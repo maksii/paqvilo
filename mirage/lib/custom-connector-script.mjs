@@ -35,7 +35,9 @@ export function dotnetSdk(command = 'dotnet') {
     try {
       const answer = spawnSync(command, ['--version'], { encoding: 'utf8', timeout: 20000, windowsHide: true });
       if (answer.status === 0 && /^\d+\.\d+/.test(answer.stdout.trim())) version = answer.stdout.trim();
-    } catch { version = null; }
+    } catch {
+      version = null;
+    }
     sdkCache.set(command, version);
   }
   return sdkCache.get(command);
@@ -43,22 +45,58 @@ export function dotnetSdk(command = 'dotnet') {
 export const SDK_MISSING = 'CONNECTOR_SCRIPT_SDK_MISSING';
 export const UNTRUSTED = 'CONNECTOR_SCRIPT_UNTRUSTED';
 /** The SHA-256 (hex) of a script's text: the value connectorScripts registers. */
-export const scriptHash = text => createHash('sha256').update(String(text), 'utf8').digest('hex');
-const untrusted = (connector, script) => new DataError(`${UNTRUSTED}: the custom connector ${connector} runs C# custom code (script.csx, sha256 ${scriptHash(script.text)}) that the project does not trust; a script runs with your user rights only when connectorScripts names { connector: ${connector}, sha256 } of its text.`, 501, 'OperationUnsupported');
+export const scriptHash = (text) => createHash('sha256').update(String(text), 'utf8').digest('hex');
+const untrusted = (connector, script) =>
+  new DataError(
+    `${UNTRUSTED}: the custom connector ${connector} runs C# custom code (script.csx, sha256 ${scriptHash(script.text)}) that the project does not trust; a script runs with your user rights only when connectorScripts names { connector: ${connector}, sha256 } of its text.`,
+    501,
+    'OperationUnsupported',
+  );
 // The environment of a script host: these names (case-insensitive) and DOTNET_*/NUGET_* variables only. The build also gets
 // the folder variables NuGet resolves its configuration and caches from (dotnet build fails "Value cannot be null (path1)"
 // without them on Windows); none of them carries a value of the user's.
 const ENV_ALLOWED = /^(?:PATH|SYSTEMROOT|TEMP|TMP|HOME|USERPROFILE|DOTNET_\w*|NUGET_\w*)$/i;
 const BUILD_ALLOWED = /^(?:APPDATA|LOCALAPPDATA|PROGRAMDATA|PROGRAMFILES|PROGRAMFILES\(X86\))$/i;
 export const hostEnvironment = (source = process.env, { build = false } = {}) => ({
-  ...Object.fromEntries(Object.entries(source).filter(([name]) => ENV_ALLOWED.test(name) || build && BUILD_ALLOWED.test(name))), DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' });
-const missing = command => new DataError(`${SDK_MISSING}: the custom connector runs C# custom code (script.csx), which needs the .NET SDK; '${command}' is not on PATH.`, 501, 'OperationUnsupported');
+  ...Object.fromEntries(
+    Object.entries(source).filter(([name]) => ENV_ALLOWED.test(name) || (build && BUILD_ALLOWED.test(name))),
+  ),
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1',
+  DOTNET_NOLOGO: '1',
+});
+const missing = (command) =>
+  new DataError(
+    `${SDK_MISSING}: the custom connector runs C# custom code (script.csx), which needs the .NET SDK; '${command}' is not on PATH.`,
+    501,
+    'OperationUnsupported',
+  );
 
 // The namespaces the platform supports, as global usings of the generated host (System.Drawing excepted, see above).
-const USINGS = ['System', 'System.Collections', 'System.Collections.Generic', 'System.Diagnostics', 'System.IO', 'System.IO.Compression', 'System.Linq', 'System.Net',
-  'System.Net.Http', 'System.Net.Http.Headers', 'System.Net.Security', 'System.Security.Authentication', 'System.Security.Cryptography', 'System.Text',
-  'System.Text.RegularExpressions', 'System.Threading', 'System.Threading.Tasks', 'System.Web', 'System.Xml', 'System.Xml.Linq', 'Microsoft.Extensions.Logging',
-  'Newtonsoft.Json', 'Newtonsoft.Json.Linq'];
+const USINGS = [
+  'System',
+  'System.Collections',
+  'System.Collections.Generic',
+  'System.Diagnostics',
+  'System.IO',
+  'System.IO.Compression',
+  'System.Linq',
+  'System.Net',
+  'System.Net.Http',
+  'System.Net.Http.Headers',
+  'System.Net.Security',
+  'System.Security.Authentication',
+  'System.Security.Cryptography',
+  'System.Text',
+  'System.Text.RegularExpressions',
+  'System.Threading',
+  'System.Threading.Tasks',
+  'System.Web',
+  'System.Xml',
+  'System.Xml.Linq',
+  'Microsoft.Extensions.Logging',
+  'Newtonsoft.Json',
+  'Newtonsoft.Json.Linq',
+];
 const HOST = `
 public interface IScriptContext {
   string CorrelationId { get; }
@@ -142,7 +180,7 @@ public static class Program {
   }
 }
 `;
-const project = sdk => `<Project Sdk="Microsoft.NET.Sdk">
+const project = (sdk) => `<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net${sdk.split('.')[0]}.0</TargetFramework>
@@ -173,36 +211,71 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
   let root = stateDirectory ? path.join(stateDirectory, 'connector-scripts') : null;
   const available = () => dotnetSdk(command) !== null;
   /** Whether connectorScripts registers this connector's script text. */
-  const trusts = (connector, script) => Boolean(script) && trusted.some(entry => entry.connector === connector && entry.sha256 === scriptHash(script.text));
+  const trusts = (connector, script) =>
+    Boolean(script) &&
+    trusted.some((entry) => entry.connector === connector && entry.sha256 === scriptHash(script.text));
   function prepare(script, connector) {
     if (!trusts(connector, script)) return Promise.reject(untrusted(connector, script));
     const sdk = dotnetSdk(command);
     if (!sdk) return Promise.reject(missing(command));
-    try { root ??= temporaryRoot ??= fs.mkdtempSync(path.join(os.tmpdir(), 'mirage-connector-scripts-')); }
-    catch (error) { return Promise.reject(error); }
-    const hash = createHash('sha256').update(sdk + '\n' + script.text).digest('hex').slice(0, 32), dir = path.join(root, hash), dll = path.join(dir, 'out', 'ConnectorScriptHost.dll');
+    try {
+      root ??= temporaryRoot ??= fs.mkdtempSync(path.join(os.tmpdir(), 'mirage-connector-scripts-'));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const hash = createHash('sha256')
+        .update(sdk + '\n' + script.text)
+        .digest('hex')
+        .slice(0, 32),
+      dir = path.join(root, hash),
+      dll = path.join(dir, 'out', 'ConnectorScriptHost.dll');
     if (builds.has(dll)) return builds.get(dll);
     const built = (async () => {
       if (fs.existsSync(dll)) return dll;
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       for (const [name, content] of Object.entries({
         'ConnectorScriptHost.csproj': project(sdk),
-        'GlobalUsings.cs': USINGS.map(n => `global using ${n};`).join('\n') + '\n',
+        'GlobalUsings.cs': USINGS.map((n) => `global using ${n};`).join('\n') + '\n',
         'Host.cs': HOST,
         'Script.cs': script.text,
       })) {
         const file = path.join(dir, name);
-        try { fs.writeFileSync(file, content, { flag: 'wx', mode: 0o600 }); }
-        catch (error) {
+        try {
+          fs.writeFileSync(file, content, { flag: 'wx', mode: 0o600 });
+        } catch (error) {
           // A failed build may leave the exact sources for a retry. Never
           // truncate a pre-existing file or follow a link outside this cache.
-          if (error.code !== 'EEXIST' || readLocalFileSync(file, { root: dir, encoding: 'utf8' }) !== content) throw error;
+          if (error.code !== 'EEXIST' || readLocalFileSync(file, { root: dir, encoding: 'utf8' }) !== content)
+            throw error;
         }
       }
-      const output = await execute(command, ['build', '-c', 'Release', '-o', 'out', '--nologo', '-v', 'q'], dir, 5 * 60000);
+      const output = await execute(
+        command,
+        ['build', '-c', 'Release', '-o', 'out', '--nologo', '-v', 'q'],
+        dir,
+        5 * 60000,
+      );
       if (output.code !== 0 || !fs.existsSync(dll)) {
-        const errors = [...new Set(output.text.split(/\r?\n/).filter(line => /error/i.test(line)).map(line => line.split(dir).join('').replace(/\s*\[[^\]]*\.csproj\]$/, '').replace(/^[\\/]*Script\.cs/, 'script.csx').trim()))].slice(0, 5);
-        throw new DataError('The custom connector script did not build: ' + (errors.join(' | ') || 'dotnet build failed.'), 502, 'ProviderFailed');
+        const errors = [
+          ...new Set(
+            output.text
+              .split(/\r?\n/)
+              .filter((line) => /error/i.test(line))
+              .map((line) =>
+                line
+                  .split(dir)
+                  .join('')
+                  .replace(/\s*\[[^\]]*\.csproj\]$/, '')
+                  .replace(/^[\\/]*Script\.cs/, 'script.csx')
+                  .trim(),
+              ),
+          ),
+        ].slice(0, 5);
+        throw new DataError(
+          'The custom connector script did not build: ' + (errors.join(' | ') || 'dotnet build failed.'),
+          502,
+          'ProviderFailed',
+        );
       }
       return dll;
     })();
@@ -210,63 +283,151 @@ export function createScriptHost({ stateDirectory = null, command = 'dotnet', tr
     built.catch(() => builds.delete(dll));
     return built;
   }
-  async function run({ connector, script, operationId, correlationId = null, request, timeoutMs = 120000, signal = null, send }) {
+  async function run({
+    connector,
+    script,
+    operationId,
+    correlationId = null,
+    request,
+    timeoutMs = 120000,
+    signal = null,
+    send,
+  }) {
     if (!trusts(connector, script)) throw untrusted(connector, script);
     if (!available()) throw missing(command);
     const dll = await prepare(script, connector);
     const limit = Math.max(1, Math.min(timeoutMs, 120000));
-    const body = request.body === undefined || request.body === null ? null : Buffer.from(request.body).toString('base64');
-    const child = spawn(command, [dll], { cwd: path.dirname(path.dirname(dll)), env: hostEnvironment(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const body =
+      request.body === undefined || request.body === null ? null : Buffer.from(request.body).toString('base64');
+    const child = spawn(command, [dll], {
+      cwd: path.dirname(path.dirname(dll)),
+      env: hostEnvironment(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
     const stop = () => child.kill();
     const timer = setTimeout(stop, limit + 5000);
     signal?.addEventListener('abort', stop, { once: true });
-    const write = value => child.stdin.write(JSON.stringify(value) + '\n');
-    let buffer = '', result = null, failure = null, chain = Promise.resolve();
-    const decode = answer => ({ statusCode: answer.status, headers: answer.headers ?? {}, body: answer.body == null ? null : Buffer.from(answer.body, 'base64') });
+    const write = (value) => child.stdin.write(JSON.stringify(value) + '\n');
+    let buffer = '',
+      result = null,
+      failure = null,
+      chain = Promise.resolve();
+    const decode = (answer) => ({
+      statusCode: answer.status,
+      headers: answer.headers ?? {},
+      body: answer.body == null ? null : Buffer.from(answer.body, 'base64'),
+    });
     child.stdout.setEncoding('utf8');
-    child.stdout.on('data', chunk => {
+    child.stdout.on('data', (chunk) => {
       buffer += chunk;
       for (let at = buffer.indexOf('\n'); at >= 0; at = buffer.indexOf('\n')) {
-        const line = buffer.slice(0, at).trim(); buffer = buffer.slice(at + 1);
+        const line = buffer.slice(0, at).trim();
+        buffer = buffer.slice(at + 1);
         if (!line) continue;
-        let message; try { message = JSON.parse(line); } catch { continue; }
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
         if (message.type === 'result') result = decode(message);
         else if (message.type === 'error') failure = message.message;
-        else if (message.type === 'send') chain = chain.then(async () => {
-          try {
-            const answer = await send({ method: message.method, url: message.url, headers: message.headers ?? {}, body: message.body == null ? undefined : Buffer.from(message.body, 'base64') });
-            const bytes = answer.body == null ? null : Buffer.isBuffer(answer.body) ? answer.body : Buffer.from(typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body));
-            write({ status: answer.statusCode, headers: answer.headers ?? {}, body: bytes ? bytes.toString('base64') : null });
-          } catch (error) { write({ error: error.message }); }
-        });
+        else if (message.type === 'send')
+          chain = chain.then(async () => {
+            try {
+              const answer = await send({
+                method: message.method,
+                url: message.url,
+                headers: message.headers ?? {},
+                body: message.body == null ? undefined : Buffer.from(message.body, 'base64'),
+              });
+              const bytes =
+                answer.body == null
+                  ? null
+                  : Buffer.isBuffer(answer.body)
+                    ? answer.body
+                    : Buffer.from(typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body));
+              write({
+                status: answer.statusCode,
+                headers: answer.headers ?? {},
+                body: bytes ? bytes.toString('base64') : null,
+              });
+            } catch (error) {
+              write({ error: error.message });
+            }
+          });
       }
     });
     let stderr = '';
-    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-2000); });
-    const exited = new Promise(resolve => { child.on('close', resolve); child.on('error', () => resolve(-1)); });
-    write({ operationId, correlationId, timeoutMs: limit, request: { method: request.method, url: request.url, headers: request.headers ?? {}, body } });
+    child.stderr.on('data', (chunk) => {
+      stderr = (stderr + chunk).slice(-2000);
+    });
+    const exited = new Promise((resolve) => {
+      child.on('close', resolve);
+      child.on('error', () => resolve(-1));
+    });
+    write({
+      operationId,
+      correlationId,
+      timeoutMs: limit,
+      request: { method: request.method, url: request.url, headers: request.headers ?? {}, body },
+    });
     await exited;
     clearTimeout(timer);
     signal?.removeEventListener('abort', stop);
-    if (signal?.aborted) throw signal.reason instanceof DataError ? signal.reason : new DataError('The connector call was cancelled.', 409, 'FlowRunCancelled');
-    if (!result) throw new DataError('The custom connector script failed: ' + (failure ?? (stderr.trim().split(/\r?\n/).at(-1) || 'the host ended without a response.')), 502, 'ProviderFailed');
+    if (signal?.aborted)
+      throw signal.reason instanceof DataError
+        ? signal.reason
+        : new DataError('The connector call was cancelled.', 409, 'FlowRunCancelled');
+    if (!result)
+      throw new DataError(
+        'The custom connector script failed: ' +
+          (failure ?? (stderr.trim().split(/\r?\n/).at(-1) || 'the host ended without a response.')),
+        502,
+        'ProviderFailed',
+      );
     const type = Object.entries(result.headers).find(([k]) => k.toLowerCase() === 'content-type')?.[1] ?? '';
     const text = result.body?.toString('utf8') ?? '';
     let parsed = text || null;
-    if (/json/i.test(type) && text) { try { parsed = JSON.parse(text); } catch { throw new DataError('The custom connector script answered invalid JSON.', 502, 'ProviderFailed'); } }
+    if (/json/i.test(type) && text) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new DataError('The custom connector script answered invalid JSON.', 502, 'ProviderFailed');
+      }
+    }
     return { statusCode: result.statusCode, headers: result.headers, body: parsed };
   }
-  return { available, trusts, prepare, run, command, missing: () => missing(command).message, untrusted: (connector, script) => untrusted(connector, script).message };
+  return {
+    available,
+    trusts,
+    prepare,
+    run,
+    command,
+    missing: () => missing(command).message,
+    untrusted: (connector, script) => untrusted(connector, script).message,
+  };
 }
 
 function execute(command, args, cwd, timeout) {
-  return new Promise(resolve => {
+  return new Promise((resolve) => {
     const child = spawn(command, args, { cwd, windowsHide: true, env: hostEnvironment(process.env, { build: true }) });
     let text = '';
-    child.stdout.on('data', c => { text = (text + c).slice(-20000); });
-    child.stderr.on('data', c => { text = (text + c).slice(-20000); });
+    child.stdout.on('data', (c) => {
+      text = (text + c).slice(-20000);
+    });
+    child.stderr.on('data', (c) => {
+      text = (text + c).slice(-20000);
+    });
     const timer = setTimeout(() => child.kill(), timeout);
-    child.on('close', code => { clearTimeout(timer); resolve({ code, text }); });
-    child.on('error', error => { clearTimeout(timer); resolve({ code: -1, text: error.message }); });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, text });
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve({ code: -1, text: error.message });
+    });
   });
 }

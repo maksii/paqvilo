@@ -2,8 +2,8 @@
 // row versions, following the documented Dataverse/Power Pages responses
 // (power-pages/configure/read-operations; data-platform/webapi/query/select-columns
 // and fetchxml/select-columns).
-import {isExactNumeric} from './exact-numeric.mjs';
-import {compileFormattedTimeZone} from './formatted-time-zone.mjs';
+import { isExactNumeric } from './exact-numeric.mjs';
+import { compileFormattedTimeZone } from './formatted-time-zone.mjs';
 import {
   fieldKind,
   formattedValue,
@@ -14,18 +14,18 @@ import {
   parseDateValue,
   primaryNameValue,
   scalar,
-} from "./dataverse-values.mjs";
+} from './dataverse-values.mjs';
 
-export const FORMATTED = "@OData.Community.Display.V1.FormattedValue";
-export const ATTRIBUTE_NAME = "@OData.Community.Display.V1.AttributeName";
-export const LOOKUP_LOGICAL = "@Microsoft.Dynamics.CRM.lookuplogicalname";
-export const NAVIGATION = "@Microsoft.Dynamics.CRM.associatednavigationproperty";
-const SYSTEM_DATES = new Set(["createdon", "modifiedon", "overriddencreatedon"]);
+export const FORMATTED = '@OData.Community.Display.V1.FormattedValue';
+export const ATTRIBUTE_NAME = '@OData.Community.Display.V1.AttributeName';
+export const LOOKUP_LOGICAL = '@Microsoft.Dynamics.CRM.lookuplogicalname';
+export const NAVIGATION = '@Microsoft.Dynamics.CRM.associatednavigationproperty';
+const SYSTEM_DATES = new Set(['createdon', 'modifiedon', 'overriddencreatedon']);
 const isPrivate = (key) => /^__sim/i.test(key);
 const isLookupObject = (value) =>
-  value && typeof value === "object" && !Array.isArray(value) && own(value, "id") && own(value, "logical_name");
+  value && typeof value === 'object' && !Array.isArray(value) && own(value, 'id') && own(value, 'logical_name');
 const isChoiceObject = (value) =>
-  value && typeof value === "object" && !Array.isArray(value) && own(value, "value") && !own(value, "id");
+  value && typeof value === 'object' && !Array.isArray(value) && own(value, 'value') && !own(value, 'id');
 const rowKey = (value) => {
   const raw = scalar(value);
   return raw == null ? null : String(guidKey(raw) ?? raw).toLowerCase();
@@ -36,7 +36,7 @@ const rowKey = (value) => {
  * options: { store, identity, metadata(logical) -> fields, formatting }
  */
 export function createWebApiFormatter({ store, identity: _identity = {}, metadata, formatting = {} }) {
-  formatting = {...formatting, timeZoneOffsetAt: compileFormattedTimeZone(formatting.formattedValueTimeZone)};
+  formatting = { ...formatting, timeZoneOffsetAt: compileFormattedTimeZone(formatting.formattedValueTimeZone) };
   const definition = (logical, attribute) => store.fieldDefinition(logical, attribute, metadata);
   const storedRows = new Map();
   const storedRow = (mapping, id) => {
@@ -46,12 +46,11 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     // elastic and non-string-keyed tables, which keep the per-request index below.
     // ponytail: those tables index every row once per request; upgrade: indexed lookup over virtual rows.
     const raw = scalar(id);
-    const subset = typeof raw === "string" ? store.primaryKeySubset(mapping, [raw]) : null;
+    const subset = typeof raw === 'string' ? store.primaryKeySubset(mapping, [raw]) : null;
     if (subset) return subset.findLast((row) => rowKey(row[mapping.idColumn]) === key) ?? null;
     if (!storedRows.has(mapping.logicalName)) {
       const index = new Map();
-      for (const row of store.tableRows(mapping.logicalName))
-        index.set(rowKey(row[mapping.idColumn]), row);
+      for (const row of store.tableRows(mapping.logicalName)) index.set(rowKey(row[mapping.idColumn]), row);
       storedRows.set(mapping.logicalName, index);
     }
     return storedRows.get(mapping.logicalName).get(key) ?? null;
@@ -80,9 +79,7 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
   const singleValued = (mapping, attribute) =>
     attribute === mapping.idColumn
       ? []
-      : Object.entries(mapping.relationships ?? {}).filter(
-          ([, rel]) => rel.many === false && rel.from === attribute,
-        );
+      : Object.entries(mapping.relationships ?? {}).filter(([, rel]) => rel.many === false && rel.from === attribute);
   /** Resolve the relationship behind a lookup column (polymorphic lookups by target). */
   const lookupOf = (mapping, attribute, value) => {
     const candidates = singleValued(mapping, attribute);
@@ -103,7 +100,7 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     attribute !== mapping.idColumn &&
     (isLookupObject(value) ||
       singleValued(mapping, attribute).length > 0 ||
-      fieldKind(definition(mapping.logicalName, attribute)) === "lookup");
+      fieldKind(definition(mapping.logicalName, attribute)) === 'lookup');
 
   /** JSON value of a column: choices as numbers, lookups as ids, UTC instants. */
   const outputValue = (value, columnDefinition, key) => {
@@ -113,34 +110,32 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     if (isLookupObject(value)) return value.id;
     const kind = fieldKind(columnDefinition);
     if (
-      typeof value === "string" &&
-      (kind === "datetime" || (!kind && (SYSTEM_DATES.has(key) || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value))))
+      typeof value === 'string' &&
+      (kind === 'datetime' || (!kind && (SYSTEM_DATES.has(key) || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value))))
     ) {
       const parsed = parseDateValue(value);
       if (parsed)
         // A date-only input literal does not change the column's behavior.
         // UserLocal columns with date display format still return an instant;
         // only metadata-declared DateOnly columns use a bare date here.
-        return isDateOnlyField(columnDefinition)
-          ? isoUtc(parsed.ms, { dateOnly: true })
-          : isoUtc(parsed.ms);
+        return isDateOnlyField(columnDefinition) ? isoUtc(parsed.ms, { dateOnly: true }) : isoUtc(parsed.ms);
     }
     return value;
   };
   const formatted = (value, columnDefinition, key) => {
     if (value == null) return undefined;
-    if (isExactNumeric(value)) return formattedValue(value,columnDefinition,formatting);
+    if (isExactNumeric(value)) return formattedValue(value, columnDefinition, formatting);
     if (isChoiceObject(value)) return value.label ?? formattedValue(value.value, columnDefinition, formatting);
     if (fieldKind(columnDefinition)) return formattedValue(value, columnDefinition, formatting);
-    if (typeof value === "boolean") return value ? "Yes" : "No";
-    if (typeof value === "string" && (SYSTEM_DATES.has(key) || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)))
-      return formattedValue(value, { dataverseType: "datetime" }, formatting);
+    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    if (typeof value === 'string' && (SYSTEM_DATES.has(key) || /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)))
+      return formattedValue(value, { dataverseType: 'datetime' }, formatting);
     return undefined;
   };
 
   /** Write one lookup value and its annotations into `out` under `key`. */
   const writeLookup = (out, mapping, attribute, value, key, { navigation = true } = {}) => {
-    if (value == null || value === "") {
+    if (value == null || value === '') {
       out[key] = null;
       return;
     }
@@ -162,12 +157,12 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     if (projected == null) return projected;
     const stored = storedRow(mapping, projected[mapping.idColumn]);
     const out = {};
-    if (etag && stored) out["@odata.etag"] = store.etag(stored);
+    if (etag && stored) out['@odata.etag'] = store.etag(stored);
     // Only navigation properties named in $expand are expanded entities; a
     // single-valued navigation may share its name with the lookup column.
     const expanded = new Map((expand ?? []).map((spec) => [spec.navigation, spec]));
     for (const key of Object.keys(projected)) {
-      if (isPrivate(key) || key.includes("@")) continue;
+      if (isPrivate(key) || key.includes('@')) continue;
       const value = projected[key];
       const spec = expanded.get(key);
       if (spec && mapping.relationships?.[key]) {
@@ -208,29 +203,29 @@ export function createWebApiFormatter({ store, identity: _identity = {}, metadat
     const out = {};
     if (!info.aggregate && row[info.idColumn] != null) {
       const stored = storedRow(rootMapping, row[info.idColumn]);
-      if (stored) out["@odata.etag"] = store.etag(stored);
+      if (stored) out['@odata.etag'] = store.etag(stored);
     }
     const byKey = new Map(info.columns.map((column) => [column.key, column]));
     for (const [key, value] of Object.entries(row)) {
-      if (isPrivate(key) || key.includes("@") || value == null || value === "") continue;
+      if (isPrivate(key) || key.includes('@') || value == null || value === '') continue;
       const column = byKey.get(key);
       let entity = info.root,
         attribute = key;
       if (column) {
         entity = column.entity;
         attribute = column.attribute;
-      } else if (key.includes(".")) {
-        const alias = key.slice(0, key.indexOf("."));
+      } else if (key.includes('.')) {
+        const alias = key.slice(0, key.indexOf('.'));
         entity = info.aliases[alias] ?? entity;
-        attribute = key.slice(key.indexOf(".") + 1);
+        attribute = key.slice(key.indexOf('.') + 1);
       }
-      const rootColumn = !column?.aliased && !key.includes(".");
+      const rootColumn = !column?.aliased && !key.includes('.');
       if (!rootColumn) out[`${key}${ATTRIBUTE_NAME}`] = attribute;
       if (column?.aggregate || column?.dategrouping) {
-        if (typeof value === "number")
+        if (typeof value === 'number')
           out[`${key}${FORMATTED}`] = formattedValue(
             value,
-            { dataverseType: Number.isInteger(value) ? "int" : "decimal" },
+            { dataverseType: Number.isInteger(value) ? 'int' : 'decimal' },
             formatting,
           );
         out[key] = value;

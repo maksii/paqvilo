@@ -1,7 +1,13 @@
 import { isDeepStrictEqual } from 'node:util';
 
 export function validateRowIndex(rows, index, insertion = false) {
-  if (!Array.isArray(rows) || !Number.isSafeInteger(index) || index < 0 || index >= rows.length + Number(insertion) || !insertion && !Object.hasOwn(rows, index))
+  if (
+    !Array.isArray(rows) ||
+    !Number.isSafeInteger(index) ||
+    index < 0 ||
+    index >= rows.length + Number(insertion) ||
+    (!insertion && !Object.hasOwn(rows, index))
+  )
     throw new RangeError('Row index must identify an own array element.');
 }
 export function assignRowValues(row, values) {
@@ -29,48 +35,76 @@ function tableRows(target, table) {
  * this relies on sections changing only inside store transactions. */
 export class RowTransaction {
   constructor(store, { reuse = false } = {}) {
-    this.store = store; this.state = store.state; this.undo = []; this.entries = [];
+    this.store = store;
+    this.state = store.state;
+    this.undo = [];
+    this.entries = [];
     const cached = reuse ? store.sectionSnapshot : null;
     if (reuse) store.sectionSnapshot = null;
     const valid = cached?.state === store.state && cached.revision === store.revision;
-    const reused = {}, fresh = {};
+    const reused = {},
+      fresh = {};
     for (const [key, value] of Object.entries(store.state)) {
       if (key === 'tables') continue;
       const hit = valid ? cached.sections.get(key) : undefined;
-      if (hit && hit.value === value) reused[key] = hit.copy; else fresh[key] = value;
+      if (hit && hit.value === value) reused[key] = hit.copy;
+      else fresh[key] = value;
     }
     const copies = structuredClone(fresh);
     // Keep the state's section order (rollback re-adds removed sections in this order).
-    this.metadata = Object.fromEntries(Object.keys(store.state).filter((key) => key !== 'tables').map((key) => [key, Object.hasOwn(reused, key) ? reused[key] : copies[key]]));
-    this.unchanged = new Set(); this.compared = false;
+    this.metadata = Object.fromEntries(
+      Object.keys(store.state)
+        .filter((key) => key !== 'tables')
+        .map((key) => [key, Object.hasOwn(reused, key) ? reused[key] : copies[key]]),
+    );
+    this.unchanged = new Set();
+    this.compared = false;
     this.tables = new Set(Object.keys(store.state.tables));
     this.lengths = new Map(Object.entries(store.state.tables).map(([table, rows]) => [table, rows?.length]));
   }
   set(table, rows, index, row) {
     validateRowIndex(rows, index);
     const previous = rows.at(index);
-    this.undo.push(target => replaceRow(target === this.state ? rows : tableRows(target, table), index, target === this.state ? previous : structuredClone(previous)));
-    replaceRow(rows, index, row); this.entries.push({ op: 'set', table, index, row });
+    this.undo.push((target) =>
+      replaceRow(
+        target === this.state ? rows : tableRows(target, table),
+        index,
+        target === this.state ? previous : structuredClone(previous),
+      ),
+    );
+    replaceRow(rows, index, row);
+    this.entries.push({ op: 'set', table, index, row });
   }
   mutate(table, rows, index, values) {
     validateRowIndex(rows, index);
-    const row = rows.at(index), previous = structuredClone(row);
-    this.undo.push(target => {
+    const row = rows.at(index),
+      previous = structuredClone(row);
+    this.undo.push((target) => {
       const destination = target === this.state ? row : tableRows(target, table).at(index);
       for (const key of Object.keys(destination)) delete destination[key];
       assignRowValues(destination, target === this.state ? previous : structuredClone(previous));
     });
-    assignRowValues(row, values); this.entries.push({ op: 'set', table, index, row });
+    assignRowValues(row, values);
+    this.entries.push({ op: 'set', table, index, row });
   }
   insert(table, rows, index, row) {
     validateRowIndex(rows, index, true);
-    this.undo.push(target => (target === this.state ? rows : tableRows(target, table)).splice(index, 1)); rows.splice(index, 0, row);
+    this.undo.push((target) => (target === this.state ? rows : tableRows(target, table)).splice(index, 1));
+    rows.splice(index, 0, row);
     this.entries.push({ op: 'insert', table, index, row });
   }
   remove(table, rows, index) {
     validateRowIndex(rows, index);
-    const previous = rows.at(index); this.undo.push(target => (target === this.state ? rows : tableRows(target, table)).splice(index, 0, target === this.state ? previous : structuredClone(previous)));
-    rows.splice(index, 1); this.entries.push({ op: 'delete', table, index });
+    const previous = rows.at(index);
+    this.undo.push((target) =>
+      (target === this.state ? rows : tableRows(target, table)).splice(
+        index,
+        0,
+        target === this.state ? previous : structuredClone(previous),
+      ),
+    );
+    rows.splice(index, 1);
+    this.entries.push({ op: 'delete', table, index });
   }
   /**
    * Tables this transaction wrote through its row operations, tables it allocated or removed, and,
@@ -87,7 +121,8 @@ export class RowTransaction {
     // New tables may have been allocated before their first row operation.
     for (const table of Object.keys(this.state.tables)) if (!this.tables.has(table)) yield { op: 'table', table };
     for (const entry of this.entries) yield entry;
-    for (const key of Object.keys(this.metadata)) if (!Object.hasOwn(this.state, key)) yield { op: 'remove-section', key };
+    for (const key of Object.keys(this.metadata))
+      if (!Object.hasOwn(this.state, key)) yield { op: 'remove-section', key };
     for (const [key, value] of Object.entries(this.state)) {
       if (key === 'tables') continue;
       if (!isDeepStrictEqual(value, this.metadata[key])) yield { op: 'section', key, value };
@@ -98,7 +133,10 @@ export class RowTransaction {
   /** After a fully compared commit: the section copies proven equal to the committed sections. */
   reusableSections() {
     if (!this.compared || this.promoted) return null;
-    return { state: this.state, sections: new Map([...this.unchanged].map((key) => [key, { value: this.state[key], copy: this.metadata[key] }])) };
+    return {
+      state: this.state,
+      sections: new Map([...this.unchanged].map((key) => [key, { value: this.state[key], copy: this.metadata[key] }])),
+    };
   }
   /**
    * Undo every row operation and restore the sections. `restoreSection(current, saved)` (a savepoint
@@ -106,9 +144,13 @@ export class RowTransaction {
    */
   rollback(target = this.state, restoreSection = null) {
     for (let i = this.undo.length - 1; i >= 0; i--) this.undo[i](target);
-    for (const key of Object.keys(target)) if (key !== 'tables' && !Object.hasOwn(this.metadata, key)) delete target[key];
+    for (const key of Object.keys(target))
+      if (key !== 'tables' && !Object.hasOwn(this.metadata, key)) delete target[key];
     for (const [key, value] of Object.entries(this.metadata)) {
-      if (restoreSection && Object.hasOwn(target, key)) { if (!isDeepStrictEqual(target[key], value)) target[key] = restoreSection(target[key], value); continue; }
+      if (restoreSection && Object.hasOwn(target, key)) {
+        if (!isDeepStrictEqual(target[key], value)) target[key] = restoreSection(target[key], value);
+        continue;
+      }
       Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
     }
     for (const table of Object.keys(target.tables)) if (!this.tables.has(table)) delete target.tables[table];

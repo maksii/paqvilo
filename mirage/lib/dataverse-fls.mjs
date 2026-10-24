@@ -17,16 +17,23 @@ const ADMIN_ROLE = 'System Administrator';
 export const SYSTEM_ADMINISTRATOR_STAND_IN = Object.freeze({ systemuserid: null });
 const FLAGS = ['cancreate', 'canread', 'canupdate', 'canreadunmasked'];
 // CanReadUnmasked: 1 One Record (Retrieve only), 3 All Records.
-const UNMASK_ONE = 1, UNMASK_ALL = 3;
+const UNMASK_ONE = 1,
+  UNMASK_ALL = 3;
 // The read inner code 0x8004f508 is a guess.
 const INNER_CODE = { create: '0x8004f502', update: '0x8004f507', read: '0x8004f508' };
 
-const TEXT = 'nvarchar', INT = 'int', BOOL = 'bit', LOOKUP = 'lookup', GUID = 'uniqueidentifier';
+const TEXT = 'nvarchar',
+  INT = 'int',
+  BOOL = 'bit',
+  LOOKUP = 'lookup',
+  GUID = 'uniqueidentifier';
 const nn = (target, from, to, via) => ({ entity: target, from, to, many: true, intersect: { entity: via, from, to } });
 // Entity set names are guessed from the Web API plural convention.
 const TABLE_DEFS = {
   fieldsecurityprofile: {
-    set: 'fieldsecurityprofiles', id: 'fieldsecurityprofileid', name: 'name',
+    set: 'fieldsecurityprofiles',
+    id: 'fieldsecurityprofileid',
+    name: 'name',
     fields: { fieldsecurityprofileid: GUID, name: TEXT },
     relationships: {
       systemuserprofiles_association: nn('systemuser', 'fieldsecurityprofileid', 'systemuserid', 'systemuserprofiles'),
@@ -34,14 +41,40 @@ const TABLE_DEFS = {
     },
   },
   fieldpermission: {
-    set: 'fieldpermissions', id: 'fieldpermissionid',
-    fields: { fieldpermissionid: GUID, fieldsecurityprofileid: LOOKUP, entityname: TEXT, attributelogicalname: TEXT, cancreate: INT, canread: INT, canupdate: INT, canreadunmasked: INT },
+    set: 'fieldpermissions',
+    id: 'fieldpermissionid',
+    fields: {
+      fieldpermissionid: GUID,
+      fieldsecurityprofileid: LOOKUP,
+      entityname: TEXT,
+      attributelogicalname: TEXT,
+      cancreate: INT,
+      canread: INT,
+      canupdate: INT,
+      canreadunmasked: INT,
+    },
   },
-  systemuserprofiles: { set: 'systemuserprofiles', id: 'systemuserprofileid', fields: { systemuserprofileid: GUID, systemuserid: LOOKUP, fieldsecurityprofileid: LOOKUP } },
-  teamprofiles: { set: 'teamprofiles', id: 'teamprofileid', fields: { teamprofileid: GUID, teamid: LOOKUP, fieldsecurityprofileid: LOOKUP } },
+  systemuserprofiles: {
+    set: 'systemuserprofiles',
+    id: 'systemuserprofileid',
+    fields: { systemuserprofileid: GUID, systemuserid: LOOKUP, fieldsecurityprofileid: LOOKUP },
+  },
+  teamprofiles: {
+    set: 'teamprofiles',
+    id: 'teamprofileid',
+    fields: { teamprofileid: GUID, teamid: LOOKUP, fieldsecurityprofileid: LOOKUP },
+  },
   principalobjectattributeaccess: {
-    set: 'principalobjectattributeaccesses', id: 'principalobjectattributeaccessid',
-    fields: { principalobjectattributeaccessid: GUID, objectid: LOOKUP, attributeid: GUID, principalid: LOOKUP, readaccess: BOOL, updateaccess: BOOL },
+    set: 'principalobjectattributeaccesses',
+    id: 'principalobjectattributeaccessid',
+    fields: {
+      principalobjectattributeaccessid: GUID,
+      objectid: LOOKUP,
+      attributeid: GUID,
+      principalid: LOOKUP,
+      readaccess: BOOL,
+      updateaccess: BOOL,
+    },
   },
 };
 
@@ -81,7 +114,13 @@ export function ensureFieldSecurity(store) {
 // IsSecured arrives as a bool, or as { Value } in the Web API; the dataverseMetadata flag overrides the columnMetadata one.
 const flag = (value) => (value !== null && typeof value === 'object' ? value.Value === true : value === true);
 export function isSecuredField(field) {
-  return flag(field?.dataverseMetadata?.IsSecured ?? field?.dataverseMetadata?.isSecured ?? field?.columnMetadata?.IsSecured ?? field?.columnMetadata?.isSecured ?? field?.isSecured);
+  return flag(
+    field?.dataverseMetadata?.IsSecured ??
+      field?.dataverseMetadata?.isSecured ??
+      field?.columnMetadata?.IsSecured ??
+      field?.columnMetadata?.isSecured ??
+      field?.isSecured,
+  );
 }
 // A link-entity or aggregate alias prefixes both the key and the id column.
 const idOf = (mapping, row, prefix = '') => row?.[`${prefix}${mapping.idColumn ?? `${mapping.logicalName}id`}`];
@@ -94,28 +133,51 @@ const attributeIdOf = (organizationId, entity, name) => metadataComponentId(orga
 export function denied(operation, user, name, entity) {
   return new DataError(
     `SystemUser user with Id ${user.systemuserid} does not have ${operation} permissions to a ${name} secured field on entity ${entity}. The requested operation could not be completed.`,
-    403, 'AccessDenied', { innerCode: INNER_CODE[operation] },
+    403,
+    'AccessDenied',
+    { innerCode: INNER_CODE[operation] },
   );
 }
 
 /** A masked column used as a filter, order or aggregate operand: 0x80041155 CannotFilterOnMaskedAttribute. */
 export function maskedOperand() {
-  return new DataError('Filtering on masked attributes without the read unmasked column permission is not allowed.', 400, 'InvalidRequest', { innerCode: '0x80041155' });
+  return new DataError(
+    'Filtering on masked attributes without the read unmasked column permission is not allowed.',
+    400,
+    'InvalidRequest',
+    { innerCode: '0x80041155' },
+  );
 }
 // Aggregates that read only whether a value is present: masking keeps null as null, so they observe nothing of the clear value.
 const PRESENCE_AGGREGATES = new Set(['count', 'countcolumn', '$count']);
 
 /** Pure factory over a store and principals. `organizationId()` returns the organization GUID that derives the column MetadataIds. */
-export function createFieldSecurity({ store, principals, organizationId, metadataFields = () => undefined, diagnostic = null }) {
+export function createFieldSecurity({
+  store,
+  principals,
+  organizationId,
+  metadataFields = () => undefined,
+  diagnostic = null,
+}) {
   const reporter = onceReporter(diagnostic);
   const report = (entry) => reporter.report(entry, `${entry.code}\u0000${entry.table}\u0000${entry.column}`);
   const rows = (logical) => store.tableRows(logical);
-  const isAdmin = (user) => user === SYSTEM_ADMINISTRATOR_STAND_IN || principals.roles(user).some((r) => r.name === ADMIN_ROLE);
-  const mappingField = (mapping, name, source = metadataFields(mapping?.logicalName)) => ({ ...source?.[name], ...mapping?.fieldMetadata?.[name], ...mapping?.fields?.[name] });
-  const securedNames = mapping => {
+  const isAdmin = (user) =>
+    user === SYSTEM_ADMINISTRATOR_STAND_IN || principals.roles(user).some((r) => r.name === ADMIN_ROLE);
+  const mappingField = (mapping, name, source = metadataFields(mapping?.logicalName)) => ({
+    ...source?.[name],
+    ...mapping?.fieldMetadata?.[name],
+    ...mapping?.fields?.[name],
+  });
+  const securedNames = (mapping) => {
     const source = metadataFields(mapping?.logicalName) ?? null;
-    return [...new Set([...Object.keys(source ?? {}), ...Object.keys(mapping?.fieldMetadata ?? {}), ...Object.keys(mapping?.fields ?? {})])]
-      .filter(name => isSecuredField(mappingField(mapping, name, source)));
+    return [
+      ...new Set([
+        ...Object.keys(source ?? {}),
+        ...Object.keys(mapping?.fieldMetadata ?? {}),
+        ...Object.keys(mapping?.fields ?? {}),
+      ]),
+    ].filter((name) => isSecuredField(mappingField(mapping, name, source)));
   };
   // A stored mapping keyed by its logical name may omit logicalName (a project-declared table); the masking rule, grant and
   // metadata lookups key on it, so it is always set here.
@@ -129,9 +191,14 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
   // formatted value and a Liquid `.name` never disagree with a masked column read.
   const assertSecurable = () => {
     for (const logical of Object.keys(store.state.mappings ?? {})) {
-      const mapping = mappingOf(logical), name = mapping?.nameColumn;
+      const mapping = mappingOf(logical),
+        name = mapping?.nameColumn;
       if (name && isSecuredField(mappingField(mapping, name))) {
-        throw new DataError(`The primary name column ${name} of table ${logical} can't be secured.`, 400, 'InvalidRequest'); // Native message text and code not known.
+        throw new DataError(
+          `The primary name column ${name} of table ${logical} can't be secured.`,
+          400,
+          'InvalidRequest',
+        ); // Native message text and code not known.
       }
     }
   };
@@ -140,12 +207,18 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
   // A user reaches its own profiles and those of its teams.
   function scopeOf(kind, id) {
     const uid = key(id);
-    const teams = kind === 'team'
-      ? [uid]
-      : rows('teammembership').filter((m) => same(refId(m.systemuserid), uid)).map((m) => key(refId(m.teamid)));
+    const teams =
+      kind === 'team'
+        ? [uid]
+        : rows('teammembership')
+            .filter((m) => same(refId(m.systemuserid), uid))
+            .map((m) => key(refId(m.teamid)));
     const profiles = new Set();
-    if (kind !== 'team') for (const r of rows('systemuserprofiles')) if (same(refId(r.systemuserid), uid)) profiles.add(key(refId(r.fieldsecurityprofileid)));
-    for (const r of rows('teamprofiles')) if (teams.some((t) => same(refId(r.teamid), t))) profiles.add(key(refId(r.fieldsecurityprofileid)));
+    if (kind !== 'team')
+      for (const r of rows('systemuserprofiles'))
+        if (same(refId(r.systemuserid), uid)) profiles.add(key(refId(r.fieldsecurityprofileid)));
+    for (const r of rows('teamprofiles'))
+      if (teams.some((t) => same(refId(r.teamid), t))) profiles.add(key(refId(r.fieldsecurityprofileid)));
     return { profiles, principals: kind === 'team' ? teams : [uid, ...teams] };
   }
 
@@ -155,7 +228,14 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
     for (const r of rows('fieldpermission')) {
       if (!profiles.has(key(refId(r.fieldsecurityprofileid)))) continue;
       const k = `${key(r.entityname)}.${key(r.attributelogicalname)}`;
-      const cur = out.get(k) ?? { entity: key(r.entityname), name: key(r.attributelogicalname), cancreate: 0, canread: 0, canupdate: 0, canreadunmasked: 0 };
+      const cur = out.get(k) ?? {
+        entity: key(r.entityname),
+        name: key(r.attributelogicalname),
+        cancreate: 0,
+        canread: 0,
+        canupdate: 0,
+        canreadunmasked: 0,
+      };
       for (const f of FLAGS) cur[f] = Math.max(cur[f], Number(r[f]) || 0);
       out.set(k, cur);
     }
@@ -208,20 +288,28 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
     return rules.byColumn.get(id);
   }
   function ruleOf(entity, column) {
-    const link = rows('attributemaskingrule').find((r) => same(r.entityname, entity) && same(r.attributelogicalname, column));
+    const link = rows('attributemaskingrule').find(
+      (r) => same(r.entityname, entity) && same(r.attributelogicalname, column),
+    );
     if (!link) return null;
     const rule = rows('maskingrule').find((r) => same(r.maskingruleid, refId(link.maskingruleid)));
     if (!rule?.regularexpression) return { error: 'The masking rule has no regular expression.' };
     const pattern = String(rule.regularexpression);
     if (!compiled.has(pattern)) {
-      try { compiled.set(pattern, { regex: new RegExp(pattern, 'g') }); } catch (error) { compiled.set(pattern, { error: error.message }); }
+      try {
+        compiled.set(pattern, { regex: new RegExp(pattern, 'g') });
+      } catch (error) {
+        compiled.set(pattern, { error: error.message });
+      }
     }
     const { regex, error } = compiled.get(pattern);
     return error ? { error } : { regex, character: String(rule.maskedcharacter ?? '*') || '*' };
   }
 
   // The one unmask rule: UnMaskedData asked and CanReadUnmasked All Records, or One Record on a single-record read.
-  const unmaskable = (access, view) => view?.unmask === true && (access.unmasked === UNMASK_ALL || (access.unmasked === UNMASK_ONE && view.single === true));
+  const unmaskable = (access, view) =>
+    view?.unmask === true &&
+    (access.unmasked === UNMASK_ALL || (access.unmasked === UNMASK_ONE && view.single === true));
 
   // Each match of the rule's expression becomes one masked character.
   function maskedValue(entity, column, value, access, view) {
@@ -230,7 +318,12 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
     if (!rule) return value;
     if (unmaskable(access, view)) return value;
     if (rule.error) {
-      report({ code: 'MASKING_RULE_UNSUPPORTED', table: entity, column, message: `The masking rule of ${entity}.${column} cannot be evaluated (${rule.error}); the column reads as null.` });
+      report({
+        code: 'MASKING_RULE_UNSUPPORTED',
+        table: entity,
+        column,
+        message: `The masking rule of ${entity}.${column} cannot be evaluated (${rule.error}); the column reads as null.`,
+      });
       return null;
     }
     return String(value).replace(rule.regex, () => rule.character);
@@ -243,17 +336,26 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
     const mapping = mappingOf(logical);
     const source = metadataFields(mapping?.logicalName ?? logical) ?? null;
     let administrator, scope, grants;
-    return Object.fromEntries(columns.map(name => {
-      if (!isSecuredField(mappingField(mapping, name, source))) return [name, { read: true, create: true, update: true }];
-      administrator ??= isAdmin(user);
-      if (administrator) return [name, { read: true, create: true, update: true }];
-      scope ??= scopeOf('systemuser', user.systemuserid);
-      grants ??= grantsOf(scope.profiles);
-      const permission = grants.get(`${key(logical)}.${key(name)}`) ?? {};
-      const shared = sharedOf(scope.principals, recordId, attributeIdOf(organizationId(), logical, name));
-      return [name, { read: permission.canread === ALLOWED || shared.read, create: permission.cancreate === ALLOWED,
-        update: permission.canupdate === ALLOWED || shared.update }];
-    }));
+    return Object.fromEntries(
+      columns.map((name) => {
+        if (!isSecuredField(mappingField(mapping, name, source)))
+          return [name, { read: true, create: true, update: true }];
+        administrator ??= isAdmin(user);
+        if (administrator) return [name, { read: true, create: true, update: true }];
+        scope ??= scopeOf('systemuser', user.systemuserid);
+        grants ??= grantsOf(scope.profiles);
+        const permission = grants.get(`${key(logical)}.${key(name)}`) ?? {};
+        const shared = sharedOf(scope.principals, recordId, attributeIdOf(organizationId(), logical, name));
+        return [
+          name,
+          {
+            read: permission.canread === ALLOWED || shared.read,
+            create: permission.cancreate === ALLOWED,
+            update: permission.canupdate === ALLOWED || shared.update,
+          },
+        ];
+      }),
+    );
   }
 
   // Create checks cancreate; update checks canupdate or an update share on the record.
@@ -362,7 +464,8 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
         const access = accessOf(c.user, logical, column);
         if (!access.read) throw denied('read', c.user, column, logical);
         // The maskedFor rule over the access just read.
-        if (!PRESENCE_AGGREGATES.has(method) && maskOf(logical, column) !== null && !unmaskable(access, view)) throw maskedOperand();
+        if (!PRESENCE_AGGREGATES.has(method) && maskOf(logical, column) !== null && !unmaskable(access, view))
+          throw maskedOperand();
       }
     },
 
@@ -420,9 +523,26 @@ export const fieldSecurity = {
   install(api) {
     const { store, principals } = api;
     // The organization GUID comes from the organization row: api.settings.organizationId is null at runtime.
-    const fls = createFieldSecurity({ store, principals, metadataFields: logical => api.metadataFields?.(logical), organizationId: () => organizationRecord(store)?.organizationid, diagnostic: api.diagnostic ?? null });
+    const fls = createFieldSecurity({
+      store,
+      principals,
+      metadataFields: (logical) => api.metadataFields?.(logical),
+      organizationId: () => organizationRecord(store)?.organizationid,
+      diagnostic: api.diagnostic ?? null,
+    });
     fls.assertSecurable();
-    api.fieldSecurity = { mask: fls.mask, maskValue: fls.maskValue, maskedFor: fls.maskedFor, canRead: fls.canRead, canWrite: fls.canWrite, capabilities: fls.capabilities, assertAggregate: fls.assertAggregate, rowMask: fls.rowMask, maskedOperand, diagnostics: fls.diagnostics };
+    api.fieldSecurity = {
+      mask: fls.mask,
+      maskValue: fls.maskValue,
+      maskedFor: fls.maskedFor,
+      canRead: fls.canRead,
+      canWrite: fls.canWrite,
+      capabilities: fls.capabilities,
+      assertAggregate: fls.assertAggregate,
+      rowMask: fls.rowMask,
+      maskedOperand,
+      diagnostics: fls.diagnostics,
+    };
     for (const entity of ['systemuser', 'team']) {
       api.registry.register({
         name: 'RetrievePrincipalAttributePrivileges',
@@ -438,7 +558,9 @@ export const fieldSecurity = {
         },
       });
     }
-    api.recordHooks.add('project', (c, mapping, formatted, info = {}) => fls.project(c, mapping, formatted, { single: info.single === true }));
+    api.recordHooks.add('project', (c, mapping, formatted, info = {}) =>
+      fls.project(c, mapping, formatted, { single: info.single === true }),
+    );
     api.recordHooks.add('beforeWrite', (c, mapping, change) => fls.beforeWrite(c, mapping, change));
     // The API awaits install, so the seed is committed before the first request.
     return api.change(() => ensureFieldSecurity(store));

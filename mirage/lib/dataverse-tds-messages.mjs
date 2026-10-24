@@ -11,13 +11,13 @@
 //   attentionAck() -> DONE with DONE_ATTN, the reply a client ATTENTION (0x06) requires
 // DONE, ERROR and DONE status bits are encoded by dataverse-tds-login.mjs and shared here.
 // Malformed or truncated input throws TdsProtocolError; nothing is read past the payload.
-import { decodeTypedValue } from "./dataverse-tds-types.mjs";
-import { DONE_STATUS, done, error } from "./dataverse-tds-login.mjs";
+import { decodeTypedValue } from './dataverse-tds-types.mjs';
+import { DONE_STATUS, done, error } from './dataverse-tds-login.mjs';
 
 export class TdsProtocolError extends Error {
   constructor(message) {
     super(message);
-    this.name = "TdsProtocolError";
+    this.name = 'TdsProtocolError';
   }
 }
 
@@ -27,7 +27,7 @@ const PROC_ID_SWITCH = 0xffff;
 const SP_EXECUTESQL = 10;
 
 // Error number and text for a write statement: no native number is documented, so both are guesses.
-export const READ_ONLY_ERROR = { number: 40000, message: "The request is read-only." };
+export const READ_ONLY_ERROR = { number: 40000, message: 'The request is read-only.' };
 
 class Reader {
   constructor(buf) {
@@ -35,7 +35,8 @@ class Reader {
     this.offset = 0;
   }
   need(n) {
-    if (n < 0 || this.offset + n > this.buf.length) throw new TdsProtocolError(`message truncated at byte ${this.offset}`);
+    if (n < 0 || this.offset + n > this.buf.length)
+      throw new TdsProtocolError(`message truncated at byte ${this.offset}`);
   }
   take(n) {
     this.need(n);
@@ -57,7 +58,7 @@ class Reader {
   }
   // B_VARCHAR: a one-byte character count, then UTF-16LE characters.
   bVarchar() {
-    return this.take(this.u8() * 2).toString("utf16le");
+    return this.take(this.u8() * 2).toString('utf16le');
   }
 }
 
@@ -71,7 +72,7 @@ function readAllHeaders(r) {
   while (r.offset < end) {
     const start = r.offset;
     const length = r.u32();
-    if (length < 6 || start + length > end) throw new TdsProtocolError("ALL_HEADERS entry exceeds its block");
+    if (length < 6 || start + length > end) throw new TdsProtocolError('ALL_HEADERS entry exceeds its block');
     if (r.u16() === HEADER_TRANSACTION_DESCRIPTOR && length === 18) {
       headers.transaction = { descriptor: r.u64(), outstandingRequests: r.u32() };
     }
@@ -84,8 +85,8 @@ export function decodeSqlBatch(payload) {
   const r = new Reader(payload);
   const headers = readAllHeaders(r);
   const text = payload.subarray(r.offset);
-  if (text.length % 2) throw new TdsProtocolError("SQL_BATCH text is not UTF-16LE");
-  return { headers, sql: text.toString("utf16le") };
+  if (text.length % 2) throw new TdsProtocolError('SQL_BATCH text is not UTF-16LE');
+  return { headers, sql: text.toString('utf16le') };
 }
 
 export function decodeRpc(payload) {
@@ -95,7 +96,7 @@ export function decodeRpc(payload) {
   let procId;
   let procName;
   if (nameLength === PROC_ID_SWITCH) procId = r.u16();
-  else procName = r.take(nameLength * 2).toString("utf16le");
+  else procName = r.take(nameLength * 2).toString('utf16le');
   const flags = r.u16();
   const params = [];
   while (r.offset < payload.length) {
@@ -118,15 +119,15 @@ export function decodeRpc(payload) {
 // add them when a client sends prepared statements.
 export function rpcToQuery(rpc) {
   const name = rpc.procName?.toLowerCase();
-  if (rpc.procId !== SP_EXECUTESQL && name !== "sp_executesql") {
+  if (rpc.procId !== SP_EXECUTESQL && name !== 'sp_executesql') {
     throw new TdsProtocolError(`RPC ${rpc.procName ?? rpc.procId} is not supported`);
   }
   // sp_executesql(@stmt, @params declaration, value...): the declaration is redundant because each value carries its type.
   const [stmt, , ...values] = rpc.params;
-  if (typeof stmt?.value !== "string") throw new TdsProtocolError("sp_executesql needs an NVARCHAR statement");
+  if (typeof stmt?.value !== 'string') throw new TdsProtocolError('sp_executesql needs an NVARCHAR statement');
   const params = {};
   values.forEach((p, k) => {
-    const key = p.name ? (p.name.startsWith("@") ? p.name : `@${p.name}`) : `@p${k + 1}`;
+    const key = p.name ? (p.name.startsWith('@') ? p.name : `@${p.name}`) : `@p${k + 1}`;
     params[key] = p.value;
   });
   return { sql: stmt.value, params };
@@ -156,7 +157,7 @@ export function returnStatus(value = 0) {
   return b;
 }
 
-export const errorToken = ({ server = "", ...rest }) => error({ ...rest, serverName: server });
+export const errorToken = ({ server = '', ...rest }) => error({ ...rest, serverName: server });
 
 export function readOnlyError() {
   return Buffer.concat([errorToken(READ_ONLY_ERROR), doneToken({ error: true })]);

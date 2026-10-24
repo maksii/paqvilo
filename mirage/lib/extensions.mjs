@@ -20,10 +20,11 @@ const scope = new AsyncLocalStorage();
 /** Registries of operators and shell conventions for the packs of one runtime; duplicates across packs throw. */
 export function createPackRegistries(packs = []) {
   const registries = emptyRegistries();
-  for (const [name, { value, pack }] of collectPackExport(packs, 'expressionOperators')) registries.operators.set(name, { packId: pack, evaluate: value });
+  for (const [name, { value, pack }] of collectPackExport(packs, 'expressionOperators'))
+    registries.operators.set(name, { packId: pack, evaluate: value });
   for (const [key, { value, pack }] of collectPackExport(packs, 'shell'))
     (key.startsWith('footerLogoClass:') ? registries.footerLogos : registries.notificationQueries).set(value, pack);
-  return Object.freeze({ ...registries, packIds: packs.map(pack => pack.id) });
+  return Object.freeze({ ...registries, packIds: packs.map((pack) => pack.id) });
 }
 
 /** Makes a runtime's registries visible to lookups outside any runWithPackRegistries scope. */
@@ -41,7 +42,7 @@ const sources = () => {
   const scoped = scope.getStore();
   return scoped ? [scoped, legacy] : [legacy, ...active.values()];
 };
-const keysOf = field => [...new Set(sources().flatMap(registries => [...registries[field].keys()]))];
+const keysOf = (field) => [...new Set(sources().flatMap((registries) => [...registries[field].keys()]))];
 
 /**
  * Register plugin expression operators of `packId` ({ name: evaluate }).
@@ -50,10 +51,10 @@ const keysOf = field => [...new Set(sources().flatMap(registries => [...registri
  */
 export function registerExpressionOperators(packId, definitions) {
   if (definitions == null) return;
-  if (typeof definitions !== "object" || Array.isArray(definitions))
+  if (typeof definitions !== 'object' || Array.isArray(definitions))
     throw new TypeError(`Pack ${packId}: expressionOperators must be an object of functions`);
   for (const [name, evaluate] of Object.entries(definitions)) {
-    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(name) || typeof evaluate !== "function")
+    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(name) || typeof evaluate !== 'function')
       throw new TypeError(`Pack ${packId}: expression operator ${name} must be a named function`);
     const existing = operators.get(name);
     if (existing && existing.packId !== packId)
@@ -74,7 +75,8 @@ export function expressionOperator(name) {
 /** Names and packs of the registered operators (diagnostics). */
 export function expressionOperators() {
   const seen = new Map();
-  for (const registries of sources()) for (const [name, { packId }] of registries.operators) if (!seen.has(name)) seen.set(name, packId);
+  for (const registries of sources())
+    for (const [name, { packId }] of registries.operators) if (!seen.has(name)) seen.set(name, packId);
   return [...seen].map(([name, packId]) => ({ name, packId }));
 }
 
@@ -87,9 +89,18 @@ export function validateEndpoints(packId, endpoints) {
   if (endpoints == null) return [];
   if (!Array.isArray(endpoints)) throw new TypeError(`Pack ${packId}: endpoints must be an array`);
   for (const endpoint of endpoints) {
-    if (!endpoint || typeof endpoint.id !== "string" || !(endpoint.pattern instanceof RegExp) || typeof endpoint.handle !== "function")
+    if (
+      !endpoint ||
+      typeof endpoint.id !== 'string' ||
+      !(endpoint.pattern instanceof RegExp) ||
+      typeof endpoint.handle !== 'function'
+    )
       throw new TypeError(`Pack ${packId}: every endpoint needs id, pattern (RegExp) and handle(context)`);
-    if (!Array.isArray(endpoint.methods) || !endpoint.methods.length || endpoint.methods.some((method) => !/^[A-Z]+$/.test(method)))
+    if (
+      !Array.isArray(endpoint.methods) ||
+      !endpoint.methods.length ||
+      endpoint.methods.some((method) => !/^[A-Z]+$/.test(method))
+    )
       throw new TypeError(`Pack ${packId}: endpoint ${endpoint.id} needs upper-case methods`);
     if (!/^\^\\\/__sim\\\//.test(endpoint.pattern.source))
       throw new TypeError(`Pack ${packId}: endpoint ${endpoint.id} must be anchored under /__sim/`);
@@ -99,7 +110,9 @@ export function validateEndpoints(packId, endpoints) {
 
 /** Endpoints of the given packs, tagged with their pack id. */
 export function packEndpoints(packs = []) {
-  return packs.flatMap((pack) => validateEndpoints(pack.id, pack.endpoints).map((endpoint) => ({ ...endpoint, packId: pack.id })));
+  return packs.flatMap((pack) =>
+    validateEndpoints(pack.id, pack.endpoints).map((endpoint) => ({ ...endpoint, packId: pack.id })),
+  );
 }
 
 // Shell conventions packs declare for the portals they serve, for example the
@@ -114,7 +127,8 @@ const footerLogos = legacy.footerLogos;
 const notificationQueries = legacy.notificationQueries;
 const claim = (map, value, packId, field) => {
   const owner = map.get(value);
-  if (owner !== undefined && owner !== packId) throw new Error(`Ambiguous shell registration for ${field}:${value} in packs ${owner} and ${packId}`);
+  if (owner !== undefined && owner !== packId)
+    throw new Error(`Ambiguous shell registration for ${field}:${value} in packs ${owner} and ${packId}`);
   map.set(value, packId);
 };
 
@@ -122,13 +136,13 @@ export function registerShellConventions(packId, conventions) {
   if (conventions == null) return;
   const className = conventions.footerLogoClass;
   if (className != null) {
-    if (typeof className !== "string" || !/^[A-Za-z_][\w-]*$/.test(className))
+    if (typeof className !== 'string' || !/^[A-Za-z_][\w-]*$/.test(className))
       throw new TypeError(`Pack ${packId}: shell.footerLogoClass must be a CSS class name`);
     claim(footerLogos, className, packId, 'footerLogoClass');
   }
   const query = conventions.headerNotificationQuery;
   if (query != null) {
-    if (typeof query !== "string" || !query.trim() || query.length > 256)
+    if (typeof query !== 'string' || !query.trim() || query.length > 256)
       throw new TypeError(`Pack ${packId}: shell.headerNotificationQuery must name a web template`);
     claim(notificationQueries, query, packId, 'headerNotificationQuery');
   }

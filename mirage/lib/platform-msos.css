@@ -1,19 +1,75 @@
 /* Local equivalent of the MultiSelectPicklist control stylesheet (controlsAssets/msos.<hash>.css):
    the control states observed on first load (editing: closed list, no view mode; empty:
    no selected-items strip; read-only: view mode only) and the host's hidden chrome. */
-.msos-hidden{display:none}
-.msos-a11y{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}
-.msos-container .msos-viewmode-container{display:none}
-.msos-container.msos-disabled .msos-viewmode-container{display:block}
-.msos-invisible{visibility:hidden}
-.msos-container.msos-none-selected .msos-selecteditems-container,.msos-container.msos-disabled .msos-selecteditems-container,.msos-container.msos-disabled .msos-inner-container{display:none}
-.msos-container:not(.msos-none-selected):not(.msos-disabled) .msos-inner-container{display:none}
-.msos-inner-container[aria-expanded="false"] .msos-selection-container{display:none}
-.msos-inner-container{display:flex;flex-direction:column}
-.msos-filter-container{display:flex;align-items:stretch}
-.msos-input-container{flex:1 1 auto}
-.msos-input{width:100%;box-sizing:border-box;min-height:34px;padding:6px 12px;border:1px solid #ccc;border-radius:4px 0 0 4px}
-.msos-caret-button,.msos-quick-delete,.msos-viewmode-button{background:none;border:1px solid #ccc;cursor:pointer}
-.msos-selecteditems{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:4px}
-.msos-selection{list-style:none;margin:0;padding:0}
-#UpdMSPicklistControl>.b{display:none}
+.msos-hidden {
+  display: none;
+}
+.msos-a11y {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+.msos-container .msos-viewmode-container {
+  display: none;
+}
+.msos-container.msos-disabled .msos-viewmode-container {
+  display: block;
+}
+.msos-invisible {
+  visibility: hidden;
+}
+.msos-container.msos-none-selected .msos-selecteditems-container,
+.msos-container.msos-disabled .msos-selecteditems-container,
+.msos-container.msos-disabled .msos-inner-container {
+  display: none;
+}
+.msos-container:not(.msos-none-selected):not(.msos-disabled) .msos-inner-container {
+  display: none;
+}
+.msos-inner-container[aria-expanded='false'] .msos-selection-container {
+  display: none;
+}
+.msos-inner-container {
+  display: flex;
+  flex-direction: column;
+}
+.msos-filter-container {
+  display: flex;
+  align-items: stretch;
+}
+.msos-input-container {
+  flex: 1 1 auto;
+}
+.msos-input {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid #ccc;
+  border-radius: 4px 0 0 4px;
+}
+.msos-caret-button,
+.msos-quick-delete,
+.msos-viewmode-button {
+  background: none;
+  border: 1px solid #ccc;
+  cursor: pointer;
+}
+.msos-selecteditems {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.msos-selection {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+#UpdMSPicklistControl > .b {
+  display: none;
+}

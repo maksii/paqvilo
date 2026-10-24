@@ -1,4 +1,4 @@
-import { DataError } from "./data-error.mjs";
+import { DataError } from './data-error.mjs';
 
 /*
  * The organisation fiscal calendar behind the fiscal FetchXML operators, the matching Web API
@@ -30,34 +30,45 @@ import { DataError } from "./data-error.mjs";
  *   29 February start falls on 28 February in other years.
  */
 export const FISCAL_PERIOD_TYPES = Object.freeze({
-  2000: Object.freeze({ name: "annually", periods: 1, months: 12 }),
-  2001: Object.freeze({ name: "semiannually", periods: 2, months: 6 }),
-  2002: Object.freeze({ name: "quarterly", periods: 4, months: 3 }),
-  2003: Object.freeze({ name: "monthly", periods: 12, months: 1 }),
-  2004: Object.freeze({ name: "fourweekly", periods: 13, days: 28 }),
+  2000: Object.freeze({ name: 'annually', periods: 1, months: 12 }),
+  2001: Object.freeze({ name: 'semiannually', periods: 2, months: 6 }),
+  2002: Object.freeze({ name: 'quarterly', periods: 4, months: 3 }),
+  2003: Object.freeze({ name: 'monthly', periods: 12, months: 1 }),
+  2004: Object.freeze({ name: 'fourweekly', periods: 13, days: 28 }),
 });
 
 const DAY = 86400000;
 const BY_NAME = new Map(Object.entries(FISCAL_PERIOD_TYPES).map(([code, type]) => [type.name, Number(code)]));
 // The earlier simulator setting (periods per year) mapped onto the period types.
-const BY_PERIOD_COUNT = new Map([[1, 2000], [2, 2001], [4, 2002], [12, 2003], [13, 2004]]);
+const BY_PERIOD_COUNT = new Map([
+  [1, 2000],
+  [2, 2001],
+  [4, 2002],
+  [12, 2003],
+  [13, 2004],
+]);
 
 const invalid = (message) => {
-  throw new DataError(message, 500, "InvalidFiscalCalendar");
+  throw new DataError(message, 500, 'InvalidFiscalCalendar');
 };
 const daysIn = (year, month) => new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
 
 function periodType(value, setting) {
-  if (value == null || value === "") return null;
-  const text = String(value).trim().toLowerCase().replace(/[\s_-]/g, "");
+  if (value == null || value === '') return null;
+  const text = String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]/g, '');
   const code = /^\d+$/.test(text) ? Number(text) : BY_NAME.get(text);
   if (!FISCAL_PERIOD_TYPES[code])
-    invalid(`${setting} must be a fiscal period type (2000-2004 or ${[...BY_NAME.keys()].join(", ")}), not '${value}'.`);
+    invalid(
+      `${setting} must be a fiscal period type (2000-2004 or ${[...BY_NAME.keys()].join(', ')}), not '${value}'.`,
+    );
   return code;
 }
 
 function startDate(value, setting) {
-  if (value == null || value === "") return null;
+  if (value == null || value === '') return null;
   const text = String(value).trim();
   // YYYY-MM-DD (any time part is ignored) or MM-DD; only the month and day are used.
   const match = /^(?:\d{4}-)?(\d{2})-(\d{2})(?:[T ].*)?$/.exec(text);
@@ -77,9 +88,9 @@ function startDate(value, setting) {
 export function fiscalCalendar(settings = {}) {
   // A calendar this function made passes through unchanged.
   if (Number.isInteger(settings?.periods) && Number.isInteger(settings?.startMonth)) return settings;
-  const start = startDate(settings?.fiscalCalendarStart, "fiscalCalendarStart") ?? { month: 0, day: 1 };
-  let code = periodType(settings?.fiscalPeriodType, "fiscalPeriodType");
-  if (code == null && settings?.fiscalPeriodsPerYear != null && settings.fiscalPeriodsPerYear !== "") {
+  const start = startDate(settings?.fiscalCalendarStart, 'fiscalCalendarStart') ?? { month: 0, day: 1 };
+  let code = periodType(settings?.fiscalPeriodType, 'fiscalPeriodType');
+  if (code == null && settings?.fiscalPeriodsPerYear != null && settings.fiscalPeriodsPerYear !== '') {
     code = BY_PERIOD_COUNT.get(Number(settings.fiscalPeriodsPerYear));
     if (code == null)
       invalid(`fiscalPeriodsPerYear must be 1, 2, 4, 12 or 13, not '${settings.fiscalPeriodsPerYear}'.`);
@@ -92,7 +103,12 @@ const localMidnight = (year, month, day, offset) => Date.UTC(year, month, day) -
 
 /** Start (local midnight, as an instant) of fiscal year `year`: its start day in that calendar year. */
 export function fiscalYearStart(calendar, year, offset = 0) {
-  return localMidnight(year, calendar.startMonth, Math.min(calendar.startDay, daysIn(year, calendar.startMonth)), offset);
+  return localMidnight(
+    year,
+    calendar.startMonth,
+    Math.min(calendar.startDay, daysIn(year, calendar.startMonth)),
+    offset,
+  );
 }
 
 // Start of period `period` (1 to periods) of fiscal year `year`, counted from the year's start.
@@ -109,7 +125,9 @@ export function fiscalPeriodBounds(calendar, year, period, offset = 0) {
   if (!Number.isInteger(period) || period < 1 || period > calendar.periods) return null;
   return [
     periodStart(calendar, year, period, offset),
-    period === calendar.periods ? fiscalYearStart(calendar, year + 1, offset) : periodStart(calendar, year, period + 1, offset),
+    period === calendar.periods
+      ? fiscalYearStart(calendar, year + 1, offset)
+      : periodStart(calendar, year, period + 1, offset),
   ];
 }
 
@@ -132,25 +150,39 @@ export function shiftFiscalPeriod(calendar, { year, period }, count) {
 }
 
 const positiveInteger = (value, operator) => {
-  const text = String(value ?? "").trim();
+  const text = String(value ?? '').trim();
   if (!/^\d+$/.test(text) || !Number.isSafeInteger(Number(text)) || Number(text) < 1)
-    throw new DataError(`${operator} requires a positive integer value`, 400, "InvalidQuery");
+    throw new DataError(`${operator} requires a positive integer value`, 400, 'InvalidQuery');
   return Number(text);
 };
 
 export const FISCAL_OPERATORS = new Set([
-  "this-fiscal-year", "last-fiscal-year", "next-fiscal-year", "this-fiscal-period",
-  "last-fiscal-period", "next-fiscal-period", "last-x-fiscal-years", "next-x-fiscal-years",
-  "last-x-fiscal-periods", "next-x-fiscal-periods", "in-fiscal-year", "in-fiscal-period",
-  "in-fiscal-period-and-year", "in-or-before-fiscal-period-and-year",
-  "in-or-after-fiscal-period-and-year",
+  'this-fiscal-year',
+  'last-fiscal-year',
+  'next-fiscal-year',
+  'this-fiscal-period',
+  'last-fiscal-period',
+  'next-fiscal-period',
+  'last-x-fiscal-years',
+  'next-x-fiscal-years',
+  'last-x-fiscal-periods',
+  'next-x-fiscal-periods',
+  'in-fiscal-year',
+  'in-fiscal-period',
+  'in-fiscal-period-and-year',
+  'in-or-before-fiscal-period-and-year',
+  'in-or-after-fiscal-period-and-year',
 ]);
 
 /**
  * Predicate over instants for a fiscal operator, or null for any other operator. `now` is
  * the query's clock, `offset` the user's time zone offset in minutes.
  */
-export function fiscalOperatorPredicate(operator, values, { now = Date.now(), offset = 0, calendar = fiscalCalendar() } = {}) {
+export function fiscalOperatorPredicate(
+  operator,
+  values,
+  { now = Date.now(), offset = 0, calendar = fiscalCalendar() } = {},
+) {
   if (!FISCAL_OPERATORS.has(operator)) return null;
   const range = (start, end) => (ms) => ms >= start && ms < end;
   const none = () => false;
@@ -159,33 +191,33 @@ export function fiscalOperatorPredicate(operator, values, { now = Date.now(), of
   const current = fiscalPeriodOf(calendar, now, offset);
   const n = () => positiveInteger(values[0], operator);
   switch (operator) {
-    case "this-fiscal-year":
+    case 'this-fiscal-year':
       return range(yearStart(current.year), yearStart(current.year + 1));
-    case "last-fiscal-year":
+    case 'last-fiscal-year':
       return range(yearStart(current.year - 1), yearStart(current.year));
-    case "next-fiscal-year":
+    case 'next-fiscal-year':
       return range(yearStart(current.year + 1), yearStart(current.year + 2));
-    case "this-fiscal-period":
+    case 'this-fiscal-period':
       return range(...bounds(current));
-    case "last-fiscal-period":
+    case 'last-fiscal-period':
       return range(...bounds(shiftFiscalPeriod(calendar, current, -1)));
-    case "next-fiscal-period":
+    case 'next-fiscal-period':
       return range(...bounds(shiftFiscalPeriod(calendar, current, 1)));
     // Sql4Cds: from the start of the period (year) X before the current one up to now, and
     // from now to the end of the period (year) X after the current one.
-    case "last-x-fiscal-periods":
+    case 'last-x-fiscal-periods':
       return range(bounds(shiftFiscalPeriod(calendar, current, -n()))[0], now);
-    case "next-x-fiscal-periods":
+    case 'next-x-fiscal-periods':
       return range(now, bounds(shiftFiscalPeriod(calendar, current, n()))[1]);
-    case "last-x-fiscal-years":
+    case 'last-x-fiscal-years':
       return range(yearStart(current.year - n()), now);
-    case "next-x-fiscal-years":
+    case 'next-x-fiscal-years':
       return range(now, yearStart(current.year + n() + 1));
-    case "in-fiscal-year": {
+    case 'in-fiscal-year': {
       const year = positiveInteger(values[0], operator);
       return range(yearStart(year), yearStart(year + 1));
     }
-    case "in-fiscal-period": {
+    case 'in-fiscal-period': {
       const period = positiveInteger(values[0], operator);
       if (period > calendar.periods) return none;
       return (ms) => fiscalPeriodOf(calendar, ms, offset).period === period;
@@ -196,8 +228,8 @@ export function fiscalOperatorPredicate(operator, values, { now = Date.now(), of
         year = positiveInteger(values[1], operator);
       const target = fiscalPeriodBounds(calendar, year, period, offset);
       if (!target) return none;
-      if (operator === "in-fiscal-period-and-year") return range(...target);
-      if (operator === "in-or-before-fiscal-period-and-year") return (ms) => ms < target[1];
+      if (operator === 'in-fiscal-period-and-year') return range(...target);
+      if (operator === 'in-or-before-fiscal-period-and-year') return (ms) => ms < target[1];
       return (ms) => ms >= target[0];
     }
   }

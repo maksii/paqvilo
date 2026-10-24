@@ -48,29 +48,79 @@
  * Not enforced: function names other than FREETEXT and FREETEXTTABLE.
  */
 
-import { TdsSqlError, checkPredicate, parseExpression, splitBatches, tokenize } from "./dataverse-tds-sql-lexer.mjs";
+import { TdsSqlError, checkPredicate, parseExpression, splitBatches, tokenize } from './dataverse-tds-sql-lexer.mjs';
 
 // Data types the Dataverse SQL docs list as supported.
 const SUPPORTED_TYPES = new Set([
-  "BIGINT", "BINARY", "BIT", "CHAR", "DATETIME", "DECIMAL", "FLOAT", "INT", "MONEY", "NCHAR", "NUMERIC", "NVARCHAR",
-  "REAL", "SMALLDATETIME", "SMALLINT", "SMALLMONEY", "TINYINT", "UNIQUEIDENTIFIER", "VARBINARY", "VARCHAR",
+  'BIGINT',
+  'BINARY',
+  'BIT',
+  'CHAR',
+  'DATETIME',
+  'DECIMAL',
+  'FLOAT',
+  'INT',
+  'MONEY',
+  'NCHAR',
+  'NUMERIC',
+  'NVARCHAR',
+  'REAL',
+  'SMALLDATETIME',
+  'SMALLINT',
+  'SMALLMONEY',
+  'TINYINT',
+  'UNIQUEIDENTIFIER',
+  'VARBINARY',
+  'VARCHAR',
 ]);
-const READ_ONLY = new Set(["INSERT", "UPDATE", "DELETE", "MERGE"]);
+const READ_ONLY = new Set(['INSERT', 'UPDATE', 'DELETE', 'MERGE']);
 const UNSUPPORTED_STATEMENTS = new Set([
-  "ALTER", "CREATE", "DROP", "EXEC", "EXECUTE", "IF", "ELSE", "USE", "WHILE",
-  "BACKUP", "BEGIN", "BREAK", "BULK", "CHECKPOINT", "CLOSE", "COMMIT", "CONTINUE", "DBCC", "DEALLOCATE",
-  "DENY", "GOTO", "GRANT", "KILL", "OPEN", "PRINT", "RAISERROR", "RECONFIGURE", "RESTORE", "RETURN",
-  "REVOKE", "ROLLBACK", "SAVE", "SHUTDOWN", "THROW", "TRUNCATE", "WAITFOR",
+  'ALTER',
+  'CREATE',
+  'DROP',
+  'EXEC',
+  'EXECUTE',
+  'IF',
+  'ELSE',
+  'USE',
+  'WHILE',
+  'BACKUP',
+  'BEGIN',
+  'BREAK',
+  'BULK',
+  'CHECKPOINT',
+  'CLOSE',
+  'COMMIT',
+  'CONTINUE',
+  'DBCC',
+  'DEALLOCATE',
+  'DENY',
+  'GOTO',
+  'GRANT',
+  'KILL',
+  'OPEN',
+  'PRINT',
+  'RAISERROR',
+  'RECONFIGURE',
+  'RESTORE',
+  'RETURN',
+  'REVOKE',
+  'ROLLBACK',
+  'SAVE',
+  'SHUTDOWN',
+  'THROW',
+  'TRUNCATE',
+  'WAITFOR',
 ]);
 // Keywords rejected wherever they appear. INTO directly after INSERT is exempt so INSERT reports its own error.
-const REJECTED_KEYWORDS = new Set(["FOR", "INTO", "OPTION", "OUTPUT", "WITH"]);
-const QUANTIFIERS = new Set(["ANY", "SOME", "ALL"]);
-const COMPARISONS = new Set(["=", "<>", "!=", "<", ">", "<=", ">=", "!<", "!>"]);
+const REJECTED_KEYWORDS = new Set(['FOR', 'INTO', 'OPTION', 'OUTPUT', 'WITH']);
+const QUANTIFIERS = new Set(['ANY', 'SOME', 'ALL']);
+const COMPARISONS = new Set(['=', '<>', '!=', '<', '>', '<=', '>=', '!<', '!>']);
 // Identifiers that end a table or column alias when written without AS.
-const ALIAS_STOP = new Set(["ON", "EXCEPT", "INTERSECT"]);
+const ALIAS_STOP = new Set(['ON', 'EXCEPT', 'INTERSECT']);
 
 export function parseBatch(sql) {
-  if (typeof sql !== "string") throw new TypeError("parseBatch expects a SQL string.");
+  if (typeof sql !== 'string') throw new TypeError('parseBatch expects a SQL string.');
   const statements = [];
   for (const batch of splitBatches(sql)) {
     let tokens = [];
@@ -78,12 +128,12 @@ export function parseBatch(sql) {
       tokens = prepareTokens(tokenize(batch.sql));
       const s = { tokens, pos: 0, quantified: new Map() };
       while (s.pos < tokens.length) {
-        if (eatPunct(s, ";")) continue;
+        if (eatPunct(s, ';')) continue;
         const line = peek(s).line;
         const statement = parseStatement(s);
         statement.line = batch.line + line - 1;
         statements.push(statement);
-        if (!eatPunct(s, ";") && s.pos < tokens.length) checkSeparator(s);
+        if (!eatPunct(s, ';') && s.pos < tokens.length) checkSeparator(s);
       }
     } catch (err) {
       if (err instanceof TdsSqlError) {
@@ -107,30 +157,40 @@ function prepareTokens(tokens) {
     const tok = tokens[i];
     const next = tokens[i + 1];
     const word = wordOf(tok);
-    if (tok.type === "keyword" && REJECTED_KEYWORDS.has(tok.value) && !(tok.value === "INTO" && isKeyword(tokens[i - 1], "INSERT"))) {
+    if (
+      tok.type === 'keyword' &&
+      REJECTED_KEYWORDS.has(tok.value) &&
+      !(tok.value === 'INTO' && isKeyword(tokens[i - 1], 'INSERT'))
+    ) {
       throw notSupported(tok, `The ${tok.value} clause is not supported by the Dataverse SQL endpoint.`);
     }
-    if (tok.type === "keyword" && QUANTIFIERS.has(tok.value) && tokens[i - 1]?.type === "operator" && COMPARISONS.has(tokens[i - 1].value)
-      && isPunct(next, "(") && isKeyword(tokens[i + 2], "SELECT")) {
-      next.quantifier = tok.value === "ALL" ? "ALL" : "ANY";
+    if (
+      tok.type === 'keyword' &&
+      QUANTIFIERS.has(tok.value) &&
+      tokens[i - 1]?.type === 'operator' &&
+      COMPARISONS.has(tokens[i - 1].value) &&
+      isPunct(next, '(') &&
+      isKeyword(tokens[i + 2], 'SELECT')
+    ) {
+      next.quantifier = tok.value === 'ALL' ? 'ALL' : 'ANY';
       tokens.splice(i, 1);
       i -= 1;
       continue;
     }
-    if ((word === "FREETEXT" || word === "FREETEXTTABLE") && isPunct(next, "(")) {
+    if ((word === 'FREETEXT' || word === 'FREETEXTTABLE') && isPunct(next, '(')) {
       throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
     }
-    if ((word === "PIVOT" || word === "UNPIVOT") && isPunct(next, "(")) {
+    if ((word === 'PIVOT' || word === 'UNPIVOT') && isPunct(next, '(')) {
       throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
     }
-    if (word === "AT" && isWord(next, "TIME") && isWord(tokens[i + 2], "ZONE")) {
-      throw notSupported(tok, "AT TIME ZONE is not supported by the Dataverse SQL endpoint.");
+    if (word === 'AT' && isWord(next, 'TIME') && isWord(tokens[i + 2], 'ZONE')) {
+      throw notSupported(tok, 'AT TIME ZONE is not supported by the Dataverse SQL endpoint.');
     }
-    if (word === "OFFSET" && (next?.type === "number" || next?.type === "variable")) {
-      throw notSupported(tok, "The OFFSET clause is not supported by the Dataverse SQL endpoint.");
+    if (word === 'OFFSET' && (next?.type === 'number' || next?.type === 'variable')) {
+      throw notSupported(tok, 'The OFFSET clause is not supported by the Dataverse SQL endpoint.');
     }
-    if (word === "FETCH" && (isWord(next, "NEXT") || isWord(next, "FIRST"))) {
-      throw notSupported(tok, "The FETCH clause is not supported by the Dataverse SQL endpoint.");
+    if (word === 'FETCH' && (isWord(next, 'NEXT') || isWord(next, 'FIRST'))) {
+      throw notSupported(tok, 'The FETCH clause is not supported by the Dataverse SQL endpoint.');
     }
   }
   return tokens;
@@ -141,12 +201,15 @@ function prepareTokens(tokens) {
 function parseStatement(s) {
   const tok = peek(s);
   const word = wordOf(tok);
-  if (word === "SELECT") return parseQuery(s);
-  if (word === "DECLARE") return parseDeclare(s);
-  if (word === "SET") return parseSet(s);
-  if (READ_ONLY.has(word)) throw notSupported(tok, `${word} is not supported: the Dataverse SQL endpoint is read-only.`);
-  if (UNSUPPORTED_STATEMENTS.has(word)) throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
-  if (word === "VALUES") throw notSupported(tok, "The VALUES table value constructor is not supported by the Dataverse SQL endpoint.");
+  if (word === 'SELECT') return parseQuery(s);
+  if (word === 'DECLARE') return parseDeclare(s);
+  if (word === 'SET') return parseSet(s);
+  if (READ_ONLY.has(word))
+    throw notSupported(tok, `${word} is not supported: the Dataverse SQL endpoint is read-only.`);
+  if (UNSUPPORTED_STATEMENTS.has(word))
+    throw notSupported(tok, `${word} is not supported by the Dataverse SQL endpoint.`);
+  if (word === 'VALUES')
+    throw notSupported(tok, 'The VALUES table value constructor is not supported by the Dataverse SQL endpoint.');
   throw syntaxError(tok);
 }
 
@@ -161,17 +224,17 @@ function parseDeclare(s) {
   const variables = [];
   do {
     const tok = peek(s);
-    if (tok?.type !== "variable") throw syntaxError(tok);
+    if (tok?.type !== 'variable') throw syntaxError(tok);
     advance(s);
     const dataType = parseDataType(s);
     let value = null;
-    if (isOperator(peek(s), "=")) {
+    if (isOperator(peek(s), '=')) {
       advance(s);
       value = expr(s);
     }
     variables.push({ name: tok.value, dataType, value });
-  } while (eatPunct(s, ","));
-  return { type: "Declare", variables };
+  } while (eatPunct(s, ','));
+  return { type: 'Declare', variables };
 }
 
 function parseDataType(s) {
@@ -181,28 +244,30 @@ function parseDataType(s) {
   const name = tok.value.toUpperCase();
   if (!SUPPORTED_TYPES.has(name)) {
     throw new TdsSqlError(2715, `Data type '${tok.value}' is not supported by the Dataverse SQL endpoint.`, {
-      pos: tok.pos, line: tok.line, unsupported: true,
+      pos: tok.pos,
+      line: tok.line,
+      unsupported: true,
     });
   }
   let length = null;
   let scale = null;
-  if (eatPunct(s, "(")) {
+  if (eatPunct(s, '(')) {
     const first = peek(s);
-    if (isWord(first, "MAX")) {
+    if (isWord(first, 'MAX')) {
       advance(s);
-      length = "MAX";
+      length = 'MAX';
     } else {
       length = integerToken(s);
     }
-    if (eatPunct(s, ",")) scale = integerToken(s);
-    expectPunct(s, ")");
+    if (eatPunct(s, ',')) scale = integerToken(s);
+    expectPunct(s, ')');
   }
-  return { type: "DataType", name, length, scale };
+  return { type: 'DataType', name, length, scale };
 }
 
 function integerToken(s) {
   const tok = peek(s);
-  if (tok?.type !== "number" || !/^\d+$/.test(tok.value)) throw syntaxError(tok);
+  if (tok?.type !== 'number' || !/^\d+$/.test(tok.value)) throw syntaxError(tok);
   advance(s);
   return Number(tok.value);
 }
@@ -212,11 +277,12 @@ function parseSet(s) {
   const kw = advance(s);
   const tok = peek(s);
   if (!tok) throw syntaxError(kw);
-  if (tok.type !== "variable") throw notSupported(tok, "SET options are not supported; only SET @variable = expression is.");
+  if (tok.type !== 'variable')
+    throw notSupported(tok, 'SET options are not supported; only SET @variable = expression is.');
   advance(s);
-  if (!isOperator(peek(s), "=")) throw syntaxError(peek(s));
+  if (!isOperator(peek(s), '=')) throw syntaxError(peek(s));
   advance(s);
-  return { type: "Set", name: tok.value, value: expr(s) };
+  return { type: 'Set', name: tok.value, value: expr(s) };
 }
 
 // ---- queries
@@ -225,16 +291,16 @@ function parseSet(s) {
 // parseSubqueryHook, which the lexer calls with the stream on SELECT.
 function parseQuery(s) {
   let query = parseSelect(s);
-  while (isKeyword(peek(s), "UNION")) {
+  while (isKeyword(peek(s), 'UNION')) {
     advance(s);
-    const all = eatKeyword(s, "ALL");
+    const all = eatKeyword(s, 'ALL');
     const right = parseSelect(s);
-    query = { type: "SetOperation", operator: "UNION", all, left: query, right, orderBy: null };
+    query = { type: 'SetOperation', operator: 'UNION', all, left: query, right, orderBy: null };
   }
-  if (isWord(peek(s), "EXCEPT") || isWord(peek(s), "INTERSECT")) {
+  if (isWord(peek(s), 'EXCEPT') || isWord(peek(s), 'INTERSECT')) {
     throw notSupported(peek(s), `${wordOf(peek(s))} is not supported by the Dataverse SQL endpoint; only UNION is.`);
   }
-  if (isKeyword(peek(s), "ORDER")) query.orderBy = parseOrderBy(s);
+  if (isKeyword(peek(s), 'ORDER')) query.orderBy = parseOrderBy(s);
   return query;
 }
 
@@ -247,17 +313,17 @@ function parseSubqueryHook(s) {
 }
 
 function parseSelect(s) {
-  expectKeyword(s, "SELECT");
-  const distinct = eatKeyword(s, "DISTINCT");
-  const top = isKeyword(peek(s), "TOP") ? parseTop(s) : null;
+  expectKeyword(s, 'SELECT');
+  const distinct = eatKeyword(s, 'DISTINCT');
+  const top = isKeyword(peek(s), 'TOP') ? parseTop(s) : null;
   const starts = [];
   const columns = parseSelectList(s, starts);
-  if (isKeyword(peek(s), "FROM")) checkColumnNames(columns, starts);
-  const from = isKeyword(peek(s), "FROM") ? parseFrom(s) : null;
-  const where = eatKeyword(s, "WHERE") ? checkPredicate(s, expr(s)) : null;
-  const groupBy = isKeyword(peek(s), "GROUP") ? parseGroupBy(s) : null;
-  const having = eatKeyword(s, "HAVING") ? checkPredicate(s, expr(s)) : null;
-  return { type: "Select", distinct, top, columns, from, where, groupBy, having, orderBy: null };
+  if (isKeyword(peek(s), 'FROM')) checkColumnNames(columns, starts);
+  const from = isKeyword(peek(s), 'FROM') ? parseFrom(s) : null;
+  const where = eatKeyword(s, 'WHERE') ? checkPredicate(s, expr(s)) : null;
+  const groupBy = isKeyword(peek(s), 'GROUP') ? parseGroupBy(s) : null;
+  const having = eatKeyword(s, 'HAVING') ? checkPredicate(s, expr(s)) : null;
+  return { type: 'Select', distinct, top, columns, from, where, groupBy, having, orderBy: null };
 }
 
 // TOP count is parsed as a primary, not an expression: "TOP (10) * FROM" must not read "*" as multiplication.
@@ -265,19 +331,19 @@ function parseTop(s) {
   advance(s);
   const tok = peek(s);
   let count;
-  if (eatPunct(s, "(")) {
+  if (eatPunct(s, '(')) {
     count = expr(s);
-    expectPunct(s, ")");
-  } else if (tok?.type === "number") {
+    expectPunct(s, ')');
+  } else if (tok?.type === 'number') {
     advance(s);
-    count = { type: "Literal", kind: "number", numberType: tok.numberType, text: tok.value };
-  } else if (tok?.type === "variable") {
+    count = { type: 'Literal', kind: 'number', numberType: tok.numberType, text: tok.value };
+  } else if (tok?.type === 'variable') {
     advance(s);
-    count = { type: "Variable", name: tok.value };
+    count = { type: 'Variable', name: tok.value };
   } else {
     throw syntaxError(tok);
   }
-  const percent = eatWord(s, "PERCENT");
+  const percent = eatWord(s, 'PERCENT');
   return { count, percent };
 }
 
@@ -287,23 +353,23 @@ function parseSelectList(s, starts) {
   do {
     const tok = peek(s);
     starts.push(tok);
-    if (isOperator(tok, "*")) {
+    if (isOperator(tok, '*')) {
       advance(s);
-      columns.push({ kind: "Star", qualifier: null });
-    } else if (isName(tok) && isPunct(peek(s, 1), ".") && isOperator(peek(s, 2), "*")) {
-      advance(s);
-      advance(s);
-      advance(s);
-      columns.push({ kind: "Star", qualifier: tok.value });
-    } else if (tok?.type === "variable" && isOperator(peek(s, 1), "=")) {
+      columns.push({ kind: 'Star', qualifier: null });
+    } else if (isName(tok) && isPunct(peek(s, 1), '.') && isOperator(peek(s, 2), '*')) {
       advance(s);
       advance(s);
-      columns.push({ kind: "Assign", name: tok.value, expr: expr(s) });
+      advance(s);
+      columns.push({ kind: 'Star', qualifier: tok.value });
+    } else if (tok?.type === 'variable' && isOperator(peek(s, 1), '=')) {
+      advance(s);
+      advance(s);
+      columns.push({ kind: 'Assign', name: tok.value, expr: expr(s) });
     } else {
       const e = expr(s);
-      columns.push({ kind: "Expr", expr: e, alias: parseAlias(s) });
+      columns.push({ kind: 'Expr', expr: e, alias: parseAlias(s) });
     }
-  } while (eatPunct(s, ","));
+  } while (eatPunct(s, ','));
   return columns;
 }
 
@@ -313,14 +379,18 @@ function parseSelectList(s, starts) {
 function checkColumnNames(columns, starts) {
   const seen = new Set();
   columns.forEach((column, i) => {
-    if (column.kind !== "Expr") return;
+    if (column.kind !== 'Expr') return;
     const tok = starts[i];
-    const name = column.alias ?? (column.expr.type === "ColumnRef" ? column.expr.parts.at(-1) : null);
+    const name = column.alias ?? (column.expr.type === 'ColumnRef' ? column.expr.parts.at(-1) : null);
     if (name === null) {
-      throw notSupported(tok, "Without unique column name and alias: an expression column needs an alias in the Dataverse SQL endpoint.");
+      throw notSupported(
+        tok,
+        'Without unique column name and alias: an expression column needs an alias in the Dataverse SQL endpoint.',
+      );
     }
     const key = name.toLowerCase();
-    if (seen.has(key)) throw notSupported(tok, `Duplicate column name '${name}' is not supported by the Dataverse SQL endpoint.`);
+    if (seen.has(key))
+      throw notSupported(tok, `Duplicate column name '${name}' is not supported by the Dataverse SQL endpoint.`);
     seen.add(key);
   });
 }
@@ -333,118 +403,121 @@ function parseFrom(s) {
     const joins = [];
     for (let join = parseJoin(s); join; join = parseJoin(s)) joins.push(join);
     items.push({ source, joins });
-  } while (eatPunct(s, ","));
+  } while (eatPunct(s, ','));
   return items;
 }
 
 function parseTableSource(s) {
   const tok = peek(s);
-  if (eatPunct(s, "(")) {
-    if (isKeyword(peek(s), "VALUES")) throw notSupported(peek(s), "The VALUES table value constructor is not supported by the Dataverse SQL endpoint.");
-    if (!isKeyword(peek(s), "SELECT")) throw syntaxError(peek(s));
+  if (eatPunct(s, '(')) {
+    if (isKeyword(peek(s), 'VALUES'))
+      throw notSupported(peek(s), 'The VALUES table value constructor is not supported by the Dataverse SQL endpoint.');
+    if (!isKeyword(peek(s), 'SELECT')) throw syntaxError(peek(s));
     const query = parseQuery(s);
-    expectPunct(s, ")");
+    expectPunct(s, ')');
     const alias = parseAlias(s);
     if (alias === null) throw syntaxError(peek(s));
-    return { type: "Derived", query, alias };
+    return { type: 'Derived', query, alias };
   }
   if (!isName(tok)) throw syntaxError(tok);
   advance(s);
   let schema = null;
   let name = tok.value;
-  if (eatPunct(s, ".")) {
+  if (eatPunct(s, '.')) {
     const second = peek(s);
     if (!isName(second)) throw syntaxError(second);
     advance(s);
-    if (isPunct(peek(s), ".")) throw notSupported(peek(s), "Three-part table names are not supported by the Dataverse SQL endpoint.");
-    if (tok.value.toLowerCase() !== "dbo") {
+    if (isPunct(peek(s), '.'))
+      throw notSupported(peek(s), 'Three-part table names are not supported by the Dataverse SQL endpoint.');
+    if (tok.value.toLowerCase() !== 'dbo') {
       throw notSupported(tok, `Schema '${tok.value}' is not supported; only dbo is.`);
     }
     schema = tok.value;
     name = second.value;
   }
-  return { type: "TableRef", schema, name, alias: parseAlias(s) };
+  return { type: 'TableRef', schema, name, alias: parseAlias(s) };
 }
 
 // JOIN, INNER/LEFT/RIGHT/FULL [OUTER] JOIN, CROSS JOIN, CROSS APPLY, OUTER APPLY. Returns null if none.
 function parseJoin(s) {
   const tok = peek(s);
-  if (isKeyword(tok, "CROSS")) {
+  if (isKeyword(tok, 'CROSS')) {
     advance(s);
-    if (eatWord(s, "APPLY")) return parseApply(s, "CROSS");
-    expectKeyword(s, "JOIN");
-    return { type: "Join", kind: "CROSS", source: parseTableSource(s), on: null };
+    if (eatWord(s, 'APPLY')) return parseApply(s, 'CROSS');
+    expectKeyword(s, 'JOIN');
+    return { type: 'Join', kind: 'CROSS', source: parseTableSource(s), on: null };
   }
-  if (isKeyword(tok, "OUTER")) {
+  if (isKeyword(tok, 'OUTER')) {
     advance(s);
-    if (!eatWord(s, "APPLY")) throw syntaxError(peek(s));
-    return parseApply(s, "OUTER");
+    if (!eatWord(s, 'APPLY')) throw syntaxError(peek(s));
+    return parseApply(s, 'OUTER');
   }
   let kind;
-  if (isKeyword(tok, "JOIN")) {
-    kind = "INNER";
-  } else if (isKeyword(tok, "INNER")) {
+  if (isKeyword(tok, 'JOIN')) {
+    kind = 'INNER';
+  } else if (isKeyword(tok, 'INNER')) {
     advance(s);
-    kind = "INNER";
-  } else if (isKeyword(tok, "LEFT") || isKeyword(tok, "RIGHT") || isKeyword(tok, "FULL")) {
+    kind = 'INNER';
+  } else if (isKeyword(tok, 'LEFT') || isKeyword(tok, 'RIGHT') || isKeyword(tok, 'FULL')) {
     advance(s);
-    eatKeyword(s, "OUTER");
+    eatKeyword(s, 'OUTER');
     kind = tok.value;
   } else {
     return null;
   }
-  expectKeyword(s, "JOIN");
+  expectKeyword(s, 'JOIN');
   const source = parseTableSource(s);
-  if (!eatWord(s, "ON")) throw syntaxError(peek(s));
-  return { type: "Join", kind, source, on: checkPredicate(s, expr(s)) };
+  if (!eatWord(s, 'ON')) throw syntaxError(peek(s));
+  return { type: 'Join', kind, source, on: checkPredicate(s, expr(s)) };
 }
 
 function parseApply(s, kind) {
   const tok = peek(s);
   const source = parseTableSource(s);
-  if (source.type !== "Derived") throw notSupported(tok, "APPLY is supported only with a derived table (unverified).");
-  return { type: "Apply", kind, source };
+  if (source.type !== 'Derived') throw notSupported(tok, 'APPLY is supported only with a derived table (unverified).');
+  return { type: 'Apply', kind, source };
 }
 
 function parseGroupBy(s) {
   advance(s);
-  expectKeyword(s, "BY");
+  expectKeyword(s, 'BY');
   const tok = peek(s);
-  if (isKeyword(tok, "ALL")) throw notSupported(tok, "GROUP BY ALL is not supported by the Dataverse SQL endpoint.");
-  if (isWord(tok, "CUBE") || isWord(tok, "ROLLUP") || isWord(tok, "GROUPING")) {
-    throw notSupported(tok, "CUBE, ROLLUP and GROUPING SETS are not supported by the Dataverse SQL endpoint.");
+  if (isKeyword(tok, 'ALL')) throw notSupported(tok, 'GROUP BY ALL is not supported by the Dataverse SQL endpoint.');
+  if (isWord(tok, 'CUBE') || isWord(tok, 'ROLLUP') || isWord(tok, 'GROUPING')) {
+    throw notSupported(tok, 'CUBE, ROLLUP and GROUPING SETS are not supported by the Dataverse SQL endpoint.');
   }
-  if (isPunct(tok, "(") && isPunct(peek(s, 1), ")")) throw notSupported(tok, "GROUP BY () is not supported by the Dataverse SQL endpoint.");
+  if (isPunct(tok, '(') && isPunct(peek(s, 1), ')'))
+    throw notSupported(tok, 'GROUP BY () is not supported by the Dataverse SQL endpoint.');
   const items = [];
   do {
     items.push(expr(s));
-  } while (eatPunct(s, ","));
+  } while (eatPunct(s, ','));
   return items;
 }
 
 function parseOrderBy(s) {
   advance(s);
-  expectKeyword(s, "BY");
+  expectKeyword(s, 'BY');
   const items = [];
   do {
     const e = expr(s);
-    const direction = isKeyword(peek(s), "ASC") || isKeyword(peek(s), "DESC") ? advance(s).value : null;
-    const ordinal = e.type === "Literal" && e.kind === "number" && /^\d+$/.test(e.text) ? Number(e.text) : null;
+    const direction = isKeyword(peek(s), 'ASC') || isKeyword(peek(s), 'DESC') ? advance(s).value : null;
+    const ordinal = e.type === 'Literal' && e.kind === 'number' && /^\d+$/.test(e.text) ? Number(e.text) : null;
     items.push({ expr: e, direction, ordinal });
-  } while (eatPunct(s, ","));
+  } while (eatPunct(s, ','));
   return items;
 }
 
 // AS alias or a bare identifier. Keywords never reach here. Quoted identifiers may always be aliases.
 function parseAlias(s) {
-  if (eatKeyword(s, "AS")) {
+  if (eatKeyword(s, 'AS')) {
     const tok = peek(s);
     if (!isName(tok)) throw syntaxError(tok);
     advance(s);
     return tok.value;
   }
   const tok = peek(s);
-  if (isName(tok) && !(tok.quoting === "none" && ALIAS_STOP.has(tok.value.toUpperCase()))) {
+  if (isName(tok) && !(tok.quoting === 'none' && ALIAS_STOP.has(tok.value.toUpperCase()))) {
     advance(s);
     return tok.value;
   }
@@ -462,10 +535,16 @@ const expr = (s) => {
 // Replaces Binary(op, left, Subquery(query)) with Quantified when the query was marked by prepareTokens.
 function attachQuantifiers(node, quantified) {
   if (Array.isArray(node)) return node.map((item) => attachQuantifiers(item, quantified));
-  if (node === null || typeof node !== "object") return node;
+  if (node === null || typeof node !== 'object') return node;
   for (const key of Object.keys(node)) node[key] = attachQuantifiers(node[key], quantified);
-  if (node.type === "Binary" && node.right?.type === "Subquery" && quantified.has(node.right.query)) {
-    return { type: "Quantified", operator: node.operator, quantifier: quantified.get(node.right.query), left: node.left, query: node.right.query };
+  if (node.type === 'Binary' && node.right?.type === 'Subquery' && quantified.has(node.right.query)) {
+    return {
+      type: 'Quantified',
+      operator: node.operator,
+      quantifier: quantified.get(node.right.query),
+      left: node.left,
+      query: node.right.query,
+    };
   }
   return node;
 }
@@ -474,14 +553,14 @@ function attachQuantifiers(node, quantified) {
 
 const peek = (s, k = 0) => s.tokens[s.pos + k];
 const advance = (s) => s.tokens[s.pos++];
-const isName = (tok) => tok?.type === "identifier";
-const isKeyword = (tok, value) => tok?.type === "keyword" && tok.value === value;
-const isPunct = (tok, value) => tok?.type === "punct" && tok.value === value;
-const isOperator = (tok, value) => tok?.type === "operator" && tok.value === value;
+const isName = (tok) => tok?.type === 'identifier';
+const isKeyword = (tok, value) => tok?.type === 'keyword' && tok.value === value;
+const isPunct = (tok, value) => tok?.type === 'punct' && tok.value === value;
+const isOperator = (tok, value) => tok?.type === 'operator' && tok.value === value;
 // Upper-case keyword value, or upper-case unquoted identifier. Null for anything else.
 const wordOf = (tok) => {
-  if (tok?.type === "keyword") return tok.value;
-  if (tok?.type === "identifier" && tok.quoting === "none") return tok.value.toUpperCase();
+  if (tok?.type === 'keyword') return tok.value;
+  if (tok?.type === 'identifier' && tok.quoting === 'none') return tok.value.toUpperCase();
   return null;
 };
 const isWord = (tok, value) => wordOf(tok) === value;
@@ -515,7 +594,7 @@ function expectPunct(s, value) {
 }
 
 function syntaxError(tok) {
-  if (!tok) return new TdsSqlError(102, "Incorrect syntax near the end of the statement.");
+  if (!tok) return new TdsSqlError(102, 'Incorrect syntax near the end of the statement.');
   return new TdsSqlError(102, `Incorrect syntax near '${tok.raw}'.`, { pos: tok.pos, line: tok.line });
 }
 

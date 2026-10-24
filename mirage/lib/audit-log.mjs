@@ -1,24 +1,23 @@
-import { randomUUID } from "node:crypto";
-import { performance } from "node:perf_hooks";
+import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 
-const secret =
-  /(?:password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)/i;
-const limitText = (value, limit = 12000) => String(value ?? "").slice(0, limit);
+const secret = /(?:password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)/i;
+const limitText = (value, limit = 12000) => String(value ?? '').slice(0, limit);
 
 /** Keep query structure useful while excluding credential values and headers. */
 export function auditText(value, limit = 12000) {
-  return String(value ?? "")
-    .replace(/Bearer\s+[^\s"'<>]+/gi, "Bearer [redacted]")
+  return String(value ?? '')
+    .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
     .replace(
       /((?:password|passwd|[\w-]*secret|[\w-]*token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi,
-      "$1[redacted]",
+      '$1[redacted]',
     )
     .replace(/<condition\b[^>]*(?:\/>|>[\s\S]*?<\/condition>)/gi, (tag) => {
       const attribute = /\battribute\s*=\s*(["'])(.*?)\1/i.exec(tag)?.[2];
-      return secret.test(attribute ?? "")
+      return secret.test(attribute ?? '')
         ? tag
             .replace(/\bvalue\s*=\s*(["'])(.*?)\1/gi, 'value="[redacted]"')
-            .replace(/(<value>)[\s\S]*?(<\/value>)/gi, "$1[redacted]$2")
+            .replace(/(<value>)[\s\S]*?(<\/value>)/gi, '$1[redacted]$2')
         : tag;
     })
     .slice(0, limit);
@@ -27,61 +26,45 @@ export function auditText(value, limit = 12000) {
 export function auditQuery(value) {
   if (value instanceof URLSearchParams)
     return Object.fromEntries(
-      [...value].map(([key, item]) => [
-        key,
-        secret.test(key) ? "[redacted]" : auditText(item),
-      ]),
+      [...value].map(([key, item]) => [key, secret.test(key) ? '[redacted]' : auditText(item)]),
     );
-  if (typeof value === "string") return auditText(value);
-  if (!value || typeof value !== "object") return undefined;
+  if (typeof value === 'string') return auditText(value);
+  if (!value || typeof value !== 'object') return undefined;
   return Object.fromEntries(
     Object.entries(value)
       .slice(0, 40)
       .map(([key, item]) => [
         key,
         secret.test(key)
-          ? "[redacted]"
-          : typeof item === "string"
+          ? '[redacted]'
+          : typeof item === 'string'
             ? auditText(item)
-            : typeof item === "number" || typeof item === "boolean"
+            : typeof item === 'number' || typeof item === 'boolean'
               ? item
-              : "[structured value]",
+              : '[structured value]',
       ]),
   );
 }
 
 const pathOnly = (value) => {
   try {
-    return new URL(String(value ?? "/"), "http://local.invalid").pathname.slice(
-      0,
-      600,
-    );
+    return new URL(String(value ?? '/'), 'http://local.invalid').pathname.slice(0, 600);
   } catch {
-    return "/";
+    return '/';
   }
 };
-const positive = (value, fallback, max) =>
-  Math.min(max, Math.max(1, Number.parseInt(value, 10) || fallback));
-export const AUDIT_KINDS = [
-  "api",
-  "liquid-fetchxml",
-  "form",
-  "page",
-  "entity-read",
-  "entity-query",
-];
+const positive = (value, fallback, max) => Math.min(max, Math.max(1, Number.parseInt(value, 10) || fallback));
+export const AUDIT_KINDS = ['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query'];
 // Runtime services may add their own lowercase kinds (for example native form services).
 const auditKind = (kind) =>
-  AUDIT_KINDS.includes(kind) ||
-  (typeof kind === "string" && /^[a-z][a-z0-9-]{1,39}$/.test(kind))
-    ? kind
-    : "api";
+  AUDIT_KINDS.includes(kind) || (typeof kind === 'string' && /^[a-z][a-z0-9-]{1,39}$/.test(kind)) ? kind : 'api';
 const statusMatches = (status, filter) => {
-  const value = String(filter ?? "").trim().toLowerCase();
+  const value = String(filter ?? '')
+    .trim()
+    .toLowerCase();
   if (!value) return true;
-  if (value === "pending") return status === null;
-  if (/^[1-5]xx$/.test(value))
-    return Number.isInteger(status) && Math.floor(status / 100) === Number(value[0]);
+  if (value === 'pending') return status === null;
+  if (/^[1-5]xx$/.test(value)) return Number.isInteger(status) && Math.floor(status / 100) === Number(value[0]);
   return String(status) === value;
 };
 
@@ -97,8 +80,7 @@ export class AuditLog {
 
   /** Observe completed entries (sanitized copies); returns an unsubscribe function. */
   subscribe(listener) {
-    if (typeof listener !== "function")
-      throw new TypeError("Audit listeners must be functions.");
+    if (typeof listener !== 'function') throw new TypeError('Audit listeners must be functions.');
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -122,23 +104,29 @@ export class AuditLog {
       sequence: ++this.sequence,
       correlationId: correlationId || id,
       parentId: parentId ?? null,
-      ...(activeConfigurationPreset ? {activeConfigurationPreset:{id:limitText(activeConfigurationPreset.id,80),source:limitText(activeConfigurationPreset.source,160),digest:limitText(activeConfigurationPreset.digest,64)}} : {}),
+      ...(activeConfigurationPreset
+        ? {
+            activeConfigurationPreset: {
+              id: limitText(activeConfigurationPreset.id, 80),
+              source: limitText(activeConfigurationPreset.source, 160),
+              digest: limitText(activeConfigurationPreset.digest, 64),
+            },
+          }
+        : {}),
       startedAt: new Date().toISOString(),
       kind: auditKind(kind),
-      method: limitText(method || "GET", 12).toUpperCase(),
+      method: limitText(method || 'GET', 12).toUpperCase(),
       path: pathOnly(path),
-      provider: provider === "live" ? "live" : "local",
+      provider: provider === 'live' ? 'live' : 'local',
       entity: entity ? limitText(entity, 160) : null,
       identity: {
         contactId: limitText(identity?.contactId ?? identity?.id, 100) || null,
-        roles: (identity?.roles ?? [])
-          .map((role) => auditText(role, 200))
-          .slice(0, 100),
+        roles: (identity?.roles ?? []).map((role) => auditText(role, 200)).slice(0, 100),
       },
       query: auditQuery(query),
       status: null,
       rowCount: null,
-      outcome: "pending",
+      outcome: 'pending',
       durationMs: null,
     };
     this.entries.push(entry);
@@ -163,29 +151,22 @@ export class AuditLog {
       } = {}) => {
         if (completed) return;
         completed = true;
-        entry.durationMs =
-          Math.round((performance.now() - started) * 100) / 100;
+        entry.durationMs = Math.round((performance.now() - started) * 100) / 100;
         if (Number.isFinite(saveMs) && saveMs >= 0) entry.saveMs = Math.round(saveMs * 100) / 100;
         if (['checkpoint', 'journal'].includes(saveMode)) entry.saveMode = saveMode;
         entry.status = Number.isInteger(status) ? status : 500;
-        if (Number.isInteger(rowCount) && rowCount >= 0)
-          entry.rowCount = rowCount;
-        if (actualProvider)
-          entry.provider = actualProvider === "live" ? "live" : "local";
+        if (Number.isInteger(rowCount) && rowCount >= 0) entry.rowCount = rowCount;
+        if (actualProvider) entry.provider = actualProvider === 'live' ? 'live' : 'local';
         if (actualEntity) entry.entity = limitText(actualEntity, 160);
         entry.outcome =
-          entry.status === 401 || entry.status === 403
-            ? "denied"
-            : entry.status >= 400
-              ? "error"
-              : "success";
+          entry.status === 401 || entry.status === 403 ? 'denied' : entry.status >= 400 ? 'error' : 'success';
         if (error || simulatorCode || portalError?.code)
           entry.error = {
-            code: auditText(
-              error?.code ?? simulatorCode ?? portalError?.code ?? "SIMULATOR_ERROR",
-              160,
+            code: auditText(error?.code ?? simulatorCode ?? portalError?.code ?? 'SIMULATOR_ERROR', 160),
+            message: auditText(
+              error?.message ?? (typeof error === 'string' ? error : (portalError?.message ?? '')),
+              2000,
             ),
-            message: auditText(error?.message ?? (typeof error === "string" ? error : portalError?.message ?? ""), 2000),
           };
         // A documented portal envelope code (for example 90040102) differs from the simulator code.
         if (entry.error && portalError?.code && String(portalError.code) !== entry.error.code)
@@ -202,27 +183,38 @@ export class AuditLog {
   }
 
   filtered(filters = {}) {
-    const get = (key) =>
-      filters instanceof URLSearchParams ? filters.get(key) : filters[key];
-    const kind = get("kind"),
-      provider = get("provider"),
-      outcome = get("outcome"),
-      status = get("status"),
-      method = String(get("method") ?? "").trim().toUpperCase(),
-      correlationId = String(get("correlationId") ?? "").trim(),
-      contactId = String(get("contactId") ?? "").trim().replace(/[{}]/g, "").toLowerCase(),
-      lower = (key) => String(get(key) ?? "").trim().toLowerCase(),
-      search = lower("search"),
-      pathFilter = lower("path"),
-      entity = lower("entity");
-    const sequenceBound = key => {
+    const get = (key) => (filters instanceof URLSearchParams ? filters.get(key) : filters[key]);
+    const kind = get('kind'),
+      provider = get('provider'),
+      outcome = get('outcome'),
+      status = get('status'),
+      method = String(get('method') ?? '')
+        .trim()
+        .toUpperCase(),
+      correlationId = String(get('correlationId') ?? '').trim(),
+      contactId = String(get('contactId') ?? '')
+        .trim()
+        .replace(/[{}]/g, '')
+        .toLowerCase(),
+      lower = (key) =>
+        String(get(key) ?? '')
+          .trim()
+          .toLowerCase(),
+      search = lower('search'),
+      pathFilter = lower('path'),
+      entity = lower('entity');
+    const sequenceBound = (key) => {
       const value = get(key);
-      if (value === undefined || value === null || value === "") return null;
+      if (value === undefined || value === null || value === '') return null;
       if (!/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value)))
-        throw Object.assign(new RangeError(`${key} must be a nonnegative safe integer.`), {status: 400, code: "InvalidAuditSequence"});
+        throw Object.assign(new RangeError(`${key} must be a nonnegative safe integer.`), {
+          status: 400,
+          code: 'InvalidAuditSequence',
+        });
       return Number(value);
     };
-    const afterSequence = sequenceBound("afterSequence"), throughSequence = sequenceBound("throughSequence");
+    const afterSequence = sequenceBound('afterSequence'),
+      throughSequence = sequenceBound('throughSequence');
     return this.entries
       .filter(
         (entry) =>
@@ -232,11 +224,14 @@ export class AuditLog {
           statusMatches(entry.status, status) &&
           (!method || entry.method === method) &&
           (!correlationId || entry.correlationId === correlationId) &&
-          (!contactId || String(entry.identity.contactId ?? "").replace(/[{}]/g, "").toLowerCase() === contactId) &&
+          (!contactId ||
+            String(entry.identity.contactId ?? '')
+              .replace(/[{}]/g, '')
+              .toLowerCase() === contactId) &&
           (afterSequence === null || entry.sequence > afterSequence) &&
           (throughSequence === null || entry.sequence <= throughSequence) &&
           (!pathFilter || entry.path.toLowerCase().includes(pathFilter)) &&
-          (!entity || String(entry.entity ?? "").toLowerCase() === entity) &&
+          (!entity || String(entry.entity ?? '').toLowerCase() === entity) &&
           (!search || JSON.stringify(entry).toLowerCase().includes(search)),
       )
       .slice()
@@ -244,18 +239,15 @@ export class AuditLog {
   }
 
   list(filters = {}) {
-    const get = (key) =>
-      filters instanceof URLSearchParams ? filters.get(key) : filters[key];
+    const get = (key) => (filters instanceof URLSearchParams ? filters.get(key) : filters[key]);
     const rows = this.filtered(filters),
-      pageSize = positive(get("pageSize"), 25, 100);
+      pageSize = positive(get('pageSize'), 25, 100);
     const pageCount = Math.max(1, Math.ceil(rows.length / pageSize));
-    const page = positive(get("page"), 1, pageCount);
+    const page = positive(get('page'), 1, pageCount);
     const summary = { success: 0, error: 0, denied: 0, pending: 0 };
     for (const row of this.entries) summary[row.outcome]++;
     return {
-      items: structuredClone(
-        rows.slice((page - 1) * pageSize, page * pageSize),
-      ),
+      items: structuredClone(rows.slice((page - 1) * pageSize, page * pageSize)),
       total: rows.length,
       page,
       pageSize,
@@ -263,9 +255,7 @@ export class AuditLog {
       retained: this.entries.length,
       dropped: this.dropped,
       summary,
-      kinds: [
-        ...new Set([...AUDIT_KINDS, ...this.entries.map((entry) => entry.kind)]),
-      ],
+      kinds: [...new Set([...AUDIT_KINDS, ...this.entries.map((entry) => entry.kind)])],
       latestSequence: this.sequence,
       oldestSequence: this.entries[0]?.sequence ?? null,
     };

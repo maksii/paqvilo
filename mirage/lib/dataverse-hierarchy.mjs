@@ -15,27 +15,29 @@
 // answer for a cyclic hierarchy (the local walk stops at the repeated record and reports HIERARCHY_CYCLE).
 // ponytail: each resolution rescans the table's rows and the relationship records; cache the parent index by store revision when a
 // hot query path needs it.
-import { createMetadataService } from "./dataverse-metadata.mjs";
-import { guidKey } from "./dataverse-values.mjs";
-import { packCheck, registerPackExport } from "./pack-exports.mjs";
-import { onceReporter, packOverrides } from "./dataverse-addon-common.mjs";
+import { createMetadataService } from './dataverse-metadata.mjs';
+import { guidKey } from './dataverse-values.mjs';
+import { packCheck, registerPackExport } from './pack-exports.mjs';
+import { onceReporter, packOverrides } from './dataverse-addon-common.mjs';
 
-const DIRECTIONS = ["under", "eq-or-under", "above", "eq-or-above"];
-const QUERY_OPERATORS = ["under", "eq-or-under", "above", "eq-or-above", "not-under"];
+const DIRECTIONS = ['under', 'eq-or-under', 'above', 'eq-or-above'];
+const QUERY_OPERATORS = ['under', 'eq-or-under', 'above', 'eq-or-above', 'not-under'];
 const DEFAULT_MAX_DEPTH = 100; // ponytail: local bound; the native limit is not known (see above).
 const NAME = /^[a-z_][a-z0-9_]*$/i;
 
-const refId = (value) => (value !== null && typeof value === "object" ? value.id : value);
+const refId = (value) => (value !== null && typeof value === 'object' ? value.id : value);
 const lookupKey = (value) => guidKey(refId(value));
 
 /** Validates the pack export 'hierarchies': { '<table>': '<lookup column>' }. Returns lowercase names; throws TypeError on a bad entry. */
 export function validateHierarchies(map) {
   if (map === undefined) return {};
-  if (!map || typeof map !== "object" || Array.isArray(map)) throw new TypeError("hierarchies must map table names to lookup columns.");
+  if (!map || typeof map !== 'object' || Array.isArray(map))
+    throw new TypeError('hierarchies must map table names to lookup columns.');
   const result = {};
   for (const [table, column] of Object.entries(map)) {
     if (!NAME.test(table)) throw new TypeError(`hierarchies key '${table}' must be a logical table name.`);
-    if (typeof column !== "string" || !NAME.test(column)) throw new TypeError(`hierarchies['${table}'] must name a lookup column.`);
+    if (typeof column !== 'string' || !NAME.test(column))
+      throw new TypeError(`hierarchies['${table}'] must name a lookup column.`);
     result[table.toLowerCase()] = column.toLowerCase();
   }
   return result;
@@ -48,9 +50,16 @@ export function validateHierarchies(map) {
  * Diagnostics go to the optional diagnostic(entry) callback. A root that is not a row of the table yields an empty set.
  * Lookup values may be { id } objects or bare GUIDs; a null or unreadable lookup ends the branch.
  */
-export function resolveHierarchy(store, table, column, rootId, direction, { maxDepth = DEFAULT_MAX_DEPTH, diagnostic = null } = {}) {
+export function resolveHierarchy(
+  store,
+  table,
+  column,
+  rootId,
+  direction,
+  { maxDepth = DEFAULT_MAX_DEPTH, diagnostic = null } = {},
+) {
   if (!DIRECTIONS.includes(direction)) throw new TypeError(`Unknown hierarchy direction '${direction}'.`);
-  if (!Number.isInteger(maxDepth) || maxDepth < 0) throw new TypeError("maxDepth must be a non-negative integer.");
+  if (!Number.isInteger(maxDepth) || maxDepth < 0) throw new TypeError('maxDepth must be a non-negative integer.');
   const logical = String(table).toLowerCase();
   const lookup = String(column).toLowerCase();
   const idColumn = store.state.mappings?.[logical]?.idColumn;
@@ -63,7 +72,7 @@ export function resolveHierarchy(store, table, column, rootId, direction, { maxD
   const result = new Set();
   if (!root || !parents.has(root)) return result;
 
-  const down = direction.endsWith("under");
+  const down = direction.endsWith('under');
   const children = new Map();
   if (down) {
     for (const [id, parent] of parents) {
@@ -72,9 +81,10 @@ export function resolveHierarchy(store, table, column, rootId, direction, { maxD
       children.get(parent).push(id);
     }
   }
-  const neighbours = (id) => (down ? children.get(id) ?? [] : [parents.get(id)].filter((parent) => parent && parents.has(parent)));
+  const neighbours = (id) =>
+    down ? (children.get(id) ?? []) : [parents.get(id)].filter((parent) => parent && parents.has(parent));
 
-  if (direction.startsWith("eq-or")) result.add(root);
+  if (direction.startsWith('eq-or')) result.add(root);
   const seen = new Set([root]);
   let cycle = false;
   let depth = 0;
@@ -95,7 +105,12 @@ export function resolveHierarchy(store, table, column, rootId, direction, { maxD
     depth += 1;
     if (depth > maxDepth) {
       diagnostic?.({
-        code: "HIERARCHY_DEPTH_EXCEEDED", table: logical, column: lookup, rootId: root, direction, maxDepth,
+        code: 'HIERARCHY_DEPTH_EXCEEDED',
+        table: logical,
+        column: lookup,
+        rootId: root,
+        direction,
+        maxDepth,
         message: `The ${direction} walk on '${logical}' stopped at depth ${maxDepth}; records deeper than that are not returned.`,
       });
       break;
@@ -103,10 +118,15 @@ export function resolveHierarchy(store, table, column, rootId, direction, { maxD
     for (const id of next) result.add(id);
     frontier = next;
   }
-  if (cycle) diagnostic?.({
-    code: "HIERARCHY_CYCLE", table: logical, column: lookup, rootId: root, direction,
-    message: `The '${lookup}' lookup of '${logical}' forms a loop; the ${direction} walk stopped at the repeated record.`,
-  });
+  if (cycle)
+    diagnostic?.({
+      code: 'HIERARCHY_CYCLE',
+      table: logical,
+      column: lookup,
+      rootId: root,
+      direction,
+      message: `The '${lookup}' lookup of '${logical}' forms a loop; the ${direction} walk stopped at the repeated record.`,
+    });
   return result;
 }
 
@@ -119,22 +139,31 @@ function stateOf(api) {
 }
 
 // Diagnostics: once per key (code, table, column), then never again until reset.
-const report = (state, entry) => state.reporter.report(entry, `${entry.code}\u0000${entry.table}\u0000${entry.column ?? ""}`);
+const report = (state, entry) =>
+  state.reporter.report(entry, `${entry.code}\u0000${entry.table}\u0000${entry.column ?? ''}`);
 
 // The lookup column of a table's hierarchy: the explicit map first, else a self-referencing 1:N relationship marked IsHierarchical.
 function hierarchyOf(api, state, table) {
-  const logical = String(table ?? "").toLowerCase();
+  const logical = String(table ?? '').toLowerCase();
   if (state.explicit[logical]) return { column: state.explicit[logical] };
-  const service = createMetadataService({ organizationId: api.settings.organizationId, schema: api.schema ?? null, mappings: () => api.store.state.mappings });
-  const flagged = service.oneToMany(logical).find((r) => r.IsHierarchical === true && r.ReferencingEntity === logical && r.ReferencedEntity === logical);
+  const service = createMetadataService({
+    organizationId: api.settings.organizationId,
+    schema: api.schema ?? null,
+    mappings: () => api.store.state.mappings,
+  });
+  const flagged = service
+    .oneToMany(logical)
+    .find((r) => r.IsHierarchical === true && r.ReferencingEntity === logical && r.ReferencedEntity === logical);
   return flagged ? { column: String(flagged.ReferencingAttribute).toLowerCase() } : null;
 }
 
 function resolveFor(api, state, table, rootId, direction) {
-  const logical = String(table ?? "").toLowerCase();
+  const logical = String(table ?? '').toLowerCase();
   const hierarchy = hierarchyOf(api, state, logical);
   if (!hierarchy || !api.store.state.mappings?.[logical]) return null;
-  return resolveHierarchy(api.store, logical, hierarchy.column, rootId, direction, { diagnostic: (entry) => report(state, entry) });
+  return resolveHierarchy(api.store, logical, hierarchy.column, rootId, direction, {
+    diagnostic: (entry) => report(state, entry),
+  });
 }
 
 /**
@@ -143,7 +172,7 @@ function resolveFor(api, state, table, rootId, direction) {
  */
 function install(api, options = {}) {
   const state = stateOf(api);
-  state.explicit = validateHierarchies(options.hierarchies ?? packOverrides(api, "hierarchies"));
+  state.explicit = validateHierarchies(options.hierarchies ?? packOverrides(api, 'hierarchies'));
   state.reporter = onceReporter(options.diagnostic ?? api.diagnostic ?? null);
   api.hierarchy = {
     isHierarchical: (table) => hierarchyOf(api, state, table),
@@ -165,21 +194,21 @@ function reset(api) {
 function describe(api = null) {
   const wired = api?.hierarchyQueryWired === true;
   return {
-    name: "dataverse-hierarchy",
+    name: 'dataverse-hierarchy',
     version: 1,
-    kind: "dataverse-extension",
-    level: wired ? "behaviour" : "contract",
+    kind: 'dataverse-extension',
+    level: wired ? 'behaviour' : 'contract',
     operations: [
-      ...DIRECTIONS.map((name) => ({ name: `resolve:${name}`, level: "behaviour" })),
-      ...QUERY_OPERATORS.map((name) => ({ name: `query:${name}`, level: wired ? "behaviour" : "contract" })),
+      ...DIRECTIONS.map((name) => ({ name: `resolve:${name}`, level: 'behaviour' })),
+      ...QUERY_OPERATORS.map((name) => ({ name: `query:${name}`, level: wired ? 'behaviour' : 'contract' })),
     ],
-    requires: ["metadata:IsHierarchical"],
-    principal: "caller",
-    stateOwner: "none",
-    lifecycle: "per-request",
+    requires: ['metadata:IsHierarchical'],
+    principal: 'caller',
+    stateOwner: 'none',
+    lifecycle: 'per-request',
   };
 }
 
-export const EXTENSION = { name: "dataverse-hierarchy", install, reset, describe };
+export const EXTENSION = { name: 'dataverse-hierarchy', install, reset, describe };
 
-registerPackExport("hierarchies", { key: (key) => key.toLowerCase(), check: packCheck(validateHierarchies) });
+registerPackExport('hierarchies', { key: (key) => key.toLowerCase(), check: packCheck(validateHierarchies) });

@@ -1,9 +1,21 @@
 /** Classify browser assets by their served MIME type; extensions are a fallback only. */
 export function assetKind(contentType, file = '') {
-  const type = String(contentType ?? '').split(';', 1)[0].trim().toLowerCase();
+  const type = String(contentType ?? '')
+    .split(';', 1)[0]
+    .trim()
+    .toLowerCase();
   if (type) {
     if (type === 'text/css') return 'stylesheet';
-    if (['text/javascript', 'application/javascript', 'application/x-javascript', 'text/ecmascript', 'application/ecmascript'].includes(type)) return 'script';
+    if (
+      [
+        'text/javascript',
+        'application/javascript',
+        'application/x-javascript',
+        'text/ecmascript',
+        'application/ecmascript',
+      ].includes(type)
+    )
+      return 'script';
     return type.startsWith('image/') ? 'image' : 'asset';
   }
   const pathname = String(file).split(/[?#]/, 1)[0];

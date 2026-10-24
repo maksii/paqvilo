@@ -22,10 +22,16 @@ export const syncIoWorker = { url: new URL('./sync-io-worker.mjs', import.meta.u
 function start() {
   const { port1, port2 } = new MessageChannel();
   const flags = new Int32Array(new SharedArrayBuffer(4));
-  const worker = new Worker(syncIoWorker.url, { workerData: { port: port2, signal: flags.buffer }, transferList: [port2], env: SHARE_ENV });
+  const worker = new Worker(syncIoWorker.url, {
+    workerData: { port: port2, signal: flags.buffer },
+    transferList: [port2],
+    env: SHARE_ENV,
+  });
   // A worker that failed or exited is replaced by the next call. A crash during a call is answered by the worker itself
   // (crashed), because these listeners cannot run while the main thread waits.
-  const reset = () => { if (bridge?.worker === worker) bridge = null; };
+  const reset = () => {
+    if (bridge?.worker === worker) bridge = null;
+  };
   worker.on('error', reset);
   worker.on('exit', reset);
   worker.unref();
@@ -49,7 +55,9 @@ export function closeSyncIoBridge() {
  */
 export function syncIo(operation, payload, { timeoutMs = 10_000 } = {}) {
   bridge ??= start();
-  const current = bridge, id = ++current.next, deadline = Date.now() + timeoutMs;
+  const current = bridge,
+    id = ++current.next,
+    deadline = Date.now() + timeoutMs;
   Atomics.store(current.flags, 0, 0);
   current.port.postMessage({ id, operation, payload });
   for (;;) {

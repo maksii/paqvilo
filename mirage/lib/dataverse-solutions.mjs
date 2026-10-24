@@ -17,61 +17,133 @@
 // importjob id. App/form/view/workflow definitions and opaque asset bytes
 // persist in bounded, per-solution transport layers; metadata rows share the record store and export retains current edits.
 // Error messages and statuses the platform does not document are guesses.
-import { randomUUID } from "node:crypto";
-import { deflateRawSync } from "node:zlib";
-import { DataError } from "./data-error.mjs";
-import { contextUrl } from "./dataverse-odata.mjs";
-import { readSolutionZip, parseSchemaDocument } from "./solution-schema.mjs";
-import { parseSolutionXml, child, childText, labelsOf, pickLabel } from "./solution-xml.mjs";
-import { createTable, createColumn, createKey, updateTable, activateKey } from "./dataverse-metadata-tables.mjs";
-import { readSolutionAssetEntries, appendSolutionAssetLayer, latestSolutionAssetEntries, solutionAssetLayers } from "./dataverse-solution-assets.mjs";
-import { solutionDocumentComponents, applySolutionPayloads, mergeSolutionCustomizationEntries } from "./dataverse-solution-components.mjs";
-import { standardTableDef } from './dataverse-standard.mjs';
-import { installSolutionMessages, entriesOfSolution, holdingArchive, assertStageable, metadataIdOf, componentsOf, addMemberRows } from "./dataverse-solution-messages.mjs";
-import { registerInternalMessage } from "./dataverse-addon-common.mjs";
-import { securityDefinitions, mergeInventory } from "./solution-inventory.mjs";
-import { importSolutionSecurity } from "./dataverse-security.mjs";
+import { randomUUID } from 'node:crypto';
+import { deflateRawSync } from 'node:zlib';
+import { DataError } from './data-error.mjs';
+import { contextUrl } from './dataverse-odata.mjs';
+import { readSolutionZip, parseSchemaDocument } from './solution-schema.mjs';
+import { parseSolutionXml, child, childText, labelsOf, pickLabel } from './solution-xml.mjs';
+import { createTable, createColumn, createKey, updateTable, activateKey } from './dataverse-metadata-tables.mjs';
 import {
-  createOneToMany, createManyToMany, createGlobalSet, requireMetadataPrivilege, addSolutionComponents, assertUnpatched, componentObjectId,
-  lastMetadataSeq, managedLayerOf, managedLayerId, layerStack, activeOnTop, projectManagedFlags,
-} from "./dataverse-metadata-relationships.mjs";
+  readSolutionAssetEntries,
+  appendSolutionAssetLayer,
+  latestSolutionAssetEntries,
+  solutionAssetLayers,
+} from './dataverse-solution-assets.mjs';
+import {
+  solutionDocumentComponents,
+  applySolutionPayloads,
+  mergeSolutionCustomizationEntries,
+} from './dataverse-solution-components.mjs';
+import { standardTableDef } from './dataverse-standard.mjs';
+import {
+  installSolutionMessages,
+  entriesOfSolution,
+  holdingArchive,
+  assertStageable,
+  metadataIdOf,
+  componentsOf,
+  addMemberRows,
+} from './dataverse-solution-messages.mjs';
+import { registerInternalMessage } from './dataverse-addon-common.mjs';
+import { securityDefinitions, mergeInventory } from './solution-inventory.mjs';
+import { importSolutionSecurity } from './dataverse-security.mjs';
+import {
+  createOneToMany,
+  createManyToMany,
+  createGlobalSet,
+  requireMetadataPrivilege,
+  addSolutionComponents,
+  assertUnpatched,
+  componentObjectId,
+  lastMetadataSeq,
+  managedLayerOf,
+  managedLayerId,
+  layerStack,
+  activeOnTop,
+  projectManagedFlags,
+} from './dataverse-metadata-relationships.mjs';
 
 const DEFAULT_LCID = 1033;
 // asyncoperation.operationtype of an ImportSolutionAsync job: 203 "Import Solution Async Operation".
 export const IMPORT_SOLUTION_TYPE = 203;
-const lower = (value) => String(value ?? "").toLowerCase();
+const lower = (value) => String(value ?? '').toLowerCase();
 const sameGuid = (a, b) => lower(idOf(a)) === lower(idOf(b));
-const idOf = (value) => (value && typeof value === "object" ? value.id : value);
-const invalid = (message) => new DataError(message, 400, "InvalidRequest");
+const idOf = (value) => (value && typeof value === 'object' ? value.id : value);
+const invalid = (message) => new DataError(message, 400, 'InvalidRequest');
 const stamp = (api) => new Date(api.clock?.() ?? Date.now()).toISOString();
 const rowsOf = (store, table) => store.state.tables?.[table] ?? [];
 
 // Seeded Dataverse-only tables: solution, publisher and importjob. The writable columns named
 // here are the ones the simulator reads and writes; the rest of the documented columns are not modelled.
-const UUID = { dataverseType: "uniqueidentifier" }, TEXT = { dataverseType: "nvarchar" }, INT = { dataverseType: "int" };
-const DT = { dataverseType: "datetime" }; const BIT = { dataverseType: "bit" };
+const UUID = { dataverseType: 'uniqueidentifier' },
+  TEXT = { dataverseType: 'nvarchar' },
+  INT = { dataverseType: 'int' };
+const DT = { dataverseType: 'datetime' };
+const BIT = { dataverseType: 'bit' };
 const SEEDS = {
   solution: {
-    set: "solutions", id: "solutionid", name: "friendlyname",
-    fields: { solutionid: UUID, uniquename: TEXT, friendlyname: TEXT, version: TEXT, ismanaged: BIT, publisherid: { dataverseType: "lookup", targets: ["publisher"] }, parentsolutionid: { dataverseType: "lookup", targets: ["solution"] }, description: TEXT, installedon: DT, createdon: DT, modifiedon: DT },
+    set: 'solutions',
+    id: 'solutionid',
+    name: 'friendlyname',
+    fields: {
+      solutionid: UUID,
+      uniquename: TEXT,
+      friendlyname: TEXT,
+      version: TEXT,
+      ismanaged: BIT,
+      publisherid: { dataverseType: 'lookup', targets: ['publisher'] },
+      parentsolutionid: { dataverseType: 'lookup', targets: ['solution'] },
+      description: TEXT,
+      installedon: DT,
+      createdon: DT,
+      modifiedon: DT,
+    },
   },
   publisher: {
-    set: "publishers", id: "publisherid", name: "friendlyname",
-    fields: { publisherid: UUID, uniquename: TEXT, friendlyname: TEXT, customizationprefix: TEXT, customizationoptionvalueprefix: INT, description: TEXT, emailaddress: TEXT, supportingwebsiteurl: TEXT },
+    set: 'publishers',
+    id: 'publisherid',
+    name: 'friendlyname',
+    fields: {
+      publisherid: UUID,
+      uniquename: TEXT,
+      friendlyname: TEXT,
+      customizationprefix: TEXT,
+      customizationoptionvalueprefix: INT,
+      description: TEXT,
+      emailaddress: TEXT,
+      supportingwebsiteurl: TEXT,
+    },
   },
   // One row per solution and component. Written by addSolutionComponentRows (metadata writes and imports).
   solutioncomponent: {
-    set: "solutioncomponents", id: "solutioncomponentid", name: "solutioncomponentid",
+    set: 'solutioncomponents',
+    id: 'solutioncomponentid',
+    name: 'solutioncomponentid',
     fields: {
-      solutioncomponentid: UUID, solutionid: { dataverseType: "lookup", targets: ["solution"] }, objectid: UUID, componenttype: INT,
-      rootcomponentbehavior: INT, ismetadata: BIT,
+      solutioncomponentid: UUID,
+      solutionid: { dataverseType: 'lookup', targets: ['solution'] },
+      objectid: UUID,
+      componenttype: INT,
+      rootcomponentbehavior: INT,
+      ismetadata: BIT,
     },
   },
   importjob: {
-    set: "importjobs", id: "importjobid", name: "name",
+    set: 'importjobs',
+    id: 'importjobid',
+    name: 'name',
     fields: {
-      importjobid: UUID, name: TEXT, data: TEXT, progress: { dataverseType: "float" }, solutionname: TEXT, solutionid: UUID,
-      operationcontext: TEXT, importcontext: TEXT, startedon: DT, completedon: DT,
+      importjobid: UUID,
+      name: TEXT,
+      data: TEXT,
+      progress: { dataverseType: 'float' },
+      solutionname: TEXT,
+      solutionid: UUID,
+      operationcontext: TEXT,
+      importcontext: TEXT,
+      startedon: DT,
+      completedon: DT,
     },
   },
 };
@@ -79,8 +151,14 @@ const SEEDS = {
 function seedMappings(store) {
   for (const [logical, def] of Object.entries(SEEDS)) {
     const mapping = (store.state.mappings[logical] ??= {
-      logicalName: logical, entitySet: def.set, idColumn: def.id, nameColumn: def.name,
-      userConfigured: true, dataverseOnly: true, fields: {}, relationships: {},
+      logicalName: logical,
+      entitySet: def.set,
+      idColumn: def.id,
+      nameColumn: def.name,
+      userConfigured: true,
+      dataverseOnly: true,
+      fields: {},
+      relationships: {},
     });
     for (const [name, type] of Object.entries(def.fields)) mapping.fields[name] ??= type;
     store.state.tables[logical] ??= [];
@@ -102,52 +180,101 @@ function crc32(bytes) {
 }
 
 export function zipOf(files) {
-  const parts = [], central = [];
+  const parts = [],
+    central = [];
   let offset = 0;
   for (const { name, data } of files) {
-    const nameBytes = Buffer.from(name, "utf8");
+    const nameBytes = Buffer.from(name, 'utf8');
     const packed = deflateRawSync(data);
     const crc = crc32(data);
     const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x0800, 6); local.writeUInt16LE(8, 8);
-    local.writeUInt16LE(0x21, 12); local.writeUInt32LE(crc, 14); local.writeUInt32LE(packed.length, 18); local.writeUInt32LE(data.length, 22);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(0x21, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(packed.length, 18);
+    local.writeUInt32LE(data.length, 22);
     local.writeUInt16LE(nameBytes.length, 26);
     parts.push(local, nameBytes, packed);
     const entry = Buffer.alloc(46);
-    entry.writeUInt32LE(0x02014b50, 0); entry.writeUInt16LE(20, 4); entry.writeUInt16LE(20, 6); entry.writeUInt16LE(0x0800, 8); entry.writeUInt16LE(8, 10);
-    entry.writeUInt16LE(0x21, 14); entry.writeUInt32LE(crc, 16); entry.writeUInt32LE(packed.length, 20); entry.writeUInt32LE(data.length, 24);
-    entry.writeUInt16LE(nameBytes.length, 28); entry.writeUInt32LE(offset, 42);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(20, 4);
+    entry.writeUInt16LE(20, 6);
+    entry.writeUInt16LE(0x0800, 8);
+    entry.writeUInt16LE(8, 10);
+    entry.writeUInt16LE(0x21, 14);
+    entry.writeUInt32LE(crc, 16);
+    entry.writeUInt32LE(packed.length, 20);
+    entry.writeUInt32LE(data.length, 24);
+    entry.writeUInt16LE(nameBytes.length, 28);
+    entry.writeUInt32LE(offset, 42);
     central.push(entry, nameBytes);
     offset += 30 + nameBytes.length + packed.length;
   }
   const directory = Buffer.concat(central);
   const end = Buffer.alloc(22);
-  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(files.length, 8); end.writeUInt16LE(files.length, 10);
-  end.writeUInt32LE(directory.length, 12); end.writeUInt32LE(offset, 16);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(directory.length, 12);
+  end.writeUInt32LE(offset, 16);
   return Buffer.concat([...parts, directory, end]);
 }
 
 // ---- XML writing
 // The shapes are the ones solution-schema.mjs parseSchemaDocument reads back.
 
-const esc = (value) => String(value ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
-const el = (name, text) => (text === undefined || text === null || text === "" ? "" : `<${name}>${esc(text)}</${name}>`);
-const nilEl = (name, text) => (text === undefined || text === null || text === "" ? `<${name} xsi:nil="true" />` : `<${name}>${esc(text)}</${name}>`);
-const XSI = "http://www.w3.org/2001/XMLSchema-instance";
-const ORG_VERSION = "9.2.0.0"; // the simulated organization's version, as the export header states it
-const labelRows = (tag, labels, row) => `<${tag}>${Object.entries(labels ?? {}).map(([code, text]) => `<${row} description="${esc(text)}" languagecode="${esc(code)}" />`).join("")}</${tag}>`;
+const esc = (value) =>
+  String(value ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+const el = (name, text) =>
+  text === undefined || text === null || text === '' ? '' : `<${name}>${esc(text)}</${name}>`;
+const nilEl = (name, text) =>
+  text === undefined || text === null || text === '' ? `<${name} xsi:nil="true" />` : `<${name}>${esc(text)}</${name}>`;
+const XSI = 'http://www.w3.org/2001/XMLSchema-instance';
+const ORG_VERSION = '9.2.0.0'; // the simulated organization's version, as the export header states it
+const labelRows = (tag, labels, row) =>
+  `<${tag}>${Object.entries(labels ?? {})
+    .map(([code, text]) => `<${row} description="${esc(text)}" languagecode="${esc(code)}" />`)
+    .join('')}</${tag}>`;
 const BEHAVIOR_NUMBER = { UserLocal: 1, DateOnly: 2, TimeZoneIndependent: 3 };
-const BEHAVIOR_NAME = { 1: "UserLocal", 2: "DateOnly", 3: "TimeZoneIndependent" };
+const BEHAVIOR_NAME = { 1: 'UserLocal', 2: 'DateOnly', 3: 'TimeZoneIndependent' };
 // Web API @odata.type names for the column types the simulator creates through the metadata API.
 const ATTRIBUTE_ODATA = {
-  nvarchar: "String", memo: "Memo", int: "Integer", bigint: "BigInt", decimal: "Decimal", float: "Double", money: "Money", bit: "Boolean",
-  datetime: "DateTime", picklist: "Picklist", multiselectpicklist: "MultiSelectPicklist", file: "File", image: "Image",
+  nvarchar: 'String',
+  memo: 'Memo',
+  int: 'Integer',
+  bigint: 'BigInt',
+  decimal: 'Decimal',
+  float: 'Double',
+  money: 'Money',
+  bit: 'Boolean',
+  datetime: 'DateTime',
+  picklist: 'Picklist',
+  multiselectpicklist: 'MultiSelectPicklist',
+  file: 'File',
+  image: 'Image',
 };
 // Columns Dataverse creates on every table: never part of a solution's customizations.
 const SYSTEM_COLUMNS = new Set([
-  "createdon", "createdby", "createdonbehalfby", "modifiedon", "modifiedby", "modifiedonbehalfby", "statecode", "statuscode",
-  "versionnumber", "ownerid", "owninguser", "owningteam", "owningbusinessunit", "importsequencenumber", "overriddencreatedon",
-  "timezoneruleversionnumber", "utcconversiontimezonecode",
+  'createdon',
+  'createdby',
+  'createdonbehalfby',
+  'modifiedon',
+  'modifiedby',
+  'modifiedonbehalfby',
+  'statecode',
+  'statuscode',
+  'versionnumber',
+  'ownerid',
+  'owninguser',
+  'owningteam',
+  'owningbusinessunit',
+  'importsequencenumber',
+  'overriddencreatedon',
+  'timezoneruleversionnumber',
+  'utcconversiontimezonecode',
 ]);
 
 function attributeXml(name, field, primary) {
@@ -155,29 +282,30 @@ function attributeXml(name, field, primary) {
   const type = field.dataverseType;
   const setName = field.globalOptionSet ?? (f.optionSet?.isGlobal ? f.optionSet.name : null);
   const options = f.optionSet?.options ?? [];
-  const optionXml = !setName && options.length
-    ? `<optionset Name="${esc(f.schemaName ?? name)}"><options>${options.map((o) => `<option value="${Number(o.value)}">${labelRows("labels", o.labels, "label")}</option>`).join("")}</options></optionset>`
-    : "";
+  const optionXml =
+    !setName && options.length
+      ? `<optionset Name="${esc(f.schemaName ?? name)}"><options>${options.map((o) => `<option value="${Number(o.value)}">${labelRows('labels', o.labels, 'label')}</option>`).join('')}</options></optionset>`
+      : '';
   // Member order as a Dataverse export writes it: Type, Name, LogicalName, RequiredLevel, DisplayMask, IsCustomField, the labels,
   // then Format, Behavior, MaxLength, MinValue, MaxValue and the option set. Accuracy stays (the reader takes it for precision).
   return `<attribute PhysicalName="${esc(f.schemaName ?? name)}">${[
-    el("Type", type),
-    el("Name", f.schemaName ?? name),
-    el("LogicalName", name),
-    el("RequiredLevel", f.requiredLevel),
-    primary ? el("DisplayMask", "ValidForForm|ValidForRead|PrimaryName") : "",
-    el("IsCustomField", 1),
-    labelRows("displaynames", f.labels, "displayname"),
-    labelRows("Descriptions", f.descriptionLabels, "Description"),
-    el("Format", f.format),
-    field.dateTimeBehavior ? el("Behavior", BEHAVIOR_NUMBER[field.dateTimeBehavior] ?? 1) : "",
-    f.maxLength != null ? el("MaxLength", f.maxLength) : "",
-    f.precision != null ? el("Accuracy", f.precision) : "",
-    f.minValue != null ? el("MinValue", f.minValue) : "",
-    f.maxValue != null ? el("MaxValue", f.maxValue) : "",
-    setName ? el("OptionSetName", setName) : "",
+    el('Type', type),
+    el('Name', f.schemaName ?? name),
+    el('LogicalName', name),
+    el('RequiredLevel', f.requiredLevel),
+    primary ? el('DisplayMask', 'ValidForForm|ValidForRead|PrimaryName') : '',
+    el('IsCustomField', 1),
+    labelRows('displaynames', f.labels, 'displayname'),
+    labelRows('Descriptions', f.descriptionLabels, 'Description'),
+    el('Format', f.format),
+    field.dateTimeBehavior ? el('Behavior', BEHAVIOR_NUMBER[field.dateTimeBehavior] ?? 1) : '',
+    f.maxLength != null ? el('MaxLength', f.maxLength) : '',
+    f.precision != null ? el('Accuracy', f.precision) : '',
+    f.minValue != null ? el('MinValue', f.minValue) : '',
+    f.maxValue != null ? el('MaxValue', f.maxValue) : '',
+    setName ? el('OptionSetName', setName) : '',
     optionXml,
-  ].join("")}</attribute>`;
+  ].join('')}</attribute>`;
 }
 
 function entityXml(mapping, logical, names) {
@@ -188,29 +316,37 @@ function entityXml(mapping, logical, names) {
     const field = mapping.fields?.[name];
     if (!field || name === mapping.idColumn) continue;
     const primary = name === mapping.nameColumn;
-    if (!primary && (ATTRIBUTE_ODATA[field.dataverseType] === undefined)) continue; // lookups travel as relationships
+    if (!primary && ATTRIBUTE_ODATA[field.dataverseType] === undefined) continue; // lookups travel as relationships
     attributes.push(attributeXml(name, field, primary));
   }
   // Member order as a Dataverse export writes it: Name (the display and logical names), then EntityInfo/entity with the labels,
   // the attributes and the flags. The primary id and name are not members: the reader takes them from the attributes.
   const displayName = labels.DisplayName?.[DEFAULT_LCID] ?? logical;
   return `<Entity><Name LocalizedName="${esc(displayName)}" OriginalName="${esc(logical)}" /><EntityInfo><entity Name="${esc(logical)}">${[
-    labelRows("LocalizedNames", labels.DisplayName, "LocalizedName"),
-    labelRows("LocalizedCollectionNames", labels.DisplayCollectionName, "LocalizedName"),
-    labelRows("Descriptions", {}, "Description"),
-    `<attributes>${attributes.join("")}</attributes>`,
-    `<EntityKeys>${(mapping.alternateKeys ?? []).filter(key => !key.builtIn).map(key => `<EntityKey>${el("Name", key.schemaName ?? key.name)}${el("LogicalName", key.name)}${labelRows("displaynames", key.labels, "displayname")}<EntityKeyAttributes>${key.attributes.map(name => el("AttributeName", name)).join("")}</EntityKeyAttributes></EntityKey>`).join("")}</EntityKeys>`,
-    el("EntitySetName", mapping.entitySet),
-    el("TableType", mapping.tableType ?? dm.TableType),
-    el("DataSourceId", dm.DataSourceId),
-    el("DataProviderId", dm.DataProviderId),
+    labelRows('LocalizedNames', labels.DisplayName, 'LocalizedName'),
+    labelRows('LocalizedCollectionNames', labels.DisplayCollectionName, 'LocalizedName'),
+    labelRows('Descriptions', {}, 'Description'),
+    `<attributes>${attributes.join('')}</attributes>`,
+    `<EntityKeys>${(mapping.alternateKeys ?? [])
+      .filter((key) => !key.builtIn)
+      .map(
+        (key) =>
+          `<EntityKey>${el('Name', key.schemaName ?? key.name)}${el('LogicalName', key.name)}${labelRows('displaynames', key.labels, 'displayname')}<EntityKeyAttributes>${key.attributes.map((name) => el('AttributeName', name)).join('')}</EntityKeyAttributes></EntityKey>`,
+      )
+      .join('')}</EntityKeys>`,
+    el('EntitySetName', mapping.entitySet),
+    el('TableType', mapping.tableType ?? dm.TableType),
+    el('DataSourceId', dm.DataSourceId),
+    el('DataProviderId', dm.DataProviderId),
     typeof dm.ChangeTrackingEnabled === 'boolean' ? el('ChangeTrackingEnabled', dm.ChangeTrackingEnabled ? 1 : 0) : '',
-    typeof dm.IsOptimisticConcurrencyEnabled === 'boolean' ? el('IsOptimisticConcurrencyEnabled', dm.IsOptimisticConcurrencyEnabled ? 1 : 0) : '',
-    el("OwnershipTypeMask", mapping.ownership ?? "OrganizationOwned"),
-    el("IsActivity", dm.IsActivity === true ? 1 : 0),
-    el("HasRelatedNotes", dm.HasNotes === true ? 1 : 0),
-    el("HasRelatedActivities", 0),
-  ].join("")}</entity></EntityInfo></Entity>`;
+    typeof dm.IsOptimisticConcurrencyEnabled === 'boolean'
+      ? el('IsOptimisticConcurrencyEnabled', dm.IsOptimisticConcurrencyEnabled ? 1 : 0)
+      : '',
+    el('OwnershipTypeMask', mapping.ownership ?? 'OrganizationOwned'),
+    el('IsActivity', dm.IsActivity === true ? 1 : 0),
+    el('HasRelatedNotes', dm.HasNotes === true ? 1 : 0),
+    el('HasRelatedActivities', 0),
+  ].join('')}</entity></EntityInfo></Entity>`;
 }
 
 function relationshipSides(state, schemaName) {
@@ -234,18 +370,26 @@ function relationshipXml(state, schemaName, sides) {
       { entity: rel.entity, navigation: rel.partner, attribute: rel.intersect.to },
     ];
     return `<EntityRelationship Name="${esc(schemaName)}">${[
-      el("EntityRelationshipType", "ManyToMany"),
+      el('EntityRelationshipType', 'ManyToMany'),
       relationshipFactsXml(rel),
-      el("IntersectEntityName", rel.intersect.entity),
-      el("Entity1LogicalName", first.entity),
-      el("Entity2LogicalName", second.entity),
-      el("Entity1IntersectAttribute", first.attribute),
-      el("Entity2IntersectAttribute", second.attribute),
-      `<EntityRelationshipRoles>${[first, second].map((role, index) => `<EntityRelationshipRole>${[
-        el("AssociationRoleOrdinal", index + 1), el("EntityName", role.entity), el("NavigationPropertyName", role.navigation), el("IntersectAttribute", role.attribute),
-        menuXml(index === 0 ? rel.menu1 : rel.menu2),
-      ].join("")}</EntityRelationshipRole>`).join("")}</EntityRelationshipRoles>`,
-    ].join("")}</EntityRelationship>`;
+      el('IntersectEntityName', rel.intersect.entity),
+      el('Entity1LogicalName', first.entity),
+      el('Entity2LogicalName', second.entity),
+      el('Entity1IntersectAttribute', first.attribute),
+      el('Entity2IntersectAttribute', second.attribute),
+      `<EntityRelationshipRoles>${[first, second]
+        .map(
+          (role, index) =>
+            `<EntityRelationshipRole>${[
+              el('AssociationRoleOrdinal', index + 1),
+              el('EntityName', role.entity),
+              el('NavigationPropertyName', role.navigation),
+              el('IntersectAttribute', role.attribute),
+              menuXml(index === 0 ? rel.menu1 : rel.menu2),
+            ].join('')}</EntityRelationshipRole>`,
+        )
+        .join('')}</EntityRelationshipRoles>`,
+    ].join('')}</EntityRelationship>`;
   }
   const referencing = sides.find((side) => side.rel.many === false);
   const { logical, nav, rel } = referencing;
@@ -253,73 +397,99 @@ function relationshipXml(state, schemaName, sides) {
   // Member order as a Dataverse export writes it. ReferencedAttributeName is kept although a Dataverse export omits it: the
   // reader and createOneToMany take the referenced column from it.
   return `<EntityRelationship Name="${esc(schemaName)}">${[
-    el("EntityRelationshipType", "OneToMany"),
+    el('EntityRelationshipType', 'OneToMany'),
     relationshipFactsXml(rel),
-    el("IsHierarchical", rel.hierarchical ? 1 : 0),
-    el("ReferencingEntityName", logical),
-    el("ReferencedEntityName", rel.entity),
-    el("ReferencingAttributeName", lookupSchema),
-    el("ReferencedAttributeName", rel.to),
-    ...Object.entries(rel.cascade ?? {}).map(([key, value]) => el(`Cascade${key[0].toUpperCase()}${key.slice(1)}`, value)),
-    `<EntityRelationshipRoles><EntityRelationshipRole>${el("NavigationPropertyName", nav)}${el("RelationshipRoleType", 1)}${menuXml(rel.associatedMenu)}</EntityRelationshipRole><EntityRelationshipRole>${el("NavigationPropertyName", rel.partner)}${el("RelationshipRoleType", 0)}</EntityRelationshipRole></EntityRelationshipRoles>`,
-  ].join("")}</EntityRelationship>`;
+    el('IsHierarchical', rel.hierarchical ? 1 : 0),
+    el('ReferencingEntityName', logical),
+    el('ReferencedEntityName', rel.entity),
+    el('ReferencingAttributeName', lookupSchema),
+    el('ReferencedAttributeName', rel.to),
+    ...Object.entries(rel.cascade ?? {}).map(([key, value]) =>
+      el(`Cascade${key[0].toUpperCase()}${key.slice(1)}`, value),
+    ),
+    `<EntityRelationshipRoles><EntityRelationshipRole>${el('NavigationPropertyName', nav)}${el('RelationshipRoleType', 1)}${menuXml(rel.associatedMenu)}</EntityRelationshipRole><EntityRelationshipRole>${el('NavigationPropertyName', rel.partner)}${el('RelationshipRoleType', 0)}</EntityRelationshipRole></EntityRelationshipRoles>`,
+  ].join('')}</EntityRelationship>`;
 }
 
 function relationshipFactsXml(rel) {
-  return [el('IntroducedVersion', rel.introducedVersion),
-    ...Object.entries({ isCustomizable: 'IsCustomizable', isManaged: 'IsManaged', isCustomRelationship: 'IsCustomRelationship', isValidForAdvancedFind: 'IsValidForAdvancedFind' })
-      .map(([key, name]) => typeof rel[key] === 'boolean' ? el(name, rel[key] ? 1 : 0) : ''),
-    el('RelationshipBehavior', rel.relationshipBehavior), el('SecurityTypes', rel.securityTypes)].join('');
+  return [
+    el('IntroducedVersion', rel.introducedVersion),
+    ...Object.entries({
+      isCustomizable: 'IsCustomizable',
+      isManaged: 'IsManaged',
+      isCustomRelationship: 'IsCustomRelationship',
+      isValidForAdvancedFind: 'IsValidForAdvancedFind',
+    }).map(([key, name]) => (typeof rel[key] === 'boolean' ? el(name, rel[key] ? 1 : 0) : '')),
+    el('RelationshipBehavior', rel.relationshipBehavior),
+    el('SecurityTypes', rel.securityTypes),
+  ].join('');
 }
 
 function menuXml(menu) {
   if (!menu) return '';
-  return [el('NavPaneDisplayOption', menu.behavior), el('NavPaneArea', menu.group), el('NavPaneOrder', menu.order),
+  return [
+    el('NavPaneDisplayOption', menu.behavior),
+    el('NavPaneArea', menu.group),
+    el('NavPaneOrder', menu.order),
     typeof menu.isCustomizable === 'boolean' ? el('IsCustomizable', menu.isCustomizable ? 1 : 0) : '',
-    menu.labels ? labelRows('CustomLabels', menu.labels, 'CustomLabel') : ''].join('');
+    menu.labels ? labelRows('CustomLabels', menu.labels, 'CustomLabel') : '',
+  ].join('');
 }
 
 function optionSetXml(set) {
   return `<optionset Name="${esc(set.name)}">${[
-    el("OptionSetType", "picklist"),
-    el("IsGlobal", 1),
-    el("IsCustomizable", set.isCustomizable === false ? 0 : 1),
+    el('OptionSetType', 'picklist'),
+    el('IsGlobal', 1),
+    el('IsCustomizable', set.isCustomizable === false ? 0 : 1),
     el('IntroducedVersion', set.introducedVersion),
-    labelRows("displaynames", set.displayLabels, "displayname"),
-    labelRows("Descriptions", set.descriptionLabels, "Description"),
-    `<options>${(set.options ?? []).map((o) => `<option value="${Number(o.value)}"${o.externalValue === undefined ? '' : ` ExternalValue="${esc(o.externalValue)}"`}${o.isHidden === undefined ? '' : ` IsHidden="${o.isHidden ? 1 : 0}"`}>${labelRows("labels", o.labels, "label")}</option>`).join("")}</options>`,
-  ].join("")}</optionset>`;
+    labelRows('displaynames', set.displayLabels, 'displayname'),
+    labelRows('Descriptions', set.descriptionLabels, 'Description'),
+    `<options>${(set.options ?? []).map((o) => `<option value="${Number(o.value)}"${o.externalValue === undefined ? '' : ` ExternalValue="${esc(o.externalValue)}"`}${o.isHidden === undefined ? '' : ` IsHidden="${o.isHidden ? 1 : 0}"`}>${labelRows('labels', o.labels, 'label')}</option>`).join('')}</options>`,
+  ].join('')}</optionset>`;
 }
 
 const XML_HEAD = '<?xml version="1.0" encoding="utf-8"?>';
 
 // The archive for one solution: its components as recorded by the metadata writes that named it.
 function buildSolutionArchive(state, row, { managed = false } = {}) {
-  const publisher = rowsOf({ state }, "publisher").find((p) => sameGuid(p.publisherid, row.publisherid));
+  const publisher = rowsOf({ state }, 'publisher').find((p) => sameGuid(p.publisherid, row.publisherid));
   const entries = entriesOfSolution(state, row.solutionid); // the solution's own membership rows (a patch exports its own components)
-  const intersect = new Set(Object.values(state.mappings ?? {}).flatMap((m) => Object.values(m.relationships ?? {}).map((r) => r.intersect?.entity).filter(Boolean)));
+  const intersect = new Set(
+    Object.values(state.mappings ?? {}).flatMap((m) =>
+      Object.values(m.relationships ?? {})
+        .map((r) => r.intersect?.entity)
+        .filter(Boolean),
+    ),
+  );
   const attributes = new Map();
-  for (const entry of entries) if (entry.kind === "attribute") attributes.set(lower(entry.logical), [...(attributes.get(lower(entry.logical)) ?? []), lower(entry.name)]);
-  const roots = [], entities = [], relationships = [], optionSets = [];
+  for (const entry of entries)
+    if (entry.kind === 'attribute')
+      attributes.set(lower(entry.logical), [...(attributes.get(lower(entry.logical)) ?? []), lower(entry.name)]);
+  const roots = [],
+    entities = [],
+    relationships = [],
+    optionSets = [];
   const seen = new Set();
   for (const entry of entries) {
-    const key = `${entry.kind}|${lower(entry.logical)}|${lower(entry.name ?? "")}`;
+    const key = `${entry.kind}|${lower(entry.logical)}|${lower(entry.name ?? '')}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    if (entry.kind === "entity") {
+    if (entry.kind === 'entity') {
       const mapping = state.mappings?.[entry.logical];
       if (!mapping || intersect.has(entry.logical)) continue; // an intersect table is written by its relationship
       // The primary name column always travels with its table: the import reads the table's primary name from the archive.
       const members = attributes.get(lower(entry.logical)) ?? [];
-      const primary = lower(mapping.nameColumn ?? "");
-      entities.push(entityXml(mapping, entry.logical, primary && !members.includes(primary) ? [primary, ...members] : members));
+      const primary = lower(mapping.nameColumn ?? '');
+      entities.push(
+        entityXml(mapping, entry.logical, primary && !members.includes(primary) ? [primary, ...members] : members),
+      );
       roots.push(`<RootComponent type="1" schemaName="${esc(entry.logical)}" behavior="0" />`);
-    } else if (entry.kind === "relationship") {
+    } else if (entry.kind === 'relationship') {
       const sides = relationshipSides(state, entry.name);
       if (!sides.length) continue;
       relationships.push(relationshipXml(state, entry.name, sides));
       roots.push(`<RootComponent type="10" schemaName="${esc(entry.name)}" behavior="0" />`);
-    } else if (entry.kind === "optionset") {
+    } else if (entry.kind === 'optionset') {
       const set = state.dataverse?.globalOptionSets?.[entry.logical];
       if (!set) continue;
       optionSets.push(optionSetXml(set));
@@ -327,48 +497,61 @@ function buildSolutionArchive(state, row, { managed = false } = {}) {
     }
   }
   for (const member of state.tables.solutioncomponent ?? []) {
-    if (!sameGuid(member.solutionid, row.solutionid) || ![26, 29, 60, 61, 62, 80].includes(member.componenttype)) continue;
+    if (!sameGuid(member.solutionid, row.solutionid) || ![26, 29, 60, 61, 62, 80].includes(member.componenttype))
+      continue;
     roots.push(`<RootComponent type="${member.componenttype}" id="{${esc(member.objectid)}}" behavior="0" />`);
   }
   // The root attributes, the SolutionManifest members (Publisher members too) and MissingDependencies are as a Dataverse export
   // writes them. MissingDependencies stays empty: no dependency is computed at export (RetrieveMissingDependencies does that).
   const manifest = `${XML_HEAD}<ImportExportXml version="9.2.0.0" SolutionPackageVersion="9.2" languagecode="${DEFAULT_LCID}" generatedBy="Mirage" xmlns:xsi="${XSI}" OrganizationVersion="${ORG_VERSION}" OrganizationSchemaType="Standard" CRMServerServiceabilityVersion="${ORG_VERSION}"><SolutionManifest>${[
-    el("UniqueName", row.uniquename),
-    labelRows("LocalizedNames", { [DEFAULT_LCID]: row.friendlyname ?? row.uniquename }, "LocalizedName"),
-    labelRows("Descriptions", row.description ? { [DEFAULT_LCID]: row.description } : {}, "Description"),
-    el("Version", row.version ?? "1.0.0.0"),
-    el("Managed", managed ? 1 : 0),
+    el('UniqueName', row.uniquename),
+    labelRows('LocalizedNames', { [DEFAULT_LCID]: row.friendlyname ?? row.uniquename }, 'LocalizedName'),
+    labelRows('Descriptions', row.description ? { [DEFAULT_LCID]: row.description } : {}, 'Description'),
+    el('Version', row.version ?? '1.0.0.0'),
+    el('Managed', managed ? 1 : 0),
     `<Publisher>${[
-      el("UniqueName", publisher?.uniquename ?? "mirage"),
-      labelRows("LocalizedNames", { [DEFAULT_LCID]: publisher?.friendlyname ?? publisher?.uniquename ?? "Mirage" }, "LocalizedName"),
-      labelRows("Descriptions", {}, "Description"),
-      nilEl("EMailAddress", publisher?.emailaddress),
-      nilEl("SupportingWebsiteUrl", publisher?.supportingwebsiteurl),
-      el("CustomizationPrefix", publisher?.customizationprefix ?? "new"),
-      el("CustomizationOptionValuePrefix", publisher?.customizationoptionvalueprefix ?? 10000),
-    ].join("")}</Publisher>`,
-    `<RootComponents>${roots.join("")}</RootComponents>`,
-    "<MissingDependencies />",
-  ].join("")}</SolutionManifest></ImportExportXml>`;
+      el('UniqueName', publisher?.uniquename ?? 'mirage'),
+      labelRows(
+        'LocalizedNames',
+        { [DEFAULT_LCID]: publisher?.friendlyname ?? publisher?.uniquename ?? 'Mirage' },
+        'LocalizedName',
+      ),
+      labelRows('Descriptions', {}, 'Description'),
+      nilEl('EMailAddress', publisher?.emailaddress),
+      nilEl('SupportingWebsiteUrl', publisher?.supportingwebsiteurl),
+      el('CustomizationPrefix', publisher?.customizationprefix ?? 'new'),
+      el('CustomizationOptionValuePrefix', publisher?.customizationoptionvalueprefix ?? 10000),
+    ].join('')}</Publisher>`,
+    `<RootComponents>${roots.join('')}</RootComponents>`,
+    '<MissingDependencies />',
+  ].join('')}</SolutionManifest></ImportExportXml>`;
   // customizations.xml members in a Dataverse export's order. The ones the simulator does not model are written empty.
   const empty = (name) => `<${name} />`;
   const customizations = `${XML_HEAD}<ImportExportXml xmlns:xsi="${XSI}" OrganizationVersion="${ORG_VERSION}" OrganizationSchemaType="Standard" CRMServerServiceabilityVersion="${ORG_VERSION}">${[
-    `<Entities>${entities.join("")}</Entities>`,
-    empty("Roles"), empty("Workflows"), empty("FieldSecurityProfiles"), empty("Templates"), empty("EntityMaps"),
-    `<EntityRelationships>${relationships.join("")}</EntityRelationships>`,
-    empty("OrganizationSettings"),
-    `<optionsets>${optionSets.join("")}</optionsets>`,
-    empty("CustomControls"), empty("EntityDataProviders"),
+    `<Entities>${entities.join('')}</Entities>`,
+    empty('Roles'),
+    empty('Workflows'),
+    empty('FieldSecurityProfiles'),
+    empty('Templates'),
+    empty('EntityMaps'),
+    `<EntityRelationships>${relationships.join('')}</EntityRelationships>`,
+    empty('OrganizationSettings'),
+    `<optionsets>${optionSets.join('')}</optionsets>`,
+    empty('CustomControls'),
+    empty('EntityDataProviders'),
     `<Languages><Language>${DEFAULT_LCID}</Language></Languages>`,
-  ].join("")}</ImportExportXml>`;
+  ].join('')}</ImportExportXml>`;
   const types = `${XML_HEAD}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml" /></Types>`;
   latestSolutionAssetEntries(state, row.solutionid); // verify every persisted entry before exporting
-  const payload = solutionAssetLayers(state, { solutionIds: [row.solutionid] }).flatMap(layer => layer.entries.map(entry => ({ name: entry.name, data: Buffer.from(entry.content, 'base64') })))
-    .filter(entry => !/^(?:solution\.xml|\[Content_Types\]\.xml|Other\/Solution\.xml)$/i.test(entry.name));
+  const payload = solutionAssetLayers(state, { solutionIds: [row.solutionid] })
+    .flatMap((layer) =>
+      layer.entries.map((entry) => ({ name: entry.name, data: Buffer.from(entry.content, 'base64') })),
+    )
+    .filter((entry) => !/^(?:solution\.xml|\[Content_Types\]\.xml|Other\/Solution\.xml)$/i.test(entry.name));
   const files = mergeSolutionCustomizationEntries(payload, customizations, state);
   return zipOf([
-    { name: "[Content_Types].xml", data: Buffer.from(types, "utf8") },
-    { name: "solution.xml", data: Buffer.from(manifest, "utf8") },
+    { name: '[Content_Types].xml', data: Buffer.from(types, 'utf8') },
+    { name: 'solution.xml', data: Buffer.from(manifest, 'utf8') },
     ...files,
   ]);
 }
@@ -377,23 +560,42 @@ function buildSolutionArchive(state, row, { managed = false } = {}) {
 // Read the archive with the Solution reader, then create the components through the metadata create functions.
 
 const NS_NAME = (labels, fallback) => (labels && Object.keys(labels).length ? labels : { [DEFAULT_LCID]: fallback });
-const blockOf = (labels) => ({ LocalizedLabels: Object.entries(labels ?? {}).map(([code, Label]) => ({ Label, LanguageCode: Number(code) })) });
+const blockOf = (labels) => ({
+  LocalizedLabels: Object.entries(labels ?? {}).map(([code, Label]) => ({ Label, LanguageCode: Number(code) })),
+});
 
 function readArchive(base64) {
-  if (typeof base64 !== "string" || !base64.trim()) throw invalid("CustomizationFile is required and must be a base64 solution zip.");
+  if (typeof base64 !== 'string' || !base64.trim())
+    throw invalid('CustomizationFile is required and must be a base64 solution zip.');
   let docs, assetEntries;
   try {
-    const bytes = Buffer.from(base64, "base64");
+    const bytes = Buffer.from(base64, 'base64');
     assetEntries = readSolutionAssetEntries(bytes);
     docs = readSolutionZip(bytes);
   } catch (_error) {
-    throw new DataError("The solution file is invalid. The compressed file must contain the following files at its root: solution.xml, customizations.xml, and [Content_Types].xml.", 400, "0x80048060"); // ImportCustomizationsBadZipFileError
+    throw new DataError(
+      'The solution file is invalid. The compressed file must contain the following files at its root: solution.xml, customizations.xml, and [Content_Types].xml.',
+      400,
+      '0x80048060',
+    ); // ImportCustomizationsBadZipFileError
   }
-  const archive = { manifest: null, entities: [], relationships: [], optionSets: [], assetEntries, payloadComponents: [], inventory: [] };
+  const archive = {
+    manifest: null,
+    entities: [],
+    relationships: [],
+    optionSets: [],
+    assetEntries,
+    payloadComponents: [],
+    inventory: [],
+  };
   for (const entry of assetEntries) {
     // Binary web resources and plug-in assemblies remain opaque. Only XML
     // component declarations are read; declarations/entities are rejected.
-    if (/(?:^|\/)(?:customizations\.xml|Entities\/.*\.xml|AppModules\/.*\.xml|AppModuleSiteMaps\/.*\.xml|Workflows\/.*\.xml|WebResources\/[^/]+\.xml)$/i.test(entry.name))
+    if (
+      /(?:^|\/)(?:customizations\.xml|Entities\/.*\.xml|AppModules\/.*\.xml|AppModuleSiteMaps\/.*\.xml|Workflows\/.*\.xml|WebResources\/[^/]+\.xml)$/i.test(
+        entry.name,
+      )
+    )
       archive.payloadComponents.push(...solutionDocumentComponents(entry.data.toString('utf8'), entry));
   }
   for (const doc of docs) {
@@ -402,23 +604,27 @@ function readArchive(base64) {
     archive.entities.push(...(facts.entities ?? []));
     archive.relationships.push(...(facts.relationships ?? []));
     archive.optionSets.push(...(facts.optionSets ?? []));
-    archive.inventory.push(...(facts.inventory ?? []).filter((record) => record.component === "role" || record.component === "fieldsecurityprofile"));
+    archive.inventory.push(
+      ...(facts.inventory ?? []).filter(
+        (record) => record.component === 'role' || record.component === 'fieldsecurityprofile',
+      ),
+    );
   }
-  if (!archive.manifest?.solution.uniqueName) throw invalid("The solution file has no solution.xml with a UniqueName.");
+  if (!archive.manifest?.solution.uniqueName) throw invalid('The solution file has no solution.xml with a UniqueName.');
   const root = parseSolutionXml(archive.manifest.xml, { recover: true });
-  const manifest = child(root, "SolutionManifest") ?? root;
-  const publisher = child(manifest, "Publisher");
+  const manifest = child(root, 'SolutionManifest') ?? root;
+  const publisher = child(manifest, 'Publisher');
   archive.solution = {
     uniqueName: archive.manifest.solution.uniqueName,
-    friendlyName: pickLabel(labelsOf(child(manifest, "LocalizedNames")), DEFAULT_LCID),
-    version: archive.manifest.solution.version ?? "1.0.0.0",
-    managed: archive.manifest.solution.managed === "1",
-    description: pickLabel(labelsOf(child(manifest, "Descriptions")), DEFAULT_LCID),
+    friendlyName: pickLabel(labelsOf(child(manifest, 'LocalizedNames')), DEFAULT_LCID),
+    version: archive.manifest.solution.version ?? '1.0.0.0',
+    managed: archive.manifest.solution.managed === '1',
+    description: pickLabel(labelsOf(child(manifest, 'Descriptions')), DEFAULT_LCID),
     publisher: {
-      uniqueName: childText(publisher, "UniqueName"),
-      friendlyName: pickLabel(labelsOf(child(publisher, "LocalizedNames")), DEFAULT_LCID),
-      customizationPrefix: childText(publisher, "CustomizationPrefix"),
-      optionValuePrefix: Number(childText(publisher, "CustomizationOptionValuePrefix")) || undefined,
+      uniqueName: childText(publisher, 'UniqueName'),
+      friendlyName: pickLabel(labelsOf(child(publisher, 'LocalizedNames')), DEFAULT_LCID),
+      customizationPrefix: childText(publisher, 'CustomizationPrefix'),
+      optionValuePrefix: Number(childText(publisher, 'CustomizationOptionValuePrefix')) || undefined,
     },
   };
   return archive;
@@ -426,50 +632,65 @@ function readArchive(base64) {
 
 // Columns the import creates: the supported types, excluding Dataverse's own columns and lookups (relationships make those).
 function importableAttributes(entity) {
-  return entity.attributes.filter((a) => a.isCustomField !== false && !SYSTEM_COLUMNS.has(a.name) && !a.attributeOf && ATTRIBUTE_ODATA[a.type] !== undefined);
+  return entity.attributes.filter(
+    (a) =>
+      a.isCustomField !== false &&
+      !SYSTEM_COLUMNS.has(a.name) &&
+      !a.attributeOf &&
+      ATTRIBUTE_ODATA[a.type] !== undefined,
+  );
 }
 
 function attributeBody(a, primary) {
   const body = {
-    "@odata.type": `#Microsoft.Dynamics.CRM.${ATTRIBUTE_ODATA[a.type]}AttributeMetadata`,
+    '@odata.type': `#Microsoft.Dynamics.CRM.${ATTRIBUTE_ODATA[a.type]}AttributeMetadata`,
     SchemaName: a.schemaName ?? a.name,
     DisplayName: blockOf(NS_NAME(a.labels, a.name)),
     Description: blockOf(a.descriptionLabels ?? {}),
-    RequiredLevel: a.requiredLevel ?? "none",
+    RequiredLevel: a.requiredLevel ?? 'none',
   };
   if (primary) body.IsPrimaryName = true;
   if (a.maxLength != null) body.MaxLength = a.maxLength;
   if (a.precision != null) body.Precision = a.precision;
   if (a.minValue != null) body.MinValue = a.minValue;
   if (a.maxValue != null) body.MaxValue = a.maxValue;
-  if (a.type === "nvarchar") body.FormatName = { Value: a.format ?? "Text" };
-  if (a.type === "datetime") {
-    body.Format = a.format ?? "DateAndTime";
+  if (a.type === 'nvarchar') body.FormatName = { Value: a.format ?? 'Text' };
+  if (a.type === 'datetime') {
+    body.Format = a.format ?? 'DateAndTime';
     body.DateTimeBehavior = { Value: a.dateTimeBehavior ?? BEHAVIOR_NAME[1] };
   }
-  if (a.type === "picklist" || a.type === "multiselectpicklist") {
-    if (a.optionSetName && !a.optionSet) body["GlobalOptionSet@odata.bind"] = `GlobalOptionSetDefinitions(Name='${a.optionSetName}')`;
-    else body.OptionSet = { Options: (a.optionSet?.options ?? []).map((o) => ({ Value: o.value, Label: blockOf(o.labels) })) };
+  if (a.type === 'picklist' || a.type === 'multiselectpicklist') {
+    if (a.optionSetName && !a.optionSet)
+      body['GlobalOptionSet@odata.bind'] = `GlobalOptionSetDefinitions(Name='${a.optionSetName}')`;
+    else
+      body.OptionSet = {
+        Options: (a.optionSet?.options ?? []).map((o) => ({ Value: o.value, Label: blockOf(o.labels) })),
+      };
   }
-  if (a.type === "bit") {
-    const option = (value) => ({ Label: blockOf((a.optionSet?.options ?? []).find((o) => o.value === value)?.labels ?? {}) });
+  if (a.type === 'bit') {
+    const option = (value) => ({
+      Label: blockOf((a.optionSet?.options ?? []).find((o) => o.value === value)?.labels ?? {}),
+    });
     body.OptionSet = { TrueOption: option(1), FalseOption: option(0) };
   }
   return body;
 }
 
 function entityBody(entity, attributes) {
-  const primaryFact = entity.attributes.find((a) => a.name === entity.primaryNameAttribute) ?? entity.attributes.find((a) => a.isPrimaryName);
-  if (!primaryFact || primaryFact.type !== "nvarchar") throw invalid(`The table ${entity.logicalName} has no text primary name column.`);
+  const primaryFact =
+    entity.attributes.find((a) => a.name === entity.primaryNameAttribute) ??
+    entity.attributes.find((a) => a.isPrimaryName);
+  if (!primaryFact || primaryFact.type !== 'nvarchar')
+    throw invalid(`The table ${entity.logicalName} has no text primary name column.`);
   const primary = attributeBody(primaryFact, true);
   const others = attributes.filter((a) => a.name !== primaryFact.name).map((a) => attributeBody(a, false));
   return {
-    "@odata.type": "#Microsoft.Dynamics.CRM.EntityMetadata",
+    '@odata.type': '#Microsoft.Dynamics.CRM.EntityMetadata',
     SchemaName: entity.schemaName ?? entity.logicalName,
     DisplayName: blockOf(NS_NAME(entity.labels, entity.logicalName)),
     DisplayCollectionName: blockOf(NS_NAME(entity.collectionLabels ?? entity.labels, entity.logicalName)),
     Description: blockOf({}),
-    OwnershipType: /user/i.test(entity.ownership ?? "") ? "UserOwned" : "OrganizationOwned",
+    OwnershipType: /user/i.test(entity.ownership ?? '') ? 'UserOwned' : 'OrganizationOwned',
     IsActivity: entity.isActivity === true,
     HasActivities: false,
     HasNotes: entity.relatedNotes === true,
@@ -480,7 +701,7 @@ function entityBody(entity, attributes) {
 function globalSetBody(set) {
   return {
     Name: set.name,
-    OptionSetType: "picklist",
+    OptionSetType: 'picklist',
     DisplayName: blockOf(NS_NAME(set.displayLabels, set.name)),
     Description: blockOf(set.descriptionLabels ?? {}),
     Options: (set.options ?? []).map((o) => ({ Value: o.value, Label: blockOf(o.labels) })),
@@ -488,9 +709,9 @@ function globalSetBody(set) {
 }
 
 function relationshipBodies(rel) {
-  if (rel.type === "one-to-many") {
+  if (rel.type === 'one-to-many') {
     return {
-      kind: "one-to-many",
+      kind: 'one-to-many',
       body: {
         SchemaName: rel.schemaName,
         ReferencedEntity: rel.referencedEntity,
@@ -500,13 +721,16 @@ function relationshipBodies(rel) {
         ReferencingEntityNavigationPropertyName: rel.referencingNavigation,
         IsHierarchical: rel.isHierarchical === true,
         ...(rel.cascade ? { CascadeConfiguration: rel.cascade } : {}),
-        Lookup: { SchemaName: rel.referencingAttributeSchemaName ?? rel.referencingAttribute, LogicalName: rel.referencingAttribute },
+        Lookup: {
+          SchemaName: rel.referencingAttributeSchemaName ?? rel.referencingAttribute,
+          LogicalName: rel.referencingAttribute,
+        },
       },
       entity: rel.referencingEntity,
     };
   }
   return {
-    kind: "many-to-many",
+    kind: 'many-to-many',
     body: {
       SchemaName: rel.schemaName,
       Entity1LogicalName: rel.entity1,
@@ -545,7 +769,9 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
   const managed = archive.solution.managed === true;
   // The solution's own id when it is already installed (an update replaces its layer in place); a new solution's entries get
   // their id in recordSolution.
-  const ownId = (state.tables.solution ?? []).find((s) => lower(s.uniquename) === lower(archive.solution.uniqueName))?.solutionid ?? null;
+  const ownId =
+    (state.tables.solution ?? []).find((s) => lower(s.uniquename) === lower(archive.solution.uniqueName))?.solutionid ??
+    null;
   // An existing component without a managed stack is an unmanaged definition; with one, the customization above the stack counts.
   const unmanagedOnTop = (kind, logical, name = null) => {
     const layer = managedLayerOf(api, kind, logical, name);
@@ -558,10 +784,13 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
     return at === -1 || at === stack.length - 1;
   };
   // Whether an existing definition is replaced by the incoming one.
-  const replaces = (kind, logical, name = null) => (managed ? becomesTop(kind, logical, name) && (overwrite || !unmanagedOnTop(kind, logical, name)) : overwrite);
+  const replaces = (kind, logical, name = null) =>
+    managed ? becomesTop(kind, logical, name) && (overwrite || !unmanagedOnTop(kind, logical, name)) : overwrite;
   for (const set of archive.optionSets) {
-    const existing = Object.keys(state.dataverse?.globalOptionSets ?? {}).some((name) => lower(name) === lower(set.name));
-    if (existing) log.push({ kind: "optionset", name: set.name, action: "kept" });
+    const existing = Object.keys(state.dataverse?.globalOptionSets ?? {}).some(
+      (name) => lower(name) === lower(set.name),
+    );
+    if (existing) log.push({ kind: 'optionset', name: set.name, action: 'kept' });
     else {
       createGlobalSet(api, globalSetBody(set));
       // The metadata writer validates the supported writable contract; exported source facts
@@ -570,53 +799,68 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
       for (const key of ['introducedVersion', 'isCustomizable', 'externalTypeName', 'parentOptionSetName'])
         if (set[key] !== undefined) stored[key] = structuredClone(set[key]);
       for (const option of stored.options) {
-        const source = set.options.find(item => item.value === option.value);
+        const source = set.options.find((item) => item.value === option.value);
         for (const key of ['externalValue', 'isHidden']) if (source?.[key] !== undefined) option[key] = source[key];
       }
-      log.push({ kind: "optionset", name: set.name, action: "created" });
+      log.push({ kind: 'optionset', name: set.name, action: 'created' });
     }
-    members.push({ kind: "optionset", logical: set.name, name: null, created: !existing });
+    members.push({ kind: 'optionset', logical: set.name, name: null, created: !existing });
   }
-  const intersects = new Set(archive.relationships.filter((r) => r.type === "many-to-many").map((r) => r.intersectEntity));
+  const intersects = new Set(
+    archive.relationships.filter((r) => r.type === 'many-to-many').map((r) => r.intersectEntity),
+  );
   for (const entity of archive.entities) {
     if (entity.isIntersect || intersects.has(entity.logicalName)) continue;
     const logical = entity.logicalName;
     const attributes = importableAttributes(entity);
     const key = `LogicalName='${logical}'`;
     const existed = state.mappings[logical] !== undefined;
-    const outcome = new Map(attributes.map((a) => [a.name, "created"])); // a new table's columns are created with it
-    const tableReplaced = existed && managed && replaces("entity", logical) && state.mappings[logical].dataverseMetadata?.createdByMetadataApi === true;
+    const outcome = new Map(attributes.map((a) => [a.name, 'created'])); // a new table's columns are created with it
+    const tableReplaced =
+      existed &&
+      managed &&
+      replaces('entity', logical) &&
+      state.mappings[logical].dataverseMetadata?.createdByMetadataApi === true;
     if (!existed) {
       createTable(c, entityBody(entity, attributes)); // grants the table's privileges too
-      log.push({ kind: "entity", name: logical, action: "created" });
+      log.push({ kind: 'entity', name: logical, action: 'created' });
     } else {
       if (tableReplaced) updateTable(c, key, entityLayerBody(entity));
-      log.push({ kind: "entity", name: logical, action: tableReplaced ? "overwritten" : "kept" });
+      log.push({ kind: 'entity', name: logical, action: tableReplaced ? 'overwritten' : 'kept' });
       const mapping = state.mappings[logical];
       for (const a of attributes) {
         const exists = Object.hasOwn(mapping.fields ?? {}, a.name);
-        if (exists && !replaces("attribute", logical, a.name)) {
-          outcome.set(a.name, "kept");
-          log.push({ kind: "attribute", name: `${logical}.${a.name}`, action: "kept" });
+        if (exists && !replaces('attribute', logical, a.name)) {
+          outcome.set(a.name, 'kept');
+          log.push({ kind: 'attribute', name: `${logical}.${a.name}`, action: 'kept' });
           continue;
         }
         if (exists) delete mapping.fields[a.name]; // overwrite: the solution's definition replaces the unmanaged one; row values stay
         createColumn(c, key, attributeBody(a, false));
-        outcome.set(a.name, exists ? "overwritten" : "created");
-        log.push({ kind: "attribute", name: `${logical}.${a.name}`, action: exists ? "overwritten" : "created" });
+        outcome.set(a.name, exists ? 'overwritten' : 'created');
+        log.push({ kind: 'attribute', name: `${logical}.${a.name}`, action: exists ? 'overwritten' : 'created' });
       }
     }
-    members.push({ kind: "entity", logical, name: null, created: !existed });
+    members.push({ kind: 'entity', logical, name: null, created: !existed });
     const mapping = state.mappings[logical];
     if (!existed || overwrite) {
       if (entity.tableType !== undefined) mapping.tableType = entity.tableType;
       if (entity.isVirtual !== undefined) mapping.isVirtual = entity.isVirtual;
-      for (const [source, property] of Object.entries({ dataSourceId: 'DataSourceId', dataProviderId: 'DataProviderId', changeTrackingEnabled: 'ChangeTrackingEnabled', isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled' }))
+      for (const [source, property] of Object.entries({
+        dataSourceId: 'DataSourceId',
+        dataProviderId: 'DataProviderId',
+        changeTrackingEnabled: 'ChangeTrackingEnabled',
+        isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled',
+      }))
         if (entity[source] !== undefined) (mapping.dataverseMetadata ??= {})[property] = entity[source];
     }
     if (!existed) {
       if (entity.entitySetName) {
-        if (Object.entries(state.mappings).some(([name, other]) => name !== logical && lower(other.entitySet) === lower(entity.entitySetName)))
+        if (
+          Object.entries(state.mappings).some(
+            ([name, other]) => name !== logical && lower(other.entitySet) === lower(entity.entitySetName),
+          )
+        )
           throw invalid(`The entity set ${entity.entitySetName} already exists.`);
         mapping.entitySet = entity.entitySetName;
       }
@@ -630,39 +874,80 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
       bucket[source.name] = structuredClone(field);
     }
     for (const sourceKey of entity.keys ?? []) {
-      const exists = (mapping.alternateKeys ?? []).some(key => lower(key.name) === lower(sourceKey.name));
-      if (!exists) createKey(c, key, { SchemaName: sourceKey.schemaName ?? sourceKey.name, KeyAttributes: sourceKey.attributes, DisplayName: blockOf(sourceKey.labels) });
-      members.push({ kind: "key", logical, name: sourceKey.name, created: !exists });
+      const exists = (mapping.alternateKeys ?? []).some((key) => lower(key.name) === lower(sourceKey.name));
+      if (!exists)
+        createKey(c, key, {
+          SchemaName: sourceKey.schemaName ?? sourceKey.name,
+          KeyAttributes: sourceKey.attributes,
+          DisplayName: blockOf(sourceKey.labels),
+        });
+      members.push({ kind: 'key', logical, name: sourceKey.name, created: !exists });
     }
-    for (const a of attributes) members.push({ kind: "attribute", logical, name: a.name, created: outcome.get(a.name) === "created" });
+    for (const a of attributes)
+      members.push({ kind: 'attribute', logical, name: a.name, created: outcome.get(a.name) === 'created' });
     if (managed) {
       const primary = (a) => a.name === entity.primaryNameAttribute || a.isPrimaryName === true; // the primary name column is never removed
-      const entityKept = existed && !tableReplaced && unmanagedOnTop("entity", logical);
-      layers.push({ kind: "entity", logical, name: null, body: entityLayerBody(entity), customizable: entity.isCustomizable !== false,
-        applied: !existed || tableReplaced, kept: entityKept });
+      const entityKept = existed && !tableReplaced && unmanagedOnTop('entity', logical);
+      layers.push({
+        kind: 'entity',
+        logical,
+        name: null,
+        body: entityLayerBody(entity),
+        customizable: entity.isCustomizable !== false,
+        applied: !existed || tableReplaced,
+        kept: entityKept,
+      });
       for (const a of attributes.filter((x) => !primary(x))) {
-        const kept = outcome.get(a.name) === "kept";
-        layers.push({ kind: "attribute", logical, name: a.name, body: attributeBody(a, false), customizable: a.isCustomizable !== false,
-          applied: !kept, kept: kept && unmanagedOnTop("attribute", logical, a.name) });
+        const kept = outcome.get(a.name) === 'kept';
+        layers.push({
+          kind: 'attribute',
+          logical,
+          name: a.name,
+          body: attributeBody(a, false),
+          customizable: a.isCustomizable !== false,
+          applied: !kept,
+          kept: kept && unmanagedOnTop('attribute', logical, a.name),
+        });
       }
-      for (const sourceKey of entity.keys ?? []) layers.push({ kind: "key", logical, name: lower(sourceKey.name), body: null, applied: true, kept: false });
+      for (const sourceKey of entity.keys ?? [])
+        layers.push({ kind: 'key', logical, name: lower(sourceKey.name), body: null, applied: true, kept: false });
     }
   }
   for (const rel of archive.relationships) {
     const { kind, body, entity } = relationshipBodies(rel);
     const existed = relationshipSides(state, rel.schemaName).length > 0;
     if (existed) {
-      log.push({ kind: "relationship", name: rel.schemaName, action: "kept" });
+      log.push({ kind: 'relationship', name: rel.schemaName, action: 'kept' });
     } else {
-      if (kind === "one-to-many") createOneToMany(api, body);
+      if (kind === 'one-to-many') createOneToMany(api, body);
       else createManyToMany(api, body);
       for (const side of relationshipSides(state, rel.schemaName))
-        for (const key of ['introducedVersion', 'isCustomizable', 'isManaged', 'isCustomRelationship', 'isValidForAdvancedFind', 'relationshipBehavior', 'securityTypes', 'associatedMenu', 'menu1', 'menu2', 'cascade'])
+        for (const key of [
+          'introducedVersion',
+          'isCustomizable',
+          'isManaged',
+          'isCustomRelationship',
+          'isValidForAdvancedFind',
+          'relationshipBehavior',
+          'securityTypes',
+          'associatedMenu',
+          'menu1',
+          'menu2',
+          'cascade',
+        ])
           if (rel[key] !== undefined) side.rel[key] = structuredClone(rel[key]);
-      log.push({ kind: "relationship", name: rel.schemaName, action: "created" });
+      log.push({ kind: 'relationship', name: rel.schemaName, action: 'created' });
     }
-    members.push({ kind: "relationship", logical: entity, name: rel.schemaName, created: !existed });
-    if (managed) layers.push({ kind: "relationship", logical: entity, name: rel.schemaName, body: null, applied: true, kept: false });
+    members.push({ kind: 'relationship', logical: entity, name: rel.schemaName, created: !existed });
+    if (managed)
+      layers.push({
+        kind: 'relationship',
+        logical: entity,
+        name: rel.schemaName,
+        body: null,
+        applied: true,
+        kept: false,
+      });
   }
   if (managed) {
     const stacks = ((state.dataverse ??= {}).managedLayers ??= {});
@@ -717,20 +1002,32 @@ function recordSolution(api, archive, members) {
     createdon: row.createdon ?? stamp(api),
   });
   addSolutionComponents(api, info.uniqueName, members);
-  const keyIds = new Set(members.filter(member => member.kind === 'key').map(member => componentObjectId(member, api.settings.organizationId)));
-  addMemberRows(store, row.solutionid, componentsOf(store.state, api.settings.organizationId).filter(component => keyIds.has(component.id)));
+  const keyIds = new Set(
+    members
+      .filter((member) => member.kind === 'key')
+      .map((member) => componentObjectId(member, api.settings.organizationId)),
+  );
+  addMemberRows(
+    store,
+    row.solutionid,
+    componentsOf(store.state, api.settings.organizationId).filter((component) => keyIds.has(component.id)),
+  );
   // A created component records the solution that introduced it (the base layer an uninstall or upgrade removes). The managed
   // layers this import recorded take the solution too.
   const dv = (store.state.dataverse ??= {});
   const origin = (dv.componentOrigin ??= {});
-  for (const member of members) if (member.created) origin[lower(componentObjectId(member, api.settings.organizationId))] = row.solutionid;
-  for (const layer of Object.values(dv.managedLayers ?? {})) for (const entry of layerStack(layer)) if (entry.solutionid == null) entry.solutionid = row.solutionid;
+  for (const member of members)
+    if (member.created) origin[lower(componentObjectId(member, api.settings.organizationId))] = row.solutionid;
+  for (const layer of Object.values(dv.managedLayers ?? {}))
+    for (const entry of layerStack(layer)) if (entry.solutionid == null) entry.solutionid = row.solutionid;
   return row;
 }
 
 function importLogXml(solution, log, error) {
-  const rows = log.map((item) => `<Item kind="${esc(item.kind)}" name="${esc(item.name)}" action="${esc(item.action)}" />`).join("");
-  return `${XML_HEAD}<ImportLog solution="${esc(solution)}"${error ? ' result="failed"' : ' result="succeeded"'}>${rows}${error ? `<Error>${esc(error)}</Error>` : ""}</ImportLog>`;
+  const rows = log
+    .map((item) => `<Item kind="${esc(item.kind)}" name="${esc(item.name)}" action="${esc(item.action)}" />`)
+    .join('');
+  return `${XML_HEAD}<ImportLog solution="${esc(solution)}"${error ? ' result="failed"' : ' result="succeeded"'}>${rows}${error ? `<Error>${esc(error)}</Error>` : ''}</ImportLog>`;
 }
 
 // The importjob row: created when the import starts (startedon), completed with its log and progress.
@@ -761,28 +1058,47 @@ async function importArchive(api, archive, { overwrite, jobId, origin, version, 
   const revision = api.changes?.current();
   let created = [];
   try {
-    await api.change(() => api.store.transact(() => {
-      const members = apply(api, archive, { overwrite, origin, version, caller }, log);
-      created = members.filter((member) => member.kind === "key" && member.created);
-      const solution = recordSolution(api, archive, members);
-      appendSolutionAssetLayer(api.store.state, solution.solutionid, archive.assetEntries ?? [], archive.solution);
-      // Security roles and field security profiles: the same import as the Solution source seed (dataverse-security.mjs).
-      const name = archive.solution.uniqueName;
-      const security = securityDefinitions(mergeInventory((archive.inventory ?? []).map((record) => ({ ...record, solution: name }))),
-        { managed: archive.solution.managed === true ? new Set([lower(name)]) : new Set() });
-      if (security.securityRoles.length || security.fieldSecurityProfiles.length)
-        (api.store.state.dataverse ??= {}).securityDiagnostics = importSolutionSecurity(api.store, api.settings.organizationId, security, { solutionId: solution.solutionid });
-      applySolutionPayloads(api.store.state, solution.solutionid, archive.payloadComponents ?? [], { overwrite, definitionOf: standardTableDef, entityId: logical => metadataIdOf(api, 'entity', logical) });
-      writeJob(api, { jobId, archive, log, progress: 100 });
-    }, { isolated: true }));
+    await api.change(() =>
+      api.store.transact(
+        () => {
+          const members = apply(api, archive, { overwrite, origin, version, caller }, log);
+          created = members.filter((member) => member.kind === 'key' && member.created);
+          const solution = recordSolution(api, archive, members);
+          appendSolutionAssetLayer(api.store.state, solution.solutionid, archive.assetEntries ?? [], archive.solution);
+          // Security roles and field security profiles: the same import as the Solution source seed (dataverse-security.mjs).
+          const name = archive.solution.uniqueName;
+          const security = securityDefinitions(
+            mergeInventory((archive.inventory ?? []).map((record) => ({ ...record, solution: name }))),
+            { managed: archive.solution.managed === true ? new Set([lower(name)]) : new Set() },
+          );
+          if (security.securityRoles.length || security.fieldSecurityProfiles.length)
+            (api.store.state.dataverse ??= {}).securityDiagnostics = importSolutionSecurity(
+              api.store,
+              api.settings.organizationId,
+              security,
+              { solutionId: solution.solutionid },
+            );
+          applySolutionPayloads(api.store.state, solution.solutionid, archive.payloadComponents ?? [], {
+            overwrite,
+            definitionOf: standardTableDef,
+            entityId: (logical) => metadataIdOf(api, 'entity', logical),
+          });
+          writeJob(api, { jobId, archive, log, progress: 100 });
+        },
+        { isolated: true },
+      ),
+    );
   } catch (error) {
     await api.store.flushCommittedEvents?.();
     api.changes?.rewind(revision);
-    await api.change(() => api.store.transact(() => writeJob(api, { jobId, archive, log: [], error: error.message, progress: 0 })));
+    await api.change(() =>
+      api.store.transact(() => writeJob(api, { jobId, archive, log: [], error: error.message, progress: 0 })),
+    );
     throw error instanceof DataError ? error : invalid(`The solution import failed: ${error.message}`);
   }
   // The imported keys start Pending; each gets its index job once the import has committed.
-  for (const member of created) await activateKey(api, member.logical, lower(member.name), caller?.systemuserid ?? null);
+  for (const member of created)
+    await activateKey(api, member.logical, lower(member.name), caller?.systemuserid ?? null);
 }
 
 // ---- The module
@@ -791,7 +1107,7 @@ async function importArchive(api, archive, { overwrite, jobId, origin, version, 
 export async function solutionImportJob(api, asyncId, { timeoutMs = 10000 } = {}) {
   const until = Date.now() + timeoutMs;
   for (;;) {
-    const row = rowsOf(api.store, "asyncoperation").find((r) => sameGuid(r.asyncoperationid, asyncId));
+    const row = rowsOf(api.store, 'asyncoperation').find((r) => sameGuid(r.asyncoperationid, asyncId));
     if (row?.statecode === 3) return row;
     if (Date.now() > until) throw new Error(`Import ${asyncId} did not complete within ${timeoutMs} ms.`);
     await new Promise((resolve) => setTimeout(resolve, 5));
@@ -814,65 +1130,119 @@ export function install(api) {
     exportArchive: (row, options) => buildSolutionArchive(store.state, row, options),
   });
   const exportOperation = {
-    name: "ExportSolution",
-    kind: "action",
-    binding: "unbound",
-    signature: { params: [["SolutionName", "Edm.String"], ["Managed", "Edm.Boolean"]], response: [["ExportSolutionFile", "Edm.Binary"]] },
+    name: 'ExportSolution',
+    kind: 'action',
+    binding: 'unbound',
+    signature: {
+      params: [
+        ['SolutionName', 'Edm.String'],
+        ['Managed', 'Edm.Boolean'],
+      ],
+      response: [['ExportSolutionFile', 'Edm.Binary']],
+    },
     handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvExportCustomization", "solution");
-      const name = String(ctx.body?.SolutionName ?? "").trim();
-      if (!name) throw invalid("SolutionName is required.");
-      const row = rowsOf(store, "solution").find((s) => lower(s.uniquename) === lower(name) && s.parentsolutionid == null);
+      requireMetadataPrivilege(api, ctx, 'prvExportCustomization', 'solution');
+      const name = String(ctx.body?.SolutionName ?? '').trim();
+      if (!name) throw invalid('SolutionName is required.');
+      const row = rowsOf(store, 'solution').find(
+        (s) => lower(s.uniquename) === lower(name) && s.parentsolutionid == null,
+      );
       // A missing solution fails the export with the documented 0x80048037 and message; the 404 status is a guess.
-      if (!row) throw new DataError("An error occurred while exporting a solution. The solution does not exist in this system.", 404, "NotFound", { innerCode: "0x80048037" });
+      if (!row)
+        throw new DataError(
+          'An error occurred while exporting a solution. The solution does not exist in this system.',
+          404,
+          'NotFound',
+          { innerCode: '0x80048037' },
+        );
       assertUnpatched(store, row);
       const zip = buildSolutionArchive(store.state, row, { managed: ctx.body?.Managed === true });
       return {
         status: 200,
-        body: { "@odata.context": contextUrl(ctx.origin, ctx.version, "Microsoft.Dynamics.CRM.ExportSolutionResponse"), ExportSolutionFile: zip.toString("base64") },
+        body: {
+          '@odata.context': contextUrl(ctx.origin, ctx.version, 'Microsoft.Dynamics.CRM.ExportSolutionResponse'),
+          ExportSolutionFile: zip.toString('base64'),
+        },
       };
     },
   };
   const importOperation = {
-    name: "ImportSolution",
-    kind: "action",
-    binding: "unbound",
-    signature: { params: [["OverwriteUnmanagedCustomizations", "Edm.Boolean"], ["PublishWorkflows", "Edm.Boolean"], ["CustomizationFile", "Edm.Binary"], ["ImportJobId", "Edm.Guid"], ["HoldingSolution", "Edm.Boolean"]] },
+    name: 'ImportSolution',
+    kind: 'action',
+    binding: 'unbound',
+    signature: {
+      params: [
+        ['OverwriteUnmanagedCustomizations', 'Edm.Boolean'],
+        ['PublishWorkflows', 'Edm.Boolean'],
+        ['CustomizationFile', 'Edm.Binary'],
+        ['ImportJobId', 'Edm.Guid'],
+        ['HoldingSolution', 'Edm.Boolean'],
+      ],
+    },
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
+      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
       const body = ctx.body ?? {};
       const archive = readArchive(body.CustomizationFile);
       const target = stagedArchive(api, archive, body);
-      const jobId = typeof body.ImportJobId === "string" && body.ImportJobId ? body.ImportJobId : randomUUID();
-      await importArchive(api, target, { overwrite: body.OverwriteUnmanagedCustomizations === true, jobId, origin: ctx.origin, version: ctx.version, caller: ctx.caller });
+      const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
+      await importArchive(api, target, {
+        overwrite: body.OverwriteUnmanagedCustomizations === true,
+        jobId,
+        origin: ctx.origin,
+        version: ctx.version,
+        caller: ctx.caller,
+      });
       return undefined; // 204 No Content
     },
   };
   const asyncOperation = {
-    name: "ImportSolutionAsync",
-    kind: "action",
-    binding: "unbound",
+    name: 'ImportSolutionAsync',
+    kind: 'action',
+    binding: 'unbound',
     signature: {
-      params: [["OverwriteUnmanagedCustomizations", "Edm.Boolean"], ["PublishWorkflows", "Edm.Boolean"], ["CustomizationFile", "Edm.Binary"], ["ImportJobId", "Edm.Guid"], ["HoldingSolution", "Edm.Boolean"]],
-      response: [["ImportJobKey", "Edm.String"], ["AsyncOperationId", "Edm.Guid"]],
+      params: [
+        ['OverwriteUnmanagedCustomizations', 'Edm.Boolean'],
+        ['PublishWorkflows', 'Edm.Boolean'],
+        ['CustomizationFile', 'Edm.Binary'],
+        ['ImportJobId', 'Edm.Guid'],
+        ['HoldingSolution', 'Edm.Boolean'],
+      ],
+      response: [
+        ['ImportJobKey', 'Edm.String'],
+        ['AsyncOperationId', 'Edm.Guid'],
+      ],
     },
     async handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvImportCustomization", "solution");
+      requireMetadataPrivilege(api, ctx, 'prvImportCustomization', 'solution');
       const body = ctx.body ?? {};
       const archive = readArchive(body.CustomizationFile);
       const target = stagedArchive(api, archive, body);
-      const jobId = typeof body.ImportJobId === "string" && body.ImportJobId ? body.ImportJobId : randomUUID();
+      const jobId = typeof body.ImportJobId === 'string' && body.ImportJobId ? body.ImportJobId : randomUUID();
       const overwrite = body.OverwriteUnmanagedCustomizations === true;
-      await api.change(() => api.store.transact(() => writeJob(api, { jobId, archive: target, log: [], progress: 0 }), { isolated: true }));
+      await api.change(() =>
+        api.store.transact(() => writeJob(api, { jobId, archive: target, log: [], progress: 0 }), { isolated: true }),
+      );
       // The import runs as an asyncoperation job on the shared queue (dataverse-async systemJob): Ready, then Locked, then
       // Completed with Succeeded (30) or Failed (31). The job's own error, when it fails, is the operation's message.
-      const asyncId = await api.systemJob({
-        name: `Import ${target.solution.uniqueName}`, operationtype: IMPORT_SOLUTION_TYPE, callerId: ctx.caller.systemuserid,
-      }, () => importArchive(api, target, { overwrite, jobId, origin: ctx.origin, version: ctx.version, caller: ctx.caller }));
+      const asyncId = await api.systemJob(
+        {
+          name: `Import ${target.solution.uniqueName}`,
+          operationtype: IMPORT_SOLUTION_TYPE,
+          callerId: ctx.caller.systemuserid,
+        },
+        () =>
+          importArchive(api, target, {
+            overwrite,
+            jobId,
+            origin: ctx.origin,
+            version: ctx.version,
+            caller: ctx.caller,
+          }),
+      );
       return {
         status: 200,
         body: {
-          "@odata.context": contextUrl(ctx.origin, ctx.version, "Microsoft.Dynamics.CRM.ImportSolutionAsyncResponse"),
+          '@odata.context': contextUrl(ctx.origin, ctx.version, 'Microsoft.Dynamics.CRM.ImportSolutionAsyncResponse'),
           AsyncOperationId: asyncId,
           ImportJobKey: jobId,
         },
@@ -882,18 +1252,25 @@ export function install(api) {
   // RetrieveFormattedImportJobResults: natively the results are in Microsoft Excel format; here the import log Mirage writes
   // is the data. The importjob row is written by the import, so an unknown id is the one error here.
   const formattedResults = {
-    name: "RetrieveFormattedImportJobResults",
-    kind: "function",
-    binding: "unbound",
-    signature: { params: [["ImportJobId", "Edm.Guid"]], response: [["FormattedResults", "Edm.String"]] },
+    name: 'RetrieveFormattedImportJobResults',
+    kind: 'function',
+    binding: 'unbound',
+    signature: { params: [['ImportJobId', 'Edm.Guid']], response: [['FormattedResults', 'Edm.String']] },
     handle(ctx) {
-      requireMetadataPrivilege(api, ctx, "prvReadImportJob", "importjob"); // privilege name assumed from the table privilege pattern
-      const id = String(ctx.params?.ImportJobId ?? "");
-      const row = rowsOf(store, "importjob").find((r) => sameGuid(r.importjobid, id));
-      if (!row) throw new DataError(`importjob With Id = ${id} Does Not Exist`, 404, "0x80040217");
+      requireMetadataPrivilege(api, ctx, 'prvReadImportJob', 'importjob'); // privilege name assumed from the table privilege pattern
+      const id = String(ctx.params?.ImportJobId ?? '');
+      const row = rowsOf(store, 'importjob').find((r) => sameGuid(r.importjobid, id));
+      if (!row) throw new DataError(`importjob With Id = ${id} Does Not Exist`, 404, '0x80040217');
       return {
         status: 200,
-        body: { "@odata.context": contextUrl(ctx.origin, ctx.version, "Microsoft.Dynamics.CRM.RetrieveFormattedImportJobResultsResponse"), FormattedResults: row.data ?? "" },
+        body: {
+          '@odata.context': contextUrl(
+            ctx.origin,
+            ctx.version,
+            'Microsoft.Dynamics.CRM.RetrieveFormattedImportJobResultsResponse',
+          ),
+          FormattedResults: row.data ?? '',
+        },
       };
     },
   };
@@ -901,13 +1278,18 @@ export function install(api) {
   // ImportSolutions is internal to the platform, so it answers the not-simulated default.
   // https://learn.microsoft.com/dotnet/api/microsoft.crm.sdk.messages.importsolutionsrequest
   registerInternalMessage(api, {
-    name: "ImportSolutions",
-    kind: "action",
-    binding: "unbound",
+    name: 'ImportSolutions',
+    kind: 'action',
+    binding: 'unbound',
     signature: {
       params: [
-        ["OverwriteUnmanagedCustomizations", "Edm.Boolean"], ["PublishWorkflows", "Edm.Boolean"], ["CustomizationFiles", "Edm.Binary"],
-        ["ImportJobId", "Edm.Guid"], ["ConvertToManaged", "Edm.Boolean"], ["SkipProductUpdateDependencies", "Edm.Boolean"], ["HoldingSolution", "Edm.Boolean"],
+        ['OverwriteUnmanagedCustomizations', 'Edm.Boolean'],
+        ['PublishWorkflows', 'Edm.Boolean'],
+        ['CustomizationFiles', 'Edm.Binary'],
+        ['ImportJobId', 'Edm.Guid'],
+        ['ConvertToManaged', 'Edm.Boolean'],
+        ['SkipProductUpdateDependencies', 'Edm.Boolean'],
+        ['HoldingSolution', 'Edm.Boolean'],
       ],
     },
   });

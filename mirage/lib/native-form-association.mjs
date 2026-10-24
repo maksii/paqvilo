@@ -10,7 +10,10 @@ export function takeNativeFormContactAssociation(entity, identity) {
   const association = associations.getStore();
   if (!association || association.consumed) return null;
   association.consumed = true;
-  const contactId = String(identity?.contactId ?? identity?.id ?? '').replace(/[{}]/g, '').toLowerCase();
+  const contactId = String(identity?.contactId ?? identity?.id ?? '')
+    .replace(/[{}]/g, '')
+    .toLowerCase();
   return association.entity === entity && contactId && association.contactId === contactId
-    ? { column: association.column, contactId } : null;
+    ? { column: association.column, contactId }
+    : null;
 }

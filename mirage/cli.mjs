@@ -1,78 +1,87 @@
 #!/usr/bin/env node
-import fs from "node:fs/promises";
-import path from "node:path";
-import { parseArgs } from "node:util";
-import { importPortal } from "./lib/importer.mjs";
-import { createPortalRenderer } from "./lib/liquid.mjs";
-import { assertPortalSource } from "./lib/source-dialect.mjs";
-import { createSimulator } from "./server.mjs";
-const reportStartup = event => console.error(JSON.stringify({ type: 'runtime-startup', ...event }));
-import { builtinPresets, presetDescriptor } from "./lib/presets.mjs";
-import { resolveSolutionRoots } from "./lib/solution-roots.mjs";
-import { shareSolutionParses } from "./lib/solution-cache.mjs";
-import { runtimePort } from "./lib/runtime-port.mjs";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { parseArgs } from 'node:util';
+import { importPortal } from './lib/importer.mjs';
+import { createPortalRenderer } from './lib/liquid.mjs';
+import { assertPortalSource } from './lib/source-dialect.mjs';
+import { createSimulator } from './server.mjs';
+const reportStartup = (event) => console.error(JSON.stringify({ type: 'runtime-startup', ...event }));
+import { builtinPresets, presetDescriptor } from './lib/presets.mjs';
+import { resolveSolutionRoots } from './lib/solution-roots.mjs';
+import { shareSolutionParses } from './lib/solution-cache.mjs';
+import { runtimePort } from './lib/runtime-port.mjs';
 import { runtimeSettings } from './lib/runtime-config.mjs';
 import { simulationSettings } from './lib/simulation-settings.mjs';
 import { loadOrganizationSources } from './lib/solution-runtime-source.mjs';
-import { bootstrapProject, loadProjectConfig, projectOrigin, projectStateFile, projectSummary } from "./lib/project-config.mjs";
-import { resolveDeploymentProfiles, loadDeploymentProfiles, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
+import {
+  bootstrapProject,
+  loadProjectConfig,
+  projectOrigin,
+  projectStateFile,
+  projectSummary,
+} from './lib/project-config.mjs';
+import {
+  resolveDeploymentProfiles,
+  loadDeploymentProfiles,
+  deploymentProfilesSummary,
+} from './lib/deployment-profiles.mjs';
 import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, unknownMirageCommand } from './tool-registry.mjs';
 import { runtimeOptions, configuredSettingKeys } from './lib/config-keys.mjs';
-
 
 let parsed;
 try {
   parsed = parseArgs({
     allowPositionals: true,
     options: {
-      source: { type: "string" },
+      source: { type: 'string' },
       runtime: { type: 'string' },
       simulation: { type: 'string' },
-      repo: { type: "string" },
+      repo: { type: 'string' },
       // The toolkit catalogue file (lense/config.mjs), as the toolkit's own --config.
-      config: { type: "string" },
-      site: { type: "string" },
+      config: { type: 'string' },
+      site: { type: 'string' },
       // Without --env the catalogue site's defaultEnv applies (lense/config.mjs).
-      env: { type: "string" },
-      port: { type: "string", default: "8787" },
-      state: { type: "string" },
-      "state-dir": { type: "string" },
-      origin: { type: "string" },
-      cdp: { type: "string" },
-      preset: { type: "string" },
-      "preset-mode": { type: "string" },
+      env: { type: 'string' },
+      port: { type: 'string', default: '8787' },
+      state: { type: 'string' },
+      'state-dir': { type: 'string' },
+      origin: { type: 'string' },
+      cdp: { type: 'string' },
+      preset: { type: 'string' },
+      'preset-mode': { type: 'string' },
       'apply-configuration': { type: 'boolean' },
-      path: { type: "string", default: "/" },
-      "managed-control-path": { type: "string" },
-      stylesheet: { type: "string", multiple: true },
-      "parent-snippet": { type: "string" },
-      "child-snippet": { type: "string" },
-      output: { type: "string" },
-      local: { type: "string" },
-      "solution-root": { type: "string", multiple: true },
-      "solution-order": { type: "string" },
-      project: { type: "string" },
-      portal: { type: "string" },
-      "deployment-profile": { type: "string" },
-      pack: { type: "string" },
-      "pack-module": { type: "string", multiple: true },
-      profile: { type: "string" },
-      seed: { type: "string" },
-      rows: { type: "string" },
-      out: { type: "string" },
-      count: { type: "string", multiple: true },
+      path: { type: 'string', default: '/' },
+      'managed-control-path': { type: 'string' },
+      stylesheet: { type: 'string', multiple: true },
+      'parent-snippet': { type: 'string' },
+      'child-snippet': { type: 'string' },
+      output: { type: 'string' },
+      local: { type: 'string' },
+      'solution-root': { type: 'string', multiple: true },
+      'solution-order': { type: 'string' },
+      project: { type: 'string' },
+      portal: { type: 'string' },
+      'deployment-profile': { type: 'string' },
+      pack: { type: 'string' },
+      'pack-module': { type: 'string', multiple: true },
+      profile: { type: 'string' },
+      seed: { type: 'string' },
+      rows: { type: 'string' },
+      out: { type: 'string' },
+      count: { type: 'string', multiple: true },
       'materialize-persona-memberships': { type: 'boolean' },
-      help: { type: "boolean" },
-      json: { type: "boolean" },
+      help: { type: 'boolean' },
+      json: { type: 'boolean' },
       // preflight: a scenario JSON file { id, requires: [...] } scopes blocking; --strict blocks on every unsatisfied requirement.
-      scenario: { type: "string" },
-      strict: { type: "boolean" },
-      "no-watch": { type: "boolean" },
+      scenario: { type: 'string' },
+      strict: { type: 'boolean' },
+      'no-watch': { type: 'boolean' },
       // Live create, update and delete requests are impossible without this runtime flag.
-      "allow-live-writes": { type: "boolean" },
+      'allow-live-writes': { type: 'boolean' },
       // standard or enhanced: the data model of a YAML source (a .powerpages-site export
       // defaults to enhanced); a project portal and a catalogue site set dataModel instead.
-      "data-model": { type: "string" },
+      'data-model': { type: 'string' },
     },
   });
 } catch (error) {
@@ -81,10 +90,19 @@ try {
   process.exit(process.argv[2] === 'preflight' ? 2 : 1);
 }
 const { values: args, positionals } = parsed;
-const stateDir = path.resolve(args['state-dir'] ?? path.join(
-  args.config ? path.dirname(path.resolve(args.config)) : args.project ? path.dirname(path.resolve(args.project)) : process.cwd(), '.paqvilo'));
-const command = positionals[0] ?? "serve";
-if (args.help || command === "help") {
+const stateDir = path.resolve(
+  args['state-dir'] ??
+    path.join(
+      args.config
+        ? path.dirname(path.resolve(args.config))
+        : args.project
+          ? path.dirname(path.resolve(args.project))
+          : process.cwd(),
+      '.paqvilo',
+    ),
+);
+const command = positionals[0] ?? 'serve';
+if (args.help || command === 'help') {
   console.log(`Power Pages local mirage
 
 Commands: ${MIRAGE_COMMANDS.join(', ')}
@@ -111,35 +129,36 @@ Admin: /__sim/. New workspaces use local data/page modes; saved modes persist.
 Default state and evidence paths are under .paqvilo. Map deploymentProfiles in config and pin locally in /_sim/ → Environment; legacy exported Pages profiles use --deployment-profile.
 Presets (registry; a portal lists only packs that match it): ${Object.entries(
     Object.keys(builtinPresets).reduce((groups, id) => {
-      const pack = presetDescriptor(builtinPresets, id)?.pack ?? "generic";
+      const pack = presetDescriptor(builtinPresets, id)?.pack ?? 'generic';
       (groups[pack] ??= []).push(id);
       return groups;
     }, {}),
   )
-    .map(([pack, ids]) => `${pack}: ${ids.join(", ")}`)
-    .join("; ")}
+    .map(([pack, ids]) => `${pack}: ${ids.join(', ')}`)
+    .join('; ')}
 Live access uses the selected connected browser identity. Exact parity requires passing evidence.`);
   process.exit(0);
 }
 try {
-  if(!MIRAGE_CORE_COMMANDS.includes(command))throw new Error(unknownMirageCommand(command));
-  if (command === "data") {
-    const { runDataCommand } = await import("./lib/data-generation.mjs");
+  if (!MIRAGE_CORE_COMMANDS.includes(command)) throw new Error(unknownMirageCommand(command));
+  if (command === 'data') {
+    const { runDataCommand } = await import('./lib/data-generation.mjs');
     // data scaffold resolves its portal like serve: a project file and portal,
     // an explicit --source (solution roots discovered unless --solution-root),
     // or the toolkit catalogue site/environment (--site/--env/--repo).
-    const resolved = positionals[1] === "scaffold" || positionals[1] === 'generate' && args['materialize-persona-memberships'] ? await resolveDataSource(args) : {};
+    const resolved =
+      positionals[1] === 'scaffold' || (positionals[1] === 'generate' && args['materialize-persona-memberships'])
+        ? await resolveDataSource(args)
+        : {};
     console.log(JSON.stringify(await runDataCommand(positionals.slice(1), { ...args, ...resolved }), null, 2));
-  } else if (command === "verify") {
-    const { verifyParity } = await import("./verify.mjs");
+  } else if (command === 'verify') {
+    const { verifyParity } = await import('./verify.mjs');
     const result = await verifyParity({
       localUrl: args.local,
       origin: args.origin,
       cdpUrl: args.cdp,
       path: args.path,
-      outputDir:
-        args.output ??
-        path.join(stateDir, "simulator", args.site ?? "default", "evidence/latest"),
+      outputDir: args.output ?? path.join(stateDir, 'simulator', args.site ?? 'default', 'evidence/latest'),
     });
     console.log(JSON.stringify(result, null, 2));
     process.exitCode = result.passed ? 0 : 1;
@@ -148,21 +167,29 @@ try {
     let profileMirage;
     if (args.site) {
       const { loadCatalogue, resolveMirageConfig } = await import('../lense/config.mjs');
-      const catalogue = loadCatalogue(args), selected = catalogue.sites[args.site];
-      if (selected) profileMirage = resolveMirageConfig(selected.mirage, { configDir: catalogue.configDir, sourceRoot: catalogue.sourceRoot });
+      const catalogue = loadCatalogue(args),
+        selected = catalogue.sites[args.site];
+      if (selected)
+        profileMirage = resolveMirageConfig(selected.mirage, {
+          configDir: catalogue.configDir,
+          sourceRoot: catalogue.sourceRoot,
+        });
     }
-    const runtime = runtimeSettings(args.runtime ? { kind: args.runtime } : project?.runtime ?? profileMirage?.runtime);
-    const simulation = simulationSettings(args.simulation ? { level: args.simulation } : project?.simulation ?? profileMirage?.simulation);
-    if (project && args.source)
-      throw new Error("Use either --project or --source, not both.");
-    if (project && args["solution-root"]?.length)
-      throw new Error("--solution-root is supplied by the project configuration.");
-    if (project && args["solution-order"])
-      throw new Error("--solution-order is supplied by the project configuration (solutionOrder).");
-    if (project && args["data-model"])
+    const runtime = runtimeSettings(
+      args.runtime ? { kind: args.runtime } : (project?.runtime ?? profileMirage?.runtime),
+    );
+    const simulation = simulationSettings(
+      args.simulation ? { level: args.simulation } : (project?.simulation ?? profileMirage?.simulation),
+    );
+    if (project && args.source) throw new Error('Use either --project or --source, not both.');
+    if (project && args['solution-root']?.length)
+      throw new Error('--solution-root is supplied by the project configuration.');
+    if (project && args['solution-order'])
+      throw new Error('--solution-order is supplied by the project configuration (solutionOrder).');
+    if (project && args['data-model'])
       throw new Error("--data-model is supplied by the project configuration (the portal's dataModel).");
-    if (args["data-model"] != null && !["standard", "enhanced"].includes(args["data-model"]))
-      throw new Error("--data-model must be standard or enhanced.");
+    if (args['data-model'] != null && !['standard', 'enhanced'].includes(args['data-model']))
+      throw new Error('--data-model must be standard or enhanced.');
     if (project && args.portal && !project.portals.some((p) => p.id === args.portal))
       throw new Error(`Portal '${args.portal}' is not configured in ${project.configFile}`);
     if (command === 'preflight') {
@@ -170,104 +197,282 @@ try {
       const { preflight, preflightExitCode } = await import('./lib/capability-report.mjs');
       let options;
       if (runtime.kind !== 'power-pages') {
-        if (args.source || args.portal) throw new Error('Standalone runtimes select a project or solution roots without a portal or source.');
-        options = { ...runtimeOptions({ project, catalogue: profileMirage }), solutionRoots: project?.solutionRoots ?? args['solution-root'] ?? profileMirage?.solutionRoots ?? [],
-          solutionOrder: project?.solutionOrder ?? args['solution-order'] ?? profileMirage?.solutionOrder };
+        if (args.source || args.portal)
+          throw new Error('Standalone runtimes select a project or solution roots without a portal or source.');
+        options = {
+          ...runtimeOptions({ project, catalogue: profileMirage }),
+          solutionRoots: project?.solutionRoots ?? args['solution-root'] ?? profileMirage?.solutionRoots ?? [],
+          solutionOrder: project?.solutionOrder ?? args['solution-order'] ?? profileMirage?.solutionOrder,
+        };
       } else if (project) {
         const portal = project.portals.find((p) => p.id === (args.portal ?? project.defaultPortal));
-        options = { ...runtimeOptions({ project, portal }), sourceDir: portal.sourceDir, solutionRoots: portal.solutionRoots, solutionOrder: project.solutionOrder, dataModel: portal.dataModel ?? undefined };
+        options = {
+          ...runtimeOptions({ project, portal }),
+          sourceDir: portal.sourceDir,
+          solutionRoots: portal.solutionRoots,
+          solutionOrder: project.solutionOrder,
+          dataModel: portal.dataModel ?? undefined,
+        };
       } else {
         const { loadConfig } = await import('../lense/config.mjs');
-        const cfg = args.source && !args.site ? null : await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) });
-        const sourceDir = args.source ? path.resolve(args.source) : cfg.sourceDir, siteMirage = cfg?.mirageConfig ?? null;
-        const roots = await resolveSolutionRoots({ sourceDir, explicitRoots: args['solution-root'], explicitOrder: args['solution-order'], catalogue: siteMirage });
-        options = { ...runtimeOptions({ catalogue: siteMirage }), sourceDir, solutionRoots: roots.roots, solutionOrder: roots.order, dataModel: args['data-model'] ?? siteMirage?.dataModel ?? undefined, preset: siteMirage?.preset ?? null };
+        const cfg =
+          args.source && !args.site
+            ? null
+            : await loadConfig({
+                site: args.site,
+                env: args.env,
+                ...(args.repo ? { repo: args.repo } : {}),
+                ...(args.config ? { config: args.config } : {}),
+              });
+        const sourceDir = args.source ? path.resolve(args.source) : cfg.sourceDir,
+          siteMirage = cfg?.mirageConfig ?? null;
+        const roots = await resolveSolutionRoots({
+          sourceDir,
+          explicitRoots: args['solution-root'],
+          explicitOrder: args['solution-order'],
+          catalogue: siteMirage,
+        });
+        options = {
+          ...runtimeOptions({ catalogue: siteMirage }),
+          sourceDir,
+          solutionRoots: roots.roots,
+          solutionOrder: roots.order,
+          dataModel: args['data-model'] ?? siteMirage?.dataModel ?? undefined,
+          preset: siteMirage?.preset ?? null,
+        };
       }
-      const scenario = args.scenario ? { ...JSON.parse(await fs.readFile(path.resolve(args.scenario), 'utf8')), file: args.scenario } : null;
-      const report = await preflight({ ...options, runtime, simulation, project: project && projectSummary(project), lcid: project?.lcid,
-        dataPacks: [...(options.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))], scenario, strict: args.strict === true, preset: args.preset ?? options.preset ?? null });
+      const scenario = args.scenario
+        ? { ...JSON.parse(await fs.readFile(path.resolve(args.scenario), 'utf8')), file: args.scenario }
+        : null;
+      const report = await preflight({
+        ...options,
+        runtime,
+        simulation,
+        project: project && projectSummary(project),
+        lcid: project?.lcid,
+        dataPacks: [...(options.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
+        scenario,
+        strict: args.strict === true,
+        preset: args.preset ?? options.preset ?? null,
+      });
       if (args.json) console.log(JSON.stringify(report, null, 2));
-      else console.log([`Preflight (${report.runtime.kind}): ${report.summary.total} requirements, ${report.summary.satisfied} satisfied, ${report.summary.blocking} blocking.`,
-        ...report.requirements.filter((row) => row.inScope && row.status !== 'satisfied').map((row) => `  ${row.blocking ? 'BLOCKING ' : ''}${row.status} ${row.id}${row.message ? ` - ${row.message}` : ''}`)].join('\n'));
+      else
+        console.log(
+          [
+            `Preflight (${report.runtime.kind}): ${report.summary.total} requirements, ${report.summary.satisfied} satisfied, ${report.summary.blocking} blocking.`,
+            ...report.requirements
+              .filter((row) => row.inScope && row.status !== 'satisfied')
+              .map(
+                (row) =>
+                  `  ${row.blocking ? 'BLOCKING ' : ''}${row.status} ${row.id}${row.message ? ` - ${row.message}` : ''}`,
+              ),
+          ].join('\n'),
+        );
       process.exitCode = preflightExitCode(report);
     } else if (runtime.kind !== 'power-pages') {
       if (!['serve', 'inspect'].includes(command)) throw new Error(`${command} requires a Power Pages runtime.`);
-      if (args.source || args.portal || args.cdp) throw new Error('Standalone runtimes select a project or solution roots without a portal, source, or live browser.');
+      if (args.source || args.portal || args.cdp)
+        throw new Error(
+          'Standalone runtimes select a project or solution roots without a portal, source, or live browser.',
+        );
       const roots = project?.solutionRoots ?? args['solution-root'] ?? profileMirage?.solutionRoots ?? [];
       if (command === 'inspect') {
-        const source = await loadOrganizationSources({ solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'], modelDriven: project?.modelDriven ?? profileMirage?.modelDriven, lcid: project?.lcid });
-        console.log(JSON.stringify({ runtime, simulation, portals: [], solutions: roots, applications: source.metadata.modelDrivenApps,
-          modelDriven: project?.modelDriven ?? profileMirage?.modelDriven ?? { trustedExtensions: false },
-          clientExtensions: { resources: source.clientResources.resources.map(({ name, type }) => ({ name, type })),
-            controls: source.clientResources.pcf.controls.map(({ name, controlType }) => ({ name, controlType })) },
-          entities: Object.keys(source.metadata.entities), diagnostics: [...source.metadata.diagnostics, ...source.solutionData.diagnostics, ...source.clientResources.diagnostics] }, null, 2));
+        const source = await loadOrganizationSources({
+          solutionRoots: roots,
+          solutionOrder: project?.solutionOrder ?? args['solution-order'],
+          modelDriven: project?.modelDriven ?? profileMirage?.modelDriven,
+          lcid: project?.lcid,
+        });
+        console.log(
+          JSON.stringify(
+            {
+              runtime,
+              simulation,
+              portals: [],
+              solutions: roots,
+              applications: source.metadata.modelDrivenApps,
+              modelDriven: project?.modelDriven ?? profileMirage?.modelDriven ?? { trustedExtensions: false },
+              clientExtensions: {
+                resources: source.clientResources.resources.map(({ name, type }) => ({ name, type })),
+                controls: source.clientResources.pcf.controls.map(({ name, controlType }) => ({ name, controlType })),
+              },
+              entities: Object.keys(source.metadata.entities),
+              diagnostics: [
+                ...source.metadata.diagnostics,
+                ...source.solutionData.diagnostics,
+                ...source.clientResources.diagnostics,
+              ],
+            },
+            null,
+            2,
+          ),
+        );
       } else {
-        const stateFile = path.resolve(args.state ?? (project ? projectStateFile(project, 'organization', path.join(stateDir, 'simulator/projects')) : path.join(stateDir, 'simulator', runtime.kind, 'state.json')));
+        const stateFile = path.resolve(
+          args.state ??
+            (project
+              ? projectStateFile(project, 'organization', path.join(stateDir, 'simulator/projects'))
+              : path.join(stateDir, 'simulator', runtime.kind, 'state.json')),
+        );
         let stop;
         // Settings of every registered key (config-keys.mjs); command-line choices follow.
-        const simulator = await createSimulator({ ...runtimeOptions({ project, catalogue: profileMirage }), configuredSettings: configuredSettingKeys({ project, catalogue: profileMirage }), onStartup: reportStartup, runtime, simulation, solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'],
-          stateFile, port: runtimePort(args.port), project: project && projectSummary(project),
-          projectRoot: project ? path.dirname(project.configFile) : args.config ? path.dirname(path.resolve(args.config)) : process.cwd(),
-          dataPacks: [...profileMirage?.dataPacks ?? [], ...(args['pack-module'] ?? []).map(module => ({ module }))],
-          setup: args.config ? { config: path.resolve(args.config), site: args.site, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) } : project ? { project: project.configFile, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) } : undefined,
-          preset: args.preset, presetMode: args['preset-mode'], watch: !args['no-watch'] && project?.watch !== false,
-          onShutdown: () => stop?.() });
+        const simulator = await createSimulator({
+          ...runtimeOptions({ project, catalogue: profileMirage }),
+          configuredSettings: configuredSettingKeys({ project, catalogue: profileMirage }),
+          onStartup: reportStartup,
+          runtime,
+          simulation,
+          solutionRoots: roots,
+          solutionOrder: project?.solutionOrder ?? args['solution-order'],
+          stateFile,
+          port: runtimePort(args.port),
+          project: project && projectSummary(project),
+          projectRoot: project
+            ? path.dirname(project.configFile)
+            : args.config
+              ? path.dirname(path.resolve(args.config))
+              : process.cwd(),
+          dataPacks: [
+            ...(profileMirage?.dataPacks ?? []),
+            ...(args['pack-module'] ?? []).map((module) => ({ module })),
+          ],
+          setup: args.config
+            ? {
+                config: path.resolve(args.config),
+                site: args.site,
+                ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
+              }
+            : project
+              ? {
+                  project: project.configFile,
+                  ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
+                }
+              : undefined,
+          preset: args.preset,
+          presetMode: args['preset-mode'],
+          watch: !args['no-watch'] && project?.watch !== false,
+          onShutdown: () => stop?.(),
+        });
         const discovery = path.join(stateDir, 'simulator', `session-${process.pid}.json`);
         await fs.mkdir(path.dirname(discovery), { recursive: true });
-        await fs.writeFile(discovery, JSON.stringify({ pid: process.pid, runtime, project: project?.configFile ?? null,
-          sourceDir: null, stateFile, url: simulator.url, adminUrl: simulator.adminUrl, discovery }, null, 2));
-        console.log(JSON.stringify({ pid: process.pid, runtime, simulation: simulator.status().simulation, url: simulator.url,
-          adminUrl: simulator.adminUrl, dataverse: simulator.status().dataverse, discovery }, null, 2));
+        await fs.writeFile(
+          discovery,
+          JSON.stringify(
+            {
+              pid: process.pid,
+              runtime,
+              project: project?.configFile ?? null,
+              sourceDir: null,
+              stateFile,
+              url: simulator.url,
+              adminUrl: simulator.adminUrl,
+              discovery,
+            },
+            null,
+            2,
+          ),
+        );
+        console.log(
+          JSON.stringify(
+            {
+              pid: process.pid,
+              runtime,
+              simulation: simulator.status().simulation,
+              url: simulator.url,
+              adminUrl: simulator.adminUrl,
+              dataverse: simulator.status().dataverse,
+              discovery,
+            },
+            null,
+            2,
+          ),
+        );
         let stopped = false;
-        stop = async () => { if (stopped) return; stopped = true; await simulator.close(); await fs.rm(discovery, { force: true }); };
+        stop = async () => {
+          if (stopped) return;
+          stopped = true;
+          await simulator.close();
+          await fs.rm(discovery, { force: true });
+        };
         process.once('SIGINT', () => stop().then(() => process.exit(0)));
         process.once('SIGTERM', () => stop().then(() => process.exit(0)));
-        process.stdin.on('data', data => { if (String(data).trim() === 'stop') stop().then(() => process.exit(0)); });
+        process.stdin.on('data', (data) => {
+          if (String(data).trim() === 'stop') stop().then(() => process.exit(0));
+        });
       }
-    }
-    else if (project && command === "inspect") {
-      const selected = args.portal
-        ? project.portals.filter((p) => p.id === args.portal)
-        : project.portals;
+    } else if (project && command === 'inspect') {
+      const selected = args.portal ? project.portals.filter((p) => p.id === args.portal) : project.portals;
       const bootstrapped = await bootstrapProject({ ...project, portals: selected });
       // A source with zero recognised pages is not a portal: fail loudly, naming its layout.
       for (const { portal } of bootstrapped.portals) assertPortalSource(portal);
-      console.log(JSON.stringify({
-        configFile: project.configFile,
-        version: project.version,
-        defaultPortal: project.defaultPortal,
-        lcid: project.lcid,
-        solutionOrder: project.solutionOrder,
-        portals: bootstrapped.portals.map(({ id, sourceDir, origin, reference, solutions, portal, metadata, solutionData, deploymentProfiles, activeProfiles }) => ({
-          id, sourceDir: portal.sourceDir ?? sourceDir, origin: projectOrigin(project, { origin, reference }), solutions, format: portal.format,
-          layout: portal.source?.dialect ?? null, dataModel: portal.dataModel, dataModelSource: portal.dataModelSource,
-          profileSelection: deploymentProfilesSummary(deploymentProfiles, activeProfiles),
-          serverLogics: (portal.serverLogics ?? []).map((item) => item.name),
-          cloudFlows: (portal.cloudFlows ?? []).map((item) => item.name),
-          solutionData: solutionData.stats,
-          pages: portal.pages.map((page) => ({ id: page.id, name: page.name, url: page.url, pageTemplateId: page.pageTemplateId })),
-          templates: new Set(Object.values(portal.templates)).size,
-          snippets: Object.keys(portal.snippets).length,
-          assets: portal.webFiles.length,
-          forms: portal.forms.length,
-          lists: portal.lists.length,
-          liquidSyntax: createPortalRenderer(portal).inspectCapabilities(),
-          solutionMetadata: metadata.summary,
-          diagnostics: [...portal.diagnostics, ...metadata.diagnostics],
-        })),
-        solutions: project.solutions,
-        references: project.references,
-        defaultReference: project.defaultReference?.id ?? null,
-        dataPacks: project.dataPacks,
-        solutionDiagnostics: bootstrapped.solutionData.diagnostics,
-      }, null, 2));
+      console.log(
+        JSON.stringify(
+          {
+            configFile: project.configFile,
+            version: project.version,
+            defaultPortal: project.defaultPortal,
+            lcid: project.lcid,
+            solutionOrder: project.solutionOrder,
+            portals: bootstrapped.portals.map(
+              ({
+                id,
+                sourceDir,
+                origin,
+                reference,
+                solutions,
+                portal,
+                metadata,
+                solutionData,
+                deploymentProfiles,
+                activeProfiles,
+              }) => ({
+                id,
+                sourceDir: portal.sourceDir ?? sourceDir,
+                origin: projectOrigin(project, { origin, reference }),
+                solutions,
+                format: portal.format,
+                layout: portal.source?.dialect ?? null,
+                dataModel: portal.dataModel,
+                dataModelSource: portal.dataModelSource,
+                profileSelection: deploymentProfilesSummary(deploymentProfiles, activeProfiles),
+                serverLogics: (portal.serverLogics ?? []).map((item) => item.name),
+                cloudFlows: (portal.cloudFlows ?? []).map((item) => item.name),
+                solutionData: solutionData.stats,
+                pages: portal.pages.map((page) => ({
+                  id: page.id,
+                  name: page.name,
+                  url: page.url,
+                  pageTemplateId: page.pageTemplateId,
+                })),
+                templates: new Set(Object.values(portal.templates)).size,
+                snippets: Object.keys(portal.snippets).length,
+                assets: portal.webFiles.length,
+                forms: portal.forms.length,
+                lists: portal.lists.length,
+                liquidSyntax: createPortalRenderer(portal).inspectCapabilities(),
+                solutionMetadata: metadata.summary,
+                diagnostics: [...portal.diagnostics, ...metadata.diagnostics],
+              }),
+            ),
+            solutions: project.solutions,
+            references: project.references,
+            defaultReference: project.defaultReference?.id ?? null,
+            dataPacks: project.dataPacks,
+            solutionDiagnostics: bootstrapped.solutionData.diagnostics,
+          },
+          null,
+          2,
+        ),
+      );
       process.exitCode = bootstrapped.portals.some(({ portal, metadata }) =>
-        [...portal.diagnostics, ...metadata.diagnostics].some((d) => d.code?.startsWith("invalid"))) ? 1 : 0;
-    }
-    else if (project && command === "serve" && !args.portal) {
+        [...portal.diagnostics, ...metadata.diagnostics].some((d) => d.code?.startsWith('invalid')),
+      )
+        ? 1
+        : 0;
+    } else if (project && command === 'serve' && !args.portal) {
       const port = runtimePort(args.port);
       if (port && port + project.portals.length - 1 > 65535)
-        throw new Error("The configured portal count exceeds the available port range.");
+        throw new Error('The configured portal count exceeds the available port range.');
       const sessions = [];
       let stop;
       // The portals share their Solution roots: each file is parsed once during startup.
@@ -282,25 +487,36 @@ try {
                 const state = path.parse(path.resolve(args.state));
                 return path.join(state.dir, portal.id, state.base);
               })()
-            : projectStateFile(project, portal.id, path.join(stateDir, "simulator/projects"));
+            : projectStateFile(project, portal.id, path.join(stateDir, 'simulator/projects'));
           const simulator = await createSimulator({
             ...runtimeOptions({ project, portal }),
             configuredSettings: configuredSettingKeys({ project, portal }),
             onStartup: reportStartup,
-            setup: args.config ? { config: path.resolve(args.config), site: args.site, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) } : { project: project.configFile, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) },
+            setup: args.config
+              ? {
+                  config: path.resolve(args.config),
+                  site: args.site,
+                  ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
+                }
+              : {
+                  project: project.configFile,
+                  ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
+                },
             sourceDir: portal.sourceDir,
             stateFile,
-            preset: args.preset, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
+            preset: args.preset,
+            presetMode: args['preset-mode'] ?? 'always',
+            presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
             port: port ? port + index : 0,
             origin: projectOrigin(project, portal) ?? args.origin,
             solutionRoots: portal.solutionRoots,
             project: projectSummary(project, portal.id),
             deploymentProfile: portal.deploymentProfile ?? undefined,
-            watch: !args["no-watch"] && project.watch !== false,
+            watch: !args['no-watch'] && project.watch !== false,
             onShutdown: () => stop?.(),
             // A source with zero recognised pages is refused, naming its layout.
             requirePortalSource: true,
-            allowLiveWrites: args["allow-live-writes"] === true,
+            allowLiveWrites: args['allow-live-writes'] === true,
           });
           sessions.push({ portal, simulator, stateFile });
           // Keep the runtime in the cleanup set even when browser attachment fails.
@@ -312,315 +528,40 @@ try {
       } finally {
         sharedParses.close();
       }
-      const discovery = path.join(stateDir, "simulator", `session-${process.pid}.json`);
+      const discovery = path.join(stateDir, 'simulator', `session-${process.pid}.json`);
       await fs.mkdir(path.dirname(discovery), { recursive: true });
-      await fs.writeFile(discovery, JSON.stringify({
-        pid: process.pid,
-        project: project.configFile,
-        portals: sessions.map(({ portal, simulator, stateFile }) => ({
-          id: portal.id, sourceDir: portal.sourceDir, stateFile,
-          url: simulator.url, adminUrl: simulator.adminUrl,
-          identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
-        })),
+      await fs.writeFile(
         discovery,
-      }, null, 2));
-      console.log(JSON.stringify({ project: project.configFile, portals: sessions.map(({ portal, simulator, stateFile }) => {
-        const { config: startedConfig, status: startedStatus } = simulator.state({ summary: true });
-        return {
-          id: portal.id, sourceDir: portal.sourceDir, stateFile,
-          url: simulator.url, adminUrl: simulator.adminUrl,
-          // Portal pages carry only site-setting headers unless confinement is opted in.
-          confinePortalPages: startedConfig.confinePortalPages,
-          signInPath: startedStatus.bootstrap.signInPath,
-          startupPreset: startedStatus.startupPreset,
-          // External sign-in's local identity provider: its own loopback port, closed with the runtime.
-          identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
-          // "disabled" unless started with --allow-live-writes.
-          liveWrites: simulator.live.status().liveWrites,
-        };
-      }), discovery }, null, 2));
-      let stopped = false;
-      stop = async () => {
-        if (stopped) return;
-        stopped = true;
-        await Promise.all(sessions.map(({ simulator }) => simulator.close()));
-        await fs.rm(discovery, { force: true });
-      };
-      process.once("SIGINT", () => stop().then(() => process.exit(0)));
-      process.once("SIGTERM", () => stop().then(() => process.exit(0)));
-      process.stdin.on("data", (data) => {
-        if (String(data).trim() === "stop") stop().then(() => process.exit(0));
-      });
-    }
-    else {
-    let sourceDir = args.source,
-      origin = args.origin;
-    let configuredPortal = null;
-    let siteMirage = null;
-    if (project) {
-      configuredPortal = project.portals.find((p) => p.id === (args.portal ?? project.defaultPortal));
-      sourceDir = configuredPortal.sourceDir;
-      origin = projectOrigin(project, configuredPortal) ?? origin;
-      if (args.config && args.site) {
-        const { loadConfig } = await import('../lense/config.mjs');
-        siteMirage = (await loadConfig({ config: args.config, site: args.site, env: args.env })).mirageConfig;
-      }
-    } else if (!sourceDir) {
-      const { loadConfig } = await import("../lense/config.mjs");
-      const cfg = await loadConfig({
-        site: args.site,
-        env: args.env,
-        ...(args.repo ? { repo: args.repo } : {}),
-        ...(args.config ? { config: args.config } : {}),
-      });
-      sourceDir = cfg.sourceDir;
-      origin ??= /^https:\/\//i.test(cfg.origin ?? '') ? cfg.origin : null;
-      args.site ??= cfg.siteName;
-      siteMirage = cfg.mirageConfig ?? null;
-    } else if (args.site) {
-      // --source with a catalogued --site (as `mirage dev` launches serve): the site's
-      // mirage settings (observed behaviour, catalogued roots) still apply.
-      const { loadConfig } = await import("../lense/config.mjs");
-      siteMirage = (await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) })).mirageConfig ?? null;
-    }
-    if (command === 'serve') {
-      args.preset ??= siteMirage?.preset;
-      args['preset-mode'] ??= siteMirage?.presetMode;
-      if(args['apply-configuration']===undefined && siteMirage?.presetConfiguration==='apply')args['apply-configuration']=true;
-    }
-    const deploymentProfile = args["deployment-profile"] ?? configuredPortal?.deploymentProfile;
-    // The data model of a YAML source: --data-model, else the project portal's or catalogue
-    // site's dataModel, else the source's default (lib/importer.mjs).
-    const dataModel = args["data-model"] ?? (project ? configuredPortal?.dataModel : siteMirage?.dataModel) ?? undefined;
-    if (command === "inspect") {
-      const profileConfig = resolveDeploymentProfiles(siteMirage?.deploymentProfiles ?? configuredPortal?.deploymentProfiles);
-      if (deploymentProfile && Object.keys(profileConfig.profiles).length) throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
-      const activeProfiles = await loadDeploymentProfiles(profileConfig);
-      // A source with zero recognised pages is not a portal: fail loudly, naming its layout.
-      const portal = assertPortalSource(await importPortal(sourceDir, { deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : deploymentProfile, deploymentProfileFile: activeProfiles.pagesFile, dataModel }));
-      console.log(
         JSON.stringify(
           {
-            sourceDir: portal.sourceDir,
-            profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
-            format: portal.format,
-            layout: portal.source?.dialect ?? null,
-            dataModel: portal.dataModel,
-            dataModelSource: portal.dataModelSource,
-            serverLogics: (portal.serverLogics ?? []).map((item) => item.name),
-            cloudFlows: (portal.cloudFlows ?? []).map((item) => item.name),
-            pages: portal.pages.map((p) => ({
-              id: p.id,
-              name: p.name,
-              url: p.url,
-              pageTemplateId: p.pageTemplateId,
+            pid: process.pid,
+            project: project.configFile,
+            portals: sessions.map(({ portal, simulator, stateFile }) => ({
+              id: portal.id,
+              sourceDir: portal.sourceDir,
+              stateFile,
+              url: simulator.url,
+              adminUrl: simulator.adminUrl,
+              identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
             })),
-            templates: new Set(Object.values(portal.templates)).size,
-            snippets: Object.keys(portal.snippets).length,
-            assets: portal.webFiles.length,
-            forms: portal.forms.length,
-            lists: portal.lists.length,
-            liquidSyntax: createPortalRenderer(portal).inspectCapabilities(),
-            diagnostics: portal.diagnostics,
+            discovery,
           },
           null,
           2,
         ),
       );
-      process.exitCode = portal.diagnostics.some((d) =>
-        d.code?.startsWith("invalid"),
-      )
-        ? 1
-        : 0;
-    } else if (
-      command === "serve" ||
-      command === "render" ||
-      command === "capture-shell" ||
-      command === "capture-stylesheets" ||
-      command === "capture-snippet-composition"
-    ) {
-      const capturing = [
-        "capture-shell",
-        "capture-stylesheets",
-        "capture-snippet-composition",
-      ].includes(command);
-      if (capturing && !args.cdp)
-        throw new Error(
-          `${command} requires --cdp for the intended connected browser.`,
-        );
-      if (capturing && args.preset)
-        throw new Error(
-          `${command} does not apply presets. Apply --preset when starting serve.`,
-        );
-      if (command === "capture-stylesheets" && !args.stylesheet?.length)
-        throw new Error(
-          "capture-stylesheets requires --stylesheet PATH (repeatable).",
-        );
-      if (
-        command === "capture-snippet-composition" &&
-        (!args["parent-snippet"] || !args["child-snippet"])
-      )
-        throw new Error(
-          "capture-snippet-composition requires --parent-snippet NAME and --child-snippet NAME.",
-        );
-      if (
-        command === "capture-shell" &&
-        (!args.path.startsWith("/") ||
-          args.path.startsWith("//") ||
-          args.path.includes("\\"))
-      )
-        throw new Error("Capture page path must be portal-relative.");
-      const port = command === "serve" ? runtimePort(args.port) : 0;
-      const stateFile = path.resolve(
-        args.state ??
-        (project
-          ? projectStateFile(project, configuredPortal.id, path.join(stateDir, "simulator/projects"))
-          : path.join(stateDir, "simulator", args.site ?? "default", "state.json")));
-      // Solution roots are resolved as bootstrap-report resolves them: --solution-root,
-      // else the catalogue site's mirage roots, else discovery; layered in derived
-      // order unless --solution-order explicit (or the site's solutionOrder: explicit).
-      const resolvedRoots = project
-        ? { roots: configuredPortal.solutionRoots, order: project.solutionOrder }
-        : await resolveSolutionRoots({
-            sourceDir,
-            explicitRoots: args["solution-root"],
-            explicitOrder: args["solution-order"],
-            catalogue: siteMirage,
-            cacheFile: path.join(path.dirname(stateFile), "cache", "solution-sources.json"),
-          });
-      const solutionRoots = resolvedRoots.roots;
-      let stop;
-      const simulator = await createSimulator({
-        // Settings of every registered key (config-keys.mjs: project portal, project, catalogue site).
-        ...runtimeOptions({ project, portal: configuredPortal, catalogue: siteMirage }),
-        configuredSettings: configuredSettingKeys({ project, portal: configuredPortal, catalogue: siteMirage }),
-        onStartup: reportStartup,
-        setup: args.config ? { config: path.resolve(args.config), site: args.site, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) } : project ? { project: project.configFile, ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }) } : null,
-        sourceDir,
-        dataPacks: [...(siteMirage?.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
-        runtime, simulation,
-        projectRoot: args.config ? path.dirname(path.resolve(args.config)) : project?.configFile ? path.dirname(project.configFile) : process.cwd(),
-        ...(project ? { project: projectSummary(project, configuredPortal.id) } : {}),
-        stateFile,
-        preset: args.preset, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
-        port,
-        origin,
-        solutionRoots,
-        solutionOrder: resolvedRoots.order,
-        deploymentProfile,
-        dataModel,
-        watch: command === "serve" && !args["no-watch"] && project?.watch !== false,
-        ...(command === "serve" ? { onShutdown: () => stop?.() } : {}),
-        // A source with zero recognised pages is refused, naming its layout.
-        requirePortalSource: true,
-        allowLiveWrites: args["allow-live-writes"] === true,
-      });
-      try {
-        if (args.cdp) await simulator.live.connect(args.cdp);
-        if (capturing) {
-          const state = simulator.state();
-          const response = await fetch(
-            `${simulator.url}/__sim/api/assets/${command}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-Sim-CSRF": state.csrf,
-              },
-              body: JSON.stringify(
-                command === "capture-stylesheets"
-                  ? { paths: args.stylesheet }
-                  : command === "capture-snippet-composition"
-                    ? {
-                        path: args.path,
-                        parentName: args["parent-snippet"],
-                        childName: args["child-snippet"],
-                      }
-                    : {
-                        path: args.path,
-                        managedControlPath: args["managed-control-path"],
-                      },
-              ),
-            },
-          );
-          const report = await response.json();
-          const capture = report.report ?? report;
-          console.log(
-            JSON.stringify(
-              {
-                ...report,
-                counts: {
-                  captured: capture.captured?.length ?? 0,
-                  failures: capture.failures?.length ?? 0,
-                },
-              },
-              null,
-              2,
-            ),
-          );
-          process.exitCode = response.ok ? 0 : 1;
-          await simulator.close();
-        } else if (command === "render") {
-          if (
-            !args.path.startsWith("/") ||
-            args.path.startsWith("//") ||
-            args.path.includes("\\")
-          )
-            throw new Error("Render path must be portal-relative.");
-          const target = new URL(args.path, simulator.url);
-          if (target.origin !== simulator.url)
-            throw new Error("Render path escaped the local simulator.");
-          const response = await fetch(target, { redirect: "error" });
-          const html = await response.text();
-          if (args.output) {
-            const output = path.resolve(args.output);
-            await fs.mkdir(path.dirname(output), { recursive: true });
-            await fs.writeFile(output, html);
-            console.log(
-              JSON.stringify(
-                {
-                  status: response.status,
-                  output,
-                  diagnostics: simulator.state().diagnostics,
-                },
-                null,
-                2,
-              ),
-            );
-          } else console.log(html);
-          process.exitCode = response.ok ? 0 : 1;
-          await simulator.close();
-        } else {
-          const discovery = path.join(
-            stateDir,
-            "simulator",
-            `session-${process.pid}.json`,
-          );
-          await fs.mkdir(path.dirname(discovery), { recursive: true });
-          await fs.writeFile(
-            discovery,
-            JSON.stringify(
-              {
-                pid: process.pid,
+      console.log(
+        JSON.stringify(
+          {
+            project: project.configFile,
+            portals: sessions.map(({ portal, simulator, stateFile }) => {
+              const { config: startedConfig, status: startedStatus } = simulator.state({ summary: true });
+              return {
+                id: portal.id,
+                sourceDir: portal.sourceDir,
+                stateFile,
                 url: simulator.url,
                 adminUrl: simulator.adminUrl,
-                identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
-                sourceDir,
-                stateFile,
-              },
-              null,
-              2,
-            ),
-          );
-          const { config: startedConfig, status: startedStatus } = simulator.state({ summary: true });
-          console.log(
-            JSON.stringify(
-              {
-                url: simulator.url,
-                adminUrl: simulator.adminUrl,
-                sourceDir,
-                stateFile,
-                discovery,
                 // Portal pages carry only site-setting headers unless confinement is opted in.
                 confinePortalPages: startedConfig.confinePortalPages,
                 signInPath: startedStatus.bootstrap.signInPath,
@@ -629,30 +570,336 @@ try {
                 identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
                 // "disabled" unless started with --allow-live-writes.
                 liveWrites: simulator.live.status().liveWrites,
-              },
-              null,
-              2,
-            ),
-          );
-          let stopped = false;
-          stop = async () => {
-            if (stopped) return;
-            stopped = true;
-            await simulator.close();
-            await fs.rm(discovery, { force: true });
-          };
-          process.once("SIGINT", () => stop().then(() => process.exit(0)));
-          process.once("SIGTERM", () => stop().then(() => process.exit(0)));
-          process.stdin.on("data", (data) => {
-            if (String(data).trim() === "stop")
-              stop().then(() => process.exit(0));
-          });
+              };
+            }),
+            discovery,
+          },
+          null,
+          2,
+        ),
+      );
+      let stopped = false;
+      stop = async () => {
+        if (stopped) return;
+        stopped = true;
+        await Promise.all(sessions.map(({ simulator }) => simulator.close()));
+        await fs.rm(discovery, { force: true });
+      };
+      process.once('SIGINT', () => stop().then(() => process.exit(0)));
+      process.once('SIGTERM', () => stop().then(() => process.exit(0)));
+      process.stdin.on('data', (data) => {
+        if (String(data).trim() === 'stop') stop().then(() => process.exit(0));
+      });
+    } else {
+      let sourceDir = args.source,
+        origin = args.origin;
+      let configuredPortal = null;
+      let siteMirage = null;
+      if (project) {
+        configuredPortal = project.portals.find((p) => p.id === (args.portal ?? project.defaultPortal));
+        sourceDir = configuredPortal.sourceDir;
+        origin = projectOrigin(project, configuredPortal) ?? origin;
+        if (args.config && args.site) {
+          const { loadConfig } = await import('../lense/config.mjs');
+          siteMirage = (await loadConfig({ config: args.config, site: args.site, env: args.env })).mirageConfig;
         }
-      } catch (error) {
-        await simulator.close();
-        throw error;
+      } else if (!sourceDir) {
+        const { loadConfig } = await import('../lense/config.mjs');
+        const cfg = await loadConfig({
+          site: args.site,
+          env: args.env,
+          ...(args.repo ? { repo: args.repo } : {}),
+          ...(args.config ? { config: args.config } : {}),
+        });
+        sourceDir = cfg.sourceDir;
+        origin ??= /^https:\/\//i.test(cfg.origin ?? '') ? cfg.origin : null;
+        args.site ??= cfg.siteName;
+        siteMirage = cfg.mirageConfig ?? null;
+      } else if (args.site) {
+        // --source with a catalogued --site (as `mirage dev` launches serve): the site's
+        // mirage settings (observed behaviour, catalogued roots) still apply.
+        const { loadConfig } = await import('../lense/config.mjs');
+        siteMirage =
+          (
+            await loadConfig({
+              site: args.site,
+              env: args.env,
+              ...(args.repo ? { repo: args.repo } : {}),
+              ...(args.config ? { config: args.config } : {}),
+            })
+          ).mirageConfig ?? null;
       }
-    } else throw new Error(`Unknown command: ${command}`);
+      if (command === 'serve') {
+        args.preset ??= siteMirage?.preset;
+        args['preset-mode'] ??= siteMirage?.presetMode;
+        if (args['apply-configuration'] === undefined && siteMirage?.presetConfiguration === 'apply')
+          args['apply-configuration'] = true;
+      }
+      const deploymentProfile = args['deployment-profile'] ?? configuredPortal?.deploymentProfile;
+      // The data model of a YAML source: --data-model, else the project portal's or catalogue
+      // site's dataModel, else the source's default (lib/importer.mjs).
+      const dataModel =
+        args['data-model'] ?? (project ? configuredPortal?.dataModel : siteMirage?.dataModel) ?? undefined;
+      if (command === 'inspect') {
+        const profileConfig = resolveDeploymentProfiles(
+          siteMirage?.deploymentProfiles ?? configuredPortal?.deploymentProfiles,
+        );
+        if (deploymentProfile && Object.keys(profileConfig.profiles).length)
+          throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
+        const activeProfiles = await loadDeploymentProfiles(profileConfig);
+        // A source with zero recognised pages is not a portal: fail loudly, naming its layout.
+        const portal = assertPortalSource(
+          await importPortal(sourceDir, {
+            deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : deploymentProfile,
+            deploymentProfileFile: activeProfiles.pagesFile,
+            dataModel,
+          }),
+        );
+        console.log(
+          JSON.stringify(
+            {
+              sourceDir: portal.sourceDir,
+              profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
+              format: portal.format,
+              layout: portal.source?.dialect ?? null,
+              dataModel: portal.dataModel,
+              dataModelSource: portal.dataModelSource,
+              serverLogics: (portal.serverLogics ?? []).map((item) => item.name),
+              cloudFlows: (portal.cloudFlows ?? []).map((item) => item.name),
+              pages: portal.pages.map((p) => ({
+                id: p.id,
+                name: p.name,
+                url: p.url,
+                pageTemplateId: p.pageTemplateId,
+              })),
+              templates: new Set(Object.values(portal.templates)).size,
+              snippets: Object.keys(portal.snippets).length,
+              assets: portal.webFiles.length,
+              forms: portal.forms.length,
+              lists: portal.lists.length,
+              liquidSyntax: createPortalRenderer(portal).inspectCapabilities(),
+              diagnostics: portal.diagnostics,
+            },
+            null,
+            2,
+          ),
+        );
+        process.exitCode = portal.diagnostics.some((d) => d.code?.startsWith('invalid')) ? 1 : 0;
+      } else if (
+        command === 'serve' ||
+        command === 'render' ||
+        command === 'capture-shell' ||
+        command === 'capture-stylesheets' ||
+        command === 'capture-snippet-composition'
+      ) {
+        const capturing = ['capture-shell', 'capture-stylesheets', 'capture-snippet-composition'].includes(command);
+        if (capturing && !args.cdp) throw new Error(`${command} requires --cdp for the intended connected browser.`);
+        if (capturing && args.preset)
+          throw new Error(`${command} does not apply presets. Apply --preset when starting serve.`);
+        if (command === 'capture-stylesheets' && !args.stylesheet?.length)
+          throw new Error('capture-stylesheets requires --stylesheet PATH (repeatable).');
+        if (command === 'capture-snippet-composition' && (!args['parent-snippet'] || !args['child-snippet']))
+          throw new Error('capture-snippet-composition requires --parent-snippet NAME and --child-snippet NAME.');
+        if (
+          command === 'capture-shell' &&
+          (!args.path.startsWith('/') || args.path.startsWith('//') || args.path.includes('\\'))
+        )
+          throw new Error('Capture page path must be portal-relative.');
+        const port = command === 'serve' ? runtimePort(args.port) : 0;
+        const stateFile = path.resolve(
+          args.state ??
+            (project
+              ? projectStateFile(project, configuredPortal.id, path.join(stateDir, 'simulator/projects'))
+              : path.join(stateDir, 'simulator', args.site ?? 'default', 'state.json')),
+        );
+        // Solution roots are resolved as bootstrap-report resolves them: --solution-root,
+        // else the catalogue site's mirage roots, else discovery; layered in derived
+        // order unless --solution-order explicit (or the site's solutionOrder: explicit).
+        const resolvedRoots = project
+          ? { roots: configuredPortal.solutionRoots, order: project.solutionOrder }
+          : await resolveSolutionRoots({
+              sourceDir,
+              explicitRoots: args['solution-root'],
+              explicitOrder: args['solution-order'],
+              catalogue: siteMirage,
+              cacheFile: path.join(path.dirname(stateFile), 'cache', 'solution-sources.json'),
+            });
+        const solutionRoots = resolvedRoots.roots;
+        let stop;
+        const simulator = await createSimulator({
+          // Settings of every registered key (config-keys.mjs: project portal, project, catalogue site).
+          ...runtimeOptions({ project, portal: configuredPortal, catalogue: siteMirage }),
+          configuredSettings: configuredSettingKeys({ project, portal: configuredPortal, catalogue: siteMirage }),
+          onStartup: reportStartup,
+          setup: args.config
+            ? {
+                config: path.resolve(args.config),
+                site: args.site,
+                ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
+              }
+            : project
+              ? {
+                  project: project.configFile,
+                  ...(process.env.MIRAGE_SETUP_RUNTIME ? {} : { command: 'mirage serve' }),
+                }
+              : null,
+          sourceDir,
+          dataPacks: [...(siteMirage?.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
+          runtime,
+          simulation,
+          projectRoot: args.config
+            ? path.dirname(path.resolve(args.config))
+            : project?.configFile
+              ? path.dirname(project.configFile)
+              : process.cwd(),
+          ...(project ? { project: projectSummary(project, configuredPortal.id) } : {}),
+          stateFile,
+          preset: args.preset,
+          presetMode: args['preset-mode'] ?? 'always',
+          presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
+          port,
+          origin,
+          solutionRoots,
+          solutionOrder: resolvedRoots.order,
+          deploymentProfile,
+          dataModel,
+          watch: command === 'serve' && !args['no-watch'] && project?.watch !== false,
+          ...(command === 'serve' ? { onShutdown: () => stop?.() } : {}),
+          // A source with zero recognised pages is refused, naming its layout.
+          requirePortalSource: true,
+          allowLiveWrites: args['allow-live-writes'] === true,
+        });
+        try {
+          if (args.cdp) await simulator.live.connect(args.cdp);
+          if (capturing) {
+            const state = simulator.state();
+            const response = await fetch(`${simulator.url}/__sim/api/assets/${command}`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'X-Sim-CSRF': state.csrf,
+              },
+              body: JSON.stringify(
+                command === 'capture-stylesheets'
+                  ? { paths: args.stylesheet }
+                  : command === 'capture-snippet-composition'
+                    ? {
+                        path: args.path,
+                        parentName: args['parent-snippet'],
+                        childName: args['child-snippet'],
+                      }
+                    : {
+                        path: args.path,
+                        managedControlPath: args['managed-control-path'],
+                      },
+              ),
+            });
+            const report = await response.json();
+            const capture = report.report ?? report;
+            console.log(
+              JSON.stringify(
+                {
+                  ...report,
+                  counts: {
+                    captured: capture.captured?.length ?? 0,
+                    failures: capture.failures?.length ?? 0,
+                  },
+                },
+                null,
+                2,
+              ),
+            );
+            process.exitCode = response.ok ? 0 : 1;
+            await simulator.close();
+          } else if (command === 'render') {
+            if (!args.path.startsWith('/') || args.path.startsWith('//') || args.path.includes('\\'))
+              throw new Error('Render path must be portal-relative.');
+            const target = new URL(args.path, simulator.url);
+            if (target.origin !== simulator.url) throw new Error('Render path escaped the local simulator.');
+            const response = await fetch(target, { redirect: 'error' });
+            const html = await response.text();
+            if (args.output) {
+              const output = path.resolve(args.output);
+              await fs.mkdir(path.dirname(output), { recursive: true });
+              await fs.writeFile(output, html);
+              console.log(
+                JSON.stringify(
+                  {
+                    status: response.status,
+                    output,
+                    diagnostics: simulator.state().diagnostics,
+                  },
+                  null,
+                  2,
+                ),
+              );
+            } else console.log(html);
+            process.exitCode = response.ok ? 0 : 1;
+            await simulator.close();
+          } else {
+            const discovery = path.join(stateDir, 'simulator', `session-${process.pid}.json`);
+            await fs.mkdir(path.dirname(discovery), { recursive: true });
+            await fs.writeFile(
+              discovery,
+              JSON.stringify(
+                {
+                  pid: process.pid,
+                  url: simulator.url,
+                  adminUrl: simulator.adminUrl,
+                  identityProvider: {
+                    origin: simulator.identityProvider.origin,
+                    port: simulator.identityProvider.port,
+                  },
+                  sourceDir,
+                  stateFile,
+                },
+                null,
+                2,
+              ),
+            );
+            const { config: startedConfig, status: startedStatus } = simulator.state({ summary: true });
+            console.log(
+              JSON.stringify(
+                {
+                  url: simulator.url,
+                  adminUrl: simulator.adminUrl,
+                  sourceDir,
+                  stateFile,
+                  discovery,
+                  // Portal pages carry only site-setting headers unless confinement is opted in.
+                  confinePortalPages: startedConfig.confinePortalPages,
+                  signInPath: startedStatus.bootstrap.signInPath,
+                  startupPreset: startedStatus.startupPreset,
+                  // External sign-in's local identity provider: its own loopback port, closed with the runtime.
+                  identityProvider: {
+                    origin: simulator.identityProvider.origin,
+                    port: simulator.identityProvider.port,
+                  },
+                  // "disabled" unless started with --allow-live-writes.
+                  liveWrites: simulator.live.status().liveWrites,
+                },
+                null,
+                2,
+              ),
+            );
+            let stopped = false;
+            stop = async () => {
+              if (stopped) return;
+              stopped = true;
+              await simulator.close();
+              await fs.rm(discovery, { force: true });
+            };
+            process.once('SIGINT', () => stop().then(() => process.exit(0)));
+            process.once('SIGTERM', () => stop().then(() => process.exit(0)));
+            process.stdin.on('data', (data) => {
+              if (String(data).trim() === 'stop') stop().then(() => process.exit(0));
+            });
+          }
+        } catch (error) {
+          await simulator.close();
+          throw error;
+        }
+      } else throw new Error(`Unknown command: ${command}`);
     }
   }
 } catch (error) {
@@ -663,9 +910,10 @@ try {
 /** Portal source and solution roots for data commands, resolved like serve. */
 async function resolveDataSource(options) {
   if (options.project) {
-    if (options.source) throw new Error("Use either --project or --source, not both.");
-    if (options["solution-root"]?.length) throw new Error("--solution-root is supplied by the project configuration.");
-    if (options['data-model']) throw new Error("--data-model is supplied by the project configuration (the portal's dataModel).");
+    if (options.source) throw new Error('Use either --project or --source, not both.');
+    if (options['solution-root']?.length) throw new Error('--solution-root is supplied by the project configuration.');
+    if (options['data-model'])
+      throw new Error("--data-model is supplied by the project configuration (the portal's dataModel).");
     const project = await loadProjectConfig(options.project);
     const portalId = options.portal ?? project.defaultPortal;
     const portal = project.portals.find((candidate) => candidate.id === portalId);
@@ -673,20 +921,30 @@ async function resolveDataSource(options) {
     return {
       source: portal.sourceDir,
       dataModel: portal.dataModel ?? undefined,
-      "solution-root": portal.solutionRoots,
-      resolution: { kind: "project", configFile: project.configFile, portal: portal.id },
+      'solution-root': portal.solutionRoots,
+      resolution: { kind: 'project', configFile: project.configFile, portal: portal.id },
     };
   }
   if (options.source)
     return {
       source: path.resolve(options.source),
-      resolution: { kind: "source", solutionRoots: options["solution-root"]?.length ? "explicit" : "discovered" },
+      resolution: { kind: 'source', solutionRoots: options['solution-root']?.length ? 'explicit' : 'discovered' },
     };
-  const { loadConfig } = await import("../lense/config.mjs");
-  const cfg = await loadConfig({ site: options.site, env: options.env, ...(options.repo ? { repo: options.repo } : {}), ...(options.config ? { config: options.config } : {}) });
+  const { loadConfig } = await import('../lense/config.mjs');
+  const cfg = await loadConfig({
+    site: options.site,
+    env: options.env,
+    ...(options.repo ? { repo: options.repo } : {}),
+    ...(options.config ? { config: options.config } : {}),
+  });
   return {
     source: cfg.sourceDir,
     dataModel: options['data-model'] ?? cfg.mirageConfig.dataModel,
-    resolution: { kind: "catalogue", site: cfg.siteName, env: options.env, solutionRoots: options["solution-root"]?.length ? "explicit" : "discovered" },
+    resolution: {
+      kind: 'catalogue',
+      site: cfg.siteName,
+      env: options.env,
+      solutionRoots: options['solution-root']?.length ? 'explicit' : 'discovered',
+    },
   };
 }

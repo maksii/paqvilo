@@ -1,21 +1,21 @@
 // Opt-in portal drop behavior established by a site's reference observations.
 // Without observations the DotLiquid object model applies. Missing service metadata,
 // cache versions/timestamps and identity data are intentionally not fabricated.
-import { LiquidDrop, LIQUID_HIDDEN, lookupMember } from "./liquid-engine.mjs";
+import { LiquidDrop, LIQUID_HIDDEN, lookupMember } from './liquid-engine.mjs';
 
 function hideHostName(record) {
-  if (!record || typeof record !== "object") return record;
+  if (!record || typeof record !== 'object') return record;
   const descriptors = Object.getOwnPropertyDescriptors(record);
   delete descriptors[LIQUID_HIDDEN];
   const copy = Object.create(Object.getPrototypeOf(record), descriptors);
   Object.defineProperty(copy, LIQUID_HIDDEN, {
-    value: new Set([...(record[LIQUID_HIDDEN] ?? []), "name"]),
+    value: new Set([...(record[LIQUID_HIDDEN] ?? []), 'name']),
   });
   return copy;
 }
 
 class ObservedEntitySetDrop extends LiquidDrop {
-  static netTypeName = "Adxstudio.Xrm.Web.Mvc.Liquid.EntitySetDrop";
+  static netTypeName = 'Adxstudio.Xrm.Web.Mvc.Liquid.EntitySetDrop';
   #delegate;
   constructor(delegate) {
     super();
@@ -35,14 +35,14 @@ class ObservedEntitiesDrop extends LiquidDrop {
   }
   async liquidGet(key, context) {
     const set = (await lookupMember(this.#delegate, key, context)).value;
-    if (!set || typeof set !== "object") return set;
+    if (!set || typeof set !== 'object') return set;
     if (!this.#sets.has(set)) this.#sets.set(set, new ObservedEntitySetDrop(set));
     return this.#sets.get(set);
   }
 }
 
 class ObservedSiteMapNodeDrop extends LiquidDrop {
-  static netTypeName = "Adxstudio.Xrm.Web.Mvc.Liquid.SiteMapNodeDrop";
+  static netTypeName = 'Adxstudio.Xrm.Web.Mvc.Liquid.SiteMapNodeDrop';
 }
 
 class ObservedSiteMapDrop extends LiquidDrop {
@@ -56,7 +56,7 @@ class ObservedSiteMapDrop extends LiquidDrop {
     const value = (await lookupMember(this.#delegate, key, context)).value;
     // The two observed missing index keys yield a node drop, not nil. No wider
     // URL resolution or unobserved node properties are inferred from this probe.
-    if (value == null && ["name", "code"].includes(String(key).toLowerCase())) return this.#missingNode;
+    if (value == null && ['name', 'code'].includes(String(key).toLowerCase())) return this.#missingNode;
     return value;
   }
 }
@@ -70,23 +70,23 @@ class ObservedEventsDrop extends LiquidDrop {}
  * This does not infer page.entity or JSON serialization identity behavior.
  */
 export function withLiquidIdentity(record, identity) {
-  if (!record || typeof record !== "object" || typeof identity !== "string" || !identity) return record;
+  if (!record || typeof record !== 'object' || typeof identity !== 'string' || !identity) return record;
   const liquidGet = async (key, context) =>
-    String(key).toLowerCase() === "id" ? identity : (await lookupMember(record, key, context)).value;
+    String(key).toLowerCase() === 'id' ? identity : (await lookupMember(record, key, context)).value;
   return new Proxy(record, {
     get(target, key, receiver) {
-      if (key === "liquidGet") return liquidGet;
+      if (key === 'liquidGet') return liquidGet;
       return Reflect.get(target, key, receiver);
     },
   });
 }
 
 /** Apply only observed drop members/types; source-derived identity is independent. */
-export function applyObservedLiquidObjects(context, { mode = "dotliquid", pageIdentity = null } = {}) {
-  if (!["dotliquid", "observed"].includes(mode)) throw new TypeError("Unknown Liquid object compatibility mode");
-  if (mode === "dotliquid" && !pageIdentity) return context;
+export function applyObservedLiquidObjects(context, { mode = 'dotliquid', pageIdentity = null } = {}) {
+  if (!['dotliquid', 'observed'].includes(mode)) throw new TypeError('Unknown Liquid object compatibility mode');
+  if (mode === 'dotliquid' && !pageIdentity) return context;
   const result = { ...context };
-  if (mode === "observed") {
+  if (mode === 'observed') {
     result.website = hideHostName(context.website);
     result.user = hideHostName(context.user);
     if (context.entities) result.entities = new ObservedEntitiesDrop(context.entities);

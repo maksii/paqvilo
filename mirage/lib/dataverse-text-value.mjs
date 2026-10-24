@@ -8,5 +8,9 @@ export function encodeDataverseText(route, result) {
   for (const [name, value] of Object.entries(result.headers ?? {}))
     if (name.toLowerCase() === 'content-type' && value != null) contentType = String(value);
   if (contentType && contentType.split(';')[0].trim().toLowerCase() !== 'text/plain') return result;
-  return { ...result, headers: contentType ? result.headers : { ...result.headers, 'content-type': 'text/plain' }, body: '\uFEFF' + result.body };
+  return {
+    ...result,
+    headers: contentType ? result.headers : { ...result.headers, 'content-type': 'text/plain' },
+    body: '\uFEFF' + result.body,
+  };
 }

@@ -1,18 +1,17 @@
-import { isDeepStrictEqual } from "node:util";
-import { createHash } from "node:crypto";
-import { compactBuiltinPresets } from "./data.mjs";
+import { isDeepStrictEqual } from 'node:util';
+import { createHash } from 'node:crypto';
+import { compactBuiltinPresets } from './data.mjs';
 
 /** Keep separately captured assets; the current baseline wins only the same origin/path. */
 export function mergeAssetManifests(current, baseline) {
   const entries = new Map();
   for (const manifest of [current, baseline]) {
     if (manifest == null) continue;
-    if (manifest.version !== 1 || !Array.isArray(manifest.assets))
-      throw Error("Invalid migration asset manifest.");
+    if (manifest.version !== 1 || !Array.isArray(manifest.assets)) throw Error('Invalid migration asset manifest.');
     for (const entry of manifest.assets) {
-      if (typeof entry.origin !== "string" || typeof entry.path !== "string")
-        throw Error("Migration asset entry requires origin and path.");
-      entries.set(entry.origin + "\0" + entry.path, structuredClone(entry));
+      if (typeof entry.origin !== 'string' || typeof entry.path !== 'string')
+        throw Error('Migration asset entry requires origin and path.');
+      entries.set(entry.origin + '\0' + entry.path, structuredClone(entry));
     }
   }
   return { version: 1, assets: [...entries.values()] };
@@ -43,13 +42,10 @@ export function migrateScenarioState(
   result.tables ??= {};
   result.mappings ??= {};
   for (const [entity, newRows] of Object.entries(latest.tables ?? {})) {
-    const mapping =
-        current.mappings?.[entity] ?? latest.mappings?.[entity] ?? {},
-      key = mapping.idColumn ?? entity + "id";
-    const identifier = (row) => String(row[key] ?? "").toLowerCase();
-    const oldRows = new Map(
-      (legacy?.tables?.[entity] ?? []).map((row) => [identifier(row), row]),
-    );
+    const mapping = current.mappings?.[entity] ?? latest.mappings?.[entity] ?? {},
+      key = mapping.idColumn ?? entity + 'id';
+    const identifier = (row) => String(row[key] ?? '').toLowerCase();
+    const oldRows = new Map((legacy?.tables?.[entity] ?? []).map((row) => [identifier(row), row]));
     const currentRows = (result.tables[entity] ??= []),
       rows = new Map(currentRows.map((row) => [identifier(row), row]));
     const preservedFields = {};
@@ -59,7 +55,7 @@ export function migrateScenarioState(
       preservedDeletions = 0;
     for (const fresh of newRows) {
       const id = identifier(fresh);
-      if (!id) throw Error("Migration row lacks primary key: " + entity);
+      if (!id) throw Error('Migration row lacks primary key: ' + entity);
       const prior = oldRows.get(id),
         row = rows.get(id);
       if (!row) {
@@ -107,57 +103,43 @@ export function migrateScenarioState(
       result.mappings[entity].inferred === true &&
       result.mappings[entity].userConfigured !== true &&
       result.mappings[entity].entitySetInferred !== false &&
-      result.mappings[entity].entitySet === entity + "s" &&
-      mapping.entitySet !== entity + "s"
-    ) result.mappings[entity].entitySet = mapping.entitySet;
+      result.mappings[entity].entitySet === entity + 's' &&
+      mapping.entitySet !== entity + 's'
+    )
+      result.mappings[entity].entitySet = mapping.entitySet;
     // New source-declared relationships enable related query traversal; existing
     // author-configured relationship definitions remain authoritative.
     if (mapping.relationships) {
       result.mappings[entity].relationships ??= {};
       for (const [name, relationship] of Object.entries(mapping.relationships))
-        result.mappings[entity].relationships[name] ??=
-          structuredClone(relationship);
+        result.mappings[entity].relationships[name] ??= structuredClone(relationship);
     }
   }
-  const oldPlugins = new Map(
-      (legacy?.plugins ?? []).map((plugin) => [plugin.id, plugin]),
-    ),
-    plugins = new Map(
-      (result.plugins ?? []).map((plugin) => [plugin.id, plugin]),
-    );
+  const oldPlugins = new Map((legacy?.plugins ?? []).map((plugin) => [plugin.id, plugin])),
+    plugins = new Map((result.plugins ?? []).map((plugin) => [plugin.id, plugin]));
   for (const fresh of latest.plugins ?? []) {
     const saved = plugins.get(fresh.id);
-    if (!saved || isDeepStrictEqual(saved, oldPlugins.get(fresh.id)))
-      plugins.set(fresh.id, structuredClone(fresh));
+    if (!saved || isDeepStrictEqual(saved, oldPlugins.get(fresh.id))) plugins.set(fresh.id, structuredClone(fresh));
     else report.preservedCustomPlugins.push(fresh.id);
   }
   result.plugins = [...plugins.values()];
   const fingerprint = (plugin) =>
-    plugin == null
-      ? null
-      : createHash("sha256").update(JSON.stringify(plugin)).digest("hex");
+    plugin == null ? null : createHash('sha256').update(JSON.stringify(plugin)).digest('hex');
   report.plugins = (latest.plugins ?? []).map((fresh) => ({
     id: fresh.id,
-    beforeSha256: fingerprint(
-      (current.plugins ?? []).find((plugin) => plugin.id === fresh.id),
-    ),
+    beforeSha256: fingerprint((current.plugins ?? []).find((plugin) => plugin.id === fresh.id)),
     afterSha256: fingerprint(plugins.get(fresh.id)),
     canonicalSha256: fingerprint(fresh),
     currentCanonical: isDeepStrictEqual(plugins.get(fresh.id), fresh),
   }));
   // Native exported trees are compiled from the portal and must never acquire
   // configured scenario grants during a fixture refresh.
-  if (current.simulator?.permissionSource !== "exported") {
-    const previousRules = new Map(
-      (legacy?.permissions ?? []).map((rule) => [rule.id, rule]),
-    );
-    const rules = new Map(
-      (result.permissions ?? []).map((rule) => [rule.id, rule]),
-    );
+  if (current.simulator?.permissionSource !== 'exported') {
+    const previousRules = new Map((legacy?.permissions ?? []).map((rule) => [rule.id, rule]));
+    const rules = new Map((result.permissions ?? []).map((rule) => [rule.id, rule]));
     for (const fresh of latest.permissions ?? []) {
       const saved = rules.get(fresh.id);
-      if (!saved || isDeepStrictEqual(saved, previousRules.get(fresh.id)))
-        rules.set(fresh.id, structuredClone(fresh));
+      if (!saved || isDeepStrictEqual(saved, previousRules.get(fresh.id))) rules.set(fresh.id, structuredClone(fresh));
       else report.preservedCustomPermissions.push(fresh.id);
     }
     result.permissions = [...rules.values()];
@@ -169,32 +151,26 @@ export function migrateScenarioState(
       ...result.simulator.shellProfile,
       ...structuredClone(shellProfile),
     };
-    if (configuredControls != null)
-      result.simulator.shellProfile.managedControls = configuredControls;
+    if (configuredControls != null) result.simulator.shellProfile.managedControls = configuredControls;
   }
   if (managedControls != null) {
     if (
-      typeof managedControls !== "object" ||
+      typeof managedControls !== 'object' ||
       Array.isArray(managedControls) ||
       Object.entries(managedControls).some(
         ([name, definition]) =>
           !/^[A-Za-z][\w.]*$/.test(name) ||
           !definition ||
-          typeof definition !== "object" ||
+          typeof definition !== 'object' ||
           Array.isArray(definition) ||
           !definition.manifest ||
-          typeof definition.manifest !== "object" ||
-          ["stylesheets", "scripts"].some(
-            (key) => definition[key] != null && !Array.isArray(definition[key]),
-          ),
+          typeof definition.manifest !== 'object' ||
+          ['stylesheets', 'scripts'].some((key) => definition[key] != null && !Array.isArray(definition[key])),
       )
     )
-      throw Error("Invalid managed control migration baseline.");
+      throw Error('Invalid managed control migration baseline.');
     result.simulator ??= {};
-    if (
-      result.simulator.managedControls == null &&
-      result.simulator.shellProfile?.managedControls == null
-    )
+    if (result.simulator.managedControls == null && result.simulator.shellProfile?.managedControls == null)
       result.simulator.managedControls = structuredClone(managedControls);
   }
   return { state: result, report };

@@ -15,34 +15,34 @@
 //   PagesClientApiUnsupported error (never a pending promise); InstrumentationSettings and
 //   dynamics365PortalAnalytics are empty strings.
 // Values already present on the page (an authored or captured definition) are kept.
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from 'node:crypto';
 
 export const PORTAL_OBJECT_KEYS = Object.freeze([
-  "User",
-  "type",
-  "id",
-  "geo",
-  "tenant",
-  "correlationId",
-  "orgEnvironmentId",
-  "orgId",
-  "portalProductionOrTrialType",
-  "isTelemetryEnabled",
-  "InstrumentationSettings",
-  "timerProfileForBatching",
-  "activeLanguages",
-  "isClientApiEnabled",
-  "isSpaSite",
-  "onPagesClientApiReady",
-  "dynamics365PortalAnalytics",
+  'User',
+  'type',
+  'id',
+  'geo',
+  'tenant',
+  'correlationId',
+  'orgEnvironmentId',
+  'orgId',
+  'portalProductionOrTrialType',
+  'isTelemetryEnabled',
+  'InstrumentationSettings',
+  'timerProfileForBatching',
+  'activeLanguages',
+  'isClientApiEnabled',
+  'isSpaSite',
+  'onPagesClientApiReady',
+  'dynamics365PortalAnalytics',
 ]);
-export const PORTAL_USER_KEYS = Object.freeze(["userName", "firstName", "lastName", "email", "contactId", "userRoles"]);
+export const PORTAL_USER_KEYS = Object.freeze(['userName', 'firstName', 'lastName', 'email', 'contactId', 'userRoles']);
 
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** A stable GUID-shaped value derived from `seed`. */
 function localGuid(seed) {
-  const hex = createHash("sha256").update(seed).digest("hex");
+  const hex = createHash('sha256').update(seed).digest('hex');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
@@ -51,40 +51,47 @@ function localGuid(seed) {
  * `identity` is the session persona, `site` the website id, page language, the site's active language codes and trace id.
  * activeLanguages lists the site's active website languages when the host passes them, else the page language.
  */
-export function portalClientObject(identity = {}, { websiteId = "", language = "", languages = null, traceId = null } = {}) {
+export function portalClientObject(
+  identity = {},
+  { websiteId = '', language = '', languages = null, traceId = null } = {},
+) {
   identity ??= {};
-  const site = String(websiteId ?? "").toLowerCase();
-  const contactId = String(identity.contactId ?? identity.id ?? "");
+  const site = String(websiteId ?? '').toLowerCase();
+  const contactId = String(identity.contactId ?? identity.id ?? '');
   return {
     User: {
       userName: String(identity.adx_identity_username ?? identity.username ?? contactId),
-      firstName: String(identity.firstname ?? ""),
-      lastName: String(identity.lastname ?? ""),
-      email: String(identity.emailaddress1 ?? identity.email ?? ""),
+      firstName: String(identity.firstname ?? ''),
+      lastName: String(identity.lastname ?? ''),
+      email: String(identity.emailaddress1 ?? identity.email ?? ''),
       contactId,
       userRoles: [],
     },
-    type: "",
+    type: '',
     id: site,
-    geo: "",
+    geo: '',
     tenant: localGuid(`tenant:${site}`),
-    correlationId: GUID.test(String(traceId ?? "")) ? String(traceId) : randomUUID(),
+    correlationId: GUID.test(String(traceId ?? '')) ? String(traceId) : randomUUID(),
     orgEnvironmentId: localGuid(`environment:${site}`),
     orgId: localGuid(`organization:${site}`),
-    portalProductionOrTrialType: "",
-    isTelemetryEnabled: "False",
-    InstrumentationSettings: { instrumentationKey: "", collectorEndpoint: "" },
-    timerProfileForBatching: "NEAR_REAL_TIME",
+    portalProductionOrTrialType: '',
+    isTelemetryEnabled: 'False',
+    InstrumentationSettings: { instrumentationKey: '', collectorEndpoint: '' },
+    timerProfileForBatching: 'NEAR_REAL_TIME',
     activeLanguages: Array.isArray(languages) && languages.length ? languages.map(String) : language ? [language] : [],
-    isClientApiEnabled: "False",
-    isSpaSite: "False",
-    dynamics365PortalAnalytics: "",
+    isClientApiEnabled: 'False',
+    isSpaSite: 'False',
+    dynamics365PortalAnalytics: '',
   };
 }
 
 /** Browser script that completes window.Microsoft.Dynamic365.Portal in the compatibility key order. */
 export function clientPortalObjectRuntime(identity, site) {
-  const scriptJson = value => JSON.stringify(value).replace(/[<>\u2028\u2029]/g, character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
+  const scriptJson = (value) =>
+    JSON.stringify(value).replace(
+      /[<>\u2028\u2029]/g,
+      (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    );
   const values = scriptJson(portalClientObject(identity, site));
   const keys = scriptJson(PORTAL_OBJECT_KEYS);
   return `(()=>{const values=${values};const ready=function(){if(!ready.warned){ready.warned=true;console.error('PagesClientApiUnsupported: the local pages client API (lib/pages-client-api.js) did not run.');}const failed=Promise.reject(Object.assign(new Error('PagesClientApiUnsupported: onPagesClientApiReady (the local pages client API did not run)'),{name:'PagesClientApiUnsupported',member:'onPagesClientApiReady'}));failed.catch(()=>{});return failed;};ready.__paqviloLocal=true;window.Microsoft||={};Microsoft.Dynamic365||={};const portal=Microsoft.Dynamic365.Portal||={};for(const key of ${keys}){if(key==="User"){portal.User||={};for(const [name,field] of Object.entries(values.User))if(!(name in portal.User))portal.User[name]=field;}else if(key==="onPagesClientApiReady"){if(typeof portal[key]!=="function")portal[key]=ready;}else if(!(key in portal))portal[key]=values[key];}Microsoft.PowerPages||={};if(typeof Microsoft.PowerPages.onPagesClientApiReady!=="function")Microsoft.PowerPages.onPagesClientApiReady=portal.onPagesClientApiReady;})();`;

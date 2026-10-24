@@ -7,23 +7,83 @@
  * consults this catalogue. Every entry cites its Microsoft Dataverse table reference
  * page; nothing here is inferred from a project.
  */
-const PA = "https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/";
-const D365 = "https://learn.microsoft.com/dynamics365/developer/reference/entities/";
+const PA = 'https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/';
+const D365 = 'https://learn.microsoft.com/dynamics365/developer/reference/entities/';
 
 // Documented system choices that partial exports omit. Solution
 // definitions always take precedence. English labels are a reference fallback,
 // not evidence of a site's translations or installed application extensions.
 const SYSTEM_OPTION_SETS = {
-  field_security_permission_type: { reference: PA + 'fieldpermission#cancreate', values: [[0, 'Not Allowed'], [4, 'Allowed']] },
-  activitypointer_isregularactivity: { reference: PA + 'activitypointer#isregularactivity', values: [[0, 'No'], [1, 'Yes']] },
-  activitypointer_deliveryprioritycode: { reference: PA + 'activitypointer#deliveryprioritycode', values: [[0, 'Low'], [1, 'Normal'], [2, 'High']] },
-  activitypointer_prioritycode: { reference: PA + 'activitypointer#prioritycode', values: [[0, 'Low'], [1, 'Normal'], [2, 'High']] },
-  activitypointer_statecode: { reference: PA + 'activitypointer#statecode', values: [[0, 'Open'], [1, 'Completed'], [2, 'Canceled'], [3, 'Scheduled']] },
+  field_security_permission_type: {
+    reference: PA + 'fieldpermission#cancreate',
+    values: [
+      [0, 'Not Allowed'],
+      [4, 'Allowed'],
+    ],
+  },
+  activitypointer_isregularactivity: {
+    reference: PA + 'activitypointer#isregularactivity',
+    values: [
+      [0, 'No'],
+      [1, 'Yes'],
+    ],
+  },
+  activitypointer_deliveryprioritycode: {
+    reference: PA + 'activitypointer#deliveryprioritycode',
+    values: [
+      [0, 'Low'],
+      [1, 'Normal'],
+      [2, 'High'],
+    ],
+  },
+  activitypointer_prioritycode: {
+    reference: PA + 'activitypointer#prioritycode',
+    values: [
+      [0, 'Low'],
+      [1, 'Normal'],
+      [2, 'High'],
+    ],
+  },
+  activitypointer_statecode: {
+    reference: PA + 'activitypointer#statecode',
+    values: [
+      [0, 'Open'],
+      [1, 'Completed'],
+      [2, 'Canceled'],
+      [3, 'Scheduled'],
+    ],
+  },
   // Status reasons can be extended by an organisation; reference labels provide
   // defaults without rejecting its additional values when an export omits them.
-  activitypointer_statuscode: { reference: PA + 'activitypointer#statuscode', open: true, values: [[1, 'Open'], [2, 'Completed'], [3, 'Canceled'], [4, 'Scheduled']] },
-  activitypointer_instancetypecode: { reference: PA + 'activitypointer#instancetypecode', values: [[0, 'Not Recurring'], [1, 'Recurring Master'], [2, 'Recurring Instance'], [3, 'Recurring Exception'], [4, 'Recurring Future Exception']] },
-  socialprofile_community: { reference: PA + 'socialprofile#community', open: true, values: [[0, 'Other'], [1, 'Facebook'], [2, 'Twitter']] },
+  activitypointer_statuscode: {
+    reference: PA + 'activitypointer#statuscode',
+    open: true,
+    values: [
+      [1, 'Open'],
+      [2, 'Completed'],
+      [3, 'Canceled'],
+      [4, 'Scheduled'],
+    ],
+  },
+  activitypointer_instancetypecode: {
+    reference: PA + 'activitypointer#instancetypecode',
+    values: [
+      [0, 'Not Recurring'],
+      [1, 'Recurring Master'],
+      [2, 'Recurring Instance'],
+      [3, 'Recurring Exception'],
+      [4, 'Recurring Future Exception'],
+    ],
+  },
+  socialprofile_community: {
+    reference: PA + 'socialprofile#community',
+    open: true,
+    values: [
+      [0, 'Other'],
+      [1, 'Facebook'],
+      [2, 'Twitter'],
+    ],
+  },
   // ActivityTypeCode is EntityName, not a closed numeric choice. Installed and
   // custom activity types vary by organisation; never invent their object codes.
   activitypointer_activitytypecode: { reference: PA + 'activitypointer#activitytypecode', dynamic: true, values: [] },
@@ -31,81 +91,312 @@ const SYSTEM_OPTION_SETS = {
 
 export function standardOptionSet(name) {
   const entry = SYSTEM_OPTION_SETS[String(name).toLowerCase()];
-  return entry ? { name, source: entry.reference, sourceKind: 'dataverse-reference', dynamic: entry.dynamic ?? false, open: entry.open ?? false,
-    options: entry.values.map(([value, label]) => ({ value, labels: { 1033: label } })) } : null;
+  return entry
+    ? {
+        name,
+        source: entry.reference,
+        sourceKind: 'dataverse-reference',
+        dynamic: entry.dynamic ?? false,
+        open: entry.open ?? false,
+        options: entry.values.map(([value, label]) => ({ value, labels: { 1033: label } })),
+      }
+    : null;
 }
 
 // logicalName -> [EntitySetName, PrimaryIdAttribute, PrimaryNameAttribute|null, reference base]
 const TABLES = {
-  account: ["accounts", "accountid", "name", PA],
-  activitypointer: ["activitypointers", "activityid", "subject", PA],
-  adx_externalidentity: ["adx_externalidentities", "adx_externalidentityid", "adx_username", PA],
-  adx_portalcomment: ["adx_portalcomments", "activityid", "subject", PA],
-  annotation: ["annotations", "annotationid", "subject", PA],
-  businessunit: ["businessunits", "businessunitid", "name", PA],
-  category: ["categories", "categoryid", "title", PA],
-  connection: ["connections", "connectionid", "name", PA],
-  contact: ["contacts", "contactid", "fullname", PA],
-  email: ["emails", "activityid", "subject", PA],
-  environmentvariabledefinition: ["environmentvariabledefinitions", "environmentvariabledefinitionid", "schemaname", PA],
-  environmentvariablevalue: ["environmentvariablevalues", "environmentvariablevalueid", "schemaname", PA],
-  incident: ["incidents", "incidentid", "title", D365],
-  knowledgearticle: ["knowledgearticles", "knowledgearticleid", "title", PA],
-  languagelocale: ["languagelocale", "languagelocaleid", "name", PA],
-  lead: ["leads", "leadid", "fullname", D365],
-  mspp_webrole: ["mspp_webroles", "mspp_webroleid", "mspp_name", PA],
-  msdyn_richtextfile: ["msdyn_richtextfiles", "msdyn_richtextfileid", "msdyn_name", PA],
-  powerpagecomponent: ["powerpagecomponents", "powerpagecomponentid", "name", PA],
-  processstage: ["processstages", "processstageid", "stagename", PA],
-  product: ["products", "productid", "name", D365],
-  queue: ["queues", "queueid", "name", PA],
-  sharepointdocumentlocation: ["sharepointdocumentlocations", "sharepointdocumentlocationid", "name", PA],
-  systemuser: ["systemusers", "systemuserid", "fullname", PA],
-  task: ["tasks", "activityid", "subject", PA],
-  team: ["teams", "teamid", "name", PA],
-  webresource: ["webresourceset", "webresourceid", "name", PA],
+  account: ['accounts', 'accountid', 'name', PA],
+  activitypointer: ['activitypointers', 'activityid', 'subject', PA],
+  adx_externalidentity: ['adx_externalidentities', 'adx_externalidentityid', 'adx_username', PA],
+  adx_portalcomment: ['adx_portalcomments', 'activityid', 'subject', PA],
+  annotation: ['annotations', 'annotationid', 'subject', PA],
+  businessunit: ['businessunits', 'businessunitid', 'name', PA],
+  category: ['categories', 'categoryid', 'title', PA],
+  connection: ['connections', 'connectionid', 'name', PA],
+  contact: ['contacts', 'contactid', 'fullname', PA],
+  email: ['emails', 'activityid', 'subject', PA],
+  environmentvariabledefinition: [
+    'environmentvariabledefinitions',
+    'environmentvariabledefinitionid',
+    'schemaname',
+    PA,
+  ],
+  environmentvariablevalue: ['environmentvariablevalues', 'environmentvariablevalueid', 'schemaname', PA],
+  incident: ['incidents', 'incidentid', 'title', D365],
+  knowledgearticle: ['knowledgearticles', 'knowledgearticleid', 'title', PA],
+  languagelocale: ['languagelocale', 'languagelocaleid', 'name', PA],
+  lead: ['leads', 'leadid', 'fullname', D365],
+  mspp_webrole: ['mspp_webroles', 'mspp_webroleid', 'mspp_name', PA],
+  msdyn_richtextfile: ['msdyn_richtextfiles', 'msdyn_richtextfileid', 'msdyn_name', PA],
+  powerpagecomponent: ['powerpagecomponents', 'powerpagecomponentid', 'name', PA],
+  processstage: ['processstages', 'processstageid', 'stagename', PA],
+  product: ['products', 'productid', 'name', D365],
+  queue: ['queues', 'queueid', 'name', PA],
+  sharepointdocumentlocation: ['sharepointdocumentlocations', 'sharepointdocumentlocationid', 'name', PA],
+  systemuser: ['systemusers', 'systemuserid', 'fullname', PA],
+  task: ['tasks', 'activityid', 'subject', PA],
+  team: ['teams', 'teamid', 'name', PA],
+  webresource: ['webresourceset', 'webresourceid', 'name', PA],
 };
 
 /** Documented built-in relationships that portal grants reference but solutions rarely export. */
 const ONE_TO_MANY = [
   // [schemaName, referencingEntity, referencedEntity, referencingAttribute, referencedAttribute, referencingNavigation, referencedNavigation, reference table]
-  ["contact_customer_accounts", "contact", "account", "parentcustomerid", "accountid", "parentcustomerid_account", "contact_customer_accounts", "account"],
-  ["contact_customer_contacts", "contact", "contact", "parentcustomerid", "contactid", "parentcustomerid_contact", "contact_customer_contacts", "contact"],
-  ["account_primary_contact", "account", "contact", "primarycontactid", "contactid", "primarycontactid", "account_primary_contact", "account"],
-  ["account_parent_account", "account", "account", "parentaccountid", "accountid", "parentaccountid", "account_parent_account", "account"],
-  ["knowledgearticle_Annotations", "annotation", "knowledgearticle", "objectid", "knowledgearticleid", "objectid_knowledgearticle", "knowledgearticle_Annotations", "knowledgearticle"],
-  ["environmentvariabledefinition_environmentvariablevalue", "environmentvariablevalue", "environmentvariabledefinition", "environmentvariabledefinitionid", "environmentvariabledefinitionid", "EnvironmentVariableDefinitionId", "environmentvariabledefinition_environmentvariablevalue", "environmentvariabledefinition"],
+  [
+    'contact_customer_accounts',
+    'contact',
+    'account',
+    'parentcustomerid',
+    'accountid',
+    'parentcustomerid_account',
+    'contact_customer_accounts',
+    'account',
+  ],
+  [
+    'contact_customer_contacts',
+    'contact',
+    'contact',
+    'parentcustomerid',
+    'contactid',
+    'parentcustomerid_contact',
+    'contact_customer_contacts',
+    'contact',
+  ],
+  [
+    'account_primary_contact',
+    'account',
+    'contact',
+    'primarycontactid',
+    'contactid',
+    'primarycontactid',
+    'account_primary_contact',
+    'account',
+  ],
+  [
+    'account_parent_account',
+    'account',
+    'account',
+    'parentaccountid',
+    'accountid',
+    'parentaccountid',
+    'account_parent_account',
+    'account',
+  ],
+  [
+    'knowledgearticle_Annotations',
+    'annotation',
+    'knowledgearticle',
+    'objectid',
+    'knowledgearticleid',
+    'objectid_knowledgearticle',
+    'knowledgearticle_Annotations',
+    'knowledgearticle',
+  ],
+  [
+    'environmentvariabledefinition_environmentvariablevalue',
+    'environmentvariablevalue',
+    'environmentvariabledefinition',
+    'environmentvariabledefinitionid',
+    'environmentvariabledefinitionid',
+    'EnvironmentVariableDefinitionId',
+    'environmentvariabledefinition_environmentvariablevalue',
+    'environmentvariabledefinition',
+  ],
   // Activities regarding accounts and contacts (activitypointer, account and contact references).
-  ["Account_ActivityPointers", "activitypointer", "account", "regardingobjectid", "accountid", "regardingobjectid_account", "Account_ActivityPointers", "activitypointer"],
-  ["Contact_ActivityPointers", "activitypointer", "contact", "regardingobjectid", "contactid", "regardingobjectid_contact", "Contact_ActivityPointers", "activitypointer"],
+  [
+    'Account_ActivityPointers',
+    'activitypointer',
+    'account',
+    'regardingobjectid',
+    'accountid',
+    'regardingobjectid_account',
+    'Account_ActivityPointers',
+    'activitypointer',
+  ],
+  [
+    'Contact_ActivityPointers',
+    'activitypointer',
+    'contact',
+    'regardingobjectid',
+    'contactid',
+    'regardingobjectid_contact',
+    'Contact_ActivityPointers',
+    'activitypointer',
+  ],
   // Merged contacts (contact reference) and case customers (Dynamics 365 incident reference).
-  ["contact_master_contact", "contact", "contact", "masterid", "contactid", "masterid", "contact_master_contact", "contact"],
-  ["incident_customer_accounts", "incident", "account", "customerid", "accountid", "customerid_account", "incident_customer_accounts", "incident"],
-  ["incident_customer_contacts", "incident", "contact", "customerid", "contactid", "customerid_contact", "incident_customer_contacts", "incident"],
+  [
+    'contact_master_contact',
+    'contact',
+    'contact',
+    'masterid',
+    'contactid',
+    'masterid',
+    'contact_master_contact',
+    'contact',
+  ],
+  [
+    'incident_customer_accounts',
+    'incident',
+    'account',
+    'customerid',
+    'accountid',
+    'customerid_account',
+    'incident_customer_accounts',
+    'incident',
+  ],
+  [
+    'incident_customer_contacts',
+    'incident',
+    'contact',
+    'customerid',
+    'contactid',
+    'customerid_contact',
+    'incident_customer_contacts',
+    'incident',
+  ],
   // SharePoint document locations regarding records (sharepointdocumentlocation reference;
   // the referenced navigation property is the relationship schema name, as documented for
   // Account_SharepointDocumentLocation).
-  ["Account_SharepointDocumentLocation", "sharepointdocumentlocation", "account", "regardingobjectid", "accountid", "regardingobjectid_account", "Account_SharepointDocumentLocation", "sharepointdocumentlocation"],
-  ["adx_portalcomment_SharePointDocumentLocations", "sharepointdocumentlocation", "adx_portalcomment", "regardingobjectid", "activityid", "regardingobjectid_adx_portalcomment", "adx_portalcomment_SharePointDocumentLocations", "sharepointdocumentlocation"],
-  ["knowledgearticle_SharePointDocumentLocations", "sharepointdocumentlocation", "knowledgearticle", "regardingobjectid", "knowledgearticleid", "regardingobjectid_knowledgearticle", "knowledgearticle_SharePointDocumentLocations", "sharepointdocumentlocation"],
-  ["KbArticle_SharepointDocumentLocation", "sharepointdocumentlocation", "kbarticle", "regardingobjectid", "kbarticleid", "regardingobjectid_kbarticle", "KbArticle_SharepointDocumentLocation", "sharepointdocumentlocation"],
-  ["msdyn_knowledgearticletemplate_SharePointDocumentLocations", "sharepointdocumentlocation", "msdyn_knowledgearticletemplate", "regardingobjectid", "msdyn_knowledgearticletemplateid", "regardingobjectid_msdyn_knowledgearticletemplate", "msdyn_knowledgearticletemplate_SharePointDocumentLocations", "sharepointdocumentlocation"],
-  ["mspp_website_SharePointDocumentLocations", "sharepointdocumentlocation", "mspp_website", "regardingobjectid", "mspp_websiteid", "regardingobjectid_mspp_website", "mspp_website_SharePointDocumentLocations", "sharepointdocumentlocation"],
+  [
+    'Account_SharepointDocumentLocation',
+    'sharepointdocumentlocation',
+    'account',
+    'regardingobjectid',
+    'accountid',
+    'regardingobjectid_account',
+    'Account_SharepointDocumentLocation',
+    'sharepointdocumentlocation',
+  ],
+  [
+    'adx_portalcomment_SharePointDocumentLocations',
+    'sharepointdocumentlocation',
+    'adx_portalcomment',
+    'regardingobjectid',
+    'activityid',
+    'regardingobjectid_adx_portalcomment',
+    'adx_portalcomment_SharePointDocumentLocations',
+    'sharepointdocumentlocation',
+  ],
+  [
+    'knowledgearticle_SharePointDocumentLocations',
+    'sharepointdocumentlocation',
+    'knowledgearticle',
+    'regardingobjectid',
+    'knowledgearticleid',
+    'regardingobjectid_knowledgearticle',
+    'knowledgearticle_SharePointDocumentLocations',
+    'sharepointdocumentlocation',
+  ],
+  [
+    'KbArticle_SharepointDocumentLocation',
+    'sharepointdocumentlocation',
+    'kbarticle',
+    'regardingobjectid',
+    'kbarticleid',
+    'regardingobjectid_kbarticle',
+    'KbArticle_SharepointDocumentLocation',
+    'sharepointdocumentlocation',
+  ],
+  [
+    'msdyn_knowledgearticletemplate_SharePointDocumentLocations',
+    'sharepointdocumentlocation',
+    'msdyn_knowledgearticletemplate',
+    'regardingobjectid',
+    'msdyn_knowledgearticletemplateid',
+    'regardingobjectid_msdyn_knowledgearticletemplate',
+    'msdyn_knowledgearticletemplate_SharePointDocumentLocations',
+    'sharepointdocumentlocation',
+  ],
+  [
+    'mspp_website_SharePointDocumentLocations',
+    'sharepointdocumentlocation',
+    'mspp_website',
+    'regardingobjectid',
+    'mspp_websiteid',
+    'regardingobjectid_mspp_website',
+    'mspp_website_SharePointDocumentLocations',
+    'sharepointdocumentlocation',
+  ],
   // Case activities, notes, email and portal comments (Dynamics 365 incident reference;
   // the referencing navigation from the activitypointer, annotation, email and
   // adx_portalcomment references).
-  ["Incident_ActivityPointers", "activitypointer", "incident", "regardingobjectid", "incidentid", "regardingobjectid_incident", "Incident_ActivityPointers", "incident"],
-  ["Incident_Annotation", "annotation", "incident", "objectid", "incidentid", "objectid_incident", "Incident_Annotation", "incident"],
-  ["Incident_Emails", "email", "incident", "regardingobjectid", "incidentid", "regardingobjectid_incident_email", "Incident_Emails", "incident"],
-  ["incident_adx_portalcomments", "adx_portalcomment", "incident", "regardingobjectid", "incidentid", "regardingobjectid_incident_adx_portalcomment", "incident_adx_portalcomments", "incident"],
+  [
+    'Incident_ActivityPointers',
+    'activitypointer',
+    'incident',
+    'regardingobjectid',
+    'incidentid',
+    'regardingobjectid_incident',
+    'Incident_ActivityPointers',
+    'incident',
+  ],
+  [
+    'Incident_Annotation',
+    'annotation',
+    'incident',
+    'objectid',
+    'incidentid',
+    'objectid_incident',
+    'Incident_Annotation',
+    'incident',
+  ],
+  [
+    'Incident_Emails',
+    'email',
+    'incident',
+    'regardingobjectid',
+    'incidentid',
+    'regardingobjectid_incident_email',
+    'Incident_Emails',
+    'incident',
+  ],
+  [
+    'incident_adx_portalcomments',
+    'adx_portalcomment',
+    'incident',
+    'regardingobjectid',
+    'incidentid',
+    'regardingobjectid_incident_adx_portalcomment',
+    'incident_adx_portalcomments',
+    'incident',
+  ],
   // Notes on portal comments (annotation reference).
-  ["adx_portalcomment_Annotations", "annotation", "adx_portalcomment", "objectid", "activityid", "objectid_adx_portalcomment", "adx_portalcomment_Annotations", "annotation"],
+  [
+    'adx_portalcomment_Annotations',
+    'annotation',
+    'adx_portalcomment',
+    'objectid',
+    'activityid',
+    'objectid_adx_portalcomment',
+    'adx_portalcomment_Annotations',
+    'annotation',
+  ],
 ];
 const MANY_TO_MANY = [
   // [schemaName, entity1, entity2, intersectEntity, attribute1, attribute2, navigation1, navigation2, reference table]
-  ["knowledgearticle_category", "knowledgearticle", "category", "knowledgearticlescategories", "knowledgearticleid", "categoryid", "knowledgearticle_category", "knowledgearticle_category", "knowledgearticle"],
+  [
+    'knowledgearticle_category',
+    'knowledgearticle',
+    'category',
+    'knowledgearticlescategories',
+    'knowledgearticleid',
+    'categoryid',
+    'knowledgearticle_category',
+    'knowledgearticle_category',
+    'knowledgearticle',
+  ],
   // Enhanced-model web role memberships (contact reference).
-  ["powerpagecomponent_mspp_webrole_contact", "powerpagecomponent", "contact", "powerpagecomponent_mspp_webrole_contact", "powerpagecomponentid", "contactid", "powerpagecomponent_mspp_webrole_contact", "powerpagecomponent_mspp_webrole_contact", "contact"],
+  [
+    'powerpagecomponent_mspp_webrole_contact',
+    'powerpagecomponent',
+    'contact',
+    'powerpagecomponent_mspp_webrole_contact',
+    'powerpagecomponentid',
+    'contactid',
+    'powerpagecomponent_mspp_webrole_contact',
+    'powerpagecomponent_mspp_webrole_contact',
+    'contact',
+  ],
 ];
 
 const reference = (logicalName) => {
@@ -114,7 +405,7 @@ const reference = (logicalName) => {
 };
 
 export function standardTable(logicalName) {
-  const name = String(logicalName ?? "").toLowerCase();
+  const name = String(logicalName ?? '').toLowerCase();
   const row = TABLES[name];
   return row
     ? {
@@ -128,31 +419,44 @@ export function standardTable(logicalName) {
 
 export function standardRelationships() {
   return [
-    ...ONE_TO_MANY.map(([schemaName, referencingEntity, referencedEntity, referencingAttribute, referencedAttribute, referencingNavigation, referencedNavigation, table]) => ({
-      schemaName,
-      type: "one-to-many",
-      referencingEntity,
-      referencedEntity,
-      referencingAttribute,
-      referencedAttribute,
-      referencingNavigation,
-      referencedNavigation,
-      source: reference(table),
-      standardFallback: true,
-    })),
-    ...MANY_TO_MANY.map(([schemaName, entity1, entity2, intersectEntity, attribute1, attribute2, navigation1, navigation2, table]) => ({
-      schemaName,
-      type: "many-to-many",
-      entity1,
-      entity2,
-      intersectEntity,
-      attribute1,
-      attribute2,
-      navigation1,
-      navigation2,
-      source: reference(table),
-      standardFallback: true,
-    })),
+    ...ONE_TO_MANY.map(
+      ([
+        schemaName,
+        referencingEntity,
+        referencedEntity,
+        referencingAttribute,
+        referencedAttribute,
+        referencingNavigation,
+        referencedNavigation,
+        table,
+      ]) => ({
+        schemaName,
+        type: 'one-to-many',
+        referencingEntity,
+        referencedEntity,
+        referencingAttribute,
+        referencedAttribute,
+        referencingNavigation,
+        referencedNavigation,
+        source: reference(table),
+        standardFallback: true,
+      }),
+    ),
+    ...MANY_TO_MANY.map(
+      ([schemaName, entity1, entity2, intersectEntity, attribute1, attribute2, navigation1, navigation2, table]) => ({
+        schemaName,
+        type: 'many-to-many',
+        entity1,
+        entity2,
+        intersectEntity,
+        attribute1,
+        attribute2,
+        navigation1,
+        navigation2,
+        source: reference(table),
+        standardFallback: true,
+      }),
+    ),
   ];
 }
 
@@ -164,10 +468,10 @@ export function standardRelationships() {
  * (for example x_epiversions -> x_epiversionses). Results are marked inferred.
  */
 export function pluralizeEntitySetName(logicalName) {
-  const name = String(logicalName ?? "");
-  if (/(?:s|x|z|ch|sh)$/i.test(name)) return name + "es";
-  if (/[^aeiou]y$/i.test(name)) return name.slice(0, -1) + "ies";
-  return name + "s";
+  const name = String(logicalName ?? '');
+  if (/(?:s|x|z|ch|sh)$/i.test(name)) return name + 'es';
+  if (/[^aeiou]y$/i.test(name)) return name.slice(0, -1) + 'ies';
+  return name + 's';
 }
 
 /**
@@ -176,31 +480,31 @@ export function pluralizeEntitySetName(logicalName) {
  * and team). Their relationships are system components that solutions do not export.
  */
 export const STANDARD_LOOKUP_TARGETS = {
-  createdby: ["systemuser"],
-  modifiedby: ["systemuser"],
-  createdonbehalfby: ["systemuser"],
-  modifiedonbehalfby: ["systemuser"],
-  owninguser: ["systemuser"],
-  owningteam: ["team"],
-  owningbusinessunit: ["businessunit"],
-  ownerid: ["systemuser", "team"],
-  organizationid: ["organization"],
+  createdby: ['systemuser'],
+  modifiedby: ['systemuser'],
+  createdonbehalfby: ['systemuser'],
+  modifiedonbehalfby: ['systemuser'],
+  owninguser: ['systemuser'],
+  owningteam: ['team'],
+  owningbusinessunit: ['businessunit'],
+  ownerid: ['systemuser', 'team'],
+  organizationid: ['organization'],
 };
-export const STANDARD_LOOKUP_REFERENCE = PA + "account";
+export const STANDARD_LOOKUP_REFERENCE = PA + 'account';
 
 /** Columns Dataverse creates on every standard table but never writes into solution XML. */
 export const IMPLICIT_SYSTEM_COLUMNS = {
   versionnumber: {
-    name: "versionnumber",
-    label: "Version Number",
-    dataverseType: "bigint",
-    type: "number",
+    name: 'versionnumber',
+    label: 'Version Number',
+    dataverseType: 'bigint',
+    type: 'number',
     required: false,
-    requiredLevel: "none",
+    requiredLevel: 'none',
     validForCreate: false,
     validForUpdate: false,
     validForRead: true,
     implicit: true,
-    source: PA + "environmentvariabledefinition",
+    source: PA + 'environmentvariabledefinition',
   },
 };

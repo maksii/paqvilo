@@ -40,14 +40,26 @@ const DOCS = Object.freeze({
   runtimePerformance: 'mirage/docs/runtime-performance.md',
 });
 
-const label = path => path.split('/').pop().replace(/\.md$/, '').split('-').map(word => word[0].toUpperCase() + word.slice(1)).join(' ');
-const plainRelease = version => /^\d+\.\d+\.\d+$/.test(version ?? '');
+const label = (path) =>
+  path
+    .split('/')
+    .pop()
+    .replace(/\.md$/, '')
+    .split('-')
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(' ');
+const plainRelease = (version) => /^\d+\.\d+\.\d+$/.test(version ?? '');
 
 /** @returns {Record<string, { href: string, path: string, label: string }>} */
 export function docsLinks(version, repositoryUrl) {
-  const repository = String(repositoryUrl ?? '').replace(/^git\+/, '').replace(/\.git$/, '').replace(/\/$/, '');
+  const repository = String(repositoryUrl ?? '')
+    .replace(/^git\+/, '')
+    .replace(/\.git$/, '')
+    .replace(/\/$/, '');
   const base = repository ? `${repository}/blob/${plainRelease(version) ? `v${version}` : 'main'}/` : '';
-  return Object.fromEntries(Object.entries(DOCS).map(([key, path]) => [key, { href: base ? base + path : null, path, label: label(path) }]));
+  return Object.fromEntries(
+    Object.entries(DOCS).map(([key, path]) => [key, { href: base ? base + path : null, path, label: label(path) }]),
+  );
 }
 
 export const DOC_PATHS = DOCS;

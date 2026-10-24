@@ -5,13 +5,24 @@ export function formWriteError(error, observed, kind = 'entityform') {
   // Basic Form.aspx documents use the error MessagePanel postback.
   if (kind !== 'entityform' || error?.nativeFormWriteFailure !== true) return null;
   // A plugin's InvalidPluginExecutionException message (a handler's reject(message)) is shown as thrown.
-  return { type: 'error', ...(observed?.formSubmissionErrorMarkup ? { markup: observed.formSubmissionErrorMarkup } : {}), message: observed?.formSubmissionErrorMessage ??
-    (error.code === 'PluginValidation' && error.details?.declaredValidationMessage === true ? error.message :
-      error.code === 'PermissionDenied' ? "You don't have the appropriate permissions." :
-      'An error occurred while processing your request. Please try again.') };
+  return {
+    type: 'error',
+    ...(observed?.formSubmissionErrorMarkup ? { markup: observed.formSubmissionErrorMarkup } : {}),
+    message:
+      observed?.formSubmissionErrorMessage ??
+      (error.code === 'PluginValidation' && error.details?.declaredValidationMessage === true
+        ? error.message
+        : error.code === 'PermissionDenied'
+          ? "You don't have the appropriate permissions."
+          : 'An error occurred while processing your request. Please try again.'),
+  };
 }
 
-const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const escapeHtml = (value) =>
+  String(value ?? '').replace(
+    /[&<>"']/g,
+    (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
+  );
 
 /**
  * The basic form's error MessagePanel after a failed save. Bootstrap 5 sites render the
@@ -32,7 +43,9 @@ export function formErrorPanel(outcome, { v5 = false, closeButton = '' } = {}) {
  * editable-snippet wrapper, followed by an empty actions row.
  */
 export function createAccessDeniedForm({ ids, formName, defaultButton = 'InsertButton', snippet }) {
-  const message = typeof snippet === 'string' ? snippet
-    : "<div class='alert alert-block alert-danger'><span class='fa fa-lock' aria-hidden='true'></span>You don't have the appropriate permissions.</div>";
+  const message =
+    typeof snippet === 'string'
+      ? snippet
+      : "<div class='alert alert-block alert-danger'><span class='fa fa-lock' aria-hidden='true'></span>You don't have the appropriate permissions.</div>";
   return `<div id="${escapeHtml(ids.wrapper)}"><div id="${escapeHtml(ids.panel)}" class="crmEntityFormView" data-form-name="${escapeHtml(formName)}" onkeypress="javascript:return WebForm_FireDefaultButton(event, '${escapeHtml(defaultButton)}')" role="form" aria-label="Basic Form"><div id="${escapeHtml(ids.view)}" class="entity-form"><div><div class="xrm-editable-html xrm-attribute"><div class="xrm-attribute-value">${message}</div></div></div></div><div class="actions"></div></div></div>`;
 }

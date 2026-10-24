@@ -45,4 +45,10 @@ const PAIRS = `Dateline Standard Time=Etc/GMT+12|UTC-11=Etc/GMT+11|Aleutian Stan
 |Line Islands Standard Time=Pacific/Kiritimati`;
 
 /** Windows time-zone id -> IANA zone name. */
-export const WINDOWS_TIME_ZONES = Object.freeze(Object.fromEntries(PAIRS.replace(/\n/g, '').split('|').map(pair => pair.split('='))));
+export const WINDOWS_TIME_ZONES = Object.freeze(
+  Object.fromEntries(
+    PAIRS.replace(/\n/g, '')
+      .split('|')
+      .map((pair) => pair.split('=')),
+  ),
+);

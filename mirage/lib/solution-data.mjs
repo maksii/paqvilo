@@ -1,30 +1,26 @@
-
 import { applyCustomColumns } from './dataverse-custom-columns.mjs';
-import {
-  reconcilePermissionDiagnostics,
-  compactBuiltinPresets,
-} from "./data.mjs";
+import { reconcilePermissionDiagnostics, compactBuiltinPresets } from './data.mjs';
 import {
   scanSolutionSources,
   buildSolutionSchema,
   tableFields,
   tableColumnDefaults,
   readSolutionZip,
-} from "./solution-schema.mjs";
-import { pluralizeEntitySetName, standardTable } from "./solution-standard.mjs";
-import { resolveScopedRelationship } from "./permissions.mjs";
+} from './solution-schema.mjs';
+import { pluralizeEntitySetName, standardTable } from './solution-standard.mjs';
+import { resolveScopedRelationship } from './permissions.mjs';
 import { sourceRecordId } from './source-record-id.mjs';
 export { sourceRecordId };
 
 export { readSolutionZip };
 
 const id = (value) =>
-  String(value ?? "")
-    .replace(/[{}]/g, "")
+  String(value ?? '')
+    .replace(/[{}]/g, '')
     .toLowerCase();
-const SCOPED = ["contact", "account", "parent"];
-const ENV_DEFINITION = "environmentvariabledefinition";
-const ENV_VALUE = "environmentvariablevalue";
+const SCOPED = ['contact', 'account', 'parent'];
+const ENV_DEFINITION = 'environmentvariabledefinition';
+const ENV_VALUE = 'environmentvariablevalue';
 
 function mappingFor(schema, name) {
   const table = schema.tables[name];
@@ -34,8 +30,8 @@ function mappingFor(schema, name) {
     idColumn: table.primaryIdAttribute,
     idColumnSource: table.primaryIdSource,
     relationships: {},
-    entitySetInferred: table.entitySetSource === "pluralized",
-    idColumnInferred: table.primaryIdSource === "convention",
+    entitySetInferred: table.entitySetSource === 'pluralized',
+    idColumnInferred: table.primaryIdSource === 'convention',
     metadataSources: [...table.sources],
     schemaComplete: table.schemaComplete,
   };
@@ -44,9 +40,14 @@ function mappingFor(schema, name) {
   if (table.ownership !== undefined) mapping.ownership = table.ownership;
   if (table.tableType !== undefined) mapping.tableType = table.tableType;
   if (table.isVirtual !== undefined) mapping.isVirtual = table.isVirtual;
-  for (const [source, property] of Object.entries({ dataSourceId: 'DataSourceId', dataProviderId: 'DataProviderId', changeTrackingEnabled: 'ChangeTrackingEnabled', isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled' }))
+  for (const [source, property] of Object.entries({
+    dataSourceId: 'DataSourceId',
+    dataProviderId: 'DataProviderId',
+    changeTrackingEnabled: 'ChangeTrackingEnabled',
+    isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled',
+  }))
     if (table[source] !== undefined) (mapping.dataverseMetadata ??= {})[property] = table[source];
-  mapping.inferred =mapping.entitySetInferred || mapping.idColumnInferred;
+  mapping.inferred = mapping.entitySetInferred || mapping.idColumnInferred;
   if (table.primaryNameAttribute) {
     mapping.nameColumn = table.primaryNameAttribute;
     mapping.nameColumnSource = table.primaryNameSource;
@@ -68,7 +69,7 @@ function mappingFor(schema, name) {
   const columnDefaults = tableColumnDefaults(table.attributes);
   if (Object.keys(columnDefaults).length) mapping.recordDefaults = columnDefaults;
   const state = table.attributes.statecode;
-  const states = state?.type === "state" ? (state.optionSet?.states ?? []) : [];
+  const states = state?.type === 'state' ? (state.optionSet?.states ?? []) : [];
   const valid = states.filter((s) => Number.isInteger(s.value) && Number.isInteger(s.defaultStatus));
   if (valid.length) {
     mapping.stateStatusDefaults = Object.fromEntries(valid.map((s) => [s.value, s.defaultStatus]));
@@ -84,8 +85,11 @@ function mappingFor(schema, name) {
  * properties keep earlier values. Unpacked directories, XML files and solution
  * ZIPs are supported; nothing is written outside an optional parse cache.
  */
-export async function importSolutionData(roots = [], { entities, cacheFile, cache, order = "explicit", lcid = 1033, scan, schema } = {}) {
-  if (typeof roots === "string") roots = [roots];
+export async function importSolutionData(
+  roots = [],
+  { entities, cacheFile, cache, order = 'explicit', lcid = 1033, scan, schema } = {},
+) {
+  if (typeof roots === 'string') roots = [roots];
   scan ??= await scanSolutionSources(roots, { cacheFile, cache, order });
   schema ??= buildSolutionSchema(scan, { lcid });
 
@@ -93,10 +97,10 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
   for (const name of Object.keys(schema.tables).sort()) mappings[name] = mappingFor(schema, name);
   const relationships = {};
   for (const [key, rel] of Object.entries(schema.relationships)) {
-    if (rel.type === "one-to-many") {
+    if (rel.type === 'one-to-many') {
       relationships[key] = {
         schemaName: rel.schemaName,
-        type: "one-to-many",
+        type: 'one-to-many',
         referencingEntity: rel.referencingEntity,
         referencedEntity: rel.referencedEntity,
         referencingAttribute: rel.referencingAttribute,
@@ -119,7 +123,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
         to: rel.referencedAttribute,
         many: false,
         schemaName: rel.schemaName,
-        type: "many-to-one",
+        type: 'many-to-one',
         partner: rel.referencedNavigation,
         ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
         ...(rel.isHierarchical ? { hierarchical: true } : {}),
@@ -130,7 +134,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
         to: rel.referencingAttribute,
         many: true,
         schemaName: rel.schemaName,
-        type: "one-to-many",
+        type: 'one-to-many',
         partner: rel.referencingNavigation,
         ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
         ...(rel.isHierarchical ? { hierarchical: true } : {}),
@@ -138,7 +142,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
     } else {
       relationships[key] = {
         schemaName: rel.schemaName,
-        type: "many-to-many",
+        type: 'many-to-many',
         intersectEntity: rel.intersectEntity,
         entity1: rel.entity1,
         entity2: rel.entity2,
@@ -159,7 +163,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
         many: true,
         intersect: { entity: rel.intersectEntity, from: rel.attribute1, to: rel.attribute2 },
         schemaName: rel.schemaName,
-        type: "many-to-many",
+        type: 'many-to-many',
         partner: rel.navigation2,
       };
       if (first !== second || rel.navigation1 !== rel.navigation2)
@@ -170,7 +174,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
           many: true,
           intersect: { entity: rel.intersectEntity, from: rel.attribute2, to: rel.attribute1 },
           schemaName: rel.schemaName,
-          type: "many-to-many",
+          type: 'many-to-many',
           partner: rel.navigation1,
         };
     }
@@ -183,7 +187,9 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
   const connectionReferences = schema.connectionReferences ?? [];
   const values = Object.values(filtered);
   return {
-    roots: scan.inputs.filter((input) => input.type !== "missing" && input.type !== "unsupported").map((input) => input.input),
+    roots: scan.inputs
+      .filter((input) => input.type !== 'missing' && input.type !== 'unsupported')
+      .map((input) => input.input),
     layers: schema.layers,
     order: scan.order,
     fingerprint: schema.fingerprint,
@@ -250,19 +256,27 @@ export function solutionSeedRows(metadata, { environmentVariables: overrides = {
       });
   }
   const seeds = definitions.length ? { [ENV_DEFINITION]: definitions, [ENV_VALUE]: values } : {};
-  const declared = new Map((metadata.connectionReferences ?? []).map(reference => [reference.logicalName.toLowerCase(), reference]));
-  const bound = new Map(connectionReferences.map(reference => [reference.logicalName.toLowerCase(), reference]));
+  const declared = new Map(
+    (metadata.connectionReferences ?? []).map((reference) => [reference.logicalName.toLowerCase(), reference]),
+  );
+  const bound = new Map(connectionReferences.map((reference) => [reference.logicalName.toLowerCase(), reference]));
   const names = [...new Set([...declared.keys(), ...bound.keys()])];
-  if (names.length) seeds.connectionreference = names.map(name => {
-    const solution = declared.get(name), profile = bound.get(name);
-    return Object.fromEntries(Object.entries({
-      connectionreferenceid: sourceRecordId('connectionreference', name),
-      connectionreferencelogicalname: profile?.logicalName ?? solution.logicalName,
-      connectionreferencedisplayname: solution?.displayName,
-      connectionid: profile?.connectionId ?? null, connectorid: profile?.connectorId ?? solution?.connectorId,
-      statecode: 0, statuscode: 1,
-    }).filter(([, value]) => value !== undefined));
-  });
+  if (names.length)
+    seeds.connectionreference = names.map((name) => {
+      const solution = declared.get(name),
+        profile = bound.get(name);
+      return Object.fromEntries(
+        Object.entries({
+          connectionreferenceid: sourceRecordId('connectionreference', name),
+          connectionreferencelogicalname: profile?.logicalName ?? solution.logicalName,
+          connectionreferencedisplayname: solution?.displayName,
+          connectionid: profile?.connectionId ?? null,
+          connectorid: profile?.connectorId ?? solution?.connectorId,
+          statecode: 0,
+          statuscode: 1,
+        }).filter(([, value]) => value !== undefined),
+      );
+    });
   return seeds;
 }
 
@@ -276,7 +290,11 @@ const fieldsWithoutProvenance = (schema, name) => tableFields(schema, name, { pr
  * tables whose complete column metadata is stored on the mapping (`fieldMetadata`
  * and `schemaComplete`) for Web API attribute validation.
  */
-export function applySolutionData(state, metadata, { webApiTables, environmentVariables, connectionReferences, presetLibrary, owned = false } = {}) {
+export function applySolutionData(
+  state,
+  metadata,
+  { webApiTables, environmentVariables, connectionReferences, presetLibrary, owned = false } = {},
+) {
   const input = {
     ...state,
     presets: compactBuiltinPresets(state.presets ?? {}, presetLibrary),
@@ -292,8 +310,10 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
   // A table the Dataverse API seeded (dataverseOnly or a standard table) is a stand-in until a Solution defines it; a table
   // created through the metadata API is the user's and stays.
   const dataverseSeeded = (mapping) =>
-    (mapping?.dataverseOnly === true || mapping?.standardTable === true) && mapping.dataverseMetadata?.createdByMetadataApi !== true;
-  const solutionRelationships = new Set(previous.relationshipMappings ?? []), relationshipsTaken = [];
+    (mapping?.dataverseOnly === true || mapping?.standardTable === true) &&
+    mapping.dataverseMetadata?.createdByMetadataApi !== true;
+  const solutionRelationships = new Set(previous.relationshipMappings ?? []),
+    relationshipsTaken = [];
   for (const [name, mapping] of Object.entries(metadata.mappings)) {
     const existing = result.mappings[name];
     if (!existing || imported(existing) || dataverseSeeded(existing)) {
@@ -303,11 +323,14 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
       // A configured mapping keeps the Solution's relationships, primary name column, alternate keys
       // and create defaults (column defaults, state/status pairs) when it names none (as a preset
       // layered over the imported mappings does): a record created through it gets what Dataverse sets.
-      for (const key of ["nameColumn", "alternateKeys", "recordDefaults", "stateStatusDefaults", "labels"])
+      for (const key of ['nameColumn', 'alternateKeys', 'recordDefaults', 'stateStatusDefaults', 'labels'])
         if (existing[key] === undefined && mapping[key] !== undefined) existing[key] = structuredClone(mapping[key]);
       // Relationships an earlier import gave this configured mapping follow the Solution (a relationship added to the
       // source since then declares its navigation too); relationships the mapping declared itself stay.
-      if (mapping.relationships !== undefined && (existing.relationships === undefined || solutionRelationships.has(name))) {
+      if (
+        mapping.relationships !== undefined &&
+        (existing.relationships === undefined || solutionRelationships.has(name))
+      ) {
         existing.relationships = structuredClone(mapping.relationships);
         relationshipsTaken.push(name);
       }
@@ -319,18 +342,18 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
     if (!metadata.mappings[name] && mapping.userConfigured !== true && mapping.metadataSources?.length) {
       result.mappings[name] = {
         entitySet: standardTable(name)?.entitySet ?? pluralizeEntitySetName(name),
-        entitySetSource: standardTable(name) ? "dataverse-reference" : "pluralized",
-        idColumn: standardTable(name)?.primaryIdAttribute ?? name + "id",
-        idColumnSource: standardTable(name) ? "dataverse-reference" : "convention",
+        entitySetSource: standardTable(name) ? 'dataverse-reference' : 'pluralized',
+        idColumn: standardTable(name)?.primaryIdAttribute ?? name + 'id',
+        idColumnSource: standardTable(name) ? 'dataverse-reference' : 'convention',
         relationships: {},
         inferred: true,
         entitySetInferred: !standardTable(name),
         idColumnInferred: !standardTable(name),
       };
       importDiagnostics.push({
-        code: "SOLUTION_MAPPING_REMOVED",
+        code: 'SOLUTION_MAPPING_REMOVED',
         entity: name,
-        message: "The selected solution layers no longer define this table; its imported mapping was reset.",
+        message: 'The selected solution layers no longer define this table; its imported mapping was reset.',
       });
     }
   // Complete column metadata for Web API tables (the 400 InvalidAttribute rule).
@@ -339,12 +362,12 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
   for (const [name, mapping] of Object.entries(result.mappings)) {
     if (mapping.userConfigured === true) continue;
     const table = schema?.tables[name];
-    const ours = imported(mapping) || mapping.fieldMetadataSource === "solution" || mapping.fieldMetadata === undefined;
+    const ours = imported(mapping) || mapping.fieldMetadataSource === 'solution' || mapping.fieldMetadata === undefined;
     if (apiTables?.has(name) && table && ours) {
       mapping.fieldMetadata = fieldsWithoutProvenance(schema, name);
       mapping.schemaComplete = table.schemaComplete === true;
-      mapping.fieldMetadataSource = "solution";
-    } else if (mapping.fieldMetadataSource === "solution") {
+      mapping.fieldMetadataSource = 'solution';
+    } else if (mapping.fieldMetadataSource === 'solution') {
       delete mapping.fieldMetadata;
       delete mapping.schemaComplete;
       delete mapping.fieldMetadataSource;
@@ -352,17 +375,26 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
   }
   // Source-derived rows: upsert by primary key and remove rows that left the source.
   const seeds = solutionSeedRows(metadata, { environmentVariables, connectionReferences });
-  const boundReferences = new Set((connectionReferences ?? []).map(reference => reference.logicalName.toLowerCase()));
+  const boundReferences = new Set((connectionReferences ?? []).map((reference) => reference.logicalName.toLowerCase()));
   for (const reference of metadata.connectionReferences ?? [])
     if (!boundReferences.has(reference.logicalName.toLowerCase()))
-      importDiagnostics.push({ code: "SOLUTION_CONNREF_UNBOUND", severity: "warning", logicalName: reference.logicalName, ...(reference.connectorId ? { connectorId: reference.connectorId } : {}),
-        message: "The Solution declares this connection reference, but no deployment profile binds a ConnectionId; actions through it are unbound." });
-  if (seeds.connectionreference && !result.mappings.connectionreference) result.mappings.connectionreference = {
-    entitySet: 'connectionreferences', idColumn: 'connectionreferenceid', inferred: true,
-  };
+      importDiagnostics.push({
+        code: 'SOLUTION_CONNREF_UNBOUND',
+        severity: 'warning',
+        logicalName: reference.logicalName,
+        ...(reference.connectorId ? { connectorId: reference.connectorId } : {}),
+        message:
+          'The Solution declares this connection reference, but no deployment profile binds a ConnectionId; actions through it are unbound.',
+      });
+  if (seeds.connectionreference && !result.mappings.connectionreference)
+    result.mappings.connectionreference = {
+      entitySet: 'connectionreferences',
+      idColumn: 'connectionreferenceid',
+      inferred: true,
+    };
   const seeded = {};
   for (const [entity, rows] of Object.entries(seeds)) {
-    const key = result.mappings[entity]?.idColumn ?? entity + "id";
+    const key = result.mappings[entity]?.idColumn ?? entity + 'id';
     const table = (result.tables[entity] ??= []);
     const before = new Set((previous.seededRows?.[entity] ?? []).map(id));
     const current = new Set(rows.map((row) => id(row[key])));
@@ -371,17 +403,24 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
       if (before.has(rowId) && !current.has(rowId)) table.splice(index, 1);
     }
     const positions = new Map();
-    table.forEach((row, index) => { const value = id(row?.[key]); if (!positions.has(value)) positions.set(value, index); });
+    table.forEach((row, index) => {
+      const value = id(row?.[key]);
+      if (!positions.has(value)) positions.set(value, index);
+    });
     for (const row of rows) {
-      const rowId = id(row[key]), index = positions.get(rowId) ?? -1;
+      const rowId = id(row[key]),
+        index = positions.get(rowId) ?? -1;
       if (index >= 0) table[index] = { ...table[index], ...row };
-      else { positions.set(rowId, table.length); table.push(row); }
+      else {
+        positions.set(rowId, table.length);
+        table.push(row);
+      }
     }
     seeded[entity] = [...current];
   }
   for (const [entity, ids] of Object.entries(previous.seededRows ?? {}))
     if (!seeds[entity] && result.tables[entity]) {
-      const key = result.mappings[entity]?.idColumn ?? entity + "id";
+      const key = result.mappings[entity]?.idColumn ?? entity + 'id';
       const stale = new Set(ids.map(id));
       result.tables[entity] = result.tables[entity].filter((row) => !stale.has(id(row?.[key])));
     }
@@ -392,7 +431,7 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
   for (const p of permissions)
     if (p.imported && p.userConfigured !== true && SCOPED.includes(p.scope) && p.metadataSource) {
       p.enabled = false;
-      p.disabledReason = "The currently selected solution metadata must resolve this permission relationship.";
+      p.disabledReason = 'The currently selected solution metadata must resolve this permission relationship.';
       delete p.field;
       delete p.relationship;
       delete p.identityRelationship;
@@ -406,14 +445,14 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
     let changed = false;
     for (const permission of permissions) {
       if (!permission.imported || permission.userConfigured === true || !SCOPED.includes(permission.scope)) continue;
-      const rel = metadata.relationships[String(permission.relationshipName ?? "").toLowerCase()];
+      const rel = metadata.relationships[String(permission.relationshipName ?? '').toLowerCase()];
       if (!rel) continue;
-      const parent = permission.scope === "parent" ? byId.get(id(permission.parentPermissionId)) : null;
-      if (permission.scope === "parent" && (!parent || parent.enabled === false)) continue;
-      const target = parent?.entity ?? (permission.scope === "account" ? "account" : "contact");
+      const parent = permission.scope === 'parent' ? byId.get(id(permission.parentPermissionId)) : null;
+      if (permission.scope === 'parent' && (!parent || parent.enabled === false)) continue;
+      const target = parent?.entity ?? (permission.scope === 'account' ? 'account' : 'contact');
       const resolution = resolveScopedRelationship(rel, permission, target, result.mappings);
       if (!resolution) continue;
-      if (permission.scope === "parent") {
+      if (permission.scope === 'parent') {
         permission.relationship = resolution.descriptor;
         if (!permission.roles?.length) {
           permission.roles = structuredClone(parent.roles ?? []);
@@ -434,20 +473,22 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
   }
   for (const p of permissions)
     if (p.imported && p.enabled === false && p.userConfigured !== true && SCOPED.includes(p.scope)) {
-      const rel = metadata.relationships[String(p.relationshipName ?? "").toLowerCase()];
+      const rel = metadata.relationships[String(p.relationshipName ?? '').toLowerCase()];
       const parent = byId.get(id(p.parentPermissionId));
       if (!rel)
         p.disabledReason = p.relationshipName
           ? `No selected solution layer or documented Dataverse relationship defines '${p.relationshipName}'.`
-          : "The exported permission has no relationship name for its scope.";
-      else if (p.scope === "parent" && !parent)
-        p.disabledReason = "The referenced parent permission is inactive or was not exported into this portal; Power Pages does not apply children of an ineffective parent.";
-      else if (p.scope === "parent" && parent.enabled === false)
-        p.disabledReason = "The referenced parent permission is disabled or unresolved.";
+          : 'The exported permission has no relationship name for its scope.';
+      else if (p.scope === 'parent' && !parent)
+        p.disabledReason =
+          'The referenced parent permission is inactive or was not exported into this portal; Power Pages does not apply children of an ineffective parent.';
+      else if (p.scope === 'parent' && parent.enabled === false)
+        p.disabledReason = 'The referenced parent permission is disabled or unresolved.';
       else if (!p.roles?.length)
-        p.disabledReason = "No web roles are associated with this root permission; Power Pages requires at least one web role for a table permission to take effect.";
+        p.disabledReason =
+          'No web roles are associated with this root permission; Power Pages requires at least one web role for a table permission to take effect.';
       else
-        p.disabledReason = `Relationship '${rel.schemaName}' does not connect '${p.entity}' to the required ${p.scope === "parent" ? "parent permission table" : p.scope} table.`;
+        p.disabledReason = `Relationship '${rel.schemaName}' does not connect '${p.entity}' to the required ${p.scope === 'parent' ? 'parent permission table' : p.scope} table.`;
     }
   result.simulator.solutionData = {
     roots: metadata.roots,
@@ -459,7 +500,9 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
   };
   // Solution diagnostics describe the current layers only; earlier imports are replaced.
   result.simulator.importDiagnostics = [
-    ...(result.simulator.importDiagnostics ?? []).filter((d) => !resolved.has(d.id) && !String(d.code ?? "").startsWith("SOLUTION_")),
+    ...(result.simulator.importDiagnostics ?? []).filter(
+      (d) => !resolved.has(d.id) && !String(d.code ?? '').startsWith('SOLUTION_'),
+    ),
     ...importDiagnostics,
     ...metadata.diagnostics,
   ];

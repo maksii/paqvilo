@@ -11,9 +11,12 @@ const paths = {
   pageForm: '<path d="M3 1h6l4 4v10H3zM9 1v4h4M5 7h1m2 0h3M5 10h1m2 0h3M5 13h1m2 0h3"/>',
   pageGrid: '<path d="M3 1h6l4 4v10H3zM9 1v4h4M5 7h1m2 0h3M5 10h1m2 0h3M5 13h1m2 0h3"/>',
   redirect: '<path d="M2 14V7h10M9 3l4 4-4 4"/>',
-  marker: '<circle cx="7" cy="7" r="5.5"/><path d="M1.5 7h11M7 1.5c-3 3-3 8 0 11M7 1.5c2 2 3 4 2.5 7M12 9l3 6-3-1-2 1z"/>',
-  settings: '<path d="m6 1-.5 2-1.5.8L2 3.5.5 6l1.5 1.5v1L.5 10 2 12.5l2-.3 1.5.8.5 2h3l.5-2 1.5-.8 2 .3 1.5-2.5L13 8.5v-1L14.5 6 13 3.5l-2 .3L9.5 3 9 1z"/><circle cx="7.5" cy="8" r="2.5"/>',
-  siteSettings: '<path d="M1 1h14v10H1zM3 3h4v4H3zM9 3h4M9 5h4M3 9h6m2 1 1-2 1 2 2 .5-1.5 1.5.5 2-2-1-2 1 .5-2L9 10.5z"/>',
+  marker:
+    '<circle cx="7" cy="7" r="5.5"/><path d="M1.5 7h11M7 1.5c-3 3-3 8 0 11M7 1.5c2 2 3 4 2.5 7M12 9l3 6-3-1-2 1z"/>',
+  settings:
+    '<path d="m6 1-.5 2-1.5.8L2 3.5.5 6l1.5 1.5v1L.5 10 2 12.5l2-.3 1.5.8.5 2h3l.5-2 1.5-.8 2 .3 1.5-2.5L13 8.5v-1L14.5 6 13 3.5l-2 .3L9.5 3 9 1z"/><circle cx="7.5" cy="8" r="2.5"/>',
+  siteSettings:
+    '<path d="M1 1h14v10H1zM3 3h4v4H3zM9 3h4M9 5h4M3 9h6m2 1 1-2 1 2 2 .5-1.5 1.5.5 2-2-1-2 1 .5-2L9 10.5z"/>',
   list: '<path d="M2 1h12v14H2zM4 4h1m2 0h5M4 7h1m2 0h5M4 10h1m2 0h5M4 13h1m2 0h5"/>',
   edit: '<path d="M3 1h9v4M3 1v14h6M5 4h5M5 7h3m2 7-2 .5.5-2L13 8l1.5 1.5zM12 9l1.5 1.5"/>',
   shortcut: '<path d="M2 7V3h11v8H9M.5 10.5h7m-3-3 3 3-3 3"/>',
@@ -71,14 +74,84 @@ const paths = {
   reset: '<path d="M1 7a6 6 0 1 1 2 6M1 2v5h5"/>',
   download: '<path d="M8 1v10M4 7l4 4 4-4M2 12v3h12v-3"/>',
 };
-export const icon = (name, className = '') => `<svg class="icon icon-${name} ${className}" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width=".85" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] ?? paths.page}</svg>`;
+export const icon = (name, className = '') =>
+  `<svg class="icon icon-${name} ${className}" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width=".85" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] ?? paths.page}</svg>`;
 // Column browsers use metadata glyphs, including types whose form editor is unavailable.
-export const columnIcon = field => field?.type === 'date' ? 'calendar'
-  : field?.type === 'lookup' ? field.dataverseType === 'owner' ? 'person' : 'lookupColumn'
-    : field?.type === 'boolean' ? 'booleanColumn'
-      : field?.options || ['picklist', 'state', 'status', 'multiselectpicklist'].includes(field?.dataverseType) ? 'choiceColumn'
-        : field?.dataverseType === 'money' ? 'moneyColumn'
-          : field?.dataverseType === 'image' ? 'imageColumn'
-            : field?.dataverseType === 'file' ? 'help'
-              : field?.type === 'number' ? 'numericColumn' : 'text';
-export const navigationIcon = item => ({ website: 'globe', pagetemplate: 'page', redirect: 'redirect', sitemarker: 'marker', sitesetting: 'siteSettings', setting: 'settings', contentsnippet: 'pageCode', basicform: 'edit', entityform: 'edit', list: 'list', entitylist: 'list', shortcut: 'shortcut', webfile: 'file', advancedform: 'pageForm', webform: 'pageForm', weblinkset: 'lines', webpage: 'pages', webtemplate: 'template', websitelanguage: 'language', contact: 'person', tablepermission: 'shield', entitypermission: 'shield', columnpermissionprofile: 'shield', invitation: 'invitation', publishingstatetransitionrule: 'transition', webpageaccesscontrolrule: 'shield', webrole: 'person', websiteaccess: 'key' })[item.id] ?? ({ website: 'globe', pagetemplate: 'page', redirect: 'redirect', sitemarker: 'marker', sitesetting: 'siteSettings', setting: 'settings', contentsnippet: 'pageCode', entityform: 'edit', entitylist: 'list', shortcut: 'shortcut', webfile: 'file', webform: 'pageForm', weblinkset: 'lines', webpage: 'pages', webtemplate: 'template', websitelanguage: 'language', contact: 'person', entitypermission: 'shield', columnpermissionprofile: 'shield', invitation: 'invitation', publishingstatetransitionrule: 'transition', webpageaccesscontrolrule: 'shield', webrole: 'person', websiteaccess: 'key' })[item.entity?.replace(/^.*?_/, '')] ?? 'page';
+export const columnIcon = (field) =>
+  field?.type === 'date'
+    ? 'calendar'
+    : field?.type === 'lookup'
+      ? field.dataverseType === 'owner'
+        ? 'person'
+        : 'lookupColumn'
+      : field?.type === 'boolean'
+        ? 'booleanColumn'
+        : field?.options || ['picklist', 'state', 'status', 'multiselectpicklist'].includes(field?.dataverseType)
+          ? 'choiceColumn'
+          : field?.dataverseType === 'money'
+            ? 'moneyColumn'
+            : field?.dataverseType === 'image'
+              ? 'imageColumn'
+              : field?.dataverseType === 'file'
+                ? 'help'
+                : field?.type === 'number'
+                  ? 'numericColumn'
+                  : 'text';
+export const navigationIcon = (item) =>
+  ({
+    website: 'globe',
+    pagetemplate: 'page',
+    redirect: 'redirect',
+    sitemarker: 'marker',
+    sitesetting: 'siteSettings',
+    setting: 'settings',
+    contentsnippet: 'pageCode',
+    basicform: 'edit',
+    entityform: 'edit',
+    list: 'list',
+    entitylist: 'list',
+    shortcut: 'shortcut',
+    webfile: 'file',
+    advancedform: 'pageForm',
+    webform: 'pageForm',
+    weblinkset: 'lines',
+    webpage: 'pages',
+    webtemplate: 'template',
+    websitelanguage: 'language',
+    contact: 'person',
+    tablepermission: 'shield',
+    entitypermission: 'shield',
+    columnpermissionprofile: 'shield',
+    invitation: 'invitation',
+    publishingstatetransitionrule: 'transition',
+    webpageaccesscontrolrule: 'shield',
+    webrole: 'person',
+    websiteaccess: 'key',
+  })[item.id] ??
+  {
+    website: 'globe',
+    pagetemplate: 'page',
+    redirect: 'redirect',
+    sitemarker: 'marker',
+    sitesetting: 'siteSettings',
+    setting: 'settings',
+    contentsnippet: 'pageCode',
+    entityform: 'edit',
+    entitylist: 'list',
+    shortcut: 'shortcut',
+    webfile: 'file',
+    webform: 'pageForm',
+    weblinkset: 'lines',
+    webpage: 'pages',
+    webtemplate: 'template',
+    websitelanguage: 'language',
+    contact: 'person',
+    entitypermission: 'shield',
+    columnpermissionprofile: 'shield',
+    invitation: 'invitation',
+    publishingstatetransitionrule: 'transition',
+    webpageaccesscontrolrule: 'shield',
+    webrole: 'person',
+    websiteaccess: 'key',
+  }[item.entity?.replace(/^.*?_/, '')] ??
+  'page';

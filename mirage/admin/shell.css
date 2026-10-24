@@ -1,7 +1,7 @@
 /* Shared shell for /_sim/ and /_setup/: tokens, base elements, sidebar, top bar, panels, buttons, badges,
    notices, tables, forms, dialogs and feedback. Page sheets add only their own extras. Light theme only. */
 :root {
-  font-family: Inter, "Segoe UI", Arial, sans-serif;
+  font-family: Inter, 'Segoe UI', Arial, sans-serif;
   color: #213047;
   background: #f5f7fb;
   font-synthesis: none;
@@ -494,7 +494,7 @@ td.actions {
 }
 code,
 .code-text {
-  font-family: Consolas, "Courier New", monospace;
+  font-family: Consolas, 'Courier New', monospace;
   font-size: 11px;
   color: #5c6b87;
 }
@@ -844,33 +844,132 @@ footer {
     right: 16px;
   }
 }
-[hidden] { display: none !important; }
-.activity-feedback{display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:5;margin-bottom:18px;padding:12px 16px;border:1px solid #c9d9ee;border-radius:10px;background:#edf4ff;color:#244874;box-shadow:0 3px 12px #193d6410;font-size:13px}
-.activity-feedback[hidden]{display:none}
-.activity-feedback::before,.loading::before{content:'';display:inline-block;width:15px;height:15px;flex:none;margin-right:4px;vertical-align:middle;border:2px solid #bfcee1;border-top-color:currentColor;border-radius:50%;animation:studio-spin .8s linear infinite}
-button[aria-busy=true]{cursor:wait}
-@keyframes studio-spin{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){.activity-feedback::before,.loading::before{animation:none}}
+[hidden] {
+  display: none !important;
+}
+.activity-feedback {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin-bottom: 18px;
+  padding: 12px 16px;
+  border: 1px solid #c9d9ee;
+  border-radius: 10px;
+  background: #edf4ff;
+  color: #244874;
+  box-shadow: 0 3px 12px #193d6410;
+  font-size: 13px;
+}
+.activity-feedback[hidden] {
+  display: none;
+}
+.activity-feedback::before,
+.loading::before {
+  content: '';
+  display: inline-block;
+  width: 15px;
+  height: 15px;
+  flex: none;
+  margin-right: 4px;
+  vertical-align: middle;
+  border: 2px solid #bfcee1;
+  border-top-color: currentColor;
+  border-radius: 50%;
+  animation: studio-spin 0.8s linear infinite;
+}
+button[aria-busy='true'] {
+  cursor: wait;
+}
+@keyframes studio-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .activity-feedback::before,
+  .loading::before {
+    animation: none;
+  }
+}
 /* Collapsible sidebar groups. */
-.nav-group { margin: 0 0 6px; }
-.nav-group > summary { cursor: pointer; padding: 6px 12px; color: #7f8ca6; font-size: 10px; font-weight: 650; letter-spacing: 1.5px; text-transform: uppercase; }
-.nav-group > summary:hover { color: #fff; }
-.nav-group > summary:focus-visible { outline: 3px solid #8ca3ff; outline-offset: 2px; border-radius: 6px; }
-.nav-group[open] > summary { margin-bottom: 2px; }
-.nav-group .nav-item { margin-bottom: 3px; }
+.nav-group {
+  margin: 0 0 6px;
+}
+.nav-group > summary {
+  cursor: pointer;
+  padding: 6px 12px;
+  color: #7f8ca6;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+.nav-group > summary:hover {
+  color: #fff;
+}
+.nav-group > summary:focus-visible {
+  outline: 3px solid #8ca3ff;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.nav-group[open] > summary {
+  margin-bottom: 2px;
+}
+.nav-group .nav-item {
+  margin-bottom: 3px;
+}
 @media (max-width: 700px) {
-  nav { display: grid; overflow: visible; }
-  .nav-group { margin: 0; }
-  .nav-group > summary { padding: 6px 4px; }
-  .nav-group[open] { display: flex; flex-wrap: wrap; gap: 3px; }
-  .nav-group[open] > summary { flex-basis: 100%; }
-  .nav-group .nav-item { margin-bottom: 0; }
+  nav {
+    display: grid;
+    overflow: visible;
+  }
+  .nav-group {
+    margin: 0;
+  }
+  .nav-group > summary {
+    padding: 6px 4px;
+  }
+  .nav-group[open] {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+  }
+  .nav-group[open] > summary {
+    flex-basis: 100%;
+  }
+  .nav-group .nav-item {
+    margin-bottom: 0;
+  }
 }
 /* A row of control help texts under a toolbar: each text is tied to its control by aria-describedby. */
-.field-hints { display: grid; gap: 2px; margin: 6px 0 10px; }
-.field-hints .ui-field-help { margin-top: 0; }
+.field-hints {
+  display: grid;
+  gap: 2px;
+  margin: 6px 0 10px;
+}
+.field-hints .ui-field-help {
+  margin-top: 0;
+}
 /* AREAS switch: Project setup and Simulator workspace in both sidebars; an unreachable area is an inert item with its reason. */
-.nav-label.area-label { margin-top: 18px; }
-.nav-item[aria-disabled="true"] { opacity: 0.6; cursor: not-allowed; flex-wrap: wrap; }
-.nav-item[aria-disabled="true"]:hover { background: transparent; color: #b7c4d9; }
-.nav-item .muted { flex-basis: 100%; padding-left: 32px; font-size: 10px; line-height: 1.4; color: #8190aa; }
+.nav-label.area-label {
+  margin-top: 18px;
+}
+.nav-item[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: not-allowed;
+  flex-wrap: wrap;
+}
+.nav-item[aria-disabled='true']:hover {
+  background: transparent;
+  color: #b7c4d9;
+}
+.nav-item .muted {
+  flex-basis: 100%;
+  padding-left: 32px;
+  font-size: 10px;
+  line-height: 1.4;
+  color: #8190aa;
+}

@@ -10,12 +10,22 @@ import { systemClock } from './runtime-clock.mjs';
 
 export const SECRET_TYPE = 100000005;
 const KEY_VAULT_STORE = 0;
-const ARM = /^\/subscriptions\/[^/]+\/resourceGroups\/[^/]+\/providers\/Microsoft\.KeyVault\/vaults\/([^/]+)\/secrets\/([^/]+)(?:\/([^/]+))?\/?$/i;
+const ARM =
+  /^\/subscriptions\/[^/]+\/resourceGroups\/[^/]+\/providers\/Microsoft\.KeyVault\/vaults\/([^/]+)\/secrets\/([^/]+)(?:\/([^/]+))?\/?$/i;
 const VAULT_URI = /^https:\/\/([^./]+)\.vault\.azure\.net(?::443)?\/secrets\/([^/?#]+)(?:\/([^/?#]+))?\/?$/i;
 const KEY = /^[A-Za-z0-9-]+\/[A-Za-z0-9-]+$/;
 const VARIABLE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ENTRY_KEYS = new Set(['source', 'variable', 'protectedValue', 'versions', 'expiresOn', 'allow', 'disabled', 'description']);
+const ENTRY_KEYS = new Set([
+  'source',
+  'variable',
+  'protectedValue',
+  'versions',
+  'expiresOn',
+  'allow',
+  'disabled',
+  'description',
+]);
 const plainObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const lower = (value) => String(value ?? '').toLowerCase();
 
@@ -38,12 +48,15 @@ export function secretSettings(value, label = 'secrets') {
     if (!KEY.test(key)) throw new Error(`${at}: keys are <vault>/<secret> (letters, digits and hyphens)`);
     if (!plainObject(entry)) throw new Error(`${at} must be an object`);
     if (Object.hasOwn(entry, 'value') || Object.hasOwn(entry, 'secret'))
-      throw new Error(`${at}: secret values never live in config; name an environment variable (source: environment) or a protected value`);
+      throw new Error(
+        `${at}: secret values never live in config; name an environment variable (source: environment) or a protected value`,
+      );
     for (const name of Object.keys(entry)) if (!ENTRY_KEYS.has(name)) throw new Error(`Unknown ${at} key '${name}'`);
     const source = entry.source ?? 'environment';
     const normal = { source, allow: [], disabled: false };
     if (source === 'environment') {
-      if (typeof entry.variable !== 'string' || !VARIABLE.test(entry.variable)) throw new Error(`${at}.variable must name an environment variable`);
+      if (typeof entry.variable !== 'string' || !VARIABLE.test(entry.variable))
+        throw new Error(`${at}.variable must name an environment variable`);
       normal.variable = entry.variable;
     } else if (source === 'protected') {
       if (typeof entry.protectedValue !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(entry.protectedValue))
@@ -51,12 +64,19 @@ export function secretSettings(value, label = 'secrets') {
       normal.protectedValue = entry.protectedValue;
     } else throw new Error(`${at}.source must be 'environment' or 'protected'`);
     if (entry.versions !== undefined) {
-      if (!plainObject(entry.versions) || typeof entry.versions.current !== 'string' || !entry.versions.current || Object.keys(entry.versions).some((k) => k !== 'current'))
+      if (
+        !plainObject(entry.versions) ||
+        typeof entry.versions.current !== 'string' ||
+        !entry.versions.current ||
+        Object.keys(entry.versions).some((k) => k !== 'current')
+      )
         throw new Error(`${at}.versions must be { current: <version> }`);
       normal.versions = { current: entry.versions.current };
     }
     if (entry.expiresOn !== undefined) {
-      const time = Date.parse(entry.expiresOn instanceof Date ? entry.expiresOn.toISOString() : String(entry.expiresOn));
+      const time = Date.parse(
+        entry.expiresOn instanceof Date ? entry.expiresOn.toISOString() : String(entry.expiresOn),
+      );
       if (!Number.isFinite(time)) throw new Error(`${at}.expiresOn must be an ISO date`);
       normal.expiresOn = new Date(time).toISOString();
     }
@@ -76,12 +96,23 @@ export function secretSettings(value, label = 'secrets') {
 }
 
 // Windows DPAPI, loaded only when a protected secret is read (lense/dataverse/connection.mjs refuses other hosts).
-const dpapi = { unprotect: async (blob) => (await import('../../lense/dataverse/connection.mjs')).protectSecret(blob, true) };
+const dpapi = {
+  unprotect: async (blob) => (await import('../../lense/dataverse/connection.mjs')).protectSecret(blob, true),
+};
 
 /** Resolves Key Vault references from the `secrets` config. resolve() is the only place a value is read. */
-export function createSecretResolver({ secrets = {}, env = process.env, protect = dpapi, clock = systemClock.now, diagnostic = () => {} } = {}) {
+export function createSecretResolver({
+  secrets = {},
+  env = process.env,
+  protect = dpapi,
+  clock = systemClock.now,
+  diagnostic = () => {},
+} = {}) {
   const settings = secretSettings(secrets);
-  const now = () => { const value = clock(); return value instanceof Date ? value.getTime() : Number(value); };
+  const now = () => {
+    const value = clock();
+    return value instanceof Date ? value.getTime() : Number(value);
+  };
   // The status every caller shares; principal and value checks belong to resolve().
   const inspect = (reference) => {
     const parsed = parseSecretReference(reference);
@@ -91,13 +122,22 @@ export function createSecretResolver({ secrets = {}, env = process.env, protect 
     const version = parsed.version ?? entry.versions?.current ?? null;
     const base = { parsed, entry, version, expiresOn: entry.expiresOn ?? null };
     if (entry.disabled) return { ...base, status: 'disabled', reason: `Secret ${parsed.key} is disabled.` };
-    if (entry.expiresOn && Date.parse(entry.expiresOn) <= now()) return { ...base, status: 'expired', reason: `Secret ${parsed.key} expired on ${entry.expiresOn}.` };
-    if (parsed.version && parsed.version !== entry.versions?.current) return { ...base, status: 'missing', reason: `Secret ${parsed.key} has no version ${parsed.version}.` };
-    if (entry.source === 'environment' && !env[entry.variable]) return { ...base, status: 'missing', reason: `Environment variable ${entry.variable} is not set.` };
+    if (entry.expiresOn && Date.parse(entry.expiresOn) <= now())
+      return { ...base, status: 'expired', reason: `Secret ${parsed.key} expired on ${entry.expiresOn}.` };
+    if (parsed.version && parsed.version !== entry.versions?.current)
+      return { ...base, status: 'missing', reason: `Secret ${parsed.key} has no version ${parsed.version}.` };
+    if (entry.source === 'environment' && !env[entry.variable])
+      return { ...base, status: 'missing', reason: `Environment variable ${entry.variable} is not set.` };
     return { ...base, status: 'available' };
   };
   const refuse = (state, purpose) => {
-    diagnostic({ code: `SECRET_${state.status.toUpperCase()}`, severity: 'warning', key: state.parsed?.key ?? null, purpose: purpose ?? null, message: state.reason });
+    diagnostic({
+      code: `SECRET_${state.status.toUpperCase()}`,
+      severity: 'warning',
+      key: state.parsed?.key ?? null,
+      purpose: purpose ?? null,
+      message: state.reason,
+    });
     return { status: state.status, reason: state.reason };
   };
   return {
@@ -106,19 +146,44 @@ export function createSecretResolver({ secrets = {}, env = process.env, protect 
       if (state.status !== 'available') return refuse(state, purpose);
       // Fail closed: an entry without an allow list is denied to everyone.
       if (!principalId || !state.entry.allow.includes(lower(principalId)))
-        return refuse({ ...state, status: 'denied', reason: `The principal is not allowed to read ${state.parsed.key}.` }, purpose);
+        return refuse(
+          { ...state, status: 'denied', reason: `The principal is not allowed to read ${state.parsed.key}.` },
+          purpose,
+        );
       let value;
       if (state.entry.source === 'environment') value = env[state.entry.variable];
       else {
-        try { value = await protect.unprotect(state.entry.protectedValue); } catch { value = undefined; }
-        if (!value) return refuse({ ...state, status: 'missing', reason: `The protected value of ${state.parsed.key} could not be read (Windows DPAPI, same user).` }, purpose);
+        try {
+          value = await protect.unprotect(state.entry.protectedValue);
+        } catch {
+          value = undefined;
+        }
+        if (!value)
+          return refuse(
+            {
+              ...state,
+              status: 'missing',
+              reason: `The protected value of ${state.parsed.key} could not be read (Windows DPAPI, same user).`,
+            },
+            purpose,
+          );
       }
-      return { status: 'resolved', value, version: state.version, ...(state.expiresOn ? { expiresOn: state.expiresOn } : {}) };
+      return {
+        status: 'resolved',
+        value,
+        version: state.version,
+        ...(state.expiresOn ? { expiresOn: state.expiresOn } : {}),
+      };
     },
     /** Status only, never the value. */
     describe(reference) {
       const state = inspect(reference);
-      return { bound: Boolean(state.entry), status: state.status, version: state.version ?? null, expiresOn: state.expiresOn ?? null };
+      return {
+        bound: Boolean(state.entry),
+        status: state.status,
+        version: state.version ?? null,
+        expiresOn: state.expiresOn ?? null,
+      };
     },
     keys: () => Object.keys(settings),
   };
@@ -128,7 +193,8 @@ const rowsOf = (state, logical) => state?.tables?.[logical] ?? [];
 const idOf = (value) => lower(value !== null && typeof value === 'object' ? (value.id ?? value.value) : value);
 
 /** True when a definition holds secret material: the Secret type, or a value kept in a non-Key Vault secret store. */
-export const isSecretDefinition = (row) => Number(row?.type) === SECRET_TYPE || Number(row?.secretstore ?? KEY_VAULT_STORE) === 1;
+export const isSecretDefinition = (row) =>
+  Number(row?.type) === SECRET_TYPE || Number(row?.secretstore ?? KEY_VAULT_STORE) === 1;
 
 /**
  * The effective environment variables, keyed by lower-case schema name. Layers, lowest first: the definition default,
@@ -138,19 +204,30 @@ export const isSecretDefinition = (row) => Number(row?.type) === SECRET_TYPE || 
  * reference is the Key Vault reference (null when the store holds the secret itself); resolve it with the resolver.
  */
 export function effectiveEnvironmentVariables(state, { overrides = [] } = {}) {
-  const layers = (Array.isArray(overrides) ? overrides : [overrides]).map((layer) => new Map(Object.entries(layer ?? {}).map(([name, value]) => [lower(name), value])));
+  const layers = (Array.isArray(overrides) ? overrides : [overrides]).map(
+    (layer) => new Map(Object.entries(layer ?? {}).map(([name, value]) => [lower(name), value])),
+  );
   const values = rowsOf(state, 'environmentvariablevalue');
   const result = {};
   for (const definition of rowsOf(state, 'environmentvariabledefinition')) {
     const schemaName = definition.schemaname ?? definition.schemaName;
     if (!schemaName) continue;
     const id = idOf(definition.environmentvariabledefinitionid);
-    const row = values.find((v) => idOf(v.environmentvariabledefinitionid ?? v._environmentvariabledefinitionid_value) === id);
+    const row = values.find(
+      (v) => idOf(v.environmentvariabledefinitionid ?? v._environmentvariabledefinitionid_value) === id,
+    );
     let value = row ? (row.value ?? null) : (definition.defaultvalue ?? null);
     for (const layer of layers) if (layer.has(lower(schemaName))) value = layer.get(lower(schemaName));
     const type = definition.type == null ? null : Number(definition.type);
     result[lower(schemaName)] = isSecretDefinition(definition)
-      ? { schemaName, id, type, secret: true, reference: Number(definition.secretstore ?? KEY_VAULT_STORE) === 1 ? null : (value == null ? null : String(value)) }
+      ? {
+          schemaName,
+          id,
+          type,
+          secret: true,
+          reference:
+            Number(definition.secretstore ?? KEY_VAULT_STORE) === 1 ? null : value == null ? null : String(value),
+        }
       : { schemaName, id, type, value: value == null ? null : String(value) };
   }
   return result;
@@ -158,7 +235,12 @@ export function effectiveEnvironmentVariables(state, { overrides = [] } = {}) {
 
 /** The workerData.environmentVariables map for server logic: lower-case schema name → text, or { secret: true }. */
 export function environmentVariablePayload(state, options) {
-  return Object.fromEntries(Object.entries(effectiveEnvironmentVariables(state, options)).map(([name, entry]) => [name, entry.secret ? { secret: true } : entry.value]));
+  return Object.fromEntries(
+    Object.entries(effectiveEnvironmentVariables(state, options)).map(([name, entry]) => [
+      name,
+      entry.secret ? { secret: true } : entry.value,
+    ]),
+  );
 }
 
 /**
@@ -167,16 +249,43 @@ export function environmentVariablePayload(state, options) {
  * `principalId` (the portal service principal) and stay unset when no resolver exists. `secretNames` lists the
  * settings that carry resolved secrets: callers must keep them out of /_sim payloads.
  */
-export async function bindSiteSettings(settings, bindings, effective, { resolver = null, principalId = null, diagnostic = () => {} } = {}) {
-  const next = { ...settings }, secretNames = [];
+export async function bindSiteSettings(
+  settings,
+  bindings,
+  effective,
+  { resolver = null, principalId = null, diagnostic = () => {} } = {},
+) {
+  const next = { ...settings },
+    secretNames = [];
   for (const [setting, target] of Object.entries(bindings ?? {})) {
     const entry = Object.values(effective).find((e) => lower(e.schemaName) === idOf(target) || e.id === idOf(target));
-    if (!entry) { diagnostic({ code: 'SITE_SETTING_ENVIRONMENT_VARIABLE_UNMATCHED', severity: 'warning', setting, message: `Site setting ${setting} names an environment variable that is not imported.` }); continue; }
-    if (!entry.secret) { if (entry.value !== null) next[setting] = entry.value; continue; }
+    if (!entry) {
+      diagnostic({
+        code: 'SITE_SETTING_ENVIRONMENT_VARIABLE_UNMATCHED',
+        severity: 'warning',
+        setting,
+        message: `Site setting ${setting} names an environment variable that is not imported.`,
+      });
+      continue;
+    }
+    if (!entry.secret) {
+      if (entry.value !== null) next[setting] = entry.value;
+      continue;
+    }
     secretNames.push(setting);
-    const answer = resolver ? await resolver.resolve(entry.reference, { principalId, purpose: `site-setting:${setting}` }) : { status: 'unbound' };
+    const answer = resolver
+      ? await resolver.resolve(entry.reference, { principalId, purpose: `site-setting:${setting}` })
+      : { status: 'unbound' };
     if (answer.status === 'resolved') next[setting] = answer.value;
-    else { delete next[setting]; diagnostic({ code: 'SITE_SETTING_SECRET_UNRESOLVED', severity: 'warning', setting, message: `Site setting ${setting} is bound to a Secret environment variable that is ${answer.status}.` }); }
+    else {
+      delete next[setting];
+      diagnostic({
+        code: 'SITE_SETTING_SECRET_UNRESOLVED',
+        severity: 'warning',
+        setting,
+        message: `Site setting ${setting} is bound to a Secret environment variable that is ${answer.status}.`,
+      });
+    }
   }
   return { settings: next, secretNames };
 }

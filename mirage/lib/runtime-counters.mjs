@@ -10,7 +10,7 @@ export function createCounters() {
       values.set(name, (values.get(name) ?? 0) + by);
       counters.tick += 1;
     },
-    get: name => values.get(name) ?? 0,
+    get: (name) => values.get(name) ?? 0,
     snapshot: () => Object.fromEntries([...values].sort(([a], [b]) => a.localeCompare(b))),
   };
   return counters;

@@ -2,11 +2,15 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 // The store is `true` (legacy owned flag) or a request context (request-context.mjs). A context owns the host change slot
 // only when its inBatch flag is set, so plain request contexts still queue their writes.
 export const organizationContext = new AsyncLocalStorage();
-const owning = value => (value && typeof value === 'object' ? (value.inBatch ? value : value.with({ inBatch: true })) : true);
+const owning = (value) =>
+  value && typeof value === 'object' ? (value.inBatch ? value : value.with({ inBatch: true })) : true;
 /** Runs fn as the owner of the host change slot ($batch, local administration), keeping the request context. */
-export const runOwned = fn => organizationContext.run(owning(organizationContext.getStore()), fn);
+export const runOwned = (fn) => organizationContext.run(owning(organizationContext.getStore()), fn);
 /** True inside runOwned: a record write must not enter the host change queue again. */
-export const ownsChange = () => { const value = organizationContext.getStore(); return value === true || value?.inBatch === true; };
+export const ownsChange = () => {
+  const value = organizationContext.getStore();
+  return value === true || value?.inBatch === true;
+};
 
 export async function runAtomic(api, fn) {
   const revision = api.changes?.current();

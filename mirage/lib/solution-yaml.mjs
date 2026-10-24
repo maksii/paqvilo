@@ -14,7 +14,14 @@ import { child, descendants } from './solution-xml.mjs';
 
 const YAML_FILE = /\.ya?ml$/i;
 /** The element each YAML component file describes (its root element in the classic XML layout). */
-export const YAML_ROOTS = Object.freeze({ entity: 'Entity', attribute: 'attribute', form: 'systemform', view: 'savedquery', optionset: 'optionset', relationship: 'EntityRelationship' });
+export const YAML_ROOTS = Object.freeze({
+  entity: 'Entity',
+  attribute: 'attribute',
+  form: 'systemform',
+  view: 'savedquery',
+  optionset: 'optionset',
+  relationship: 'EntityRelationship',
+});
 
 /**
  * `{ kind: 'yaml', part, entityDir?, formType? }` for a YAML-format repository path that carries runtime metadata, else null:
@@ -23,13 +30,14 @@ export const YAML_ROOTS = Object.freeze({ entity: 'Entity', attribute: 'attribut
  */
 export function classifyYamlPath(relative) {
   const parts = String(relative).replace(/\\/g, '/').split('/').filter(Boolean);
-  const lower = parts.map(part => part.toLowerCase());
+  const lower = parts.map((part) => part.toLowerCase());
   if (!YAML_FILE.test(lower.at(-1) ?? '')) return null;
   if (lower[0] === 'entities' && parts.length >= 3) {
     const entityDir = parts[1];
     if (parts.length === 3 && /^entity\.ya?ml$/.test(lower[2])) return { kind: 'yaml', part: 'entity', entityDir };
     if (lower[2] === 'attributes' && parts.length === 4) return { kind: 'yaml', part: 'attribute', entityDir };
-    if (lower[2] === 'formxml' && parts.length >= 4) return { kind: 'yaml', part: 'form', entityDir, ...(parts.length === 5 ? { formType: lower[3] } : {}) };
+    if (lower[2] === 'formxml' && parts.length >= 4)
+      return { kind: 'yaml', part: 'form', entityDir, ...(parts.length === 5 ? { formType: lower[3] } : {}) };
     if (lower[2] === 'savedqueries' && parts.length === 4) return { kind: 'yaml', part: 'view', entityDir };
     return null;
   }
@@ -41,10 +49,19 @@ export function classifyYamlPath(relative) {
 function element(name, value) {
   const node = { name, attrs: {}, children: [], text: '' };
   if (value == null) return node;
-  if (typeof value !== 'object') { node.text = String(value); return node; }
+  if (typeof value !== 'object') {
+    node.text = String(value);
+    return node;
+  }
   for (const [key, item] of Object.entries(value)) {
-    if (key.startsWith('@')) { node.attrs[key.slice(1)] = item == null ? '' : String(item); continue; }
-    if (key === '#text') { node.text = item == null ? '' : String(item); continue; }
+    if (key.startsWith('@')) {
+      node.attrs[key.slice(1)] = item == null ? '' : String(item);
+      continue;
+    }
+    if (key === '#text') {
+      node.text = item == null ? '' : String(item);
+      continue;
+    }
     for (const entry of Array.isArray(item) ? item : [item]) node.children.push(element(key, entry));
   }
   return node;
@@ -56,7 +73,8 @@ function element(name, value) {
  */
 export function yamlNode(text, root) {
   const document = YAML.parse(String(text), { maxAliasCount: 100 });
-  if (!document || typeof document !== 'object' || Array.isArray(document)) throw new Error(`The YAML document is not a ${root} mapping.`);
+  if (!document || typeof document !== 'object' || Array.isArray(document))
+    throw new Error(`The YAML document is not a ${root} mapping.`);
   const keys = Object.keys(document);
   // The element itself or its collection element (EntityRelationships, savedqueries, forms) may wrap the document.
   const wrapped = keys.length === 1 && [root.toLowerCase(), `${root.toLowerCase()}s`].includes(keys[0].toLowerCase());
@@ -65,7 +83,7 @@ export function yamlNode(text, root) {
 
 /** The nodes of `name` at or below `node`. */
 const all = (node, name) => [...(node.name === name ? [node] : []), ...descendants(node, name)];
-const empty = name => ({ name, attrs: {}, children: [], text: '' });
+const empty = (name) => ({ name, attrs: {}, children: [], text: '' });
 const ensure = (parent, name) => child(parent, name) ?? (parent.children.push(empty(name)), parent.children.at(-1));
 
 /**
@@ -75,22 +93,31 @@ const ensure = (parent, name) => child(parent, name) ?? (parent.children.push(em
  * component (an attribute without a name, a form without <form>, a view without savedqueryid).
  */
 export function yamlEntityNode(entityDir, parts) {
-  const node = parts.find(item => item.part === 'entity')?.node ?? empty('Entity');
+  const node = parts.find((item) => item.part === 'entity')?.node ?? empty('Entity');
   const info = ensure(node, 'EntityInfo');
   const header = ensure(info, 'entity');
   if (!header.attrs.Name && !child(node, 'Name')?.text.trim()) header.attrs.Name = entityDir;
   const unread = [];
   parts.forEach((item, index) => {
     if (item.part === 'attribute') {
-      const named = all(item.node, 'attribute').filter(attribute => attribute.attrs.PhysicalName || child(attribute, 'LogicalName') || child(attribute, 'Name'));
-      if (named.length) ensure(header, 'attributes').children.push(...named); else unread.push({ part: item.part, index });
+      const named = all(item.node, 'attribute').filter(
+        (attribute) => attribute.attrs.PhysicalName || child(attribute, 'LogicalName') || child(attribute, 'Name'),
+      );
+      if (named.length) ensure(header, 'attributes').children.push(...named);
+      else unread.push({ part: item.part, index });
     } else if (item.part === 'form') {
-      const forms = all(item.node, 'systemform').filter(form => child(form, 'form'));
-      if (forms.length) ensure(node, 'FormXml').children.push({ ...empty('forms'), attrs: item.formType ? { type: item.formType } : {}, children: forms });
+      const forms = all(item.node, 'systemform').filter((form) => child(form, 'form'));
+      if (forms.length)
+        ensure(node, 'FormXml').children.push({
+          ...empty('forms'),
+          attrs: item.formType ? { type: item.formType } : {},
+          children: forms,
+        });
       else unread.push({ part: item.part, index });
     } else if (item.part === 'view') {
-      const views = all(item.node, 'savedquery').filter(view => child(view, 'savedqueryid'));
-      if (views.length) ensure(ensure(node, 'SavedQueries'), 'savedqueries').children.push(...views); else unread.push({ part: item.part, index });
+      const views = all(item.node, 'savedquery').filter((view) => child(view, 'savedqueryid'));
+      if (views.length) ensure(ensure(node, 'SavedQueries'), 'savedqueries').children.push(...views);
+      else unread.push({ part: item.part, index });
     }
   });
   return { node, unread };
@@ -102,11 +129,13 @@ export function yamlEntityNode(entityDir, parts) {
  */
 export function yamlComponentNode(part, node) {
   if (part === 'optionset') {
-    const sets = all(node, 'optionset').filter(set => set.attrs.Name);
+    const sets = all(node, 'optionset').filter((set) => set.attrs.Name);
     return sets.length ? { ...empty('ImportExportXml'), children: [{ ...empty('optionsets'), children: sets }] } : null;
   }
   if (part === 'relationship') {
-    const relationships = all(node, 'EntityRelationship').filter(relationship => relationship.attrs.Name && relationship.children.length);
+    const relationships = all(node, 'EntityRelationship').filter(
+      (relationship) => relationship.attrs.Name && relationship.children.length,
+    );
     return relationships.length ? { ...empty('EntityRelationships'), children: relationships } : null;
   }
   return null;

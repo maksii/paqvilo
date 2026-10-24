@@ -13,7 +13,10 @@ import path from 'node:path';
 export const VAULT_KEY_FILE = 'mirage-vault.key';
 const vaults = new Map();
 
-const aclError = message => Object.assign(new Error('The vault key file cannot be made readable by the current user only: ' + message), { code: 'VaultKeyAclFailed' });
+const aclError = (message) =>
+  Object.assign(new Error('The vault key file cannot be made readable by the current user only: ' + message), {
+    code: 'VaultKeyAclFailed',
+  });
 // Use an exact private DACL rather than preserving explicit grants inherited from a
 // runner's process defaults. One native ACL update publishes the new DACL atomically.
 const restrictScript = String.raw`$ErrorActionPreference = 'Stop'
@@ -31,11 +34,25 @@ Write-Output ('private-acl-verified:' + [System.Security.Principal.WindowsIdenti
 `;
 /** Windows: replace all inherited and explicit entries with one verified current-user grant. */
 export function restrictToCurrentUser(file) {
-  const executable = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const result = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(restrictScript, 'utf16le').toString('base64')], {
-    encoding: 'utf8', windowsHide: true, timeout: 60000, env: { ...process.env, PAQVILO_VAULT_FILE: path.resolve(file) },
-  });
-  const output = result.stdout?.trim() ?? '', marker = 'private-acl-verified:';
+  const executable = path.join(
+    process.env.SystemRoot ?? 'C:\\Windows',
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+  const result = spawnSync(
+    executable,
+    ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(restrictScript, 'utf16le').toString('base64')],
+    {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 60000,
+      env: { ...process.env, PAQVILO_VAULT_FILE: path.resolve(file) },
+    },
+  );
+  const output = result.stdout?.trim() ?? '',
+    marker = 'private-acl-verified:';
   if (result.status !== 0 || !output.startsWith(marker) || /[\r\n]/.test(output))
     throw aclError((result.stderr || result.error?.message || 'Private ACL verification failed.').trim());
   return output.slice(marker.length) + ':(F)';
@@ -48,14 +65,17 @@ function loadKey(stateDirectory) {
   if (!fs.existsSync(file)) {
     // Written and restricted under a temporary name, then linked to the key name: the link fails when another creation won,
     // so a concurrent first reader never sees an empty or partial key and the first key is never replaced.
-    const key = randomBytes(32), temporary = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    const key = randomBytes(32),
+      temporary = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
     try {
       const descriptor = fs.openSync(temporary, 'wx', 0o600);
       try {
         if (process.platform === 'win32') restrictToCurrentUser(temporary);
         // No key bytes exist until the temporary file's final ACL is verified.
         fs.writeFileSync(descriptor, key.toString('base64'));
-      } finally { fs.closeSync(descriptor); }
+      } finally {
+        fs.closeSync(descriptor);
+      }
       fs.linkSync(temporary, file);
       return key;
     } catch (error) {
@@ -65,7 +85,10 @@ function loadKey(stateDirectory) {
     }
   }
   const key = Buffer.from(fs.readFileSync(file, 'utf8').trim(), 'base64');
-  if (key.length !== 32) throw Object.assign(new Error('The vault key file under the state directory is not a 256-bit key.'), { code: 'VaultKeyInvalid' });
+  if (key.length !== 32)
+    throw Object.assign(new Error('The vault key file under the state directory is not a 256-bit key.'), {
+      code: 'VaultKeyInvalid',
+    });
   return key;
 }
 
@@ -79,9 +102,15 @@ export function flowVault(stateDirectory = null) {
     persistent: Boolean(id),
     /** { alg, iv, tag, data } (base64) of a JSON value. */
     seal(value) {
-      const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', keyOf(), iv);
+      const iv = randomBytes(12),
+        cipher = createCipheriv('aes-256-gcm', keyOf(), iv);
       const data = Buffer.concat([cipher.update(JSON.stringify(value ?? null), 'utf8'), cipher.final()]);
-      return { alg: 'A256GCM', iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: data.toString('base64') };
+      return {
+        alg: 'A256GCM',
+        iv: iv.toString('base64'),
+        tag: cipher.getAuthTag().toString('base64'),
+        data: data.toString('base64'),
+      };
     },
     /** The value of a sealed record, or undefined when it cannot be opened (another key, tampered, absent). */
     open(sealed) {
@@ -89,8 +118,12 @@ export function flowVault(stateDirectory = null) {
       try {
         const decipher = createDecipheriv('aes-256-gcm', keyOf(), Buffer.from(sealed.iv, 'base64'));
         decipher.setAuthTag(Buffer.from(sealed.tag, 'base64'));
-        return JSON.parse(Buffer.concat([decipher.update(Buffer.from(sealed.data, 'base64')), decipher.final()]).toString('utf8'));
-      } catch { return undefined; }
+        return JSON.parse(
+          Buffer.concat([decipher.update(Buffer.from(sealed.data, 'base64')), decipher.final()]).toString('utf8'),
+        );
+      } catch {
+        return undefined;
+      }
     },
   };
   if (id) vaults.set(id, vault);

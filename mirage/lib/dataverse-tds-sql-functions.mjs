@@ -27,7 +27,20 @@ const DAY = 86400000;
 const EPOCH_1900 = Date.UTC(1900, 0, 1);
 const DT_MIN = Date.UTC(1753, 0, 1);
 const DT_MAX = Date.UTC(9999, 11, 31, 23, 59, 59, 997);
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const MONTHS = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const INT_RANGE = {
   tinyint: [0n, 255n],
@@ -35,7 +48,14 @@ const INT_RANGE = {
   int: [-2147483648n, 2147483647n],
   bigint: [-(2n ** 63n), 2n ** 63n - 1n],
 };
-const TYPE_ALIAS = { numeric: 'decimal', dec: 'decimal', real: 'float', char: 'varchar', nchar: 'nvarchar', smalldatetime: 'datetime' };
+const TYPE_ALIAS = {
+  numeric: 'decimal',
+  dec: 'decimal',
+  real: 'float',
+  char: 'varchar',
+  nchar: 'nvarchar',
+  smalldatetime: 'datetime',
+};
 const TYPE_TEXT = /^\s*([a-z]+)\s*(?:\(\s*([^)]*?)\s*\))?\s*$/i;
 const DECIMAL_TEXT = /^([+-]?)(\d*)(?:\.(\d*))?(?:e([+-]?\d+))?$/i;
 const FLOAT_TEXT = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
@@ -45,40 +65,130 @@ const COMPACT_DATE = /^(\d{4})(\d{2})(\d{2})$/;
 const GUID_TEXT = /^\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?$/i;
 const CONVERSION_ERRORS = new Set([241, 242, 245, 8114, 8115, 8169, 9809]);
 const QUOTES = {
-  '[': ['[', ']'], ']': ['[', ']'], "'": ["'", "'"], '"': ['"', '"'], '(': ['(', ')'], ')': ['(', ')'],
-  '<': ['<', '>'], '>': ['<', '>'], '{': ['{', '}'], '}': ['{', '}'], '`': ['`', '`'],
+  '[': ['[', ']'],
+  ']': ['[', ']'],
+  "'": ["'", "'"],
+  '"': ['"', '"'],
+  '(': ['(', ')'],
+  ')': ['(', ')'],
+  '<': ['<', '>'],
+  '>': ['<', '>'],
+  '{': ['{', '}'],
+  '}': ['{', '}'],
+  '`': ['`', '`'],
 };
 const DATE_PARTS = {
-  year: ['year', 'yy', 'yyyy'], quarter: ['quarter', 'qq', 'q'], month: ['month', 'mm', 'm'],
-  dayofyear: ['dayofyear', 'dy', 'y'], day: ['day', 'dd', 'd'], week: ['week', 'wk', 'ww'],
-  weekday: ['weekday', 'dw', 'w'], hour: ['hour', 'hh'], minute: ['minute', 'mi', 'n'],
-  second: ['second', 'ss', 's'], millisecond: ['millisecond', 'ms'],
+  year: ['year', 'yy', 'yyyy'],
+  quarter: ['quarter', 'qq', 'q'],
+  month: ['month', 'mm', 'm'],
+  dayofyear: ['dayofyear', 'dy', 'y'],
+  day: ['day', 'dd', 'd'],
+  week: ['week', 'wk', 'ww'],
+  weekday: ['weekday', 'dw', 'w'],
+  hour: ['hour', 'hh'],
+  minute: ['minute', 'mi', 'n'],
+  second: ['second', 'ss', 's'],
+  millisecond: ['millisecond', 'ms'],
 };
 const PART_BY_NAME = new Map(Object.entries(DATE_PARTS).flatMap(([part, names]) => names.map((n) => [n, part])));
 // Named in Dataverse SQL's unsupported lists (analytic, ranking, cryptographic, metadata, security, ...).
 const UNSUPPORTED = new Set([
-  'ROW_NUMBER', 'RANK', 'DENSE_RANK', 'NTILE', 'LAG', 'LEAD', 'FIRST_VALUE', 'LAST_VALUE',
-  'PERCENT_RANK', 'CUME_DIST', 'PERCENTILE_CONT', 'PERCENTILE_DISC',
-  'HASHBYTES', 'ENCRYPTBYKEY', 'DECRYPTBYKEY', 'ENCRYPTBYPASSPHRASE', 'DECRYPTBYPASSPHRASE',
-  'ENCRYPTBYCERT', 'DECRYPTBYCERT', 'ENCRYPTBYASYMKEY', 'DECRYPTBYASYMKEY', 'SIGNBYCERT',
-  'VERIFYSIGNEDBYCERT', 'SIGNBYASYMKEY', 'VERIFYSIGNEDBYASYMKEY', 'CERTENCODED', 'CERTPRIVATEKEY',
-  'KEY_GUID', 'KEY_ID', 'KEY_NAME', 'CHECKSUM', 'BINARY_CHECKSUM', 'DECOMPRESS',
-  'OPENQUERY', 'OPENROWSET', 'OPENDATASOURCE', 'OPENXML', 'OPENJSON', 'CONTAINSTABLE', 'FREETEXTTABLE',
-  'STRING_SPLIT', 'TEXTPTR', 'TEXTVALID', 'TRIGGER_NESTLEVEL', 'COLUMNS_UPDATED', 'CURSOR_STATUS',
-  'IDENTITY', 'ISJSON', 'SCOPE_IDENTITY', 'SERVERPROPERTY', 'STATS_DATE', 'PARSENAME', 'APP_NAME',
-  'CONNECTIONPROPERTY', 'CONTEXT_INFO', 'CURRENT_REQUEST_ID', 'CURRENT_TRANSACTION_ID', 'HOST_ID',
-  'HOST_NAME', 'SESSION_ID', 'XACT_STATE', 'MIN_ACTIVE_ROWVERSION', 'GET_FILESTREAM_TRANSACTION_CONTEXT',
-  'ORIGINAL_LOGIN', 'SUSER_NAME', 'SUSER_SID', 'SUSER_SNAME', 'SUSER_ID', 'USER_NAME', 'USER_ID',
-  'IS_MEMBER', 'IS_ROLEMEMBER', 'IS_SRVROLEMEMBER', 'HAS_PERMS_BY_NAME', 'PERMISSIONS',
+  'ROW_NUMBER',
+  'RANK',
+  'DENSE_RANK',
+  'NTILE',
+  'LAG',
+  'LEAD',
+  'FIRST_VALUE',
+  'LAST_VALUE',
+  'PERCENT_RANK',
+  'CUME_DIST',
+  'PERCENTILE_CONT',
+  'PERCENTILE_DISC',
+  'HASHBYTES',
+  'ENCRYPTBYKEY',
+  'DECRYPTBYKEY',
+  'ENCRYPTBYPASSPHRASE',
+  'DECRYPTBYPASSPHRASE',
+  'ENCRYPTBYCERT',
+  'DECRYPTBYCERT',
+  'ENCRYPTBYASYMKEY',
+  'DECRYPTBYASYMKEY',
+  'SIGNBYCERT',
+  'VERIFYSIGNEDBYCERT',
+  'SIGNBYASYMKEY',
+  'VERIFYSIGNEDBYASYMKEY',
+  'CERTENCODED',
+  'CERTPRIVATEKEY',
+  'KEY_GUID',
+  'KEY_ID',
+  'KEY_NAME',
+  'CHECKSUM',
+  'BINARY_CHECKSUM',
+  'DECOMPRESS',
+  'OPENQUERY',
+  'OPENROWSET',
+  'OPENDATASOURCE',
+  'OPENXML',
+  'OPENJSON',
+  'CONTAINSTABLE',
+  'FREETEXTTABLE',
+  'STRING_SPLIT',
+  'TEXTPTR',
+  'TEXTVALID',
+  'TRIGGER_NESTLEVEL',
+  'COLUMNS_UPDATED',
+  'CURSOR_STATUS',
+  'IDENTITY',
+  'ISJSON',
+  'SCOPE_IDENTITY',
+  'SERVERPROPERTY',
+  'STATS_DATE',
+  'PARSENAME',
+  'APP_NAME',
+  'CONNECTIONPROPERTY',
+  'CONTEXT_INFO',
+  'CURRENT_REQUEST_ID',
+  'CURRENT_TRANSACTION_ID',
+  'HOST_ID',
+  'HOST_NAME',
+  'SESSION_ID',
+  'XACT_STATE',
+  'MIN_ACTIVE_ROWVERSION',
+  'GET_FILESTREAM_TRANSACTION_CONTEXT',
+  'ORIGINAL_LOGIN',
+  'SUSER_NAME',
+  'SUSER_SID',
+  'SUSER_SNAME',
+  'SUSER_ID',
+  'USER_NAME',
+  'USER_ID',
+  'IS_MEMBER',
+  'IS_ROLEMEMBER',
+  'IS_SRVROLEMEMBER',
+  'HAS_PERMS_BY_NAME',
+  'PERMISSIONS',
 ]);
-const UNSUPPORTED_FAMILY = /^(ERROR_|IDENT_|SQL_VARIANT_|JSON_|OBJECT_|DB_|COL_|COLUMNPROPERTY|DATABASEPROPERTY|OBJECTPROPERTY|TYPEPROPERTY|FILE|INDEX|TYPE_|SCHEMA_|FULLTEXT|APPLOCK_|ASSEMBLYPROPERTY|ORIGINAL_)/;
+const UNSUPPORTED_FAMILY =
+  /^(ERROR_|IDENT_|SQL_VARIANT_|JSON_|OBJECT_|DB_|COL_|COLUMNPROPERTY|DATABASEPROPERTY|OBJECTPROPERTY|TYPEPROPERTY|FILE|INDEX|TYPE_|SCHEMA_|FULLTEXT|APPLOCK_|ASSEMBLYPROPERTY|ORIGINAL_)/;
 
 const FUNCTIONS = new Map();
 const def = (name, minArgs, maxArgs, returns, fn) => FUNCTIONS.set(name, { minArgs, maxArgs, returns, fn });
 // Static return types: returns(argTypes, extra) gives { type, length?, precision?, scale? } (length -1 is max).
 // argTypes are the static types of the arguments; extra.target is the type text of CONVERT's first argument.
 const STRING_KINDS = new Set(['nvarchar', 'varchar']);
-const NUMERIC_KINDS = new Set(['int', 'bigint', 'smallint', 'tinyint', 'decimal', 'numeric', 'money', 'smallmoney', 'float', 'real']);
+const NUMERIC_KINDS = new Set([
+  'int',
+  'bigint',
+  'smallint',
+  'tinyint',
+  'decimal',
+  'numeric',
+  'money',
+  'smallmoney',
+  'float',
+  'real',
+]);
 const TEXT = () => ({ type: 'nvarchar', length: 4000 });
 const TEXT_OF_FIRST = ([a]) => (STRING_KINDS.has(a?.type) ? { type: 'nvarchar', length: a.length ?? 4000 } : TEXT());
 const TEXT_ONE = () => ({ type: 'nvarchar', length: 1 });
@@ -88,14 +198,30 @@ const FLOAT = () => ({ type: 'float' });
 const DATETIME = () => ({ type: 'datetime' });
 const GUID = () => ({ type: 'uniqueidentifier' });
 const FIRST = ([a]) => ({ ...a });
-const NUMERIC = ([a]) => (a.type === 'null' ? { type: 'int' } : NUMERIC_KINDS.has(a.type) ? { ...a } : { type: 'float' });
+const NUMERIC = ([a]) =>
+  a.type === 'null' ? { type: 'int' } : NUMERIC_KINDS.has(a.type) ? { ...a } : { type: 'float' };
 const ISNULL_TYPE = ([a, b]) => (a.type === 'null' ? { ...b } : { ...a });
 const COMMON = (types) => commonType(types);
 
-const PRECEDENCE = ['datetime', 'float', 'decimal', 'money', 'bigint', 'int', 'smallint', 'tinyint', 'bit',
-  'uniqueidentifier', 'nvarchar', 'varchar', 'varbinary', 'binary'];
+const PRECEDENCE = [
+  'datetime',
+  'float',
+  'decimal',
+  'money',
+  'bigint',
+  'int',
+  'smallint',
+  'tinyint',
+  'bit',
+  'uniqueidentifier',
+  'nvarchar',
+  'varchar',
+  'varbinary',
+  'binary',
+];
 const RANK = new Map(PRECEDENCE.map((t, i) => [t, i]));
-const aliasType = (t) => ({ real: 'float', numeric: 'decimal', char: 'varchar', nchar: 'nvarchar', smalldatetime: 'datetime' }[t] ?? t);
+const aliasType = (t) =>
+  ({ real: 'float', numeric: 'decimal', char: 'varchar', nchar: 'nvarchar', smalldatetime: 'datetime' })[t] ?? t;
 
 // Highest-precedence type among branch types; null when any branch type is unknown. A bare NULL takes no part.
 export function commonType(metas) {
@@ -105,7 +231,10 @@ export function commonType(metas) {
   const best = real.reduce((a, b) => ((RANK.get(b.type) ?? 99) < (RANK.get(a.type) ?? 99) ? b : a));
   if (STRING_KINDS.has(best.type)) {
     const strings = real.filter((m) => STRING_KINDS.has(m.type));
-    const length = strings.reduce((max, m) => (max === -1 || m.length === -1 ? -1 : Math.max(max, m.length ?? 4000)), 0);
+    const length = strings.reduce(
+      (max, m) => (max === -1 || m.length === -1 ? -1 : Math.max(max, m.length ?? 4000)),
+      0,
+    );
     return { type: strings.some((m) => m.type === 'nvarchar') ? 'nvarchar' : 'varchar', length };
   }
   return best;
@@ -115,7 +244,10 @@ export function commonType(metas) {
 export function returnType(name, argTypes = [], extra = {}) {
   const fn = FUNCTIONS.get(String(name).toUpperCase());
   if (!fn) return null;
-  return fn.returns(argTypes.map((a) => (typeof a === 'string' ? { type: a } : a)), extra);
+  return fn.returns(
+    argTypes.map((a) => (typeof a === 'string' ? { type: a } : a)),
+    extra,
+  );
 }
 
 const anyNull = (...xs) => xs.some((x) => x === null || x === undefined);
@@ -124,8 +256,13 @@ const fail = (number, message) => {
 };
 const pad = (n, width = 2) => String(n).padStart(width, '0');
 const fields = (d) => ({
-  y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, day: d.getUTCDate(),
-  h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds(), ms: d.getUTCMilliseconds(),
+  y: d.getUTCFullYear(),
+  mo: d.getUTCMonth() + 1,
+  day: d.getUTCDate(),
+  h: d.getUTCHours(),
+  mi: d.getUTCMinutes(),
+  s: d.getUTCSeconds(),
+  ms: d.getUTCMilliseconds(),
 });
 const daysIn = (y, month1) => new Date(Date.UTC(y, month1, 0)).getUTCDate();
 const weekdaySun0 = (d) => (((Math.floor(d.getTime() / DAY) + 4) % 7) + 7) % 7;
@@ -208,15 +345,26 @@ function addMonths(d, n) {
 function addPart(part, n, d) {
   const ms = d.getTime();
   switch (part) {
-    case 'year': return addMonths(d, 12 * n);
-    case 'quarter': return addMonths(d, 3 * n);
-    case 'month': return addMonths(d, n);
-    case 'dayofyear': case 'day': case 'weekday': return dtOf(ms + n * DAY);
-    case 'week': return dtOf(ms + n * 7 * DAY);
-    case 'hour': return dtOf(ms + n * 3600000);
-    case 'minute': return dtOf(ms + n * 60000);
-    case 'second': return dtOf(ms + n * 1000);
-    default: return dtOf(ms + n);
+    case 'year':
+      return addMonths(d, 12 * n);
+    case 'quarter':
+      return addMonths(d, 3 * n);
+    case 'month':
+      return addMonths(d, n);
+    case 'dayofyear':
+    case 'day':
+    case 'weekday':
+      return dtOf(ms + n * DAY);
+    case 'week':
+      return dtOf(ms + n * 7 * DAY);
+    case 'hour':
+      return dtOf(ms + n * 3600000);
+    case 'minute':
+      return dtOf(ms + n * 60000);
+    case 'second':
+      return dtOf(ms + n * 1000);
+    default:
+      return dtOf(ms + n);
   }
 }
 // Index of the datepart boundary that a date falls in; DATEDIFF subtracts two of these.
@@ -226,15 +374,26 @@ function boundary(part, d) {
   const y = d.getUTCFullYear();
   const mo = d.getUTCMonth();
   switch (part) {
-    case 'year': return y;
-    case 'quarter': return y * 4 + Math.floor(mo / 3);
-    case 'month': return y * 12 + mo;
-    case 'dayofyear': case 'day': case 'weekday': return day;
-    case 'week': return Math.floor((day + 4) / 7); // Sunday-based weeks (DATEFIRST 7)
-    case 'hour': return Math.floor(ms / 3600000);
-    case 'minute': return Math.floor(ms / 60000);
-    case 'second': return Math.floor(ms / 1000);
-    default: return ms;
+    case 'year':
+      return y;
+    case 'quarter':
+      return y * 4 + Math.floor(mo / 3);
+    case 'month':
+      return y * 12 + mo;
+    case 'dayofyear':
+    case 'day':
+    case 'weekday':
+      return day;
+    case 'week':
+      return Math.floor((day + 4) / 7); // Sunday-based weeks (DATEFIRST 7)
+    case 'hour':
+      return Math.floor(ms / 3600000);
+    case 'minute':
+      return Math.floor(ms / 60000);
+    case 'second':
+      return Math.floor(ms / 1000);
+    default:
+      return ms;
   }
 }
 function datePartValue(part, d) {
@@ -242,17 +401,28 @@ function datePartValue(part, d) {
   const days = Math.floor(d.getTime() / DAY);
   const jan1 = Date.UTC(y, 0, 1) / DAY;
   switch (part) {
-    case 'year': return y;
-    case 'quarter': return Math.floor((mo - 1) / 3) + 1;
-    case 'month': return mo;
-    case 'dayofyear': return days - jan1 + 1;
-    case 'day': return day;
-    case 'week': return Math.floor((days + 4) / 7) - Math.floor((jan1 + 4) / 7) + 1;
-    case 'weekday': return weekdaySun0(d) + 1;
-    case 'hour': return h;
-    case 'minute': return mi;
-    case 'second': return s;
-    default: return ms;
+    case 'year':
+      return y;
+    case 'quarter':
+      return Math.floor((mo - 1) / 3) + 1;
+    case 'month':
+      return mo;
+    case 'dayofyear':
+      return days - jan1 + 1;
+    case 'day':
+      return day;
+    case 'week':
+      return Math.floor((days + 4) / 7) - Math.floor((jan1 + 4) / 7) + 1;
+    case 'weekday':
+      return weekdaySun0(d) + 1;
+    case 'hour':
+      return h;
+    case 'minute':
+      return mi;
+    case 'second':
+      return s;
+    default:
+      return ms;
   }
 }
 
@@ -262,14 +432,22 @@ function formatDate(d, style) {
   const date = `${pad(y, 4)}-${pad(mo)}-${pad(day)}`;
   const time = `${pad(h)}:${pad(mi)}:${pad(s)}`;
   switch (Number(style ?? 0)) {
-    case 0: return `${MONTHS[mo - 1].slice(0, 3)} ${pad(day)} ${y} ${pad(h % 12 || 12)}:${pad(mi)}${h < 12 ? 'AM' : 'PM'}`;
-    case 101: return `${pad(mo)}/${pad(day)}/${pad(y, 4)}`;
-    case 103: return `${pad(day)}/${pad(mo)}/${pad(y, 4)}`;
-    case 112: return `${pad(y, 4)}${pad(mo)}${pad(day)}`;
-    case 120: return `${date} ${time}`;
-    case 121: return `${date} ${time}.${pad(ms, 3)}`;
-    case 126: return `${date}T${time}.${pad(ms, 3)}`;
-    default: return fail(9809, `The style ${style} is not a valid style number for datetime.`);
+    case 0:
+      return `${MONTHS[mo - 1].slice(0, 3)} ${pad(day)} ${y} ${pad(h % 12 || 12)}:${pad(mi)}${h < 12 ? 'AM' : 'PM'}`;
+    case 101:
+      return `${pad(mo)}/${pad(day)}/${pad(y, 4)}`;
+    case 103:
+      return `${pad(day)}/${pad(mo)}/${pad(y, 4)}`;
+    case 112:
+      return `${pad(y, 4)}${pad(mo)}${pad(day)}`;
+    case 120:
+      return `${date} ${time}`;
+    case 121:
+      return `${date} ${time}.${pad(ms, 3)}`;
+    case 126:
+      return `${date}T${time}.${pad(ms, 3)}`;
+    default:
+      return fail(9809, `The style ${style} is not a valid style number for datetime.`);
   }
 }
 function textOf(value, style) {
@@ -304,7 +482,8 @@ function toInteger(value, t, fromType) {
   let n;
   if (typeof value === 'string') {
     const s = value.trim();
-    if (!/^[+-]?\d+$/.test(s)) fail(245, `Conversion failed when converting the ${fromType} value '${value}' to data type ${t.base}.`);
+    if (!/^[+-]?\d+$/.test(s))
+      fail(245, `Conversion failed when converting the ${fromType} value '${value}' to data type ${t.base}.`);
     n = BigInt(s);
   } else if (typeof value === 'boolean') n = value ? 1n : 0n;
   else if (value instanceof Date) n = BigInt(Math.floor((value.getTime() - EPOCH_1900) / DAY));
@@ -354,7 +533,9 @@ function toGuid(value) {
 function fromText(text, style) {
   const s = Number(style ?? 0);
   let m = null;
-  let year; let month; let day;
+  let year;
+  let month;
+  let day;
   let [h, mi, sec, ms] = [0, 0, 0, 0];
   if (s === 101 || s === 103) {
     m = US_DATE.exec(text);
@@ -379,7 +560,8 @@ function fromText(text, style) {
   } else fail(9809, `The style ${style} is not a valid style number for datetime.`);
   if (!m) fail(241, 'Conversion failed when converting date and/or time from character string.');
   const [y, mo, d] = [Number(year), Number(month), Number(day)];
-  if (y < 1753 || y > 9999) fail(242, 'The conversion of a varchar data type to a datetime data type resulted in an out-of-range value.');
+  if (y < 1753 || y > 9999)
+    fail(242, 'The conversion of a varchar data type to a datetime data type resulted in an out-of-range value.');
   if (mo < 1 || mo > 12 || d < 1 || d > daysIn(y, mo) || h > 23 || mi > 59 || sec > 59) {
     fail(241, 'Conversion failed when converting date and/or time from character string.');
   }
@@ -393,7 +575,8 @@ function toDatetime(value, style, _fromType) {
   const days = typeof value === 'object' ? Number(value.decimal) : Number(value);
   const whole = Math.trunc(days);
   const ms = EPOCH_1900 + whole * DAY + Math.round((days - whole) * DAY);
-  if (!(ms >= DT_MIN && ms <= DT_MAX)) fail(8115, 'Arithmetic overflow error converting expression to data type datetime.');
+  if (!(ms >= DT_MIN && ms <= DT_MAX))
+    fail(8115, 'Arithmetic overflow error converting expression to data type datetime.');
   return new Date(ms);
 }
 
@@ -410,25 +593,42 @@ function metaOfTypeText(spec) {
 function parseType(spec) {
   const m = TYPE_TEXT.exec(String(spec));
   const raw = m ? m[1].toLowerCase() : '';
-  if (raw === 'money' || raw === 'smallmoney') return { base: 'decimal', precision: raw === 'money' ? 19 : 10, scale: 4 };
+  if (raw === 'money' || raw === 'smallmoney')
+    return { base: 'decimal', precision: raw === 'money' ? 19 : 10, scale: 4 };
   const base = TYPE_ALIAS[raw] ?? raw;
   const args = m?.[2] ? m[2].split(',').map((x) => x.trim()) : [];
   switch (base) {
-    case 'decimal': return { base, precision: args[0] === undefined ? 18 : Number(args[0]), scale: args[1] === undefined ? 0 : Number(args[1]) };
-    case 'varchar': case 'nvarchar': {
+    case 'decimal':
+      return {
+        base,
+        precision: args[0] === undefined ? 18 : Number(args[0]),
+        scale: args[1] === undefined ? 0 : Number(args[1]),
+      };
+    case 'varchar':
+    case 'nvarchar': {
       let length = 30; // CAST and CONVERT default for character types without a length
       if (args[0] !== undefined) length = args[0].toLowerCase() === 'max' ? Infinity : Number(args[0]);
       return { base, length };
     }
-    case 'binary': case 'varbinary': { // binary(n) defaults to 1 byte, varbinary(n) to 30; binary has no max
+    case 'binary':
+    case 'varbinary': {
+      // binary(n) defaults to 1 byte, varbinary(n) to 30; binary has no max
       const max = args[0] !== undefined && args[0].toLowerCase() === 'max';
       if (max && base === 'binary') fail(102, "Incorrect syntax near 'max'.");
       const length = args[0] === undefined ? (base === 'binary' ? 1 : 30) : max ? Infinity : Number(args[0]);
       return { base, length };
     }
-    case 'int': case 'bigint': case 'smallint': case 'tinyint': case 'bit': case 'float': case 'datetime': case 'uniqueidentifier':
+    case 'int':
+    case 'bigint':
+    case 'smallint':
+    case 'tinyint':
+    case 'bit':
+    case 'float':
+    case 'datetime':
+    case 'uniqueidentifier':
       return { base };
-    default: return fail(2715, `Cannot find data type ${spec}.`);
+    default:
+      return fail(2715, `Cannot find data type ${spec}.`);
   }
 }
 
@@ -439,10 +639,17 @@ function toBinary(value, t, fromType) {
   let bytes;
   if (Buffer.isBuffer(value)) bytes = value;
   else if (typeof value === 'string') bytes = Buffer.from(value, fromType === 'varchar' ? 'latin1' : 'utf16le');
-  else if (typeof value === 'bigint') { bytes = Buffer.alloc(8); bytes.writeBigInt64BE(value); }
-  else if (typeof value === 'number' && Number.isInteger(value)) {
-    if (value >= -2147483648 && value <= 2147483647) { bytes = Buffer.alloc(4); bytes.writeInt32BE(value); }
-    else { bytes = Buffer.alloc(8); bytes.writeBigInt64BE(BigInt(value)); }
+  else if (typeof value === 'bigint') {
+    bytes = Buffer.alloc(8);
+    bytes.writeBigInt64BE(value);
+  } else if (typeof value === 'number' && Number.isInteger(value)) {
+    if (value >= -2147483648 && value <= 2147483647) {
+      bytes = Buffer.alloc(4);
+      bytes.writeInt32BE(value);
+    } else {
+      bytes = Buffer.alloc(8);
+      bytes.writeBigInt64BE(BigInt(value));
+    }
   } else if (typeof value === 'boolean') bytes = Buffer.from([value ? 1 : 0]);
   else fail(8114, `Error converting data type ${fromType} to ${t.base}.`);
   if (t.base === 'binary') {
@@ -458,20 +665,33 @@ export function castValue(value, spec, { style, fromType = 'nvarchar' } = {}) {
   const t = parseType(spec);
   if (value === null || value === undefined) return null;
   if (t.base === 'binary' || t.base === 'varbinary') return toBinary(value, t, fromType);
-  if (Buffer.isBuffer(value)) { // varbinary: text reads bytes as characters (utf16le for nvarchar), integers read big-endian
+  if (Buffer.isBuffer(value)) {
+    // varbinary: text reads bytes as characters (utf16le for nvarchar), integers read big-endian
     if (t.base === 'varchar' || t.base === 'nvarchar') {
       return (t.base === 'nvarchar' ? value.toString('utf16le') : value.toString('latin1')).slice(0, t.length);
     }
-    if (!['int', 'bigint', 'smallint', 'tinyint'].includes(t.base)) fail(8114, `Error converting data type varbinary to ${t.base}.`);
+    if (!['int', 'bigint', 'smallint', 'tinyint'].includes(t.base))
+      fail(8114, `Error converting data type varbinary to ${t.base}.`);
   }
   switch (t.base) {
-    case 'int': case 'bigint': case 'smallint': case 'tinyint': return toInteger(value, t, fromType);
-    case 'bit': return toBit(value, fromType);
-    case 'decimal': return toDecimal(value, t, fromType);
-    case 'float': return toFloat(value, fromType);
-    case 'varchar': case 'nvarchar': return textOf(value, style).slice(0, t.length);
-    case 'datetime': return toDatetime(value, style, fromType);
-    default: return toGuid(value);
+    case 'int':
+    case 'bigint':
+    case 'smallint':
+    case 'tinyint':
+      return toInteger(value, t, fromType);
+    case 'bit':
+      return toBit(value, fromType);
+    case 'decimal':
+      return toDecimal(value, t, fromType);
+    case 'float':
+      return toFloat(value, fromType);
+    case 'varchar':
+    case 'nvarchar':
+      return textOf(value, style).slice(0, t.length);
+    case 'datetime':
+      return toDatetime(value, style, fromType);
+    default:
+      return toGuid(value);
   }
 }
 
@@ -500,7 +720,8 @@ function convertOperand(v, other) {
   }
   return v;
 }
-const isDecimalValue = (v) => v !== null && typeof v === 'object' && !(v instanceof Date) && !Buffer.isBuffer(v) && 'decimal' in v;
+const isDecimalValue = (v) =>
+  v !== null && typeof v === 'object' && !(v instanceof Date) && !Buffer.isBuffer(v) && 'decimal' in v;
 
 export function compareValues(a, b, ctx, typeA = null, typeB = null) {
   const ord = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
@@ -550,9 +771,26 @@ function dateFormat(d, pattern, locale) {
   const h12 = h % 12 || 12;
   const named = (opts) => new Intl.DateTimeFormat(locale, { timeZone: 'UTC', ...opts }).format(d);
   const map = {
-    yyyy: pad(y, 4), yy: pad(y % 100), MMMM: named({ month: 'long' }), MMM: named({ month: 'short' }), MM: pad(mo), M: String(mo),
-    dddd: named({ weekday: 'long' }), ddd: named({ weekday: 'short' }), dd: pad(day), d: String(day), HH: pad(h), H: String(h),
-    hh: pad(h12), h: String(h12), mm: pad(mi), m: String(mi), ss: pad(s), s: String(s), fff: pad(ms, 3), tt: h < 12 ? 'AM' : 'PM',
+    yyyy: pad(y, 4),
+    yy: pad(y % 100),
+    MMMM: named({ month: 'long' }),
+    MMM: named({ month: 'short' }),
+    MM: pad(mo),
+    M: String(mo),
+    dddd: named({ weekday: 'long' }),
+    ddd: named({ weekday: 'short' }),
+    dd: pad(day),
+    d: String(day),
+    HH: pad(h),
+    H: String(h),
+    hh: pad(h12),
+    h: String(h12),
+    mm: pad(mi),
+    m: String(mi),
+    ss: pad(s),
+    s: String(s),
+    fff: pad(ms, 3),
+    tt: h < 12 ? 'AM' : 'PM',
   };
   return pattern.replace(dateFormatTokens, (t) => {
     if (t.length > 1 && t.startsWith("'")) return t.slice(1, -1);
@@ -570,7 +808,7 @@ function numberFormat(n, pattern, locale) {
   if (int === '0' && minInt === 0) int = '';
   int = int.padStart(minInt, '0');
   if (intPat.includes(',')) int = int.replace(/\B(?=(\d{3})+(?!\d))/g, sep.group);
-  const body = (int + (frac ? `${sep.decimal}${frac}` : '')) || '0';
+  const body = int + (frac ? `${sep.decimal}${frac}` : '') || '0';
   return (n < 0 && /[1-9]/.test(body) ? '-' : '') + body;
 }
 
@@ -651,7 +889,10 @@ def('TRIM', 1, 2, TEXT_OF_FIRST, (args) => {
 def('CONCAT', 2, 254, TEXT, (args) => args.map((v) => (v === null ? '' : textOf(v))).join(''));
 def('CONCAT_WS', 3, 254, TEXT, ([sep, ...rest]) => {
   if (sep === null) return null;
-  return rest.filter((v) => v !== null).map((v) => textOf(v)).join(textOf(sep));
+  return rest
+    .filter((v) => v !== null)
+    .map((v) => textOf(v))
+    .join(textOf(sep));
 });
 def('STUFF', 4, 4, TEXT, ([s, start, len, ins]) => {
   if (anyNull(s, start, len, ins)) return null;
@@ -680,8 +921,28 @@ const DATE_STANDARD = {
 };
 // ponytail: common regions only; a region not listed formats currency with the no-currency code XXX.
 const CURRENCY_BY_REGION = {
-  US: 'USD', GB: 'GBP', JP: 'JPY', IN: 'INR', CN: 'CNY', CA: 'CAD', AU: 'AUD', CH: 'CHF', BR: 'BRL', RU: 'RUB', KR: 'KRW',
-  DE: 'EUR', FR: 'EUR', IT: 'EUR', ES: 'EUR', NL: 'EUR', AT: 'EUR', BE: 'EUR', IE: 'EUR', PT: 'EUR', FI: 'EUR', GR: 'EUR',
+  US: 'USD',
+  GB: 'GBP',
+  JP: 'JPY',
+  IN: 'INR',
+  CN: 'CNY',
+  CA: 'CAD',
+  AU: 'AUD',
+  CH: 'CHF',
+  BR: 'BRL',
+  RU: 'RUB',
+  KR: 'KRW',
+  DE: 'EUR',
+  FR: 'EUR',
+  IT: 'EUR',
+  ES: 'EUR',
+  NL: 'EUR',
+  AT: 'EUR',
+  BE: 'EUR',
+  IE: 'EUR',
+  PT: 'EUR',
+  FI: 'EUR',
+  GR: 'EUR',
 };
 const cultureOf = (name) => {
   let tag;
@@ -700,9 +961,10 @@ function separators(locale) {
   };
 }
 function standardNumber(n, letter, precision, locale) {
-  const opts = letter === 'C'
-    ? { style: 'currency', currency: CURRENCY_BY_REGION[new Intl.Locale(locale).maximize().region] ?? 'XXX' }
-    : { style: letter === 'P' ? 'percent' : 'decimal' };
+  const opts =
+    letter === 'C'
+      ? { style: 'currency', currency: CURRENCY_BY_REGION[new Intl.Locale(locale).maximize().region] ?? 'XXX' }
+      : { style: letter === 'P' ? 'percent' : 'decimal' };
   if (precision !== '') opts.minimumFractionDigits = opts.maximumFractionDigits = Number(precision);
   else if (letter !== 'C') opts.minimumFractionDigits = opts.maximumFractionDigits = 2; // N and P default to two places
   return new Intl.NumberFormat(locale, opts).format(n);
@@ -718,11 +980,16 @@ def('FORMAT', 2, 3, TEXT, ([v, fmt, culture]) => {
       : dateFormat(v, pattern, locale);
   }
   if (typeof v === 'string' || typeof v === 'boolean') {
-    fail(8116, `Argument data type ${typeof v === 'string' ? 'nvarchar' : 'bit'} is invalid for argument 1 of format function.`);
+    fail(
+      8116,
+      `Argument data type ${typeof v === 'string' ? 'nvarchar' : 'bit'} is invalid for argument 1 of format function.`,
+    );
   }
   const n = toFloat(v, 'nvarchar');
   const standard = NUMBER_STANDARD.exec(pattern);
-  return standard ? standardNumber(n, standard[1].toUpperCase(), standard[2], locale) : numberFormat(n, pattern, locale);
+  return standard
+    ? standardNumber(n, standard[1].toUpperCase(), standard[2], locale)
+    : numberFormat(n, pattern, locale);
 });
 
 // FORMATMESSAGE(msg, args...): printf-style %s %d %i %u %x %X %o %% with flags - 0 +, width and .precision.
@@ -752,7 +1019,8 @@ function formatMessageArg(flags, width, precision, type, v) {
 }
 def('FORMATMESSAGE', 1, 254, TEXT, ([msg, ...args]) => {
   if (msg === null) return null;
-  if (typeof msg === 'number' || typeof msg === 'bigint') fail(195, "'FORMATMESSAGE' is not supported in Dataverse SQL.");
+  if (typeof msg === 'number' || typeof msg === 'bigint')
+    fail(195, "'FORMATMESSAGE' is not supported in Dataverse SQL.");
   let next = 0;
   return textOf(msg).replace(PLACEHOLDER, (_, flags, width, precision, type) => {
     if (type === '%') return '%';
@@ -810,7 +1078,10 @@ def('DATEDIFF', 3, 3, INT, ([part, a, b]) => {
   const p = datepart(part);
   const diff = boundary(p, dateOf(b)) - boundary(p, dateOf(a));
   if (Math.abs(diff) > 2147483647) {
-    fail(535, 'The datediff function resulted in an overflow. The number of dateparts separating two date/time instances is too large. Try to use datediff with a less precise datepart.');
+    fail(
+      535,
+      'The datediff function resulted in an overflow. The number of dateparts separating two date/time instances is too large. Try to use datediff with a less precise datepart.',
+    );
   }
   return diff;
 });
@@ -864,7 +1135,7 @@ const mulberry32 = (seed) => {
   return () => {
     a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = ((t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 };
@@ -907,7 +1178,9 @@ def('SIGN', 1, 1, NUMERIC, ([x]) => {
   const { coef } = parseDecimal(v.decimal);
   return { decimal: coef > 0n ? '1' : coef < 0n ? '-1' : '0' };
 });
-def('POWER', 2, 2, FLOAT, ([x, y]) => (anyNull(x, y) ? null : floatOut(toFloat(x, 'nvarchar') ** toFloat(y, 'nvarchar'))));
+def('POWER', 2, 2, FLOAT, ([x, y]) =>
+  anyNull(x, y) ? null : floatOut(toFloat(x, 'nvarchar') ** toFloat(y, 'nvarchar')),
+);
 def('SQRT', 1, 1, FLOAT, ([x]) => (x === null ? null : floatOut(Math.sqrt(toFloat(x, 'nvarchar')))));
 def('SQUARE', 1, 1, FLOAT, ([x]) => {
   if (x === null) return null;
@@ -933,12 +1206,24 @@ def('COALESCE', 2, 254, COMMON, (args) => {
   return v === undefined ? null : v;
 });
 def('NULLIF', 2, 2, FIRST, ([a, b], ctx) => (a === null || b === null || compareValues(a, b, ctx) !== 0 ? a : null));
-def('IIF', 3, 3, (t) => commonType(t.slice(1)), ([cond, a, b]) => (cond === true ? a : b));
-def('CHOOSE', 2, 254, (t) => commonType(t.slice(1)), ([i, ...values]) => {
-  if (i === null) return null;
-  const k = Math.trunc(Number(i));
-  return k >= 1 && k <= values.length ? values[k - 1] : null;
-});
+def(
+  'IIF',
+  3,
+  3,
+  (t) => commonType(t.slice(1)),
+  ([cond, a, b]) => (cond === true ? a : b),
+);
+def(
+  'CHOOSE',
+  2,
+  254,
+  (t) => commonType(t.slice(1)),
+  ([i, ...values]) => {
+    if (i === null) return null;
+    const k = Math.trunc(Number(i));
+    return k >= 1 && k <= values.length ? values[k - 1] : null;
+  },
+);
 
 // System functions. NEWID is random, not sequential.
 def('NEWID', 0, 0, GUID, (_, ctx) => (ctx.newId ? ctx.newId() : randomUUID().toUpperCase()));
@@ -959,15 +1244,27 @@ def('ISNUMERIC', 1, 1, INT, ([v]) => {
 });
 
 // CONVERT(type, value, style) and TRY_CONVERT. The first argument is the type text.
-def('CONVERT', 2, 3, (_t, extra) => metaOfTypeText(extra.target), ([type, v, style]) => castValue(v, type, { style }));
-def('TRY_CONVERT', 2, 3, (_t, extra) => metaOfTypeText(extra.target), ([type, v, style]) => {
-  try {
-    return castValue(v, type, { style });
-  } catch (e) {
-    if (CONVERSION_ERRORS.has(e.number)) return null;
-    throw e;
-  }
-});
+def(
+  'CONVERT',
+  2,
+  3,
+  (_t, extra) => metaOfTypeText(extra.target),
+  ([type, v, style]) => castValue(v, type, { style }),
+);
+def(
+  'TRY_CONVERT',
+  2,
+  3,
+  (_t, extra) => metaOfTypeText(extra.target),
+  ([type, v, style]) => {
+    try {
+      return castValue(v, type, { style });
+    } catch (e) {
+      if (CONVERSION_ERRORS.has(e.number)) return null;
+      throw e;
+    }
+  },
+);
 
 // Keys are uppercase names; each entry is { minArgs, maxArgs, returns(argTypes, extra), fn(args, ctx) }.
 export { FUNCTIONS };

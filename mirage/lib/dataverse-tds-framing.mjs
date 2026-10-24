@@ -139,7 +139,10 @@ export function decodePrelogin(payload) {
     const offset = payload.readUInt16BE(i + 1);
     const length = payload.readUInt16BE(i + 3);
     if (offset + length > payload.length) throw new Error(`PRELOGIN option ${token} points outside the message`);
-    fields[PRELOGIN_NAMES[token] ?? `0x${token.toString(16).padStart(2, '0')}`] = payload.subarray(offset, offset + length);
+    fields[PRELOGIN_NAMES[token] ?? `0x${token.toString(16).padStart(2, '0')}`] = payload.subarray(
+      offset,
+      offset + length,
+    );
   }
   return fields;
 }
@@ -177,7 +180,8 @@ class PreloginTlsAdapter extends Duplex {
     if (this.#raw) return this.push(chunk);
     this.#inbound = this.#inbound.length ? Buffer.concat([this.#inbound, chunk]) : chunk;
     while (this.#inbound.length) {
-      if (this.#inbound[0] !== TDS.PRELOGIN) { // the client's first raw TLS record: its handshake packets are over
+      if (this.#inbound[0] !== TDS.PRELOGIN) {
+        // the client's first raw TLS record: its handshake packets are over
         this.#flush(); // the server's handshake flight is complete, so it goes out in PRELOGIN packets
         this.#raw = true;
         const rest = this.#inbound;

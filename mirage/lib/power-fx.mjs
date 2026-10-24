@@ -31,22 +31,59 @@
 //   "UTC"); host.now() (ms, default Date.now); host.guid() (GUID() text, default crypto.randomUUID); host.dataRowLimit (non-delegated reads, default 500); host.diagnostic(entry)
 //   (delegation warnings); host.self / host.parent records; host.app ('canvas' makes IsMatch default to Complete).
 import { DataError } from './data-error.mjs';
-import { compareNumeric, decimalParts, decimalText, exactNumeric, isExactNumeric, multiplyNumeric, numericPair } from './exact-numeric.mjs';
+import {
+  compareNumeric,
+  decimalParts,
+  decimalText,
+  exactNumeric,
+  isExactNumeric,
+  multiplyNumeric,
+  numericPair,
+} from './exact-numeric.mjs';
 import { FUNCTIONS } from './power-fx-functions.mjs';
 
 // ---- Values
 
 // Learn, "Error handling" (ErrorKind enum values) and the Power Fx SDK ErrorKind enum.
 export const ErrorKind = Object.freeze({
-  None: 0, Sync: 1, MissingRequired: 2, CreatePermission: 3, EditPermissions: 4, DeletePermissions: 5, Conflict: 6, NotFound: 7,
-  ConstraintViolated: 8, GeneratedValue: 9, ReadOnlyValue: 10, Validation: 11, Unknown: 12, Div0: 13, BadLanguageCode: 14,
-  BadRegex: 15, InvalidFunctionUsage: 16, FileNotFound: 17, AnalysisError: 18, ReadPermission: 19, NotSupported: 20,
-  InsufficientMemory: 21, QuotaExceeded: 22, Network: 23, Numeric: 24, InvalidArgument: 25, Internal: 26, NotApplicable: 27,
-  Timeout: 28, ServiceUnavailable: 29, InvalidJSON: 30, Custom: 1000,
+  None: 0,
+  Sync: 1,
+  MissingRequired: 2,
+  CreatePermission: 3,
+  EditPermissions: 4,
+  DeletePermissions: 5,
+  Conflict: 6,
+  NotFound: 7,
+  ConstraintViolated: 8,
+  GeneratedValue: 9,
+  ReadOnlyValue: 10,
+  Validation: 11,
+  Unknown: 12,
+  Div0: 13,
+  BadLanguageCode: 14,
+  BadRegex: 15,
+  InvalidFunctionUsage: 16,
+  FileNotFound: 17,
+  AnalysisError: 18,
+  ReadPermission: 19,
+  NotSupported: 20,
+  InsufficientMemory: 21,
+  QuotaExceeded: 22,
+  Network: 23,
+  Numeric: 24,
+  InvalidArgument: 25,
+  Internal: 26,
+  NotApplicable: 27,
+  Timeout: 28,
+  ServiceUnavailable: 29,
+  InvalidJSON: 30,
+  Custom: 1000,
 });
 
 export class FxError {
-  constructor(errors) { this.errors = errors; }
+  constructor(errors) {
+    this.errors = errors;
+  }
 }
 export const fxError = (kind, message) => new FxError([{ Kind: kind, Message: message }]);
 export const isError = (v) => v instanceof FxError;
@@ -56,18 +93,32 @@ export const CAUSE = Symbol('power-fx.cause');
 // kind 'datetime': ms is the UTC instant; tzi marks a time zone independent value (UTCNow, a TimeZoneIndependent column) whose
 // parts read in UTC. kind 'date': ms is UTC midnight of the calendar date. kind 'time': ms since midnight.
 export class FxDate {
-  constructor(kind, ms, tzi = false) { this.kind = kind; this.ms = ms; this.tzi = tzi; }
+  constructor(kind, ms, tzi = false) {
+    this.kind = kind;
+    this.ms = ms;
+    this.tzi = tzi;
+  }
 }
 export class FxGuid {
-  constructor(text) { this.value = String(text).toLowerCase(); }
-  toString() { return this.value; }
+  constructor(text) {
+    this.value = String(text).toLowerCase();
+  }
+  toString() {
+    return this.value;
+  }
 }
 export class FxUntyped {
-  constructor(raw) { this.raw = raw; }
+  constructor(raw) {
+    this.raw = raw;
+  }
 }
 // A related record (a Dataverse lookup) read on first use. table and id identify it; load() answers the record or null.
 export class FxRecordRef {
-  constructor(table, id, load) { this.table = table; this.id = String(id).toLowerCase(); this.load = load; }
+  constructor(table, id, load) {
+    this.table = table;
+    this.id = String(id).toLowerCase();
+    this.load = load;
+  }
   get record() {
     if (!('cached' in this)) this.cached = this.load();
     return this.cached;
@@ -76,14 +127,24 @@ export class FxRecordRef {
 // A delegable table: adapter (power-fx-dataverse.mjs) answers reads, writes and the OData translation of columns; query
 // holds the delegated filters, order and top so far.
 export class FxDataSource {
-  constructor(name, adapter, query = { filters: [], orderby: [], top: null }) { this.name = name; this.adapter = adapter; this.query = query; }
-  with(change) { return new FxDataSource(this.name, this.adapter, { ...this.query, ...change }); }
+  constructor(name, adapter, query = { filters: [], orderby: [], top: null }) {
+    this.name = name;
+    this.adapter = adapter;
+    this.query = query;
+  }
+  with(change) {
+    return new FxDataSource(this.name, this.adapter, { ...this.query, ...change });
+  }
 }
 // A record's display-name aliases (Dataverse 'Display Name' -> logical name), kept off the enumerable fields.
 export const ALIASES = Symbol('power-fx.aliases');
 
 export const isBlank = (v) => v === null || v === undefined;
-export const isRecord = (v) => v !== null && typeof v === 'object' && !isExactNumeric(v) && (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
+export const isRecord = (v) =>
+  v !== null &&
+  typeof v === 'object' &&
+  !isExactNumeric(v) &&
+  (Object.getPrototypeOf(v) === Object.prototype || Object.getPrototypeOf(v) === null);
 export const isTable = Array.isArray;
 
 // A host record marked with LAZY (a canvas control whose properties are getters) is used as it is: toFx never reads its
@@ -127,7 +188,11 @@ export function runtimeError(error) {
   // A refused data-source write answers the data source's own error (the Web API envelope), not a generic formula error.
   if (first[CAUSE]) return first[CAUSE];
   const kind = Object.keys(ErrorKind).find((name) => ErrorKind[name] === first.Kind) ?? String(first.Kind);
-  return new DataError(String(first.Message ?? kind), 400, 'PowerFxError', { kind, errorKind: first.Kind, errors: error.errors });
+  return new DataError(String(first.Message ?? kind), 400, 'PowerFxError', {
+    kind,
+    errorKind: first.Kind,
+    errors: error.errors,
+  });
 }
 
 // ---- Dates and time zones
@@ -137,8 +202,26 @@ const zoneFormats = new Map();
 // Offset (ms) of an IANA zone at a UTC instant, from Intl (stdlib); 0 for UTC.
 export function zoneOffset(utcMs, timeZone) {
   if (!timeZone || timeZone === 'UTC') return 0;
-  if (!zoneFormats.has(timeZone)) zoneFormats.set(timeZone, new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }));
-  const parts = Object.fromEntries(zoneFormats.get(timeZone).formatToParts(new Date(utcMs)).map((p) => [p.type, Number(p.value)]));
+  if (!zoneFormats.has(timeZone))
+    zoneFormats.set(
+      timeZone,
+      new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        hourCycle: 'h23',
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric',
+        second: 'numeric',
+      }),
+    );
+  const parts = Object.fromEntries(
+    zoneFormats
+      .get(timeZone)
+      .formatToParts(new Date(utcMs))
+      .map((p) => [p.type, Number(p.value)]),
+  );
   const wall = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
   return wall - Math.floor(utcMs / 1000) * 1000;
 }
@@ -159,7 +242,8 @@ const pad = (n, width = 2) => String(n).padStart(width, '0');
 export function isoOf(date) {
   const d = new Date(date.ms);
   if (date.kind === 'date') return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
-  if (date.kind === 'time') return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${pad(d.getUTCMilliseconds(), 3)}`;
+  if (date.kind === 'time')
+    return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}.${pad(d.getUTCMilliseconds(), 3)}`;
   return d.toISOString();
 }
 
@@ -171,17 +255,43 @@ export function isoOf(date) {
 function wallOfParts(year, month, day, hour = 0, minute = 0, second = 0, ms = 0) {
   const wall = Date.UTC(year, month - 1, day, hour, minute, second, ms);
   const d = new Date(wall);
-  const valid = d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === day && hour < 24 && minute < 60 && second < 60;
+  const valid =
+    d.getUTCFullYear() === year &&
+    d.getUTCMonth() === month - 1 &&
+    d.getUTCDate() === day &&
+    hour < 24 &&
+    minute < 60 &&
+    second < 60;
   return valid ? wall : NaN;
 }
 export function parseDateText(text, kind, timeZone) {
   const value = String(text).trim();
   if (!value) return null;
-  let m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i.exec(value);
-  let wall, zoned = null;
+  let m =
+    /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i.exec(
+      value,
+    );
+  let wall,
+    zoned = null;
   if (m) {
-    wall = wallOfParts(+m[1], +m[2], +m[3], +(m[4] ?? 0), +(m[5] ?? 0), +(m[6] ?? 0), Number(String(m[7] ?? '0').slice(0, 3).padEnd(3, '0')));
-    if (m[8]) zoned = m[8].toUpperCase() === 'Z' ? 0 : (m[8][0] === '-' ? -1 : 1) * (Number(m[8].slice(1, 3)) * 60 + Number(m[8].slice(-2))) * 60_000;
+    wall = wallOfParts(
+      +m[1],
+      +m[2],
+      +m[3],
+      +(m[4] ?? 0),
+      +(m[5] ?? 0),
+      +(m[6] ?? 0),
+      Number(
+        String(m[7] ?? '0')
+          .slice(0, 3)
+          .padEnd(3, '0'),
+      ),
+    );
+    if (m[8])
+      zoned =
+        m[8].toUpperCase() === 'Z'
+          ? 0
+          : (m[8][0] === '-' ? -1 : 1) * (Number(m[8].slice(1, 3)) * 60 + Number(m[8].slice(-2))) * 60_000;
   } else if ((m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i.exec(value))) {
     let hour = +(m[4] ?? 0);
     if (m[7]) hour = (hour % 12) + (m[7].toUpperCase() === 'PM' ? 12 : 0);
@@ -201,7 +311,9 @@ export function parseDateText(text, kind, timeZone) {
   if (Number.isNaN(wall)) return null;
   if (zoned !== null) {
     const utc = wall - zoned;
-    return kind === 'datetime' ? new FxDate('datetime', utc) : fromWall(kind, utc + zoneOffset(utc, timeZone), timeZone);
+    return kind === 'datetime'
+      ? new FxDate('datetime', utc)
+      : fromWall(kind, utc + zoneOffset(utc, timeZone), timeZone);
   }
   return fromWall(kind, wall, timeZone);
 }
@@ -215,7 +327,9 @@ export const round15 = (n) => (Number.isFinite(n) && !Number.isInteger(n) ? Numb
 // (exact-numeric.mjs, the store's own representation). Float (Float(), Sqrt, Ln, Exp, Power, ^ and float columns, which
 // Learn says return float, and any arithmetic with a float operand) is an FxFloat double.
 export class FxFloat {
-  constructor(value) { this.value = value; }
+  constructor(value) {
+    this.value = value;
+  }
 }
 export const isNumeric = (v) => typeof v === 'number' || isExactNumeric(v) || v instanceof FxFloat;
 const DECIMAL_PLACES = 28;
@@ -226,18 +340,22 @@ export function decimalArithmetic(op, a, b) {
     return exactArithmetic(op, a, b);
   } catch (error) {
     // Learn ("Error handling", ErrorKind.Numeric): a numeric overflow is an error value, never an exception.
-    if (error?.code === 'NumericPrecisionUnsupported') return fxError(ErrorKind.Numeric, 'Invalid operation: the number is out of range.');
+    if (error?.code === 'NumericPrecisionUnsupported')
+      return fxError(ErrorKind.Numeric, 'Invalid operation: the number is out of range.');
     throw error;
   }
 }
 function exactArithmetic(op, a, b) {
   const pair = numericPair(a, b);
   const scale = Math.max(decimalParts(a).scale, decimalParts(b).scale);
-  if (op === '+' || op === '-') return exactNumeric(decimalText({ coefficient: op === '+' ? pair.x + pair.y : pair.x - pair.y, scale }), 'Decimal');
+  if (op === '+' || op === '-')
+    return exactNumeric(decimalText({ coefficient: op === '+' ? pair.x + pair.y : pair.x - pair.y, scale }), 'Decimal');
   if (op === '*') return multiplyNumeric([a, b], 'Decimal');
   if (pair.y === 0n) return fxError(ErrorKind.Div0, 'Invalid operation: division by zero.');
-  const scaled = pair.x * 10n ** BigInt(DECIMAL_PLACES), quotient = scaled / pair.y, rest = scaled % pair.y;
-  const negative = (pair.x < 0n) !== (pair.y < 0n);
+  const scaled = pair.x * 10n ** BigInt(DECIMAL_PLACES),
+    quotient = scaled / pair.y,
+    rest = scaled % pair.y;
+  const negative = pair.x < 0n !== pair.y < 0n;
   const up = (rest < 0n ? -rest : rest) * 2n >= (pair.y < 0n ? -pair.y : pair.y) ? (negative ? -1n : 1n) : 0n;
   return exactNumeric(decimalText({ coefficient: quotient + up, scale: DECIMAL_PLACES }), 'Decimal');
 }
@@ -254,7 +372,10 @@ export function toNumber(v) {
   if (v instanceof FxFloat) return v.value;
   if (isExactNumeric(v)) return Number(v.value);
   if (typeof v === 'boolean') return v ? 1 : 0;
-  if (typeof v === 'string') { const parsed = parseNumber(v); return isExactNumeric(parsed) ? Number(parsed.value) : parsed; }
+  if (typeof v === 'string') {
+    const parsed = parseNumber(v);
+    return isExactNumeric(parsed) ? Number(parsed.value) : parsed;
+  }
   if (v instanceof FxDate) return v.ms;
   if (v instanceof FxUntyped) return toNumber(v.raw);
   if (v instanceof FxError) return v;
@@ -266,12 +387,18 @@ export function toNumber(v) {
 // Intl.NumberFormat parts. Power Fx ignores only the current language's currency symbol; $ € £ ¥ are ignored here.
 export function numberSeparators(language = 'en-US') {
   let parts;
-  try { parts = new Intl.NumberFormat(language || 'en-US', { useGrouping: true }).formatToParts(1234567.5); } catch { return null; }
+  try {
+    parts = new Intl.NumberFormat(language || 'en-US', { useGrouping: true }).formatToParts(1234567.5);
+  } catch {
+    return null;
+  }
   // Group widths come from the same parts: en-IN 12,34,567 is primary 3, secondary 2.
   const widths = parts.filter((part) => part.type === 'integer').map((part) => part.value.length);
   return {
-    decimal: parts.find((part) => part.type === 'decimal')?.value ?? '.', group: parts.find((part) => part.type === 'group')?.value ?? ',',
-    primary: widths.at(-1) ?? 3, secondary: widths.length > 2 ? widths.at(-2) : widths.at(-1) ?? 3,
+    decimal: parts.find((part) => part.type === 'decimal')?.value ?? '.',
+    group: parts.find((part) => part.type === 'group')?.value ?? ',',
+    primary: widths.at(-1) ?? 3,
+    secondary: widths.length > 2 ? widths.at(-2) : (widths.at(-1) ?? 3),
   };
 }
 // The invariant (en-US) form of number text in a language: { text, percent } or an FxError.
@@ -280,17 +407,31 @@ export function invariantNumberText(text, language = 'en-US') {
   const separators = numberSeparators(language);
   if (!separators) return fxError(ErrorKind.InvalidArgument, `The language tag '${language}' is not valid.`);
   let percent = false;
-  if (value.endsWith('%')) { percent = true; value = value.slice(0, -1).trim(); } else if (value.startsWith('%')) { percent = true; value = value.slice(1).trim(); }
+  if (value.endsWith('%')) {
+    percent = true;
+    value = value.slice(0, -1).trim();
+  } else if (value.startsWith('%')) {
+    percent = true;
+    value = value.slice(1).trim();
+  }
   value = value.replace(/^([+-]?)\s*[$€£¥]\s*/, '$1').replace(/\s*[$€£¥]$/, '');
   // A space-like group separator (fr-FR U+202F, others U+00A0) also matches a plain space typed by a user; an apostrophe
   // (de-CH) also matches the typographic U+2019.
-  const group = /^\s$/.test(separators.group) ? '[\\s\\u00a0\\u202f]' : /^['’]$/.test(separators.group) ? "['’]" : separators.group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const group = /^\s$/.test(separators.group)
+    ? '[\\s\\u00a0\\u202f]'
+    : /^['’]$/.test(separators.group)
+      ? "['’]"
+      : separators.group.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // Groups are removed only where they follow the language's widths (secondary groups, then the primary group last).
   const { primary, secondary } = separators;
-  value = value.replace(new RegExp(`^([+-]?)(\\d{1,${secondary}}(?:${group}\\d{${secondary}})*${group}\\d{${primary}})(?!\\d)`), (_, sign, digits) => sign + digits.replace(new RegExp(group, 'g'), ''));
+  value = value.replace(
+    new RegExp(`^([+-]?)(\\d{1,${secondary}}(?:${group}\\d{${secondary}})*${group}\\d{${primary}})(?!\\d)`),
+    (_, sign, digits) => sign + digits.replace(new RegExp(group, 'g'), ''),
+  );
   // With a non-period decimal separator a remaining period is not part of a number in that language.
   if (separators.decimal !== '.') value = value.replace(/\./g, 'x').split(separators.decimal).join('.');
-  if (!/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(value)) return fxError(ErrorKind.InvalidArgument, `The value '${text}' cannot be converted to a number.`);
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i.test(value))
+    return fxError(ErrorKind.InvalidArgument, `The value '${text}' cannot be converted to a number.`);
   return { text: value.replace(/^([+-]?)\./, '$10.').replace(/^\+/, ''), percent };
 }
 export function parseNumber(text, language = 'en-US') {
@@ -300,7 +441,8 @@ export function parseNumber(text, language = 'en-US') {
   // Learn "Data types" (Numbers): Decimal holds up to about ±7.9 x 10^28; Decimal("1e100") is an overflow error.
   let exact;
   try {
-    if (compareNumeric(parsed.text.replace(/^-/, ''), '79228162514264337593543950335') > 0) throw new RangeError('Decimal range');
+    if (compareNumeric(parsed.text.replace(/^-/, ''), '79228162514264337593543950335') > 0)
+      throw new RangeError('Decimal range');
     exact = exactNumeric(parsed.text, 'Decimal');
   } catch {
     return fxError(ErrorKind.Numeric, `The value '${text}' is out of range.`);
@@ -330,9 +472,20 @@ export function toText(v, fx = null) {
   if (v instanceof FxFloat) return numberText(v.value);
   if (isExactNumeric(v)) return decimalText(decimalParts(v));
   if (typeof v === 'boolean') return v ? 'true' : 'false';
-  if (v instanceof FxDate) return formatDate(v, v.kind === 'date' ? 'm/d/yyyy' : v.kind === 'time' ? 'h:mm AM/PM' : 'm/d/yyyy h:mm AM/PM', fx?.timeZone, fx?.language);
+  if (v instanceof FxDate)
+    return formatDate(
+      v,
+      v.kind === 'date' ? 'm/d/yyyy' : v.kind === 'time' ? 'h:mm AM/PM' : 'm/d/yyyy h:mm AM/PM',
+      fx?.timeZone,
+      fx?.language,
+    );
   if (v instanceof FxGuid) return v.value;
-  if (v instanceof FxUntyped) return v.raw === null ? '' : typeof v.raw === 'object' ? fxError(ErrorKind.InvalidArgument, 'The untyped value is not text.') : String(v.raw);
+  if (v instanceof FxUntyped)
+    return v.raw === null
+      ? ''
+      : typeof v.raw === 'object'
+        ? fxError(ErrorKind.InvalidArgument, 'The untyped value is not text.')
+        : String(v.raw);
   if (v instanceof FxError) return v;
   if (typeof v === 'object' && typeof v.toString === 'function' && /^-?\d/.test(String(v))) return String(v); // exact-numeric
   return fxError(ErrorKind.InvalidArgument, 'The value cannot be converted to text.');
@@ -341,7 +494,8 @@ export function toDate(v, kind, fx) {
   if (v === null || v === undefined) return null;
   if (v instanceof FxDate) {
     if (v.kind === kind || kind === 'any') return v;
-    if (kind === 'datetime') return v.kind === 'date' ? fromWall('datetime', v.ms, fx?.timeZone) : fromWall('datetime', v.ms, fx?.timeZone);
+    if (kind === 'datetime')
+      return v.kind === 'date' ? fromWall('datetime', v.ms, fx?.timeZone) : fromWall('datetime', v.ms, fx?.timeZone);
     return fromWall(kind, wallOf(v, fx?.timeZone), fx?.timeZone);
   }
   if (typeof v === 'string' || v instanceof FxUntyped) {
@@ -374,29 +528,58 @@ export function formatDate(date, format, timeZone, language = 'en-US') {
     if (!t.token) return t.text;
     const tok = t.token;
     // m and mm are minutes after an hour token or before a seconds token (Excel rule).
-    const isMinute = (tok === 'm' || tok === 'mm') && (tokens.slice(0, i).reverse().find((x) => x.token)?.token?.startsWith('h') || tokens.slice(i + 1).find((x) => x.token)?.token?.startsWith('s'));
+    const isMinute =
+      (tok === 'm' || tok === 'mm') &&
+      (tokens
+        .slice(0, i)
+        .reverse()
+        .find((x) => x.token)
+        ?.token?.startsWith('h') ||
+        tokens
+          .slice(i + 1)
+          .find((x) => x.token)
+          ?.token?.startsWith('s'));
     if (isMinute) return tok === 'mm' ? pad(d.getUTCMinutes()) : String(d.getUTCMinutes());
     const hour12 = d.getUTCHours() % 12 || 12;
     switch (tok) {
-      case 'yyyy': return String(d.getUTCFullYear());
-      case 'yy': return pad(d.getUTCFullYear() % 100);
-      case 'mmmm': return name({ month: 'long' });
-      case 'mmm': return name({ month: 'short' });
-      case 'mm': return pad(d.getUTCMonth() + 1);
-      case 'm': return String(d.getUTCMonth() + 1);
-      case 'dddd': return name({ weekday: 'long' });
-      case 'ddd': return name({ weekday: 'short' });
-      case 'dd': return pad(d.getUTCDate());
-      case 'd': return String(d.getUTCDate());
-      case 'hh': return pad(ampm ? hour12 : d.getUTCHours());
-      case 'h': return String(ampm ? hour12 : d.getUTCHours());
-      case 'ss': return pad(d.getUTCSeconds());
-      case 's': return String(d.getUTCSeconds());
-      case 'AM/PM': return d.getUTCHours() < 12 ? 'AM' : 'PM';
-      case 'am/pm': return d.getUTCHours() < 12 ? 'am' : 'pm';
-      case 'A/P': return d.getUTCHours() < 12 ? 'A' : 'P';
-      case 'a/p': return d.getUTCHours() < 12 ? 'a' : 'p';
-      default: return pad(d.getUTCMilliseconds(), 3).slice(0, tok.length); // f, ff, fff
+      case 'yyyy':
+        return String(d.getUTCFullYear());
+      case 'yy':
+        return pad(d.getUTCFullYear() % 100);
+      case 'mmmm':
+        return name({ month: 'long' });
+      case 'mmm':
+        return name({ month: 'short' });
+      case 'mm':
+        return pad(d.getUTCMonth() + 1);
+      case 'm':
+        return String(d.getUTCMonth() + 1);
+      case 'dddd':
+        return name({ weekday: 'long' });
+      case 'ddd':
+        return name({ weekday: 'short' });
+      case 'dd':
+        return pad(d.getUTCDate());
+      case 'd':
+        return String(d.getUTCDate());
+      case 'hh':
+        return pad(ampm ? hour12 : d.getUTCHours());
+      case 'h':
+        return String(ampm ? hour12 : d.getUTCHours());
+      case 'ss':
+        return pad(d.getUTCSeconds());
+      case 's':
+        return String(d.getUTCSeconds());
+      case 'AM/PM':
+        return d.getUTCHours() < 12 ? 'AM' : 'PM';
+      case 'am/pm':
+        return d.getUTCHours() < 12 ? 'am' : 'pm';
+      case 'A/P':
+        return d.getUTCHours() < 12 ? 'A' : 'P';
+      case 'a/p':
+        return d.getUTCHours() < 12 ? 'a' : 'p';
+      default:
+        return pad(d.getUTCMilliseconds(), 3).slice(0, tok.length); // f, ff, fff
     }
   });
   return out.join('');
@@ -420,7 +603,8 @@ export function equals(a, b, fx = null) {
     const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
     return [...keys].every((key) => equals(a[key] ?? null, b[key] ?? null, fx));
   }
-  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((item, i) => equals(item, b[i], fx));
+  if (Array.isArray(a) && Array.isArray(b))
+    return a.length === b.length && a.every((item, i) => equals(item, b[i], fx));
   return a === b;
 }
 function compareDates(a, b, fx) {
@@ -433,14 +617,16 @@ export function compare(a, b, fx = null) {
   if (b instanceof FxUntyped) b = b.raw;
   if (a instanceof FxDate || b instanceof FxDate) {
     if (isBlank(a) || isBlank(b)) return isBlank(a) && isBlank(b) ? 0 : isBlank(a) ? -1 : 1;
-    const da = toDate(a, 'any', fx), db = toDate(b, 'any', fx);
+    const da = toDate(a, 'any', fx),
+      db = toDate(b, 'any', fx);
     if (da instanceof FxError) return da;
     if (db instanceof FxError) return db;
     return compareDates(da, db, fx);
   }
   if (typeof a === 'string' || typeof b === 'string') {
     if (isNumeric(a) || isNumeric(b)) return numericOrder(a, b);
-    const ta = a ?? '', tb = b ?? '';
+    const ta = a ?? '',
+      tb = b ?? '';
     return ta < tb ? -1 : ta > tb ? 1 : 0;
   }
   if (a instanceof FxGuid || b instanceof FxGuid) return String(a ?? '').localeCompare(String(b ?? ''));
@@ -448,7 +634,8 @@ export function compare(a, b, fx = null) {
 }
 // Numbers compare exactly (decimal digits, not doubles); a value that is not a number is an error.
 function numericOrder(a, b) {
-  const da = toDecimal(a), db = toDecimal(b);
+  const da = toDecimal(a),
+    db = toDecimal(b);
   if (da instanceof FxError) return da;
   if (db instanceof FxError) return db;
   return compareNumeric(da ?? 0, db ?? 0);
@@ -464,15 +651,50 @@ export class FxSyntaxError extends DataError {
 
 const IDENT_START = /[\p{L}\p{Nl}_]/u;
 const IDENT_PART = /[\p{L}\p{Nl}\p{Nd}\p{Pc}\p{Mn}\p{Mc}\p{Cf}_]/u;
-const OPERATORS = ['[@', '<>', '<=', '>=', '&&', '||', '(', ')', '{', '}', '[', ']', ',', ';', ':', '.', '!', '@', '+', '-', '*', '/', '^', '%', '&', '=', '<', '>'];
+const OPERATORS = [
+  '[@',
+  '<>',
+  '<=',
+  '>=',
+  '&&',
+  '||',
+  '(',
+  ')',
+  '{',
+  '}',
+  '[',
+  ']',
+  ',',
+  ';',
+  ':',
+  '.',
+  '!',
+  '@',
+  '+',
+  '-',
+  '*',
+  '/',
+  '^',
+  '%',
+  '&',
+  '=',
+  '<',
+  '>',
+];
 
 function lex(text) {
   const tokens = [];
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
-    if (/\s/.test(ch)) { i++; continue; }
-    if (text.startsWith('//', i)) { while (i < text.length && text[i] !== '\n') i++; continue; }
+    if (/\s/.test(ch)) {
+      i++;
+      continue;
+    }
+    if (text.startsWith('//', i)) {
+      while (i < text.length && text[i] !== '\n') i++;
+      continue;
+    }
     if (text.startsWith('/*', i)) {
       const end = text.indexOf('*/', i + 2);
       if (end < 0) throw new FxSyntaxError('Unterminated comment', i);
@@ -483,7 +705,11 @@ function lex(text) {
     if (/[0-9]/.test(ch) || (ch === '.' && /[0-9]/.test(text[i + 1] ?? ''))) {
       const m = /^(\d*\.?\d*)(e[+-]?\d+)?/i.exec(text.slice(i));
       let v;
-      try { v = exactNumeric((m[0].startsWith('.') ? '0' : '') + m[0], 'Decimal'); } catch { v = fxError(ErrorKind.Numeric, `The number ${m[0]} is out of range.`); }
+      try {
+        v = exactNumeric((m[0].startsWith('.') ? '0' : '') + m[0], 'Decimal');
+      } catch {
+        v = fxError(ErrorKind.Numeric, `The number ${m[0]} is out of range.`);
+      }
       tokens.push({ k: 'num', v, at: start });
       i += m[0].length;
       continue;
@@ -494,7 +720,11 @@ function lex(text) {
       for (;;) {
         if (i >= text.length) throw new FxSyntaxError('Unterminated text literal', start);
         if (text[i] === '"') {
-          if (text[i + 1] === '"') { value += '"'; i += 2; continue; }
+          if (text[i + 1] === '"') {
+            value += '"';
+            i += 2;
+            continue;
+          }
           i++;
           break;
         }
@@ -515,7 +745,11 @@ function lex(text) {
       for (;;) {
         if (i >= text.length) throw new FxSyntaxError('Unterminated quoted identifier', start);
         if (text[i] === "'") {
-          if (text[i + 1] === "'") { value += "'"; i += 2; continue; }
+          if (text[i + 1] === "'") {
+            value += "'";
+            i += 2;
+            continue;
+          }
           i++;
           break;
         }
@@ -547,19 +781,34 @@ function lexInterpolation(text, from) {
     if (i >= text.length) throw new FxSyntaxError('Unterminated interpolated text', from - 2);
     const ch = text[i];
     if (ch === '"') {
-      if (text[i + 1] === '"') { literal += '"'; i += 2; continue; }
+      if (text[i + 1] === '"') {
+        literal += '"';
+        i += 2;
+        continue;
+      }
       i++;
       break;
     }
-    if (ch === '{' && text[i + 1] === '{') { literal += '{'; i += 2; continue; }
-    if (ch === '}' && text[i + 1] === '}') { literal += '}'; i += 2; continue; }
+    if (ch === '{' && text[i + 1] === '{') {
+      literal += '{';
+      i += 2;
+      continue;
+    }
+    if (ch === '}' && text[i + 1] === '}') {
+      literal += '}';
+      i += 2;
+      continue;
+    }
     if (ch === '{') {
       if (literal) parts.push(literal);
       literal = '';
-      let depth = 1, j = i + 1;
+      let depth = 1,
+        j = i + 1;
       while (j < text.length && depth > 0) {
-        if (text[j] === '"') { j++; while (j < text.length && !(text[j] === '"' && text[j + 1] !== '"')) j += text[j] === '"' ? 2 : 1; }
-        else if (text[j] === '{') depth++;
+        if (text[j] === '"') {
+          j++;
+          while (j < text.length && !(text[j] === '"' && text[j + 1] !== '"')) j += text[j] === '"' ? 2 : 1;
+        } else if (text[j] === '{') depth++;
         else if (text[j] === '}') depth--;
         j++;
       }
@@ -578,8 +827,25 @@ function lexInterpolation(text, from) {
 // ---- Parser
 
 const BINARY = {
-  As: 1, '||': 2, Or: 2, '&&': 3, And: 3, in: 4, exactin: 4,
-  '=': 5, '<>': 5, '<': 5, '<=': 5, '>': 5, '>=': 5, '&': 6, '+': 7, '-': 7, '*': 8, '/': 8, '^': 10,
+  As: 1,
+  '||': 2,
+  Or: 2,
+  '&&': 3,
+  And: 3,
+  in: 4,
+  exactin: 4,
+  '=': 5,
+  '<>': 5,
+  '<': 5,
+  '<=': 5,
+  '>': 5,
+  '>=': 5,
+  '&': 6,
+  '+': 7,
+  '-': 7,
+  '*': 8,
+  '/': 8,
+  '^': 10,
 };
 const PREFIX = 9;
 const KEYWORD_OPERATORS = new Set(['As', 'Or', 'And', 'in', 'exactin', 'Not']);
@@ -624,7 +890,10 @@ export function parse(text) {
       const op = binaryOp();
       if (!op || BINARY[op] < min) return left;
       next();
-      if (op === 'As') { left = { t: 'as', e: left, name: identifier() }; continue; }
+      if (op === 'As') {
+        left = { t: 'as', e: left, name: identifier() };
+        continue;
+      }
       const right = expression(BINARY[op] + 1);
       left = { t: 'bin', op: op === 'Or' ? '||' : op === 'And' ? '&&' : op, l: left, r: right };
     }
@@ -636,7 +905,12 @@ export function parse(text) {
       const e = expression(PREFIX);
       return token.v === '+' ? e : { t: 'unary', op: token.v, e };
     }
-    if (token.k === 'id' && !token.quoted && token.v === 'Not' && !(tokens[pos + 1].k === 'op' && tokens[pos + 1].v === '(')) {
+    if (
+      token.k === 'id' &&
+      !token.quoted &&
+      token.v === 'Not' &&
+      !(tokens[pos + 1].k === 'op' && tokens[pos + 1].v === '(')
+    ) {
       next();
       return { t: 'unary', op: '!', e: expression(PREFIX) };
     }
@@ -647,7 +921,10 @@ export function parse(text) {
       if (isOp('.')) {
         next();
         const name = identifier();
-        if (isOp('(') && dottedName(node) !== null) { node = call(`${dottedName(node)}.${name}`); continue; }
+        if (isOp('(') && dottedName(node) !== null) {
+          node = call(`${dottedName(node)}.${name}`);
+          continue;
+        }
         node = { t: 'dot', obj: node, name };
         continue;
       }
@@ -658,7 +935,11 @@ export function parse(text) {
         node = { t: 'disamb', table: node.name, field };
         continue;
       }
-      if (isOp('%')) { next(); node = { t: 'pct', e: node }; continue; }
+      if (isOp('%')) {
+        next();
+        node = { t: 'pct', e: node };
+        continue;
+      }
       return node;
     }
   }
@@ -676,7 +957,10 @@ export function parse(text) {
     if (!isOp(')')) {
       for (;;) {
         args.push(chain());
-        if (isOp(',')) { next(); continue; }
+        if (isOp(',')) {
+          next();
+          continue;
+        }
         break;
       }
     }
@@ -686,9 +970,12 @@ export function parse(text) {
   function primary() {
     const token = next();
     switch (token.k) {
-      case 'num': return { t: 'lit', v: token.v };
-      case 'str': return { t: 'lit', v: token.v };
-      case 'interp': return { t: 'interp', parts: token.parts };
+      case 'num':
+        return { t: 'lit', v: token.v };
+      case 'str':
+        return { t: 'lit', v: token.v };
+      case 'interp':
+        return { t: 'interp', parts: token.parts };
       case 'id': {
         if (!token.quoted && (token.v === 'true' || token.v === 'false')) return { t: 'lit', v: token.v === 'true' };
         if (isOp('(')) return call(token.v);
@@ -711,7 +998,10 @@ export function parse(text) {
             const name = identifier();
             expect(':');
             fields.push([name, expression(0)]);
-            if (isOp(',')) { next(); continue; }
+            if (isOp(',')) {
+              next();
+              continue;
+            }
             if (!isOp('}')) throw new FxSyntaxError("Expected ',' or '}'", peek().at);
           }
           next();
@@ -721,7 +1011,10 @@ export function parse(text) {
           const items = [];
           while (!isOp(']')) {
             items.push(expression(0));
-            if (isOp(',')) { next(); continue; }
+            if (isOp(',')) {
+              next();
+              continue;
+            }
             if (!isOp(']')) throw new FxSyntaxError("Expected ',' or ']'", peek().at);
           }
           next();
@@ -729,9 +1022,13 @@ export function parse(text) {
         }
         break;
       }
-      default: break;
+      default:
+        break;
     }
-    throw new FxSyntaxError(token.k === 'eof' ? 'Unexpected end of formula' : `Unexpected '${token.v ?? token.k}'`, token.at);
+    throw new FxSyntaxError(
+      token.k === 'eof' ? 'Unexpected end of formula' : `Unexpected '${token.v ?? token.k}'`,
+      token.at,
+    );
   }
 
   if (peek().k === 'eof') throw new FxSyntaxError('The formula is empty', 0);
@@ -750,28 +1047,89 @@ export function parse(text) {
 //   for here, and the DateTimeFormat members are the en-US patterns Learn's Text examples print.
 const ENUMS = {
   ErrorKind,
-  TimeUnit: { Milliseconds: 'Milliseconds', Seconds: 'Seconds', Minutes: 'Minutes', Hours: 'Hours', Days: 'Days', Months: 'Months', Quarters: 'Quarters', Years: 'Years' },
-  SortOrder: { Ascending: 'Ascending', Descending: 'Descending' },
-  StartOfWeek: { Sunday: 1, Monday: 2, MondayZero: 3, Tuesday: 12, Wednesday: 13, Thursday: 14, Friday: 15, Saturday: 16 },
-  MatchOptions: { BeginsWith: '^c', Complete: '^c$', Contains: 'c', EndsWith: 'c$', IgnoreCase: 'i', Multiline: 'm', DotAll: 's', FreeSpacing: 'x', NumberedSubMatches: 'N' },
-  Match: {
-    Any: '.', Comma: ',', Digit: '\\d', Email: '[^@\\s]+@[^@\\s]+\\.[^@\\s]+', Hyphen: '-', LeftParen: '\\(', Letter: '\\p{L}',
-    MultipleDigits: '\\d+', MultipleLetters: '\\p{L}+', MultipleNonSpaces: '\\S+', MultipleSpaces: '\\s+', NonSpace: '\\S',
-    OptionalDigits: '\\d*', OptionalLetters: '\\p{L}*', OptionalNonSpaces: '\\S*', OptionalSpaces: '\\s*', Period: '\\.',
-    RightParen: '\\)', Space: '\\s', Tab: '\\t',
+  TimeUnit: {
+    Milliseconds: 'Milliseconds',
+    Seconds: 'Seconds',
+    Minutes: 'Minutes',
+    Hours: 'Hours',
+    Days: 'Days',
+    Months: 'Months',
+    Quarters: 'Quarters',
+    Years: 'Years',
   },
-  JSONFormat: { Compact: '', IndentFour: '4', IgnoreBinaryData: 'G', IncludeBinaryData: 'B', IgnoreUnsupportedTypes: 'I', FlattenValueTables: '_' },
+  SortOrder: { Ascending: 'Ascending', Descending: 'Descending' },
+  StartOfWeek: {
+    Sunday: 1,
+    Monday: 2,
+    MondayZero: 3,
+    Tuesday: 12,
+    Wednesday: 13,
+    Thursday: 14,
+    Friday: 15,
+    Saturday: 16,
+  },
+  MatchOptions: {
+    BeginsWith: '^c',
+    Complete: '^c$',
+    Contains: 'c',
+    EndsWith: 'c$',
+    IgnoreCase: 'i',
+    Multiline: 'm',
+    DotAll: 's',
+    FreeSpacing: 'x',
+    NumberedSubMatches: 'N',
+  },
+  Match: {
+    Any: '.',
+    Comma: ',',
+    Digit: '\\d',
+    Email: '[^@\\s]+@[^@\\s]+\\.[^@\\s]+',
+    Hyphen: '-',
+    LeftParen: '\\(',
+    Letter: '\\p{L}',
+    MultipleDigits: '\\d+',
+    MultipleLetters: '\\p{L}+',
+    MultipleNonSpaces: '\\S+',
+    MultipleSpaces: '\\s+',
+    NonSpace: '\\S',
+    OptionalDigits: '\\d*',
+    OptionalLetters: '\\p{L}*',
+    OptionalNonSpaces: '\\S*',
+    OptionalSpaces: '\\s*',
+    Period: '\\.',
+    RightParen: '\\)',
+    Space: '\\s',
+    Tab: '\\t',
+  },
+  JSONFormat: {
+    Compact: '',
+    IndentFour: '4',
+    IgnoreBinaryData: 'G',
+    IncludeBinaryData: 'B',
+    IgnoreUnsupportedTypes: 'I',
+    FlattenValueTables: '_',
+  },
   NotificationType: { Error: 'Error', Information: 'Information', Success: 'Success', Warning: 'Warning' },
   DateTimeFormat: {
-    LongDate: 'dddd, mmmm d, yyyy', ShortDate: 'm/d/yyyy', LongTime: 'h:mm:ss AM/PM', ShortTime: 'h:mm AM/PM', LongTime24: 'hh:mm:ss',
-    ShortTime24: 'hh:mm', LongDateTime: 'dddd, mmmm d, yyyy h:mm:ss AM/PM', ShortDateTime: 'm/d/yyyy h:mm AM/PM',
-    LongDateTime24: 'dddd, mmmm d, yyyy hh:mm:ss', ShortDateTime24: 'm/d/yyyy hh:mm', UTC: 'UTC',
+    LongDate: 'dddd, mmmm d, yyyy',
+    ShortDate: 'm/d/yyyy',
+    LongTime: 'h:mm:ss AM/PM',
+    ShortTime: 'h:mm AM/PM',
+    LongTime24: 'hh:mm:ss',
+    ShortTime24: 'hh:mm',
+    LongDateTime: 'dddd, mmmm d, yyyy h:mm:ss AM/PM',
+    ShortDateTime: 'm/d/yyyy h:mm AM/PM',
+    LongDateTime24: 'dddd, mmmm d, yyyy hh:mm:ss',
+    ShortDateTime24: 'm/d/yyyy hh:mm',
+    UTC: 'UTC',
   },
   RemoveFlags: { First: 'First', All: 'All' },
 };
 
 class FxNameError extends DataError {
-  constructor(name) { super(`Name isn't valid. '${name}' isn't recognized.`, 400, 'PowerFxNameUnknown', { name }); }
+  constructor(name) {
+    super(`Name isn't valid. '${name}' isn't recognized.`, 400, 'PowerFxNameUnknown', { name });
+  }
 }
 
 // Evaluation context for one formula: the host, the globals and the scope stack (innermost last). Scope entries are
@@ -787,7 +1145,9 @@ export class Fx {
     this.rowLimit = Number(this.host.dataRowLimit ?? 500);
     this.warnings = [];
   }
-  now() { return typeof this.host.now === 'function' ? this.host.now() : Date.now(); }
+  now() {
+    return typeof this.host.now === 'function' ? this.host.now() : Date.now();
+  }
   warn(entry) {
     this.warnings.push(entry);
     this.host.diagnostic?.(entry);
@@ -795,16 +1155,23 @@ export class Fx {
   // Evaluates node with an extra record scope for the duration of fn.
   inScope(scope, fn) {
     this.scopes.push(scope);
-    try { return fn(); } finally { this.scopes.pop(); }
+    try {
+      return fn();
+    } finally {
+      this.scopes.pop();
+    }
   }
-  ev(node) { return evaluateNode(this, node); }
+  ev(node) {
+    return evaluateNode(this, node);
+  }
 }
 
 function lookupName(fx, node) {
   const { name } = node;
   if (!node.global) {
     if (name === 'ThisRecord') {
-      for (let i = fx.scopes.length - 1; i >= 0; i--) if (fx.scopes[i].record !== undefined && !fx.scopes[i].vars) return fx.scopes[i].record;
+      for (let i = fx.scopes.length - 1; i >= 0; i--)
+        if (fx.scopes[i].record !== undefined && !fx.scopes[i].vars) return fx.scopes[i].record;
       if (fx.host.scope) return fx.host.scope;
     }
     for (let i = fx.scopes.length - 1; i >= 0; i--) {
@@ -854,7 +1221,13 @@ export function member(fx, value, name) {
   if (value instanceof FxRecordRef) return member(fx, value.record, name);
   if (value instanceof FxUntyped) {
     const raw = value.raw;
-    return raw !== null && typeof raw === 'object' && !Array.isArray(raw) && Object.hasOwn(raw, name) && raw[name] !== null ? new FxUntyped(raw[name]) : null;
+    return raw !== null &&
+      typeof raw === 'object' &&
+      !Array.isArray(raw) &&
+      Object.hasOwn(raw, name) &&
+      raw[name] !== null
+      ? new FxUntyped(raw[name])
+      : null;
   }
   if (value instanceof FxDataSource) value = readAll(fx, value, 'property selection');
   if (Array.isArray(value)) return value.map((row) => ({ [name]: member(fx, row, name) }));
@@ -869,11 +1242,19 @@ export function member(fx, value, name) {
 export function readAll(fx, value, operation) {
   if (!(value instanceof FxDataSource)) return value;
   const limit = fx?.rowLimit ?? 500;
-  const rows = value.adapter.read({ ...value.query, top: value.query.top === null ? limit + 1 : Math.min(value.query.top, limit + 1) });
+  const rows = value.adapter.read({
+    ...value.query,
+    top: value.query.top === null ? limit + 1 : Math.min(value.query.top, limit + 1),
+  });
   const truncated = rows.length > limit;
   // Learn shows this warning at authoring time (Studio wording); here it is raised when the formula runs.
   fx?.warn({
-    code: 'POWERFX_DELEGATION', severity: 'warning', dataSource: value.name, operation, rowLimit: limit, truncated,
+    code: 'POWERFX_DELEGATION',
+    severity: 'warning',
+    dataSource: value.name,
+    operation,
+    rowLimit: limit,
+    truncated,
     message: `Delegation warning. The '${operation}' part of this formula might not work correctly on large data sets; it read the first ${limit} rows of '${value.name}'.`,
   });
   return truncated ? rows.slice(0, limit) : rows;
@@ -881,18 +1262,23 @@ export function readAll(fx, value, operation) {
 
 function evaluateNode(fx, node) {
   switch (node.t) {
-    case 'lit': return node.v;
+    case 'lit':
+      return node.v;
     case 'interp': {
       let out = '';
       for (const part of node.parts) {
-        if (typeof part === 'string') { out += part; continue; }
+        if (typeof part === 'string') {
+          out += part;
+          continue;
+        }
         const text = toText(fx.ev(part.node), fx);
         if (text instanceof FxError) return text;
         out += text;
       }
       return out;
     }
-    case 'id': return lookupName(fx, node);
+    case 'id':
+      return lookupName(fx, node);
     case 'disamb': {
       for (let i = fx.scopes.length - 1; i >= 0; i--) {
         if (fx.scopes[i].source === node.table) return member(fx, fx.scopes[i].record, node.field);
@@ -911,10 +1297,11 @@ function evaluateNode(fx, node) {
       for (const [name, value] of node.fields) record[name] = fx.ev(value);
       return record;
     }
-    case 'tbl': return node.items.map((item) => {
-      const value = fx.ev(item);
-      return isRecord(value) ? value : { Value: value };
-    });
+    case 'tbl':
+      return node.items.map((item) => {
+        const value = fx.ev(item);
+        return isRecord(value) ? value : { Value: value };
+      });
     case 'unary': {
       const value = fx.ev(node.e);
       if (value instanceof FxError) return value;
@@ -928,8 +1315,10 @@ function evaluateNode(fx, node) {
       const value = fx.ev(node.e);
       return value instanceof FxError ? value : arithmetic(fx, '/', value, 100);
     }
-    case 'bin': return binary(fx, node);
-    case 'as': return fx.ev(node.e);
+    case 'bin':
+      return binary(fx, node);
+    case 'as':
+      return fx.ev(node.e);
     case 'chain': {
       // Learn ("Error handling", Stopping further processing): each chained formula runs even when an earlier one failed;
       // Assumed: the chain's result is the earlier errors when any, else the last value.
@@ -941,8 +1330,10 @@ function evaluateNode(fx, node) {
       }
       return errors.length ? new FxError(errors) : last;
     }
-    case 'call': return callFunction(fx, node);
-    default: throw new DataError(`Unknown Power Fx node '${node.t}'.`, 500, 'PowerFxInternal');
+    case 'call':
+      return callFunction(fx, node);
+    default:
+      throw new DataError(`Unknown Power Fx node '${node.t}'.`, 500, 'PowerFxInternal');
   }
 }
 
@@ -961,18 +1352,27 @@ function binary(fx, node) {
   if (r instanceof FxError) return r;
   switch (op) {
     case '&': {
-      const a = toText(l, fx), b = toText(r, fx);
+      const a = toText(l, fx),
+        b = toText(r, fx);
       return a instanceof FxError ? a : b instanceof FxError ? b : a + b;
     }
-    case '=': return equals(l, r, fx);
-    case '<>': return !equals(l, r, fx);
-    case '<': case '<=': case '>': case '>=': {
+    case '=':
+      return equals(l, r, fx);
+    case '<>':
+      return !equals(l, r, fx);
+    case '<':
+    case '<=':
+    case '>':
+    case '>=': {
       const c = compare(l, r, fx);
       if (c instanceof FxError) return c;
       return op === '<' ? c < 0 : op === '<=' ? c <= 0 : op === '>' ? c > 0 : c >= 0;
     }
-    case 'in': case 'exactin': return membership(fx, l, r, op === 'exactin');
-    default: return arithmetic(fx, op, l, r);
+    case 'in':
+    case 'exactin':
+      return membership(fx, l, r, op === 'exactin');
+    default:
+      return arithmetic(fx, op, l, r);
   }
 }
 
@@ -985,11 +1385,13 @@ function membership(fx, needle, haystack, exact) {
       if (isRecord(needle)) return equals(needle, row, fx);
       const keys = Object.keys(row);
       const value = keys.length === 1 ? row[keys[0]] : row;
-      if (!exact && typeof needle === 'string' && typeof value === 'string') return needle.toLowerCase() === value.toLowerCase();
+      if (!exact && typeof needle === 'string' && typeof value === 'string')
+        return needle.toLowerCase() === value.toLowerCase();
       return equals(needle, value, fx);
     });
   }
-  const text = toText(haystack, fx), part = toText(needle, fx);
+  const text = toText(haystack, fx),
+    part = toText(needle, fx);
   if (text instanceof FxError) return text;
   if (part instanceof FxError) return part;
   return exact ? text.includes(part) : text.toLowerCase().includes(part.toLowerCase());
@@ -1004,23 +1406,30 @@ function arithmetic(fx, op, l, r) {
     // A day is a wall-clock day, as DateAdd(..., TimeUnit.Days) counts it (one rule for both, across daylight saving).
     return fromWall(l.kind, wallOf(l, fx.timeZone) + (op === '+' ? n : -n) * DAY, fx.timeZone, l.tzi);
   }
-  if (l instanceof FxDate && r instanceof FxDate && op === '-') return round15((wallOf(l, fx.timeZone) - wallOf(r, fx.timeZone)) / DAY);
-  const a = toDecimal(l), b = toDecimal(r);
+  if (l instanceof FxDate && r instanceof FxDate && op === '-')
+    return round15((wallOf(l, fx.timeZone) - wallOf(r, fx.timeZone)) / DAY);
+  const a = toDecimal(l),
+    b = toDecimal(r);
   if (a instanceof FxError) return a;
   if (b instanceof FxError) return b;
   // Learn (formula column data types): ^ returns a float, and a float operand makes the result a float.
   if (op === '^' || l instanceof FxFloat || r instanceof FxFloat) {
-    const x = toNumber(a), y = toNumber(b);
+    const x = toNumber(a),
+      y = toNumber(b);
     if (op === '/' && y === 0) return fxError(ErrorKind.Div0, 'Invalid operation: division by zero.');
     const result = op === '+' ? x + y : op === '-' ? x - y : op === '*' ? x * y : op === '/' ? x / y : Math.pow(x, y);
-    return Number.isFinite(result) ? new FxFloat(result) : fxError(ErrorKind.Numeric, 'Invalid operation: the result is not a number.');
+    return Number.isFinite(result)
+      ? new FxFloat(result)
+      : fxError(ErrorKind.Numeric, 'Invalid operation: the result is not a number.');
   }
   if (!['+', '-', '*', '/'].includes(op)) throw new DataError(`Unknown operator '${op}'.`, 500, 'PowerFxInternal');
   return decimalArithmetic(op, a, b);
 }
 
 export class FxFunctionError extends DataError {
-  constructor(message, details = {}) { super(message, 400, 'PowerFxFunctionUnsupported', details); }
+  constructor(message, details = {}) {
+    super(message, 400, 'PowerFxFunctionUnsupported', details);
+  }
 }
 
 function callFunction(fx, node) {
@@ -1032,7 +1441,10 @@ function callFunction(fx, node) {
   }
   const { min = 0, max = Infinity } = definition;
   if (node.args.length < min || node.args.length > max)
-    throw new FxFunctionError(`Invalid number of arguments to ${node.name}: received ${node.args.length}, expected ${min === max ? min : max === Infinity ? `${min} or more` : `${min} to ${max}`}.`, { function: node.name });
+    throw new FxFunctionError(
+      `Invalid number of arguments to ${node.name}: received ${node.args.length}, expected ${min === max ? min : max === Infinity ? `${min} or more` : `${min} to ${max}`}.`,
+      { function: node.name },
+    );
   if (definition.lazy) return definition.fn(fx, node.args, node);
   const args = node.args.map((arg) => fx.ev(arg));
   if (!definition.errors) {
@@ -1059,7 +1471,10 @@ function calledNames(node, out = new Set()) {
   if (!node || typeof node !== 'object') return out;
   if (node.t === 'call') out.add(node.name);
   for (const value of Object.values(node)) {
-    if (Array.isArray(value)) value.forEach((item) => (Array.isArray(item) ? item.forEach((x) => calledNames(x, out)) : calledNames(item?.node ?? item, out)));
+    if (Array.isArray(value))
+      value.forEach((item) =>
+        Array.isArray(item) ? item.forEach((x) => calledNames(x, out)) : calledNames(item?.node ?? item, out),
+      );
     else if (value && typeof value === 'object') calledNames(value, out);
   }
   return out;
@@ -1082,10 +1497,22 @@ export const powerFxEngine = Object.freeze({
   checkSync(expression, { host = {} } = {}) {
     try {
       const ast = parse(expression);
-      const unknown = [...calledNames(ast)].filter((name) => !Object.hasOwn(FUNCTIONS, name) && typeof host.functions?.[name] !== 'function');
-      return { ok: unknown.length === 0, diagnostics: unknown.map((name) => ({ code: 'POWERFX_FUNCTION_UNSUPPORTED', function: name, message: `'${name}' is an unknown or unsupported function.` })) };
+      const unknown = [...calledNames(ast)].filter(
+        (name) => !Object.hasOwn(FUNCTIONS, name) && typeof host.functions?.[name] !== 'function',
+      );
+      return {
+        ok: unknown.length === 0,
+        diagnostics: unknown.map((name) => ({
+          code: 'POWERFX_FUNCTION_UNSUPPORTED',
+          function: name,
+          message: `'${name}' is an unknown or unsupported function.`,
+        })),
+      };
     } catch (error) {
-      return { ok: false, diagnostics: [{ code: 'POWERFX_SYNTAX', message: error.message, position: error.details?.position ?? null }] };
+      return {
+        ok: false,
+        diagnostics: [{ code: 'POWERFX_SYNTAX', message: error.message, position: error.details?.position ?? null }],
+      };
     }
   },
   async check(expression, options = {}) {

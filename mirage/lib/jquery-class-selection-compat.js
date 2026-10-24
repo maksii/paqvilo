@@ -7,8 +7,8 @@
   const wrapped = function (selector, context, results, seed) {
     if (!seed && typeof selector === 'string' && /^\.[\w-]+$/.test(selector)) {
       const output = results || [];
-      if(context&&![1,9,11].includes(context.nodeType))return output;
-      Array.prototype.push.apply(output, select('.'+CSS.escape(selector.slice(1)), context));
+      if (context && ![1, 9, 11].includes(context.nodeType)) return output;
+      Array.prototype.push.apply(output, select('.' + CSS.escape(selector.slice(1)), context));
       return output;
     }
     return find.apply(this, arguments);
@@ -18,9 +18,11 @@
   $.find = wrapped;
   // setDocument() installs its fast finder again whenever the selector engine
   // switches iframe documents. Keep the guarded finder across those assignments.
-  if ($.expr?.find) Object.defineProperty($.expr.find,'CLASS',{
-    configurable:true,enumerable:true,
-    get:()=> (name,context)=>select('.'+CSS.escape(name),context),
-    set:()=>{},
-  });
+  if ($.expr?.find)
+    Object.defineProperty($.expr.find, 'CLASS', {
+      configurable: true,
+      enumerable: true,
+      get: () => (name, context) => select('.' + CSS.escape(name), context),
+      set: () => {},
+    });
 })(window.jQuery);

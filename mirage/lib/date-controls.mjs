@@ -1,20 +1,20 @@
 /** Convert exported .NET display tokens to the captured Moment date-picker's tokens. */
 export function datePickerFormat(format, dateOnly = true) {
-  return String(
-    format || (dateOnly ? "M/d/yyyy" : "M/d/yyyy h:mm tt"),
-  ).replace(/'[^']*'|yyyy|yyy|yy|dddd|ddd|dd|d|tt/g, (token) =>
-    token.startsWith("'")
-      ? "[" + token.slice(1, -1) + "]"
-      : {
-          yyyy: "YYYY",
-          yyy: "YYYY",
-          yy: "YY",
-          dddd: "dddd",
-          ddd: "ddd",
-          dd: "DD",
-          d: "D",
-          tt: "A",
-        }[token],
+  return String(format || (dateOnly ? 'M/d/yyyy' : 'M/d/yyyy h:mm tt')).replace(
+    /'[^']*'|yyyy|yyy|yy|dddd|ddd|dd|d|tt/g,
+    (token) =>
+      token.startsWith("'")
+        ? '[' + token.slice(1, -1) + ']'
+        : {
+            yyyy: 'YYYY',
+            yyy: 'YYYY',
+            yy: 'YY',
+            dddd: 'dddd',
+            ddd: 'ddd',
+            dd: 'DD',
+            d: 'D',
+            tt: 'A',
+          }[token],
   );
 }
 

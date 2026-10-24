@@ -1,40 +1,141 @@
 /* Toolkit-authored structural symbols, not a copy of a platform icon font.
    Captured font CSS replaces this resource. Decorative symbols retain their
    existing aria-hidden/label contracts from the control markup. */
-.fa,.fa-solid,.fas{display:inline-block;font-style:normal;font-variant:normal;font-weight:normal;text-rendering:auto;line-height:1}
-.fa-fw{width:1.25em;text-align:center}
-.fa-search:before,.fa-magnifying-glass:before{content:'\2315'}
-.fa-times:before,.fa-close:before,.fa-xmark:before{content:'\00d7'}
-.fa-check:before{content:'\2713'}
-.fa-chevron-down:before,.fa-chevron-circle-down:before,.fa-caret-down:before{content:'\25be'}
-.fa-chevron-up:before,.fa-caret-up:before{content:'\25b4'}
-.fa-chevron-left:before,.fa-caret-left:before{content:'\2039'}
-.fa-chevron-right:before,.fa-caret-right:before{content:'\203a'}
-.fa-arrow-up:before{content:'\2191'}
-.fa-arrow-down:before{content:'\2193'}
-.fa-calendar:before,.fa-calendar-days:before{content:'\25a6'}
-.fa-plus:before{content:'+'}
-.fa-minus:before{content:'\2212'}
-.fa-exclamation-circle:before,.fa-circle-exclamation:before{content:'!'}
-.fa-info-circle:before,.fa-circle-info:before{content:'i'}
-.fa-bars:before{content:'\2630'}
-.fa-clock:before{content:'\25f7'}
-.fa-download:before{content:'\2913'}
-.fa-edit:before,.fa-pencil-square-o:before{content:'\270e'}
-.fa-exclamation-triangle:before{content:'\26a0'}
-.fa-external-link:before{content:'\2197'}
-.fa-eye-slash:before{content:'\25c9\0338'}
-.fa-file:before,.fa-file-o:before{content:'\25a4'}
-.fa-filter:before{content:'\22a5'}
-.fa-list:before{content:'\2261'}
-.fa-lock:before{content:'\1f512'}
-.fa-plus-circle:before{content:'\2295'}
-.fa-question-circle:before{content:'?'}
-.fa-refresh:before{content:'\21bb'}
-.fa-sign-in:before{content:'\21aa'}
-.fa-spinner:before{content:'\25cc'}
-.fa-trash:before,.fa-trash-o:before,.fa-trash-can:before{content:'\1f5d1'}
-.fa-4x{font-size:4em}
-.fa-spin{animation:paqvilo-icon-spin 1s linear infinite}
-@keyframes paqvilo-icon-spin{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){.fa-spin{animation:none}}
+.fa,
+.fa-solid,
+.fas {
+  display: inline-block;
+  font-style: normal;
+  font-variant: normal;
+  font-weight: normal;
+  text-rendering: auto;
+  line-height: 1;
+}
+.fa-fw {
+  width: 1.25em;
+  text-align: center;
+}
+.fa-search:before,
+.fa-magnifying-glass:before {
+  content: '\2315';
+}
+.fa-times:before,
+.fa-close:before,
+.fa-xmark:before {
+  content: '\00d7';
+}
+.fa-check:before {
+  content: '\2713';
+}
+.fa-chevron-down:before,
+.fa-chevron-circle-down:before,
+.fa-caret-down:before {
+  content: '\25be';
+}
+.fa-chevron-up:before,
+.fa-caret-up:before {
+  content: '\25b4';
+}
+.fa-chevron-left:before,
+.fa-caret-left:before {
+  content: '\2039';
+}
+.fa-chevron-right:before,
+.fa-caret-right:before {
+  content: '\203a';
+}
+.fa-arrow-up:before {
+  content: '\2191';
+}
+.fa-arrow-down:before {
+  content: '\2193';
+}
+.fa-calendar:before,
+.fa-calendar-days:before {
+  content: '\25a6';
+}
+.fa-plus:before {
+  content: '+';
+}
+.fa-minus:before {
+  content: '\2212';
+}
+.fa-exclamation-circle:before,
+.fa-circle-exclamation:before {
+  content: '!';
+}
+.fa-info-circle:before,
+.fa-circle-info:before {
+  content: 'i';
+}
+.fa-bars:before {
+  content: '\2630';
+}
+.fa-clock:before {
+  content: '\25f7';
+}
+.fa-download:before {
+  content: '\2913';
+}
+.fa-edit:before,
+.fa-pencil-square-o:before {
+  content: '\270e';
+}
+.fa-exclamation-triangle:before {
+  content: '\26a0';
+}
+.fa-external-link:before {
+  content: '\2197';
+}
+.fa-eye-slash:before {
+  content: '\25c9\0338';
+}
+.fa-file:before,
+.fa-file-o:before {
+  content: '\25a4';
+}
+.fa-filter:before {
+  content: '\22a5';
+}
+.fa-list:before {
+  content: '\2261';
+}
+.fa-lock:before {
+  content: '\1f512';
+}
+.fa-plus-circle:before {
+  content: '\2295';
+}
+.fa-question-circle:before {
+  content: '?';
+}
+.fa-refresh:before {
+  content: '\21bb';
+}
+.fa-sign-in:before {
+  content: '\21aa';
+}
+.fa-spinner:before {
+  content: '\25cc';
+}
+.fa-trash:before,
+.fa-trash-o:before,
+.fa-trash-can:before {
+  content: '\1f5d1';
+}
+.fa-4x {
+  font-size: 4em;
+}
+.fa-spin {
+  animation: paqvilo-icon-spin 1s linear infinite;
+}
+@keyframes paqvilo-icon-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fa-spin {
+    animation: none;
+  }
+}

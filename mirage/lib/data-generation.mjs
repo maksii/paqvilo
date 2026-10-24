@@ -3,38 +3,51 @@
 // merges them additively (by primary key) into an explicit local state file
 // through the runtime's lock, digest and atomic-replace protocol. It never
 // contacts a portal or PAC.
-import fs from "node:fs/promises";
-import path from "node:path";
-import { DataStore } from "./data.mjs";
-import { assertOfflineState } from "./offline-state.mjs";
-import { discoverPacks, presetLibrary } from "./preset-registry.mjs";
-import { resolvePreset } from "./presets.mjs";
-import { fieldIndexFromMappings, formatViolations, schemaViolations } from "./schema-validation.mjs";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { DataStore } from './data.mjs';
+import { assertOfflineState } from './offline-state.mjs';
+import { discoverPacks, presetLibrary } from './preset-registry.mjs';
+import { resolvePreset } from './presets.mjs';
+import { fieldIndexFromMappings, formatViolations, schemaViolations } from './schema-validation.mjs';
 import { validatePersonaCatalog, mergePersonaCatalogs } from './persona-catalog.mjs';
 import { membershipsForRoles } from './permissions.mjs';
 import { guidKey } from './dataverse-values.mjs';
 
 const clone = (value) => structuredClone(value);
-const own = (value, key) => value != null && Object.hasOwn(value, key) ? value[key] : undefined;
+const own = (value, key) => (value != null && Object.hasOwn(value, key) ? value[key] : undefined);
 const idColumnOf = (state, table) => own(state.mappings, table)?.idColumn ?? `${table}id`;
-const rowKey = value => guidKey(value) ?? String(value).toLowerCase();
-const object = value => value !== null && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
-const validName = value => typeof value === 'string' && /^[\w.-]+$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
+const rowKey = (value) => guidKey(value) ?? String(value).toLowerCase();
+const object = (value) =>
+  value !== null &&
+  typeof value === 'object' &&
+  !Array.isArray(value) &&
+  [Object.prototype, null].includes(Object.getPrototypeOf(value));
+const validName = (value) =>
+  typeof value === 'string' && /^[\w.-]+$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
 
 function validateDatasetBody(value, label) {
   if (!object(value)) throw new Error(`${label} must be a dataset object`);
-  for (const section of ['mappings', 'tables']) if (value[section] !== undefined && !object(value[section])) throw new Error(`${label}.${section} must be an object`);
+  for (const section of ['mappings', 'tables'])
+    if (value[section] !== undefined && !object(value[section]))
+      throw new Error(`${label}.${section} must be an object`);
   for (const [table, mapping] of Object.entries(value.mappings ?? {})) {
-    if (!validName(table) || !object(mapping)) throw new Error(`${label}.mappings must contain valid table names and mapping objects`);
-    for (const field of ['idColumn', 'entitySet']) if (mapping[field] !== undefined && !validName(mapping[field])) throw new Error(`${label}.mappings.${table}.${field} must be a valid name`);
+    if (!validName(table) || !object(mapping))
+      throw new Error(`${label}.mappings must contain valid table names and mapping objects`);
+    for (const field of ['idColumn', 'entitySet'])
+      if (mapping[field] !== undefined && !validName(mapping[field]))
+        throw new Error(`${label}.mappings.${table}.${field} must be a valid name`);
   }
   for (const [table, rows] of Object.entries(value.tables ?? {})) {
-    if (!validName(table) || !Array.isArray(rows)) throw new Error(`${label}.tables must contain valid table names and row arrays`);
+    if (!validName(table) || !Array.isArray(rows))
+      throw new Error(`${label}.tables must contain valid table names and row arrays`);
     for (const row of rows) if (!object(row)) throw new Error(`${label}.tables.${table} rows must be objects`);
   }
   if (value.permissions !== undefined) {
-    if (!Array.isArray(value.permissions)) throw new Error(`${label}.permissions must be an array of permission objects`);
-    for (const permission of value.permissions) if (!object(permission)) throw new Error(`${label}.permissions must be an array of permission objects`);
+    if (!Array.isArray(value.permissions))
+      throw new Error(`${label}.permissions must be an array of permission objects`);
+    for (const permission of value.permissions)
+      if (!object(permission)) throw new Error(`${label}.permissions must be an array of permission objects`);
   }
 }
 
@@ -78,15 +91,31 @@ export function findDanglingLookups(state, tables = Object.keys(state.tables ?? 
   const indexes = new Map();
   const has = (table, id) => {
     if (!indexes.has(table))
-      indexes.set(table, new Set((own(state.tables, table) ?? []).map((row) => rowKey(own(row, idColumnOf(state, table))))));
+      indexes.set(
+        table,
+        new Set((own(state.tables, table) ?? []).map((row) => rowKey(own(row, idColumnOf(state, table))))),
+      );
     return indexes.get(table).has(rowKey(id));
   };
   const dangling = [];
   for (const table of tables)
     for (const row of own(state.tables, table) ?? [])
       for (const [field, value] of Object.entries(row))
-        if (value && typeof value === "object" && !Array.isArray(value) && value.logical_name && value.id != null && !has(String(value.logical_name).toLowerCase(), value.id))
-          dangling.push({ table, id: own(row, idColumnOf(state, table)), field, target: value.logical_name, value: value.id });
+        if (
+          value &&
+          typeof value === 'object' &&
+          !Array.isArray(value) &&
+          value.logical_name &&
+          value.id != null &&
+          !has(String(value.logical_name).toLowerCase(), value.id)
+        )
+          dangling.push({
+            table,
+            id: own(row, idColumnOf(state, table)),
+            field,
+            target: value.logical_name,
+            value: value.id,
+          });
   return dangling;
 }
 
@@ -94,14 +123,22 @@ export function findDanglingLookups(state, tables = Object.keys(state.tables ?? 
  * Merge a pack dataset fragment (and its base preset, when named) into a copy
  * of `state`. Returns { state, report }.
  */
-export function mergeDataset(state, fragment, { basePreset, packId, materializePersonaMemberships = false, portal } = {}) {
-  if (!state || typeof state !== "object" || Array.isArray(state)) throw new Error("state must be a Mirage state object");
+export function mergeDataset(
+  state,
+  fragment,
+  { basePreset, packId, materializePersonaMemberships = false, portal } = {},
+) {
+  if (!state || typeof state !== 'object' || Array.isArray(state))
+    throw new Error('state must be a Mirage state object');
   if (!object(state.mappings) || !Array.isArray(state.permissions))
-    throw new Error("state must contain mappings and an explicit permissions array (start the Mirage once to bootstrap it)");
+    throw new Error(
+      'state must contain mappings and an explicit permissions array (start the Mirage once to bootstrap it)',
+    );
   validateDatasetBody(state, 'State');
   validateDatasetBody(fragment, 'Dataset');
   if (basePreset !== undefined && basePreset !== null) validateDatasetBody(basePreset, 'Base preset');
-  if (typeof materializePersonaMemberships !== 'boolean') throw new Error('materializePersonaMemberships must be a boolean');
+  if (typeof materializePersonaMemberships !== 'boolean')
+    throw new Error('materializePersonaMemberships must be a boolean');
   const result = clone(state);
   result.tables ??= {};
   const report = { base: {}, generated: {} };
@@ -112,8 +149,16 @@ export function mergeDataset(state, fragment, { basePreset, packId, materializeP
   mergeMappings(result.mappings, fragment.mappings);
   mergeRows(result, fragment.tables, report.generated);
   let catalog = result.personaCatalog;
-  if (basePreset?.personaCatalog !== undefined) catalog = mergePersonaCatalogs(catalog, validatePersonaCatalog(basePreset.personaCatalog, `Preset ${basePreset.id ?? basePreset.name ?? 'base'}`));
-  if (fragment.personaCatalog !== undefined) catalog = mergePersonaCatalogs(catalog, validatePersonaCatalog(fragment.personaCatalog, `Dataset ${packId ?? 'pack'}`));
+  if (basePreset?.personaCatalog !== undefined)
+    catalog = mergePersonaCatalogs(
+      catalog,
+      validatePersonaCatalog(basePreset.personaCatalog, `Preset ${basePreset.id ?? basePreset.name ?? 'base'}`),
+    );
+  if (fragment.personaCatalog !== undefined)
+    catalog = mergePersonaCatalogs(
+      catalog,
+      validatePersonaCatalog(fragment.personaCatalog, `Dataset ${packId ?? 'pack'}`),
+    );
   if (catalog !== undefined) result.personaCatalog = validatePersonaCatalog(catalog, 'Merged state');
   const permissionIds = new Set(result.permissions.map((permission) => permission.id));
   let addedPermissions = 0;
@@ -125,32 +170,57 @@ export function mergeDataset(state, fragment, { basePreset, packId, materializeP
     }
   result.provenance = {
     ...(result.provenance ?? {}),
-    dataPacks: { ...(result.provenance?.dataPacks ?? {}), [packId ?? "pack"]: clone(fragment.provenance ?? {}) },
+    dataPacks: { ...(result.provenance?.dataPacks ?? {}), [packId ?? 'pack']: clone(fragment.provenance ?? {}) },
   };
   const dangling = findDanglingLookups(result, Object.keys(fragment.tables ?? {}));
   if (dangling.length)
-    throw new Error(`Generated data has ${dangling.length} unresolved lookup(s): ${JSON.stringify(dangling.slice(0, 5))}`);
+    throw new Error(
+      `Generated data has ${dangling.length} unresolved lookup(s): ${JSON.stringify(dangling.slice(0, 5))}`,
+    );
   // Generated rows of schema-complete tables must match the bootstrapped
   // field list and option sets (mapping.fieldMetadata of Web API tables).
   const violations = schemaViolations(fragment.tables ?? {}, fieldIndexFromMappings(result.mappings), {
     idColumn: (table) => idColumnOf(result, table),
   });
   if (violations.length)
-    throw new Error(`Generated data does not match the bootstrapped schema:\n${formatViolations(violations).join("\n")}`);
+    throw new Error(
+      `Generated data does not match the bootstrapped schema:\n${formatViolations(violations).join('\n')}`,
+    );
   let addedMemberships = 0;
   if (materializePersonaMemberships) {
-    if (!portal || !Array.isArray(portal.records)) throw new Error('Persona memberships require the selected imported portal export.');
+    if (!portal || !Array.isArray(portal.records))
+      throw new Error('Persona memberships require the selected imported portal export.');
     const descriptors = fragment.personaRoles ?? [];
-    if (!Array.isArray(descriptors)) throw new Error('Dataset personaRoles must be an array of { contactId, roles } descriptors.');
-    const normalizeId = value => guidKey(value) ?? String(value ?? '').replace(/[{}]/g, '').toLowerCase();
+    if (!Array.isArray(descriptors))
+      throw new Error('Dataset personaRoles must be an array of { contactId, roles } descriptors.');
+    const normalizeId = (value) =>
+      guidKey(value) ??
+      String(value ?? '')
+        .replace(/[{}]/g, '')
+        .toLowerCase();
     const contactIdColumn = idColumnOf(result, 'contact');
-    const contacts = new Map((result.tables.contact ?? []).map(row => [normalizeId(row[contactIdColumn]), row]));
-    const generatedContacts = new Set([...(basePreset?.tables?.contact ?? []), ...(fragment.tables?.contact ?? [])].map(row => normalizeId(row[contactIdColumn])));
+    const contacts = new Map((result.tables.contact ?? []).map((row) => [normalizeId(row[contactIdColumn]), row]));
+    const generatedContacts = new Set(
+      [...(basePreset?.tables?.contact ?? []), ...(fragment.tables?.contact ?? [])].map((row) =>
+        normalizeId(row[contactIdColumn]),
+      ),
+    );
     for (const descriptor of descriptors) {
-      if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor) || typeof (descriptor.contactId ?? descriptor.id) !== 'string' || !(descriptor.contactId ?? descriptor.id).trim() || !Array.isArray(descriptor.roles) || descriptor.roles.some(name => typeof name !== 'string' || !name.trim())) throw new Error('Dataset personaRoles must contain explicit contactId and role-name arrays.');
+      if (
+        !descriptor ||
+        typeof descriptor !== 'object' ||
+        Array.isArray(descriptor) ||
+        typeof (descriptor.contactId ?? descriptor.id) !== 'string' ||
+        !(descriptor.contactId ?? descriptor.id).trim() ||
+        !Array.isArray(descriptor.roles) ||
+        descriptor.roles.some((name) => typeof name !== 'string' || !name.trim())
+      )
+        throw new Error('Dataset personaRoles must contain explicit contactId and role-name arrays.');
       const contact = contacts.get(normalizeId(descriptor.contactId ?? descriptor.id));
-      if (!contact || Number(contact.statecode?.value ?? contact.statecode ?? 0) !== 0) throw new Error('Persona membership contact is missing or inactive in the merged local data.');
-      if (!generatedContacts.has(normalizeId(descriptor.contactId ?? descriptor.id))) throw new Error('Persona membership contact must be supplied by this dataset or its base preset.');
+      if (!contact || Number(contact.statecode?.value ?? contact.statecode ?? 0) !== 0)
+        throw new Error('Persona membership contact is missing or inactive in the merged local data.');
+      if (!generatedContacts.has(normalizeId(descriptor.contactId ?? descriptor.id)))
+        throw new Error('Persona membership contact must be supplied by this dataset or its base preset.');
     }
     // Resolve every role before adding any assignments. Catalogue metadata and
     // a base preset never implicitly create memberships during additive merge.
@@ -158,11 +228,13 @@ export function mergeDataset(state, fragment, { basePreset, packId, materializeP
     if (assignments.length) {
       result.simulator ??= {};
       const memberships = (result.simulator.contactRoles ??= []);
-      const seen = new Set(memberships.map(entry => `${normalizeId(entry.contactId)}:${normalizeId(entry.roleId)}`));
+      const seen = new Set(memberships.map((entry) => `${normalizeId(entry.contactId)}:${normalizeId(entry.roleId)}`));
       for (const assignment of assignments) {
         const key = `${assignment.contactId}:${assignment.roleId}`;
         if (seen.has(key)) continue;
-        memberships.push(assignment); seen.add(key); addedMemberships++;
+        memberships.push(assignment);
+        seen.add(key);
+        addedMemberships++;
       }
     }
   }
@@ -179,42 +251,49 @@ const parseCount = (value, option) => {
 
 /** CLI adapter: `node mirage/cli.mjs data generate --pack ID ...` (parsed args). */
 export async function runDataCommand(subcommands, args) {
-  if (subcommands.length !== 1) throw new Error('Data commands require exactly one action: generate or scaffold; unexpected positional arguments are not accepted.');
+  if (subcommands.length !== 1)
+    throw new Error(
+      'Data commands require exactly one action: generate or scaffold; unexpected positional arguments are not accepted.',
+    );
   const [action] = subcommands;
-  if (action === 'scaffold') for (const name of ['pack', 'pack-module', 'count', 'materialize-persona-memberships']) if (args[name] !== undefined) throw new Error(`--${name} is supported only by data generate`);
-  if (action === 'generate' && args.rows !== undefined) throw new Error('--rows is supported only by data scaffold; use --count NAME=N for pack-defined generation counts');
-  if (action === "scaffold")
+  if (action === 'scaffold')
+    for (const name of ['pack', 'pack-module', 'count', 'materialize-persona-memberships'])
+      if (args[name] !== undefined) throw new Error(`--${name} is supported only by data generate`);
+  if (action === 'generate' && args.rows !== undefined)
+    throw new Error('--rows is supported only by data scaffold; use --count NAME=N for pack-defined generation counts');
+  if (action === 'scaffold')
     return scaffoldDataCommand({
-      profile: args.profile ?? "smoke",
+      profile: args.profile ?? 'smoke',
       state: args.state,
       out: args.out,
       seed: args.seed,
       source: args.source,
-      solutionRoots: args["solution-root"] ?? [],
-      rowsPerTable: parseCount(args.rows, "rows"),
+      solutionRoots: args['solution-root'] ?? [],
+      rowsPerTable: parseCount(args.rows, 'rows'),
       resolution: args.resolution,
       dataModel: args.dataModel ?? args['data-model'],
     });
-  if (action !== "generate")
+  if (action !== 'generate')
     throw new Error(
-      "Usage: node mirage/cli.mjs data generate --pack ID --profile NAME --state FILE [--out FILE] [--seed S]\n" +
-        "       node mirage/cli.mjs data scaffold --source PORTAL_DIR --profile smoke|dev --state FILE [--solution-root DIR ...] [--rows N] [--out FILE] [--seed S]",
+      'Usage: node mirage/cli.mjs data generate --pack ID --profile NAME --state FILE [--out FILE] [--seed S]\n' +
+        '       node mirage/cli.mjs data scaffold --source PORTAL_DIR --profile smoke|dev --state FILE [--solution-root DIR ...] [--rows N] [--out FILE] [--seed S]',
     );
   let project;
   if (args.project) {
-    const { loadProjectConfig } = await import("./project-config.mjs");
+    const { loadProjectConfig } = await import('./project-config.mjs');
     project = await loadProjectConfig(args.project);
   }
   const counts = {};
   for (const entry of args.count ?? []) {
     const match = /^([A-Za-z][A-Za-z0-9_]*)=(.+)$/.exec(entry);
-    if (!match || ['__proto__', 'constructor', 'prototype'].includes(match[1])) throw new Error('--count must be NAME=N with a valid generator-defined name');
+    if (!match || ['__proto__', 'constructor', 'prototype'].includes(match[1]))
+      throw new Error('--count must be NAME=N with a valid generator-defined name');
     if (Object.hasOwn(counts, match[1])) throw new Error(`Duplicate --count ${match[1]}`);
     counts[match[1]] = parseCount(match[2], `count ${match[1]}`);
   }
   return generateDataCommand({
     pack: args.pack,
-    profile: args.profile ?? "deep",
+    profile: args.profile ?? 'deep',
     state: args.state,
     out: args.out,
     seed: args.seed,
@@ -223,7 +302,7 @@ export async function runDataCommand(subcommands, args) {
     materializePersonaMemberships: args['materialize-persona-memberships'] ?? false,
     source: args.source,
     dataModel: args.dataModel ?? args['data-model'],
-    packModules: (args["pack-module"] ?? []).map((module) => ({ module: path.resolve(module) })),
+    packModules: (args['pack-module'] ?? []).map((module) => ({ module: path.resolve(module) })),
   });
 }
 
@@ -231,17 +310,30 @@ export async function runDataCommand(subcommands, args) {
  * `data generate`: load the pack, generate the profile, merge into --state and
  * write --out (default: --state, in place) with lock/digest/atomic replace.
  */
-export async function generateDataCommand({ pack: packId, profile = "deep", state: statePath, out, seed, counts = {}, project, packModules = [], materializePersonaMemberships = false, source: portalSource, dataModel } = {}) {
-  if (!packId) throw new Error("--pack is required");
-  if (!statePath) throw new Error("--state is required");
+export async function generateDataCommand({
+  pack: packId,
+  profile = 'deep',
+  state: statePath,
+  out,
+  seed,
+  counts = {},
+  project,
+  packModules = [],
+  materializePersonaMemberships = false,
+  source: portalSource,
+  dataModel,
+} = {}) {
+  if (!packId) throw new Error('--pack is required');
+  if (!statePath) throw new Error('--state is required');
   const inputPath = path.resolve(statePath);
   const outputPath = path.resolve(out ?? statePath);
   const packs = await discoverPacks({ project, explicit: packModules });
   const pack = packs.find((candidate) => candidate.id === packId);
-  if (!pack) throw new Error(`Unknown data pack '${packId}'. Available: ${packs.map((p) => p.id).join(", ") || "none"}`);
-  if (typeof pack.dataset !== "function") throw new Error(`Data pack '${packId}' does not provide dataset()`);
+  if (!pack)
+    throw new Error(`Unknown data pack '${packId}'. Available: ${packs.map((p) => p.id).join(', ') || 'none'}`);
+  if (typeof pack.dataset !== 'function') throw new Error(`Data pack '${packId}' does not provide dataset()`);
   if (pack.profiles && !Object.hasOwn(pack.profiles, profile))
-    throw new Error(`Data pack '${packId}' has no profile '${profile}' (${Object.keys(pack.profiles).join(", ")})`);
+    throw new Error(`Data pack '${packId}' has no profile '${profile}' (${Object.keys(pack.profiles).join(', ')})`);
   await assertOfflineState(outputPath);
   if (outputPath !== inputPath) await assertOfflineState(inputPath);
   const started = performance.now();
@@ -252,14 +344,23 @@ export async function generateDataCommand({ pack: packId, profile = "deep", stat
   const library = presetLibrary({ packs: [pack] });
   const basePreset = fragment.base ? resolvePreset(input, fragment.base, library) : null;
   if (fragment.base && !basePreset) throw new Error(`Base preset '${fragment.base}' is unavailable`);
-  if (materializePersonaMemberships && !portalSource) throw new Error('Persona memberships require the selected portal source (--source, --site or --project).');
-  const portal = materializePersonaMemberships ? await (await import('./importer.mjs')).importPortal(path.resolve(portalSource), { dataModel }) : undefined;
-  const { state: output, report } = mergeDataset(input, fragment, { basePreset, packId, materializePersonaMemberships, portal });
+  if (materializePersonaMemberships && !portalSource)
+    throw new Error('Persona memberships require the selected portal source (--source, --site or --project).');
+  const portal = materializePersonaMemberships
+    ? await (await import('./importer.mjs')).importPortal(path.resolve(portalSource), { dataModel })
+    : undefined;
+  const { state: output, report } = mergeDataset(input, fragment, {
+    basePreset,
+    packId,
+    materializePersonaMemberships,
+    portal,
+  });
   const generatedMs = performance.now() - started;
   // Re-check immediately before writing; the store applies its own lock and
   // digest checks (docs/state-write-integrity.md).
   await assertOfflineState(outputPath);
-  const destination = outputPath === inputPath ? source : await new DataStore({ file: outputPath, state: output }).init();
+  const destination =
+    outputPath === inputPath ? source : await new DataStore({ file: outputPath, state: output }).init();
   await destination.replaceState(output, { expectedDigest: destination.snapshotDigest() });
   return {
     written: outputPath,
@@ -267,7 +368,9 @@ export async function generateDataCommand({ pack: packId, profile = "deep", stat
     profile,
     seed: fragment.provenance?.seed ?? seed ?? null,
     base: fragment.base ?? null,
-    rows: Object.fromEntries(Object.entries(report.generated).filter(([, entry]) => entry.added || entry.alreadyPresent)),
+    rows: Object.fromEntries(
+      Object.entries(report.generated).filter(([, entry]) => entry.added || entry.alreadyPresent),
+    ),
     baseRowsAdded: Object.values(report.base).reduce((sum, entry) => sum + entry.added, 0),
     addedPermissions: report.addedPermissions,
     addedMemberships: report.addedMemberships,
@@ -283,15 +386,31 @@ export async function generateDataCommand({ pack: packId, profile = "deep", stat
  * --state (bootstrapped from the portal and its solution metadata when the
  * file does not exist yet), writing --out with lock/digest/atomic replace.
  */
-export async function scaffoldDataCommand({ profile = "smoke", state: statePath, out, seed, source, solutionRoots = [], rowsPerTable, resolution, dataModel } = {}) {
-  if (!statePath) throw new Error("--state is required");
-  if (!source) throw new Error("A portal source is required (--site/--env, --project or --source)");
-  const [{ importPortal }, { importSolutionData, applySolutionData }, { discoverSolutionRoots }, { scaffoldData }, { initialState }] = await Promise.all([
-    import("./importer.mjs"),
-    import("./solution-data.mjs"),
-    import("./solution-roots.mjs"),
-    import("./scaffold-data.mjs"),
-    import("./bootstrap.mjs"),
+export async function scaffoldDataCommand({
+  profile = 'smoke',
+  state: statePath,
+  out,
+  seed,
+  source,
+  solutionRoots = [],
+  rowsPerTable,
+  resolution,
+  dataModel,
+} = {}) {
+  if (!statePath) throw new Error('--state is required');
+  if (!source) throw new Error('A portal source is required (--site/--env, --project or --source)');
+  const [
+    { importPortal },
+    { importSolutionData, applySolutionData },
+    { discoverSolutionRoots },
+    { scaffoldData },
+    { initialState },
+  ] = await Promise.all([
+    import('./importer.mjs'),
+    import('./solution-data.mjs'),
+    import('./solution-roots.mjs'),
+    import('./scaffold-data.mjs'),
+    import('./bootstrap.mjs'),
   ]);
   const inputPath = path.resolve(statePath);
   const outputPath = path.resolve(out ?? statePath);
@@ -300,16 +419,24 @@ export async function scaffoldDataCommand({ profile = "smoke", state: statePath,
   const started = performance.now();
   const sourceDir = path.resolve(source);
   const portal = await importPortal(sourceDir, { dataModel });
-  const roots = solutionRoots.length ? solutionRoots.map((root) => path.resolve(root)) : await discoverSolutionRoots(sourceDir);
+  const roots = solutionRoots.length
+    ? solutionRoots.map((root) => path.resolve(root))
+    : await discoverSolutionRoots(sourceDir);
   const metadata = await importSolutionData(roots);
-  const scaffold = scaffoldData({ portal, schema: metadata.schema, profile, ...(seed ? { seed } : {}), ...(rowsPerTable ? { rowsPerTable } : {}) });
+  const scaffold = scaffoldData({
+    portal,
+    schema: metadata.schema,
+    profile,
+    ...(seed ? { seed } : {}),
+    ...(rowsPerTable ? { rowsPerTable } : {}),
+  });
   let input;
   let bootstrapped = false;
   try {
     await fs.access(inputPath);
     input = (await new DataStore({ file: inputPath }).init()).snapshot();
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if (error.code !== 'ENOENT') throw error;
     input = applySolutionData(initialState(portal, { metadata }), metadata);
     bootstrapped = true;
   }
@@ -326,10 +453,15 @@ export async function scaffoldDataCommand({ profile = "smoke", state: statePath,
     } else if (!own(output.mappings, table))
       // Tables the solution layers do not define (such as the web role
       // membership intersect) get the conventional mapping of their rows.
-      output.mappings[table] = { entitySet: `${table}s`, idColumn: own(scaffold.idColumns, table), relationships: {}, inferred: true };
+      output.mappings[table] = {
+        entitySet: `${table}s`,
+        idColumn: own(scaffold.idColumns, table),
+        relationships: {},
+        inferred: true,
+      };
     const key = own(output.mappings, table)?.idColumn ?? own(scaffold.idColumns, table);
     const existing = own(output.tables, table) ?? (output.tables[table] = []);
-    const ids = new Set(existing.map((row) => rowKey(own(row, key) ?? "")));
+    const ids = new Set(existing.map((row) => rowKey(own(row, key) ?? '')));
     let added = 0;
     for (const row of generated)
       if (!ids.has(rowKey(own(row, key)))) {
@@ -350,9 +482,10 @@ export async function scaffoldDataCommand({ profile = "smoke", state: statePath,
   }
   output.provenance = { ...(output.provenance ?? {}), scaffold: { ...scaffold.report, source: sourceDir } };
   await assertOfflineState(outputPath);
-  const destination = outputPath === inputPath && !bootstrapped
-    ? await new DataStore({ file: inputPath }).init()
-    : await new DataStore({ file: outputPath, state: output }).init();
+  const destination =
+    outputPath === inputPath && !bootstrapped
+      ? await new DataStore({ file: inputPath }).init()
+      : await new DataStore({ file: outputPath, state: output }).init();
   await destination.replaceState(output, { expectedDigest: destination.snapshotDigest() });
   return {
     written: outputPath,
@@ -363,7 +496,7 @@ export async function scaffoldDataCommand({ profile = "smoke", state: statePath,
     addedMemberships,
     source: sourceDir,
     solutionRoots: roots,
-    resolution: resolution ?? { kind: "source", solutionRoots: solutionRoots.length ? "explicit" : "discovered" },
+    resolution: resolution ?? { kind: 'source', solutionRoots: solutionRoots.length ? 'explicit' : 'discovered' },
     elapsedMs: Math.round(performance.now() - started),
   };
 }

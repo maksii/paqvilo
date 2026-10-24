@@ -3,8 +3,49 @@
 // handling": error in, error out); `errors: true` sees error arguments; `lazy: true` receives the argument nodes (If,
 // Switch, IfError, record scope functions, behaviour functions that name their target).
 // Semantics follow each function's Learn reference page (https://learn.microsoft.com/power-platform/power-fx/reference/).
-import { decimalParts, decimalText, exactNumeric, isExactNumeric, numericPair, roundNumeric } from './exact-numeric.mjs';
-import { ALIASES, CAUSE, FxFloat, decimalArithmetic, invariantNumberText, parseNumber, toDecimal, ErrorKind, FxDataSource, FxDate, FxError, FxGuid, FxRecordRef, FxUntyped, compare, equals, fieldName, formatDate, fromWall, fxError, isBlank, isRecord, isoOf, member, readAll, round15, toBoolean, toDate, toFx, toNumber, toText, wallOf, zoneOffset } from './power-fx.mjs';
+import {
+  decimalParts,
+  decimalText,
+  exactNumeric,
+  isExactNumeric,
+  numericPair,
+  roundNumeric,
+} from './exact-numeric.mjs';
+import {
+  ALIASES,
+  CAUSE,
+  FxFloat,
+  decimalArithmetic,
+  invariantNumberText,
+  parseNumber,
+  toDecimal,
+  ErrorKind,
+  FxDataSource,
+  FxDate,
+  FxError,
+  FxGuid,
+  FxRecordRef,
+  FxUntyped,
+  compare,
+  equals,
+  fieldName,
+  formatDate,
+  fromWall,
+  fxError,
+  isBlank,
+  isRecord,
+  isoOf,
+  member,
+  readAll,
+  round15,
+  toBoolean,
+  toDate,
+  toFx,
+  toNumber,
+  toText,
+  wallOf,
+  zoneOffset,
+} from './power-fx.mjs';
 
 const DAY = 86_400_000;
 const fail = (kind, message) => fxError(ErrorKind[kind], message);
@@ -16,7 +57,8 @@ const firstError = (...values) => values.find((value) => value instanceof FxErro
 // A table argument's rows: a data source read without delegation (with the warning), an untyped array as Value records.
 function rowsOf(fx, value, operation) {
   if (value instanceof FxDataSource) return readAll(fx, value, operation);
-  if (value instanceof FxUntyped && Array.isArray(value.raw)) return value.raw.map((item) => ({ Value: item === null ? null : new FxUntyped(item) }));
+  if (value instanceof FxUntyped && Array.isArray(value.raw))
+    return value.raw.map((item) => ({ Value: item === null ? null : new FxUntyped(item) }));
   if (Array.isArray(value)) return value;
   if (isBlank(value)) return [];
   return fail('InvalidArgument', `${operation} needs a table.`);
@@ -45,14 +87,22 @@ const integer = (value) => (value instanceof FxError ? value : Math.trunc(value)
 
 // Number functions: the argument converted, an error or blank handled once.
 const numeric = (fn, { blank = 'zero' } = {}) => ({
-  min: 1, max: 1,
+  min: 1,
+  max: 1,
   fn: (fx, value) => {
     if (isBlank(value) && blank === 'blank') return null;
     const x = toNumber(value);
     return x instanceof FxError ? x : fn(x);
   },
 });
-const textual = (fn) => ({ min: 1, max: 1, fn: (fx, value) => { const t = toText(value, fx); return t instanceof FxError ? t : fn(t); } });
+const textual = (fn) => ({
+  min: 1,
+  max: 1,
+  fn: (fx, value) => {
+    const t = toText(value, fx);
+    return t instanceof FxError ? t : fn(t);
+  },
+});
 
 // Learn "Round, RoundDown, RoundUp, Int and Trunc": Round half away from zero; RoundUp away from zero; RoundDown and Trunc
 // toward zero; Int down. Exponent arithmetic keeps 1.005 at 1.01.
@@ -64,9 +114,11 @@ function scaled(x, digits, mode) {
   return sign * shift(whole, -digits) || 0;
 }
 const rounding = (mode) => ({
-  min: 1, max: 2,
+  min: 1,
+  max: 2,
   fn: (fx, value, digits = 0) => {
-    const x = toNumber(value), d = toNumber(digits);
+    const x = toNumber(value),
+      d = toNumber(digits);
     if (x instanceof FxError) return x;
     if (d instanceof FxError) return d;
     // An exact decimal beyond a double's digits rounds exactly (half away from zero).
@@ -79,14 +131,25 @@ const rounding = (mode) => ({
 
 function formatNumber(value, format) {
   const fmt = String(format).replace(/^\[\$-[^\]]*\]/, '');
-  const parts = [...fmt.matchAll(/"([^"]*)"|\\(.)|([0#,.])|(.)/gs)].map((m) => (m[3] !== undefined ? { p: m[3] } : { t: m[1] ?? m[2] ?? m[4] }));
+  const parts = [...fmt.matchAll(/"([^"]*)"|\\(.)|([0#,.])|(.)/gs)].map((m) =>
+    m[3] !== undefined ? { p: m[3] } : { t: m[1] ?? m[2] ?? m[4] },
+  );
   const first = parts.findIndex((part) => part.p && part.p !== ',' && part.p !== '.');
   if (first < 0) return parts.map((part) => part.t ?? part.p).join('');
   let last = parts.length - 1;
   while (!parts[last].p || parts[last].p === ',') last--;
-  const pattern = parts.slice(first, last + 1).map((part) => part.p ?? '').join('');
-  const prefix = parts.slice(0, first).map((part) => part.t ?? part.p).join('');
-  const suffix = parts.slice(last + 1).map((part) => part.t ?? part.p).join('');
+  const pattern = parts
+    .slice(first, last + 1)
+    .map((part) => part.p ?? '')
+    .join('');
+  const prefix = parts
+    .slice(0, first)
+    .map((part) => part.t ?? part.p)
+    .join('');
+  const suffix = parts
+    .slice(last + 1)
+    .map((part) => part.t ?? part.p)
+    .join('');
   const percent = (prefix + suffix).includes('%');
   const [intPattern, decPattern = ''] = pattern.split('.');
   const decimals = (decPattern.match(/[0#]/g) ?? []).length;
@@ -98,7 +161,7 @@ function formatNumber(value, format) {
   if (intPattern.includes(',')) intText = intText.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   let decText = fraction;
   while (decText.length > minDecimals && decText.endsWith('0')) decText = decText.slice(0, -1);
-  const body = intText + (decText || pattern.includes('.') && minDecimals ? `.${decText}` : '');
+  const body = intText + (decText || (pattern.includes('.') && minDecimals) ? `.${decText}` : '');
   return `${x < 0 ? '-' : ''}${prefix}${body}${suffix}`;
 }
 
@@ -106,7 +169,8 @@ function formatNumber(value, format) {
 
 const partsOf = (fx, date) => new Date(wallOf(date, fx.timeZone));
 const datePart = (get) => ({
-  min: 1, max: 1,
+  min: 1,
+  max: 1,
   fn: (fx, value) => {
     if (isBlank(value)) return null;
     const date = toDate(value, 'any', fx);
@@ -151,9 +215,15 @@ function isoWeek(d) {
 function regexOf(fx, pattern, options, fallback) {
   const opts = String(options ?? fallback);
   let source = String(pattern);
-  // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
-  if (opts.includes('x')) source = source.replace(/\\#/g, '\u0000').replace(/#[^\n]*/g, '').replace(/\s+/g, '').replace(/\u0000/g, '\\#');
-  const begins = opts.includes('^c'), ends = opts.includes('c$');
+  if (opts.includes('x'))
+    source = source
+      .replace(/\\#/g, '\u0000')
+      .replace(/#[^\n]*/g, '')
+      .replace(/\s+/g, '')
+      // eslint-disable-next-line no-control-regex -- This parser intentionally recognizes control bytes in untrusted text.
+      .replace(/\u0000/g, '\\#');
+  const begins = opts.includes('^c'),
+    ends = opts.includes('c$');
   source = `${begins ? '^' : ''}(?:${source})${ends ? '$' : ''}`;
   const flags = `u${opts.includes('i') ? 'i' : ''}${opts.includes('m') ? 'm' : ''}${opts.includes('s') ? 's' : ''}`;
   try {
@@ -164,7 +234,9 @@ function regexOf(fx, pattern, options, fallback) {
 }
 const isMatchDefault = (fx) => (fx.host.app === 'canvas' ? '^c$' : 'c');
 function matchRecord(match, numbered) {
-  const record = { ...Object.fromEntries(Object.entries(match.groups ?? {}).map(([key, value]) => [key, value ?? null])) };
+  const record = {
+    ...Object.fromEntries(Object.entries(match.groups ?? {}).map(([key, value]) => [key, value ?? null])),
+  };
   record.FullMatch = match[0];
   record.StartMatch = match.index + 1;
   if (numbered) record.SubMatches = singleColumn(match.slice(1).map((value) => value ?? null));
@@ -187,8 +259,10 @@ function jsonOf(fx, value, flatten) {
     const single = flatten && value.every((row) => isRecord(row) && Object.keys(row).length === 1 && 'Value' in row);
     return value.map((row) => (single ? jsonOf(fx, row.Value, flatten) : jsonOf(fx, row, flatten)));
   }
-  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, jsonOf(fx, item, flatten)]));
-  if (typeof value === 'number' && !Number.isFinite(value)) throw fail('InvalidArgument', 'JSON cannot serialize a non-finite number.');
+  if (isRecord(value))
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, jsonOf(fx, item, flatten)]));
+  if (typeof value === 'number' && !Number.isFinite(value))
+    throw fail('InvalidArgument', 'JSON cannot serialize a non-finite number.');
   return value;
 }
 
@@ -201,20 +275,33 @@ const ORDERED = new Set(['number', 'text', 'datetime', 'date']); // <, <=, >, >=
 // True when node reads the row being filtered (ThisRecord, the As name or a bare column name).
 function readsRow(node, source, asName) {
   if (!node || typeof node !== 'object') return false;
-  if (node.t === 'id' && !node.global) return node.name === 'ThisRecord' || node.name === asName || source.adapter.column(node.name) !== null;
+  if (node.t === 'id' && !node.global)
+    return node.name === 'ThisRecord' || node.name === asName || source.adapter.column(node.name) !== null;
   if (node.t === 'disamb') return true;
-  return Object.values(node).some((value) => (Array.isArray(value) ? value.some((item) => readsRow(Array.isArray(item) ? item[1] : item?.node ?? item, source, asName)) : readsRow(value, source, asName)));
+  return Object.values(node).some((value) =>
+    Array.isArray(value)
+      ? value.some((item) => readsRow(Array.isArray(item) ? item[1] : (item?.node ?? item), source, asName))
+      : readsRow(value, source, asName),
+  );
 }
 // The column a node names directly: `Col`, `ThisRecord.Col` or `<AsName>.Col`.
 function columnRef(node, source, asName) {
-  if (node.t === 'id' && !node.global && node.name !== 'ThisRecord' && node.name !== asName) return source.adapter.column(node.name);
-  if (node.t === 'dot' && node.obj.t === 'id' && (node.obj.name === 'ThisRecord' || node.obj.name === asName)) return source.adapter.column(node.name);
+  if (node.t === 'id' && !node.global && node.name !== 'ThisRecord' && node.name !== asName)
+    return source.adapter.column(node.name);
+  if (node.t === 'dot' && node.obj.t === 'id' && (node.obj.name === 'ThisRecord' || node.obj.name === asName))
+    return source.adapter.column(node.name);
   return null;
 }
 // Learn (Dataverse delegation, note 3): DateTime is delegable except for the Now() and Today() functions.
 const VOLATILE = new Set(['Now', 'Today', 'UTCNow', 'UTCToday', 'IsToday', 'IsUTCToday']);
-const callsVolatile = (node) => Boolean(node && typeof node === 'object') && ((node.t === 'call' && VOLATILE.has(node.name))
-  || Object.values(node).some((value) => (Array.isArray(value) ? value.some((item) => callsVolatile(Array.isArray(item) ? item[1] : item?.node ?? item)) : callsVolatile(value))));
+const callsVolatile = (node) =>
+  Boolean(node && typeof node === 'object') &&
+  ((node.t === 'call' && VOLATILE.has(node.name)) ||
+    Object.values(node).some((value) =>
+      Array.isArray(value)
+        ? value.some((item) => callsVolatile(Array.isArray(item) ? item[1] : (item?.node ?? item)))
+        : callsVolatile(value),
+    ));
 // A row-independent operand evaluated in the outer scope; undefined when it cannot serve as a literal.
 function constantOf(fx, node, source, asName) {
   if (readsRow(node, source, asName) || callsVolatile(node)) return undefined;
@@ -237,26 +324,46 @@ function textExpr(fx, node, source, asName) {
   const quoted = (text) => `'${text.replace(/'/g, "''")}'`;
   const of = (odata) => ({ ...inner, odata });
   switch (node.name) {
-    case 'Upper': return node.args.length === 1 ? of(`toupper(${inner.odata})`) : null;
-    case 'Lower': return node.args.length === 1 ? of(`tolower(${inner.odata})`) : null;
-    case 'Right': { const count = whole(1); return count === null ? null : of(`right(${inner.odata},${count})`); }
+    case 'Upper':
+      return node.args.length === 1 ? of(`toupper(${inner.odata})`) : null;
+    case 'Lower':
+      return node.args.length === 1 ? of(`tolower(${inner.odata})`) : null;
+    case 'Right': {
+      const count = whole(1);
+      return count === null ? null : of(`right(${inner.odata},${count})`);
+    }
     case 'Substitute': {
       if (node.args.length !== 3) return null; // an instance argument stays in memory
-      const [from, to] = [1, 2].map((i) => constantOf(fx, node.args[i], source, asName)).map((value) => (value === undefined ? null : toText(value, fx)));
-      return typeof from === 'string' && typeof to === 'string' ? of(`replace(${inner.odata},${quoted(from)},${quoted(to)})`) : null;
+      const [from, to] = [1, 2]
+        .map((i) => constantOf(fx, node.args[i], source, asName))
+        .map((value) => (value === undefined ? null : toText(value, fx)));
+      return typeof from === 'string' && typeof to === 'string'
+        ? of(`replace(${inner.odata},${quoted(from)},${quoted(to)})`)
+        : null;
     }
-    case 'Left': { const count = whole(1); return count === null ? null : of(`substring(${inner.odata},0,${count})`); }
+    case 'Left': {
+      const count = whole(1);
+      return count === null ? null : of(`substring(${inner.odata},0,${count})`);
+    }
     case 'Mid': {
-      const start = whole(1), count = node.args.length > 2 ? whole(2) : undefined;
-      return !start || count === null ? null : of(`substring(${inner.odata},${start - 1}${count === undefined ? '' : `,${count}`})`);
+      const start = whole(1),
+        count = node.args.length > 2 ? whole(2) : undefined;
+      return !start || count === null
+        ? null
+        : of(`substring(${inner.odata},${start - 1}${count === undefined ? '' : `,${count}`})`);
     }
     case 'Replace': {
-      const start = whole(1), count = whole(2), value = node.args[3] ? constantOf(fx, node.args[3], source, asName) : undefined;
+      const start = whole(1),
+        count = whole(2),
+        value = node.args[3] ? constantOf(fx, node.args[3], source, asName) : undefined;
       const text = value === undefined ? null : toText(value, fx);
       if (!start || count === null || typeof text !== 'string') return null;
-      return of(`concat(concat(substring(${inner.odata},0,${start - 1}),${quoted(text)}),substring(${inner.odata},${start - 1 + count}))`);
+      return of(
+        `concat(concat(substring(${inner.odata},0,${start - 1}),${quoted(text)}),substring(${inner.odata},${start - 1 + count}))`,
+      );
     }
-    default: return null;
+    default:
+      return null;
   }
 }
 // One predicate as an OData $filter clause: a string, true or false for a constant predicate, null when not delegable.
@@ -269,7 +376,8 @@ function delegate(fx, source, node, asName) {
   }
   const clause = (inner) => (inner === null || typeof inner === 'boolean' ? null : inner);
   if (node.t === 'bin' && (node.op === '&&' || node.op === '||')) {
-    const l = clause(delegate(fx, source, node.l, asName)), r = clause(delegate(fx, source, node.r, asName));
+    const l = clause(delegate(fx, source, node.l, asName)),
+      r = clause(delegate(fx, source, node.r, asName));
     return l && r ? `(${l} ${node.op === '&&' ? 'and' : 'or'} ${r})` : null;
   }
   if ((node.t === 'unary' && node.op === '!') || (node.t === 'call' && node.name === 'Not' && node.args.length === 1)) {
@@ -277,8 +385,14 @@ function delegate(fx, source, node, asName) {
     return inner ? `not (${inner})` : null;
   }
   if (node.t === 'bin' && ODATA_OP[node.op]) {
-    let column = textExpr(fx, node.l, source, asName), other = node.r, op = node.op;
-    if (!column) { column = textExpr(fx, node.r, source, asName); other = node.l; op = SWAPPED[node.op]; }
+    let column = textExpr(fx, node.l, source, asName),
+      other = node.r,
+      op = node.op;
+    if (!column) {
+      column = textExpr(fx, node.r, source, asName);
+      other = node.l;
+      op = SWAPPED[node.op];
+    }
     if (!column || (!['=', '<>'].includes(op) && !ORDERED.has(column.type))) return null;
     const value = constantOf(fx, other, source, asName);
     if (value === undefined) return null;
@@ -292,19 +406,26 @@ function delegate(fx, source, node, asName) {
   if (node.t === 'call' && node.name === 'StartsWith' && node.args.length === 2) {
     const column = columnRef(node.args[0], source, asName);
     const value = column?.type === 'text' ? constantOf(fx, node.args[1], source, asName) : undefined;
-    return value === undefined ? null : `startswith(${column.odata},${source.adapter.literal(column, toText(value, fx))})`;
+    return value === undefined
+      ? null
+      : `startswith(${column.odata},${source.adapter.literal(column, toText(value, fx))})`;
   }
   if (node.t === 'bin' && node.op === 'in') {
     const column = columnRef(node.r, source, asName);
-    if (column?.type === 'text') { // substring: "x" in Col
+    if (column?.type === 'text') {
+      // substring: "x" in Col
       const value = constantOf(fx, node.l, source, asName);
-      return value === undefined ? null : `contains(${column.odata},${source.adapter.literal(column, toText(value, fx))})`;
+      return value === undefined
+        ? null
+        : `contains(${column.odata},${source.adapter.literal(column, toText(value, fx))})`;
     }
     const member = columnRef(node.l, source, asName); // membership: Col in [a, b]
     const list = member ? constantOf(fx, node.r, source, asName) : undefined;
     if (!Array.isArray(list) || !list.length) return null;
     const literals = list.map((row) => source.adapter.literal(member, isRecord(row) ? Object.values(row)[0] : row));
-    return literals.includes(null) ? null : `(${literals.map((literal) => `${member.odata} eq ${literal}`).join(' or ')})`;
+    return literals.includes(null)
+      ? null
+      : `(${literals.map((literal) => `${member.odata} eq ${literal}`).join(' or ')})`;
   }
   return null;
 }
@@ -314,7 +435,9 @@ function filterSource(fx, source, preds, asName, _name) {
   if (clauses.every((clause) => clause !== null)) {
     if (clauses.includes(false)) return [];
     const filters = clauses.filter((clause) => typeof clause === 'string');
-    const extended = source.query.extended || filters.some((clause) => /(toupper|tolower|substring|concat|right|replace)\(/.test(clause));
+    const extended =
+      source.query.extended ||
+      filters.some((clause) => /(toupper|tolower|substring|concat|right|replace)\(/.test(clause));
     return source.with({ filters: [...source.query.filters, ...filters], extended });
   }
   return null;
@@ -328,10 +451,21 @@ function filterRows(fx, table, rows, preds) {
     let keep = true;
     for (const pred of preds) {
       const value = inRow(fx, row, table, () => fx.ev(pred));
-      if (value instanceof FxError) { out.push(value); keep = false; break; } // Learn: the record becomes an error record
+      if (value instanceof FxError) {
+        out.push(value);
+        keep = false;
+        break;
+      } // Learn: the record becomes an error record
       const b = toBoolean(value);
-      if (b instanceof FxError) { out.push(b); keep = false; break; }
-      if (!b) { keep = false; break; }
+      if (b instanceof FxError) {
+        out.push(b);
+        keep = false;
+        break;
+      }
+      if (!b) {
+        keep = false;
+        break;
+      }
     }
     if (keep) out.push(row);
   }
@@ -342,7 +476,8 @@ function filterRows(fx, table, rows, preds) {
 
 function aggregate(name, reduce) {
   return {
-    min: 1, lazy: true,
+    min: 1,
+    lazy: true,
     fn(fx, args) {
       let values;
       const first = tableArg(fx, args[0]);
@@ -351,13 +486,19 @@ function aggregate(name, reduce) {
       if (isTableForm) {
         const column = plainColumn(args[1], first.value, first.name);
         // Learn: Sum, Min, Max, Avg delegate for Number columns; the delegated read has no row limit.
-        const rows = column && column.type === 'number' ? first.value.adapter.read({ ...first.value.query, top: first.value.query.top }) : rowsOf(fx, first.value, name);
+        const rows =
+          column && column.type === 'number'
+            ? first.value.adapter.read({ ...first.value.query, top: first.value.query.top })
+            : rowsOf(fx, first.value, name);
         if (rows instanceof FxError) return rows;
         values = rows.map((row) => inRow(fx, row, first, () => fx.ev(args[1])));
       } else values = [first.value, ...args.slice(1).map((arg) => fx.ev(arg))];
       const error = firstError(...values);
       if (error) return error;
-      return reduce(fx, values.filter((value) => !isBlank(value)));
+      return reduce(
+        fx,
+        values.filter((value) => !isBlank(value)),
+      );
     },
   };
 }
@@ -395,21 +536,33 @@ function collectionTarget(fx, node, create) {
     }
   }
   const value = fx.ev(node);
-  return value instanceof FxDataSource || Array.isArray(value) ? { value } : { error: fail('InvalidArgument', 'The first argument must be a table or collection.') };
+  return value instanceof FxDataSource || Array.isArray(value)
+    ? { value }
+    : { error: fail('InvalidArgument', 'The first argument must be a table or collection.') };
 }
-const recordsOf = (values) => values.flatMap((value) => (Array.isArray(value) ? value : [value])).map((value) => (isRecord(value) ? value : { Value: value }));
-const merged = (records) => records.reduce((out, record) => {
-  const next = copyRecord(out);
-  for (const [key, value] of Object.entries(record ?? {})) next[fieldName(out, key)] = value;
-  return next;
-}, {});
+const recordsOf = (values) =>
+  values
+    .flatMap((value) => (Array.isArray(value) ? value : [value]))
+    .map((value) => (isRecord(value) ? value : { Value: value }));
+const merged = (records) =>
+  records.reduce((out, record) => {
+    const next = copyRecord(out);
+    for (const [key, value] of Object.entries(record ?? {})) next[fieldName(out, key)] = value;
+    return next;
+  }, {});
 const sameRow = (a, b) => a === b || equals(a, b);
 function guarded(fn) {
-  try { return fn(); } catch (error) {
+  try {
+    return fn();
+  } catch (error) {
     if (error instanceof FxError) return error;
     // A data source refusal (403, 404, 400...) becomes an error value with the kind the adapter names.
     if (error?.status) {
-      const record = { Kind: ErrorKind[error.powerFxKind] ?? (error.status === 404 ? ErrorKind.NotFound : ErrorKind.Sync), Message: error.message, Details: { HttpStatusCode: error.status } };
+      const record = {
+        Kind: ErrorKind[error.powerFxKind] ?? (error.status === 404 ? ErrorKind.NotFound : ErrorKind.Sync),
+        Message: error.message,
+        Details: { HttpStatusCode: error.status },
+      };
       Object.defineProperty(record, CAUSE, { value: error });
       return new FxError([record]);
     }
@@ -421,11 +574,39 @@ function guarded(fn) {
 
 export const FUNCTIONS = {
   // Logical (Learn "And, Or, and Not", "If and Switch", "IfError")
-  And: { min: 1, lazy: true, fn: (fx, args) => { for (const arg of args) { const b = toBoolean(fx.ev(arg)); if (b instanceof FxError || !b) return b; } return true; } },
-  Or: { min: 1, lazy: true, fn: (fx, args) => { for (const arg of args) { const b = toBoolean(fx.ev(arg)); if (b instanceof FxError || b) return b; } return false; } },
-  Not: { min: 1, max: 1, fn: (fx, value) => { const b = toBoolean(value); return b instanceof FxError ? b : !b; } },
+  And: {
+    min: 1,
+    lazy: true,
+    fn: (fx, args) => {
+      for (const arg of args) {
+        const b = toBoolean(fx.ev(arg));
+        if (b instanceof FxError || !b) return b;
+      }
+      return true;
+    },
+  },
+  Or: {
+    min: 1,
+    lazy: true,
+    fn: (fx, args) => {
+      for (const arg of args) {
+        const b = toBoolean(fx.ev(arg));
+        if (b instanceof FxError || b) return b;
+      }
+      return false;
+    },
+  },
+  Not: {
+    min: 1,
+    max: 1,
+    fn: (fx, value) => {
+      const b = toBoolean(value);
+      return b instanceof FxError ? b : !b;
+    },
+  },
   If: {
-    min: 2, lazy: true,
+    min: 2,
+    lazy: true,
     fn(fx, args) {
       let i = 0;
       for (; i + 1 < args.length; i += 2) {
@@ -437,7 +618,8 @@ export const FUNCTIONS = {
     },
   },
   Switch: {
-    min: 3, lazy: true,
+    min: 3,
+    lazy: true,
     fn(fx, args) {
       const value = fx.ev(args[0]);
       if (value instanceof FxError) return value;
@@ -451,13 +633,21 @@ export const FUNCTIONS = {
     },
   },
   IfError: {
-    min: 2, lazy: true,
+    min: 2,
+    lazy: true,
     fn(fx, args) {
-      let last = null, i = 0;
+      let last = null,
+        i = 0;
       for (; i + 1 < args.length; i += 2) {
         last = fx.ev(args[i]);
         if (last instanceof FxError) {
-          const all = last.errors.map((error) => ({ Kind: error.Kind, Message: error.Message ?? null, Source: error.Source ?? null, Observed: error.Observed ?? null, Details: error.Details ?? null }));
+          const all = last.errors.map((error) => ({
+            Kind: error.Kind,
+            Message: error.Message ?? null,
+            Source: error.Source ?? null,
+            Observed: error.Observed ?? null,
+            Details: error.Details ?? null,
+          }));
           return fx.inScope({ vars: { FirstError: all[0], AllErrors: all } }, () => fx.ev(args[i + 1]));
         }
       }
@@ -465,23 +655,51 @@ export const FUNCTIONS = {
     },
   },
   IsError: { min: 1, max: 1, errors: true, fn: (fx, value) => value instanceof FxError },
-  IsBlankOrError: { min: 1, max: 1, errors: true, fn: (fx, value) => value instanceof FxError || isBlank(value) || value === '' },
+  IsBlankOrError: {
+    min: 1,
+    max: 1,
+    errors: true,
+    fn: (fx, value) => value instanceof FxError || isBlank(value) || value === '',
+  },
   Error: {
-    min: 1, max: 1, errors: true,
+    min: 1,
+    max: 1,
+    errors: true,
     fn(fx, value) {
       if (value instanceof FxError) return value;
       if (isBlank(value) || (Array.isArray(value) && !value.length)) return null;
       // Assumed: Error("text") (used by Learn's low-code plug-in examples) is a Custom error with that message.
       if (typeof value === 'string') return fxError(ErrorKind.Custom, value);
       const records = Array.isArray(value) ? value : [value];
-      return new FxError(records.map((record) => ({ ...record, Kind: record.Kind ?? ErrorKind.Custom, Message: record.Message ?? null })));
+      return new FxError(
+        records.map((record) => ({
+          ...record,
+          Kind: record.Kind ?? ErrorKind.Custom,
+          Message: record.Message ?? null,
+        })),
+      );
     },
   },
   Blank: { min: 0, max: 0, fn: () => null },
-  IsBlank: { min: 1, max: 1, fn: (fx, value) => (Array.isArray(value) ? false : isBlank(value) || value === '' || (value instanceof FxUntyped && value.raw === null)) },
-  IsEmpty: { min: 1, max: 1, fn: (fx, value) => (value instanceof FxDataSource ? value.adapter.read({ ...value.query, top: 1 }).length === 0 : rowsOf(fx, value, 'IsEmpty').length === 0) },
+  IsBlank: {
+    min: 1,
+    max: 1,
+    fn: (fx, value) =>
+      Array.isArray(value)
+        ? false
+        : isBlank(value) || value === '' || (value instanceof FxUntyped && value.raw === null),
+  },
+  IsEmpty: {
+    min: 1,
+    max: 1,
+    fn: (fx, value) =>
+      value instanceof FxDataSource
+        ? value.adapter.read({ ...value.query, top: 1 }).length === 0
+        : rowsOf(fx, value, 'IsEmpty').length === 0,
+  },
   Coalesce: {
-    min: 1, lazy: true,
+    min: 1,
+    lazy: true,
     fn(fx, args) {
       for (const arg of args) {
         const value = fx.ev(arg);
@@ -498,12 +716,16 @@ export const FUNCTIONS = {
   Ln: numeric((x) => (x <= 0 ? fail('Numeric', 'Ln needs a positive number.') : new FxFloat(Math.log(x)))),
   Sqrt: numeric((x) => (x < 0 ? fail('Numeric', 'Sqrt needs a non-negative number.') : new FxFloat(Math.sqrt(x)))),
   Power: {
-    min: 2, max: 2,
+    min: 2,
+    max: 2,
     fn: (fx, a, b) => {
-      const x = toNumber(a), y = toNumber(b);
+      const x = toNumber(a),
+        y = toNumber(b);
       if (firstError(x, y)) return firstError(x, y);
       const result = Math.pow(x, y);
-      return Number.isFinite(result) ? new FxFloat(result) : fail('Numeric', 'Invalid operation: the result is not a number.');
+      return Number.isFinite(result)
+        ? new FxFloat(result)
+        : fail('Numeric', 'Invalid operation: the result is not a number.');
     },
   },
   Int: numeric(Math.floor),
@@ -512,24 +734,39 @@ export const FUNCTIONS = {
   RoundUp: rounding('up'),
   RoundDown: rounding('down'),
   Mod: {
-    min: 2, max: 2,
+    min: 2,
+    max: 2,
     fn: (fx, a, b) => {
-      const x = toDecimal(a), d = toDecimal(b);
+      const x = toDecimal(a),
+        d = toDecimal(b);
       if (firstError(x, d)) return firstError(x, d);
       if (toNumber(d) === 0) return fail('Div0', 'Invalid operation: division by zero.');
-      if (a instanceof FxFloat || b instanceof FxFloat) return new FxFloat(toNumber(x) - toNumber(d) * Math.floor(toNumber(x) / toNumber(d)));
+      if (a instanceof FxFloat || b instanceof FxFloat)
+        return new FxFloat(toNumber(x) - toNumber(d) * Math.floor(toNumber(x) / toNumber(d)));
       // Exact remainder that takes the divisor's sign (Learn example Mod(-3, 2) = 1).
-      const pair = numericPair(x, d), scale = Math.max(decimalParts(x).scale, decimalParts(d).scale);
+      const pair = numericPair(x, d),
+        scale = Math.max(decimalParts(x).scale, decimalParts(d).scale);
       let rest = pair.x % pair.y;
-      if (rest !== 0n && (rest < 0n) !== (pair.y < 0n)) rest += pair.y;
+      if (rest !== 0n && rest < 0n !== pair.y < 0n) rest += pair.y;
       return exactNumeric(decimalText({ coefficient: rest, scale }), 'Decimal');
     },
   },
   // Learn "Decimal, Float, and Value functions": text is read in the LanguageTag argument's language, else the user's.
-  Value: { min: 1, max: 2, fn: (fx, value, language) => (isBlank(value) || value === '' ? null : asDecimal(value, numberLanguage(fx, language))) },
-  Decimal: { min: 1, max: 2, fn: (fx, value, language) => (isBlank(value) || value === '' ? null : asDecimal(value, numberLanguage(fx, language))) },
+  Value: {
+    min: 1,
+    max: 2,
+    fn: (fx, value, language) =>
+      isBlank(value) || value === '' ? null : asDecimal(value, numberLanguage(fx, language)),
+  },
+  Decimal: {
+    min: 1,
+    max: 2,
+    fn: (fx, value, language) =>
+      isBlank(value) || value === '' ? null : asDecimal(value, numberLanguage(fx, language)),
+  },
   Float: {
-    min: 1, max: 2,
+    min: 1,
+    max: 2,
     fn(fx, value, language) {
       if (isBlank(value) || value === '') return null;
       if (typeof value === 'string') {
@@ -551,12 +788,19 @@ export const FUNCTIONS = {
     if (!values.length) return fail('Div0', 'Average of no values: division by zero.');
     return sum instanceof FxFloat ? new FxFloat(sum.value / values.length) : decimalArithmetic('/', sum, values.length);
   }),
-  Max: aggregate('Max', (fx, values) => values.reduce((best, value) => (best === null || compare(value, best, fx) > 0 ? value : best), null)),
-  Min: aggregate('Min', (fx, values) => values.reduce((best, value) => (best === null || compare(value, best, fx) < 0 ? value : best), null)),
+  Max: aggregate('Max', (fx, values) =>
+    values.reduce((best, value) => (best === null || compare(value, best, fx) > 0 ? value : best), null),
+  ),
+  Min: aggregate('Min', (fx, values) =>
+    values.reduce((best, value) => (best === null || compare(value, best, fx) < 0 ? value : best), null),
+  ),
   Sequence: {
-    min: 1, max: 3,
+    min: 1,
+    max: 3,
     fn(fx, records, start = 1, step = 1) {
-      const count = toNumber(records), from = toNumber(start), by = toNumber(step);
+      const count = toNumber(records),
+        from = toNumber(start),
+        by = toNumber(step);
       if (firstError(count, from, by)) return firstError(count, from, by);
       // Learn "Sequence": at most 50,000 records.
       if (count < 0 || count > 50000) return fail('InvalidArgument', 'Sequence needs between 0 and 50,000 records.');
@@ -567,7 +811,8 @@ export const FUNCTIONS = {
   // Text (Learn "Text", "Concat and Concatenate", "Left, Mid, Right", "Len", "Lower, Upper, Proper", "Trim", "Replace and
   // Substitute", "Find", "Split", "Char", "EndsWith and StartsWith")
   Text: {
-    min: 1, max: 3,
+    min: 1,
+    max: 3,
     fn(fx, value, format, language) {
       if (isBlank(value)) return '';
       if (format === undefined || isBlank(format)) return toText(value, fx);
@@ -575,7 +820,10 @@ export const FUNCTIONS = {
       if (pattern instanceof FxError) return pattern;
       if (value instanceof FxDate) {
         const date = value;
-        if (pattern === 'UTC') return new Date(date.kind === 'datetime' ? date.ms : fromWall('datetime', date.ms, fx.timeZone).ms).toISOString();
+        if (pattern === 'UTC')
+          return new Date(
+            date.kind === 'datetime' ? date.ms : fromWall('datetime', date.ms, fx.timeZone).ms,
+          ).toISOString();
         return formatDate(date, pattern, fx.timeZone, typeof language === 'string' ? language : fx.language);
       }
       if (typeof value === 'string') return value;
@@ -597,13 +845,20 @@ export const FUNCTIONS = {
     },
   },
   Concat: {
-    min: 2, max: 3, lazy: true,
+    min: 2,
+    max: 3,
+    lazy: true,
     fn(fx, args) {
       const table = tableArg(fx, args[0]);
       const rows = rowsOf(fx, table.value, 'Concat');
       if (rows instanceof FxError) return rows;
       const separator = args[2] ? toText(fx.ev(args[2]), fx) : '';
-      const texts = rows.map((row) => toText(inRow(fx, row, table, () => fx.ev(args[1])), fx));
+      const texts = rows.map((row) =>
+        toText(
+          inRow(fx, row, table, () => fx.ev(args[1])),
+          fx,
+        ),
+      );
       return firstError(separator, ...texts) ?? texts.join(separator);
     },
   },
@@ -614,35 +869,59 @@ export const FUNCTIONS = {
   Trim: textual((t) => t.replace(/^ +| +$/g, '').replace(/ {2,}/g, ' ')),
   TrimEnds: textual((t) => t.replace(/^ +| +$/g, '')),
   Left: {
-    min: 2, max: 2,
-    fn: (fx, value, count) => { const t = text(fx, value), c = integer(n(fx, count)); return firstError(t, c) ?? (c < 0 ? fail('InvalidArgument', 'Left needs a non-negative count.') : t.slice(0, c)); },
+    min: 2,
+    max: 2,
+    fn: (fx, value, count) => {
+      const t = text(fx, value),
+        c = integer(n(fx, count));
+      return firstError(t, c) ?? (c < 0 ? fail('InvalidArgument', 'Left needs a non-negative count.') : t.slice(0, c));
+    },
   },
   Right: {
-    min: 2, max: 2,
-    fn: (fx, value, count) => { const t = text(fx, value), c = integer(n(fx, count)); return firstError(t, c) ?? (c < 0 ? fail('InvalidArgument', 'Right needs a non-negative count.') : c === 0 ? '' : t.slice(-c)); },
+    min: 2,
+    max: 2,
+    fn: (fx, value, count) => {
+      const t = text(fx, value),
+        c = integer(n(fx, count));
+      return (
+        firstError(t, c) ??
+        (c < 0 ? fail('InvalidArgument', 'Right needs a non-negative count.') : c === 0 ? '' : t.slice(-c))
+      );
+    },
   },
   Mid: {
-    min: 2, max: 3,
+    min: 2,
+    max: 3,
     fn(fx, value, start, count) {
-      const t = text(fx, value), s = integer(n(fx, start)), c = count === undefined ? Infinity : integer(n(fx, count));
+      const t = text(fx, value),
+        s = integer(n(fx, start)),
+        c = count === undefined ? Infinity : integer(n(fx, count));
       if (firstError(t, s, c)) return firstError(t, s, c);
       if (s < 1 || c < 0) return fail('InvalidArgument', 'Mid needs a start of 1 or more and a non-negative count.');
       return t.substr(s - 1, c === Infinity ? undefined : c);
     },
   },
   Replace: {
-    min: 4, max: 4,
+    min: 4,
+    max: 4,
     fn(fx, value, start, count, replacement) {
-      const t = text(fx, value), s = integer(n(fx, start)), c = integer(n(fx, count)), r = text(fx, replacement);
+      const t = text(fx, value),
+        s = integer(n(fx, start)),
+        c = integer(n(fx, count)),
+        r = text(fx, replacement);
       if (firstError(t, s, c, r)) return firstError(t, s, c, r);
-      if (s < 1 || c < 0) return fail('InvalidArgument', 'Replace needs a start of 1 or more and a non-negative count.');
+      if (s < 1 || c < 0)
+        return fail('InvalidArgument', 'Replace needs a start of 1 or more and a non-negative count.');
       return t.slice(0, s - 1) + r + t.slice(s - 1 + c);
     },
   },
   Substitute: {
-    min: 3, max: 4,
+    min: 3,
+    max: 4,
     fn(fx, value, oldText, newText, instance) {
-      const t = text(fx, value), o = text(fx, oldText), r = text(fx, newText);
+      const t = text(fx, value),
+        o = text(fx, oldText),
+        r = text(fx, newText);
       if (firstError(t, o, r)) return firstError(t, o, r);
       if (!o) return t;
       if (instance === undefined || isBlank(instance)) return t.split(o).join(r);
@@ -650,14 +929,20 @@ export const FUNCTIONS = {
       if (which instanceof FxError) return which;
       if (which < 1) return fail('InvalidArgument', 'Substitute needs an instance of 1 or more.');
       let at = -1;
-      for (let i = 0; i < which; i++) { at = t.indexOf(o, at + 1); if (at < 0) return t; }
+      for (let i = 0; i < which; i++) {
+        at = t.indexOf(o, at + 1);
+        if (at < 0) return t;
+      }
       return t.slice(0, at) + r + t.slice(at + o.length);
     },
   },
   Find: {
-    min: 2, max: 3,
+    min: 2,
+    max: 3,
     fn(fx, findText, within, start = 1) {
-      const f = text(fx, findText), w = text(fx, within), s = integer(n(fx, start));
+      const f = text(fx, findText),
+        w = text(fx, within),
+        s = integer(n(fx, start));
       if (firstError(f, w, s)) return firstError(f, w, s);
       if (s < 1 || s > w.length + 1) return fail('InvalidArgument', 'Find needs a start within the text.');
       const at = w.indexOf(f, s - 1);
@@ -665,18 +950,37 @@ export const FUNCTIONS = {
     },
   },
   Split: {
-    min: 2, max: 2,
+    min: 2,
+    max: 2,
     fn: (fx, value, separator) => {
-      const t = text(fx, value), s = text(fx, separator);
+      const t = text(fx, value),
+        s = text(fx, separator);
       if (firstError(t, s)) return firstError(t, s);
       return singleColumn(t === '' ? [] : s === '' ? [...t] : t.split(s));
     },
   },
   Char: numeric((x) => String.fromCharCode(Math.trunc(x))),
-  StartsWith: { min: 2, max: 2, fn: (fx, value, start) => { const t = text(fx, value), s = text(fx, start); return firstError(t, s) ?? t.toLowerCase().startsWith(s.toLowerCase()); } },
-  EndsWith: { min: 2, max: 2, fn: (fx, value, end) => { const t = text(fx, value), e = text(fx, end); return firstError(t, e) ?? t.toLowerCase().endsWith(e.toLowerCase()); } },
+  StartsWith: {
+    min: 2,
+    max: 2,
+    fn: (fx, value, start) => {
+      const t = text(fx, value),
+        s = text(fx, start);
+      return firstError(t, s) ?? t.toLowerCase().startsWith(s.toLowerCase());
+    },
+  },
+  EndsWith: {
+    min: 2,
+    max: 2,
+    fn: (fx, value, end) => {
+      const t = text(fx, value),
+        e = text(fx, end);
+      return firstError(t, e) ?? t.toLowerCase().endsWith(e.toLowerCase());
+    },
+  },
   IsMatch: {
-    min: 2, max: 3,
+    min: 2,
+    max: 3,
     fn(fx, value, pattern, options) {
       const { re, error } = regexOf(fx, pattern, options, isMatchDefault(fx));
       if (error) return error;
@@ -685,7 +989,8 @@ export const FUNCTIONS = {
     },
   },
   Match: {
-    min: 2, max: 3,
+    min: 2,
+    max: 3,
     fn(fx, value, pattern, options) {
       const { re, error, numbered } = regexOf(fx, pattern, options, 'c');
       if (error) return error;
@@ -696,7 +1001,8 @@ export const FUNCTIONS = {
     },
   },
   MatchAll: {
-    min: 2, max: 3,
+    min: 2,
+    max: 3,
     fn(fx, value, pattern, options) {
       const { re, error, numbered } = regexOf(fx, pattern, options, 'c');
       if (error) return error;
@@ -706,19 +1012,24 @@ export const FUNCTIONS = {
     },
   },
   GUID: {
-    min: 0, max: 1,
+    min: 0,
+    max: 1,
     fn(fx, value) {
-      if (value === undefined) return new FxGuid(typeof fx.host.guid === 'function' ? fx.host.guid() : crypto.randomUUID());
+      if (value === undefined)
+        return new FxGuid(typeof fx.host.guid === 'function' ? fx.host.guid() : crypto.randomUUID());
       const t = text(fx, value);
       if (t instanceof FxError) return t;
       const m = /^\{?([0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12})\}?$/i.exec(t.trim());
       if (!m) return fail('InvalidArgument', `'${t}' is not a GUID.`);
       const hex = m[1].replace(/-/g, '');
-      return new FxGuid(`${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`);
+      return new FxGuid(
+        `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
+      );
     },
   },
   JSON: {
-    min: 1, max: 2,
+    min: 1,
+    max: 2,
     fn(fx, value, format = '') {
       const options = toText(format, fx);
       if (options instanceof FxError) return options;
@@ -731,7 +1042,8 @@ export const FUNCTIONS = {
     },
   },
   ParseJSON: {
-    min: 1, max: 1,
+    min: 1,
+    max: 1,
     fn(fx, value) {
       if (isBlank(value)) return null;
       try {
@@ -746,19 +1058,28 @@ export const FUNCTIONS = {
   // UTCToday, IsUTCToday", "DateAdd, DateDiff, TimeZoneOffset", "Day ... Weekday", "WeekNum and ISOWeekNum")
   Now: { min: 0, max: 0, fn: (fx) => new FxDate('datetime', fx.now()) },
   UTCNow: { min: 0, max: 0, fn: (fx) => new FxDate('datetime', fx.now(), true) },
-  Today: { min: 0, max: 0, fn: (fx) => fromWall('date', wallOf(new FxDate('datetime', fx.now()), fx.timeZone), fx.timeZone) },
+  Today: {
+    min: 0,
+    max: 0,
+    fn: (fx) => fromWall('date', wallOf(new FxDate('datetime', fx.now()), fx.timeZone), fx.timeZone),
+  },
   UTCToday: { min: 0, max: 0, fn: (fx) => fromWall('date', fx.now()) },
   IsToday: {
-    min: 1, max: 1,
+    min: 1,
+    max: 1,
     fn(fx, value) {
       if (isBlank(value)) return false;
       const date = toDate(value, 'any', fx);
       if (date instanceof FxError) return date;
-      return Math.floor(wallOf(date, fx.timeZone) / DAY) === Math.floor(wallOf(new FxDate('datetime', fx.now()), fx.timeZone) / DAY);
+      return (
+        Math.floor(wallOf(date, fx.timeZone) / DAY) ===
+        Math.floor(wallOf(new FxDate('datetime', fx.now()), fx.timeZone) / DAY)
+      );
     },
   },
   IsUTCToday: {
-    min: 1, max: 1,
+    min: 1,
+    max: 1,
     fn(fx, value) {
       if (isBlank(value)) return false;
       const date = toDate(value, 'any', fx);
@@ -766,24 +1087,30 @@ export const FUNCTIONS = {
     },
   },
   Date: {
-    min: 3, max: 3,
+    min: 3,
+    max: 3,
     fn(fx, y, m, d) {
       const [year, month, day] = [y, m, d].map((value) => integer(toNumber(value)));
       return firstError(year, month, day) ?? new FxDate('date', Date.UTC(year, month - 1, day));
     },
   },
   Time: {
-    min: 3, max: 4,
+    min: 3,
+    max: 4,
     fn(fx, h, m, s, ms = 0) {
       const parts = [h, m, s, ms].map((value) => toNumber(value));
       if (firstError(...parts)) return firstError(...parts);
       const [hour, minute, second, milli] = parts;
-      return new FxDate('time', (((hour * 3600 + minute * 60 + second) * 1000 + milli) % DAY + DAY) % DAY);
+      return new FxDate('time', ((((hour * 3600 + minute * 60 + second) * 1000 + milli) % DAY) + DAY) % DAY);
     },
   },
   DateValue: { min: 1, max: 2, fn: (fx, value) => (isBlank(value) || value === '' ? null : toDate(value, 'date', fx)) },
   TimeValue: { min: 1, max: 2, fn: (fx, value) => (isBlank(value) || value === '' ? null : toDate(value, 'time', fx)) },
-  DateTimeValue: { min: 1, max: 2, fn: (fx, value) => (isBlank(value) || value === '' ? null : toDate(value, 'datetime', fx)) },
+  DateTimeValue: {
+    min: 1,
+    max: 2,
+    fn: (fx, value) => (isBlank(value) || value === '' ? null : toDate(value, 'datetime', fx)),
+  },
   Year: datePart((d) => d.getUTCFullYear()),
   Month: datePart((d) => d.getUTCMonth() + 1),
   Day: datePart((d) => d.getUTCDate()),
@@ -791,19 +1118,26 @@ export const FUNCTIONS = {
   Minute: datePart((d) => d.getUTCMinutes()),
   Second: datePart((d) => d.getUTCSeconds()),
   Weekday: {
-    min: 1, max: 2,
+    min: 1,
+    max: 2,
     fn(fx, value, start = 1) {
       if (isBlank(value)) return null;
-      const date = toDate(value, 'any', fx), type = toNumber(start);
+      const date = toDate(value, 'any', fx),
+        type = toNumber(start);
       if (firstError(date, type)) return firstError(date, type);
-      return weekday(partsOf(fx, date).getUTCDay(), type) ?? fail('InvalidArgument', `'${start}' is not a StartOfWeek value.`);
+      return (
+        weekday(partsOf(fx, date).getUTCDay(), type) ??
+        fail('InvalidArgument', `'${start}' is not a StartOfWeek value.`)
+      );
     },
   },
   WeekNum: {
-    min: 1, max: 2,
+    min: 1,
+    max: 2,
     fn(fx, value, start = 1) {
       if (isBlank(value)) return null;
-      const date = toDate(value, 'any', fx), type = toNumber(start);
+      const date = toDate(value, 'any', fx),
+        type = toNumber(start);
       if (firstError(date, type)) return firstError(date, type);
       // Excel WEEKNUM system 1: the week holding January 1 is week 1; weeks begin on the StartOfWeek day.
       const startDay = { 1: 0, 2: 1, 3: 1, 11: 1, 12: 2, 13: 3, 14: 4, 15: 5, 16: 6, 17: 0 }[type];
@@ -817,10 +1151,13 @@ export const FUNCTIONS = {
   },
   ISOWeekNum: datePart(isoWeek),
   DateAdd: {
-    min: 2, max: 3,
+    min: 2,
+    max: 3,
     fn(fx, value, addition, units) {
       if (isBlank(value)) return null;
-      const date = toDate(value, 'any', fx), amount = toNumber(addition), unit = unitOf(units);
+      const date = toDate(value, 'any', fx),
+        amount = toNumber(addition),
+        unit = unitOf(units);
       if (firstError(date, amount, unit)) return firstError(date, amount, unit);
       if (UNITS[unit] && unit !== 'days') {
         // Sub-day units add to the instant; a date-only value becomes a date/time at local midnight.
@@ -834,28 +1171,39 @@ export const FUNCTIONS = {
     },
   },
   DateDiff: {
-    min: 2, max: 3,
+    min: 2,
+    max: 3,
     fn(fx, startValue, endValue, units) {
       if (isBlank(startValue) || isBlank(endValue)) return null;
-      const start = toDate(startValue, 'any', fx), end = toDate(endValue, 'any', fx), unit = unitOf(units);
+      const start = toDate(startValue, 'any', fx),
+        end = toDate(endValue, 'any', fx),
+        unit = unitOf(units);
       if (firstError(start, end, unit)) return firstError(start, end, unit);
       // Whole units counted between unit boundaries (Learn examples: 09:45 to 10:15:36 is 1 hour, 30 minutes, 1836 seconds).
-      const a = wallOf(start, fx.timeZone), b = wallOf(end, fx.timeZone);
+      const a = wallOf(start, fx.timeZone),
+        b = wallOf(end, fx.timeZone);
       if (UNITS[unit] && unit !== 'days') {
         // Sub-day units count elapsed time: a daylight-saving change between two date/times is taken out of the wall clock.
-        const shift = (start.kind === 'datetime' && end.kind === 'datetime') ? (b - end.ms) - (a - start.ms) : 0;
+        const shift = start.kind === 'datetime' && end.kind === 'datetime' ? b - end.ms - (a - start.ms) : 0;
         return Math.floor(b / UNITS[unit]) - Math.floor(a / UNITS[unit]) - Math.round(shift / UNITS[unit]);
       }
       if (unit === 'days') return Math.floor(b / DAY) - Math.floor(a / DAY);
-      const da = new Date(a), db = new Date(b);
+      const da = new Date(a),
+        db = new Date(b);
       const months = (db.getUTCFullYear() - da.getUTCFullYear()) * 12 + db.getUTCMonth() - da.getUTCMonth();
       if (unit === 'months') return months;
-      if (unit === 'quarters') return (db.getUTCFullYear() * 4 + Math.floor(db.getUTCMonth() / 3)) - (da.getUTCFullYear() * 4 + Math.floor(da.getUTCMonth() / 3));
+      if (unit === 'quarters')
+        return (
+          db.getUTCFullYear() * 4 +
+          Math.floor(db.getUTCMonth() / 3) -
+          (da.getUTCFullYear() * 4 + Math.floor(da.getUTCMonth() / 3))
+        );
       return db.getUTCFullYear() - da.getUTCFullYear();
     },
   },
   TimeZoneOffset: {
-    min: 0, max: 1,
+    min: 0,
+    max: 1,
     fn(fx, value) {
       const date = value === undefined ? new FxDate('datetime', fx.now()) : toDate(value, 'datetime', fx);
       if (date instanceof FxError || isBlank(date)) return date;
@@ -867,7 +1215,8 @@ export const FUNCTIONS = {
   // Tables (Learn "Filter, Search, and LookUp", "Sort and SortByColumns", "First, FirstN, Index, Last, and LastN",
   // "CountRows, CountIf", "Distinct", "AddColumns, DropColumns, RenameColumns, and ShowColumns", "ForAll", "Table", "With")
   Filter: {
-    min: 2, lazy: true,
+    min: 2,
+    lazy: true,
     fn(fx, args) {
       const table = tableArg(fx, args[0]);
       if (table.value instanceof FxError) return table.value;
@@ -880,12 +1229,15 @@ export const FUNCTIONS = {
     },
   },
   LookUp: {
-    min: 2, max: 3, lazy: true,
+    min: 2,
+    max: 3,
+    lazy: true,
     fn(fx, args) {
       const table = tableArg(fx, args[0]);
       if (table.value instanceof FxError) return table.value;
       let row;
-      const delegated = table.value instanceof FxDataSource ? filterSource(fx, table.value, [args[1]], table.name) : null;
+      const delegated =
+        table.value instanceof FxDataSource ? filterSource(fx, table.value, [args[1]], table.name) : null;
       if (delegated instanceof FxDataSource) row = delegated.adapter.read({ ...delegated.query, top: 1 })[0] ?? null;
       else if (Array.isArray(delegated)) row = null;
       else {
@@ -898,7 +1250,9 @@ export const FUNCTIONS = {
     },
   },
   Sort: {
-    min: 2, max: 3, lazy: true,
+    min: 2,
+    max: 3,
+    lazy: true,
     fn(fx, args) {
       const table = tableArg(fx, args[0]);
       if (table.value instanceof FxError) return table.value;
@@ -906,7 +1260,10 @@ export const FUNCTIONS = {
       if (order instanceof FxError) return order;
       const descending = order.toLowerCase() === 'descending';
       const column = plainColumn(args[1], table.value, table.name);
-      if (column && column.type !== 'guid' && column.type !== 'currency') return table.value.with({ orderby: [...table.value.query.orderby, `${column.odata}${descending ? ' desc' : ''}`] });
+      if (column && column.type !== 'guid' && column.type !== 'currency')
+        return table.value.with({
+          orderby: [...table.value.query.orderby, `${column.odata}${descending ? ' desc' : ''}`],
+        });
       const rows = rowsOf(fx, table.value, 'Sort');
       if (rows instanceof FxError) return rows;
       const keyed = rows.map((row) => ({ row, key: inRow(fx, row, table, () => fx.ev(args[1])) }));
@@ -916,7 +1273,8 @@ export const FUNCTIONS = {
     },
   },
   SortByColumns: {
-    min: 2, lazy: true,
+    min: 2,
+    lazy: true,
     fn(fx, args) {
       const value = fx.ev(args[0]);
       if (value instanceof FxError) return value;
@@ -935,53 +1293,104 @@ export const FUNCTIONS = {
         keys.push({ name, order });
       }
       if (value instanceof FxDataSource) {
-        const columns = keys.map((key) => ({ key, column: typeof key.order === 'string' ? value.adapter.column(key.name) : null }));
+        const columns = keys.map((key) => ({
+          key,
+          column: typeof key.order === 'string' ? value.adapter.column(key.name) : null,
+        }));
         if (columns.every((item) => item.column && item.column.type !== 'guid' && item.column.type !== 'currency'))
-          return value.with({ orderby: [...value.query.orderby, ...columns.map((item) => `${item.column.odata}${item.key.order.toLowerCase() === 'descending' ? ' desc' : ''}`)] });
+          return value.with({
+            orderby: [
+              ...value.query.orderby,
+              ...columns.map(
+                (item) => `${item.column.odata}${item.key.order.toLowerCase() === 'descending' ? ' desc' : ''}`,
+              ),
+            ],
+          });
       }
       const rows = rowsOf(fx, value, 'SortByColumns');
       if (rows instanceof FxError) return rows;
       const keyed = rows.map((row) => ({ row, key: keys.map((key) => member(fx, row, key.name)) }));
-      return [...keyed].sort((a, b) => {
-        for (let k = 0; k < keys.length; k++) {
-          const order = keys[k].order;
-          let c;
-          if (Array.isArray(order)) { // a table of values gives the order (Learn SortByColumns, the ordering table form)
-            const index = (v) => { const i = order.findIndex((row) => equals(Object.values(row)[0], v, fx)); return i < 0 ? Infinity : i; };
-            c = index(a.key[k]) - index(b.key[k]);
-          } else {
-            c = compareKeys(fx, a.key[k], b.key[k]);
-            if (String(order).toLowerCase() === 'descending') c = -c;
+      return [...keyed]
+        .sort((a, b) => {
+          for (let k = 0; k < keys.length; k++) {
+            const order = keys[k].order;
+            let c;
+            if (Array.isArray(order)) {
+              // a table of values gives the order (Learn SortByColumns, the ordering table form)
+              const index = (v) => {
+                const i = order.findIndex((row) => equals(Object.values(row)[0], v, fx));
+                return i < 0 ? Infinity : i;
+              };
+              c = index(a.key[k]) - index(b.key[k]);
+            } else {
+              c = compareKeys(fx, a.key[k], b.key[k]);
+              if (String(order).toLowerCase() === 'descending') c = -c;
+            }
+            if (c) return c;
           }
-          if (c) return c;
-        }
-        return 0;
-      }).map((item) => item.row);
+          return 0;
+        })
+        .map((item) => item.row);
     },
   },
-  First: { min: 1, max: 1, fn: (fx, value) => (value instanceof FxDataSource ? value.adapter.read({ ...value.query, top: 1 })[0] ?? null : asRows(fx, value, 'First', (rows) => rows[0] ?? null)) },
+  First: {
+    min: 1,
+    max: 1,
+    fn: (fx, value) =>
+      value instanceof FxDataSource
+        ? (value.adapter.read({ ...value.query, top: 1 })[0] ?? null)
+        : asRows(fx, value, 'First', (rows) => rows[0] ?? null),
+  },
   Last: { min: 1, max: 1, fn: (fx, value) => asRows(fx, value, 'Last', (rows) => rows[rows.length - 1] ?? null) },
-  FirstN: { min: 1, max: 2, fn: (fx, value, count = 1) => asRows(fx, value, 'FirstN', (rows) => { const c = integer(toNumber(count)); return c instanceof FxError ? c : rows.slice(0, Math.max(0, c)); }) },
-  LastN: { min: 1, max: 2, fn: (fx, value, count = 1) => asRows(fx, value, 'LastN', (rows) => { const c = integer(toNumber(count)); return c instanceof FxError ? c : c <= 0 ? [] : rows.slice(-c); }) },
+  FirstN: {
+    min: 1,
+    max: 2,
+    fn: (fx, value, count = 1) =>
+      asRows(fx, value, 'FirstN', (rows) => {
+        const c = integer(toNumber(count));
+        return c instanceof FxError ? c : rows.slice(0, Math.max(0, c));
+      }),
+  },
+  LastN: {
+    min: 1,
+    max: 2,
+    fn: (fx, value, count = 1) =>
+      asRows(fx, value, 'LastN', (rows) => {
+        const c = integer(toNumber(count));
+        return c instanceof FxError ? c : c <= 0 ? [] : rows.slice(-c);
+      }),
+  },
   Index: {
-    min: 2, max: 2,
+    min: 2,
+    max: 2,
     fn(fx, value, position) {
       const i = integer(toNumber(position));
       if (i instanceof FxError) return i;
       if (value instanceof FxUntyped) {
         if (!Array.isArray(value.raw)) return fail('InvalidArgument', 'Index needs an array.');
-        return i >= 1 && i <= value.raw.length ? (value.raw[i - 1] === null ? null : new FxUntyped(value.raw[i - 1])) : fail('InvalidArgument', `Index ${i} is out of range.`);
+        return i >= 1 && i <= value.raw.length
+          ? value.raw[i - 1] === null
+            ? null
+            : new FxUntyped(value.raw[i - 1])
+          : fail('InvalidArgument', `Index ${i} is out of range.`);
       }
-      return asRows(fx, value, 'Index', (rows) => (i >= 1 && i <= rows.length ? rows[i - 1] : fail('InvalidArgument', `Index ${i} is out of range.`)));
+      return asRows(fx, value, 'Index', (rows) =>
+        i >= 1 && i <= rows.length ? rows[i - 1] : fail('InvalidArgument', `Index ${i} is out of range.`),
+      );
     },
   },
   CountRows: {
-    min: 1, max: 1,
+    min: 1,
+    max: 1,
     // Learn: CountRows delegates to Dataverse (note 4: native answers a cached count; this answers the live count).
-    fn: (fx, value) => (value instanceof FxDataSource ? value.adapter.count(value.query) : asRows(fx, value, 'CountRows', (rows) => rows.length)),
+    fn: (fx, value) =>
+      value instanceof FxDataSource
+        ? value.adapter.count(value.query)
+        : asRows(fx, value, 'CountRows', (rows) => rows.length),
   },
   CountIf: {
-    min: 2, lazy: true,
+    min: 2,
+    lazy: true,
     fn(fx, args) {
       const table = tableArg(fx, args[0]);
       if (table.value instanceof FxError) return table.value;
@@ -997,7 +1406,9 @@ export const FUNCTIONS = {
     },
   },
   Distinct: {
-    min: 2, max: 2, lazy: true,
+    min: 2,
+    max: 2,
+    lazy: true,
     fn(fx, args) {
       const table = tableArg(fx, args[0]);
       const rows = rowsOf(fx, table.value, 'Distinct');
@@ -1012,7 +1423,8 @@ export const FUNCTIONS = {
     },
   },
   AddColumns: {
-    min: 3, lazy: true,
+    min: 3,
+    lazy: true,
     fn(fx, args) {
       const table = tableArg(fx, args[0]);
       const rows = rowsOf(fx, table.value, 'AddColumns');
@@ -1030,10 +1442,15 @@ export const FUNCTIONS = {
       });
     },
   },
-  DropColumns: columnsFunction('DropColumns', (row, names) => Object.fromEntries(Object.entries(row).filter(([key]) => !names.includes(key)))),
-  ShowColumns: columnsFunction('ShowColumns', (row, names) => Object.fromEntries(names.map((name) => [name, row[fieldName(row, name)] ?? null]))),
+  DropColumns: columnsFunction('DropColumns', (row, names) =>
+    Object.fromEntries(Object.entries(row).filter(([key]) => !names.includes(key))),
+  ),
+  ShowColumns: columnsFunction('ShowColumns', (row, names) =>
+    Object.fromEntries(names.map((name) => [name, row[fieldName(row, name)] ?? null])),
+  ),
   RenameColumns: {
-    min: 3, lazy: true,
+    min: 3,
+    lazy: true,
     fn(fx, args) {
       const rows = rowsOf(fx, fx.ev(args[0]), 'RenameColumns');
       if (rows instanceof FxError) return rows;
@@ -1041,11 +1458,20 @@ export const FUNCTIONS = {
       for (let i = 1; i + 1 < args.length; i += 2) pairs.push([columnName(fx, args[i]), columnName(fx, args[i + 1])]);
       const error = firstError(...pairs.flat());
       if (error) return error;
-      return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) => [pairs.find(([from]) => fieldName(row, from) === key)?.[1] ?? key, value])));
+      return rows.map((row) =>
+        Object.fromEntries(
+          Object.entries(row).map(([key, value]) => [
+            pairs.find(([from]) => fieldName(row, from) === key)?.[1] ?? key,
+            value,
+          ]),
+        ),
+      );
     },
   },
   ForAll: {
-    min: 2, max: 2, lazy: true,
+    min: 2,
+    max: 2,
+    lazy: true,
     fn(fx, args) {
       const table = tableArg(fx, args[0]);
       if (table.value instanceof FxError) return table.value;
@@ -1068,7 +1494,9 @@ export const FUNCTIONS = {
     },
   },
   With: {
-    min: 2, max: 2, lazy: true,
+    min: 2,
+    max: 2,
+    lazy: true,
     fn(fx, args) {
       const record = fx.ev(args[0]);
       if (record instanceof FxError) return record;
@@ -1081,11 +1509,14 @@ export const FUNCTIONS = {
   // Behaviour (Learn "Set", "UpdateContext", "Collect, Clear, and ClearCollect", "Patch", "Remove and RemoveIf",
   // "Defaults", "Navigate and Back", "Notify", "Trace")
   Set: {
-    min: 2, max: 2, lazy: true,
+    min: 2,
+    max: 2,
+    lazy: true,
     fn(fx, [target, valueNode]) {
       const value = fx.ev(valueNode);
       if (value instanceof FxError) return value;
-      if (target.t === 'dot') { // Set(Record.Column, value): Learn "Supported functions" for Dataverse functions
+      if (target.t === 'dot') {
+        // Set(Record.Column, value): Learn "Supported functions" for Dataverse functions
         const record = fx.ev(target.obj);
         if (!isRecord(record)) return fail('InvalidArgument', 'Set needs a record to change a column.');
         record[fieldName(record, target.name)] = value;
@@ -1103,7 +1534,8 @@ export const FUNCTIONS = {
     },
   },
   UpdateContext: {
-    min: 1, max: 1,
+    min: 1,
+    max: 1,
     fn(fx, record) {
       if (!fx.host.context) return notHosted('UpdateContext');
       if (!isRecord(record)) return fail('InvalidArgument', 'UpdateContext needs a record.');
@@ -1114,17 +1546,21 @@ export const FUNCTIONS = {
   Collect: { min: 2, lazy: true, fn: (fx, args) => collect(fx, args, false) },
   ClearCollect: { min: 2, lazy: true, fn: (fx, args) => collect(fx, args, true) },
   Clear: {
-    min: 1, max: 1, lazy: true,
+    min: 1,
+    max: 1,
+    lazy: true,
     fn(fx, [node]) {
       const target = collectionTarget(fx, node, false);
       if (target.error) return target.error;
-      if (target.value instanceof FxDataSource) return fail('NotSupported', 'Clear works on collections, not data sources.');
+      if (target.value instanceof FxDataSource)
+        return fail('NotSupported', 'Clear works on collections, not data sources.');
       target.value.length = 0;
       return true;
     },
   },
   Patch: {
-    min: 2, lazy: true,
+    min: 2,
+    lazy: true,
     fn(fx, args) {
       const source = fx.ev(args[0]);
       if (source instanceof FxError) return source;
@@ -1136,20 +1572,27 @@ export const FUNCTIONS = {
       const update = (row, change) => {
         if (source instanceof FxDataSource) {
           const key = isRecord(row) ? source.adapter.key(row) : null;
-          return guarded(() => (key ? source.adapter.update(row, change) : source.adapter.create(merged([row ?? {}, change]))));
+          return guarded(() =>
+            key ? source.adapter.update(row, change) : source.adapter.create(merged([row ?? {}, change])),
+          );
         }
         if (!Array.isArray(source)) return fail('InvalidArgument', 'Patch needs a data source, collection or record.');
         const index = source.findIndex((item) => sameRow(item, row));
-        const next = merged([index < 0 ? row ?? {} : source[index], change]);
-        if (index < 0) source.push(next); else source[index] = next;
+        const next = merged([index < 0 ? (row ?? {}) : source[index], change]);
+        if (index < 0) source.push(next);
+        else source[index] = next;
         return next;
       };
-      if (Array.isArray(base)) return base.map((row, i) => update(row, merged(changes.map((change) => (Array.isArray(change) ? change[i] : change)))));
+      if (Array.isArray(base))
+        return base.map((row, i) =>
+          update(row, merged(changes.map((change) => (Array.isArray(change) ? change[i] : change)))),
+        );
       return update(base, merged(changes));
     },
   },
   Remove: {
-    min: 2, lazy: true,
+    min: 2,
+    lazy: true,
     fn(fx, args) {
       const target = collectionTarget(fx, args[0], false);
       if (target.error) return target.error;
@@ -1168,14 +1611,18 @@ export const FUNCTIONS = {
       for (const record of records) {
         const index = target.value.findIndex((row) => sameRow(row, record));
         if (index < 0) return fail('NotFound', 'The record to remove was not found.');
-        if (all) for (let i = target.value.length - 1; i >= 0; i--) { if (sameRow(target.value[i], record)) target.value.splice(i, 1); }
+        if (all)
+          for (let i = target.value.length - 1; i >= 0; i--) {
+            if (sameRow(target.value[i], record)) target.value.splice(i, 1);
+          }
         else target.value.splice(index, 1);
       }
       return null;
     },
   },
   RemoveIf: {
-    min: 2, lazy: true,
+    min: 2,
+    lazy: true,
     fn(fx, args) {
       const target = collectionTarget(fx, args[0], false);
       if (target.error) return target.error;
@@ -1195,7 +1642,8 @@ export const FUNCTIONS = {
   },
   Defaults: { min: 1, max: 1, fn: (fx, value) => (value instanceof FxDataSource ? value.adapter.defaults() : {}) },
   Navigate: {
-    min: 1, max: 3,
+    min: 1,
+    max: 3,
     fn(fx, screen, transition = null, context = null) {
       if (typeof fx.host.navigate !== 'function') return notHosted('Navigate');
       fx.host.navigate(screen, transition, context);
@@ -1203,7 +1651,8 @@ export const FUNCTIONS = {
     },
   },
   Back: {
-    min: 0, max: 1,
+    min: 0,
+    max: 1,
     fn(fx, transition = null) {
       if (typeof fx.host.back !== 'function') return notHosted('Back');
       // The host answers false when there is no earlier screen.
@@ -1211,7 +1660,8 @@ export const FUNCTIONS = {
     },
   },
   Notify: {
-    min: 1, max: 3,
+    min: 1,
+    max: 3,
     fn(fx, message, type = 'Information', timeout = 0) {
       if (typeof fx.host.notify !== 'function') return notHosted('Notify');
       const t = toText(message, fx);
@@ -1221,7 +1671,8 @@ export const FUNCTIONS = {
     },
   },
   Trace: {
-    min: 1, max: 3,
+    min: 1,
+    max: 3,
     fn(fx, message, severity = null, custom = null) {
       const t = toText(message, fx);
       if (t instanceof FxError) return t;
@@ -1249,14 +1700,20 @@ function sortRows(fx, keyed, [descending]) {
 }
 function columnsFunction(name, project) {
   return {
-    min: 2, lazy: true,
+    min: 2,
+    lazy: true,
     fn(fx, args) {
       const rows = rowsOf(fx, fx.ev(args[0]), name);
       if (rows instanceof FxError) return rows;
       const names = args.slice(1).map((arg) => columnName(fx, arg));
       const error = firstError(...names);
       if (error) return error;
-      return rows.map((row) => project(row, names.map((column) => fieldName(row, column))));
+      return rows.map((row) =>
+        project(
+          row,
+          names.map((column) => fieldName(row, column)),
+        ),
+      );
     },
   };
 }

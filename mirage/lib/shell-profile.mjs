@@ -1,11 +1,7 @@
-import { normalizePortalPath } from "./importer.mjs";
+import { normalizePortalPath } from './importer.mjs';
 
 /** Replace the observed shell order while retaining separately captured, source-bound observations. */
-export function mergeShellProfile(
-  previous = {},
-  observed = {},
-  { pagePath } = {},
-) {
+export function mergeShellProfile(previous = {}, observed = {}, { pagePath } = {}) {
   const result = structuredClone(observed);
   const merge = (key, identity, keep = () => true) => {
     const entries = new Map();
@@ -13,22 +9,18 @@ export function mergeShellProfile(
       if (keep(item)) entries.set(identity(item), structuredClone(item));
     for (const item of Array.isArray(observed[key]) ? observed[key] : [])
       entries.set(identity(item), structuredClone(item));
-    if (entries.size || previous[key] || observed[key])
-      result[key] = [...entries.values()];
+    if (entries.size || previous[key] || observed[key]) result[key] = [...entries.values()];
   };
-  merge("observedStylesheets", (item) => item.path);
-  merge("snippetCompositions", (item) => item.parentName);
-  merge("richTextConfigurations", (item) => item.url);
+  merge('observedStylesheets', (item) => item.path);
+  merge('snippetCompositions', (item) => item.parentName);
+  merge('richTextConfigurations', (item) => item.url);
   merge(
-    "pageCopyLayouts",
+    'pageCopyLayouts',
     (item) => `${item.pageId}:${normalizePortalPath(item.path)}`,
-    (item) =>
-      !pagePath ||
-      normalizePortalPath(item.path) !== normalizePortalPath(pagePath),
+    (item) => !pagePath || normalizePortalPath(item.path) !== normalizePortalPath(pagePath),
   );
-  for (const key of ["footerLogos", "headerNotifications", "richTextReadiness"])
-    if (!Object.hasOwn(observed, key) && previous[key])
-      result[key] = structuredClone(previous[key]);
+  for (const key of ['footerLogos', 'headerNotifications', 'richTextReadiness'])
+    if (!Object.hasOwn(observed, key) && previous[key]) result[key] = structuredClone(previous[key]);
   if (previous.managedControls || observed.managedControls)
     result.managedControls = structuredClone({
       ...previous.managedControls,

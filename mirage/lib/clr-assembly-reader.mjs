@@ -12,7 +12,11 @@ const PE_SIGNATURE = 0x00004550;
 const METADATA_SIGNATURE = 0x424a5342; // "BSJB"
 const CLI_DIRECTORY = 14;
 const STRONG_NAME_SIGNED = 0x8; // COMIMAGE_FLAGS_STRONGNAMESIGNED
-const TYPE_REF = 1, TYPE_DEF = 2, INTERFACE_IMPL = 9, NESTED_CLASS = 41, ASSEMBLY = 32;
+const TYPE_REF = 1,
+  TYPE_DEF = 2,
+  INTERFACE_IMPL = 9,
+  NESTED_CLASS = 41,
+  ASSEMBLY = 32;
 
 export class InvalidAssembly extends Error {
   constructor(message) {
@@ -129,11 +133,18 @@ function readTables(stream) {
     if (offset + size * counts[id] > stream.length) throw invalid('truncated metadata table');
     const rows = [];
     for (let row = 0; row < counts[id]; row++) {
-      rows.push(widths.map((width) => {
-        const value = width === 1 ? stream.readUInt8(offset) : width === 2 ? stream.readUInt16LE(offset) : stream.readUInt32LE(offset);
-        offset += width;
-        return value;
-      }));
+      rows.push(
+        widths.map((width) => {
+          const value =
+            width === 1
+              ? stream.readUInt8(offset)
+              : width === 2
+                ? stream.readUInt16LE(offset)
+                : stream.readUInt32LE(offset);
+          offset += width;
+          return value;
+        }),
+      );
     }
     tables[id] = rows;
   }
@@ -156,8 +167,10 @@ function streamsOf(image) {
   offset += 4;
   const streams = new Map();
   for (let i = 0; i < count; i++) {
-    const start = u32(image, offset, 'stream header'), size = u32(image, offset + 4, 'stream header');
-    const nameStart = offset + 8, nameEnd = image.indexOf(0, nameStart);
+    const start = u32(image, offset, 'stream header'),
+      size = u32(image, offset + 4, 'stream header');
+    const nameStart = offset + 8,
+      nameEnd = image.indexOf(0, nameStart);
     if (nameEnd < 0 || nameEnd - nameStart > 32) throw invalid('bad stream name');
     const name = image.toString('latin1', nameStart, nameEnd);
     offset = nameStart + Math.ceil((name.length + 1) / 4) * 4;
@@ -180,8 +193,16 @@ function blobAt(blobs, index) {
   const first = u8(blobs, index, '#Blob');
   let length, start;
   if ((first & 0x80) === 0) [length, start] = [first, index + 1];
-  else if ((first & 0xc0) === 0x80) [length, start] = [((first & 0x3f) << 8) | u8(blobs, index + 1, '#Blob'), index + 2];
-  else if ((first & 0xe0) === 0xc0) [length, start] = [((first & 0x1f) << 24) | (u8(blobs, index + 1, '#Blob') << 16) | (u8(blobs, index + 2, '#Blob') << 8) | u8(blobs, index + 3, '#Blob'), index + 4];
+  else if ((first & 0xc0) === 0x80)
+    [length, start] = [((first & 0x3f) << 8) | u8(blobs, index + 1, '#Blob'), index + 2];
+  else if ((first & 0xe0) === 0xc0)
+    [length, start] = [
+      ((first & 0x1f) << 24) |
+        (u8(blobs, index + 1, '#Blob') << 16) |
+        (u8(blobs, index + 2, '#Blob') << 8) |
+        u8(blobs, index + 3, '#Blob'),
+      index + 4,
+    ];
   else throw invalid('invalid blob length');
   at(blobs, start, length, '#Blob');
   return blobs.subarray(start, start + length);
@@ -209,8 +230,13 @@ export function inspectAssembly(input) {
   if (cliRva === 0) throw invalid('no CLI header');
   const sections = Array.from({ length: sectionCount }, (_, i) => {
     const entry = optional + optionalSize + i * 40;
-    const virtualSize = u32(buffer, entry + 8, 'section table'), rawSize = u32(buffer, entry + 16, 'section table');
-    return { rva: u32(buffer, entry + 12, 'section table'), size: virtualSize === 0 ? rawSize : Math.min(virtualSize, rawSize), raw: u32(buffer, entry + 20, 'section table') };
+    const virtualSize = u32(buffer, entry + 8, 'section table'),
+      rawSize = u32(buffer, entry + 16, 'section table');
+    return {
+      rva: u32(buffer, entry + 12, 'section table'),
+      size: virtualSize === 0 ? rawSize : Math.min(virtualSize, rawSize),
+      raw: u32(buffer, entry + 20, 'section table'),
+    };
   });
   const offsetOf = (rva, what) => {
     const section = sections.find((candidate) => rva >= candidate.rva && rva - candidate.rva < candidate.size);
@@ -229,9 +255,10 @@ export function inspectAssembly(input) {
   const strings = streams.get('#Strings') ?? Buffer.alloc(0);
   const blobs = streams.get('#Blob') ?? Buffer.alloc(0);
 
-  const typeRefs = tables[TYPE_REF] ?? [], typeDefs = tables[TYPE_DEF] ?? [];
+  const typeRefs = tables[TYPE_REF] ?? [],
+    typeDefs = tables[TYPE_DEF] ?? [];
   const row = (table, index, name) => {
-    if (!(table[index - 1])) throw invalid(`${name} row ${index} is outside the table`);
+    if (!table[index - 1]) throw invalid(`${name} row ${index} is outside the table`);
     return table[index - 1];
   };
   const nested = new Map(); // inner TypeDef row -> enclosing TypeDef row
@@ -253,7 +280,8 @@ export function inspectAssembly(input) {
     if (nested.has(index)) return `${typeDefName(nested.get(index), seen)}+${stringAt(strings, name)}`;
     return [stringAt(strings, namespace), stringAt(strings, name)].filter(Boolean).join('.');
   };
-  const nameOf = (ref) => (ref?.table === TYPE_DEF ? typeDefName(ref.row) : ref?.table === TYPE_REF ? typeRefName(ref.row) : null);
+  const nameOf = (ref) =>
+    ref?.table === TYPE_DEF ? typeDefName(ref.row) : ref?.table === TYPE_REF ? typeRefName(ref.row) : null;
   const baseOf = (index) => decodeCoded('TypeDefOrRef', row(typeDefs, index, 'TypeDef')[3]);
   // Direct interfaces and direct base only; a base defined in this assembly is followed, an external base is not (ceiling).
   const isPlugin = (index, seen = new Set()) => {
@@ -278,15 +306,19 @@ export function inspectAssembly(input) {
   const types = [];
   for (let index = 1; index <= typeDefs.length; index++) {
     const fullName = typeDefName(index);
-    if (fullName !== '<Module>') types.push({ fullName, isPlugin: isPlugin(index), isWorkflowActivity: isActivity(index) });
+    if (fullName !== '<Module>')
+      types.push({ fullName, isPlugin: isPlugin(index), isWorkflowActivity: isActivity(index) });
   }
   return {
     name: stringAt(strings, nameIndex),
     version: [major, minor, build, revision].join('.'),
-    major, minor,
+    major,
+    minor,
     culture: stringAt(strings, cultureIndex) || 'neutral',
     // The token is the last 8 bytes of SHA-1 over the public key, in reverse order (ECMA-335 §6.2.1.3 strong-name signing).
-    publicKeyToken: publicKey.length ? createHash('sha1').update(publicKey).digest().subarray(12).reverse().toString('hex') : null,
+    publicKeyToken: publicKey.length
+      ? createHash('sha1').update(publicKey).digest().subarray(12).reverse().toString('hex')
+      : null,
     strongNamed: publicKey.length > 0 && (cliFlags & STRONG_NAME_SIGNED) !== 0,
     types,
   };
@@ -302,7 +334,8 @@ function derReader(buffer) {
   let remaining = 4096;
   const node = (offset, limit = buffer.length) => {
     if (--remaining < 0 || offset < 0 || offset + 2 > limit) throw invalid('invalid certificate DER bounds');
-    const start = offset, tag = buffer[offset++];
+    const start = offset,
+      tag = buffer[offset++];
     let size = buffer[offset++];
     if (size & 0x80) {
       const count = size & 0x7f;
@@ -329,10 +362,18 @@ function derReader(buffer) {
 
 /** Extract the first CMS signer's certificate by issuer and serial number, never an unrelated certificate from its chain. */
 function cmsCertificate(buffer) {
-  if (!buffer.length || buffer.length > CERTIFICATE_LIMIT) throw invalid('certificate signature exceeds the inspection limit');
-  const der = derReader(buffer), root = der.node(0);
+  if (!buffer.length || buffer.length > CERTIFICATE_LIMIT)
+    throw invalid('certificate signature exceeds the inspection limit');
+  const der = derReader(buffer),
+    root = der.node(0);
   const [oid, wrapper] = der.children(root);
-  if (root.tag !== 0x30 || oid?.tag !== 6 || der.content(oid).toString('hex') !== '2a864886f70d010702' || wrapper?.tag !== 0xa0) throw invalid('certificate is not CMS SignedData');
+  if (
+    root.tag !== 0x30 ||
+    oid?.tag !== 6 ||
+    der.content(oid).toString('hex') !== '2a864886f70d010702' ||
+    wrapper?.tag !== 0xa0
+  )
+    throw invalid('certificate is not CMS SignedData');
   const signedData = der.children(wrapper)[0];
   if (signedData?.tag !== 0x30) throw invalid('invalid CMS SignedData');
   const fields = der.children(signedData);
@@ -345,21 +386,37 @@ function cmsCertificate(buffer) {
   if (sid?.tag !== 0x30) throw invalid('unsupported CMS signer identifier');
   const [signerIssuer, signerSerial] = der.children(sid);
   if (!signerIssuer || signerSerial?.tag !== 2) throw invalid('invalid CMS signer identity');
-  const serial = (value) => der.content(value).toString('hex').replace(/^(?:00)+/, '').toLowerCase();
+  const serial = (value) =>
+    der
+      .content(value)
+      .toString('hex')
+      .replace(/^(?:00)+/, '')
+      .toLowerCase();
   for (const candidate of der.children(certificates)) {
     if (candidate.tag !== 0x30) continue;
     const [tbs] = der.children(candidate);
     if (tbs?.tag !== 0x30) continue;
-    const parts = der.children(tbs), index = parts[0]?.tag === 0xa0 ? 1 : 0;
-    const certificateSerial = parts[index], issuer = parts[index + 2], subject = parts[index + 4];
+    const parts = der.children(tbs),
+      index = parts[0]?.tag === 0xa0 ? 1 : 0;
+    const certificateSerial = parts[index],
+      issuer = parts[index + 2],
+      subject = parts[index + 4];
     if (certificateSerial?.tag !== 2 || !issuer || !subject) continue;
     if (serial(certificateSerial) !== serial(signerSerial) || !der.raw(issuer).equals(der.raw(signerIssuer))) continue;
     let cert;
-    try { cert = new X509Certificate(der.raw(candidate)); } catch { throw invalid('invalid signer X.509 certificate'); }
+    try {
+      cert = new X509Certificate(der.raw(candidate));
+    } catch {
+      throw invalid('invalid signer X.509 certificate');
+    }
     return {
-      subject: cert.subject, issuer: cert.issuer, hash: cert.fingerprint.replaceAll(':', ''),
+      subject: cert.subject,
+      issuer: cert.issuer,
+      hash: cert.fingerprint.replaceAll(':', ''),
       selfSigned: cert.subject === cert.issuer && cert.verify(cert.publicKey),
-      certificate: cert.raw.toString('base64'), encodedSubject: der.raw(subject).toString('base64'), encodedIssuer: der.raw(issuer).toString('base64'),
+      certificate: cert.raw.toString('base64'),
+      encodedSubject: der.raw(subject).toString('base64'),
+      encodedIssuer: der.raw(issuer).toString('base64'),
     };
   }
   throw invalid('CMS signer certificate is missing');
@@ -369,27 +426,43 @@ function packageSignature(buffer) {
   // The ZIP central directory supplies sizes even when local headers use data descriptors. ZIP64/encryption are refused.
   let end = -1;
   for (let offset = buffer.length - 22; offset >= Math.max(0, buffer.length - 65557); offset--) {
-    if (u32(buffer, offset, 'ZIP end') === 0x06054b50 && offset + 22 + u16(buffer, offset + 20, 'ZIP comment') === buffer.length) { end = offset; break; }
+    if (
+      u32(buffer, offset, 'ZIP end') === 0x06054b50 &&
+      offset + 22 + u16(buffer, offset + 20, 'ZIP comment') === buffer.length
+    ) {
+      end = offset;
+      break;
+    }
   }
   if (end < 0) throw invalid('invalid NuGet package ZIP');
   const count = u16(buffer, end + 10, 'ZIP count');
-  if (count === 0xffff || u16(buffer, end + 4, 'ZIP disk') || u16(buffer, end + 6, 'ZIP disk')) throw invalid('unsupported NuGet package ZIP');
+  if (count === 0xffff || u16(buffer, end + 4, 'ZIP disk') || u16(buffer, end + 6, 'ZIP disk'))
+    throw invalid('unsupported NuGet package ZIP');
   let offset = u32(buffer, end + 16, 'ZIP central directory');
   for (let index = 0; index < count; index++) {
     if (u32(buffer, offset, 'ZIP central entry') !== 0x02014b50) throw invalid('invalid ZIP central entry');
-    const flags = u16(buffer, offset + 8, 'ZIP flags'), method = u16(buffer, offset + 10, 'ZIP compression');
-    const compressed = u32(buffer, offset + 20, 'ZIP compressed size'), expanded = u32(buffer, offset + 24, 'ZIP expanded size');
-    const nameLength = u16(buffer, offset + 28, 'ZIP name'), extraLength = u16(buffer, offset + 30, 'ZIP extra'), commentLength = u16(buffer, offset + 32, 'ZIP comment');
+    const flags = u16(buffer, offset + 8, 'ZIP flags'),
+      method = u16(buffer, offset + 10, 'ZIP compression');
+    const compressed = u32(buffer, offset + 20, 'ZIP compressed size'),
+      expanded = u32(buffer, offset + 24, 'ZIP expanded size');
+    const nameLength = u16(buffer, offset + 28, 'ZIP name'),
+      extraLength = u16(buffer, offset + 30, 'ZIP extra'),
+      commentLength = u16(buffer, offset + 32, 'ZIP comment');
     at(buffer, offset + 46, nameLength + extraLength + commentLength, 'ZIP entry');
     const name = buffer.toString('utf8', offset + 46, offset + 46 + nameLength);
     if (name === '.signature.p7s') {
-      if (flags & 1 || ![0, 8].includes(method) || expanded > CERTIFICATE_LIMIT || compressed > CERTIFICATE_LIMIT) throw invalid('unsupported package signature ZIP entry');
+      if (flags & 1 || ![0, 8].includes(method) || expanded > CERTIFICATE_LIMIT || compressed > CERTIFICATE_LIMIT)
+        throw invalid('unsupported package signature ZIP entry');
       const local = u32(buffer, offset + 42, 'ZIP local offset');
       if (u32(buffer, local, 'ZIP local entry') !== 0x04034b50) throw invalid('invalid ZIP local signature entry');
       const start = local + 30 + u16(buffer, local + 26, 'ZIP local name') + u16(buffer, local + 28, 'ZIP local extra');
       const bytes = buffer.subarray(at(buffer, start, compressed, 'ZIP signature bytes'), start + compressed);
       let signature;
-      try { signature = method === 8 ? inflateRawSync(bytes, { maxOutputLength: CERTIFICATE_LIMIT }) : bytes; } catch { throw invalid('invalid compressed package signature'); }
+      try {
+        signature = method === 8 ? inflateRawSync(bytes, { maxOutputLength: CERTIFICATE_LIMIT }) : bytes;
+      } catch {
+        throw invalid('invalid compressed package signature');
+      }
       if (signature.length !== expanded) throw invalid('package signature size mismatch');
       return signature;
     }
@@ -401,7 +474,8 @@ function packageSignature(buffer) {
 /** Signing certificate facts of a PE assembly or NuGet package. Null means no embedded signature; malformed data fails. */
 export function inspectSigningCertificate(input, { package: isPackage = false } = {}) {
   const buffer = Buffer.from(input);
-  if (!buffer.length || buffer.length > CERTIFICATE_LIMIT) throw invalid('certificate source exceeds the inspection limit');
+  if (!buffer.length || buffer.length > CERTIFICATE_LIMIT)
+    throw invalid('certificate source exceeds the inspection limit');
   if (isPackage) {
     const signature = packageSignature(buffer);
     return signature ? cmsCertificate(signature) : null;
@@ -409,19 +483,23 @@ export function inspectSigningCertificate(input, { package: isPackage = false } 
   if (buffer.length < 64 || u16(buffer, 0, 'DOS header') !== 0x5a4d) throw invalid('missing MZ header');
   const pe = u32(buffer, 0x3c, 'DOS header');
   if (u32(buffer, pe, 'PE header') !== PE_SIGNATURE) throw invalid('missing PE signature');
-  const optional = pe + 24, size = u16(buffer, pe + 20, 'COFF optional size'), magic = u16(buffer, optional, 'optional magic');
+  const optional = pe + 24,
+    size = u16(buffer, pe + 20, 'COFF optional size'),
+    magic = u16(buffer, optional, 'optional magic');
   if (![0x10b, 0x20b].includes(magic)) throw invalid('unknown optional header');
   const directory = optional + (magic === 0x20b ? 112 : 96);
   const entry = directory + 4 * 8;
   if (entry + 8 > optional + size || u32(buffer, directory - 4, 'PE directory count') <= 4) return null;
-  const offset = u32(buffer, entry, 'certificate offset'), length = u32(buffer, entry + 4, 'certificate size');
+  const offset = u32(buffer, entry, 'certificate offset'),
+    length = u32(buffer, entry + 4, 'certificate size');
   if (!offset && !length) return null;
   at(buffer, offset, length, 'certificate table');
   if (!offset || length < 8) throw invalid('invalid certificate table');
   for (let cursor = offset; cursor < offset + length;) {
     const count = u32(buffer, cursor, 'WIN_CERTIFICATE length');
     if (count < 8 || cursor + count > offset + length) throw invalid('invalid WIN_CERTIFICATE bounds');
-    const revision = u16(buffer, cursor + 4, 'WIN_CERTIFICATE revision'), type = u16(buffer, cursor + 6, 'WIN_CERTIFICATE type');
+    const revision = u16(buffer, cursor + 4, 'WIN_CERTIFICATE revision'),
+      type = u16(buffer, cursor + 6, 'WIN_CERTIFICATE type');
     if (revision === 0x200 && type === 2) return cmsCertificate(buffer.subarray(cursor + 8, cursor + count));
     cursor += Math.ceil(count / 8) * 8;
   }

@@ -6,9 +6,15 @@ export function initialOrganizationState({ solutionData, packs = [], environment
   const state = emptyState();
   state.simulator = { mode: 'local', operations: {}, endpoints: [], identity: { roles: [] } };
   const prepared = applySolutionData(state, solutionData, {
-    webApiTables: Object.keys(solutionData.mappings), environmentVariables,
+    webApiTables: Object.keys(solutionData.mappings),
+    environmentVariables,
   });
-  const library = bootstrapPresetLibrary({ metadata: solutionData, mappings: prepared.mappings, tables: prepared.tables, packs });
+  const library = bootstrapPresetLibrary({
+    metadata: solutionData,
+    mappings: prepared.mappings,
+    tables: prepared.tables,
+    packs,
+  });
   prepared.presets = library;
   return { state: prepared, presetLibrary: library };
 }

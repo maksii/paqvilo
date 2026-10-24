@@ -9,20 +9,23 @@
  * runtime (webforms-compat.js) already defines are kept. Idempotent.
  */
 (() => {
-  "use strict";
+  'use strict';
   if (window.__ppCrmEntityFormView) return;
   window.__ppCrmEntityFormView = true;
   const w = window;
-  const jq = () => (typeof w.jQuery?.fn?.jquery === "string" ? w.jQuery : null);
+  const jq = () => (typeof w.jQuery?.fn?.jquery === 'string' ? w.jQuery : null);
   const define = (name, fn) => {
-    if (typeof w[name] !== "function") w[name] = fn;
+    if (typeof w[name] !== 'function') w[name] = fn;
   };
-  const resource = (key, fallback) => (typeof w.ResourceManager?.[key] === "string" ? w.ResourceManager[key] : fallback);
+  const resource = (key, fallback) =>
+    typeof w.ResourceManager?.[key] === 'string' ? w.ResourceManager[key] : fallback;
   const visible = (element) => Boolean(element && element.getClientRects().length);
 
-  define("GetMaxLength", (field) => field.exMaxLen);
-  define("GetSelectionLength", (field) => (field.selectionStart == null ? 0 : field.selectionEnd - field.selectionStart));
-  define("LimitInput", (field, event) => {
+  define('GetMaxLength', (field) => field.exMaxLen);
+  define('GetSelectionLength', (field) =>
+    field.selectionStart == null ? 0 : field.selectionEnd - field.selectionStart,
+  );
+  define('LimitInput', (field, event) => {
     let allowed = true;
     const max = w.GetMaxLength(field);
     if (max != null) {
@@ -35,70 +38,80 @@
     event.returnValue = allowed;
     return allowed;
   });
-  define("LimitPaste", (field, event) => {
+  define('LimitPaste', (field, event) => {
     let allowed = true;
     const max = w.GetMaxLength(field);
-    const pasted = event.clipboardData?.getData?.("text") ?? "";
-    if (max != null && field.value.length + pasted.length - Number(w.GetSelectionLength(field)) > Number(max)) allowed = false;
+    const pasted = event.clipboardData?.getData?.('text') ?? '';
+    if (max != null && field.value.length + pasted.length - Number(w.GetSelectionLength(field)) > Number(max))
+      allowed = false;
     event.returnValue = allowed;
     return allowed;
   });
-  define("LengthError", (field) => {
-    const max = parseInt(field.getAttribute("maxlength"), 10);
-    document.getElementById("length_error_message")?.remove();
+  define('LengthError', (field) => {
+    const max = parseInt(field.getAttribute('maxlength'), 10);
+    document.getElementById('length_error_message')?.remove();
     if (field.value.length === max) {
-      field.insertAdjacentHTML("afterend", `<p class="alert sr-only" role="alert" id="length_error_message">${resource("Length_ErrorText", "You’ve reached the maximum characters allowed in this field.")}</p>`);
+      field.insertAdjacentHTML(
+        'afterend',
+        `<p class="alert sr-only" role="alert" id="length_error_message">${resource('Length_ErrorText', 'You’ve reached the maximum characters allowed in this field.')}</p>`,
+      );
       return false;
     }
     return true;
   });
-  define("setPrecision", (id, precision) => {
+  define('setPrecision', (id, precision) => {
     const field = id ? document.getElementById(id) : null;
-    if (!field || field.value === "" || isNaN(field.value)) return;
+    if (!field || field.value === '' || isNaN(field.value)) return;
     field.value = parseFloat(field.value).toFixed(precision || 0);
   });
-  define("getUrlScheme", (value) => {
-    const index = String(value).indexOf("://");
-    return index === -1 ? "" : String(value).substr(0, index);
+  define('getUrlScheme', (value) => {
+    const index = String(value).indexOf('://');
+    return index === -1 ? '' : String(value).substr(0, index);
   });
-  const allowedScheme = (url) => ["http", "https", "ftp", "ftps", "onenote", "tel"].includes(w.getUrlScheme(url).toLowerCase());
-  define("launchTickerSymbolUrl", (symbol) => {
-    if (symbol !== "") w.open(`http://go.microsoft.com/fwlink?linkid=8506&Symbol=${encodeURIComponent(String(symbol).toUpperCase())}`, "_blank");
+  const allowedScheme = (url) =>
+    ['http', 'https', 'ftp', 'ftps', 'onenote', 'tel'].includes(w.getUrlScheme(url).toLowerCase());
+  define('launchTickerSymbolUrl', (symbol) => {
+    if (symbol !== '')
+      w.open(
+        `http://go.microsoft.com/fwlink?linkid=8506&Symbol=${encodeURIComponent(String(symbol).toUpperCase())}`,
+        '_blank',
+      );
     return false;
   });
-  define("uppercaseTickerSymbol", (element) => {
-    if (element.value !== "") element.value = element.value.toUpperCase();
+  define('uppercaseTickerSymbol', (element) => {
+    if (element.value !== '') element.value = element.value.toUpperCase();
   });
-  define("launchUrl", (url) => {
-    if (url !== "" && allowedScheme(url)) w.open(url, "_blank");
+  define('launchUrl', (url) => {
+    if (url !== '' && allowedScheme(url)) w.open(url, '_blank');
     return false;
   });
-  define("launchEmail", (email) => {
-    if (email !== "") w.location.href = `mailto:${email}`;
+  define('launchEmail', (email) => {
+    if (email !== '') w.location.href = `mailto:${email}`;
     return false;
   });
-  define("prefixHttp", (url, maxLength) => {
+  define('prefixHttp', (url, maxLength) => {
     const value = String(url).trim();
-    return /^https?:\/\//i.test(value) ? value : `https://${value.substring(0, maxLength - "https://".length)}`;
+    return /^https?:\/\//i.test(value) ? value : `https://${value.substring(0, maxLength - 'https://'.length)}`;
   });
-  define("validateUrlProtocol", (url, maxLength) => {
-    if (url === "") return url;
+  define('validateUrlProtocol', (url, maxLength) => {
+    if (url === '') return url;
     const scheme = w.getUrlScheme(url).toLowerCase();
     if (allowedScheme(url)) return url;
-    if (scheme === "") return w.prefixHttp(url, maxLength || 100);
-    w.alert("Invalid Protocol. Only HTTP, HTTPS, FTP, FTPS, ONENOTE and TEL protocols are allowed in this field.");
+    if (scheme === '') return w.prefixHttp(url, maxLength || 100);
+    w.alert('Invalid Protocol. Only HTTP, HTTPS, FTP, FTPS, ONENOTE and TEL protocols are allowed in this field.');
     return url;
   });
-  define("validateUrlInput", (element, maxLength) => {
+  define('validateUrlInput', (element, maxLength) => {
     element.value = w.validateUrlProtocol(element.value, maxLength);
   });
-  define("validateRequiredField", (id) => {
+  define('validateRequiredField', (id) => {
     const control = document.getElementById(id);
     if (!control) return;
-    control.setAttribute("aria-invalid", control.value === "" || control.value == null ? "true" : "false");
-    for (const option of control.querySelectorAll('input[type="radio"], input[type="checkbox"]')) if (option.checked) control.setAttribute("aria-invalid", "false");
+    control.setAttribute('aria-invalid', control.value === '' || control.value == null ? 'true' : 'false');
+    for (const option of control.querySelectorAll('input[type="radio"], input[type="checkbox"]'))
+      if (option.checked) control.setAttribute('aria-invalid', 'false');
   });
-  define("scrollToPosition", (id) => {
+  define('scrollToPosition', (id) => {
     const element = id == null ? null : document.getElementById(id);
     if (!element) return;
     let x = element.offsetLeft;
@@ -109,35 +122,45 @@
     }
     w.scrollTo(x, y);
   });
-  define("setFocus", (id) => {
+  define('setFocus', (id) => {
     if (id != null) document.getElementById(id)?.focus();
   });
-  define("scrollToAndFocus", (scrollToId, focusOnId) => {
+  define('scrollToAndFocus', (scrollToId, focusOnId) => {
     if (!focusOnId) return;
     w.scrollToPosition(scrollToId || focusOnId);
     w.setFocus(focusOnId);
   });
-  define("disableButtons", () => {
-    for (const input of document.getElementsByTagName("input")) if (input.type === "submit" || input.type === "button") input.disabled = true;
+  define('disableButtons', () => {
+    for (const input of document.getElementsByTagName('input'))
+      if (input.type === 'submit' || input.type === 'button') input.disabled = true;
   });
-  define("updateConstantSum", (name) => {
+  define('updateConstantSum', (name) => {
     const elements = [...document.getElementsByClassName(name)];
-    const total = elements.reduce((sum, element) => (!isNaN(element.value) && element.value.length ? sum + parseInt(element.value, 10) : sum), 0);
+    const total = elements.reduce(
+      (sum, element) => (!isNaN(element.value) && element.value.length ? sum + parseInt(element.value, 10) : sum),
+      0,
+    );
     const field = document.getElementById(`ConstantSumTotalValue${name}`);
     if (elements.length && field) field.value = total;
   });
-  define("setIsDirty", (id) => {
+  define('setIsDirty', (id) => {
     const element = id ? document.getElementById(id) : null;
-    if (element && !element.classList.contains("dirty")) element.className = `${element.className} dirty`;
+    if (element && !element.classList.contains('dirty')) element.className = `${element.className} dirty`;
   });
-  define("isDirty", () => document.getElementsByClassName("dirty").length > 0);
-  define("clearIsDirty", () => {
-    for (const element of [...document.getElementsByClassName("dirty")]) element.classList.remove("dirty");
+  define('isDirty', () => document.getElementsByClassName('dirty').length > 0);
+  define('clearIsDirty', () => {
+    for (const element of [...document.getElementsByClassName('dirty')]) element.classList.remove('dirty');
   });
-  define("confirmExit", () => {
-    if (document.getElementById("confirmOnExit")?.value !== "true" || !w.isDirty()) return undefined;
-    const custom = document.getElementById("confirmOnExitMessage")?.value;
-    return custom || resource("Click_Stay_To_Save_Your_Changes", "Your changes haven't been saved. Would you like to stay on the page to save your changes?");
+  define('confirmExit', () => {
+    if (document.getElementById('confirmOnExit')?.value !== 'true' || !w.isDirty()) return undefined;
+    const custom = document.getElementById('confirmOnExitMessage')?.value;
+    return (
+      custom ||
+      resource(
+        'Click_Stay_To_Save_Your_Changes',
+        "Your changes haven't been saved. Would you like to stay on the page to save your changes?",
+      )
+    );
   });
   w.onbeforeunload = w.confirmExit;
   // The form adapter replaces these built-ins on form pages:
@@ -146,22 +169,27 @@
   // keeps native matching: the platform jQuery's selector engine does not use the method
   // (support.getElementsByClassName is false).
   String.prototype.trim = function () {
-    return this.replace(/^\s+|\s+$/g, "");
+    return this.replace(/^\s+|\s+$/g, '');
   };
   document.getElementsByClassName = function (name) {
     const pattern = new RegExp(`\\b${name}\\b`);
-    return [...this.getElementsByTagName("*")].filter((element) => pattern.test(element.className));
+    return [...this.getElementsByTagName('*')].filter((element) => pattern.test(element.className));
   };
   const nativeClassSelection = ($) => {
-    if (!$?.find || typeof $.fn?.jquery !== "string" || $.find.__ppNativeClassSelection) return;
+    if (!$?.find || typeof $.fn?.jquery !== 'string' || $.find.__ppNativeClassSelection) return;
     // Selector engines (jQuery <= 3.6) that check the support flag, and the class finder
     // used for compound selectors, stop using the replaced method.
-    if ($.find.support && "getElementsByClassName" in $.find.support) $.find.support.getElementsByClassName = false;
+    if ($.find.support && 'getElementsByClassName' in $.find.support) $.find.support.getElementsByClassName = false;
     if ($.expr?.find?.CLASS) delete $.expr.find.CLASS;
     // jQuery >= 3.7 answers a lone class selector with context.getElementsByClassName.
     const find = $.find;
     const wrapped = function (selector, context, results, seed) {
-      if (!seed && typeof selector === "string" && /^\.[\w-]+$/.test(selector) && (context == null || context.nodeType === 9)) {
+      if (
+        !seed &&
+        typeof selector === 'string' &&
+        /^\.[\w-]+$/.test(selector) &&
+        (context == null || context.nodeType === 9)
+      ) {
         const output = results || [];
         Array.prototype.push.apply(output, (context || document).querySelectorAll(selector));
         return output;
@@ -176,11 +204,11 @@
   const registry = (w.__ppSimCompat ||= {});
   (registry.jqueryWatchers ||= new Set()).add(nativeClassSelection);
   if (!registry.jqueryWatched) {
-    const descriptor = Object.getOwnPropertyDescriptor(w, "jQuery");
+    const descriptor = Object.getOwnPropertyDescriptor(w, 'jQuery');
     if (!descriptor || (!descriptor.get && !descriptor.set && descriptor.configurable !== false)) {
       let current = w.jQuery;
       try {
-        Object.defineProperty(w, "jQuery", {
+        Object.defineProperty(w, 'jQuery', {
           configurable: true,
           enumerable: true,
           get: () => current,
@@ -201,40 +229,45 @@
       }
     }
   }
-  define("setfocusOnSuccessMessage", () => {
-    const message = document.getElementById("MessageLabel");
+  define('setfocusOnSuccessMessage', () => {
+    const message = document.getElementById('MessageLabel');
     if (visible(message)) {
       const selected = document.querySelector('#casetypecode option[selected="selected"]');
-      for (const label of document.querySelectorAll("div.status > span.label-default")) label.textContent = selected?.textContent ?? "";
-      message.setAttribute("aria-live", "polite");
-      message.setAttribute("aria-atomic", "true");
-      if (message.parentElement?.matches("div.success") && w.history.replaceState) w.history.replaceState(null, document.title, w.location.href);
+      for (const label of document.querySelectorAll('div.status > span.label-default'))
+        label.textContent = selected?.textContent ?? '';
+      message.setAttribute('aria-live', 'polite');
+      message.setAttribute('aria-atomic', 'true');
+      if (message.parentElement?.matches('div.success') && w.history.replaceState)
+        w.history.replaceState(null, document.title, w.location.href);
       return;
     }
-    if (visible(document.getElementById("PreviousButton"))) {
-      const first = [...document.querySelectorAll("form:not(.filter):not(.form-search) input, select, textarea, button")].find((element) => visible(element) && !element.disabled && !element.readOnly);
+    if (visible(document.getElementById('PreviousButton'))) {
+      const first = [
+        ...document.querySelectorAll('form:not(.filter):not(.form-search) input, select, textarea, button'),
+      ].find((element) => visible(element) && !element.disabled && !element.readOnly);
       first?.focus();
     }
   });
 
   // Validation summary accessibility around the WebForms validation entry point.
-  if (typeof w.Page_ClientValidate === "function" && !w.Page_ClientValidate.__ppSummary) {
+  if (typeof w.Page_ClientValidate === 'function' && !w.Page_ClientValidate.__ppSummary) {
     const original = w.Page_ClientValidate;
     const wrapped = function (...args) {
       original.apply(this, args);
       if (w.Page_IsValid === false) {
-        for (const summary of document.querySelectorAll(".validation-summary")) {
-          summary.setAttribute("aria-live", "assertive");
-          summary.setAttribute("aria-atomic", "true");
-          for (const list of summary.querySelectorAll("ul")) list.setAttribute("role", "list");
-          for (const item of summary.querySelectorAll("ul li")) item.setAttribute("role", "listitem");
-          for (const link of summary.querySelectorAll("ul li a")) {
-            const id = link.getAttribute("referenceControlId");
+        for (const summary of document.querySelectorAll('.validation-summary')) {
+          summary.setAttribute('aria-live', 'assertive');
+          summary.setAttribute('aria-atomic', 'true');
+          for (const list of summary.querySelectorAll('ul')) list.setAttribute('role', 'list');
+          for (const item of summary.querySelectorAll('ul li')) item.setAttribute('role', 'listitem');
+          for (const link of summary.querySelectorAll('ul li a')) {
+            const id = link.getAttribute('referenceControlId');
             const control = id ? document.getElementById(id) : null;
             if (control && /^(INPUT|TEXTAREA|SELECT)$/.test(control.tagName)) w.validateRequiredField(id);
           }
         }
-        for (const header of document.querySelectorAll(".validation-header")) header.setAttribute("role", "presentation");
+        for (const header of document.querySelectorAll('.validation-header'))
+          header.setAttribute('role', 'presentation');
         return false;
       }
       return true;
@@ -248,15 +281,22 @@
       let observer;
       const loaded = () => {
         observer?.disconnect();
-        if (frame.getAttribute('src') === 'about:blank') { frame.style.height = '0px'; return; }
+        if (frame.getAttribute('src') === 'about:blank') {
+          frame.style.height = '0px';
+          return;
+        }
         try {
           const body = frame.contentDocument?.body;
           if (!body) return;
-          const resize = () => { frame.style.height = `${body.scrollHeight}px`; };
+          const resize = () => {
+            frame.style.height = `${body.scrollHeight}px`;
+          };
           resize();
           observer = new ResizeObserver(resize);
           observer.observe(body);
-        } catch { /* Only local quick view documents can be inspected. */ }
+        } catch {
+          /* Only local quick view documents can be inspected. */
+        }
       };
       frame.addEventListener('load', loaded);
       loaded();
@@ -265,17 +305,40 @@
       for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) {
         if (frame.dataset.lookupElement !== input.id) continue;
         const id = input.value.replace(/[{}]/g, '').trim();
-        if (!id) { frame.setAttribute('src', 'about:blank'); frame.setAttribute('tabindex', '-1'); frame.style.height = '0px'; continue; }
+        if (!id) {
+          frame.setAttribute('src', 'about:blank');
+          frame.setAttribute('tabindex', '-1');
+          frame.style.height = '0px';
+          continue;
+        }
         if (!frame.dataset.path?.trim()) continue;
         let url;
         // URL parsing accepts malformed percent escapes; validate them before deriving a frame path.
-        try { url = new URL(frame.dataset.path, location.href); decodeURI(url.href); } catch { continue; }
-        if (url.origin !== location.origin || !["http:", "https:"].includes(url.protocol) || url.pathname.startsWith('//')) continue;
+        try {
+          url = new URL(frame.dataset.path, location.href);
+          decodeURI(url.href);
+        } catch {
+          continue;
+        }
+        if (
+          url.origin !== location.origin ||
+          !['http:', 'https:'].includes(url.protocol) ||
+          url.pathname.startsWith('//')
+        )
+          continue;
         // Bootstrap 5 frames carry no table data attributes: the lookup's entity name input and
         // the current frame query supply them.
         let previous = new URLSearchParams();
-        try { previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams; } catch { /* Keep the lookup's own entity name when the previous URL is invalid. */ }
-        const entityname = frame.dataset.entityname || document.getElementById(`${input.id}_entityname`)?.value || previous.get('entityname') || '';
+        try {
+          previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams;
+        } catch {
+          /* Keep the lookup's own entity name when the previous URL is invalid. */
+        }
+        const entityname =
+          frame.dataset.entityname ||
+          document.getElementById(`${input.id}_entityname`)?.value ||
+          previous.get('entityname') ||
+          '';
         // The primary key name comes from the frame's data attribute only: Bootstrap 5 frames carry
         // none and the platform client then sends it empty.
         const primary = frame.dataset.entityprimarykeyname || '';
@@ -283,64 +346,79 @@
         // parameters and with the primary key name parameter always present.
         // Keep native literal spaces in the path-relative src; other query characters must
         // stay in their value rather than becoming another parameter or a fragment.
-        const queryValue = value => encodeURIComponent(String(value ?? '')).replace(/%20/g, ' ');
+        const queryValue = (value) => encodeURIComponent(String(value ?? '')).replace(/%20/g, ' ');
         let src;
-        try { src = `${url.pathname}?entityid=${queryValue(id)}&entityname=${queryValue(entityname)}&entityprimarykeyname=${queryValue(primary)}&formname=${queryValue(frame.dataset.formname)}&controlid=${queryValue(frame.dataset.controlid)}`; }
-        catch { continue; }
+        try {
+          src = `${url.pathname}?entityid=${queryValue(id)}&entityname=${queryValue(entityname)}&entityprimarykeyname=${queryValue(primary)}&formname=${queryValue(frame.dataset.formname)}&controlid=${queryValue(frame.dataset.controlid)}`;
+        } catch {
+          continue;
+        }
         if (frame.getAttribute('src') !== src) frame.setAttribute('src', src);
         frame.setAttribute('tabindex', '0');
       }
     };
     // jQuery-triggered changes do not dispatch native DOM change events.
     const quickJquery = jq();
-    if (quickJquery) quickJquery(document).on('change.mirageQuickView', 'input', function () { refreshQuickViews(this); });
-    else document.addEventListener('change', event => { if (event.target instanceof HTMLInputElement) refreshQuickViews(event.target); });
+    if (quickJquery)
+      quickJquery(document).on('change.mirageQuickView', 'input', function () {
+        refreshQuickViews(this);
+      });
+    else
+      document.addEventListener('change', (event) => {
+        if (event.target instanceof HTMLInputElement) refreshQuickViews(event.target);
+      });
     // Once the anti-forgery token is there the platform client replaces each bound frame's
     // response URL; the first navigation is abandoned (see quickToken below).
-    const refreshBound = () => { for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) { const bound = document.getElementById(frame.dataset.lookupElement); if (bound && bound.value) refreshQuickViews(bound); } };
+    const refreshBound = () => {
+      for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) {
+        const bound = document.getElementById(frame.dataset.lookupElement);
+        if (bound && bound.value) refreshQuickViews(bound);
+      }
+    };
     if (quickToken.waiting) quickToken.then = refreshBound;
     else setTimeout(refreshBound, 0);
     // On ready the file controls' hidden size field and the image controls' hidden value and size
     // fields (an image without a link) carry an explicit empty value, as the platform script sets
     // them; the file name field takes the shown file name.
-    for (const name of [...document.getElementsByClassName("break-file-name")]) {
+    for (const name of [...document.getElementsByClassName('break-file-name')]) {
       const control = name.parentElement?.parentElement?.parentElement;
-      const link = name.querySelector(":scope > a");
+      const link = name.querySelector(':scope > a');
       const hiddenName = name.parentElement?.parentElement?.nextElementSibling;
-      if (link && hiddenName?.tagName === "INPUT") hiddenName.value = link.textContent;
+      if (link && hiddenName?.tagName === 'INPUT') hiddenName.value = link.textContent;
       const size = control?.lastElementChild;
-      if (size?.tagName === "INPUT") size.setAttribute("value", "");
+      if (size?.tagName === 'INPUT') size.setAttribute('value', '');
     }
-    for (const inline of [...document.getElementsByClassName("image-inline")]) {
+    for (const inline of [...document.getElementsByClassName('image-inline')]) {
       const value = inline.parentElement?.nextElementSibling;
-      if (!inline.firstElementChild?.getAttribute("href") && value?.tagName === "INPUT") value.setAttribute("value", "");
+      if (!inline.firstElementChild?.getAttribute('href') && value?.tagName === 'INPUT')
+        value.setAttribute('value', '');
       const size = value?.nextElementSibling;
-      if (size?.tagName === "INPUT") size.setAttribute("value", "");
+      if (size?.tagName === 'INPUT') size.setAttribute('value', '');
     }
     // File and image controls are laid out by their rendered width, as the platform script does:
     // a file container narrower than 250px drops its class and
     // stacks its link block (below 120px the name and delete blocks too); an image control whose
     // box is at least 250px wide puts its button and file name side by side.
-    for (const container of [...document.getElementsByClassName("file-control-container")]) {
+    for (const container of [...document.getElementsByClassName('file-control-container')]) {
       const width = container.clientWidth;
       const links = container.firstElementChild?.nextElementSibling;
       if (width >= 250 || !links) continue;
-      container.removeAttribute("class");
-      if (width >= 120) links.setAttribute("class", "container-filelink-delete gap-between-vertical-element");
+      container.removeAttribute('class');
+      if (width >= 120) links.setAttribute('class', 'container-filelink-delete gap-between-vertical-element');
       else {
-        links.removeAttribute("class");
-        links.firstElementChild?.setAttribute("class", "break-file-name gap-between-vertical-element");
-        links.lastElementChild?.setAttribute("class", "gap-between-vertical-element");
+        links.removeAttribute('class');
+        links.firstElementChild?.setAttribute('class', 'break-file-name gap-between-vertical-element');
+        links.lastElementChild?.setAttribute('class', 'gap-between-vertical-element');
       }
     }
-    for (const name of [...document.getElementsByClassName("break-image-name")]) {
+    for (const name of [...document.getElementsByClassName('break-image-name')]) {
       const box = name.parentElement;
       if (!box || !(box.parentElement?.clientWidth >= 250)) continue;
-      box.setAttribute("class", "div-for-image-input");
-      box.firstElementChild?.setAttribute("class", "btn btn-default btn-for-image-input btn-for-inputofimage");
-      name.setAttribute("class", "break-image-name");
+      box.setAttribute('class', 'div-for-image-input');
+      box.firstElementChild?.setAttribute('class', 'btn btn-default btn-for-image-input btn-for-inputofimage');
+      name.setAttribute('class', 'break-image-name');
     }
-    const active = document.querySelector(".progress .list-group-item.active");
+    const active = document.querySelector('.progress .list-group-item.active');
     if (active) {
       const label = active.textContent;
       const host = active.parentElement?.parentElement;
@@ -348,59 +426,80 @@
       // and every further word an empty attribute. Reproduced without interpreting the
       // title as HTML: only plain attribute-name words become attributes.
       if (host) {
-        const announcer = document.createElement("div");
+        const announcer = document.createElement('div');
         const [first, ...rest] = label.trim().split(/\s+/);
-        announcer.id = first ?? "";
+        announcer.id = first ?? '';
         for (const word of rest) {
           const name = word.toLowerCase();
-          if (/^[a-z_][a-z0-9_.-]*$/.test(name) && !["id", "class", "aria-live"].includes(name) && !announcer.hasAttribute(name)) announcer.setAttribute(name, "");
+          if (
+            /^[a-z_][a-z0-9_.-]*$/.test(name) &&
+            !['id', 'class', 'aria-live'].includes(name) &&
+            !announcer.hasAttribute(name)
+          )
+            announcer.setAttribute(name, '');
         }
-        announcer.className = "sr-only";
-        announcer.setAttribute("aria-live", "assertive");
+        announcer.className = 'sr-only';
+        announcer.setAttribute('aria-live', 'assertive');
         announcer.textContent = label;
         host.append(announcer);
       }
-      document.querySelector("fieldset")?.setAttribute("aria-labelledby", label);
-      setTimeout(() => document.querySelector("fieldset .control")?.firstChild?.focus?.());
+      document.querySelector('fieldset')?.setAttribute('aria-labelledby', label);
+      setTimeout(() => document.querySelector('fieldset .control')?.firstChild?.focus?.());
     }
     const linkify = (input, href, text, target) => {
       let address;
-      try { address = new URL(href, location.href); } catch { return; }
-      if (!["http:", "https:", "ftp:", "ftps:", "onenote:", "tel:", "mailto:"].includes(address.protocol)) return;
-      const container = document.createElement("div");
-      container.className = "control";
-      const link = document.createElement("a");
-      link.className = "text-primary";
-      link.style.cursor = "pointer";
-      link.setAttribute("href", address.href);
-      if (target) link.setAttribute("target", target);
-      link.setAttribute("readonly", "readonly");
+      try {
+        address = new URL(href, location.href);
+      } catch {
+        return;
+      }
+      if (!['http:', 'https:', 'ftp:', 'ftps:', 'onenote:', 'tel:', 'mailto:'].includes(address.protocol)) return;
+      const container = document.createElement('div');
+      container.className = 'control';
+      const link = document.createElement('a');
+      link.className = 'text-primary';
+      link.style.cursor = 'pointer';
+      link.setAttribute('href', address.href);
+      if (target) link.setAttribute('target', target);
+      link.setAttribute('readonly', 'readonly');
       link.textContent = text;
-      input.style.display = "none";
+      input.style.display = 'none';
       container.appendChild(link);
       input.parentElement?.appendChild(container);
     };
-    for (const input of document.querySelectorAll(".entity-form input[type='url'][readonly], .entity-form input[type='url'][disabled]")) {
-      const ticker = input.classList.contains("tickersymbol");
+    for (const input of document.querySelectorAll(
+      ".entity-form input[type='url'][readonly], .entity-form input[type='url'][disabled]",
+    )) {
+      const ticker = input.classList.contains('tickersymbol');
       const value = input.value;
       if (!value) continue;
-      linkify(input, ticker ? `http://go.microsoft.com/fwlink?linkid=8506&Symbol=${encodeURIComponent(value.toUpperCase())}` : value, value, "_blank");
+      linkify(
+        input,
+        ticker ? `http://go.microsoft.com/fwlink?linkid=8506&Symbol=${encodeURIComponent(value.toUpperCase())}` : value,
+        value,
+        '_blank',
+      );
     }
-    for (const input of document.querySelectorAll(".entity-form input[type='email'][readonly], .entity-form input[type='email'][disabled]"))
+    for (const input of document.querySelectorAll(
+      ".entity-form input[type='email'][readonly], .entity-form input[type='email'][disabled]",
+    ))
       if (input.value) linkify(input, `mailto:${input.value}`, input.value, null);
-    for (const span of document.querySelectorAll(".entity-form span[data-required]")) {
-      const required = span.getAttribute("data-required") === "true";
-      for (const control of span.querySelectorAll("input,select,textarea")) control.required = required;
+    for (const span of document.querySelectorAll('.entity-form span[data-required]')) {
+      const required = span.getAttribute('data-required') === 'true';
+      for (const control of span.querySelectorAll('input,select,textarea')) control.required = required;
     }
-    for (const form of document.querySelectorAll(".entity-form"))
-      form.addEventListener("keypress", (event) => {
+    for (const form of document.querySelectorAll('.entity-form'))
+      form.addEventListener('keypress', (event) => {
         if ((event.keyCode || event.which) !== 13 || event.target === form) return;
-        const composite = document.querySelector("textarea[id^=address]")?.closest(".control")?.querySelector(".popover-content");
+        const composite = document
+          .querySelector('textarea[id^=address]')
+          ?.closest('.control')
+          ?.querySelector('.popover-content');
         if (composite?.contains(document.activeElement)) event.preventDefault();
         event.stopPropagation();
       });
-    for (const button of document.querySelectorAll("form input[type=submit], form button"))
-      button.addEventListener("keypress", (event) => {
+    for (const button of document.querySelectorAll('form input[type=submit], form button'))
+      button.addEventListener('keypress', (event) => {
         if ((event.keyCode || event.which) !== 13) return;
         event.preventDefault();
         event.stopPropagation();
@@ -413,20 +512,27 @@
   const quickToken = { waiting: false, then: null };
   const askQuickToken = () => {
     // Only frames bound to a record are replaced (an insert form's frame stays blank: no token request).
-    const bound = [...document.querySelectorAll('iframe.quickform[data-lookup-element]')].some((frame) => document.getElementById(frame.dataset.lookupElement)?.value);
+    const bound = [...document.querySelectorAll('iframe.quickform[data-lookup-element]')].some(
+      (frame) => document.getElementById(frame.dataset.lookupElement)?.value,
+    );
     if (!bound || typeof w.shell?.getTokenDeferred !== 'function') return;
     const deferred = w.shell.getTokenDeferred();
     if (typeof deferred?.always !== 'function') return;
     quickToken.waiting = true;
-    deferred.always(() => { quickToken.waiting = false; const then = quickToken.then; quickToken.then = null; then?.(); });
+    deferred.always(() => {
+      quickToken.waiting = false;
+      const then = quickToken.then;
+      quickToken.then = null;
+      then?.();
+    });
   };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", askQuickToken, { once: true });
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', askQuickToken, { once: true });
   else askQuickToken();
   const $ = jq();
   if ($) $(ready);
-  else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });
+  else if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ready, { once: true });
   else ready();
-  w.addEventListener("load", () => {
+  w.addEventListener('load', () => {
     w.setfocusOnSuccessMessage();
     w.portal?.setValidationSummaryFocus?.();
   });

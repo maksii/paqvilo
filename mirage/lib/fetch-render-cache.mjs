@@ -18,10 +18,23 @@ export class FetchRenderCache {
   }
   readable(store, identity) {
     const revision = store.dataRevision();
-    const identityKey = JSON.stringify([identity.admin, identity.id, identity.contactId,
-      identity.accountId, [...(identity.roles ?? [])], [...(identity.roleIds ?? [])], identity.roleSource]);
+    const identityKey = JSON.stringify([
+      identity.admin,
+      identity.id,
+      identity.contactId,
+      identity.accountId,
+      [...(identity.roles ?? [])],
+      [...(identity.roleIds ?? [])],
+      identity.roleSource,
+    ]);
     let entry = this.stores.get(store);
-    if (!entry || entry.revision !== revision || entry.state !== store.state || entry.observed !== store.observed || entry.identity !== identityKey) {
+    if (
+      !entry ||
+      entry.revision !== revision ||
+      entry.state !== store.state ||
+      entry.observed !== store.observed ||
+      entry.identity !== identityKey
+    ) {
       entry = { revision, state: store.state, observed: store.observed, identity: identityKey, rows: new Map() };
       this.stores.set(store, entry);
       this.indexes = new WeakMap();
@@ -36,7 +49,7 @@ export class FetchRenderCache {
     const wanted = guidKey(scalar(value));
     if (!wanted) return rows;
     let columns = this.indexes.get(rows);
-    if (!columns) this.indexes.set(rows, columns = new Map());
+    if (!columns) this.indexes.set(rows, (columns = new Map()));
     let index = columns.get(column);
     if (!index) {
       index = new Map();
@@ -47,13 +60,18 @@ export class FetchRenderCache {
         const key = guidKey(raw);
         // Invented fixtures may use non-GUID identifiers. Keep their original
         // comparison/coercion behavior through the complete predicate.
-        if (!key) { if (raw != null && raw !== '') index.fallback.push(row); continue; }
+        if (!key) {
+          if (raw != null && raw !== '') index.fallback.push(row);
+          continue;
+        }
         if (!index.has(key)) index.set(key, []);
         index.get(key).push(row);
       }
       columns.set(column, index);
     }
     const matches = index.get(wanted) ?? [];
-    return index.fallback.length ? [...matches, ...index.fallback].sort((a,b)=>index.positions.get(a)-index.positions.get(b)) : matches;
+    return index.fallback.length
+      ? [...matches, ...index.fallback].sort((a, b) => index.positions.get(a) - index.positions.get(b))
+      : matches;
   }
 }

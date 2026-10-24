@@ -15,43 +15,52 @@
 // Default errors: aiUnavailable is the documented Predict error (403 0x80048d06), and featureNotEnabled is the web service
 // error 0x80061113. The HTTP status of featureNotEnabled is a guess.
 // ponytail: argsOf, idOf and respond are copies of the helpers in dataverse-app-messages.mjs (not exported there).
-import { DataError } from "./data-error.mjs";
-import { collectPackExport } from "./pack-exports.mjs";
-import { contextUrl } from "./dataverse-odata.mjs";
+import { DataError } from './data-error.mjs';
+import { collectPackExport } from './pack-exports.mjs';
+import { contextUrl } from './dataverse-odata.mjs';
 
 const GUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
 
 export function idOf(value) {
   if (value == null) return null;
-  if (typeof value === "string") return value.match(GUID)?.[0] ?? null;
-  if (typeof value !== "object") return null;
-  const direct = value.id ?? value["@odata.id"];
+  if (typeof value === 'string') return value.match(GUID)?.[0] ?? null;
+  if (typeof value !== 'object') return null;
+  const direct = value.id ?? value['@odata.id'];
   if (direct != null) return idOf(direct);
   return Object.values(value).map(idOf).find(Boolean) ?? null;
 }
 
-const body = (c) => (typeof c.body === "string" ? JSON.parse(c.body || "{}") : (c.body ?? {}));
+const body = (c) => (typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {}));
 export const argsOf = (c) => ({ ...body(c), ...(c.params ?? {}) });
 
 // A response with the native @odata.context for the <name>Response complex type.
 export function respond(c, name, payload) {
-  return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, `Microsoft.Dynamics.CRM.${name}Response`), ...payload } };
+  return {
+    status: 200,
+    body: { '@odata.context': contextUrl(c.origin, c.version, `Microsoft.Dynamics.CRM.${name}Response`), ...payload },
+  };
 }
 
 // Trusted pack handlers: a pack's dataverseMessages maps a message name (exact, case-sensitive) to async (ctx) => body | undefined.
 // Returns Map(name -> { handler, pack }), where pack is the pack id that supplied it.
 export function addonHandlers(packs = []) {
-  return new Map([...collectPackExport(packs, "dataverseMessages")].map(([name, { value, pack }]) => [name, { handler: value, pack: pack ?? null }]));
+  return new Map(
+    [...collectPackExport(packs, 'dataverseMessages')].map(([name, { value, pack }]) => [
+      name,
+      { handler: value, pack: pack ?? null },
+    ]),
+  );
 }
 
 // Attaches the handlers to the API (api.addonHandlers). Install it after every add-on module: it fails when a pack names a
 // message that no module registered.
 export function addonHandlerExtension(handlers) {
   return {
-    name: "dataverse-addon-handlers",
+    name: 'dataverse-addon-handlers',
     install(api) {
       for (const [name, { pack }] of handlers) {
-        if (!api.registry.has(name)) throw new Error(`Data pack ${pack}: dataverseMessages names unknown message ${name}`);
+        if (!api.registry.has(name))
+          throw new Error(`Data pack ${pack}: dataverseMessages names unknown message ${name}`);
       }
       api.addonHandlers = handlers;
     },
@@ -77,7 +86,9 @@ export function registerAddon(api, spec) {
         result = await packed.handler({
           name,
           args: argsOf(c),
-          target: c.target ? { logicalName: c.target.mapping?.logicalName ?? null, id: c.target.id ?? null, row: c.target.row ?? null } : null,
+          target: c.target
+            ? { logicalName: c.target.mapping?.logicalName ?? null, id: c.target.id ?? null, row: c.target.row ?? null }
+            : null,
           caller: c.caller,
           user: c.user,
           origin: c.origin,
@@ -98,7 +109,9 @@ export function registerInternalMessage(api, spec) {
 }
 
 export function notSimulated(name) {
-  return new DataError(`${name} is for internal use only and is not simulated.`, 501, "NotImplemented", { innerCode: "0x80040216" });
+  return new DataError(`${name} is for internal use only and is not simulated.`, 501, 'NotImplemented', {
+    innerCode: '0x80040216',
+  });
 }
 
 // Predict and the other AI messages without capacity: the documented Predict error body.
@@ -106,14 +119,19 @@ export function aiUnavailable() {
   return new DataError(
     '{"operationStatus":"Error","error":{"type":"Error","code":"EntitlementNotAvailable","innerErrors":[{"scope":"Generic","target":null,"code":"NoCapacity","type":"Error","message":"No capacity was found."}]},"predictionId":null}',
     403,
-    "EntitlementNotAvailable",
-    { innerCode: "0x80048d06" },
+    'EntitlementNotAvailable',
+    { innerCode: '0x80048d06' },
   );
 }
 
 // A message that needs a feature the organization has not enabled (web service error 0x80061113).
 export function featureNotEnabled() {
-  return new DataError("This operation couldn't be completed because this feature isn’t enabled for your organization.", 400, "FeatureNotEnabled", { innerCode: "0x80061113" });
+  return new DataError(
+    "This operation couldn't be completed because this feature isn’t enabled for your organization.",
+    400,
+    'FeatureNotEnabled',
+    { innerCode: '0x80061113' },
+  );
 }
 
 // Pack overrides from the runtime's pack export registry: api.packExport(name) is a Map of key -> { value, pack }, converted to
@@ -133,7 +151,7 @@ export function onceReporter(diagnostic = null) {
     report(entry, key) {
       if (seen.has(key)) return;
       seen.add(key);
-      const recorded = { severity: "warning", ...entry };
+      const recorded = { severity: 'warning', ...entry };
       diagnostics.push(recorded);
       diagnostic?.(recorded);
     },

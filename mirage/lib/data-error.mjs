@@ -1,8 +1,8 @@
 /** Store and query failures carry an HTTP-style status and a stable code. */
 export class DataError extends Error {
-  constructor(message, status = 400, code = "InvalidRequest", details) {
+  constructor(message, status = 400, code = 'InvalidRequest', details) {
     super(message);
-    this.name = "DataError";
+    this.name = 'DataError';
     this.status = status;
     this.statusCode = status;
     this.code = code;

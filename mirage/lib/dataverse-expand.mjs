@@ -1,22 +1,28 @@
 // $expand rules for the simulated Dataverse Web API: option count, nested expansion limits,
 // $ref and N:N checks, and the @odata.nextLink of an expanded collection.
 // Pure functions over parseExpand() items. Errors are 400 0x80060888 DataErrors.
-import { DataError } from "./data-error.mjs";
-import { encodeSkipToken, skipTokenQueryValue } from "./dataverse-odata.mjs";
+import { DataError } from './data-error.mjs';
+import { encodeSkipToken, skipTokenQueryValue } from './dataverse-odata.mjs';
 
 const MAX_EXPAND_OPTIONS = 15; // documented "up to 15 $expand options in a query"; counting across nesting levels is a guess
-const PAGING_MESSAGE = "Only $select and $filter clause can be provided while doing $expand on many-to-one relationship or nested one-to-many relationship.";
+const PAGING_MESSAGE =
+  'Only $select and $filter clause can be provided while doing $expand on many-to-one relationship or nested one-to-many relationship.';
 const UNSUPPORTED_OPTION = /[;(]\s*\$(skip|count|search|levels)\s*=/;
-const OPTION_KEYS = [["$select", "select"], ["$filter", "filter"], ["$orderby", "orderby"], ["$top", "top"]];
+const OPTION_KEYS = [
+  ['$select', 'select'],
+  ['$filter', 'filter'],
+  ['$orderby', 'orderby'],
+  ['$top', 'top'],
+];
 
 function invalid(message) {
-  return new DataError(message, 400, "InvalidRequest", { innerCode: "0x80060888" });
+  return new DataError(message, 400, 'InvalidRequest', { innerCode: '0x80060888' });
 }
 
 /** Reject unsupported nested options before evaluating the expansion. */
 export function assertExpandText(text) {
-  const match = UNSUPPORTED_OPTION.exec(String(text ?? "").replace(/'(?:[^']|'')*'/g, "''"));
-  if (match) throw invalid("$skip, $count, $search, and $levels are not supported inside $expand");
+  const match = UNSUPPORTED_OPTION.exec(String(text ?? '').replace(/'(?:[^']|'')*'/g, "''"));
+  if (match) throw invalid('$skip, $count, $search, and $levels are not supported inside $expand');
 }
 
 function countOptions(items) {
@@ -38,11 +44,18 @@ export function assertExpand(items, mapping, resolveRelationship) {
 function checkLevel(items, mapping, resolveRelationship, nested) {
   for (const item of items) {
     const rel = resolveRelationship(mapping, item.navigation);
-    if (!rel) throw new DataError(`Could not find a navigation property named '${item.navigation}' on ${mapping.logicalName}.`, 400, "InvalidAttribute");
-    if (item.ref && rel.many) throw invalid("Expand with $ref is only supported on lookup type navigation property.");
+    if (!rel)
+      throw new DataError(
+        `Could not find a navigation property named '${item.navigation}' on ${mapping.logicalName}.`,
+        400,
+        'InvalidAttribute',
+      );
+    if (item.ref && rel.many) throw invalid('Expand with $ref is only supported on lookup type navigation property.');
     const hasNested = item.expand?.length > 0;
     if ((hasNested || nested) && rel.intersect)
-      throw invalid(`The navigation property '${item.navigation}' cannot be expanded. Only many-to-one relationships are supported for nested expansion.`);
+      throw invalid(
+        `The navigation property '${item.navigation}' cannot be expanded. Only many-to-one relationships are supported for nested expansion.`,
+      );
     if (rel.many && nested && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE);
     if (!rel.many && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE); // a guess: Dataverse may accept paging on a lookup
     // ponytail: nested children are not checked when the resolver gives no target mapping.
@@ -51,11 +64,14 @@ function checkLevel(items, mapping, resolveRelationship, nested) {
 }
 
 // Percent-encodes an option value, keeping the characters the documented nextLinks leave literal.
-const encodeOption = (value) => encodeURIComponent(String(value)).replace(/%24/g, "$").replace(/%2C/g, ",").replace(/%3B/g, ";").replace(/%3D/g, "=");
+const encodeOption = (value) =>
+  encodeURIComponent(String(value)).replace(/%24/g, '$').replace(/%2C/g, ',').replace(/%3B/g, ';').replace(/%3D/g, '=');
 
 /** The option pairs of one expand item, raw: $select, $filter, $orderby, $top and a nested $expand. */
 function optionPairs(item) {
-  const pairs = OPTION_KEYS.filter(([, key]) => item[key] != null && item[key] !== "").map(([name, key]) => `${name}=${item[key]}`);
+  const pairs = OPTION_KEYS.filter(([, key]) => item[key] != null && item[key] !== '').map(
+    ([name, key]) => `${name}=${item[key]}`,
+  );
   if (item.expand?.length) pairs.push(`$expand=${serializeExpand(item.expand)}`);
   return pairs;
 }
@@ -64,9 +80,9 @@ function serializeExpand(items) {
   return items
     .map((item) => {
       const pairs = optionPairs(item);
-      return pairs.length ? `${item.navigation}(${pairs.join(";")})` : item.navigation;
+      return pairs.length ? `${item.navigation}(${pairs.join(';')})` : item.navigation;
     })
-    .join(",");
+    .join(',');
 }
 
 /**
@@ -76,12 +92,12 @@ function serializeExpand(items) {
  */
 export function childLinks(origin, version, set, id, nav, options = {}, { nested = false, token } = {}) {
   const query = optionPairs(options).map((pair) => {
-    const at = pair.indexOf("=");
+    const at = pair.indexOf('=');
     return `${pair.slice(0, at + 1)}${encodeOption(pair.slice(at + 1))}`;
   });
   if (nested && token) query.push(`$skiptoken=${skipTokenQueryValue(decodeURIComponent(encodeSkipToken(token)))}`);
   return {
     key: `${nav}@odata.nextLink`,
-    url: `${origin}/api/data/${version}/${set}(${id})/${nav}${query.length ? `?${query.join("&")}` : ""}`,
+    url: `${origin}/api/data/${version}/${set}(${id})/${nav}${query.length ? `?${query.join('&')}` : ''}`,
   };
 }

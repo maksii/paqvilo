@@ -18,8 +18,14 @@ export function fixedClock(startMs = Date.parse('2026-01-01T00:00:00.000Z')) {
   if (!Number.isFinite(now)) throw new TypeError('fixedClock needs a start time in epoch milliseconds.');
   return {
     now: () => now,
-    advance(ms) { now += Number(ms); return now; },
-    set(ms) { now = Number(ms); return now; },
+    advance(ms) {
+      now += Number(ms);
+      return now;
+    },
+    set(ms) {
+      now = Number(ms);
+      return now;
+    },
   };
 }
 
@@ -31,14 +37,14 @@ export function sequentialIds(namespace = '6ba7b810-9dad-11d1-80b4-00c04fd430c8'
 }
 
 /** The clock as a function of epoch milliseconds, from a function or a { now() } object. */
-export const clockFunction = clock => typeof clock === 'function' ? clock : () => clock.now();
+export const clockFunction = (clock) => (typeof clock === 'function' ? clock : () => clock.now());
 
 // The manual-scheduler task whose code is running, so schedule() knows which task queued a continuation.
 const currentTask = new AsyncLocalStorage();
 // libuv requests (file system, socket writes, connects, DNS) in flight: a task waiting on one is still making progress.
 const IO_REQUEST = /Req|WriteWrap|ShutdownWrap|ConnectWrap|QueryWrap|SendWrap/;
-const ioPending = () => process.getActiveResourcesInfo().some(name => IO_REQUEST.test(name));
-const turn = () => new Promise(resolve => setImmediate(resolve));
+const ioPending = () => process.getActiveResourcesInfo().some((name) => IO_REQUEST.test(name));
+const turn = () => new Promise((resolve) => setImmediate(resolve));
 
 /**
  * Tracked tasks on one clock. Real mode runs a task on the next turn (delay 0) or after its delay on an unref'd timer;
@@ -57,12 +63,25 @@ export function createScheduler({ clock = systemClock, manual = false, faults = 
   const now = clockFunction(clock);
   const tasks = new Map(); // handle -> { task, name, due, delay, order, attempt, timer, immediate }
   const running = new Set(); // entries of started tasks, each with its settle promise (entry.tracked)
-  let closed = false, sequence = 0, executed = 0, faulted = 0, failed = 0, progress = 0, wake = null;
+  let closed = false,
+    sequence = 0,
+    executed = 0,
+    faulted = 0,
+    failed = 0,
+    progress = 0,
+    wake = null;
   // Every schedule and every settle is progress, and wakes a manual runDue()/drain() waiting for some.
-  const progressed = () => { progress += 1; if (wake) { const resolve = wake.resolve; wake = null; resolve(); } };
+  const progressed = () => {
+    progress += 1;
+    if (wake) {
+      const resolve = wake.resolve;
+      wake = null;
+      resolve();
+    }
+  };
   const woken = () => (wake ??= Promise.withResolvers()).promise;
 
-  const disarm = entry => {
+  const disarm = (entry) => {
     if (entry.timer) clearTimeout(entry.timer);
     if (entry.immediate) clearImmediate(entry.immediate);
     entry.timer = entry.immediate = null;
@@ -73,13 +92,21 @@ export function createScheduler({ clock = systemClock, manual = false, faults = 
       entry.remaining = delay;
       const fire = () => {
         entry.remaining -= Math.min(entry.remaining, MAX_TIMER_DELAY);
-        if (entry.remaining > 0) { entry.timer = setTimeout(fire, Math.min(entry.remaining, MAX_TIMER_DELAY)); entry.timer.unref?.(); return; }
+        if (entry.remaining > 0) {
+          entry.timer = setTimeout(fire, Math.min(entry.remaining, MAX_TIMER_DELAY));
+          entry.timer.unref?.();
+          return;
+        }
         entry.timer = null;
         execute(handle);
       };
       entry.timer = setTimeout(fire, Math.min(delay, MAX_TIMER_DELAY));
       entry.timer.unref?.();
-    } else entry.immediate = setImmediate(() => { entry.immediate = null; execute(handle); });
+    } else
+      entry.immediate = setImmediate(() => {
+        entry.immediate = null;
+        execute(handle);
+      });
   };
   function execute(handle) {
     const entry = tasks.get(handle);
@@ -99,13 +126,34 @@ export function createScheduler({ clock = systemClock, manual = false, faults = 
     executed += 1;
     running.add(entry); // before the task starts, so what it queues synchronously counts as its continuation
     let result;
-    try { result = Promise.resolve(manual ? currentTask.run(entry, entry.task) : entry.task()); } catch (error) { result = Promise.reject(error); }
-    entry.tracked = result.then(() => {}, () => { failed += 1; }).finally(() => { running.delete(entry); entry.children = null; progressed(); });
+    try {
+      result = Promise.resolve(manual ? currentTask.run(entry, entry.task) : entry.task());
+    } catch (error) {
+      result = Promise.reject(error);
+    }
+    entry.tracked = result
+      .then(
+        () => {},
+        () => {
+          failed += 1;
+        },
+      )
+      .finally(() => {
+        running.delete(entry);
+        entry.children = null;
+        progressed();
+      });
     return entry.tracked;
   }
   // A running task with a continuation it queued that is still queued, or running and itself waiting.
-  const waiting = entry => Boolean(entry.children) && [...entry.children].some(child => tasks.get(child.order) === child || running.has(child) && waiting(child));
-  const blocked = () => { let count = 0; for (const entry of running) if (waiting(entry)) count += 1; return count; };
+  const waiting = (entry) =>
+    Boolean(entry.children) &&
+    [...entry.children].some((child) => tasks.get(child.order) === child || (running.has(child) && waiting(child)));
+  const blocked = () => {
+    let count = 0;
+    for (const entry of running) if (waiting(entry)) count += 1;
+    return count;
+  };
   // True when a task settled or was queued during a quiet check: two turns without either and without I/O in flight.
   const settles = async () => {
     for (let quiet = 0; quiet < 2;) {
@@ -121,34 +169,65 @@ export function createScheduler({ clock = systemClock, manual = false, faults = 
   async function quiesce(runTasks) {
     let count = 0;
     for (;;) {
-      const active = [...running].filter(entry => !waiting(entry));
-      if (active.length) { await Promise.race([...active.map(entry => entry.tracked), woken()]); continue; }
+      const active = [...running].filter((entry) => !waiting(entry));
+      if (active.length) {
+        await Promise.race([...active.map((entry) => entry.tracked), woken()]);
+        continue;
+      }
       const next = runTasks && !closed ? due() : null;
       if (next) {
-        if (++count > MAX_DUE_RUNS) throw new Error(`The scheduler ran ${MAX_DUE_RUNS} due tasks in one runDue(); a task keeps re-queuing itself.`);
+        if (++count > MAX_DUE_RUNS)
+          throw new Error(
+            `The scheduler ran ${MAX_DUE_RUNS} due tasks in one runDue(); a task keeps re-queuing itself.`,
+          );
         execute(next[0]);
         continue;
       }
-      if (!running.size || !await settles()) return count;
+      if (!running.size || !(await settles())) return count;
     }
   }
   const due = () => {
     const at = now();
     let next = null;
-    for (const [handle, entry] of tasks) if (entry.due <= at && (!next || entry.due < next[1].due || entry.due === next[1].due && entry.order < next[1].order)) next = [handle, entry];
+    for (const [handle, entry] of tasks)
+      if (
+        entry.due <= at &&
+        (!next || entry.due < next[1].due || (entry.due === next[1].due && entry.order < next[1].order))
+      )
+        next = [handle, entry];
     return next;
   };
-  const immediates = () => { let count = 0; for (const entry of tasks.values()) if (entry.immediate) count += 1; return count; };
+  const immediates = () => {
+    let count = 0;
+    for (const entry of tasks.values()) if (entry.immediate) count += 1;
+    return count;
+  };
   const scheduler = {
     manual,
     clock,
     schedule(task, delayMs = 0, { name = null } = {}) {
       if (typeof task !== 'function') throw new TypeError('A scheduled task must be a function.');
       if (closed) return null;
-      const delay = Math.max(0, Number(delayMs) || 0), handle = ++sequence;
-      const entry = { task, name, due: now() + delay, delay, order: handle, attempt: 0, timer: null, immediate: null, children: new Set(), tracked: null };
+      const delay = Math.max(0, Number(delayMs) || 0),
+        handle = ++sequence;
+      const entry = {
+        task,
+        name,
+        due: now() + delay,
+        delay,
+        order: handle,
+        attempt: 0,
+        timer: null,
+        immediate: null,
+        children: new Set(),
+        tracked: null,
+      };
       tasks.set(handle, entry);
-      if (manual) { const parent = currentTask.getStore(); if (parent?.children && running.has(parent)) parent.children.add(entry); progressed(); }
+      if (manual) {
+        const parent = currentTask.getStore();
+        if (parent?.children && running.has(parent)) parent.children.add(entry);
+        progressed();
+      }
       arm(handle, entry, delay);
       return handle;
     },
@@ -158,26 +237,33 @@ export function createScheduler({ clock = systemClock, manual = false, faults = 
       disarm(entry);
       return tasks.delete(handle);
     },
-    pending: () => [...tasks].map(([handle, entry]) => ({ handle, name: entry.name, due: entry.due, attempt: entry.attempt }))
-      .sort((a, b) => a.due - b.due || a.handle - b.handle),
+    pending: () =>
+      [...tasks]
+        .map(([handle, entry]) => ({ handle, name: entry.name, due: entry.due, attempt: entry.attempt }))
+        .sort((a, b) => a.due - b.due || a.handle - b.handle),
     /** Manual mode: runs every task due at the clock's time, one after another, including tasks they queue as due, and
      * returns once the started tasks settled or are blocked. */
     runDue() {
-      if (!manual) return Promise.reject(new Error('runDue() is for a manual scheduler; a real scheduler runs its own tasks.'));
+      if (!manual)
+        return Promise.reject(new Error('runDue() is for a manual scheduler; a real scheduler runs its own tasks.'));
       return quiesce(true);
     },
     /** Manual mode: moves the clock forward, then runs the tasks that became due. */
     advance(ms) {
-      if (typeof clock?.advance !== 'function') throw new Error('advance(ms) needs a clock with advance(ms), such as fixedClock().');
+      if (typeof clock?.advance !== 'function')
+        throw new Error('advance(ms) needs a clock with advance(ms), such as fixedClock().');
       clock.advance(ms);
       return scheduler.runDue();
     },
     /** Waits for running tasks, and in real mode for tasks queued for the next turn. Timers that are not due are not awaited. */
     async drain() {
-      if (manual) { await quiesce(false); return; }
+      if (manual) {
+        await quiesce(false);
+        return;
+      }
       for (;;) {
-        if (running.size) await Promise.all([...running].map(entry => entry.tracked));
-        else if (!manual && !closed && immediates()) await new Promise(resolve => setImmediate(resolve));
+        if (running.size) await Promise.all([...running].map((entry) => entry.tracked));
+        else if (!manual && !closed && immediates()) await new Promise((resolve) => setImmediate(resolve));
         else return;
       }
     },
@@ -187,9 +273,20 @@ export function createScheduler({ clock = systemClock, manual = false, faults = 
       for (const entry of tasks.values()) disarm(entry);
       tasks.clear();
     },
-    status: () => { const stuck = manual ? blocked() : 0;
-      return { manual, closed, pending: running.size - stuck + (manual || closed ? 0 : immediates()), scheduled: tasks.size, running: running.size,
-        blocked: stuck, executed, faults: faulted, failures: failed }; },
+    status: () => {
+      const stuck = manual ? blocked() : 0;
+      return {
+        manual,
+        closed,
+        pending: running.size - stuck + (manual || closed ? 0 : immediates()),
+        scheduled: tasks.size,
+        running: running.size,
+        blocked: stuck,
+        executed,
+        faults: faulted,
+        failures: failed,
+      };
+    },
   };
   return scheduler;
 }
@@ -200,7 +297,10 @@ export function createScheduler({ clock = systemClock, manual = false, faults = 
  */
 export function storeScheduler(store, scheduler = null, { reopen = false } = {}) {
   const closed = Boolean(store.scheduler?.status().closed);
-  if (scheduler) { if (!store.scheduler || closed) store.scheduler = scheduler; return scheduler; }
-  if (!store.scheduler || closed && reopen) store.scheduler = createScheduler({ clock: store.clock ?? systemClock });
+  if (scheduler) {
+    if (!store.scheduler || closed) store.scheduler = scheduler;
+    return scheduler;
+  }
+  if (!store.scheduler || (closed && reopen)) store.scheduler = createScheduler({ clock: store.clock ?? systemClock });
   return store.scheduler;
 }

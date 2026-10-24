@@ -23,10 +23,23 @@ import { systemIds } from './runtime-clock.mjs';
  */
 
 const MAX_BODY = 16 * 1024 * 1024;
-const FORWARDED = ['accept', 'content-type', 'prefer', 'if-match', 'if-none-match', 'odata-version', 'odata-maxversion'];
-const BASE_CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'";
+const FORWARDED = [
+  'accept',
+  'content-type',
+  'prefer',
+  'if-match',
+  'if-none-match',
+  'odata-version',
+  'odata-maxversion',
+];
+const BASE_CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'";
 const fail = (status, code, message) => Object.assign(new Error(message), { status, code });
-const escapeHtml = text => String(text).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+const escapeHtml = (text) =>
+  String(text).replace(
+    /[&<>"']/g,
+    (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch],
+  );
 
 const json = (res, status, body, headers = {}) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers });
@@ -44,10 +57,14 @@ async function readText(req) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-const readJson = async req => {
+const readJson = async (req) => {
   const text = await readText(req);
   if (!text) return undefined;
-  try { return JSON.parse(text); } catch { throw fail(400, 'InvalidJson', 'The request body is not valid JSON.'); }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw fail(400, 'InvalidJson', 'The request body is not valid JSON.');
+  }
 };
 
 /**
@@ -71,18 +88,34 @@ export function authorityTokenIssuer({ issueAccessToken, origin, appId }) {
  * (default systemIds, the runtime clock/ids seam).
  * Returns async (req, res, url?) => boolean; false when the path is not under /_apps/code/.
  */
-export function createCodeAppsHandler({ apps, sessions, user, organization, issueToken, dataverse, connectors, csrf, diagnostic = () => {}, ids = systemIds }) {
+export function createCodeAppsHandler({
+  apps,
+  sessions,
+  user,
+  organization,
+  issueToken,
+  dataverse,
+  connectors,
+  csrf,
+  diagnostic = () => {},
+  ids = systemIds,
+}) {
   // ponytail: one host sessionId per Mirage process; the player renews it on every app open. Per-load ids need a loader-issued cookie.
   const sessionId = ids.uuid();
-  const principalOf = req => {
+  const principalOf = (req) => {
     const principal = sessions.resolve(req);
-    if (principal.kind !== 'staff') throw fail(401, 'StaffSessionRequired', 'Select a staff user in /_sim/ before playing a code app.');
+    if (principal.kind !== 'staff')
+      throw fail(401, 'StaffSessionRequired', 'Select a staff user in /_sim/ before playing a code app.');
     const row = user(principal.principalId);
     if (!row) throw fail(401, 'StaffPrincipalUnavailable', 'The selected staff user is unavailable or disabled.');
     return { ...principal, row };
   };
-  const requireCsrf = req => { if (req.headers['x-sim-csrf'] !== csrf()) throw fail(403, 'CsrfRequired', 'Missing simulator CSRF token.'); };
-  const requireMethod = (req, ...methods) => { if (!methods.includes(req.method)) throw fail(405, 'MethodNotAllowed', 'Method not allowed.'); };
+  const requireCsrf = (req) => {
+    if (req.headers['x-sim-csrf'] !== csrf()) throw fail(403, 'CsrfRequired', 'Missing simulator CSRF token.');
+  };
+  const requireMethod = (req, ...methods) => {
+    if (!methods.includes(req.method)) throw fail(405, 'MethodNotAllowed', 'Method not allowed.');
+  };
 
   return async (req, res, url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)) => {
     const match = /^\/_apps\/code\/([^/]+)(\/(.*))?$/.exec(url.pathname);
@@ -91,8 +124,12 @@ export function createCodeAppsHandler({ apps, sessions, user, organization, issu
     res.setHeader('x-content-type-options', 'nosniff');
     try {
       let name;
-      try { name = decodeURIComponent(match[1]); } catch { throw fail(404, 'CodeAppNotFound', 'Code app not found.'); }
-      const app = apps().find(item => item.name.toLowerCase() === name.toLowerCase());
+      try {
+        name = decodeURIComponent(match[1]);
+      } catch {
+        throw fail(404, 'CodeAppNotFound', 'Code app not found.');
+      }
+      const app = apps().find((item) => item.name.toLowerCase() === name.toLowerCase());
       if (!app) throw fail(404, 'CodeAppNotFound', `Code app '${name}' is not configured.`);
       const base = `/_apps/code/${encodeURIComponent(app.name)}/`;
       if (match[2] === undefined) {
@@ -101,17 +138,32 @@ export function createCodeAppsHandler({ apps, sessions, user, organization, issu
         return true;
       }
       const rest = match[3];
-      if (rest === '') return loader(req, res, url, app, base), true;
+      if (rest === '') return (loader(req, res, url, app, base), true);
       if (rest === 'context') {
         requireMethod(req, 'GET');
         const { row } = principalOf(req);
-        json(res, 200, {
-          app: { appId: app.appId ?? '', environmentId: app.environmentId ?? organization.environmentId ?? organization.organizationId,
-            queryParams: Object.fromEntries(url.searchParams), dataverseOrgUrl: organization.origin, appUrl: new URL(base, url).href },
-          user: { fullName: row.fullname ?? '', objectId: row.azureactivedirectoryobjectid ?? '', systemUserId: row.systemuserid,
-            tenantId: organization.tenantId ?? '', userPrincipalName: row.domainname ?? '' },
-          host: { sessionId },
-        }, { 'x-sim-csrf': csrf() });
+        json(
+          res,
+          200,
+          {
+            app: {
+              appId: app.appId ?? '',
+              environmentId: app.environmentId ?? organization.environmentId ?? organization.organizationId,
+              queryParams: Object.fromEntries(url.searchParams),
+              dataverseOrgUrl: organization.origin,
+              appUrl: new URL(base, url).href,
+            },
+            user: {
+              fullName: row.fullname ?? '',
+              objectId: row.azureactivedirectoryobjectid ?? '',
+              systemUserId: row.systemuserid,
+              tenantId: organization.tenantId ?? '',
+              userPrincipalName: row.domainname ?? '',
+            },
+            host: { sessionId },
+          },
+          { 'x-sim-csrf': csrf() },
+        );
         return true;
       }
       if (rest === 'token') {
@@ -122,10 +174,21 @@ export function createCodeAppsHandler({ apps, sessions, user, organization, issu
         let audience = null;
         try {
           const target = new URL(resource);
-          if (target.origin === new URL(organization.origin).origin && ['', '/', '/.default'].includes(target.pathname) && !target.search) audience = target.origin;
-        } catch { /* refused below */ }
+          if (
+            target.origin === new URL(organization.origin).origin &&
+            ['', '/', '/.default'].includes(target.pathname) &&
+            !target.search
+          )
+            audience = target.origin;
+        } catch {
+          /* refused below */
+        }
         if (!audience) {
-          diagnostic({ code: 'CODEAPP_TOKEN_REFUSED', app: app.name, message: 'Token requested for a resource other than the local Dataverse origin.' });
+          diagnostic({
+            code: 'CODEAPP_TOKEN_REFUSED',
+            app: app.name,
+            message: 'Token requested for a resource other than the local Dataverse origin.',
+          });
           throw fail(400, 'InvalidResource', 'Only the local Dataverse origin is a valid token resource.');
         }
         const { access_token, expires_on } = await issueToken({ resource: audience, user: row, app });
@@ -136,19 +199,40 @@ export function createCodeAppsHandler({ apps, sessions, user, organization, issu
         requireMethod(req, 'GET', 'POST', 'PATCH', 'PUT', 'DELETE');
         requireCsrf(req);
         const { principalId, kind } = principalOf(req);
-        const headers = Object.fromEntries(FORWARDED.filter(name => req.headers[name] !== undefined).map(name => [name, req.headers[name]]));
+        const headers = Object.fromEntries(
+          FORWARDED.filter((name) => req.headers[name] !== undefined).map((name) => [name, req.headers[name]]),
+        );
         let body;
         if (req.method !== 'GET') {
           const text = await readText(req);
           if (text && /json/i.test(headers['content-type'] ?? '')) {
-            try { body = JSON.parse(text); } catch { throw fail(400, 'InvalidJson', 'The request body is not valid JSON.'); }
+            try {
+              body = JSON.parse(text);
+            } catch {
+              throw fail(400, 'InvalidJson', 'The request body is not valid JSON.');
+            }
           } else body = text || undefined;
         }
-        const result = await dataverse({ method: req.method, path: '/api/data/v9.2/' + rest.slice('dataverse/'.length), search: url.search, headers, body, principal: { principalId, kind } });
+        const result = await dataverse({
+          method: req.method,
+          path: '/api/data/v9.2/' + rest.slice('dataverse/'.length),
+          search: url.search,
+          headers,
+          body,
+          principal: { principalId, kind },
+        });
         const out = { ...(result.headers ?? {}) };
-        if (result.body === undefined || result.body === null) { res.writeHead(result.status ?? 204, out); res.end(); }
-        else if (typeof result.body === 'string' || Buffer.isBuffer(result.body)) { res.writeHead(result.status ?? 200, out); res.end(result.body); }
-        else json(res, result.status ?? 200, result.body, { 'content-type': 'application/json; odata.metadata=minimal; charset=utf-8', ...out });
+        if (result.body === undefined || result.body === null) {
+          res.writeHead(result.status ?? 204, out);
+          res.end();
+        } else if (typeof result.body === 'string' || Buffer.isBuffer(result.body)) {
+          res.writeHead(result.status ?? 200, out);
+          res.end(result.body);
+        } else
+          json(res, result.status ?? 200, result.body, {
+            'content-type': 'application/json; odata.metadata=minimal; charset=utf-8',
+            ...out,
+          });
         return true;
       }
       const connector = /^connectors\/([^/]+)\/([^/]+)$/.exec(rest);
@@ -157,21 +241,46 @@ export function createCodeAppsHandler({ apps, sessions, user, organization, issu
         requireCsrf(req);
         const principal = principalOf(req);
         let key, operationId;
-        try { key = decodeURIComponent(connector[1]); operationId = decodeURIComponent(connector[2]); } catch { throw fail(404, 'ConnectionReferenceNotFound', 'Connection reference path is malformed.'); }
-        const reference = (app.connectionReferences ?? []).find(item => item.key === key || item.dataSources?.includes(key));
-        if (!reference) throw fail(404, 'ConnectionReferenceNotFound', `Connection reference '${key}' is not declared in ${app.name}'s power.config.json.`);
+        try {
+          key = decodeURIComponent(connector[1]);
+          operationId = decodeURIComponent(connector[2]);
+        } catch {
+          throw fail(404, 'ConnectionReferenceNotFound', 'Connection reference path is malformed.');
+        }
+        const reference = (app.connectionReferences ?? []).find(
+          (item) => item.key === key || item.dataSources?.includes(key),
+        );
+        if (!reference)
+          throw fail(
+            404,
+            'ConnectionReferenceNotFound',
+            `Connection reference '${key}' is not declared in ${app.name}'s power.config.json.`,
+          );
         const body = await readJson(req);
-        const result = connectors ? await connectors({ app, reference, operationId, body, principal: { principalId: principal.principalId, kind: principal.kind } }) : undefined;
+        const result = connectors
+          ? await connectors({
+              app,
+              reference,
+              operationId,
+              body,
+              principal: { principalId: principal.principalId, kind: principal.kind },
+            })
+          : undefined;
         if (result === undefined) {
           diagnostic({ code: 'CODEAPP_CONNECTOR_NOT_SIMULATED', app: app.name, reference: reference.key, operationId });
-          throw fail(501, 'ConnectorNotSimulated', `Connector operation '${operationId}' on '${reference.apiId ?? reference.key}' is not simulated.`);
+          throw fail(
+            501,
+            'ConnectorNotSimulated',
+            `Connector operation '${operationId}' on '${reference.apiId ?? reference.key}' is not simulated.`,
+          );
         }
         json(res, 200, result);
         return true;
       }
       throw fail(404, 'CodeAppResourceNotFound', 'Code app resource not found.');
     } catch (error) {
-      if (!res.headersSent && !res.destroyed) json(res, error.status ?? 500, { error: { code: error.code ?? 'CodeAppError', message: error.message } });
+      if (!res.headersSent && !res.destroyed)
+        json(res, error.status ?? 500, { error: { code: error.code ?? 'CodeAppError', message: error.message } });
     }
     return true;
   };
@@ -180,7 +289,8 @@ export function createCodeAppsHandler({ apps, sessions, user, organization, issu
 function loader(req, res, url, app, base) {
   if (!['GET', 'HEAD'].includes(req.method)) throw fail(405, 'MethodNotAllowed', 'This resource requires GET.');
   const title = `<title>${escapeHtml(app.name)} (Mirage code app)</title>`;
-  let body, csp = BASE_CSP;
+  let body,
+    csp = BASE_CSP;
   if (app.localAppUrl) {
     const target = new URL(app.localAppUrl);
     for (const [key, value] of url.searchParams) target.searchParams.append(key, value);
@@ -193,5 +303,9 @@ function loader(req, res, url, app, base) {
   res.setHeader('content-security-policy', csp);
   res.setHeader('x-frame-options', 'SAMEORIGIN');
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  res.end(req.method === 'HEAD' ? undefined : `<!doctype html><html><head><meta charset="utf-8">${title}</head><body>${body}</body></html>`);
+  res.end(
+    req.method === 'HEAD'
+      ? undefined
+      : `<!doctype html><html><head><meta charset="utf-8">${title}</head><body>${body}</body></html>`,
+  );
 }

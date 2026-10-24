@@ -3,7 +3,8 @@
 import { DataError } from './data-error.mjs';
 
 // Same URL as dataverse-odata.mjs cdsHelpLink (kept here so this module has no Dataverse import).
-const cdsHelpLink = (code) => `http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a${code.slice(2)}&client=platform`;
+const cdsHelpLink = (code) =>
+  `http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a${code.slice(2)}&client=platform`;
 
 // Generic CLR SubErrorCode native sends when the plug-in names no errorCode of its own.
 const PLUGIN_SUBERROR = -2146233088;
@@ -18,21 +19,27 @@ export function pluginFailure(error, plugin, timeoutMs) {
   const fault = error?.pluginFault === 'InvalidPluginExecutionException';
   const code = fault ? '0x80040265' : '0x80040224';
   const limit = timeoutMs % 60000 === 0 ? `${timeoutMs / 60000}-minute` : `${timeoutMs / 1000}-second`;
-  const message = fault ? String(error.message)
-    : error?.timedOut ? `An unexpected error occurred from ISV code. (ErrorType = ClientError) Unexpected exception from plug-in (Execute):  ${type}: System.TimeoutException: Couldn’t complete execution of the ${type} plug-in within the ${limit} limit. Please refer https://go.microsoft.com/fwlink/?linkid=2255411 for more details`
-    : error?.message ?? String(error);
+  const message = fault
+    ? String(error.message)
+    : error?.timedOut
+      ? `An unexpected error occurred from ISV code. (ErrorType = ClientError) Unexpected exception from plug-in (Execute):  ${type}: System.TimeoutException: Couldn’t complete execution of the ${type} plug-in within the ${limit} limit. Please refer https://go.microsoft.com/fwlink/?linkid=2255411 for more details`
+      : (error?.message ?? String(error));
   const trace = traces.join('\n');
   const assembly = type.includes('.') ? type.slice(0, type.lastIndexOf('.')) : type;
   const cds = {
-    ...(fault ? {
-      'Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus': '0',
-      'Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode': String(error.errorCode == null ? PLUGIN_SUBERROR : Number(error.errorCode) | 0),
-      'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.ExceptionFromPluginExecute': type,
-      'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.ExceptionRetriable': 'False',
-      'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.ExceptionSource': 'PluginExecution',
-      'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.OriginalException': 'PluginExecution',
-      'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.PluginTrace': trace,
-    } : {}),
+    ...(fault
+      ? {
+          'Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus': '0',
+          'Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode': String(
+            error.errorCode == null ? PLUGIN_SUBERROR : Number(error.errorCode) | 0,
+          ),
+          'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.ExceptionFromPluginExecute': type,
+          'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.ExceptionRetriable': 'False',
+          'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.ExceptionSource': 'PluginExecution',
+          'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.OriginalException': 'PluginExecution',
+          'Microsoft.PowerApps.CDS.ErrorDetails.Plugin.PluginTrace': trace,
+        }
+      : {}),
     'Microsoft.PowerApps.CDS.HelpLink': cdsHelpLink(code),
     'Microsoft.PowerApps.CDS.TraceText': `\r\n[${assembly}: ${type}]\r\n[${id}: CustomApi '${name}' implementation]\r\n\r\n\t\r\n\t${trace}\r\n\t\r\n`,
     'Microsoft.PowerApps.CDS.InnerError.Message': message,

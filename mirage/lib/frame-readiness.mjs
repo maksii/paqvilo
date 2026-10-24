@@ -10,8 +10,16 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
     pending.delete(id);
     clearTimeout(entry.timer);
     entry.response?.end(Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'));
-    diagnostic({ code: reason === 'timeout' ? 'FRAME_READY_TIMEOUT' : 'FRAME_LOAD_ORDERING', severity: reason === 'timeout' ? 'warning' : 'info', path: entry.path,
-      ordering: reason, message: reason === 'timeout' ? 'Local frame load blocker expired; ready ordering is unverified.' : `Local frame load released after ${reason}.` });
+    diagnostic({
+      code: reason === 'timeout' ? 'FRAME_READY_TIMEOUT' : 'FRAME_LOAD_ORDERING',
+      severity: reason === 'timeout' ? 'warning' : 'info',
+      path: entry.path,
+      ordering: reason,
+      message:
+        reason === 'timeout'
+          ? 'Local frame load blocker expired; ready ordering is unverified.'
+          : `Local frame load released after ${reason}.`,
+    });
   };
   return {
     decorate(html, { path = '/', observed } = {}) {
@@ -21,7 +29,8 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
       const bodyEnd = html.toLowerCase().lastIndexOf('</body>');
       if (bodyEnd < 0) return html;
       if (pending.size >= limit) finish(pending.keys().next().value, 'timeout');
-      const id = randomUUID(), route = prefix + id;
+      const id = randomUUID(),
+        route = prefix + id;
       const entry = { path, timer: setTimeout(() => finish(id, 'timeout'), timeoutMs) };
       entry.timer.unref?.();
       pending.set(id, entry);
@@ -34,21 +43,38 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
     },
     handle(req, res, url) {
       if (!url.pathname.startsWith(prefix)) return false;
-      const id = url.pathname.slice(prefix.length), entry = pending.get(id);
-      if (!entry) { res.writeHead(204, { 'cache-control': 'no-store' }); res.end(); return true; }
+      const id = url.pathname.slice(prefix.length),
+        entry = pending.get(id);
+      if (!entry) {
+        res.writeHead(204, { 'cache-control': 'no-store' });
+        res.end();
+        return true;
+      }
       if (req.method === 'POST') {
         const origin = req.headers.origin;
-        if (origin && origin !== url.origin) { res.writeHead(403); res.end(); return true; }
+        if (origin && origin !== url.origin) {
+          res.writeHead(403);
+          res.end();
+          return true;
+        }
         const reason = url.searchParams.get('reason') === 'jquery-ready' ? 'jquery-ready' : 'dom-ready';
         finish(id, reason);
-        res.writeHead(204, { 'cache-control': 'no-store' }); res.end();
+        res.writeHead(204, { 'cache-control': 'no-store' });
+        res.end();
       } else if (req.method === 'GET' && !entry.response) {
         res.writeHead(200, { 'content-type': 'image/gif', 'cache-control': 'no-store' });
         entry.response = res;
-        res.on('close', () => { if (pending.has(id)) finish(id, 'aborted'); });
-      } else { res.writeHead(405); res.end(); }
+        res.on('close', () => {
+          if (pending.has(id)) finish(id, 'aborted');
+        });
+      } else {
+        res.writeHead(405);
+        res.end();
+      }
       return true;
     },
-    close() { for (const id of pending.keys()) finish(id, 'aborted'); },
+    close() {
+      for (const id of pending.keys()) finish(id, 'aborted');
+    },
   };
 }

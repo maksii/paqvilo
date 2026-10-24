@@ -64,7 +64,13 @@ function oid(dotted) {
 function time(date) {
   const pad = (n, width = 2) => String(n).padStart(width, '0');
   const year = date.getUTCFullYear();
-  const rest = [date.getUTCMonth() + 1, date.getUTCDate(), date.getUTCHours(), date.getUTCMinutes(), date.getUTCSeconds()]
+  const rest = [
+    date.getUTCMonth() + 1,
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds(),
+  ]
     .map((n) => pad(n))
     .join('');
   return year >= 1950 && year < 2050
@@ -80,15 +86,15 @@ function namedBits(bits) {
   return bitString(bytes, 7 - (last & 7));
 }
 
-const extension = (id, value, critical = false) =>
-  seq(oid(id), ...(critical ? [bool(true)] : []), octetString(value));
+const extension = (id, value, critical = false) => seq(oid(id), ...(critical ? [bool(true)] : []), octetString(value));
 
 function ipv6Bytes(host) {
   const groups = (text) => (text ? text.split(':') : []);
   const [head, tail] = host.split('::');
-  const words = tail === undefined
-    ? groups(head)
-    : [...groups(head), ...Array(8 - groups(head).length - groups(tail).length).fill('0'), ...groups(tail)];
+  const words =
+    tail === undefined
+      ? groups(head)
+      : [...groups(head), ...Array(8 - groups(head).length - groups(tail).length).fill('0'), ...groups(tail)];
   return Buffer.from(words.flatMap((hex) => [parseInt(hex, 16) >> 8, parseInt(hex, 16) & 0xff]));
 }
 
@@ -101,15 +107,21 @@ function generalName(host) {
 }
 
 // A permitted subtree for one host: an IP address with an all-ones mask, or the DNS name.
-const permittedSubtree = (host) => seq(isIP(host)
-  ? contextTag(7, Buffer.concat([ipBytes(host), Buffer.alloc(ipBytes(host).length, 0xff)]), false)
-  : generalName(host));
+const permittedSubtree = (host) =>
+  seq(
+    isIP(host)
+      ? contextTag(7, Buffer.concat([ipBytes(host), Buffer.alloc(ipBytes(host).length, 0xff)]), false)
+      : generalName(host),
+  );
 
 // DER of the nameConstraints OID (2.5.29.30): a reused certificate without it predates the constraint and is regenerated.
 const NAME_CONSTRAINTS_OID = Buffer.from('0603551d1e', 'hex');
 
 function pem(label, der) {
-  return `-----BEGIN ${label}-----\n${der.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END ${label}-----\n`;
+  return `-----BEGIN ${label}-----\n${der
+    .toString('base64')
+    .match(/.{1,64}/g)
+    .join('\n')}\n-----END ${label}-----\n`;
 }
 
 // ---- certificate
@@ -127,7 +139,9 @@ export function createSelfSignedCertificate({
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength });
   const spki = publicKey.export({ type: 'spki', format: 'der' });
   // For RSA the subjectPublicKey BIT STRING content is exactly the PKCS#1 RSAPublicKey DER.
-  const keyIdentifier = createHash('sha1').update(publicKey.export({ type: 'pkcs1', format: 'der' })).digest();
+  const keyIdentifier = createHash('sha1')
+    .update(publicKey.export({ type: 'pkcs1', format: 'der' }))
+    .digest();
   const algorithm = seq(oid(SHA256_WITH_RSA), nul());
   const name = seq(set(seq(oid('2.5.4.3'), utf8String(commonName))));
   const serial = randomBytes(16);
@@ -138,7 +152,9 @@ export function createSelfSignedCertificate({
     extension('2.5.29.17', seq(...hosts.map(generalName))), // subjectAltName
     extension('2.5.29.14', octetString(keyIdentifier)), // subjectKeyIdentifier
     // nameConstraints (critical): the CA can only vouch for the requested hosts, never login.microsoftonline.com or a live organisation.
-    ...(hosts.length ? [extension('2.5.29.30', seq(contextTag(0, Buffer.concat(hosts.map(permittedSubtree)))), true)] : []),
+    ...(hosts.length
+      ? [extension('2.5.29.30', seq(contextTag(0, Buffer.concat(hosts.map(permittedSubtree)))), true)]
+      : []),
   );
   const tbs = seq(
     contextTag(0, integer(2)), // v3

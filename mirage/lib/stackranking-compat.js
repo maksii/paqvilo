@@ -8,46 +8,63 @@
  * as on the platform.
  */
 (function ($) {
-  "use strict";
+  'use strict';
   if (!$ || $.fn.stackRanking) return;
-  const PROMPT = "That ranking has already been assigned to another item. \nAre you sure you want to reassign it to this item?";
+  const PROMPT =
+    'That ranking has already been assigned to another item. \nAre you sure you want to reassign it to this item?';
   $.fn.stackRanking = function (options) {
     const settings = $.extend({ withPrompt: true }, options);
-    const select = (cell) => $(cell).addClass("selected-cell");
-    const box = (cell) => $(cell).parent().find("div.control input");
+    const select = (cell) => $(cell).addClass('selected-cell');
+    const box = (cell) => $(cell).parent().find('div.control input');
     function click() {
       const cell = this;
       let confirmed = true;
-      $(cell).parents("table").first().find(`.sr-cell[col=${$(cell).attr("col")}]`).filter(".selected-cell").each(function () {
-        if (settings.withPrompt && !window.confirm(PROMPT)) {
-          confirmed = false;
-          return;
-        }
-        $(this).removeClass("selected-cell");
-        box(this).val("");
-      });
+      $(cell)
+        .parents('table')
+        .first()
+        .find(`.sr-cell[col=${$(cell).attr('col')}]`)
+        .filter('.selected-cell')
+        .each(function () {
+          if (settings.withPrompt && !window.confirm(PROMPT)) {
+            confirmed = false;
+            return;
+          }
+          $(this).removeClass('selected-cell');
+          box(this).val('');
+        });
       if (!confirmed) return false;
-      $(cell).parent().find(".sr-cell").removeClass("selected-cell");
+      $(cell).parent().find('.sr-cell').removeClass('selected-cell');
       select(cell);
       box(cell).val($(cell).html());
       return false;
     }
     return this.each(function () {
       const table = this;
-      const count = $(table).find("tr").length;
+      const count = $(table).find('tr').length;
       table.itemNumber = count;
-      $(table).find("tr").each(function () {
-        $(this).find("div.control").hide();
-        let cells = "";
-        for (let rank = 1; rank <= count; rank++) cells += `<div class='sr-cell' col='${rank}'>${rank}</div>`;
-        $(this).find("div.info").after(cells);
-      });
-      $(table).find(".sr-cell").on("click", click);
-      $(table).addClass("stack-ranking-question");
-      $(table).find("div.control input").each(function () {
-        const value = $(this).val();
-        if (value !== "") select($(this).parents("td").first().find(".sr-cell").get(parseInt(value, 10) - 1));
-      });
+      $(table)
+        .find('tr')
+        .each(function () {
+          $(this).find('div.control').hide();
+          let cells = '';
+          for (let rank = 1; rank <= count; rank++) cells += `<div class='sr-cell' col='${rank}'>${rank}</div>`;
+          $(this).find('div.info').after(cells);
+        });
+      $(table).find('.sr-cell').on('click', click);
+      $(table).addClass('stack-ranking-question');
+      $(table)
+        .find('div.control input')
+        .each(function () {
+          const value = $(this).val();
+          if (value !== '')
+            select(
+              $(this)
+                .parents('td')
+                .first()
+                .find('.sr-cell')
+                .get(parseInt(value, 10) - 1),
+            );
+        });
     });
   };
 })(window.jQuery);

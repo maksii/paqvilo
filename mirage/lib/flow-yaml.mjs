@@ -13,23 +13,44 @@ import path from 'node:path';
 import YAML from 'yaml';
 import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
 
-const isMap = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const isMap = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const GUID = /^\{?([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\}?$/i;
 // The value of a key at any depth up to 4, matched without case.
 function find(node, names, depth = 0, max = 4) {
   if (!isMap(node) || depth > max) return undefined;
-  for (const [key, value] of Object.entries(node)) if (names.includes(key.toLowerCase()) && value !== undefined && value !== null) return value;
-  for (const value of Object.values(node)) { const found = find(value, names, depth + 1, max); if (found !== undefined) return found; }
+  for (const [key, value] of Object.entries(node))
+    if (names.includes(key.toLowerCase()) && value !== undefined && value !== null) return value;
+  for (const value of Object.values(node)) {
+    const found = find(value, names, depth + 1, max);
+    if (found !== undefined) return found;
+  }
   return undefined;
 }
 // The client data of a document: { properties: { definition, connectionReferences } }, or null.
 function clientData(document) {
   let data = find(document, ['clientdata']);
-  if (typeof data === 'string') { try { data = parseExactJson(data); } catch { data = null; } }
+  if (typeof data === 'string') {
+    try {
+      data = parseExactJson(data);
+    } catch {
+      data = null;
+    }
+  }
   if (isMap(data)) document = data;
-  const properties = isMap(document?.properties) && isMap(document.properties.definition) ? document.properties
-    : isMap(document?.definition) && isMap(document.definition.triggers) ? { definition: document.definition, connectionReferences: document.connectionReferences } : null;
-  return properties ? { properties: { definition: properties.definition, ...(isMap(properties.connectionReferences) ? { connectionReferences: properties.connectionReferences } : {}) } } : null;
+  const properties =
+    isMap(document?.properties) && isMap(document.properties.definition)
+      ? document.properties
+      : isMap(document?.definition) && isMap(document.definition.triggers)
+        ? { definition: document.definition, connectionReferences: document.connectionReferences }
+        : null;
+  return properties
+    ? {
+        properties: {
+          definition: properties.definition,
+          ...(isMap(properties.connectionReferences) ? { connectionReferences: properties.connectionReferences } : {}),
+        },
+      }
+    : null;
 }
 
 export const YAML_INVALID = 'MODERNFLOW_YAML_INVALID';
@@ -39,11 +60,23 @@ export const YAML_INVALID = 'MODERNFLOW_YAML_INVALID';
  */
 export function parseModernFlowFile(text, file) {
   try {
-    return { document: /\.json$/i.test(file) ? parseExactJson(text) : parseExactJson(JSON.stringify(YAML.parse(text, { maxAliasCount: 100 }) ?? null)) };
+    return {
+      document: /\.json$/i.test(file)
+        ? parseExactJson(text)
+        : parseExactJson(JSON.stringify(YAML.parse(text, { maxAliasCount: 100 }) ?? null)),
+    };
   } catch (error) {
     const line = error.linePos?.[0]?.line ?? null;
     const reason = String(error.message ?? error).split(/\r?\n/)[0];
-    return { invalid: { code: YAML_INVALID, severity: 'error', file, line, message: `${YAML_INVALID}: ${file}${line ? ` line ${line}` : ''} does not parse (${reason}); quote values that start with @ or other YAML indicators.` } };
+    return {
+      invalid: {
+        code: YAML_INVALID,
+        severity: 'error',
+        file,
+        line,
+        message: `${YAML_INVALID}: ${file}${line ? ` line ${line}` : ''} does not parse (${reason}); quote values that start with @ or other YAML indicators.`,
+      },
+    };
   }
 }
 
@@ -71,12 +104,19 @@ export function modernFlowWorkflows(files, read, { diagnostic = () => {} } = {})
   }
   const result = new Map();
   for (const [folder, list] of folders) {
-    let id = null, name = null, state = null, definition = null, source = null;
+    let id = null,
+      name = null,
+      state = null,
+      definition = null,
+      source = null;
     for (const file of list.sort((a, b) => String(a.relative).localeCompare(String(b.relative)))) {
       const text = read(file);
       if (text == null) continue;
       const { document, invalid } = parseModernFlowFile(text, String(file.relative).replaceAll('\\', '/'));
-      if (invalid) { diagnostic(invalid); continue; }
+      if (invalid) {
+        diagnostic(invalid);
+        continue;
+      }
       const workflowId = find(document, ['workflowid'], 0, 1);
       if (!id && typeof workflowId === 'string' && GUID.test(workflowId)) id = GUID.exec(workflowId)[1].toLowerCase();
       const named = find(document, ['name'], 0, 1);
@@ -84,11 +124,21 @@ export function modernFlowWorkflows(files, read, { diagnostic = () => {} } = {})
       const code = find(document, ['statecode'], 0, 1);
       if (state === null && code !== undefined) state = String(code?.value ?? code);
       const data = clientData(document);
-      if (data && !definition) { definition = data; source = file.path; }
+      if (data && !definition) {
+        definition = data;
+        source = file.path;
+      }
     }
     if (!id || !definition) continue;
     const active = state === null ? null : ['1', 'activated'].includes(state.toLowerCase());
-    result.set(id, { file: source, name: name ?? folder, active, activation: { sourceValue: state, sourceFile: source ? path.dirname(source) : null }, definition: parseExactJson(stringifyExactJson(definition)), format: 'yaml' });
+    result.set(id, {
+      file: source,
+      name: name ?? folder,
+      active,
+      activation: { sourceValue: state, sourceFile: source ? path.dirname(source) : null },
+      definition: parseExactJson(stringifyExactJson(definition)),
+      format: 'yaml',
+    });
   }
   return result;
 }

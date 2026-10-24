@@ -19,10 +19,7 @@
       "bodyTitle": true,
       "cookies": true,
       "headerNames": true,
-      "tags": [
-        "core",
-        "routing"
-      ],
+      "tags": ["core", "routing"],
       "title": "Anonymous home page: status, redirect, body title, header names and cookies"
     },
     {
@@ -30,10 +27,7 @@
       "kind": "page-shell",
       "identity": "anonymous",
       "path": "/",
-      "tags": [
-        "core",
-        "shell"
-      ],
+      "tags": ["core", "shell"],
       "title": "Anonymous home page shell: document title, html and body attributes, script and stylesheet bundles in document order"
     },
     {
@@ -41,11 +35,7 @@
       "kind": "client-object",
       "identity": "anonymous",
       "path": "/",
-      "tags": [
-        "core",
-        "shell",
-        "client-object"
-      ],
+      "tags": ["core", "shell", "client-object"],
       "title": "Anonymous home page: platform client objects (Microsoft.Dynamic365.Portal, its User, Microsoft.PowerPages) by key order and value type"
     },
     {
@@ -54,16 +44,11 @@
       "path": "{protectedPage}",
       "discover": {
         "from": "portal",
-        "keys": [
-          "protectedPage"
-        ]
+        "keys": ["protectedPage"]
       },
       "bodyTitle": true,
       "headerNames": true,
-      "tags": [
-        "core",
-        "routing"
-      ],
+      "tags": ["core", "routing"],
       "title": "Anonymous request for a page anonymous visitors may not read: sign-in redirect shape and ReturnUrl encoding"
     },
     {
@@ -72,14 +57,9 @@
       "path": "{protectedPage}?parity=1",
       "discover": {
         "from": "portal",
-        "keys": [
-          "protectedPage"
-        ]
+        "keys": ["protectedPage"]
       },
-      "tags": [
-        "core",
-        "routing"
-      ],
+      "tags": ["core", "routing"],
       "title": "The same protected page with a query string: ReturnUrl encoding of the query"
     },
     {
@@ -88,15 +68,10 @@
       "path": "{ambiguousPage}",
       "discover": {
         "from": "portal",
-        "keys": [
-          "ambiguousPage"
-        ]
+        "keys": ["ambiguousPage"]
       },
       "bodyTitle": true,
-      "tags": [
-        "core",
-        "routing"
-      ],
+      "tags": ["core", "routing"],
       "title": "Anonymous request for a URL that several exported pages share with different anonymous access: which page the portal serves"
     },
     {
@@ -105,10 +80,7 @@
       "path": "/paqvilo-mirage-parity-missing-route/",
       "bodyTitle": true,
       "headerNames": true,
-      "tags": [
-        "core",
-        "routing"
-      ],
+      "tags": ["core", "routing"],
       "title": "Unknown route: status and error page title"
     },
     {
@@ -127,10 +99,7 @@
         "access-control-allow-origin"
       ],
       "headerNames": true,
-      "tags": [
-        "core",
-        "headers"
-      ],
+      "tags": ["core", "headers"],
       "title": "HTML response headers of the home page"
     },
     {
@@ -140,9 +109,7 @@
       "path": "{publicWebFile}",
       "discover": {
         "from": "portal",
-        "keys": [
-          "publicWebFile"
-        ]
+        "keys": ["publicWebFile"]
       },
       "headers": [
         "content-type",
@@ -153,10 +120,7 @@
       ],
       "headerNames": true,
       "conditional": true,
-      "tags": [
-        "core",
-        "headers"
-      ],
+      "tags": ["core", "headers"],
       "title": "Response headers and conditional GET of a public stylesheet web file"
     },
     {
@@ -167,10 +131,7 @@
       "query": {
         "$top": "1"
       },
-      "tags": [
-        "core",
-        "api"
-      ],
+      "tags": ["core", "api"],
       "title": "Web API read of an entity set that does not exist: status and error envelope"
     },
     {
@@ -184,15 +145,9 @@
       },
       "discover": {
         "from": "portal",
-        "keys": [
-          "enabledEntitySet",
-          "enabledField"
-        ]
+        "keys": ["enabledEntitySet", "enabledField"]
       },
-      "tags": [
-        "core",
-        "api"
-      ],
+      "tags": ["core", "api"],
       "title": "Anonymous Web API read of a table enabled for the Web API: status, error envelope or response shape"
     },
     {
@@ -205,14 +160,9 @@
       },
       "discover": {
         "from": "portal",
-        "keys": [
-          "enabledEntitySet"
-        ]
+        "keys": ["enabledEntitySet"]
       },
-      "tags": [
-        "core",
-        "api"
-      ],
+      "tags": ["core", "api"],
       "title": "Anonymous Web API read of the same table without $select"
     },
     {
@@ -223,10 +173,7 @@
       "query": {
         "$top": "1"
       },
-      "tags": [
-        "core",
-        "api"
-      ],
+      "tags": ["core", "api"],
       "title": "Web API read of a portal configuration table"
     },
     {
@@ -239,14 +186,9 @@
       },
       "discover": {
         "from": "portal",
-        "keys": [
-          "notEnabledEntitySet"
-        ]
+        "keys": ["notEnabledEntitySet"]
       },
-      "tags": [
-        "core",
-        "api"
-      ],
+      "tags": ["core", "api"],
       "title": "Web API read of a mapped table that is not enabled for the Web API"
     }
   ],

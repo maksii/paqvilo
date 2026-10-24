@@ -18,33 +18,41 @@
 // Assumptions, not confirmed against the platform: the rate direction (base = value / exchangerate), the rounding mode
 // (half away from zero), the 400 status for an unknown transactioncurrency on write (other lookup misses answer 404), and
 // the messages for a non-positive exchange rate and a currency binding that names no id.
-import { DataError } from "./data-error.mjs";
-import { fieldKind } from "./dataverse-values.mjs";
-import { isExactNumeric } from "./exact-numeric.mjs";
+import { DataError } from './data-error.mjs';
+import { fieldKind } from './dataverse-values.mjs';
+import { isExactNumeric } from './exact-numeric.mjs';
 
-const CURRENCY_TABLE = "transactioncurrency";
-const ORGANIZATION_TABLE = "organization";
-const NOT_FOUND_CODE = "0x80040217";
-const BIND = "transactioncurrencyid@odata.bind";
-const currencyBindings = data => Object.keys(data).filter(name => name.toLowerCase() === BIND);
-const OPERATIONS = ["CurrencyStamp", "BaseAmount", "RetrieveExchangeRate"];
+const CURRENCY_TABLE = 'transactioncurrency';
+const ORGANIZATION_TABLE = 'organization';
+const NOT_FOUND_CODE = '0x80040217';
+const BIND = 'transactioncurrencyid@odata.bind';
+const currencyBindings = (data) => Object.keys(data).filter((name) => name.toLowerCase() === BIND);
+const OPERATIONS = ['CurrencyStamp', 'BaseAmount', 'RetrieveExchangeRate'];
 
-const bare = (value) => String(value ?? "").replace(/[{}]/g, "").toLowerCase();
-const refId = (value) => (value !== null && typeof value === "object" ? value.id : value);
-const empty = (value) => value === null || value === undefined || value === "";
+const bare = (value) =>
+  String(value ?? '')
+    .replace(/[{}]/g, '')
+    .toLowerCase();
+const refId = (value) => (value !== null && typeof value === 'object' ? value.id : value);
+const empty = (value) => value === null || value === undefined || value === '';
 const isCount = (value) => !empty(value) && Number.isInteger(Number(value)) && Number(value) >= 0;
 
-const notFound = (id) => new DataError(`transactioncurrency With Id = ${id} Does Not Exist`, 400, "InvalidRequest", { id, innerCode: NOT_FOUND_CODE }); // status assumed (see header)
+const notFound = (id) =>
+  new DataError(`transactioncurrency With Id = ${id} Does Not Exist`, 400, 'InvalidRequest', {
+    id,
+    innerCode: NOT_FOUND_CODE,
+  }); // status assumed (see header)
 const bindId = (value) => {
-  const match = /\(([^()]+)\)\s*$/.exec(String(value ?? ""));
-  if (!match) throw new DataError(`The transactioncurrencyid binding '${value}' names no currency.`, 400, "InvalidRequest"); // native message text not known
+  const match = /\(([^()]+)\)\s*$/.exec(String(value ?? ''));
+  if (!match)
+    throw new DataError(`The transactioncurrencyid binding '${value}' names no currency.`, 400, 'InvalidRequest'); // native message text not known
   return bare(match[1]);
 };
 
 // Rounds half away from zero to the given number of decimal places.
 function roundTo(value, digits) {
   const factor = 10 ** digits;
-  return Number((Math.sign(value) * Math.round(Math.abs(value) * factor) / factor).toFixed(digits));
+  return Number(((Math.sign(value) * Math.round(Math.abs(value) * factor)) / factor).toFixed(digits));
 }
 
 const states = new WeakMap();
@@ -58,7 +66,7 @@ function report(state, entry) {
   const key = `${entry.code}\u0000${entry.table}`;
   if (state.seen.has(key)) return;
   state.seen.add(key);
-  const diagnostic = { severity: "warning", ...entry };
+  const diagnostic = { severity: 'warning', ...entry };
   state.diagnostics.push(diagnostic);
   state.diagnostic?.(diagnostic);
 }
@@ -67,14 +75,16 @@ function report(state, entry) {
 function currencyOfPayload(data) {
   const plain = refId(data.transactioncurrencyid);
   const bindings = currencyBindings(data);
-  if (bindings.length > 1) throw new DataError('The currency lookup has ambiguous navigation bindings.', 400, 'InvalidLookup');
+  if (bindings.length > 1)
+    throw new DataError('The currency lookup has ambiguous navigation bindings.', 400, 'InvalidLookup');
   const bound = data[bindings[0]];
   if (empty(plain) && empty(bound)) return null;
   if (bindings.length) delete data[bindings[0]];
   return empty(plain) ? bindId(bound) : bare(plain);
 }
 
-const currencyById = (api, id) => api.store.tableRows(CURRENCY_TABLE).find((row) => bare(row.transactioncurrencyid) === id) ?? null;
+const currencyById = (api, id) =>
+  api.store.tableRows(CURRENCY_TABLE).find((row) => bare(row.transactioncurrencyid) === id) ?? null;
 
 // The organization's base currency row, or null when there is none to stamp.
 function baseCurrencyOf(api) {
@@ -88,14 +98,20 @@ function baseCurrencyOf(api) {
 function rateOf(row, base) {
   if (base && bare(row.transactioncurrencyid) === bare(base.transactioncurrencyid)) return 1;
   const rate = Number(refId(row.exchangerate));
-  if (!Number.isFinite(rate) || rate <= 0) throw new DataError(`The exchange rate of currency '${row.isocurrencycode ?? row.transactioncurrencyid}' must be a positive number.`, 400, "InvalidRequest");
+  if (!Number.isFinite(rate) || rate <= 0)
+    throw new DataError(
+      `The exchange rate of currency '${row.isocurrencycode ?? row.transactioncurrencyid}' must be a positive number.`,
+      400,
+      'InvalidRequest',
+    );
   return rate;
 }
 
 // Money columns of a table: kind money, excluding the _base companions.
 function moneyColumnsOf(api, logical) {
-  return Object.entries(api.store.fieldDefinitions(logical, api.metadataFields))
-    .filter(([name, definition]) => fieldKind(definition) === "money" && !name.endsWith("_base"));
+  return Object.entries(api.store.fieldDefinitions(logical, api.metadataFields)).filter(
+    ([name, definition]) => fieldKind(definition) === 'money' && !name.endsWith('_base'),
+  );
 }
 
 // Stamps the currency, its exchange rate and each money column's base amount onto the payload (data).
@@ -109,7 +125,7 @@ function stamp(api, state, mapping, { operation: _operation, data, existing }) {
   const moneyGiven = money.some(([name]) => !empty(data[name]));
   if (explicit === null && !moneyGiven) return;
 
-  const held = existing ? bare(refId(existing.transactioncurrencyid)) : "";
+  const held = existing ? bare(refId(existing.transactioncurrencyid)) : '';
   const base = baseCurrencyOf(api);
   const id = explicit ?? (empty(held) ? null : held);
   let row;
@@ -118,7 +134,11 @@ function stamp(api, state, mapping, { operation: _operation, data, existing }) {
     if (!row) throw notFound(id);
   } else {
     if (!base) {
-      report(state, { code: "CURRENCY_BASE_MISSING", table: mapping.logicalName, message: `Table '${mapping.logicalName}' has money columns, but the organization has no base currency; no currency was stamped.` });
+      report(state, {
+        code: 'CURRENCY_BASE_MISSING',
+        table: mapping.logicalName,
+        message: `Table '${mapping.logicalName}' has money columns, but the organization has no base currency; no currency was stamped.`,
+      });
       return;
     }
     row = base;
@@ -138,7 +158,11 @@ function stamp(api, state, mapping, { operation: _operation, data, existing }) {
     // The shared payload validator owns invalid decimal values and their OData
     // error envelope. A derived amount must not replace that validation error.
     if (!Number.isFinite(amount)) continue;
-    const digits = isCount(row.currencyprecision) ? Number(row.currencyprecision) : isCount(definition.precision) ? Number(definition.precision) : 2;
+    const digits = isCount(row.currencyprecision)
+      ? Number(row.currencyprecision)
+      : isCount(definition.precision)
+        ? Number(definition.precision)
+        : 2;
     data[`${name}_base`] = roundTo(amount / rate, digits);
   }
 }
@@ -148,8 +172,8 @@ function install(api, { diagnostic } = {}) {
   const state = stateOf(api);
   state.diagnostic = diagnostic ?? api.diagnostic ?? null;
   api.currency = { diagnostics: () => [...state.diagnostics] };
-  api.recordHooks.add("beforeWrite", (c, mapping, info) => {
-    if (info.operation === "delete" || !info.data) return;
+  api.recordHooks.add('beforeWrite', (c, mapping, info) => {
+    if (info.operation === 'delete' || !info.data) return;
     stamp(api, state, mapping, info);
   });
 }
@@ -164,16 +188,16 @@ function reset(api) {
 /** Capability record. RetrieveExchangeRate executes in dataverse-predefined.mjs; listed here as the currency contract. */
 function describe() {
   return {
-    name: "dataverse-currency",
+    name: 'dataverse-currency',
     version: 1,
-    kind: "dataverse-extension",
-    level: "behaviour",
+    kind: 'dataverse-extension',
+    level: 'behaviour',
     operations: OPERATIONS,
-    requires: ["table:transactioncurrency"],
-    principal: "caller",
-    stateOwner: "none",
-    lifecycle: "per-request",
+    requires: ['table:transactioncurrency'],
+    principal: 'caller',
+    stateOwner: 'none',
+    lifecycle: 'per-request',
   };
 }
 
-export const EXTENSION = { name: "dataverse-currency", install, reset, describe };
+export const EXTENSION = { name: 'dataverse-currency', install, reset, describe };

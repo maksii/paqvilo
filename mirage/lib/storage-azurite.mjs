@@ -11,8 +11,11 @@ import { clockFunction, systemClock } from './runtime-clock.mjs';
 /** x-ms-version pinned for every request and the SAS `sv` (listed in "Previous Azure Storage service versions"). */
 export const BLOB_API_VERSION = '2021-08-06';
 // The documented Azurite well-known account (storage-connect-azurite): a public test credential, not a secret.
-const DEVELOPMENT = Object.freeze({ accountName: 'devstoreaccount1', blobEndpoint: 'http://127.0.0.1:10000/devstoreaccount1',
-  accountKey: 'Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==' });
+const DEVELOPMENT = Object.freeze({
+  accountName: 'devstoreaccount1',
+  blobEndpoint: 'http://127.0.0.1:10000/devstoreaccount1',
+  accountKey: 'Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==',
+});
 // ponytail: an upload is buffered one 4 MiB block at a time; raise BLOCK_SIZE (Put Block accepts up to 4000 MiB from 2019-12-12) if throughput matters.
 const BLOCK_SIZE = 4 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -31,13 +34,20 @@ const NOTES = Object.freeze([
   'No scale or performance guarantee; not for large numbers of connected clients.',
   'Default Blob endpoint http://127.0.0.1:10000/<account>; Paqvilo never starts Azurite (start: external).',
 ]);
-const descriptorOf = (id, level) => Object.freeze({
-  id, name: 'storage:azurite', kind: 'azurite', version: '1', level,
-  operations: Object.freeze([...STORAGE_OPERATIONS]),
-  requires: Object.freeze(['external-process:azurite', 'secret:connectionString']),
-  principal: 'connection', stateOwner: 'external', lifecycle: 'external-process',
-  fidelity: Object.freeze({ notes: NOTES }),
-});
+const descriptorOf = (id, level) =>
+  Object.freeze({
+    id,
+    name: 'storage:azurite',
+    kind: 'azurite',
+    version: '1',
+    level,
+    operations: Object.freeze([...STORAGE_OPERATIONS]),
+    requires: Object.freeze(['external-process:azurite', 'secret:connectionString']),
+    principal: 'connection',
+    stateOwner: 'external',
+    lifecycle: 'external-process',
+    fidelity: Object.freeze({ notes: NOTES }),
+  });
 /** The kind's capability record before configuration: contract. An instance with a usable connection string is behaviour. */
 export const azuriteDescriptor = descriptorOf('azurite', 'contract');
 
@@ -54,24 +64,44 @@ export function parseConnectionString(text, source = 'the connection string') {
   }
   const invalid = (message, diagnostic = 'PROVIDER_CONNECTION_STRING_INVALID') => ({ error: { message, diagnostic } });
   if (/^true$/i.test(parts.get('usedevelopmentstorage') ?? '')) {
-    if (parts.has('developmentstorageproxyuri')) return invalid(`DevelopmentStorageProxyUri in ${source} is not supported.`);
+    if (parts.has('developmentstorageproxyuri'))
+      return invalid(`DevelopmentStorageProxyUri in ${source} is not supported.`);
     return { ...DEVELOPMENT };
   }
   const blobEndpoint = parts.get('blobendpoint');
   if (!blobEndpoint) return invalid(`The connection string in ${source} names no BlobEndpoint.`);
   let url;
-  try { url = new URL(blobEndpoint); } catch { return invalid(`BlobEndpoint in ${source} is not a URL.`, 'PROVIDER_ENDPOINT_INVALID'); }
-  if (!isLoopbackUrl(url.href)) return invalid(`BlobEndpoint in ${source} is not loopback; live storage is refused.`, 'PROVIDER_NOT_LOOPBACK');
-  if (url.search || url.hash || url.username || url.password) return invalid(`BlobEndpoint in ${source} must not carry a query or credentials.`, 'PROVIDER_ENDPOINT_INVALID');
-  const accountName = parts.get('accountname'), accountKey = parts.get('accountkey');
-  if (!accountName || !/^[A-Za-z0-9-]{1,64}$/.test(accountName)) return invalid(`AccountName in ${source} is missing or invalid.`);
+  try {
+    url = new URL(blobEndpoint);
+  } catch {
+    return invalid(`BlobEndpoint in ${source} is not a URL.`, 'PROVIDER_ENDPOINT_INVALID');
+  }
+  if (!isLoopbackUrl(url.href))
+    return invalid(`BlobEndpoint in ${source} is not loopback; live storage is refused.`, 'PROVIDER_NOT_LOOPBACK');
+  if (url.search || url.hash || url.username || url.password)
+    return invalid(`BlobEndpoint in ${source} must not carry a query or credentials.`, 'PROVIDER_ENDPOINT_INVALID');
+  const accountName = parts.get('accountname'),
+    accountKey = parts.get('accountkey');
+  if (!accountName || !/^[A-Za-z0-9-]{1,64}$/.test(accountName))
+    return invalid(`AccountName in ${source} is missing or invalid.`);
   if (!accountKey || !BASE64.test(accountKey)) return invalid(`AccountKey in ${source} is missing or not base64.`);
   return { accountName, accountKey, blobEndpoint: url.href.replace(/\/+$/, '') };
 }
 
 // Shared Key (Blob, 2009-09-19 and later): the standard headers in this order, values only, one line each.
-const SIGNED_HEADERS = ['content-encoding', 'content-language', 'content-length', 'content-md5', 'content-type', 'date',
-  'if-modified-since', 'if-match', 'if-none-match', 'if-unmodified-since', 'range'];
+const SIGNED_HEADERS = [
+  'content-encoding',
+  'content-language',
+  'content-length',
+  'content-md5',
+  'content-type',
+  'date',
+  'if-modified-since',
+  'if-match',
+  'if-none-match',
+  'if-unmodified-since',
+  'range',
+];
 /**
  * The Shared Key StringToSign of a Blob request (authorize-with-shared-key): VERB, the standard header values (Content-Length
  * empty when zero, 2015-02-21 and later), CanonicalizedHeaders (x-ms-* lower-cased, sorted, linear whitespace folded) and
@@ -80,25 +110,43 @@ const SIGNED_HEADERS = ['content-encoding', 'content-language', 'content-length'
  */
 export function sharedKeyStringToSign({ method, url, headers = {}, accountName }) {
   const h = new Headers(headers);
-  const standard = SIGNED_HEADERS.map(name => { const value = h.get(name) ?? ''; return name === 'content-length' && value === '0' ? '' : value; });
+  const standard = SIGNED_HEADERS.map((name) => {
+    const value = h.get(name) ?? '';
+    return name === 'content-length' && value === '0' ? '' : value;
+  });
   // Array.prototype.sort compares UTF-16 code units: ordinal (ASCII) order for header names, as the spec's lexicographic sort.
   // The service's comparer for names with '_' or '-' next to letters (ordinal vs culture order) is not known.
-  const canonicalHeaders = [...h.keys()].filter(name => name.startsWith('x-ms-')).sort()
-    .map(name => `${name}:${h.get(name).replace(/\s+/g, ' ').trim()}\n`).join('');
+  const canonicalHeaders = [...h.keys()]
+    .filter((name) => name.startsWith('x-ms-'))
+    .sort()
+    .map((name) => `${name}:${h.get(name).replace(/\s+/g, ' ').trim()}\n`)
+    .join('');
   const target = new URL(url);
   const params = new Map();
-  for (const [name, value] of target.searchParams) params.set(name.toLowerCase(), [...(params.get(name.toLowerCase()) ?? []), value]);
-  const query = [...params.keys()].sort().map(name => `\n${name}:${params.get(name).sort().join(',')}`).join('');
+  for (const [name, value] of target.searchParams)
+    params.set(name.toLowerCase(), [...(params.get(name.toLowerCase()) ?? []), value]);
+  const query = [...params.keys()]
+    .sort()
+    .map((name) => `\n${name}:${params.get(name).sort().join(',')}`)
+    .join('');
   return `${[method.toUpperCase(), ...standard].join('\n')}\n${canonicalHeaders}/${accountName}${target.pathname}${query}`;
 }
-const hmac = (accountKey, text) => createHmac('sha256', Buffer.from(accountKey, 'base64')).update(text, 'utf8').digest('base64');
+const hmac = (accountKey, text) =>
+  createHmac('sha256', Buffer.from(accountKey, 'base64')).update(text, 'utf8').digest('base64');
 
-const decodeXml = text => text.replace(/&(lt|gt|quot|apos|amp);/g, (_, name) => ({ lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' })[name]);
-const xmlValue = (xml, tag) => { const match = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml); return match ? decodeXml(match[1]) : null; };
-const iso = text => { const time = Date.parse(text ?? ''); return Number.isFinite(time) ? new Date(time).toISOString() : null; };
+const decodeXml = (text) =>
+  text.replace(/&(lt|gt|quot|apos|amp);/g, (_, name) => ({ lt: '<', gt: '>', quot: '"', apos: "'", amp: '&' })[name]);
+const xmlValue = (xml, tag) => {
+  const match = new RegExp(`<${tag}>([^<]*)</${tag}>`).exec(xml);
+  return match ? decodeXml(match[1]) : null;
+};
+const iso = (text) => {
+  const time = Date.parse(text ?? '');
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+};
 // List Blobs may return <Etag> without quotes while the ETag header is quoted; quoting both keeps them comparable.
-const quoted = etag => (etag && !etag.startsWith('"') ? `"${etag}"` : etag);
-const sasTime = time => new Date(time).toISOString().replace(/\.\d{3}Z$/, 'Z');
+const quoted = (etag) => (etag && !etag.startsWith('"') ? `"${etag}"` : etag);
+const sasTime = (time) => new Date(time).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 /**
  * createAzuriteStorage({ id, settings: { connectionString: 'env:NAME', container }, env, clock }) → storage provider.
@@ -111,16 +159,26 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
   const container = settings.container ?? 'paqvilo';
   const variable = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(settings.connectionString ?? '')?.[1] ?? null;
   const raw = variable ? env?.[variable] : null;
-  const config = !variable ? { error: { message: `Storage provider '${id}' needs connectionString env:NAME.`, diagnostic: 'PROVIDER_CONNECTION_STRING_INVALID' } }
-    : !raw ? { error: { message: `Environment variable ${variable} is not set.`, diagnostic: 'PROVIDER_SECRET_MISSING' } }
+  const config = !variable
+    ? {
+        error: {
+          message: `Storage provider '${id}' needs connectionString env:NAME.`,
+          diagnostic: 'PROVIDER_CONNECTION_STRING_INVALID',
+        },
+      }
+    : !raw
+      ? { error: { message: `Environment variable ${variable} is not set.`, diagnostic: 'PROVIDER_SECRET_MISSING' } }
       : parseConnectionString(raw, variable);
   const { accountName, accountKey, blobEndpoint } = config.error ? {} : config;
   const shown = blobEndpoint ?? '';
   // Every request is bounded: providers.storage.<id>.timeoutMs (default 30 s) until the response headers arrive.
   const requestTimeoutMs = settings.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  let closed = false, containerReady = null;
+  let closed = false,
+    containerReady = null;
   // Last observed endpoint state for the host graph (health()): null until a request or preflight ran.
-  let health = config.error ? { ready: false, reason: config.error.message } : { ready: null, reason: 'Not contacted yet.' };
+  let health = config.error
+    ? { ready: false, reason: config.error.message }
+    : { ready: null, reason: 'Not contacted yet.' };
 
   const fail = (code, message, diagnostic) => new ProviderError(code, message, { provider: id, diagnostic });
   // The endpoint of a usable connection string; every URL is built through it, so an unusable one answers Unavailable first.
@@ -142,23 +200,53 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
     const signed = { ...all, 'content-length': body?.length ? String(body.length) : '' };
     all.authorization = `SharedKey ${accountName}:${hmac(accountKey, sharedKeyStringToSign({ method, url, headers: signed, accountName }))}`;
     // The timer bounds the wait for response headers only, so a long streamed download is not cut off.
-    const limit = timeoutMs ?? requestTimeoutMs, timer = new AbortController();
-    const timeout = setTimeout(() => timer.abort(new DOMException(`no answer within ${limit} ms`, 'TimeoutError')), limit);
+    const limit = timeoutMs ?? requestTimeoutMs,
+      timer = new AbortController();
+    const timeout = setTimeout(
+      () => timer.abort(new DOMException(`no answer within ${limit} ms`, 'TimeoutError')),
+      limit,
+    );
     try {
-      const response = await loopbackFetch(url, { method, headers: all, body, signal: signal ? AbortSignal.any([signal, timer.signal]) : timer.signal });
-      health = response.status === 401 || response.status === 403
-        ? { ready: false, reason: `Azurite refused the account key (${response.status} ${response.headers.get('x-ms-error-code') ?? 'no error code'}).` }
-        : { ready: true, reason: null };
+      const response = await loopbackFetch(url, {
+        method,
+        headers: all,
+        body,
+        signal: signal ? AbortSignal.any([signal, timer.signal]) : timer.signal,
+      });
+      health =
+        response.status === 401 || response.status === 403
+          ? {
+              ready: false,
+              reason: `Azurite refused the account key (${response.status} ${response.headers.get('x-ms-error-code') ?? 'no error code'}).`,
+            }
+          : { ready: true, reason: null };
       return response;
     } catch (error) {
       if (signal?.aborted) throw error;
-      const refused = error?.code === 'InvalidRequest'
-        ? fail('Unavailable', `BlobEndpoint in ${variable} does not resolve to loopback; live storage is refused.`, 'PROVIDER_NOT_LOOPBACK')
-        : Object.assign(fail('Unavailable', `Azurite is not reachable at ${shown} (${timer.signal.aborted ? `no answer within ${limit} ms`
-          : (error?.cause?.code ?? error?.code ?? 'connection failed')}). ${START_HINT}`, 'PROVIDER_UNREACHABLE'), { cause: error });
+      const refused =
+        error?.code === 'InvalidRequest'
+          ? fail(
+              'Unavailable',
+              `BlobEndpoint in ${variable} does not resolve to loopback; live storage is refused.`,
+              'PROVIDER_NOT_LOOPBACK',
+            )
+          : Object.assign(
+              fail(
+                'Unavailable',
+                `Azurite is not reachable at ${shown} (${
+                  timer.signal.aborted
+                    ? `no answer within ${limit} ms`
+                    : (error?.cause?.code ?? error?.code ?? 'connection failed')
+                }). ${START_HINT}`,
+                'PROVIDER_UNREACHABLE',
+              ),
+              { cause: error },
+            );
       health = { ready: false, reason: refused.message };
       throw refused;
-    } finally { clearTimeout(timeout); }
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   // Azure error code (x-ms-error-code, 2017-07-29 and later, else the <Code> element) → ProviderError. One mapping for every operation.
@@ -170,7 +258,8 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
     const status = response.status;
     // Learn: an unmet If-None-Match on a write is 412; a create-only write (If-None-Match: *) is the contract's Conflict.
     // Azurite may answer 412 ConditionNotMet or 409 BlobAlreadyExists for Put Blob with If-None-Match: *; both are Conflict.
-    if ((status === 412 || azure === 'BlobAlreadyExists') && ifNoneMatch === '*') return fail('Conflict', message, azure);
+    if ((status === 412 || azure === 'BlobAlreadyExists') && ifNoneMatch === '*')
+      return fail('Conflict', message, azure);
     if (status === 412) return fail('PreconditionFailed', message, azure);
     // A conditional write on a missing blob fails its condition (the contract), whatever 404 the service gives.
     if (status === 404) return fail(ifMatch !== undefined ? 'PreconditionFailed' : 'NotFound', message, azure);
@@ -179,18 +268,27 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
     if (status === 401 || status === 403) return fail('Unauthorized', message, azure);
     if (status === 413) return fail('TooLarge', message, azure);
     // Learn (Put Block List): a listed block that was not staged is 400 InvalidBlockList.
-    if (status === 400 && blockList && azure === 'InvalidBlockList') return fail('NotFound', `${message} A committed block was not staged for this key.`, azure);
+    if (status === 400 && blockList && azure === 'InvalidBlockList')
+      return fail('NotFound', `${message} A committed block was not staged for this key.`, azure);
     if (status === 400) return fail('Unsupported', message, azure);
     return fail('Unavailable', message, azure);
   }
 
-  const ensureContainer = () => (containerReady ??= (async () => {
-    const response = await send('PUT', `${endpoint()}/${container}?restype=container`);
-    await response.body?.cancel().catch(() => {});
-    if (response.status !== 201 && response.headers.get('x-ms-error-code') !== 'ContainerAlreadyExists') throw await failure(response, 'Create Container');
-  })().catch(error => { containerReady = null; throw error; }));
+  const ensureContainer = () =>
+    (containerReady ??= (async () => {
+      const response = await send('PUT', `${endpoint()}/${container}?restype=container`);
+      await response.body?.cancel().catch(() => {});
+      if (response.status !== 201 && response.headers.get('x-ms-error-code') !== 'ContainerAlreadyExists')
+        throw await failure(response, 'Create Container');
+    })().catch((error) => {
+      containerReady = null;
+      throw error;
+    }));
 
-  const conditions = ({ ifMatch, ifNoneMatch } = {}) => ({ ...(ifMatch !== undefined ? { 'if-match': ifMatch } : {}), ...(ifNoneMatch !== undefined ? { 'if-none-match': ifNoneMatch } : {}) });
+  const conditions = ({ ifMatch, ifNoneMatch } = {}) => ({
+    ...(ifMatch !== undefined ? { 'if-match': ifMatch } : {}),
+    ...(ifNoneMatch !== undefined ? { 'if-none-match': ifNoneMatch } : {}),
+  });
   const metadataHeaders = (metadata = {}) => {
     const headers = {};
     for (const [name, value] of Object.entries(metadata ?? {})) {
@@ -201,15 +299,23 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
     return headers;
   };
   const meta = (key, headers, size = Number(headers.get('content-length') ?? 0)) => ({
-    key, size, etag: quoted(headers.get('etag')), lastModified: iso(headers.get('last-modified')),
+    key,
+    size,
+    etag: quoted(headers.get('etag')),
+    lastModified: iso(headers.get('last-modified')),
     contentType: headers.get('content-type') ?? 'application/octet-stream',
-    metadata: Object.fromEntries([...headers].filter(([name]) => name.startsWith('x-ms-meta-')).map(([name, value]) => [name.slice(10), value])),
+    metadata: Object.fromEntries(
+      [...headers].filter(([name]) => name.startsWith('x-ms-meta-')).map(([name, value]) => [name.slice(10), value]),
+    ),
   });
   // Block ids: base64 of a SHA-256 so every id of a blob has the same length (Learn: Put Block).
-  const blockIdOf = text => createHash('sha256').update(text).digest('base64');
-  const chunksOf = body => {
+  const blockIdOf = (text) => createHash('sha256').update(text).digest('base64');
+  const chunksOf = (body) => {
     const chunks = Buffer.isBuffer(body) || body instanceof Uint8Array || typeof body === 'string' ? [body] : body;
-    if (!chunks || (typeof chunks[Symbol.asyncIterator] !== 'function' && typeof chunks[Symbol.iterator] !== 'function'))
+    if (
+      !chunks ||
+      (typeof chunks[Symbol.asyncIterator] !== 'function' && typeof chunks[Symbol.iterator] !== 'function')
+    )
       throw fail('InvalidKey', 'Storage body must be a Buffer or an AsyncIterable of Buffers.');
     return chunks;
   };
@@ -228,13 +334,26 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
     return response;
   };
   const putBlock = (key, blockId, data, signal) =>
-    write(() => send('PUT', blobUrl(key, { comp: 'block', blockid: blockId }), { body: data, signal }), [201], 'Put Block');
+    write(
+      () => send('PUT', blobUrl(key, { comp: 'block', blockid: blockId }), { body: data, signal }),
+      [201],
+      'Put Block',
+    );
   const putBlockList = async (key, blockIds, options) => {
-    const xml = `<?xml version="1.0" encoding="utf-8"?><BlockList>${blockIds.map(blockId => `<Latest>${blockId}</Latest>`).join('')}</BlockList>`;
-    const headers = { 'content-type': 'application/xml', 'x-ms-blob-content-type': options.contentType ?? 'application/octet-stream',
-      ...metadataHeaders(options.metadata), ...conditions(options) };
-    await write(() => send('PUT', blobUrl(key, { comp: 'blocklist' }), { headers, body: Buffer.from(xml), signal: options.signal }), [201], 'Put Block List',
-      { ...options, blockList: true });
+    const xml = `<?xml version="1.0" encoding="utf-8"?><BlockList>${blockIds.map((blockId) => `<Latest>${blockId}</Latest>`).join('')}</BlockList>`;
+    const headers = {
+      'content-type': 'application/xml',
+      'x-ms-blob-content-type': options.contentType ?? 'application/octet-stream',
+      ...metadataHeaders(options.metadata),
+      ...conditions(options),
+    };
+    await write(
+      () =>
+        send('PUT', blobUrl(key, { comp: 'blocklist' }), { headers, body: Buffer.from(xml), signal: options.signal }),
+      [201],
+      'Put Block List',
+      { ...options, blockList: true },
+    );
   };
 
   async function head(key) {
@@ -253,15 +372,20 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       metadataHeaders(options.metadata);
       await ensureContainer();
       if (options.blockId !== undefined) {
-        if (typeof options.blockId !== 'string' || !options.blockId || options.blockId.length > 1024) throw fail('InvalidKey', 'Block id must be a non-empty string up to 1024 characters.');
+        if (typeof options.blockId !== 'string' || !options.blockId || options.blockId.length > 1024)
+          throw fail('InvalidKey', 'Block id must be a non-empty string up to 1024 characters.');
         const parts = [];
         for await (const part of chunks) parts.push(Buffer.from(part)); // copies: a producer may reuse its buffer
         const data = Buffer.concat(parts);
         await putBlock(key, blockIdOf(`block:${options.blockId}`), data, options.signal);
         return { key, blockId: options.blockId, size: data.length };
       }
-      const hash = createHash('sha256'), staged = [], upload = randomUUID();
-      let pending = [], pendingBytes = 0, size = 0;
+      const hash = createHash('sha256'),
+        staged = [],
+        upload = randomUUID();
+      let pending = [],
+        pendingBytes = 0,
+        size = 0;
       // Stages exactly BLOCK_SIZE bytes (the remainder stays pending); `all` stages whatever is left as the last block.
       const stage = async (all = false) => {
         const data = Buffer.concat(pending);
@@ -275,17 +399,36 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       for await (const part of chunks) {
         options.signal?.throwIfAborted();
         const chunk = Buffer.from(part); // copies: a producer may reuse its buffer
-        hash.update(chunk); size += chunk.length;
-        pending.push(chunk); pendingBytes += chunk.length;
+        hash.update(chunk);
+        size += chunk.length;
+        pending.push(chunk);
+        pendingBytes += chunk.length;
         while (pendingBytes > BLOCK_SIZE) await stage();
       }
       const contentType = options.contentType ?? 'application/octet-stream';
       if (!staged.length) {
-        const headers = { 'x-ms-blob-type': 'BlockBlob', 'content-type': contentType, ...metadataHeaders(options.metadata), ...conditions(options) };
+        const headers = {
+          'x-ms-blob-type': 'BlockBlob',
+          'content-type': contentType,
+          ...metadataHeaders(options.metadata),
+          ...conditions(options),
+        };
         const data = Buffer.concat(pending);
-        const response = await write(() => send('PUT', blobUrl(key), { headers, body: data, signal: options.signal }), [201], 'Put Blob', options);
-        return { key, size, sha256: hash.digest('hex'), etag: quoted(response.headers.get('etag')), lastModified: iso(response.headers.get('last-modified')),
-          contentType, metadata: { ...(options.metadata ?? {}) } };
+        const response = await write(
+          () => send('PUT', blobUrl(key), { headers, body: data, signal: options.signal }),
+          [201],
+          'Put Blob',
+          options,
+        );
+        return {
+          key,
+          size,
+          sha256: hash.digest('hex'),
+          etag: quoted(response.headers.get('etag')),
+          lastModified: iso(response.headers.get('last-modified')),
+          contentType,
+          metadata: { ...(options.metadata ?? {}) },
+        };
       }
       if (pendingBytes) await stage(true);
       await putBlockList(key, staged, { ...options, contentType });
@@ -294,10 +437,18 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
 
     async commit(key, blockIds, options = {}) {
       key = validateKey(key, id);
-      if (!Array.isArray(blockIds) || !blockIds.length || blockIds.some(blockId => typeof blockId !== 'string' || !blockId))
+      if (
+        !Array.isArray(blockIds) ||
+        !blockIds.length ||
+        blockIds.some((blockId) => typeof blockId !== 'string' || !blockId)
+      )
         throw fail('InvalidKey', 'commit needs a non-empty block id list.');
       await ensureContainer();
-      await putBlockList(key, blockIds.map(blockId => blockIdOf(`block:${blockId}`)), options);
+      await putBlockList(
+        key,
+        blockIds.map((blockId) => blockIdOf(`block:${blockId}`)),
+        options,
+      );
       const result = await head(key);
       if (!result) throw fail('NotFound', 'Committed blob is not readable.');
       return result;
@@ -307,7 +458,8 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       key = validateKey(key, id);
       const headers = ifNoneMatch !== undefined ? { 'if-none-match': ifNoneMatch } : {};
       if (range) {
-        const start = range.start ?? 0, end = range.end;
+        const start = range.start ?? 0,
+          end = range.end;
         if (!Number.isInteger(start) || start < 0 || (end !== undefined && (!Number.isInteger(end) || end < start)))
           throw fail('InvalidRange', 'Requested range is not satisfiable.');
         headers['x-ms-range'] = `bytes=${start}-${end ?? ''}`;
@@ -324,25 +476,46 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') ?? '');
       const result = meta(key, response.headers, match ? Number(match[3]) : contentLength);
       const body = response.body ?? (async function* () {})();
-      return { ...result, body, range: range ? { start: Number(match?.[1] ?? 0), end: Number(match?.[2] ?? contentLength - 1) } : null, contentLength };
+      return {
+        ...result,
+        body,
+        range: range ? { start: Number(match?.[1] ?? 0), end: Number(match?.[2] ?? contentLength - 1) } : null,
+        contentLength,
+      };
     },
 
-    head(key) { return head(validateKey(key, id)); },
+    head(key) {
+      return head(validateKey(key, id));
+    },
 
     async delete(key, { ifMatch } = {}) {
       key = validateKey(key, id);
       const response = await send('DELETE', blobUrl(key), { headers: conditions({ ifMatch }) });
-      if (response.status === 202) { await response.body?.cancel().catch(() => {}); return true; }
-      if (response.status === 404 && ifMatch === undefined) { await response.body?.cancel().catch(() => {}); return false; }
+      if (response.status === 202) {
+        await response.body?.cancel().catch(() => {});
+        return true;
+      }
+      if (response.status === 404 && ifMatch === undefined) {
+        await response.body?.cancel().catch(() => {});
+        return false;
+      }
       throw await failure(response, 'Delete Blob', { ifMatch });
     },
 
     async list(prefix = '', { pageSize = 1000, continuation } = {}) {
       if (prefix) prefix = validateKey(prefix, id, { prefix: true });
-      if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 5000) throw fail('InvalidKey', 'pageSize must be an integer from 1 to 5000.');
-      if (continuation != null && (typeof continuation !== 'string' || continuation.length > 1024)) throw fail('InvalidKey', 'Continuation token is invalid.');
+      if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 5000)
+        throw fail('InvalidKey', 'pageSize must be an integer from 1 to 5000.');
+      if (continuation != null && (typeof continuation !== 'string' || continuation.length > 1024))
+        throw fail('InvalidKey', 'Continuation token is invalid.');
       const url = new URL(`${endpoint()}/${container}`);
-      for (const [name, value] of Object.entries({ restype: 'container', comp: 'list', prefix, maxresults: String(pageSize), ...(continuation ? { marker: continuation } : {}) }))
+      for (const [name, value] of Object.entries({
+        restype: 'container',
+        comp: 'list',
+        prefix,
+        maxresults: String(pageSize),
+        ...(continuation ? { marker: continuation } : {}),
+      }))
         if (value !== '') url.searchParams.set(name, value);
       const response = await send('GET', url.href);
       if (response.status === 404 && response.headers.get('x-ms-error-code') === 'ContainerNotFound') {
@@ -352,8 +525,10 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       if (response.status !== 200) throw await failure(response, 'List Blobs');
       const xml = await response.text();
       const items = [...xml.matchAll(/<Blob>([\s\S]*?)<\/Blob>/g)].map(([, blob]) => ({
-        key: xmlValue(blob, 'Name'), size: Number(xmlValue(blob, 'Content-Length') ?? 0),
-        etag: quoted(xmlValue(blob, 'Etag')), lastModified: iso(xmlValue(blob, 'Last-Modified')),
+        key: xmlValue(blob, 'Name'),
+        size: Number(xmlValue(blob, 'Content-Length') ?? 0),
+        etag: quoted(xmlValue(blob, 'Etag')),
+        lastModified: iso(xmlValue(blob, 'Last-Modified')),
       }));
       return { items, continuation: xmlValue(xml, 'NextMarker') || null };
     },
@@ -372,18 +547,32 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       const denied = () => fail('Unauthorized', 'Shared access signature is invalid or expired.');
       if (config.error) throw denied();
       let parsed;
-      try { parsed = new URL(url); } catch { throw denied(); }
+      try {
+        parsed = new URL(url);
+      } catch {
+        throw denied();
+      }
       const base = `${blobEndpoint}/${container}/`;
       if (!`${parsed.origin}${parsed.pathname}`.startsWith(base)) throw denied();
       let key;
-      try { key = validateKey(`${parsed.origin}${parsed.pathname}`.slice(base.length).split('/').map(decodeURIComponent).join('/'), id); } catch { throw denied(); }
-      const q = name => parsed.searchParams.get(name) ?? '';
+      try {
+        key = validateKey(
+          `${parsed.origin}${parsed.pathname}`.slice(base.length).split('/').map(decodeURIComponent).join('/'),
+          id,
+        );
+      } catch {
+        throw denied();
+      }
+      const q = (name) => parsed.searchParams.get(name) ?? '';
       if (q('sv') !== BLOB_API_VERSION || q('sr') !== 'b') throw denied();
-      const expected = Buffer.from(hmac(accountKey, serviceSasStringToSign({ sp: q('sp'), se: q('se'), accountName, container, key }))), given = Buffer.from(q('sig'));
+      const expected = Buffer.from(
+          hmac(accountKey, serviceSasStringToSign({ sp: q('sp'), se: q('se'), accountName, container, key })),
+        ),
+        given = Buffer.from(q('sig'));
       if (expected.length !== given.length || !timingSafeEqual(expected, given)) throw denied();
       const expiry = Date.parse(q('se'));
       if (!Number.isFinite(expiry) || expiry <= now()) throw denied();
-      if (permission && ![...permission].every(p => q('sp').includes(p))) throw denied();
+      if (permission && ![...permission].every((p) => q('sp').includes(p))) throw denied();
       return { key, permission: q('sp'), expiresOn: q('se') };
     },
 
@@ -397,20 +586,32 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
           const response = await send('GET', `${endpoint()}?comp=list&maxresults=1`, { timeoutMs: 2000 });
           if (response.status === 200) {
             if ((await response.text()).includes('<EnumerationResults')) return { ready: true };
-            return { ready: false, reason: `The process at ${shown} answered List Containers without EnumerationResults; it is not a Blob endpoint.` };
+            return {
+              ready: false,
+              reason: `The process at ${shown} answered List Containers without EnumerationResults; it is not a Blob endpoint.`,
+            };
           }
           await response.body?.cancel().catch(() => {});
-          return { ready: false, reason: `Azurite refused List Containers at ${shown} (${response.status} ${response.headers.get('x-ms-error-code') ?? 'no error code'}).` };
-        } catch (error) { return { ready: false, reason: error.message }; }
+          return {
+            ready: false,
+            reason: `Azurite refused List Containers at ${shown} (${response.status} ${response.headers.get('x-ms-error-code') ?? 'no error code'}).`,
+          };
+        } catch (error) {
+          return { ready: false, reason: error.message };
+        }
       })();
       health = { ready: result.ready, reason: result.reason ?? null };
       return result;
     },
 
     /** Last observed endpoint state { ready: true | false | null (not contacted yet), reason } for the host graph. Never the key. */
-    health() { return closed ? { ready: false, reason: 'The provider is closed.' } : { ...health }; },
+    health() {
+      return closed ? { ready: false, reason: 'The provider is closed.' } : { ...health };
+    },
 
-    async close() { closed = true; },
+    async close() {
+      closed = true;
+    },
   };
   return provider;
 }
@@ -424,18 +625,43 @@ export const create = createAzuriteStorage;
  * The 2020-12-06 field list is inferred from Learn's section headings and the user delegation SAS layout; Azurite's
  * acceptance of these SAS URLs is not verified.
  */
-export function serviceSasStringToSign({ sp, st = '', se, accountName, container, key, sv = BLOB_API_VERSION, sr = 'b' }) {
-  return [sp, st, se, `/blob/${accountName}/${container}/${key}`, '', '', '', sv, sr, '', '', '', '', '', '', ''].join('\n');
+export function serviceSasStringToSign({
+  sp,
+  st = '',
+  se,
+  accountName,
+  container,
+  key,
+  sv = BLOB_API_VERSION,
+  sr = 'b',
+}) {
+  return [sp, st, se, `/blob/${accountName}/${container}/${key}`, '', '', '', sv, sr, '', '', '', '', '', '', ''].join(
+    '\n',
+  );
 }
 
 /** Loopback-only reachability probe of a Blob endpoint (no authorization). Any HTTP answer means the process is running. Never throws. */
 export async function preflight({ blobEndpoint, timeoutMs = 2000, source = 'the connection string' } = {}) {
   let url;
-  try { url = new URL(blobEndpoint); } catch { return { reachable: false, status: null, message: 'Blob endpoint is not a URL.', diagnostic: 'PROVIDER_ENDPOINT_INVALID' }; }
+  try {
+    url = new URL(blobEndpoint);
+  } catch {
+    return {
+      reachable: false,
+      status: null,
+      message: 'Blob endpoint is not a URL.',
+      diagnostic: 'PROVIDER_ENDPOINT_INVALID',
+    };
+  }
   const shown = `${url.protocol}//${url.host}${url.pathname}`; // never the query (it may carry a SAS)
   if (!isLoopbackUrl(url.href))
     // The endpoint comes from a secret connection string: the message names where it is configured, never its host.
-    return { reachable: false, status: null, message: `BlobEndpoint in ${source} is not loopback; live storage is refused.`, diagnostic: 'PROVIDER_NOT_LOOPBACK' };
+    return {
+      reachable: false,
+      status: null,
+      message: `BlobEndpoint in ${source} is not loopback; live storage is refused.`,
+      diagnostic: 'PROVIDER_NOT_LOOPBACK',
+    };
   url.search = '';
   url.searchParams.set('restype', 'service');
   url.searchParams.set('comp', 'properties');
@@ -444,7 +670,15 @@ export async function preflight({ blobEndpoint, timeoutMs = 2000, source = 'the 
     await response.body?.cancel();
     return { reachable: true, status: response.status, message: `Azurite answered ${response.status} at ${shown}.` };
   } catch (error) {
-    const reason = error?.name === 'TimeoutError' ? `no answer within ${timeoutMs} ms` : (error?.cause?.code ?? error?.code ?? 'connection failed');
-    return { reachable: false, status: null, message: `Azurite is not reachable at ${shown} (${reason}). ${START_HINT}`, diagnostic: 'PROVIDER_UNREACHABLE' };
+    const reason =
+      error?.name === 'TimeoutError'
+        ? `no answer within ${timeoutMs} ms`
+        : (error?.cause?.code ?? error?.code ?? 'connection failed');
+    return {
+      reachable: false,
+      status: null,
+      message: `Azurite is not reachable at ${shown} (${reason}). ${START_HINT}`,
+      diagnostic: 'PROVIDER_UNREACHABLE',
+    };
   }
 }

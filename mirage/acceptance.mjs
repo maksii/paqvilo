@@ -1,87 +1,63 @@
-import fs from "node:fs/promises";
+import fs from 'node:fs/promises';
 import { simulatorBackgroundRequest } from './lib/simulator-background-requests.mjs';
 import { cancelNavigationRequests } from './lib/navigation-cancellations.mjs';
 import { observeDocumentCommits } from './lib/document-commits.mjs';
 import { navigationCommitBudget } from './lib/navigation-budget.mjs';
-import net from "node:net";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { createCapabilityRegistry } from "./lib/capability-registry.mjs";
-import { chromium } from "playwright-core";
-import { editRichText, assertRichText } from "./lib/richtext-actions.mjs";
-import {
-  reconcileSupersededRead,
-
-  correlateNetworkConsole,
-} from "./lib/request-evidence.mjs";
-import { auditQuery } from "./lib/audit-log.mjs";
+import net from 'node:net';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
+import { createCapabilityRegistry } from './lib/capability-registry.mjs';
+import { chromium } from 'playwright-core';
+import { editRichText, assertRichText } from './lib/richtext-actions.mjs';
+import { reconcileSupersededRead, correlateNetworkConsole } from './lib/request-evidence.mjs';
+import { auditQuery } from './lib/audit-log.mjs';
 import {
   awaitWritesBeforeDocument,
   DOCUMENT_REQUEST_PATTERN,
   awaitNetworkQuiet,
   frameState,
-} from "./lib/navigation-settle.mjs";
-import { classifyNativeNetworkFailures } from "./lib/native-network-baseline.mjs";
-import {
-  observeReadAborts,
-  reconcileIntentionalReadAbort,
-} from "./lib/intentional-abort.mjs";
+} from './lib/navigation-settle.mjs';
+import { classifyNativeNetworkFailures } from './lib/native-network-baseline.mjs';
+import { observeReadAborts, reconcileIntentionalReadAbort } from './lib/intentional-abort.mjs';
 
 const safeUrl = (value) => {
   try {
     const url = new URL(value);
     return url.origin + url.pathname;
   } catch {
-    return "<invalid URL>";
+    return '<invalid URL>';
   }
 };
 const failureUrl = (value) => {
   try {
     const url = new URL(value);
     const query = new URLSearchParams(auditQuery(url.searchParams));
-    return (
-      url.origin + url.pathname + (url.search ? "?" + query.toString() : "")
-    );
+    return url.origin + url.pathname + (url.search ? '?' + query.toString() : '');
   } catch {
-    return "<invalid URL>";
+    return '<invalid URL>';
   }
 };
 const safeMessage = (value) =>
-  String(value ?? "")
-    .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(
-      /((?:access_token|id_token|password|secret|authorization|cookie)\s*[=:]\s*)[^\s&]+/gi,
-      "$1[redacted]",
-    )
+  String(value ?? '')
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/((?:access_token|id_token|password|secret|authorization|cookie)\s*[=:]\s*)[^\s&]+/gi, '$1[redacted]')
     .replace(/https?:\/\/[^\s)]+/g, (url) => safeUrl(url));
 const LOOPBACK_HOSTS = Object.freeze(['127.0.0.1', 'localhost', '[::1]']);
 const loopback = (value) => {
   const url = new URL(value);
-  if (
-    !LOOPBACK_HOSTS.includes(url.hostname) ||
-    url.username ||
-    url.password
-  )
-    throw new Error(
-      "Local simulator and browser debugging addresses must use loopback without credentials.",
-    );
+  if (!LOOPBACK_HOSTS.includes(url.hostname) || url.username || url.password)
+    throw new Error('Local simulator and browser debugging addresses must use loopback without credentials.');
   return url;
 };
 const expand = (value, variables) =>
   Array.isArray(value)
     ? value.map((item) => expand(item, variables))
-    : value && typeof value === "object"
-      ? Object.fromEntries(
-          Object.entries(value).map(([key, item]) => [
-            key,
-            expand(item, variables),
-          ]),
-        )
-      : typeof value === "string"
+    : value && typeof value === 'object'
+      ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, expand(item, variables)]))
+      : typeof value === 'string'
         ? value.replace(/\{\{([\w]+)\}\}/g, (_all, name) => {
-            if (variables[name] === undefined)
-              throw new Error(`Unknown flow variable ${name}`);
+            if (variables[name] === undefined) throw new Error(`Unknown flow variable ${name}`);
             return String(variables[name]);
           })
         : value;
@@ -98,19 +74,12 @@ const locate = (page, target) =>
         : target.text
           ? page.getByText(target.text, { exact: target.exact !== false })
           : (() => {
-              throw new Error(
-                "A flow action requires selector, role, label, or text.",
-              );
+              throw new Error('A flow action requires selector, role, label, or text.');
             })();
 const expectedFields = (record, fields, contains) =>
-  Object.entries(fields ?? {}).every(
-    ([name, value]) => JSON.stringify(record[name]) === JSON.stringify(value),
-  ) &&
+  Object.entries(fields ?? {}).every(([name, value]) => JSON.stringify(record[name]) === JSON.stringify(value)) &&
   Object.entries(contains ?? {}).every(
-    ([name, value]) =>
-      typeof record[name] === "string" &&
-      typeof value === "string" &&
-      record[name].includes(value),
+    ([name, value]) => typeof record[name] === 'string' && typeof value === 'string' && record[name].includes(value),
   );
 
 /**
@@ -118,7 +87,9 @@ const expectedFields = (record, fields, contains) =>
  * asserts every required capability is executable (behaviour or above). Throws CapabilityUnavailable with the gaps.
  */
 export async function assertAcceptanceCapabilities({ localUrl, requires = [], timeout = 15000 }) {
-  const response = await fetch(new URL("/__sim/api/preflight", loopback(localUrl).origin), { signal: AbortSignal.timeout(timeout) });
+  const response = await fetch(new URL('/__sim/api/preflight', loopback(localUrl).origin), {
+    signal: AbortSignal.timeout(timeout),
+  });
   if (!response.ok) throw new Error(`Simulator preflight returned HTTP ${response.status}`);
   const report = await response.json();
   const registry = createCapabilityRegistry();
@@ -134,8 +105,7 @@ export async function runAcceptance({
   outputDir,
   flows,
   nativeNetworkBaseline,
-  channel = process.env.PAQVILO_BROWSER ||
-    (process.platform === "win32" ? "msedge" : "chromium"),
+  channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
   timeout = 15000,
   navigationCommitReserveMs,
   // Optional async hook run on the local browser context before the flows, e.g. a
@@ -147,58 +117,47 @@ export async function runAcceptance({
   strict = false,
 }) {
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('timeout must be a positive finite number.');
-  if (navigationCommitReserveMs !== undefined && (!Number.isFinite(navigationCommitReserveMs) || navigationCommitReserveMs < 0 || navigationCommitReserveMs >= timeout)) throw new Error('navigationCommitReserveMs must be nonnegative and smaller than timeout.');
+  if (
+    navigationCommitReserveMs !== undefined &&
+    (!Number.isFinite(navigationCommitReserveMs) ||
+      navigationCommitReserveMs < 0 ||
+      navigationCommitReserveMs >= timeout)
+  )
+    throw new Error('navigationCommitReserveMs must be nonnegative and smaller than timeout.');
   const local = loopback(localUrl);
-  if (!["http:", "https:"].includes(local.protocol))
-    throw new Error("Local simulator requires HTTP(S).");
+  if (!['http:', 'https:'].includes(local.protocol)) throw new Error('Local simulator requires HTTP(S).');
   const live = liveOrigin ? new URL(liveOrigin) : null;
   if (
     live &&
-    (live.protocol !== "https:" ||
-      live.pathname !== "/" ||
-      live.search ||
-      live.hash ||
-      live.username ||
-      live.password)
+    (live.protocol !== 'https:' || live.pathname !== '/' || live.search || live.hash || live.username || live.password)
   )
-    throw new Error("Live comparison requires a credential-free HTTPS origin.");
-  if (!Array.isArray(flows) || !flows.length)
-    throw new Error("Provide explicit acceptance flows.");
+    throw new Error('Live comparison requires a credential-free HTTPS origin.');
+  if (!Array.isArray(flows) || !flows.length) throw new Error('Provide explicit acceptance flows.');
   outputDir = path.resolve(outputDir);
   await fs.mkdir(outputDir, { recursive: true });
   let observedIdentity;
   const readState = async (full = false) => {
-    const response = await fetch(
-      new URL("/__sim/api/state" + (full ? "" : "?summary=1"), local.origin),
-      { signal: AbortSignal.timeout(timeout) },
-    );
-    if (!response.ok)
-      throw new Error(`Simulator state returned HTTP ${response.status}`);
+    const response = await fetch(new URL('/__sim/api/state' + (full ? '' : '?summary=1'), local.origin), {
+      signal: AbortSignal.timeout(timeout),
+    });
+    if (!response.ok) throw new Error(`Simulator state returned HTTP ${response.status}`);
     const state = await response.json();
-    observedIdentity =
-      state.status?.effectiveIdentity ?? state.config?.identity;
+    observedIdentity = state.status?.effectiveIdentity ?? state.config?.identity;
     return state;
   };
   const requireLocal = (state) => {
     if (
-      state.config?.mode !== "local" ||
-      state.config?.pageMode !== "local" ||
-      state.config?.endpoints?.some((endpoint) => endpoint.mode === "live")
+      state.config?.mode !== 'local' ||
+      state.config?.pageMode !== 'local' ||
+      state.config?.endpoints?.some((endpoint) => endpoint.mode === 'live')
     )
-      throw new Error(
-        "Local acceptance requires local data/page providers and no live endpoint routing.",
-      );
+      throw new Error('Local acceptance requires local data/page providers and no live endpoint routing.');
   };
   const state = await readState();
   requireLocal(state);
   if (strict && requires?.length) await assertAcceptanceCapabilities({ localUrl: local.origin, requires, timeout });
-  if (
-    !state.status?.sourceFingerprint ||
-    !state.status?.implementationFingerprint
-  )
-    throw new Error(
-      "Acceptance requires the portal source and loaded mirage implementation fingerprints.",
-    );
+  if (!state.status?.sourceFingerprint || !state.status?.implementationFingerprint)
+    throw new Error('Acceptance requires the portal source and loaded mirage implementation fingerprints.');
   const result = {
     time: new Date().toISOString(),
     passed: false,
@@ -214,43 +173,30 @@ export async function runAcceptance({
     // it, and is reported as blocked. Unlike request interception this cannot stall a page's
     // synchronous requests (lib/navigation-settle.mjs).
     blockingProxy = net.createServer((socket) => socket.destroy());
-    await new Promise((resolve) => blockingProxy.listen(0, "127.0.0.1", resolve));
+    await new Promise((resolve) => blockingProxy.listen(0, '127.0.0.1', resolve));
     ownedBrowser = await chromium.launch({
-      channel: channel === "chromium" ? undefined : channel,
+      channel: channel === 'chromium' ? undefined : channel,
       headless: true,
-      args: [
-        "--disable-background-networking",
-        "--disable-component-update",
-        "--disable-sync",
-      ],
+      args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
       proxy: {
         server: `http://127.0.0.1:${blockingProxy.address().port}`,
-        bypass: LOOPBACK_HOSTS.join(","),
+        bypass: LOOPBACK_HOSTS.join(','),
       },
     });
     const localContext = await ownedBrowser.newContext({
       viewport: result.viewport,
-      serviceWorkers: "block",
+      serviceWorkers: 'block',
     });
-    if (typeof prepareContext === "function") await prepareContext(localContext, local.origin);
-    if (flows.some((flow) => flow.mode === "live")) {
+    if (typeof prepareContext === 'function') await prepareContext(localContext, local.origin);
+    if (flows.some((flow) => flow.mode === 'live')) {
       if (!live || !cdpUrl)
-        throw new Error(
-          "Live observations require --origin and the intended existing --cdp browser.",
-        );
+        throw new Error('Live observations require --origin and the intended existing --cdp browser.');
       loopback(cdpUrl);
       attachedBrowser = await chromium.connectOverCDP(cdpUrl);
-      if (attachedBrowser.contexts().length !== 1)
-        throw new Error("Use exactly one attached browser identity.");
+      if (attachedBrowser.contexts().length !== 1) throw new Error('Use exactly one attached browser identity.');
       const context = attachedBrowser.contexts()[0];
-      if (
-        context
-          .serviceWorkers()
-          .some((worker) => new URL(worker.url()).origin === live.origin)
-      )
-        throw new Error(
-          "Relevant live service workers prevent reliable write interception.",
-        );
+      if (context.serviceWorkers().some((worker) => new URL(worker.url()).origin === live.origin))
+        throw new Error('Relevant live service workers prevent reliable write interception.');
       for (const existing of context.pages().filter((page) => {
         try {
           return new URL(page.url()).origin === live.origin;
@@ -260,20 +206,16 @@ export async function runAcceptance({
       })) {
         const registrations = await existing.evaluate(async () =>
           navigator.serviceWorker
-            ? (await navigator.serviceWorker.getRegistrations()).map(
-                (registration) => registration.scope,
-              )
+            ? (await navigator.serviceWorker.getRegistrations()).map((registration) => registration.scope)
             : [],
         );
         if (registrations.length)
-          throw new Error(
-            "Relevant live service worker registrations prevent reliable write interception.",
-          );
+          throw new Error('Relevant live service worker registrations prevent reliable write interception.');
       }
     }
     const variables = {};
     for (const [index, flow] of flows.entries()) {
-      const isLive = flow.mode === "live",
+      const isLive = flow.mode === 'live',
         origin = isLive ? live.origin : local.origin,
         context = isLive ? attachedBrowser.contexts()[0] : localContext;
       const page = await context.newPage();
@@ -282,7 +224,7 @@ export async function runAcceptance({
       await page.setViewportSize(result.viewport);
       const observation = {
         name: flow.name,
-        mode: isLive ? "live-read-only" : "local",
+        mode: isLive ? 'live-read-only' : 'local',
         passed: false,
         steps: [],
         consoleErrors: [],
@@ -298,13 +240,8 @@ export async function runAcceptance({
       result.flows.push(observation);
       const sourceAborts = [];
       if (!isLive) {
-        await page.exposeBinding("__simObserveReadAbort", (_source, value) => {
-          if (
-            sourceAborts.length < 1000 &&
-            value &&
-            typeof value.url === "string" &&
-            typeof value.stack === "string"
-          )
+        await page.exposeBinding('__simObserveReadAbort', (_source, value) => {
+          if (sourceAborts.length < 1000 && value && typeof value.url === 'string' && typeof value.stack === 'string')
             sourceAborts.push({
               ...value,
               url: failureUrl(value.url),
@@ -316,11 +253,21 @@ export async function runAcceptance({
       const pending = new Map(),
         noContentRequests = new WeakSet(),
         responseObservations = [];
-      const requestRecords = new Map(), frameDocuments = new WeakMap(), navigationHolds = new Set(), navigationBudgets = new Map();
-      let settlementDeadline = Infinity, actionDeadline = Infinity;
+      const requestRecords = new Map(),
+        frameDocuments = new WeakMap(),
+        navigationHolds = new Set(),
+        navigationBudgets = new Map();
+      let settlementDeadline = Infinity,
+        actionDeadline = Infinity;
       const navigationTimings = new Map();
       const navigationKey = (method, value) => method + ' ' + new URL(value).href;
-      const requestFrame = request => { try { return request.frame(); } catch { return null; } };
+      const requestFrame = (request) => {
+        try {
+          return request.frame();
+        } catch {
+          return null;
+        }
+      };
       const cancelRequests = (requests, reason) => {
         const cancelled = cancelNavigationRequests(requests, pending, requestRecords, { reason });
         if (cancelled.length) {
@@ -328,48 +275,74 @@ export async function runAcceptance({
           lastRequestActivity = Date.now();
         }
       };
-      page.on('framedetached', frame => cancelRequests([...requestRecords.keys()].filter(request => {
-        if (requestFrame(request) !== frame) return false;
-        const record = requestRecords.get(request);
-        // Chromium can emit ERR_ABORTED just before Playwright emits framedetached.
-        // Keep unrelated/older failures; recognize only the same detach event's aborts.
-        return pending.has(request) || record.finished === false && request.failure()?.errorText === 'net::ERR_ABORTED' && Date.now() - record.endedAt <= 250;
-      }), 'frame-detached'));
+      page.on('framedetached', (frame) =>
+        cancelRequests(
+          [...requestRecords.keys()].filter((request) => {
+            if (requestFrame(request) !== frame) return false;
+            const record = requestRecords.get(request);
+            // Chromium can emit ERR_ABORTED just before Playwright emits framedetached.
+            // Keep unrelated/older failures; recognize only the same detach event's aborts.
+            return (
+              pending.has(request) ||
+              (record.finished === false &&
+                request.failure()?.errorText === 'net::ERR_ABORTED' &&
+                Date.now() - record.endedAt <= 250)
+            );
+          }),
+          'frame-detached',
+        ),
+      );
       const cdp = await context.newCDPSession(page),
         cdpRecords = new Map(),
         frameEvents = [];
-      await cdp.send("Network.enable");
-      await cdp.send("Page.enable");
+      await cdp.send('Network.enable');
+      await cdp.send('Page.enable');
       await observeDocumentCommits(page, cdp, {
         document: (frame, token) => frameDocuments.set(frame, token),
-        commit: (frame, token) => cancelRequests([...requestRecords.keys()].filter(request => {
-          const record = requestRecords.get(request);
-          return requestFrame(request) === frame && record.documentToken === token && request.resourceType() !== 'document' &&
-            (pending.has(request) || record.finished === false && request.failure()?.errorText === 'net::ERR_ABORTED' && Date.now() - record.endedAt <= 250);
-        }), 'document-replaced'),
+        commit: (frame, token) =>
+          cancelRequests(
+            [...requestRecords.keys()].filter((request) => {
+              const record = requestRecords.get(request);
+              return (
+                requestFrame(request) === frame &&
+                record.documentToken === token &&
+                request.resourceType() !== 'document' &&
+                (pending.has(request) ||
+                  (record.finished === false &&
+                    request.failure()?.errorText === 'net::ERR_ABORTED' &&
+                    Date.now() - record.endedAt <= 250))
+              );
+            }),
+            'document-replaced',
+          ),
       });
 
       // A local navigation waits (bounded) for the script writes of the document it replaces;
       // only document requests are paused (lib/navigation-settle.mjs).
       if (!isLive) {
-        cdp.on("Fetch.requestPaused", (event) => {
+        cdp.on('Fetch.requestPaused', (event) => {
           const parents = () =>
-            new Map(
-              frameEvents
-                .filter((row) => row.parentFrameId)
-                .map((row) => [row.frameId, row.parentFrameId]),
-            );
+            new Map(frameEvents.filter((row) => row.parentFrameId).map((row) => [row.frameId, row.parentFrameId]));
           // Chromium reuses the network id across redirects; all hops share the first
           // hold's budget and leave time for the action's navigation to commit.
           const now = Date.now();
           const remaining = Math.min(timeout, Math.max(0, actionDeadline - now));
           const key = navigationKey(event.request.method, event.request.url);
           const comparableMs = navigationTimings.get(key);
-          const { reserveMs, policy: reservePolicy } = navigationCommitBudget(remaining, { explicitMs: navigationCommitReserveMs, comparableMs });
-          const budget = navigationBudgets.get(event.networkId) ?? navigationBudgets.get(event.redirectedRequestId) ?? {
-            deadline: now + Math.max(0, remaining - reserveMs),
-            reserve: reserveMs, policy: reservePolicy, ids: new Set(), key, responseMs: 0, comparableMs,
-          };
+          const { reserveMs, policy: reservePolicy } = navigationCommitBudget(remaining, {
+            explicitMs: navigationCommitReserveMs,
+            comparableMs,
+          });
+          const budget = navigationBudgets.get(event.networkId) ??
+            navigationBudgets.get(event.redirectedRequestId) ?? {
+              deadline: now + Math.max(0, remaining - reserveMs),
+              reserve: reserveMs,
+              policy: reservePolicy,
+              ids: new Set(),
+              key,
+              responseMs: 0,
+              comparableMs,
+            };
           const reserve = budget.reserve;
           for (const id of [event.networkId, event.requestId].filter(Boolean)) {
             budget.ids.add(id);
@@ -394,22 +367,18 @@ export async function runAcceptance({
                 });
             })
             .catch(() => {})
-            .finally(() =>
-              cdp
-                .send("Fetch.continueRequest", { requestId: event.requestId })
-                .catch(() => {}),
-            );
+            .finally(() => cdp.send('Fetch.continueRequest', { requestId: event.requestId }).catch(() => {}));
           navigationHolds.add(hold);
           void hold.finally(() => navigationHolds.delete(hold));
         });
-        await cdp.send("Fetch.enable", { patterns: [DOCUMENT_REQUEST_PATTERN] });
+        await cdp.send('Fetch.enable', { patterns: [DOCUMENT_REQUEST_PATTERN] });
       }
-      for (const event of ["frameAttached", "frameDetached", "frameNavigated"])
-        cdp.on("Page." + event, (value) =>
+      for (const event of ['frameAttached', 'frameDetached', 'frameNavigated'])
+        cdp.on('Page.' + event, (value) =>
           frameEvents.push({
             event,
             observedAt: new Date().toISOString(),
-            ...(event === "frameNavigated"
+            ...(event === 'frameNavigated'
               ? {
                   frameId: value.frame.id,
                   parentFrameId: value.frame.parentId,
@@ -422,7 +391,7 @@ export async function runAcceptance({
                 }),
           }),
         );
-      cdp.on("Network.requestWillBeSent", (event) => {
+      cdp.on('Network.requestWillBeSent', (event) => {
         let url;
         try {
           url = new URL(event.request.url);
@@ -438,17 +407,16 @@ export async function runAcceptance({
           loaderId: event.loaderId,
           frameId: event.frameId,
           type: event.type,
-          path:
-            url.origin === local.origin ? url.pathname + url.search : url.href,
+          path: url.origin === local.origin ? url.pathname + url.search : url.href,
           method: event.request.method,
           startedAt: new Date(event.wallTime * 1000).toISOString(),
           startedTimestamp: event.timestamp,
           parentTrace: Object.entries(event.request.headers ?? {}).find(
-            ([name]) => name.toLowerCase() === "x-sim-parent-trace",
+            ([name]) => name.toLowerCase() === 'x-sim-parent-trace',
           )?.[1],
         });
       });
-      cdp.on("Network.responseReceived", (event) => {
+      cdp.on('Network.responseReceived', (event) => {
         const record = cdpRecords.get(event.requestId);
         const timing = event.response.timing;
         if (event.type === 'Document' && timing?.sendStart >= 0 && timing.receiveHeadersEnd >= timing.sendStart) {
@@ -462,54 +430,50 @@ export async function runAcceptance({
         if (record) {
           record.status = event.response.status;
           record.mimeType = event.response.mimeType;
-          record.serverTraceId = Object.entries(
-            event.response.headers ?? {},
-          ).find(([name]) => name.toLowerCase() === "x-sim-trace-id")?.[1];
+          record.serverTraceId = Object.entries(event.response.headers ?? {}).find(
+            ([name]) => name.toLowerCase() === 'x-sim-trace-id',
+          )?.[1];
         }
       });
-      const releaseNavigationBudget = requestId => {
+      const releaseNavigationBudget = (requestId) => {
         const budget = navigationBudgets.get(requestId);
         if (budget) for (const id of budget.ids) navigationBudgets.delete(id);
       };
-      cdp.on("Network.loadingFinished", (event) => {
+      cdp.on('Network.loadingFinished', (event) => {
         const record = cdpRecords.get(event.requestId);
         if (record) record.finishedTimestamp = event.timestamp;
         releaseNavigationBudget(event.requestId);
       });
-      cdp.on("Network.loadingFailed", (event) => {
+      cdp.on('Network.loadingFailed', (event) => {
         const record = cdpRecords.get(event.requestId);
         releaseNavigationBudget(event.requestId);
         if (record) {
           record.failure = event.errorText;
           record.failedTimestamp = event.timestamp;
-          record.failedAt =
-            Date.parse(record.startedAt) +
-            (event.timestamp - record.startedTimestamp) * 1000;
+          record.failedAt = Date.parse(record.startedAt) + (event.timestamp - record.startedTimestamp) * 1000;
         }
       });
-      page.on("console", (message) => {
-        if (message.type() === "error") {
+      page.on('console', (message) => {
+        if (message.type() === 'error') {
           observation.consoleErrors.push(safeMessage(message.text()));
           (observation.consoleMessages ??= []).push({
             text: safeMessage(message.text()),
             argumentCount: message.args().length,
-            url: message.location().url
-              ? failureUrl(message.location().url)
-              : null,
+            url: message.location().url ? failureUrl(message.location().url) : null,
           });
         }
       });
-      page.on("pageerror", (error) => {
+      page.on('pageerror', (error) => {
         observation.pageErrors.push(safeMessage(error.stack || error.message));
         observation.pageErrorDetails.push({
           name: safeMessage(error.name),
           message: safeMessage(error.message),
-          stack: safeMessage(error.stack || ""),
+          stack: safeMessage(error.stack || ''),
         });
       });
-      page.on("requestfailed", (request) => {
+      page.on('requestfailed', (request) => {
         const record = requestRecords.get(request),
-          requestKey = String(record?.order ?? "");
+          requestKey = String(record?.order ?? '');
         if (!isLive) {
           let target;
           try {
@@ -525,13 +489,11 @@ export async function runAcceptance({
               url: safeUrl(request.url()),
             });
         }
-        const response = observation.failedResponses.find(
-          (item) => item.requestKey === requestKey,
-        );
+        const response = observation.failedResponses.find((item) => item.requestKey === requestKey);
         // The response already recorded it; Chromium aborts the navigation that has no document to commit.
         if (noContentRequests.has(request) && request.failure()?.errorText === 'net::ERR_ABORTED') return;
         observation.failedRequests.push({
-          kind: "network",
+          kind: 'network',
           requestKey,
           method: request.method(),
           url: failureUrl(request.url()),
@@ -550,28 +512,29 @@ export async function runAcceptance({
             : {}),
         });
       });
-      page.on("response", (response) => {
+      page.on('response', (response) => {
         const record = pending.get(response.request());
         if (record) record.status = response.status();
         // A 204/205 navigation keeps the current document. Chromium ends it with requestfailed (ERR_ABORTED) or
         // requestfinished depending on timing, so it is classified here, once, from its status.
         if (response.request().isNavigationRequest() && [204, 205].includes(response.status())) {
           noContentRequests.add(response.request());
-          (observation.noContentNavigations ??= []).push({ method: response.request().method(), url: failureUrl(response.url()), status: response.status() });
+          (observation.noContentNavigations ??= []).push({
+            method: response.request().method(),
+            url: failureUrl(response.url()),
+            status: response.status(),
+          });
         }
         if (response.status() >= 400) {
           const failure = {
-            kind: "http",
-            requestKey: String(record?.order ?? ""),
+            kind: 'http',
+            requestKey: String(record?.order ?? ''),
             method: response.request().method(),
             url: failureUrl(response.url()),
             status: response.status(),
           };
           observation.failedResponses.push(failure);
-          if (
-            !isLive &&
-            response.headers()["content-type"]?.includes("application/json")
-          )
+          if (!isLive && response.headers()['content-type']?.includes('application/json'))
             responseObservations.push(
               response
                 .json()
@@ -588,7 +551,7 @@ export async function runAcceptance({
       });
       const proofInputs = new Map();
       let lastRequestActivity = Date.now();
-      page.on("request", (request) => {
+      page.on('request', (request) => {
         const frame = requestFrame(request);
         const record = {
           order: observation.resources.length + 1,
@@ -600,58 +563,54 @@ export async function runAcceptance({
         Object.defineProperty(record, 'documentToken', { value: frameDocuments.get(frame) });
         pending.set(request, record);
         requestRecords.set(request, record);
-        if (record.type !== "eventsource") lastRequestActivity = Date.now();
+        if (record.type !== 'eventsource') lastRequestActivity = Date.now();
         const url = new URL(request.url());
         proofInputs.set(request, {
           method: record.method,
-          path:
-            url.origin === local.origin ? url.pathname + url.search : url.href,
+          path: url.origin === local.origin ? url.pathname + url.search : url.href,
           startedAt: new Date(record.started).toISOString(),
-          parentTrace: request.headers()["x-sim-parent-trace"],
+          parentTrace: request.headers()['x-sim-parent-trace'],
           identity: observedIdentity,
-          stream: record.type === "eventsource",
+          stream: record.type === 'eventsource',
         });
         observation.resources.push(record);
-        if (!["GET", "HEAD", "OPTIONS"].includes(request.method()))
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method()))
           observation.writes.push({
             method: request.method(),
             url: safeUrl(request.url()),
           });
       });
-      for (const event of ["requestfinished", "requestfailed"])
+      for (const event of ['requestfinished', 'requestfailed'])
         page.on(event, (request) => {
           const record = pending.get(request);
           if (record) {
-            if (record.type !== "eventsource") lastRequestActivity = Date.now();
+            if (record.type !== 'eventsource') lastRequestActivity = Date.now();
             record.durationMs = Date.now() - record.started;
             record.endedAt = Date.now();
-            record.finished = event === "requestfinished";
+            record.finished = event === 'requestfinished';
             pending.delete(request);
           }
         });
       // Live observations block every non-read request. Local flows are confined to loopback
       // by the owned browser's proxy (blocked requests are recorded when they fail).
       if (isLive)
-        await page.route("**/*", (route) => {
+        await page.route('**/*', (route) => {
           const request = route.request();
-          if (!["GET", "HEAD", "OPTIONS"].includes(request.method())) {
+          if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method())) {
             observation.blockedRequests.push({
               method: request.method(),
               url: safeUrl(request.url()),
             });
-            return route.abort("blockedbyclient");
+            return route.abort('blockedbyclient');
           }
           return route.continue();
         });
       const capture = async (label) => {
-        const file = path.join(
-          outputDir,
-          `${index + 1}-${flow.name.replace(/[^a-z0-9]/gi, "-")}-${label}.png`,
-        );
+        const file = path.join(outputDir, `${index + 1}-${flow.name.replace(/[^a-z0-9]/gi, '-')}-${label}.png`);
         await page.screenshot({
           path: file,
           fullPage: true,
-          animations: "disabled",
+          animations: 'disabled',
         });
         observation.screenshots.push(file);
       };
@@ -672,77 +631,66 @@ export async function runAcceptance({
         await Promise.allSettled([...navigationHolds]);
         const active = () =>
           [...pending.values()].filter(
-            (record) =>
-              record.type !== "eventsource" &&
-              !simulatorBackgroundRequest(record.url, origin),
+            (record) => record.type !== 'eventsource' && !simulatorBackgroundRequest(record.url, origin),
           );
         const deadline = Date.now() + timeout;
         settlementDeadline = deadline;
         try {
-        let lastProofCheck = 0;
-        // Native save callbacks can schedule a subgrid refresh after the modal
-        // closes. Observe that work before initiating another navigation.
-        while (
-          (active().length || Date.now() - lastRequestActivity < 500) &&
-          Date.now() < deadline
-        ) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-          if (!isLive && Date.now() - lastProofCheck > 750) {
-            lastProofCheck = Date.now();
-            const response = await fetch(
-              local.origin + "/__sim/api/audit/export",
-              { signal: AbortSignal.timeout(timeout) },
-            );
-            if (response.ok) {
-              const audit = await response.json();
-              const frameTree = await cdp.send("Page.getFrameTree");
-              const flatten = (node) => [
-                node.frame,
-                ...(node.childFrames ?? []).flatMap(flatten),
-              ];
-              const currentFrames = flatten(frameTree.frameTree);
-              observation.finalFrameTree = currentFrames.map(
-                ({ id, parentId, loaderId }) => ({ id, parentId, loaderId }),
-              );
-              for (const [request, record] of pending) {
-                const proof = reconcileSupersededRead(
-                  proofInputs.get(request),
-                  {
+          let lastProofCheck = 0;
+          // Native save callbacks can schedule a subgrid refresh after the modal
+          // closes. Observe that work before initiating another navigation.
+          while ((active().length || Date.now() - lastRequestActivity < 500) && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            if (!isLive && Date.now() - lastProofCheck > 750) {
+              lastProofCheck = Date.now();
+              const response = await fetch(local.origin + '/__sim/api/audit/export', {
+                signal: AbortSignal.timeout(timeout),
+              });
+              if (response.ok) {
+                const audit = await response.json();
+                const frameTree = await cdp.send('Page.getFrameTree');
+                const flatten = (node) => [node.frame, ...(node.childFrames ?? []).flatMap(flatten)];
+                const currentFrames = flatten(frameTree.frameTree);
+                observation.finalFrameTree = currentFrames.map(({ id, parentId, loaderId }) => ({
+                  id,
+                  parentId,
+                  loaderId,
+                }));
+                for (const [request, record] of pending) {
+                  const proof = reconcileSupersededRead(proofInputs.get(request), {
                     cdpRecords: [...cdpRecords.values()],
                     audit,
                     origin: local.origin,
                     identity: observedIdentity,
                     frameEvents,
                     currentFrames,
-                  },
-                );
-                if (proof) {
-                  record.navigationObservation = proof;
-                  (observation.supersededReads ??= []).push(proof);
-                  pending.delete(request);
+                  });
+                  if (proof) {
+                    record.navigationObservation = proof;
+                    (observation.supersededReads ??= []).push(proof);
+                    pending.delete(request);
+                  }
                 }
               }
             }
           }
+          await Promise.allSettled(responseObservations);
+          if (active().length)
+            throw new Error(
+              'Portal requests did not settle: ' +
+                active()
+                  .map((record) => record.method + ' ' + record.url)
+                  .join(', '),
+            );
+        } finally {
+          settlementDeadline = Infinity;
         }
-        await Promise.allSettled(responseObservations);
-        if (active().length)
-          throw new Error(
-            "Portal requests did not settle: " +
-              active()
-                .map((record) => record.method + " " + record.url)
-                .join(", "),
-          );
-        } finally { settlementDeadline = Infinity; }
       };
       try {
         for (const [stepIndex, definition] of flow.steps.entries()) {
           if (!isLive) requireLocal(await readState());
           const step = Object.fromEntries(
-            Object.entries(definition).map(([key, value]) => [
-              key,
-              expand(value, variables),
-            ]),
+            Object.entries(definition).map(([key, value]) => [key, expand(value, variables)]),
           );
           const entry = {
             action: step.action,
@@ -753,18 +701,9 @@ export async function runAcceptance({
           if (
             isLive &&
             (step.mutation ||
-              [
-                "identity",
-                "preset",
-                "record",
-                "rememberRecord",
-                "waitRecord",
-                "richtext",
-              ].includes(step.action))
+              ['identity', 'preset', 'record', 'rememberRecord', 'waitRecord', 'richtext'].includes(step.action))
           )
-            throw new Error(
-              "A local mutation/state assertion cannot execute in a live observation flow.",
-            );
+            throw new Error('A local mutation/state assertion cannot execute in a live observation flow.');
           actionDeadline = Date.now() + timeout;
           const surface = step.frame
             ? (Array.isArray(step.frame) ? step.frame : [step.frame]).reduce(
@@ -773,74 +712,58 @@ export async function runAcceptance({
               )
             : page;
           const target = () => locate(surface, step);
-          if (step.action === "navigate") {
+          if (step.action === 'navigate') {
             await settle();
-            if (
-              !step.path?.startsWith("/") ||
-              step.path.startsWith("//") ||
-              step.path.includes("\\")
-            )
-              throw new Error("Navigation must use a portal-relative path.");
-            if (
-              step.waitUntil &&
-              !["load", "domcontentloaded"].includes(step.waitUntil)
-            )
-              throw new Error(
-                "Navigation readiness must be load or domcontentloaded.",
-              );
+            if (!step.path?.startsWith('/') || step.path.startsWith('//') || step.path.includes('\\'))
+              throw new Error('Navigation must use a portal-relative path.');
+            if (step.waitUntil && !['load', 'domcontentloaded'].includes(step.waitUntil))
+              throw new Error('Navigation readiness must be load or domcontentloaded.');
             actionDeadline = Date.now() + timeout;
             const response = await page.goto(origin + step.path, {
               // Exported pages may leave asynchronous data requests open while
               // their document and controls are already usable. Navigation
               // readiness is DOM availability; flow assertions and `settle`
               // continue to report unfinished or failed requests separately.
-              waitUntil: step.waitUntil ?? "domcontentloaded",
+              waitUntil: step.waitUntil ?? 'domcontentloaded',
             });
             actionDeadline = Infinity;
             entry.status = response?.status();
             if (entry.status !== (step.status ?? 200))
-              throw new Error(
-                `Expected HTTP ${step.status ?? 200}, observed ${entry.status}.`,
-              );
+              throw new Error(`Expected HTTP ${step.status ?? 200}, observed ${entry.status}.`);
             if (!isLive) await loadQuiet();
-          } else if (step.action === "load")
-            await page.waitForLoadState("load");
-          else if (step.action === "reveal") {
+          } else if (step.action === 'load') await page.waitForLoadState('load');
+          else if (step.action === 'reveal') {
             await settle();
             const control = surface.locator(step.selector);
-            await control.waitFor({ state: "attached" });
+            await control.waitFor({ state: 'attached' });
             entry.alreadyVisible = await control.isVisible();
             if (!entry.alreadyVisible) {
               actionDeadline = Date.now() + timeout;
               await locate(surface, step.trigger).click();
             }
-            await control.waitFor({ state: "visible" });
-          } else if (step.action === "click") await target().click();
-          else if (step.action === "fill") await target().fill(step.value);
-          else if (step.action === "type") {
-            await target().fill("");
+            await control.waitFor({ state: 'visible' });
+          } else if (step.action === 'click') await target().click();
+          else if (step.action === 'fill') await target().fill(step.value);
+          else if (step.action === 'type') {
+            await target().fill('');
             await target().pressSequentially(step.value);
-          } else if (step.action === "richtext")
+          } else if (step.action === 'richtext')
             await editRichText(page, step.field, step.value, {
-              mode: step.mode ?? "native",
+              mode: step.mode ?? 'native',
             });
-          else if (step.action === "richtextText")
+          else if (step.action === 'richtextText')
             await assertRichText(page, step.field, step.value, {
-              mode: step.mode ?? "native",
+              mode: step.mode ?? 'native',
             });
-          else if (step.action === "select")
-            await target().selectOption(step.value);
-          else if (step.action === "check")
-            await target().setChecked(step.checked !== false);
-          else if (step.action === "visible")
+          else if (step.action === 'select') await target().selectOption(step.value);
+          else if (step.action === 'check') await target().setChecked(step.checked !== false);
+          else if (step.action === 'visible')
             await target().waitFor({
-              state: step.visible === false ? "hidden" : "visible",
+              state: step.visible === false ? 'hidden' : 'visible',
             });
-          else if (step.action === "text") {
-            await target()
-              .filter({ hasText: step.value })
-              .waitFor({ state: "visible" });
-          } else if (step.action === "value") {
+          else if (step.action === 'text') {
+            await target().filter({ hasText: step.value }).waitFor({ state: 'visible' });
+          } else if (step.action === 'value') {
             // Authored modal scripts can initialize defaults after the control
             // is attached. Assert the resulting value within the action deadline.
             const deadline = Date.now() + timeout;
@@ -858,111 +781,72 @@ export async function runAcceptance({
                 break;
               }
               observed = true;
-              matched = step.contains
-                ? value.includes(step.value)
-                : value === step.value;
+              matched = step.contains ? value.includes(step.value) : value === step.value;
               if (matched) break;
-              await new Promise((resolve) =>
-                setTimeout(
-                  resolve,
-                  Math.min(100, Math.max(1, deadline - Date.now())),
-                ),
-              );
+              await new Promise((resolve) => setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now()))));
             }
-            if (!matched)
-              throw new Error(`The expected field value was not observed.`);
-          } else if (step.action === "url") {
-            if (
-              step.waitUntil &&
-              !["load", "domcontentloaded"].includes(step.waitUntil)
-            )
-              throw new Error(
-                "Navigation readiness must be load or domcontentloaded.",
-              );
+            if (!matched) throw new Error(`The expected field value was not observed.`);
+          } else if (step.action === 'url') {
+            if (step.waitUntil && !['load', 'domcontentloaded'].includes(step.waitUntil))
+              throw new Error('Navigation readiness must be load or domcontentloaded.');
             await page.waitForURL(
               (url) =>
                 url.pathname === step.path &&
-                (step.queryName
-                  ? url.searchParams.get(step.queryName) === step.value
-                  : true),
-              { waitUntil: step.waitUntil ?? "domcontentloaded" },
+                (step.queryName ? url.searchParams.get(step.queryName) === step.value : true),
+              { waitUntil: step.waitUntil ?? 'domcontentloaded' },
             );
             if (!isLive) await loadQuiet();
-          } else if (step.action === "settle") {
+          } else if (step.action === 'settle') {
             await settle();
-          } else if (step.action === "identity") {
+          } else if (step.action === 'identity') {
             // Portal identity is per browser session (paqvilo-mirage-auth cookie), so the step
             // signs this flow's browser context in through the session API: `roles` is a
             // manual role override and `contactId` alone signs in with that local contact's
             // memberships. Without `contactId` the step keeps the signed-in contact, else the
             // configured persona's. The open page then reloads as the new identity.
             const current = await readState();
-            const signedIn = await (
-              await context.request.get(new URL("/__sim/api/session", local.origin).href)
-            ).json();
+            const signedIn = await (await context.request.get(new URL('/__sim/api/session', local.origin).href)).json();
             const contactId =
               step.contactId ??
               signedIn.contactId ??
               current.config?.identity?.contactId ??
               current.config?.identity?.id;
             if (!contactId)
-              throw new Error(
-                "The identity step needs a contactId: no contact is signed in or configured.",
-              );
-            const response = await context.request.post(
-              new URL("/__sim/api/session/sign-in", local.origin).href,
-              {
-                headers: { "x-sim-csrf": current.csrf },
-                data: { contactId, ...(step.roles ? { roles: step.roles } : {}) },
-              },
-            );
+              throw new Error('The identity step needs a contactId: no contact is signed in or configured.');
+            const response = await context.request.post(new URL('/__sim/api/session/sign-in', local.origin).href, {
+              headers: { 'x-sim-csrf': current.csrf },
+              data: { contactId, ...(step.roles ? { roles: step.roles } : {}) },
+            });
             if (!response.ok())
-              throw new Error(
-                `Session sign-in returned HTTP ${response.status()}: ${await response.text()}`,
-              );
+              throw new Error(`Session sign-in returned HTTP ${response.status()}: ${await response.text()}`);
             const session = await response.json();
-            if (
-              step.roles &&
-              JSON.stringify(session.roles) !== JSON.stringify(step.roles)
-            )
-              throw new Error("Role changes were not applied to the browser session.");
-            if (page.url().startsWith(local.origin + "/")) {
-              await page.reload({ waitUntil: step.waitUntil ?? "domcontentloaded" });
+            if (step.roles && JSON.stringify(session.roles) !== JSON.stringify(step.roles))
+              throw new Error('Role changes were not applied to the browser session.');
+            if (page.url().startsWith(local.origin + '/')) {
+              await page.reload({ waitUntil: step.waitUntil ?? 'domcontentloaded' });
               await loadQuiet();
             }
-          } else if (step.action === "preset") {
-            await page.goto(local.origin + "/__sim/#access");
+          } else if (step.action === 'preset') {
+            await page.goto(local.origin + '/__sim/#access');
+            await page.getByLabel('Available preset', { exact: true }).selectOption(step.id);
             await page
-              .getByLabel("Available preset", { exact: true })
-              .selectOption(step.id);
-            await page
-              .getByRole("button", {
-                name: "Apply selected preset",
+              .getByRole('button', {
+                name: 'Apply selected preset',
                 exact: true,
               })
               .click();
-            await page
-              .locator("#confirm")
-              .getByRole("button", { name: "Apply preset", exact: true })
-              .click();
-            await page.locator("#confirm").waitFor({ state: "hidden" });
-          } else if (
-            ["record", "rememberRecord", "waitRecord"].includes(step.action)
-          ) {
+            await page.locator('#confirm').getByRole('button', { name: 'Apply preset', exact: true }).click();
+            await page.locator('#confirm').waitFor({ state: 'hidden' });
+          } else if (['record', 'rememberRecord', 'waitRecord'].includes(step.action)) {
             let current, matches;
-            const deadline =
-              Date.now() + (step.action === "waitRecord" ? timeout : 0);
+            const deadline = Date.now() + (step.action === 'waitRecord' ? timeout : 0);
             for (;;) {
               current = await readState(true);
               requireLocal(current);
               matches = (current.data?.[step.entity] ?? []).filter((record) =>
                 expectedFields(record, step.fields, step.contains),
               );
-              if (
-                matches.length === (step.count ?? 1) ||
-                Date.now() >= deadline
-              )
-                break;
+              if (matches.length === (step.count ?? 1) || Date.now() >= deadline) break;
               await new Promise((resolve) => setTimeout(resolve, 100));
             }
             if (matches.length !== (step.count ?? 1))
@@ -970,32 +854,34 @@ export async function runAcceptance({
                 `Expected ${step.count ?? 1} matching ${step.entity} records, observed ${matches.length}.`,
               );
             if (step.variable) {
-              const mapping = current.config.mappings.find(
-                (mapping) => mapping.logicalName === step.entity,
-              );
-              variables[step.variable] =
-                matches[0][
-                  step.idColumn ?? mapping?.idColumn ?? `${step.entity}id`
-                ];
+              const mapping = current.config.mappings.find((mapping) => mapping.logicalName === step.entity);
+              variables[step.variable] = matches[0][step.idColumn ?? mapping?.idColumn ?? `${step.entity}id`];
             }
             entry.matchCount = matches.length;
-          } else if (step.action === "screenshot")
-            await capture(step.name ?? String(stepIndex + 1));
+          } else if (step.action === 'screenshot') await capture(step.name ?? String(stepIndex + 1));
           else throw new Error(`Unsupported acceptance action ${step.action}`);
           actionDeadline = Infinity;
           entry.passed = true;
         }
         await page.waitForTimeout(300);
         await settle();
-        await capture("final");
+        await capture('final');
         if (
           new URL(page.url()).origin !== origin ||
           /signin|login|authorize/i.test(new URL(page.url()).pathname) ||
-          (await page.locator("input[type=password]:visible").count())
+          (await page.locator('input[type=password]:visible').count())
         )
-          throw new Error("Sign-in or origin redirect was observed.");
-        let unexpectedRequests = observation.failedRequests.filter(failure => !simulatorBackgroundRequest(failure.url, origin) &&
-          !(failure.errorText === 'net::ERR_ABORTED' && (observation.navigationCancelledRequests ?? []).some(cancelled => cancelled.requestKey === failure.requestKey))),
+          throw new Error('Sign-in or origin redirect was observed.');
+        let unexpectedRequests = observation.failedRequests.filter(
+            (failure) =>
+              !simulatorBackgroundRequest(failure.url, origin) &&
+              !(
+                failure.errorText === 'net::ERR_ABORTED' &&
+                (observation.navigationCancelledRequests ?? []).some(
+                  (cancelled) => cancelled.requestKey === failure.requestKey,
+                )
+              ),
+          ),
           unexpectedResponses = observation.failedResponses;
         observation.sourceAborts = sourceAborts;
         observation.sourceCancelledReads = [];
@@ -1018,63 +904,42 @@ export async function runAcceptance({
           observation.nativeNetworkComparison = compared;
           if (!compared.validation.valid)
             throw new Error(
-              "Native network observation became invalid: " +
-                compared.validation.diagnostics
-                  .map((item) => item.code)
-                  .join(", "),
+              'Native network observation became invalid: ' +
+                compared.validation.diagnostics.map((item) => item.code).join(', '),
             );
-          unexpectedRequests = compared.unexpectedFailures.filter(
-            (item) => item.kind === "network",
-          );
-          unexpectedResponses = compared.unexpectedFailures.filter(
-            (item) => item.kind === "http",
-          );
+          unexpectedRequests = compared.unexpectedFailures.filter((item) => item.kind === 'network');
+          unexpectedResponses = compared.unexpectedFailures.filter((item) => item.kind === 'http');
         }
         observation.duplicateNetworkConsole = [];
         observation.unexpectedConsoleErrors = [];
         for (const message of observation.consoleMessages ?? []) {
-          const duplicate = correlateNetworkConsole(
-            message,
-            observation.failedResponses,
-          );
+          const duplicate = correlateNetworkConsole(message, observation.failedResponses);
           if (duplicate) {
             observation.duplicateNetworkConsole.push(duplicate);
             continue;
           }
           // The browser's own requests (CDP type Other, such as /favicon.ico) are not page
           // requests; their HTTP console diagnostics are recorded but are not flow failures.
-          const status = Number(/status of (\d{3})/.exec(message.text ?? "")?.[1]);
+          const status = Number(/status of (\d{3})/.exec(message.text ?? '')?.[1]);
           const own =
             message.argumentCount === 0 &&
             message.url &&
             [...cdpRecords.values()].find((row) => {
               try {
-                return row.type === "Other" && row.status === status && new URL(row.path, origin).href === message.url;
+                return row.type === 'Other' && row.status === status && new URL(row.path, origin).href === message.url;
               } catch {
                 return false;
               }
             });
-          if (own)
-            (observation.browserRequestConsole ??= []).push({ console: message, path: own.path, status });
+          if (own) (observation.browserRequestConsole ??= []).push({ console: message, path: own.path, status });
           else observation.unexpectedConsoleErrors.push(message);
         }
-        const failures = ["pageErrors", "blockedRequests"].filter(
-          (key) => observation[key].length,
-        );
-        if (observation.unexpectedConsoleErrors.length)
-          failures.push("consoleErrors");
-        if (unexpectedRequests.length) failures.push("failedRequests");
-        if (
-          unexpectedResponses.some(
-            (response) =>
-              !(flow.allowedHttpStatuses ?? []).includes(response.status),
-          )
-        )
-          failures.push("failedResponses");
-        if (failures.length)
-          throw new Error(
-            `Runtime observations failed: ${failures.join(", ")}.`,
-          );
+        const failures = ['pageErrors', 'blockedRequests'].filter((key) => observation[key].length);
+        if (observation.unexpectedConsoleErrors.length) failures.push('consoleErrors');
+        if (unexpectedRequests.length) failures.push('failedRequests');
+        if (unexpectedResponses.some((response) => !(flow.allowedHttpStatuses ?? []).includes(response.status)))
+          failures.push('failedResponses');
+        if (failures.length) throw new Error(`Runtime observations failed: ${failures.join(', ')}.`);
         observation.passed = true;
       } catch (error) {
         observation.error = safeMessage(error.message);
@@ -1082,30 +947,20 @@ export async function runAcceptance({
           ...record,
           elapsedMs: Date.now() - record.started,
         }));
-        await capture("failure").catch(() => {});
+        await capture('failure').catch(() => {});
       } finally {
         await Promise.allSettled(responseObservations);
         observation.finalUrl = safeUrl(page.url());
         if (!isLive)
           try {
-            const response = await fetch(
-              local.origin + "/__sim/api/audit/export",
-              { signal: AbortSignal.timeout(timeout) },
-            );
+            const response = await fetch(local.origin + '/__sim/api/audit/export', {
+              signal: AbortSignal.timeout(timeout),
+            });
             if (response.ok) {
-              observation.auditFile = path.join(
-                outputDir,
-                `${index + 1}-request-audit.json`,
-              );
-              await fs.writeFile(
-                observation.auditFile,
-                JSON.stringify(await response.json(), null, 2),
-              );
+              observation.auditFile = path.join(outputDir, `${index + 1}-request-audit.json`);
+              await fs.writeFile(observation.auditFile, JSON.stringify(await response.json(), null, 2));
             }
-            observation.browserNetworkFile = path.join(
-              outputDir,
-              `${index + 1}-browser-network.json`,
-            );
+            observation.browserNetworkFile = path.join(outputDir, `${index + 1}-browser-network.json`);
             const records = [...cdpRecords.values()].map((record) => {
               const url = new URL(record.path, local.origin);
               return {
@@ -1114,10 +969,7 @@ export async function runAcceptance({
                 query: auditQuery(url.searchParams),
               };
             });
-            await fs.writeFile(
-              observation.browserNetworkFile,
-              JSON.stringify({ records, frameEvents }, null, 2),
-            );
+            await fs.writeFile(observation.browserNetworkFile, JSON.stringify({ records, frameEvents }, null, 2));
           } catch (error) {
             observation.auditError = safeMessage(error.message);
           }
@@ -1126,49 +978,39 @@ export async function runAcceptance({
     }
     const final = await readState();
     result.sourceFingerprintAfter = final.status?.sourceFingerprint;
-    result.sourceChanged =
-      result.sourceFingerprint !== result.sourceFingerprintAfter;
-    result.implementationFingerprintAfter =
-      final.status?.implementationFingerprint;
-    result.implementationChanged =
-      result.implementationFingerprint !==
-      result.implementationFingerprintAfter;
-    result.passed =
-      !result.sourceChanged &&
-      !result.implementationChanged &&
-      result.flows.every((flow) => flow.passed);
+    result.sourceChanged = result.sourceFingerprint !== result.sourceFingerprintAfter;
+    result.implementationFingerprintAfter = final.status?.implementationFingerprint;
+    result.implementationChanged = result.implementationFingerprint !== result.implementationFingerprintAfter;
+    result.passed = !result.sourceChanged && !result.implementationChanged && result.flows.every((flow) => flow.passed);
   } catch (error) {
     result.error = safeMessage(error.message);
   } finally {
     await ownedBrowser?.close();
     await attachedBrowser?.close();
     if (blockingProxy) await new Promise((resolve) => blockingProxy.close(resolve));
-    result.report = path.join(outputDir, "report.json");
+    result.report = path.join(outputDir, 'report.json');
     await fs.writeFile(result.report, JSON.stringify(result, null, 2));
   }
   return result;
 }
 
-if (
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
-) {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const { values } = parseArgs({
       options: {
-        local: { type: "string" },
-        origin: { type: "string" },
-        cdp: { type: "string" },
-        plan: { type: "string" },
-        requires: { type: "string", multiple: true },
-        strict: { type: "boolean", default: false },
+        local: { type: 'string' },
+        origin: { type: 'string' },
+        cdp: { type: 'string' },
+        plan: { type: 'string' },
+        requires: { type: 'string', multiple: true },
+        strict: { type: 'boolean', default: false },
         output: {
-          type: "string",
-          default: ".paqvilo/simulator/acceptance/evidence",
+          type: 'string',
+          default: '.paqvilo/simulator/acceptance/evidence',
         },
       },
     });
-    const flows = JSON.parse(await fs.readFile(values.plan, "utf8"));
+    const flows = JSON.parse(await fs.readFile(values.plan, 'utf8'));
     const result = await runAcceptance({
       localUrl: values.local,
       liveOrigin: values.origin,

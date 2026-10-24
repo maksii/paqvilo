@@ -17,19 +17,49 @@ const PUBLISHED = 2; // statuscode Published; its statecode is Active (1)
 // Assumption: at most five published rules per table.
 const MAX_PUBLISHED_PER_TABLE = 5;
 const DEFAULT_PAGE = 5000; // Default page size of paged queries.
-const DUPLICATE_MESSAGE = 'A record was not created or updated because a duplicate of the current record already exists.';
-const TEXT = 'nvarchar', INT = 'int', BOOL = 'bit', GUID = 'uniqueidentifier', LOOKUP = 'lookup';
+const DUPLICATE_MESSAGE =
+  'A record was not created or updated because a duplicate of the current record already exists.';
+const TEXT = 'nvarchar',
+  INT = 'int',
+  BOOL = 'bit',
+  GUID = 'uniqueidentifier',
+  LOOKUP = 'lookup';
 
 const TABLES = {
   duplicaterule: {
     id: 'duplicateruleid',
     name: 'name',
-    fields: { duplicateruleid: GUID, name: TEXT, description: TEXT, baseentityname: TEXT, matchingentityname: TEXT, excludeinactiverecords: BOOL, iscasesensitive: BOOL, statecode: INT, statuscode: INT },
-    relationships: { DuplicateRule_DuplicateRuleConditions: { entity: 'duplicaterulecondition', from: 'duplicateruleid', to: 'regardingobjectid', many: true } },
+    fields: {
+      duplicateruleid: GUID,
+      name: TEXT,
+      description: TEXT,
+      baseentityname: TEXT,
+      matchingentityname: TEXT,
+      excludeinactiverecords: BOOL,
+      iscasesensitive: BOOL,
+      statecode: INT,
+      statuscode: INT,
+    },
+    relationships: {
+      DuplicateRule_DuplicateRuleConditions: {
+        entity: 'duplicaterulecondition',
+        from: 'duplicateruleid',
+        to: 'regardingobjectid',
+        many: true,
+      },
+    },
   },
   duplicaterulecondition: {
     id: 'duplicateruleconditionid',
-    fields: { duplicateruleconditionid: GUID, baseattributename: TEXT, matchingattributename: TEXT, operatorcode: INT, operatorparam: INT, ignoreblankvalues: BOOL, regardingobjectid: LOOKUP },
+    fields: {
+      duplicateruleconditionid: GUID,
+      baseattributename: TEXT,
+      matchingattributename: TEXT,
+      operatorcode: INT,
+      operatorparam: INT,
+      ignoreblankvalues: BOOL,
+      regardingobjectid: LOOKUP,
+    },
   },
 };
 
@@ -37,13 +67,22 @@ const TABLES = {
 // 3 Same Date, 4 Same Date and Time, 5 Exact Match (Pick List Label), 6 Exact Match (Pick List Value).
 // Keys are the codes and the option labels or schema names with spaces and punctuation removed, lower-cased.
 const OPERATORS = new Map([
-  ['0', 'exact'], ['exactmatch', 'exact'],
-  ['1', 'first'], ['samefirst', 'first'], ['samefirstcharacters', 'first'],
-  ['2', 'last'], ['samelast', 'last'], ['samelastcharacters', 'last'],
-  ['3', 'date'], ['samedate', 'date'],
-  ['4', 'datetime'], ['samedateandtime', 'datetime'],
-  ['5', 'label'], ['exactmatchpicklistlabel', 'label'],
-  ['6', 'value'], ['exactmatchpicklistvalue', 'value'],
+  ['0', 'exact'],
+  ['exactmatch', 'exact'],
+  ['1', 'first'],
+  ['samefirst', 'first'],
+  ['samefirstcharacters', 'first'],
+  ['2', 'last'],
+  ['samelast', 'last'],
+  ['samelastcharacters', 'last'],
+  ['3', 'date'],
+  ['samedate', 'date'],
+  ['4', 'datetime'],
+  ['samedateandtime', 'datetime'],
+  ['5', 'label'],
+  ['exactmatchpicklistlabel', 'label'],
+  ['6', 'value'],
+  ['exactmatchpicklistvalue', 'value'],
 ]);
 
 const valueOf = (v) => (v !== null && typeof v === 'object' ? v.id : v) ?? null;
@@ -101,7 +140,11 @@ function formatRow(api, user, mapping, row) {
 }
 
 function operatorOf(code) {
-  const op = OPERATORS.get(String(code).toLowerCase().replace(/[^a-z0-9]/g, ''));
+  const op = OPERATORS.get(
+    String(code)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, ''),
+  );
   if (!op) throw new DataError(`Duplicate rule operator ${code} is not simulated.`, 400, 'InvalidRequest');
   return op;
 }
@@ -110,30 +153,40 @@ function operatorOf(code) {
 function compare(op, param, a, b, caseSensitive) {
   if (op === 'value') return Number(valueOf(a)) === Number(valueOf(b));
   if (op === 'date' || op === 'datetime') {
-    const x = timeOf(a), y = timeOf(b);
+    const x = timeOf(a),
+      y = timeOf(b);
     if (x === null || y === null) return false;
     return op === 'datetime' ? x === y : dayOf(x) === dayOf(y);
   }
-  let x = textOf(a), y = textOf(b);
+  let x = textOf(a),
+    y = textOf(b);
   if (!caseSensitive) {
     x = x.toLowerCase();
     y = y.toLowerCase();
   }
   if (op === 'exact') return x === y;
   const n = Number(param);
-  if (!(n >= 1)) throw new DataError('Same first and same last conditions need an operator parameter of at least 1.', 400, 'InvalidRequest');
+  if (!(n >= 1))
+    throw new DataError(
+      'Same first and same last conditions need an operator parameter of at least 1.',
+      400,
+      'InvalidRequest',
+    );
   if (x.length < n || y.length < n) return false;
   return op === 'first' ? x.slice(0, n) === y.slice(0, n) : x.slice(-n) === y.slice(-n);
 }
 
 // Pick-list label of a value: the option label in the field's metadata (options: [{ value, label }]), else the value's text.
-const labelOf = (mapping, column, value) => mapping?.fields?.[column]?.options?.find((o) => Number(o.value) === Number(valueOf(value)))?.label ?? textOf(value);
+const labelOf = (mapping, column, value) =>
+  mapping?.fields?.[column]?.options?.find((o) => Number(o.value) === Number(valueOf(value)))?.label ?? textOf(value);
 
 // Conditions combine with AND. Blank values are ignored when the condition says so, and always for a single-condition rule.
 function matchesRow(store, rule, conditions, base, row) {
   return conditions.every((cond) => {
-    const a = base[cond.baseattributename], b = row[cond.matchingattributename];
-    if (isBlank(a) || isBlank(b)) return !(conditions.length === 1 || cond.ignoreblankvalues === true) && isBlank(a) && isBlank(b);
+    const a = base[cond.baseattributename],
+      b = row[cond.matchingattributename];
+    if (isBlank(a) || isBlank(b))
+      return !(conditions.length === 1 || cond.ignoreblankvalues === true) && isBlank(a) && isBlank(b);
     const op = operatorOf(cond.operatorcode);
     if (op !== 'label') return compare(op, cond.operatorparam, a, b, rule.iscasesensitive === true);
     const left = labelOf(store.state.mappings[rule.baseentityname], cond.baseattributename, a);
@@ -142,8 +195,10 @@ function matchesRow(store, rule, conditions, base, row) {
   });
 }
 
-const publishedRules = (store, filter) => store.tableRows('duplicaterule').filter((r) => Number(r.statuscode) === PUBLISHED && filter(r));
-const conditionsOf = (store, rule) => store.tableRows('duplicaterulecondition').filter((c) => same(c.regardingobjectid, rule.duplicateruleid));
+const publishedRules = (store, filter) =>
+  store.tableRows('duplicaterule').filter((r) => Number(r.statuscode) === PUBLISHED && filter(r));
+const conditionsOf = (store, rule) =>
+  store.tableRows('duplicaterulecondition').filter((c) => same(c.regardingobjectid, rule.duplicateruleid));
 
 // Rows of the rule's matching table that duplicate `base`. selfId excludes the record being written when the tables are the same.
 function duplicatesUnder(store, rule, base, selfId) {
@@ -152,13 +207,22 @@ function duplicatesUnder(store, rule, base, selfId) {
   const conditions = conditionsOf(store, rule);
   if (conditions.length === 0) return []; // assumed: a rule without conditions matches nothing
   const sameTable = same(mapping.logicalName, rule.baseentityname);
-  return store.tableRows(mapping.logicalName).filter((row) => (!sameTable || !same(row[mapping.idColumn], selfId))
-    && (rule.excludeinactiverecords !== true || Number(row.statecode ?? 0) === 0)
-    && matchesRow(store, rule, conditions, base, row));
+  return store
+    .tableRows(mapping.logicalName)
+    .filter(
+      (row) =>
+        (!sameTable || !same(row[mapping.idColumn], selfId)) &&
+        (rule.excludeinactiverecords !== true || Number(row.statecode ?? 0) === 0) &&
+        matchesRow(store, rule, conditions, base, row),
+    );
 }
 
 // Create and update are checked only when the request sends MSCRM.SuppressDuplicateDetection: false (the default suppresses it).
-const detectionRequested = (c) => Object.entries(c.headers ?? {}).some(([name, value]) => name.toLowerCase() === 'mscrm.suppressduplicatedetection' && String(value).trim().toLowerCase() === 'false');
+const detectionRequested = (c) =>
+  Object.entries(c.headers ?? {}).some(
+    ([name, value]) =>
+      name.toLowerCase() === 'mscrm.suppressduplicatedetection' && String(value).trim().toLowerCase() === 'false',
+  );
 
 function beforeWrite(store, c, mapping, { operation, data, existing }) {
   if ((operation !== 'create' && operation !== 'update') || !detectionRequested(c)) return;
@@ -167,8 +231,9 @@ function beforeWrite(store, c, mapping, { operation, data, existing }) {
   if (enabled === false || enabled === 0) return;
   const selfId = operation === 'update' ? existing?.[mapping.idColumn] : undefined;
   const base = { ...existing, ...data };
-  const duplicate = publishedRules(store, (r) => same(r.baseentityname, mapping.logicalName))
-    .some((rule) => duplicatesUnder(store, rule, base, selfId).length > 0);
+  const duplicate = publishedRules(store, (r) => same(r.baseentityname, mapping.logicalName)).some(
+    (rule) => duplicatesUnder(store, rule, base, selfId).length > 0,
+  );
   // 412 with the native inner code 0x80040333 (the mapping in dataverse-odata.mjs answers it with the same status).
   if (duplicate) throw new DataError(DUPLICATE_MESSAGE, 412, 'DuplicateDetected', { innerCode: '0x80040333' });
 }
@@ -177,17 +242,32 @@ function beforeWrite(store, c, mapping, { operation, data, existing }) {
 const publish = (api) => async (c) => {
   const { store } = api;
   const rule = c.target.row;
-  const jobId = await api.change(() => store.transact(async () => {
-    api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
-    const others = publishedRules(store, (r) => same(r.baseentityname, rule.baseentityname) && !same(r.duplicateruleid, rule.duplicateruleid));
-    if (others.length >= MAX_PUBLISHED_PER_TABLE) {
-      // Native error code and message for the sixth published rule not known; this one is a guess.
-      throw new DataError(`Table ${rule.baseentityname} already has ${MAX_PUBLISHED_PER_TABLE} published duplicate rules.`, 400, 'InvalidRequest');
-    }
-    await store.updateRecordAsync('duplicaterule', c.target.id, { statecode: 1, statuscode: PUBLISHED }, c.identity);
-    return randomUUID(); // publishing completes synchronously, so the job id is not tracked
-  }));
-  return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.PublishDuplicateRuleResponse'), JobId: jobId } };
+  const jobId = await api.change(() =>
+    store.transact(async () => {
+      api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
+      const others = publishedRules(
+        store,
+        (r) => same(r.baseentityname, rule.baseentityname) && !same(r.duplicateruleid, rule.duplicateruleid),
+      );
+      if (others.length >= MAX_PUBLISHED_PER_TABLE) {
+        // Native error code and message for the sixth published rule not known; this one is a guess.
+        throw new DataError(
+          `Table ${rule.baseentityname} already has ${MAX_PUBLISHED_PER_TABLE} published duplicate rules.`,
+          400,
+          'InvalidRequest',
+        );
+      }
+      await store.updateRecordAsync('duplicaterule', c.target.id, { statecode: 1, statuscode: PUBLISHED }, c.identity);
+      return randomUUID(); // publishing completes synchronously, so the job id is not tracked
+    }),
+  );
+  return {
+    status: 200,
+    body: {
+      '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.PublishDuplicateRuleResponse'),
+      JobId: jobId,
+    },
+  };
 };
 
 // Unbound: the rule is named by the DuplicateRuleId parameter (the request body of the action).
@@ -197,10 +277,12 @@ const unpublish = (api) => async (c) => {
   const id = body.DuplicateRuleId ?? c.params?.DuplicateRuleId;
   const rule = id == null ? undefined : store.tableRows('duplicaterule').find((r) => same(r.duplicateruleid, id));
   if (!rule) throw new DataError(`duplicaterule With Id = ${id} Does Not Exist`, 404, 'NotFound');
-  await api.change(() => store.transact(async () => {
-    api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
-    await store.updateRecordAsync('duplicaterule', rule.duplicateruleid, { statecode: 0, statuscode: 0 }, c.identity);
-  }));
+  await api.change(() =>
+    store.transact(async () => {
+      api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
+      await store.updateRecordAsync('duplicaterule', rule.duplicateruleid, { statecode: 0, statuscode: 0 }, c.identity);
+    }),
+  );
   return { status: 204 }; // assumed: the native return of UnpublishDuplicateRule is not known
 };
 
@@ -211,7 +293,9 @@ function offsetOf(info, count) {
   try {
     const { offset } = JSON.parse(Buffer.from(String(info.PagingCookie), 'base64url').toString());
     if (Number.isInteger(offset) && offset >= 0) return offset;
-  } catch { /* reported below */ }
+  } catch {
+    /* reported below */
+  }
   throw new DataError('PagingCookie is not valid.', 400, 'InvalidRequest');
 }
 
@@ -230,7 +314,10 @@ const retrieveDuplicates = (api) => async (c) => {
   const attributes = business.Attributes ?? business.attributes ?? business; // attribute container shape assumed
   const selfId = attributes[store.state.mappings[baseEntity]?.idColumn];
   const found = new Map();
-  for (const rule of publishedRules(store, (r) => same(r.baseentityname, baseEntity) && same(r.matchingentityname, matching))) {
+  for (const rule of publishedRules(
+    store,
+    (r) => same(r.baseentityname, baseEntity) && same(r.matchingentityname, matching),
+  )) {
     for (const row of duplicatesUnder(store, rule, attributes, selfId)) found.set(textOf(row[target.idColumn]), row);
   }
   let rows = [...found.values()].filter((row) => !readable || readable(row));
@@ -240,7 +327,10 @@ const retrieveDuplicates = (api) => async (c) => {
   rows = rows.slice(offset, offset + count);
   return {
     status: 200,
-    body: { '@odata.context': contextUrl(c.origin, c.version, target.entitySet), value: rows.map((row) => formatRow(api, c.user, target, row)) }, // context URL form assumed
+    body: {
+      '@odata.context': contextUrl(c.origin, c.version, target.entitySet),
+      value: rows.map((row) => formatRow(api, c.user, target, row)),
+    }, // context URL form assumed
   };
 };
 
@@ -257,40 +347,63 @@ const bulkDetectDuplicates = (api) => async (c) => {
   const mapping = store.state.mappings[entity];
   if (!mapping) throw new DataError(`${entity} does not exist.`, 404, 'UnknownEntity');
   api.principals.authorize({ user: c.user, entity, operation: 'read', mapping });
-  const jobId = await api.systemJob({ name: body.JobName || 'Bulk Duplicate Detection', operationtype: BULK_DUPLICATE_TYPE, callerId: c.caller.systemuserid }, async () => {
-    const readable = api.principals.readFilter({ user: c.user, entity, mapping });
-    const rules = publishedRules(store, (r) => same(r.baseentityname, entity));
-    const pairs = [];
-    scan: for (const row of store.tableRows(entity)) {
-      if (readable && !readable(row)) continue;
-      for (const rule of rules) {
-        const matchId = store.state.mappings[rule.matchingentityname]?.idColumn; // no mapping: duplicatesUnder finds nothing
-        for (const match of duplicatesUnder(store, rule, row, row[mapping.idColumn])) {
-          pairs.push({ rule, base: textOf(row[mapping.idColumn]), dup: textOf(match[matchId]), matching: rule.matchingentityname });
-          if (pairs.length >= MAX_BULK_DUPLICATES) break scan;
+  const jobId = await api.systemJob(
+    {
+      name: body.JobName || 'Bulk Duplicate Detection',
+      operationtype: BULK_DUPLICATE_TYPE,
+      callerId: c.caller.systemuserid,
+    },
+    async () => {
+      const readable = api.principals.readFilter({ user: c.user, entity, mapping });
+      const rules = publishedRules(store, (r) => same(r.baseentityname, entity));
+      const pairs = [];
+      scan: for (const row of store.tableRows(entity)) {
+        if (readable && !readable(row)) continue;
+        for (const rule of rules) {
+          const matchId = store.state.mappings[rule.matchingentityname]?.idColumn; // no mapping: duplicatesUnder finds nothing
+          for (const match of duplicatesUnder(store, rule, row, row[mapping.idColumn])) {
+            pairs.push({
+              rule,
+              base: textOf(row[mapping.idColumn]),
+              dup: textOf(match[matchId]),
+              matching: rule.matchingentityname,
+            });
+            if (pairs.length >= MAX_BULK_DUPLICATES) break scan;
+          }
         }
       }
-    }
-    const now = new Date(api.clock ? api.clock() : Date.now()).toISOString();
-    await api.change(() => store.transact(() => {
-      const table = (store.state.tables.duplicaterecord ??= []);
-      for (const { rule, base, dup, matching } of pairs) {
-        store.insertRow('duplicaterecord', table, {
-          duplicateid: uuidV5(jobId, `${base}|${dup}|${rule.duplicateruleid}`),
-          asyncoperationid: ref('asyncoperation', jobId),
-          baserecordid: ref(entity, base),
-          baserecordidtypecode: entity,
-          duplicaterecordid: ref(matching, dup),
-          duplicaterecordidtypecode: matching,
-          duplicateruleid: ref('duplicaterule', rule.duplicateruleid),
-          createdon: now,
-        });
-      }
-    }, { isolated: true }));
-    const count = pairs.length;
-    return `${count} duplicate records detected for ${entity}`;
-  });
-  return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.BulkDetectDuplicatesResponse'), JobId: jobId } };
+      const now = new Date(api.clock ? api.clock() : Date.now()).toISOString();
+      await api.change(() =>
+        store.transact(
+          () => {
+            const table = (store.state.tables.duplicaterecord ??= []);
+            for (const { rule, base, dup, matching } of pairs) {
+              store.insertRow('duplicaterecord', table, {
+                duplicateid: uuidV5(jobId, `${base}|${dup}|${rule.duplicateruleid}`),
+                asyncoperationid: ref('asyncoperation', jobId),
+                baserecordid: ref(entity, base),
+                baserecordidtypecode: entity,
+                duplicaterecordid: ref(matching, dup),
+                duplicaterecordidtypecode: matching,
+                duplicateruleid: ref('duplicaterule', rule.duplicateruleid),
+                createdon: now,
+              });
+            }
+          },
+          { isolated: true },
+        ),
+      );
+      const count = pairs.length;
+      return `${count} duplicate records detected for ${entity}`;
+    },
+  );
+  return {
+    status: 200,
+    body: {
+      '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.BulkDetectDuplicatesResponse'),
+      JobId: jobId,
+    },
+  };
 };
 
 // CompoundUpdateDuplicateDetectionRule: one call updates a duplicaterule and its conditions. Only the known columns are
@@ -305,18 +418,34 @@ const compoundUpdateRule = (api) => async (c) => {
   if (!rule) throw new DataError(`duplicaterule With Id = ${entity.duplicateruleid} Does Not Exist`, 404, 'NotFound');
   const ruleValues = pick(entity, TABLES.duplicaterule.fields);
   delete ruleValues.duplicateruleid;
-  const children = (Array.isArray(body.ChildEntities) ? body.ChildEntities : []).map((child) => ({ id: child.duplicateruleconditionid, values: pick(child, TABLES.duplicaterulecondition.fields) }));
-  await api.change(() => store.transact(async () => {
-    api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
-    await store.updateRecordAsync('duplicaterule', rule.duplicateruleid, ruleValues, c.identity);
-    for (const child of children) {
-      const condition = store.tableRows('duplicaterulecondition').find((r) => same(r.duplicateruleconditionid, child.id));
-      if (!condition) throw new DataError(`duplicaterulecondition With Id = ${child.id} Does Not Exist`, 404, 'NotFound');
-      const values = { ...child.values };
-      delete values.duplicateruleconditionid;
-      await store.updateRecordAsync('duplicaterulecondition', condition.duplicateruleconditionid, values, c.identity);
-    }
-  }, { isolated: true }));
+  const children = (Array.isArray(body.ChildEntities) ? body.ChildEntities : []).map((child) => ({
+    id: child.duplicateruleconditionid,
+    values: pick(child, TABLES.duplicaterulecondition.fields),
+  }));
+  await api.change(() =>
+    store.transact(
+      async () => {
+        api.principals.authorize({ user: c.user, entity: 'duplicaterule', operation: 'write', row: rule });
+        await store.updateRecordAsync('duplicaterule', rule.duplicateruleid, ruleValues, c.identity);
+        for (const child of children) {
+          const condition = store
+            .tableRows('duplicaterulecondition')
+            .find((r) => same(r.duplicateruleconditionid, child.id));
+          if (!condition)
+            throw new DataError(`duplicaterulecondition With Id = ${child.id} Does Not Exist`, 404, 'NotFound');
+          const values = { ...child.values };
+          delete values.duplicateruleconditionid;
+          await store.updateRecordAsync(
+            'duplicaterulecondition',
+            condition.duplicateruleconditionid,
+            values,
+            c.identity,
+          );
+        }
+      },
+      { isolated: true },
+    ),
+  );
   return { status: 204 };
 };
 
@@ -374,15 +503,17 @@ export function parseDuplicateRuleXml(text) {
     statecode,
     statuscode: number(root, 'statuscode') ?? (statecode === ACTIVE ? PUBLISHED : 1),
   };
-  const conditions = root.children.filter((node) => node.name === 'duplicaterulecondition').map((node, index) => ({
-    duplicateruleconditionid: uuidV5(SOLUTION_NAMESPACE, `duplicaterulecondition:${id}:${index}`),
-    regardingobjectid: id,
-    baseattributename: childText(node, 'baseattributename'),
-    matchingattributename: childText(node, 'matchingattributename'),
-    operatorcode: number(node, 'operatorcode') ?? 0,
-    operatorparam: number(node, 'operatorparam') ?? null,
-    ignoreblankvalues: flag(node, 'ignoreblankvalues'),
-  }));
+  const conditions = root.children
+    .filter((node) => node.name === 'duplicaterulecondition')
+    .map((node, index) => ({
+      duplicateruleconditionid: uuidV5(SOLUTION_NAMESPACE, `duplicaterulecondition:${id}:${index}`),
+      regardingobjectid: id,
+      baseattributename: childText(node, 'baseattributename'),
+      matchingattributename: childText(node, 'matchingattributename'),
+      operatorcode: number(node, 'operatorcode') ?? 0,
+      operatorparam: number(node, 'operatorparam') ?? null,
+      ignoreblankvalues: flag(node, 'ignoreblankvalues'),
+    }));
   return { duplicaterule: rule, duplicaterulecondition: conditions };
 }
 
@@ -408,11 +539,42 @@ export function reset(api) {
 // Seeding is a store transaction through the change slot. The loader awaits the returned promise.
 export function install(api) {
   const { store } = api;
-  api.registry.register({ name: 'PublishDuplicateRule', kind: 'action', binding: 'entity', entity: 'duplicaterule', handle: publish(api), csdl: CSDL_PUBLISH });
-  api.registry.register({ name: 'UnpublishDuplicateRule', kind: 'action', binding: 'unbound', handle: unpublish(api), csdl: CSDL_UNPUBLISH });
-  api.registry.register({ name: 'RetrieveDuplicates', kind: 'function', binding: 'unbound', handle: retrieveDuplicates(api), csdl: CSDL_RETRIEVE });
-  api.registry.register({ name: 'BulkDetectDuplicates', kind: 'action', binding: 'unbound', handle: bulkDetectDuplicates(api), csdl: CSDL_BULK_DETECT });
-  api.registry.register({ name: 'CompoundUpdateDuplicateDetectionRule', kind: 'action', binding: 'unbound', handle: compoundUpdateRule(api), csdl: CSDL_COMPOUND_UPDATE });
+  api.registry.register({
+    name: 'PublishDuplicateRule',
+    kind: 'action',
+    binding: 'entity',
+    entity: 'duplicaterule',
+    handle: publish(api),
+    csdl: CSDL_PUBLISH,
+  });
+  api.registry.register({
+    name: 'UnpublishDuplicateRule',
+    kind: 'action',
+    binding: 'unbound',
+    handle: unpublish(api),
+    csdl: CSDL_UNPUBLISH,
+  });
+  api.registry.register({
+    name: 'RetrieveDuplicates',
+    kind: 'function',
+    binding: 'unbound',
+    handle: retrieveDuplicates(api),
+    csdl: CSDL_RETRIEVE,
+  });
+  api.registry.register({
+    name: 'BulkDetectDuplicates',
+    kind: 'action',
+    binding: 'unbound',
+    handle: bulkDetectDuplicates(api),
+    csdl: CSDL_BULK_DETECT,
+  });
+  api.registry.register({
+    name: 'CompoundUpdateDuplicateDetectionRule',
+    kind: 'action',
+    binding: 'unbound',
+    handle: compoundUpdateRule(api),
+    csdl: CSDL_COMPOUND_UPDATE,
+  });
   api.recordHooks.add('beforeWrite', (c, mapping, change) => beforeWrite(store, c, mapping, change));
   return api.change(() => reset(api));
 }

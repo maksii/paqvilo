@@ -12,10 +12,25 @@ import { privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
 // Enums from the Auditing (Audit) table reference: Operation 1-5 and the Action option set (0-125).
 const OPERATION = { create: 1, update: 2, delete: 3, access: 4 };
 const ACTION = {
-  create: 1, update: 2, delete: 3, assign: 13, share: 14, setState: 41, associate: 33, disassociate: 34,
-  assignRoleToTeam: 53, removeRoleFromTeam: 54, assignRoleToUser: 55, removeRoleFromUser: 56,
-  addPrivilegesToRole: 57, removePrivilegesFromRole: 58, replacePrivilegesInRole: 59,
-  modifyShare: 48, unshare: 49, userAccessWeb: 64, userAccessWebServices: 65,
+  create: 1,
+  update: 2,
+  delete: 3,
+  assign: 13,
+  share: 14,
+  setState: 41,
+  associate: 33,
+  disassociate: 34,
+  assignRoleToTeam: 53,
+  removeRoleFromTeam: 54,
+  assignRoleToUser: 55,
+  removeRoleFromUser: 56,
+  addPrivilegesToRole: 57,
+  removePrivilegesFromRole: 58,
+  replacePrivilegesInRole: 59,
+  modifyShare: 48,
+  unshare: 49,
+  userAccessWeb: 64,
+  userAccessWebServices: 65,
 };
 export const AUDIT_OPERATION = OPERATION;
 export const AUDIT_ACTION = ACTION;
@@ -29,14 +44,22 @@ const DEFAULT_COUNT = 5000; // Default page size of paged queries.
 const DEFAULT_INTERVAL_HOURS = 4; // Organization.UserAccessAuditingInterval default.
 
 const AUDIT_MAPPING = {
-  logicalName: 'audit', entitySet: 'audits', idColumn: 'auditid',
+  logicalName: 'audit',
+  entitySet: 'audits',
+  idColumn: 'auditid',
   userConfigured: true,
   // Seeded by the simulated Dataverse API (not from the Solution); the portal sees it under its site settings and table permissions.
   dataverseOnly: true,
   fields: {
-    auditid: { dataverseType: 'uniqueidentifier' }, operation: { dataverseType: 'int' }, action: { dataverseType: 'int' },
-    objectid: { dataverseType: 'lookup' }, objecttypecode: { dataverseType: 'nvarchar' }, attributemask: { dataverseType: 'nvarchar' },
-    userid: { dataverseType: 'lookup' }, callinguserid: { dataverseType: 'lookup' }, createdon: { dataverseType: 'datetime' },
+    auditid: { dataverseType: 'uniqueidentifier' },
+    operation: { dataverseType: 'int' },
+    action: { dataverseType: 'int' },
+    objectid: { dataverseType: 'lookup' },
+    objecttypecode: { dataverseType: 'nvarchar' },
+    attributemask: { dataverseType: 'nvarchar' },
+    userid: { dataverseType: 'lookup' },
+    callinguserid: { dataverseType: 'lookup' },
+    createdon: { dataverseType: 'datetime' },
     transactionid: { dataverseType: 'uniqueidentifier' },
   },
   relationships: {},
@@ -61,10 +84,12 @@ function tableAudited(api, mapping) {
 // The flag comes from dataverseMetadata, columnMetadata or the field itself; absent everywhere means audited.
 function columnAudited(mapping, column) {
   const field = mapping.fields[column];
-  const declared = field.dataverseMetadata?.IsAuditEnabled ?? field.columnMetadata?.isAuditEnabled ?? field.IsAuditEnabled;
+  const declared =
+    field.dataverseMetadata?.IsAuditEnabled ?? field.columnMetadata?.isAuditEnabled ?? field.IsAuditEnabled;
   return declared === undefined ? true : flag(declared);
 }
-const auditable = (api, mapping) => mapping.logicalName !== 'audit' && auditingOn(api.store) && tableAudited(api, mapping);
+const auditable = (api, mapping) =>
+  mapping.logicalName !== 'audit' && auditingOn(api.store) && tableAudited(api, mapping);
 const auditedColumns = (mapping) => Object.keys(mapping.fields).filter((column) => columnAudited(mapping, column));
 // ColumnNumber is not in the exports; the field's position in the mapping stands in for it.
 const columnNumber = (mapping, column) => Object.keys(mapping.fields).indexOf(column) + 1;
@@ -74,7 +99,8 @@ const pick = (values, columns) => Object.fromEntries(columns.map((column) => [co
 // Audit rows carry the calling user only when impersonation is used (identity.dataverse.callerId differs).
 // An identity without a systemuser id (a portal contact, for one) is audited as the SYSTEM user.
 function actorFields(store, identity = {}) {
-  const userId = identity.systemUserId ?? uuidV5(organizationOf(store).organizationid ?? ZERO_GUID, 'systemuser:SYSTEM');
+  const userId =
+    identity.systemUserId ?? uuidV5(organizationOf(store).organizationid ?? ZERO_GUID, 'systemuser:SYSTEM');
   const callerId = identity.dataverse?.callerId ?? null;
   return {
     userid: ref('systemuser', userId),
@@ -85,12 +111,15 @@ function actorFields(store, identity = {}) {
 // Rows land in store.transact: a write that rolls back takes its audit rows with it. nested joins the write's own
 // transaction (the afterWrite path); otherwise the rows queue behind the transaction that committed.
 function writeEntries(store, entries, { nested = false } = {}) {
-  return store.transact(() => {
-    for (const { row, detail } of entries) {
-      store.insertRow('audit', rowsOf(store), row);
-      if (detail) detailsOf(store)[row.auditid] = detail;
-    }
-  }, { nested });
+  return store.transact(
+    () => {
+      for (const { row, detail } of entries) {
+        store.insertRow('audit', rowsOf(store), row);
+        if (detail) detailsOf(store)[row.auditid] = detail;
+      }
+    },
+    { nested },
+  );
 }
 
 // Fire-and-forget from committed events: a failed audit write is logged and never reaches the caller.
@@ -122,27 +151,42 @@ function eventEntries(api, event, transactionId) {
   if (!mapping || !auditable(api, mapping) || !OPERATION[event.operation]) return [];
   const audited = auditedColumns(mapping);
   // Assumption: create rows list every non-null audited column in attributemask.
-  const changed = event.operation === 'create'
-    ? audited.filter((column) => plain(event.row[column]) !== null)
-    : event.operation === 'update' ? audited.filter((column) => !same(event.previous?.[column], event.row[column])) : [];
+  const changed =
+    event.operation === 'create'
+      ? audited.filter((column) => plain(event.row[column]) !== null)
+      : event.operation === 'update'
+        ? audited.filter((column) => !same(event.previous?.[column], event.row[column]))
+        : [];
   if (event.operation === 'update' && changed.length === 0) return [];
-  const action = event.operation === 'delete' ? ACTION.delete
-    : event.operation === 'create' ? ACTION.create
-      : changed.includes('ownerid') ? ACTION.assign
-        : changed.includes('statecode') ? ACTION.setState : ACTION.update;
+  const action =
+    event.operation === 'delete'
+      ? ACTION.delete
+      : event.operation === 'create'
+        ? ACTION.create
+        : changed.includes('ownerid')
+          ? ACTION.assign
+          : changed.includes('statecode')
+            ? ACTION.setState
+            : ACTION.update;
   const row = auditRow(api, {
-    entity: event.entity, id: event.row[mapping.idColumn], operation: OPERATION[event.operation], action,
+    entity: event.entity,
+    id: event.row[mapping.idColumn],
+    operation: OPERATION[event.operation],
+    action,
     mask: changed.length ? changed.map((column) => columnNumber(mapping, column)).join(',') : null,
-    identity: event.identity, transactionId,
+    identity: event.identity,
+    transactionId,
   });
   if (event.operation === 'delete') return [{ row, detail: null }];
-  return [{
-    row,
-    detail: {
-      oldValue: event.operation === 'update' ? pick(event.previous, changed) : null,
-      newValue: pick(event.row, changed),
+  return [
+    {
+      row,
+      detail: {
+        oldValue: event.operation === 'update' ? pick(event.previous, changed) : null,
+        newValue: pick(event.row, changed),
+      },
     },
-  }];
+  ];
 }
 
 // One transaction id per committed change set (a fresh id each time, so restarts cannot collide).
@@ -156,10 +200,17 @@ function onCommitted(api, events) {
 // A failure is logged, never thrown: auditing must not break the write.
 async function afterWrite(api, c, mapping, { operation, id, relationship }) {
   try {
-    const action = operation === 'associate' ? ACTION.associate : operation === 'disassociate' ? ACTION.disassociate : null;
+    const action =
+      operation === 'associate' ? ACTION.associate : operation === 'disassociate' ? ACTION.disassociate : null;
     if (!action || !auditable(api, mapping)) return;
     // Assumption: an association is recorded as Operation Update.
-    const row = auditRow(api, { entity: mapping.logicalName, id, operation: OPERATION.update, action, identity: c.identity });
+    const row = auditRow(api, {
+      entity: mapping.logicalName,
+      id,
+      operation: OPERATION.update,
+      action,
+      identity: c.identity,
+    });
     await writeEntries(api.store, [{ row, detail: { relationship: relationship ?? null } }], { nested: true });
   } catch (error) {
     api.log?.(error);
@@ -169,7 +220,10 @@ async function afterWrite(api, c, mapping, { operation, id, relationship }) {
 // Writer for the modules that change shares, role privileges or role assignments. Rows join the caller's open
 // transaction (nested), as afterWrite does, and a failure is logged, never thrown.
 // Assumption: share and role changes are recorded as Operation Update (the reference does not say).
-export async function writeAudit(api, { entity, id, action, operation = OPERATION.update, mask = null, identity, detail = null }) {
+export async function writeAudit(
+  api,
+  { entity, id, action, operation = OPERATION.update, mask = null, identity, detail = null },
+) {
   try {
     const mapping = api.store.state.mappings[entity];
     if (!mapping || !auditable(api, mapping)) return;
@@ -209,7 +263,9 @@ export async function recordUserAccess(api, identity = {}, channel = 'web') {
 // Read-only table: any create, update or delete through the Web API is refused.
 function beforeWrite(c, mapping) {
   if (mapping.logicalName === 'audit') {
-    throw new DataError(`The requested resource does not support http method '${c.method}'.`, 405, 'MethodNotAllowed', { innerCode: '' });
+    throw new DataError(`The requested resource does not support http method '${c.method}'.`, 405, 'MethodNotAllowed', {
+      innerCode: '',
+    });
   }
 }
 
@@ -236,7 +292,13 @@ function entityValues(mapping, values) {
 // Every audited column stays present, so a hidden value is null rather than missing.
 function visibleValues(api, user, mapping, objectId, values) {
   if (!values || !api.fieldSecurity?.mask) return values;
-  const masked = api.fieldSecurity.mask(user, mapping.logicalName, { [mapping.idColumn]: objectId, ...values }, { view: { unmask: false, single: false } }) ?? {};
+  const masked =
+    api.fieldSecurity.mask(
+      user,
+      mapping.logicalName,
+      { [mapping.idColumn]: objectId, ...values },
+      { view: { unmask: false, single: false } },
+    ) ?? {};
   return Object.fromEntries(Object.keys(values).map((column) => [column, masked[column] ?? null]));
 }
 
@@ -248,8 +310,12 @@ function attributeDetail(api, user, mapping, detail, objectId) {
     InvalidNewValueAttributes: [],
     LocLabelLanguageCode: 0,
     DeletedAttributes: { Count: 0, Keys: [], Values: [] }, // assumed populated only for deleted attributes
-    OldValue: oldValues ? { '@odata.type': `#Microsoft.Dynamics.CRM.${mapping.logicalName}`, ...entityValues(mapping, oldValues) } : null,
-    NewValue: newValues ? { '@odata.type': `#Microsoft.Dynamics.CRM.${mapping.logicalName}`, ...entityValues(mapping, newValues) } : null,
+    OldValue: oldValues
+      ? { '@odata.type': `#Microsoft.Dynamics.CRM.${mapping.logicalName}`, ...entityValues(mapping, oldValues) }
+      : null,
+    NewValue: newValues
+      ? { '@odata.type': `#Microsoft.Dynamics.CRM.${mapping.logicalName}`, ...entityValues(mapping, newValues) }
+      : null,
   };
 }
 
@@ -274,10 +340,11 @@ function targetOf(store, value) {
 }
 
 // Assumption: the history collection is ordered newest first.
-const historyOf = (store, entity, id) => rowsOf(store)
-  .filter((row) => row.objecttypecode === entity && lower(plain(row.objectid)) === lower(id))
-  .reverse()
-  .sort((a, b) => b.createdon.localeCompare(a.createdon)); // newest first; ties keep the newer insertion first
+const historyOf = (store, entity, id) =>
+  rowsOf(store)
+    .filter((row) => row.objecttypecode === entity && lower(plain(row.objectid)) === lower(id))
+    .reverse()
+    .sort((a, b) => b.createdon.localeCompare(a.createdon)); // newest first; ties keep the newer insertion first
 
 // Record-level read on the target row, as the platform checks it. A row that no longer exists leaves only the
 // entity-level privilege check, since its history stays readable.
@@ -307,7 +374,7 @@ function pageOf(params, rows, render) {
   // request sets PagingInfo.ReturnTotalRecordCount.
   return {
     MoreRecords: more,
-    PagingCookie: more ? cookieOf(offset + count) : "",
+    PagingCookie: more ? cookieOf(offset + count) : '',
     TotalRecordCount: info.ReturnTotalRecordCount === true ? rows.length : -1,
     AuditDetails: rows.slice(offset, offset + count).map(render),
   };
@@ -430,76 +497,133 @@ function operations(api) {
   const { store } = api;
   return [
     {
-      name: 'RetrieveRecordChangeHistory', kind: 'function', binding: 'unbound', csdl: CSDL_RECORD_HISTORY,
+      name: 'RetrieveRecordChangeHistory',
+      kind: 'function',
+      binding: 'unbound',
+      csdl: CSDL_RECORD_HISTORY,
       handle: async (c) => {
         const target = targetOf(store, c.params?.Target);
         requirePrivileges(api, c.user, READ_PRIVILEGES, target.mapping.logicalName);
         authorizeTarget(api, c.user, target);
         const rows = historyOf(store, target.mapping.logicalName, target.id);
-        return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.RetrieveRecordChangeHistoryResponse'), AuditDetailCollection: pageOf(c.params, rows, (row) => detailOf(api, c.user, row)) } };
+        return {
+          status: 200,
+          body: {
+            '@odata.context': contextUrl(
+              c.origin,
+              c.version,
+              'Microsoft.Dynamics.CRM.RetrieveRecordChangeHistoryResponse',
+            ),
+            AuditDetailCollection: pageOf(c.params, rows, (row) => detailOf(api, c.user, row)),
+          },
+        };
       },
     },
     {
-      name: 'RetrieveAttributeChangeHistory', kind: 'function', binding: 'unbound', csdl: CSDL_ATTRIBUTE_HISTORY,
+      name: 'RetrieveAttributeChangeHistory',
+      kind: 'function',
+      binding: 'unbound',
+      csdl: CSDL_ATTRIBUTE_HISTORY,
       handle: async (c) => {
         const target = targetOf(store, c.params?.Target);
-        const entity = target.mapping.logicalName, attribute = c.params?.AttributeLogicalName;
+        const entity = target.mapping.logicalName,
+          attribute = c.params?.AttributeLogicalName;
         requirePrivileges(api, c.user, READ_PRIVILEGES, entity);
         authorizeTarget(api, c.user, target);
-        if (!target.mapping.fields[attribute]) throw new DataError(`${attribute} is not a valid attribute of ${entity}.`, 400, 'InvalidRequest');
+        if (!target.mapping.fields[attribute])
+          throw new DataError(`${attribute} is not a valid attribute of ${entity}.`, 400, 'InvalidRequest');
         const number = String(columnNumber(target.mapping, attribute));
-        const rows = historyOf(store, entity, target.id).filter((row) => row.attributemask?.split(',').includes(number));
-        return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.RetrieveAttributeChangeHistoryResponse'), AuditDetailCollection: pageOf(c.params, rows, (row) => detailOf(api, c.user, row)) } };
+        const rows = historyOf(store, entity, target.id).filter((row) =>
+          row.attributemask?.split(',').includes(number),
+        );
+        return {
+          status: 200,
+          body: {
+            '@odata.context': contextUrl(
+              c.origin,
+              c.version,
+              'Microsoft.Dynamics.CRM.RetrieveAttributeChangeHistoryResponse',
+            ),
+            AuditDetailCollection: pageOf(c.params, rows, (row) => detailOf(api, c.user, row)),
+          },
+        };
       },
     },
     {
-      name: 'RetrieveAuditDetails', kind: 'function', binding: 'entity', entity: 'audit', csdl: CSDL_AUDIT_DETAILS,
+      name: 'RetrieveAuditDetails',
+      kind: 'function',
+      binding: 'entity',
+      entity: 'audit',
+      csdl: CSDL_AUDIT_DETAILS,
       handle: async (c) => {
         requirePrivileges(api, c.user, READ_PRIVILEGES, 'audit');
         return { status: 200, body: { AuditDetail: detailOf(api, c.user, c.target.row) } };
       },
     },
     {
-      name: 'DeleteRecordChangeHistory', kind: 'action', binding: 'unbound', csdl: CSDL_DELETE_HISTORY,
+      name: 'DeleteRecordChangeHistory',
+      kind: 'action',
+      binding: 'unbound',
+      csdl: CSDL_DELETE_HISTORY,
       handle: async (c) => {
         const body = typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {});
         const target = targetOf(store, body.Target);
         requirePrivileges(api, c.user, [DELETE_PRIVILEGE], target.mapping.logicalName);
-        const deleted = await api.change(() => store.transact(() => {
-          const rows = rowsOf(store), details = detailsOf(store);
-          let count = 0;
-          for (let i = rows.length - 1; i >= 0; i--) {
-            const row = rows[i];
-            if (row.objecttypecode !== target.mapping.logicalName || lower(plain(row.objectid)) !== lower(target.id)) continue;
-            delete details[row.auditid];
-            rows.splice(i, 1);
-            count++;
-          }
-          return count;
-        }));
+        const deleted = await api.change(() =>
+          store.transact(() => {
+            const rows = rowsOf(store),
+              details = detailsOf(store);
+            let count = 0;
+            for (let i = rows.length - 1; i >= 0; i--) {
+              const row = rows[i];
+              if (row.objecttypecode !== target.mapping.logicalName || lower(plain(row.objectid)) !== lower(target.id))
+                continue;
+              delete details[row.auditid];
+              rows.splice(i, 1);
+              count++;
+            }
+            return count;
+          }),
+        );
         return { status: 200, body: { DeletedEntriesCount: deleted } };
       },
     },
     {
-      name: 'DeleteAuditData', kind: 'action', binding: 'unbound', csdl: CSDL_DELETE_AUDIT,
+      name: 'DeleteAuditData',
+      kind: 'action',
+      binding: 'unbound',
+      csdl: CSDL_DELETE_AUDIT,
       handle: async (c) => {
         requirePrivileges(api, c.user, [DELETE_AUDIT_PRIVILEGE], 'audit');
         const body = typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {});
         const end = Date.parse(body.EndDate);
-        if (body.EndDate == null || !Number.isFinite(end)) throw new DataError('EndDate is required and must be a date and time.', 400, 'InvalidRequest'); // native message text not known
-        await api.change(() => store.transact(() => {
-          const rows = rowsOf(store), details = detailsOf(store);
-          for (let i = rows.length - 1; i >= 0; i--) {
-            if (!(Date.parse(rows[i].createdon) < end)) continue;
-            delete details[rows[i].auditid];
-            rows.splice(i, 1);
-          }
-        }, { isolated: true }));
-        return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.DeleteAuditDataResponse') } };
+        if (body.EndDate == null || !Number.isFinite(end))
+          throw new DataError('EndDate is required and must be a date and time.', 400, 'InvalidRequest'); // native message text not known
+        await api.change(() =>
+          store.transact(
+            () => {
+              const rows = rowsOf(store),
+                details = detailsOf(store);
+              for (let i = rows.length - 1; i >= 0; i--) {
+                if (!(Date.parse(rows[i].createdon) < end)) continue;
+                delete details[rows[i].auditid];
+                rows.splice(i, 1);
+              }
+            },
+            { isolated: true },
+          ),
+        );
+        return {
+          status: 200,
+          body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.DeleteAuditDataResponse') },
+        };
       },
     },
     {
-      name: 'GetAuditStorageDetails', kind: 'action', binding: 'unbound', csdl: CSDL_STORAGE,
+      name: 'GetAuditStorageDetails',
+      kind: 'action',
+      binding: 'unbound',
+      csdl: CSDL_STORAGE,
       handle: async (c) => {
         requirePrivileges(api, c.user, READ_PRIVILEGES, 'audit');
         // Synthetic facts: the JSON length of each audit row, grouped by the table it audits.
@@ -510,15 +634,38 @@ function operations(api) {
         }
         const keys = [...sizes.keys()];
         // The answer is Completed at once: Mirage has no pending calculation. The Result wrapper follows the documented example.
-        const details = { Count: keys.length, Keys: keys, Values: keys.map((key) => ({ SizeInBytes: sizes.get(key), ObjectTypeCode: 0 })) }; // ObjectTypeCode 0 is a placeholder
-        return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.GetAuditStorageDetailsResponse'), Result: { Status: 'Completed', AuditStorageDetails: details } } };
+        const details = {
+          Count: keys.length,
+          Keys: keys,
+          Values: keys.map((key) => ({ SizeInBytes: sizes.get(key), ObjectTypeCode: 0 })),
+        }; // ObjectTypeCode 0 is a placeholder
+        return {
+          status: 200,
+          body: {
+            '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.GetAuditStorageDetailsResponse'),
+            Result: { Status: 'Completed', AuditStorageDetails: details },
+          },
+        };
       },
     },
     {
-      name: 'RetrieveAuditPartitionList', kind: 'function', binding: 'unbound', csdl: CSDL_PARTITIONS,
+      name: 'RetrieveAuditPartitionList',
+      kind: 'function',
+      binding: 'unbound',
+      csdl: CSDL_PARTITIONS,
       handle: async (c) => {
         requirePrivileges(api, c.user, READ_PRIVILEGES, 'audit');
-        return { status: 200, body: { '@odata.context': contextUrl(c.origin, c.version, 'Microsoft.Dynamics.CRM.RetrieveAuditPartitionListResponse'), AuditPartitionDetailCollection: [{ PartitionNumber: 1, StartDate: null, EndDate: null, Size: 0 }] } }; // one synthetic partition; its dates and size are placeholders
+        return {
+          status: 200,
+          body: {
+            '@odata.context': contextUrl(
+              c.origin,
+              c.version,
+              'Microsoft.Dynamics.CRM.RetrieveAuditPartitionListResponse',
+            ),
+            AuditPartitionDetailCollection: [{ PartitionNumber: 1, StartDate: null, EndDate: null, Size: 0 }],
+          },
+        }; // one synthetic partition; its dates and size are placeholders
       },
     },
   ];

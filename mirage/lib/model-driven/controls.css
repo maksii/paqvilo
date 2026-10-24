@@ -1,109 +1,589 @@
 @import url('./date-control.css');
 /* Scoped form controls and the advanced record lookup. */
-.choice-control { position:relative; min-width:0; }
-.field .choice-control>input { padding-right:32px; cursor:pointer; caret-color:transparent; }
-.choice-chevron { position:absolute; right:10px; top:8px; pointer-events:none; color:#605e5c; }
-.choice-chevron .icon { width:12px; height:12px; }
-.choice-control:has(>input:disabled)>.choice-chevron { display:none; }
-.choice-multiple:has(>input:disabled) { min-height:44px; background:#f0f0f0; border-radius:0; }
-.choice-multiple:has(>input:disabled)>input { height:44px; }
-.choice-multiple:has(>input:disabled)>.choice-summary { padding:0 14px; }
-.lookup:has(>input:disabled)>button { display:none; }
-.choice-options { position:absolute; z-index:12; top:100%; left:0; right:0; min-width:160px; max-height:240px; overflow:auto; background:#fff; border:1px solid #edebe9; box-shadow:0 3px 8px #0003; border-radius:4px; padding:4px 0; }
-.choice-options[hidden] { display:none; }
-.choice-options.above { top:auto; bottom:100%; }
-.choice-options [role=option] { position:relative; padding:7px 12px 7px 32px; min-height:32px; cursor:pointer; font-size:13px; }
-.choice-options [role=option]:hover,.choice-options [role=option].active { background:#f3f2f1; }
-.choice-options [aria-selected=true]::after { content:'✓'; position:absolute; left:12px; color:#242424; }
-.choice-options[aria-multiselectable=true] [role=option] { padding-left:36px; }
-.choice-options[aria-multiselectable=true] [role=option]::before { content:''; position:absolute; top:12px; left:14px; width:10px; height:10px; border:1px solid #605e5c; border-radius:0; }
-.choice-options[aria-multiselectable=true] [aria-selected=true] { background:#bdbdbd; }
-.choice-options[aria-multiselectable=true] [aria-selected=true]::before { background:transparent; border-color:#605e5c; }
-.choice-options[aria-multiselectable=true] [aria-selected=true]::after { right:auto; left:14px; color:#001e40; font-size:10px; }
-.field .choice-control.choice-multiple>input { background:transparent; }
-.choice-multiple .choice-chevron { display:none; }
-.field .choice-control.open>input { outline:2px solid #000; outline-offset:-2px; border-radius:0; }
-.field .choice-control.open:not(.choice-multiple)>input { border-bottom-color:#0078d4; box-shadow:inset 0 -2px #0078d4; }
-.field .choice-control.choice-multiple.open>input { outline:0; border:1px solid #605e5c; border-radius:0; height:42px; caret-color:auto; }
-.choice-multiple.open .choice-chevron { display:block; transform:rotate(180deg); }
-.choice-multiple .choice-options { border:1px solid #605e5c; box-shadow:none; border-radius:0; padding:16px 0 0; }
-.choice-multiple .choice-options [role=option] { min-height:36px; }
-.choice-select-all>span { float:right; font-size:12px; }
-.choice-multiple .choice-options { color:#001e40; }
-.choice-chips { position:absolute; top:7px; right:26px; left:14px; height:28px; display:flex; align-items:center; gap:6px; overflow:hidden; pointer-events:none; }
-.choice-chips[hidden] { display:none; }
-.choice-multiple:not(:focus-within):not(.open)>.choice-chips { display:none; }
-.choice-summary { position:absolute; inset:0; display:flex; align-items:center; font-weight:600; pointer-events:none; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.choice-control:not(.choice-multiple)>.choice-summary,.choice-multiple:focus-within>.choice-summary,.choice-multiple.open>.choice-summary { display:none; }
-.choice-chip { display:inline-flex; align-items:center; height:28px; min-width:0; max-width:100%; background:#f0f0f0; padding-left:8px; gap:4px; flex:none; }
-.choice-chip>span { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.choice-chip>button { pointer-events:auto; padding:0; min-height:28px; height:28px; width:24px; border:0; border-radius:0; }
-.choice-chip>button .icon { height:12px; width:12px; }
-.choice-multiple.has-choices:not(.open)>input { color:transparent; }
-.field .choice-multiple.has-choices:focus-within>input { border:1px solid #605e5c; border-radius:0; height:42px; }
-.field .choice-multiple.has-choices.open>input { height:78px; padding-top:38px; }
-.number-control { position:relative; min-width:0; }
-.number-formatted { position:absolute; inset:0 11px; display:flex; align-items:center; pointer-events:none; white-space:nowrap; overflow:hidden; }
-.number-control.has-number>input:not(:focus) { color:transparent; }
-.number-control>input:focus+.number-formatted { visibility:hidden; }
-.number-control:has(>input:disabled)>.number-formatted { color:#605e5c; }
-.text-action-control { position:relative; min-width:0; }
-.field .text-action-control>input { padding-right:42px; }
-.text-action-control>.text-field-action { position:absolute; right:0; top:0; width:32px; height:32px; min-height:32px; padding:0; border:0; border-radius:0 4px 4px 0; background:#ebebeb; color:#605e5c; }
-.text-field-action .icon { width:16px; height:16px; }
-.field .lookup { position:relative; }
-.field .lookup>button[aria-label^="Look up "] { margin-left:auto; }
-.lookup-suggestions { position:absolute; z-index:15; top:100%; left:0; right:0; background:#fff; border:1px solid #edebe9; border-radius:4px; box-shadow:0 4px 12px #0003; }
-.lookup-suggestions.above { top:auto; bottom:100%; }
-.lookup-suggestions-header { display:flex; align-items:center; gap:12px; height:36px; padding:0 12px; background:#faf9f8; }
-.lookup-suggestions-header[hidden] { display:none; }
-.lookup-suggestions-header>button { height:24px; min-height:24px; padding:0 6px; border:1px solid #d2d0ce; border-radius:2px; font-size:12px; }
-.lookup-suggestions [role=listbox] { min-height:52px; max-height:240px; overflow:auto; padding:8px; }
-.lookup-suggestions [role=listbox][aria-busy=true] { padding:16px 8px; color:#605e5c; }
-.lookup-suggestions [role=listbox]>p { margin:8px 0; color:#605e5c; }
-.lookup-suggestions button.lookup-suggestion { display:flex; width:100%; height:40px; justify-content:flex-start; gap:12px; border-radius:0; padding:0 8px; }
-.lookup-suggestions button.lookup-suggestion[aria-selected=true] { background:#f3f2f1; }
-.lookup-suggestions button.lookup-suggestion.has-description { height:52px; }
-.lookup-suggestion-text { display:flex; flex-direction:column; align-items:flex-start; min-width:0; }
-.lookup-suggestion-text>span,.lookup-suggestion-text>small { max-width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.lookup-suggestion-text>small { font-size:12px; color:#605e5c; }
-.lookup-suggestions-footer { border-top:1px solid #d2d0ce; display:flex; justify-content:space-between; padding:4px 10px; }
-.lookup-suggestions-footer button { gap:5px; min-height:34px; padding:0 8px; font-size:12px; }
-.lookup-suggestions-footer button:last-child { text-decoration:underline; }
-dialog.lookup-dialog { width:94vw; height:94vh; max-width:none; max-height:none; padding:16px; border-radius:0; }
-dialog.lookup-dialog[open] { display:flex; flex-direction:column; }
-dialog.lookup-dialog h2 { flex:none; font-size:20px; font-weight:600; line-height:28px; margin:0 32px 20px 0; }
-dialog.lookup-dialog .dialog-body { flex:1; min-height:0; max-height:none; overflow:visible; display:flex; }
-.lookup-dialog-close { position:absolute; top:16px; right:16px; padding:0; width:32px; min-height:32px; }
-.lookup-browser { display:flex; flex-direction:column; min-height:0; width:100%; }
-.lookup-browser-toolbar { display:flex; align-items:center; gap:12px; margin-top:20px; min-height:36px; }
-.lookup-browser-toolbar>div:nth-child(2) { margin-right:auto; }
-.lookup-browser-toolbar button { color:#605e5c; font-size:14px; }
-.lookup-browser-toolbar .lookup-view-picker,.lookup-browser-toolbar .lookup-table-picker { padding:0 8px; border:0; font-weight:400; }
-.lookup-only-mine { display:flex; align-items:center; font-size:14px; color:#605e5c; white-space:nowrap; }
-.lookup-only-mine input { width:20px; height:20px; min-height:0; padding:0; margin:0 4px 0 0; }
-.lookup-browser-search { position:relative; width:500px; max-width:100%; }
-.lookup-browser-search input { width:100%; padding-right:36px; border:1px solid #8a8886; border-radius:0; }
-.lookup-browser-search>span { position:absolute; top:8px; right:10px; pointer-events:none; }
-.lookup-browser-results { flex:1; min-height:120px; overflow:auto; border-top:1px solid #edebe9; }
-.lookup-browser-results table { width:100%; border-collapse:collapse; table-layout:fixed; }
-.lookup-browser-results th { font-weight:400; text-align:left; color:#605e5c; height:40px; background:#fff; position:sticky; top:0; border-bottom:1px solid #edebe9; }
-.lookup-browser-results td { height:42px; border-bottom:1px solid #edebe9; }
-.lookup-browser-results th,.lookup-browser-results td { padding:0 12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.lookup-browser-results .lookup-selection { width:42px; padding:0 12px; }
-.lookup-browser-results input[type=radio] { width:18px; height:18px; min-height:0; padding:0; vertical-align:middle; accent-color:#0078d4; cursor:pointer; }
-.lookup-browser-results tbody tr { cursor:pointer; }
-.lookup-browser-results tbody tr:hover { background:#f3f2f1; }
-.lookup-browser-results tr[aria-selected=true] { background:#edebe9; }
-.lookup-browser-results td:nth-child(2) { color:#0066b8; }
-.lookup-browser-results td>span:first-child { display:inline-flex; align-items:center; vertical-align:middle; margin-right:10px; color:#605e5c; }
-.lookup-browser-empty { height:100%; min-height:160px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:20px; text-align:center; padding:24px; }
-.lookup-browser-empty h3 { margin:0; font-size:18px; line-height:24px; font-weight:600; }
-.lookup-browser-empty p { margin:0; font-size:14px; }
-.lookup-browser-status { min-height:20px; padding:2px 0; color:#605e5c; font-size:12px; }
-.lookup-browser-selected { min-height:40px; display:flex; align-items:center; gap:8px; border-top:1px solid #f3f2f1; margin:0 -16px; padding:12px 16px 0; }
-.lookup-browser-chip { display:inline-flex; align-items:center; gap:8px; padding-left:8px; background:#eaf2ff; }
-.lookup-browser-chip button { min-height:28px; height:28px; padding:0 5px; }
-dialog.lookup-dialog .dialog-actions { flex:none; margin-top:0; padding:0 0 20px; gap:12px; }
-dialog.lookup-dialog .dialog-actions button { min-width:80px; border-radius:2px; }
-@media(max-width:650px) { .lookup-browser-toolbar { flex-wrap:wrap; }.lookup-only-mine { display:none; } }
+.choice-control {
+  position: relative;
+  min-width: 0;
+}
+.field .choice-control > input {
+  padding-right: 32px;
+  cursor: pointer;
+  caret-color: transparent;
+}
+.choice-chevron {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  pointer-events: none;
+  color: #605e5c;
+}
+.choice-chevron .icon {
+  width: 12px;
+  height: 12px;
+}
+.choice-control:has(> input:disabled) > .choice-chevron {
+  display: none;
+}
+.choice-multiple:has(> input:disabled) {
+  min-height: 44px;
+  background: #f0f0f0;
+  border-radius: 0;
+}
+.choice-multiple:has(> input:disabled) > input {
+  height: 44px;
+}
+.choice-multiple:has(> input:disabled) > .choice-summary {
+  padding: 0 14px;
+}
+.lookup:has(> input:disabled) > button {
+  display: none;
+}
+.choice-options {
+  position: absolute;
+  z-index: 12;
+  top: 100%;
+  left: 0;
+  right: 0;
+  min-width: 160px;
+  max-height: 240px;
+  overflow: auto;
+  background: #fff;
+  border: 1px solid #edebe9;
+  box-shadow: 0 3px 8px #0003;
+  border-radius: 4px;
+  padding: 4px 0;
+}
+.choice-options[hidden] {
+  display: none;
+}
+.choice-options.above {
+  top: auto;
+  bottom: 100%;
+}
+.choice-options [role='option'] {
+  position: relative;
+  padding: 7px 12px 7px 32px;
+  min-height: 32px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.choice-options [role='option']:hover,
+.choice-options [role='option'].active {
+  background: #f3f2f1;
+}
+.choice-options [aria-selected='true']::after {
+  content: '✓';
+  position: absolute;
+  left: 12px;
+  color: #242424;
+}
+.choice-options[aria-multiselectable='true'] [role='option'] {
+  padding-left: 36px;
+}
+.choice-options[aria-multiselectable='true'] [role='option']::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  width: 10px;
+  height: 10px;
+  border: 1px solid #605e5c;
+  border-radius: 0;
+}
+.choice-options[aria-multiselectable='true'] [aria-selected='true'] {
+  background: #bdbdbd;
+}
+.choice-options[aria-multiselectable='true'] [aria-selected='true']::before {
+  background: transparent;
+  border-color: #605e5c;
+}
+.choice-options[aria-multiselectable='true'] [aria-selected='true']::after {
+  right: auto;
+  left: 14px;
+  color: #001e40;
+  font-size: 10px;
+}
+.field .choice-control.choice-multiple > input {
+  background: transparent;
+}
+.choice-multiple .choice-chevron {
+  display: none;
+}
+.field .choice-control.open > input {
+  outline: 2px solid #000;
+  outline-offset: -2px;
+  border-radius: 0;
+}
+.field .choice-control.open:not(.choice-multiple) > input {
+  border-bottom-color: #0078d4;
+  box-shadow: inset 0 -2px #0078d4;
+}
+.field .choice-control.choice-multiple.open > input {
+  outline: 0;
+  border: 1px solid #605e5c;
+  border-radius: 0;
+  height: 42px;
+  caret-color: auto;
+}
+.choice-multiple.open .choice-chevron {
+  display: block;
+  transform: rotate(180deg);
+}
+.choice-multiple .choice-options {
+  border: 1px solid #605e5c;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 16px 0 0;
+}
+.choice-multiple .choice-options [role='option'] {
+  min-height: 36px;
+}
+.choice-select-all > span {
+  float: right;
+  font-size: 12px;
+}
+.choice-multiple .choice-options {
+  color: #001e40;
+}
+.choice-chips {
+  position: absolute;
+  top: 7px;
+  right: 26px;
+  left: 14px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.choice-chips[hidden] {
+  display: none;
+}
+.choice-multiple:not(:focus-within):not(.open) > .choice-chips {
+  display: none;
+}
+.choice-summary {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  font-weight: 600;
+  pointer-events: none;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.choice-control:not(.choice-multiple) > .choice-summary,
+.choice-multiple:focus-within > .choice-summary,
+.choice-multiple.open > .choice-summary {
+  display: none;
+}
+.choice-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  min-width: 0;
+  max-width: 100%;
+  background: #f0f0f0;
+  padding-left: 8px;
+  gap: 4px;
+  flex: none;
+}
+.choice-chip > span {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.choice-chip > button {
+  pointer-events: auto;
+  padding: 0;
+  min-height: 28px;
+  height: 28px;
+  width: 24px;
+  border: 0;
+  border-radius: 0;
+}
+.choice-chip > button .icon {
+  height: 12px;
+  width: 12px;
+}
+.choice-multiple.has-choices:not(.open) > input {
+  color: transparent;
+}
+.field .choice-multiple.has-choices:focus-within > input {
+  border: 1px solid #605e5c;
+  border-radius: 0;
+  height: 42px;
+}
+.field .choice-multiple.has-choices.open > input {
+  height: 78px;
+  padding-top: 38px;
+}
+.number-control {
+  position: relative;
+  min-width: 0;
+}
+.number-formatted {
+  position: absolute;
+  inset: 0 11px;
+  display: flex;
+  align-items: center;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.number-control.has-number > input:not(:focus) {
+  color: transparent;
+}
+.number-control > input:focus + .number-formatted {
+  visibility: hidden;
+}
+.number-control:has(> input:disabled) > .number-formatted {
+  color: #605e5c;
+}
+.text-action-control {
+  position: relative;
+  min-width: 0;
+}
+.field .text-action-control > input {
+  padding-right: 42px;
+}
+.text-action-control > .text-field-action {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 0 4px 4px 0;
+  background: #ebebeb;
+  color: #605e5c;
+}
+.text-field-action .icon {
+  width: 16px;
+  height: 16px;
+}
+.field .lookup {
+  position: relative;
+}
+.field .lookup > button[aria-label^='Look up '] {
+  margin-left: auto;
+}
+.lookup-suggestions {
+  position: absolute;
+  z-index: 15;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid #edebe9;
+  border-radius: 4px;
+  box-shadow: 0 4px 12px #0003;
+}
+.lookup-suggestions.above {
+  top: auto;
+  bottom: 100%;
+}
+.lookup-suggestions-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 36px;
+  padding: 0 12px;
+  background: #faf9f8;
+}
+.lookup-suggestions-header[hidden] {
+  display: none;
+}
+.lookup-suggestions-header > button {
+  height: 24px;
+  min-height: 24px;
+  padding: 0 6px;
+  border: 1px solid #d2d0ce;
+  border-radius: 2px;
+  font-size: 12px;
+}
+.lookup-suggestions [role='listbox'] {
+  min-height: 52px;
+  max-height: 240px;
+  overflow: auto;
+  padding: 8px;
+}
+.lookup-suggestions [role='listbox'][aria-busy='true'] {
+  padding: 16px 8px;
+  color: #605e5c;
+}
+.lookup-suggestions [role='listbox'] > p {
+  margin: 8px 0;
+  color: #605e5c;
+}
+.lookup-suggestions button.lookup-suggestion {
+  display: flex;
+  width: 100%;
+  height: 40px;
+  justify-content: flex-start;
+  gap: 12px;
+  border-radius: 0;
+  padding: 0 8px;
+}
+.lookup-suggestions button.lookup-suggestion[aria-selected='true'] {
+  background: #f3f2f1;
+}
+.lookup-suggestions button.lookup-suggestion.has-description {
+  height: 52px;
+}
+.lookup-suggestion-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+}
+.lookup-suggestion-text > span,
+.lookup-suggestion-text > small {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.lookup-suggestion-text > small {
+  font-size: 12px;
+  color: #605e5c;
+}
+.lookup-suggestions-footer {
+  border-top: 1px solid #d2d0ce;
+  display: flex;
+  justify-content: space-between;
+  padding: 4px 10px;
+}
+.lookup-suggestions-footer button {
+  gap: 5px;
+  min-height: 34px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+.lookup-suggestions-footer button:last-child {
+  text-decoration: underline;
+}
+dialog.lookup-dialog {
+  width: 94vw;
+  height: 94vh;
+  max-width: none;
+  max-height: none;
+  padding: 16px;
+  border-radius: 0;
+}
+dialog.lookup-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+dialog.lookup-dialog h2 {
+  flex: none;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+  margin: 0 32px 20px 0;
+}
+dialog.lookup-dialog .dialog-body {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  display: flex;
+}
+.lookup-dialog-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  padding: 0;
+  width: 32px;
+  min-height: 32px;
+}
+.lookup-browser {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+}
+.lookup-browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 20px;
+  min-height: 36px;
+}
+.lookup-browser-toolbar > div:nth-child(2) {
+  margin-right: auto;
+}
+.lookup-browser-toolbar button {
+  color: #605e5c;
+  font-size: 14px;
+}
+.lookup-browser-toolbar .lookup-view-picker,
+.lookup-browser-toolbar .lookup-table-picker {
+  padding: 0 8px;
+  border: 0;
+  font-weight: 400;
+}
+.lookup-only-mine {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  color: #605e5c;
+  white-space: nowrap;
+}
+.lookup-only-mine input {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  margin: 0 4px 0 0;
+}
+.lookup-browser-search {
+  position: relative;
+  width: 500px;
+  max-width: 100%;
+}
+.lookup-browser-search input {
+  width: 100%;
+  padding-right: 36px;
+  border: 1px solid #8a8886;
+  border-radius: 0;
+}
+.lookup-browser-search > span {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  pointer-events: none;
+}
+.lookup-browser-results {
+  flex: 1;
+  min-height: 120px;
+  overflow: auto;
+  border-top: 1px solid #edebe9;
+}
+.lookup-browser-results table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.lookup-browser-results th {
+  font-weight: 400;
+  text-align: left;
+  color: #605e5c;
+  height: 40px;
+  background: #fff;
+  position: sticky;
+  top: 0;
+  border-bottom: 1px solid #edebe9;
+}
+.lookup-browser-results td {
+  height: 42px;
+  border-bottom: 1px solid #edebe9;
+}
+.lookup-browser-results th,
+.lookup-browser-results td {
+  padding: 0 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lookup-browser-results .lookup-selection {
+  width: 42px;
+  padding: 0 12px;
+}
+.lookup-browser-results input[type='radio'] {
+  width: 18px;
+  height: 18px;
+  min-height: 0;
+  padding: 0;
+  vertical-align: middle;
+  accent-color: #0078d4;
+  cursor: pointer;
+}
+.lookup-browser-results tbody tr {
+  cursor: pointer;
+}
+.lookup-browser-results tbody tr:hover {
+  background: #f3f2f1;
+}
+.lookup-browser-results tr[aria-selected='true'] {
+  background: #edebe9;
+}
+.lookup-browser-results td:nth-child(2) {
+  color: #0066b8;
+}
+.lookup-browser-results td > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-right: 10px;
+  color: #605e5c;
+}
+.lookup-browser-empty {
+  height: 100%;
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  text-align: center;
+  padding: 24px;
+}
+.lookup-browser-empty h3 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.lookup-browser-empty p {
+  margin: 0;
+  font-size: 14px;
+}
+.lookup-browser-status {
+  min-height: 20px;
+  padding: 2px 0;
+  color: #605e5c;
+  font-size: 12px;
+}
+.lookup-browser-selected {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid #f3f2f1;
+  margin: 0 -16px;
+  padding: 12px 16px 0;
+}
+.lookup-browser-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 8px;
+  background: #eaf2ff;
+}
+.lookup-browser-chip button {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 5px;
+}
+dialog.lookup-dialog .dialog-actions {
+  flex: none;
+  margin-top: 0;
+  padding: 0 0 20px;
+  gap: 12px;
+}
+dialog.lookup-dialog .dialog-actions button {
+  min-width: 80px;
+  border-radius: 2px;
+}
+@media (max-width: 650px) {
+  .lookup-browser-toolbar {
+    flex-wrap: wrap;
+  }
+  .lookup-only-mine {
+    display: none;
+  }
+}

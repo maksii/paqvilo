@@ -24,13 +24,23 @@ async function call(path, { method = 'GET', body, headers = {} } = {}) {
   // Every proxy call needs the token, GET included (code-apps-http.mjs); only context itself answers without it.
   if (!csrf && !path.startsWith('context')) await getContext();
   const response = await fetch(base + path, {
-    method, credentials: 'same-origin',
-    headers: { accept: 'application/json', ...(csrf ? { 'x-sim-csrf': csrf } : {}), ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...headers },
+    method,
+    credentials: 'same-origin',
+    headers: {
+      accept: 'application/json',
+      ...(csrf ? { 'x-sim-csrf': csrf } : {}),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      ...headers,
+    },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await response.text();
   const data = text ? JSON.parse(text) : undefined;
-  if (!response.ok) throw Object.assign(new Error(data?.error?.message ?? response.statusText), { status: response.status, code: data?.error?.code });
+  if (!response.ok)
+    throw Object.assign(new Error(data?.error?.message ?? response.statusText), {
+      status: response.status,
+      code: data?.error?.code,
+    });
   return { data, response };
 }
 
@@ -44,7 +54,7 @@ export async function getToken(resource) {
   return (await call('token', { method: 'POST', body: { resource } })).data;
 }
 
-const key = id => `(${encodeURIComponent(String(id).replace(/[{}]/g, ''))})`;
+const key = (id) => `(${encodeURIComponent(String(id).replace(/[{}]/g, ''))})`;
 // The IGetAllOptions names are a guess; select/filter/orderBy/top/skipToken map to the OData query options.
 const query = (options = {}) => {
   const params = new URLSearchParams();
@@ -60,14 +70,36 @@ const representation = { prefer: 'return=representation,odata.include-annotation
 
 /** Minimal data-service client over the Dataverse proxy; methods resolve to `{ data }` like generated services. */
 export const dataClient = {
-  create: async (entitySet, record) => ({ data: (await call(`dataverse/${entitySet}`, { method: 'POST', body: record, headers: representation })).data }),
-  get: async (entitySet, id, options) => ({ data: (await call(`dataverse/${entitySet}${key(id)}${query(options)}`, { headers: representation })).data }),
+  create: async (entitySet, record) => ({
+    data: (await call(`dataverse/${entitySet}`, { method: 'POST', body: record, headers: representation })).data,
+  }),
+  get: async (entitySet, id, options) => ({
+    data: (await call(`dataverse/${entitySet}${key(id)}${query(options)}`, { headers: representation })).data,
+  }),
   getAll: async (entitySet, options) => {
     const { data } = await call(`dataverse/${entitySet}${query(options)}`, { headers: representation });
-    return { data: data?.value ?? [], ...(data?.['@odata.nextLink'] ? { skipToken: new URL(data['@odata.nextLink'], 'http://localhost').searchParams.get('$skiptoken') } : {}) };
+    return {
+      data: data?.value ?? [],
+      ...(data?.['@odata.nextLink']
+        ? { skipToken: new URL(data['@odata.nextLink'], 'http://localhost').searchParams.get('$skiptoken') }
+        : {}),
+    };
   },
-  update: async (entitySet, id, changes) => ({ data: (await call(`dataverse/${entitySet}${key(id)}`, { method: 'PATCH', body: changes, headers: representation })).data }),
-  delete: async (entitySet, id) => { await call(`dataverse/${entitySet}${key(id)}`, { method: 'DELETE' }); return { data: undefined }; },
+  update: async (entitySet, id, changes) => ({
+    data: (await call(`dataverse/${entitySet}${key(id)}`, { method: 'PATCH', body: changes, headers: representation }))
+      .data,
+  }),
+  delete: async (entitySet, id) => {
+    await call(`dataverse/${entitySet}${key(id)}`, { method: 'DELETE' });
+    return { data: undefined };
+  },
   // Connector operation through a power.config.json connection reference; 501 ConnectorNotSimulated unless a hook answers.
-  execute: async (reference, operationId, parameters) => ({ data: (await call(`connectors/${encodeURIComponent(reference)}/${encodeURIComponent(operationId)}`, { method: 'POST', body: parameters ?? {} })).data }),
+  execute: async (reference, operationId, parameters) => ({
+    data: (
+      await call(`connectors/${encodeURIComponent(reference)}/${encodeURIComponent(operationId)}`, {
+        method: 'POST',
+        body: parameters ?? {},
+      })
+    ).data,
+  }),
 };

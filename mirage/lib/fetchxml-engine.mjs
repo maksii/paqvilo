@@ -1,16 +1,16 @@
 // Local FetchXML evaluation with Dataverse semantics. The store supplies
 // permission-filtered rows and metadata; this module never bypasses them.
-import { DataError } from "./data-error.mjs";
-import {isExactNumeric,sumNumeric,averageNumeric} from './exact-numeric.mjs';
-import {fieldKind} from './dataverse-values.mjs';
+import { DataError } from './data-error.mjs';
+import { isExactNumeric, sumNumeric, averageNumeric } from './exact-numeric.mjs';
+import { fieldKind } from './dataverse-values.mjs';
 import {
   FETCH_OPERATORS,
   UNSUPPORTED_FETCH_OPERATORS,
   HIERARCHY_OPERATORS,
   compileColumnComparison,
   compileOperator,
-} from "./dataverse-conditions.mjs";
-import { fiscalCalendar } from "./fiscal-calendar.mjs";
+} from './dataverse-conditions.mjs';
+import { fiscalCalendar } from './fiscal-calendar.mjs';
 import {
   compareSortKeys,
   dateGroupValue,
@@ -23,7 +23,7 @@ import {
   parseDateValue,
   scalar,
   sqlGuidSortKey,
-} from "./dataverse-values.mjs";
+} from './dataverse-values.mjs';
 
 export const FETCH_LIMITS = Object.freeze({
   links: 15,
@@ -39,70 +39,123 @@ export const FETCH_LIMITS = Object.freeze({
   linkDepth: 32,
 });
 export const FETCH_LINK_TYPES = new Set([
-  "inner", "outer", "any", "not any", "all", "not all", "exists", "in",
-  "matchfirstrowusingcrossapply",
+  'inner',
+  'outer',
+  'any',
+  'not any',
+  'all',
+  'not all',
+  'exists',
+  'in',
+  'matchfirstrowusingcrossapply',
 ]);
-const FILTER_LINK_TYPES = new Set(["any", "not any", "all", "not all"]);
-const SEMI_JOIN_TYPES = new Set(["any", "not any", "all", "not all", "exists", "in"]);
-export const FETCH_AGGREGATES = new Set(["count", "countcolumn", "sum", "avg", "min", "max"]);
+const FILTER_LINK_TYPES = new Set(['any', 'not any', 'all', 'not all']);
+const SEMI_JOIN_TYPES = new Set(['any', 'not any', 'all', 'not all', 'exists', 'in']);
+export const FETCH_AGGREGATES = new Set(['count', 'countcolumn', 'sum', 'avg', 'min', 'max']);
 export const FETCH_DATE_GROUPINGS = new Set([
-  "day", "week", "month", "quarter", "year", "fiscal-period", "fiscal-year",
+  'day',
+  'week',
+  'month',
+  'quarter',
+  'year',
+  'fiscal-period',
+  'fiscal-year',
 ]);
 /** Columns every Dataverse table has (audit, version and state stamps) that Solution metadata doesn't always list. The Dataverse caller never rejects them as unknown. */
 export const DATAVERSE_SYSTEM_COLUMNS = new Set([
-  "createdon", "modifiedon", "versionnumber", "statecode", "statuscode",
-  "importsequencenumber", "overriddencreatedon", "timezoneruleversionnumber", "utcconversiontimezonecode",
+  'createdon',
+  'modifiedon',
+  'versionnumber',
+  'statecode',
+  'statuscode',
+  'importsequencenumber',
+  'overriddencreatedon',
+  'timezoneruleversionnumber',
+  'utcconversiontimezonecode',
 ]);
 export const FETCH_SCHEMA = Object.freeze({
   fetch: {
-    children: ["entity"],
+    children: ['entity'],
     attributes: [
-      "version", "count", "page", "paging-cookie", "utc-offset", "aggregate",
-      "aggregatelimit", "distinct", "mapping", "min-active-row-version",
-      "output-format", "returntotalrecordcount", "no-lock", "top",
-      "latematerialize", "useraworderby", "options", "datasource",
+      'version',
+      'count',
+      'page',
+      'paging-cookie',
+      'utc-offset',
+      'aggregate',
+      'aggregatelimit',
+      'distinct',
+      'mapping',
+      'min-active-row-version',
+      'output-format',
+      'returntotalrecordcount',
+      'no-lock',
+      'top',
+      'latematerialize',
+      'useraworderby',
+      'options',
+      'datasource',
     ],
   },
   entity: {
-    children: ["attribute", "all-attributes", "filter", "link-entity", "order"],
-    attributes: ["name", "enableprefiltering", "prefilterparametername"],
+    children: ['attribute', 'all-attributes', 'filter', 'link-entity', 'order'],
+    attributes: ['name', 'enableprefiltering', 'prefilterparametername'],
   },
-  "link-entity": {
-    children: ["attribute", "all-attributes", "filter", "link-entity", "order"],
+  'link-entity': {
+    children: ['attribute', 'all-attributes', 'filter', 'link-entity', 'order'],
     attributes: [
-      "name", "from", "to", "alias", "link-type", "visible", "intersect",
-      "enableprefiltering", "prefilterparametername",
+      'name',
+      'from',
+      'to',
+      'alias',
+      'link-type',
+      'visible',
+      'intersect',
+      'enableprefiltering',
+      'prefilterparametername',
     ],
   },
   filter: {
-    children: ["condition", "filter", "link-entity"],
+    children: ['condition', 'filter', 'link-entity'],
     attributes: [
-      "type", "hint", "isquickfindfields", "overridequickfindrecordlimitenabled",
-      "overridequickfindrecordlimitdisabled",
+      'type',
+      'hint',
+      'isquickfindfields',
+      'overridequickfindrecordlimitenabled',
+      'overridequickfindrecordlimitdisabled',
     ],
   },
   condition: {
-    children: ["value"],
-    attributes: ["attribute", "operator", "value", "valueof", "entityname", "uiname", "uitype", "uihidden"],
+    children: ['value'],
+    attributes: ['attribute', 'operator', 'value', 'valueof', 'entityname', 'uiname', 'uitype', 'uihidden'],
   },
-  value: { children: [], attributes: ["uiname", "uitype"] },
+  value: { children: [], attributes: ['uiname', 'uitype'] },
   attribute: {
     children: [],
-    attributes: ["name", "alias", "aggregate", "groupby", "dategrouping", "distinct", "usertimezone", "rowaggregate"],
+    attributes: ['name', 'alias', 'aggregate', 'groupby', 'dategrouping', 'distinct', 'usertimezone', 'rowaggregate'],
   },
-  order: { children: [], attributes: ["attribute", "alias", "descending", "entityname"] },
-  "all-attributes": { children: [], attributes: [] },
+  order: { children: [], attributes: ['attribute', 'alias', 'descending', 'entityname'] },
+  'all-attributes': { children: [], attributes: [] },
 });
 /** Accepted and ignored: execution hints and UI metadata that do not change results. */
 export const FETCH_NO_OP_ATTRIBUTES = Object.freeze({
-  fetch: ["version", "mapping", "output-format", "no-lock", "latematerialize", "options", "min-active-row-version", "utc-offset"],
-  entity: ["enableprefiltering", "prefilterparametername"],
-  "link-entity": ["visible", "intersect", "enableprefiltering", "prefilterparametername"],
+  fetch: [
+    'version',
+    'mapping',
+    'output-format',
+    'no-lock',
+    'latematerialize',
+    'options',
+    'min-active-row-version',
+    'utc-offset',
+  ],
+  entity: ['enableprefiltering', 'prefilterparametername'],
+  'link-entity': ['visible', 'intersect', 'enableprefiltering', 'prefilterparametername'],
   // hint="union" is a SQL performance hint (fetchxml/optimize-performance#union-hint): rows
   // are the same with or without it. planFetch reports its documented restrictions.
-  filter: ["hint", "isquickfindfields", "overridequickfindrecordlimitenabled", "overridequickfindrecordlimitdisabled"],
-  condition: ["uiname", "uitype", "uihidden"],
-  value: ["uiname", "uitype"],
+  filter: ['hint', 'isquickfindfields', 'overridequickfindrecordlimitenabled', 'overridequickfindrecordlimitdisabled'],
+  condition: ['uiname', 'uitype', 'uihidden'],
+  value: ['uiname', 'uitype'],
 });
 /**
  * Declared FetchXML attributes the evaluator rejects, with the reason, by element. The
@@ -112,65 +165,58 @@ export const FETCH_NO_OP_ATTRIBUTES = Object.freeze({
 export const FETCH_UNSUPPORTED_ATTRIBUTES = Object.freeze({
   attribute: Object.freeze({
     rowaggregate:
-      "FetchXML rowaggregate requires hierarchical relationship metadata, which the local store does not model.",
+      'FetchXML rowaggregate requires hierarchical relationship metadata, which the local store does not model.',
   }),
 });
 
-const fail = (message, status = 400, code = "InvalidFetchXml", details) => {
+const fail = (message, status = 400, code = 'InvalidFetchXml', details) => {
   throw new DataError(message, status, code, details);
 };
 const children = (node, name) => node.children.filter((child) => child.name === name);
-const bool = (value) => /^(?:true|1)$/i.test(String(value ?? "").trim());
+const bool = (value) => /^(?:true|1)$/i.test(String(value ?? '').trim());
 const integerAttribute = (fetch, name, { min = 1, max } = {}) => {
   const raw = fetch.attrs[name];
   if (raw == null) return null;
   const text = String(raw).trim();
   if (!/^\d+$/.test(text) || !Number.isSafeInteger(Number(text)))
-    fail(`The '${name}' attribute value '${raw}' is not a valid integer.`, 400, "InvalidFetchXml");
+    fail(`The '${name}' attribute value '${raw}' is not a valid integer.`, 400, 'InvalidFetchXml');
   const value = Number(text);
-  if (value < min) fail(`The '${name}' attribute must be at least ${min}.`, 400, "InvalidFetchXml");
-  if (max != null && value > max)
-    fail(`The '${name}' attribute can't exceed ${max}.`, 400, "InvalidFetchXml");
+  if (value < min) fail(`The '${name}' attribute must be at least ${min}.`, 400, 'InvalidFetchXml');
+  if (max != null && value > max) fail(`The '${name}' attribute can't exceed ${max}.`, 400, 'InvalidFetchXml');
   return value;
 };
 
-const XML_ENTITIES = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&apos;": "'" };
+const XML_ENTITIES = { '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&apos;': "'" };
 export const xmlDecode = (value) =>
   String(value).replace(
     /&(?:amp|lt|gt|quot|apos);|&#(?:x[\da-f]+|\d+);/gi,
     (entity) =>
       XML_ENTITIES[entity.toLowerCase()] ??
-      String.fromCodePoint(
-        parseInt(entity.slice(2, -1).replace(/^x/i, ""), /^&#x/i.test(entity) ? 16 : 10),
-      ),
+      String.fromCodePoint(parseInt(entity.slice(2, -1).replace(/^x/i, ''), /^&#x/i.test(entity) ? 16 : 10)),
   );
 export const xmlEscapeAttribute = (value) =>
-  String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/"/g, "&quot;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  String(value).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 /** Small non-resolving XML parser. Declarations and external entities are rejected. */
 export function parseXmlDocument(source, { root, maxDepth = FETCH_LIMITS.xmlDepth } = {}) {
   if (/<!DOCTYPE|<!ENTITY/i.test(source))
-    fail("FetchXML declarations and external entities are not supported", 400, "InvalidRequest");
-  const document = { name: "#document", attrs: {}, children: [] };
+    fail('FetchXML declarations and external entities are not supported', 400, 'InvalidRequest');
+  const document = { name: '#document', attrs: {}, children: [] };
   const stack = [document];
   for (const token of xmlTokens(String(source))) {
-    if (token.startsWith("<!--") || token.startsWith("<?")) continue;
-    if (token.startsWith("</")) {
+    if (token.startsWith('<!--') || token.startsWith('<?')) continue;
+    if (token.startsWith('</')) {
       const name = token.slice(2, -1).trim();
       if (stack.length === 1 || stack.pop().name !== name)
-        fail("Malformed FetchXML closing tag", 400, "InvalidRequest");
+        fail('Malformed FetchXML closing tag', 400, 'InvalidRequest');
       continue;
     }
-    if (token.startsWith("<")) {
+    if (token.startsWith('<')) {
       const match = /^<([\w:-]+)/.exec(token);
-      if (!match) fail("Malformed FetchXML element", 400, "InvalidRequest");
+      if (!match) fail('Malformed FetchXML element', 400, 'InvalidRequest');
       const attrs = Object.create(null);
       const content = token.slice(match[0].length, -1).trimEnd();
-      const selfClosing = content.endsWith("/");
+      const selfClosing = content.endsWith('/');
       const attributeText = selfClosing ? content.slice(0, -1) : content;
       const attribute = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/y;
       let at = 0;
@@ -179,28 +225,28 @@ export function parseXmlDocument(source, { root, maxDepth = FETCH_LIMITS.xmlDept
         if (at === attributeText.length) break;
         attribute.lastIndex = at;
         const parsed = attribute.exec(attributeText);
-        if (!parsed) fail(`Malformed attributes on ${match[1]}`, 400, "InvalidRequest");
+        if (!parsed) fail(`Malformed attributes on ${match[1]}`, 400, 'InvalidRequest');
         attrs[parsed[1]] = xmlDecode(parsed[2] ?? parsed[3]);
         at = attribute.lastIndex;
       }
-      const node = { name: match[1], attrs, children: [], text: "" };
+      const node = { name: match[1], attrs, children: [], text: '' };
       stack.at(-1).children.push(node);
       if (!selfClosing) {
-        if (stack.length >= maxDepth)
-          fail(`FetchXML nesting exceeds ${maxDepth} levels`, 400, "UnsupportedQuery");
+        if (stack.length >= maxDepth) fail(`FetchXML nesting exceeds ${maxDepth} levels`, 400, 'UnsupportedQuery');
         stack.push(node);
       }
     } else {
-      if (stack.length === 1 && token.trim())
-        fail("Unexpected text outside FetchXML", 400, "InvalidRequest");
-      stack.at(-1).text = (stack.at(-1).text ?? "") + xmlDecode(token);
+      if (stack.length === 1 && token.trim()) fail('Unexpected text outside FetchXML', 400, 'InvalidRequest');
+      stack.at(-1).text = (stack.at(-1).text ?? '') + xmlDecode(token);
     }
   }
   if (stack.length !== 1 || document.children.length !== 1 || (root && document.children[0].name !== root))
     fail(
-      root === "fetch" ? "FetchXML must contain one complete fetch element" : `XML must contain one complete ${root ?? "root"} element`,
+      root === 'fetch'
+        ? 'FetchXML must contain one complete fetch element'
+        : `XML must contain one complete ${root ?? 'root'} element`,
       400,
-      "InvalidRequest",
+      'InvalidRequest',
     );
   return document.children[0];
 }
@@ -211,24 +257,27 @@ function* xmlTokens(source) {
   let at = 0;
   while (at < source.length) {
     const start = at;
-    if (source[at] !== "<") {
-      const next = source.indexOf("<", at);
+    if (source[at] !== '<') {
+      const next = source.indexOf('<', at);
       at = next < 0 ? source.length : next;
-    } else if (source.startsWith("<!--", at) || source.startsWith("<?", at)) {
-      const comment = source.startsWith("<!--", at);
-      const end = source.indexOf(comment ? "-->" : "?>", at + (comment ? 4 : 2));
-      if (end < 0) fail("Unterminated FetchXML comment or instruction", 400, "InvalidRequest");
+    } else if (source.startsWith('<!--', at) || source.startsWith('<?', at)) {
+      const comment = source.startsWith('<!--', at);
+      const end = source.indexOf(comment ? '-->' : '?>', at + (comment ? 4 : 2));
+      if (end < 0) fail('Unterminated FetchXML comment or instruction', 400, 'InvalidRequest');
       at = end + (comment ? 3 : 2);
     } else {
       let quote = null;
       for (at++; at < source.length; at++) {
         const char = source[at];
-        if (quote) { if (char === quote) quote = null; }
-        else if (char === '"' || char === "'") quote = char;
-        else if (char === ">") { at++; break; }
-        else if (char === "<") fail("Malformed FetchXML element", 400, "InvalidRequest");
+        if (quote) {
+          if (char === quote) quote = null;
+        } else if (char === '"' || char === "'") quote = char;
+        else if (char === '>') {
+          at++;
+          break;
+        } else if (char === '<') fail('Malformed FetchXML element', 400, 'InvalidRequest');
       }
-      if (source[at - 1] !== ">" || quote) fail("Unterminated FetchXML element", 400, "InvalidRequest");
+      if (source[at - 1] !== '>' || quote) fail('Unterminated FetchXML element', 400, 'InvalidRequest');
     }
     yield source.slice(start, at);
   }
@@ -243,51 +292,72 @@ function* xmlTokens(source) {
  * output shows count="5000" page="1" returntotalrecordcount="true" added
  * when absent, so the portal profile reports total_record_count by default.
  */
-export function planFetch(fetch, { profile = "portal", limits: overrides = {}, generatedAnyAllAliases = [],linkBudgetError='documented',dataverseIdentity=false } = {}) {
+export function planFetch(
+  fetch,
+  {
+    profile = 'portal',
+    limits: overrides = {},
+    generatedAnyAllAliases = [],
+    linkBudgetError = 'documented',
+    dataverseIdentity = false,
+  } = {},
+) {
   const limits = { ...FETCH_LIMITS, ...overrides };
-  if (fetch?.name !== "fetch") fail("FetchXML must contain one complete fetch element", 400, "InvalidRequest");
-  const strict = profile === "webapi" || profile === "sdk";
+  if (fetch?.name !== 'fetch') fail('FetchXML must contain one complete fetch element', 400, 'InvalidRequest');
+  const strict = profile === 'webapi' || profile === 'sdk';
   const diagnostics = [];
   // The portal's OData compiler emits this private annotation. Admit only the
   // exact compiler-owned filter positions, leaving authored strict FetchXML
   // validation unchanged. Predicate execution comes from the any/inner links.
-  const filters = [], gatherFilters = node => {
-    if (node.name === 'filter') filters.push(node);
-    for (const child of node.children ?? []) gatherFilters(child);
-  };
+  const filters = [],
+    gatherFilters = (node) => {
+      if (node.name === 'filter') filters.push(node);
+      for (const child of node.children ?? []) gatherFilters(child);
+    };
   gatherFilters(fetch);
   const qualifiedFilters = new Set();
   if (!Array.isArray(generatedAnyAllAliases) || generatedAnyAllAliases.length > 5000)
     fail('Invalid generated OData filter annotations.', 501, 'LocalPluginQueryUnsupported');
   for (const annotation of generatedAnyAllAliases) {
     const filter = filters[annotation?.filterOrdinal];
-    if (!annotation || Object.keys(annotation).some(key => !['filterOrdinal', 'alias'].includes(key)) ||
-      !Number.isInteger(annotation.filterOrdinal) || annotation.filterOrdinal < 0 ||
-      typeof annotation.alias !== 'string' || !/^[a-z_][a-z\d_]{0,127}$/i.test(annotation.alias) ||
-      !filter || filter.attrs.anyallalias !== annotation.alias || qualifiedFilters.has(filter))
+    if (
+      !annotation ||
+      Object.keys(annotation).some((key) => !['filterOrdinal', 'alias'].includes(key)) ||
+      !Number.isInteger(annotation.filterOrdinal) ||
+      annotation.filterOrdinal < 0 ||
+      typeof annotation.alias !== 'string' ||
+      !/^[a-z_][a-z\d_]{0,127}$/i.test(annotation.alias) ||
+      !filter ||
+      filter.attrs.anyallalias !== annotation.alias ||
+      qualifiedFilters.has(filter)
+    )
       fail('Generated OData filter annotations do not match the execution tree.', 501, 'LocalPluginQueryUnsupported');
     qualifiedFilters.add(filter);
   }
   const links = [];
-  let conditions = 0, ordinaryLinks = 0,
+  let conditions = 0,
+    ordinaryLinks = 0,
     unionHints = 0;
   // Filter nesting: the entity's (or link-entity's) own filter is level 1.
   const filterLevels = new Map();
-  const filterLevel = (node) => (node?.name === "filter" ? (filterLevels.get(node) ?? 1) : 0);
+  const filterLevel = (node) => (node?.name === 'filter' ? (filterLevels.get(node) ?? 1) : 0);
   const visit = (node, depth, linkDepth, parent) => {
-    if (node.name === "filter") filterLevels.set(node, filterLevel(parent) + 1);
+    if (node.name === 'filter') filterLevels.set(node, filterLevel(parent) + 1);
     if (depth > FETCH_LIMITS.xmlDepth)
-      fail(`FetchXML nesting exceeds ${FETCH_LIMITS.xmlDepth} levels`, 400, "UnsupportedQuery");
+      fail(`FetchXML nesting exceeds ${FETCH_LIMITS.xmlDepth} levels`, 400, 'UnsupportedQuery');
     const schema = FETCH_SCHEMA[node.name];
-    if (!schema) fail(`Unsupported FetchXML element ${node.name}`, 400, "UnsupportedQuery");
+    if (!schema) fail(`Unsupported FetchXML element ${node.name}`, 400, 'UnsupportedQuery');
     for (const [key, reason] of Object.entries(FETCH_UNSUPPORTED_ATTRIBUTES[node.name] ?? {}))
-      if (node.attrs[key] != null) fail(reason, 400, "UnsupportedQuery");
+      if (node.attrs[key] != null) fail(reason, 400, 'UnsupportedQuery');
     for (const key of Object.keys(node.attrs))
-      if (!schema.attributes.includes(key) && !/^xmlns(?::|$)/.test(key) && !(key === 'anyallalias' && qualifiedFilters.has(node))) {
-        if (strict)
-          fail(`The '${key}' attribute is not declared on FetchXML ${node.name}.`, 400, "InvalidFetchXml");
+      if (
+        !schema.attributes.includes(key) &&
+        !/^xmlns(?::|$)/.test(key) &&
+        !(key === 'anyallalias' && qualifiedFilters.has(node))
+      ) {
+        if (strict) fail(`The '${key}' attribute is not declared on FetchXML ${node.name}.`, 400, 'InvalidFetchXml');
         diagnostics.push({
-          code: "FETCHXML_ATTRIBUTE_IGNORED",
+          code: 'FETCHXML_ATTRIBUTE_IGNORED',
           element: node.name,
           attribute: key,
           message: `The portal FetchXML model ignores the undeclared '${key}' attribute on ${node.name}.`,
@@ -295,55 +365,75 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
       }
     for (const child of node.children)
       if (!schema.children.includes(child.name))
-        fail(`Unsupported FetchXML ${child.name} inside ${node.name}`, 400, "UnsupportedQuery");
+        fail(`Unsupported FetchXML ${child.name} inside ${node.name}`, 400, 'UnsupportedQuery');
     let nextLinkDepth = linkDepth;
     switch (node.name) {
-      case "entity":
-        if (!node.attrs.name) fail("The FetchXML entity element requires a name.", 400, "InvalidFetchXml");
+      case 'entity':
+        if (!node.attrs.name) fail('The FetchXML entity element requires a name.', 400, 'InvalidFetchXml');
         break;
-      case "link-entity": {
-        if (!node.attrs.name) fail("The FetchXML link-entity element requires a name.", 400, "InvalidFetchXml");
-        const type = node.attrs["link-type"] ?? "inner";
-        if (!FETCH_LINK_TYPES.has(type))
-          fail(`Unsupported FetchXML link-type ${type}`, 400, "UnsupportedQuery");
-        if (parent?.name === "filter" && !FILTER_LINK_TYPES.has(type))
+      case 'link-entity': {
+        if (!node.attrs.name) fail('The FetchXML link-entity element requires a name.', 400, 'InvalidFetchXml');
+        const type = node.attrs['link-type'] ?? 'inner';
+        if (!FETCH_LINK_TYPES.has(type)) fail(`Unsupported FetchXML link-type ${type}`, 400, 'UnsupportedQuery');
+        if (parent?.name === 'filter' && !FILTER_LINK_TYPES.has(type))
           fail(
             `A link-entity inside a filter must use link-type any, not any, all or not all (found ${type}).`,
             400,
-            "InvalidFetchXml",
+            'InvalidFetchXml',
           );
-        const restricted = ['exists','in','matchfirstrowusingcrossapply'].includes(type);
+        const restricted = ['exists', 'in', 'matchfirstrowusingcrossapply'].includes(type);
         if (restricted) {
-          const label = {exists:'Exists',in:'In',matchfirstrowusingcrossapply:'MatchFirstRowUsingCrossApply'}[type];
-          if (children(node,'order').length)
-            fail(`${label} doesn't support order inside linkentity expression.`,400,'InvalidFetchXml',{innerCode:'0x80041121'});
-          const projected = node.children.some(child => ['attribute','all-attributes'].includes(child.name));
+          const label = { exists: 'Exists', in: 'In', matchfirstrowusingcrossapply: 'MatchFirstRowUsingCrossApply' }[
+            type
+          ];
+          if (children(node, 'order').length)
+            fail(`${label} doesn't support order inside linkentity expression.`, 400, 'InvalidFetchXml', {
+              innerCode: '0x80041121',
+            });
+          const projected = node.children.some((child) => ['attribute', 'all-attributes'].includes(child.name));
           if (type !== 'matchfirstrowusingcrossapply' && projected)
-            fail(`${label} doesn't support attribute inside linkentity expression.`,400,'InvalidFetchXml',{innerCode:'0x80041121'});
-          const selectedDescendant = part => part.children.some(child =>
-            ['attribute','all-attributes','order'].includes(child.name) || selectedDescendant(child));
-          if (children(node,'link-entity').some(selectedDescendant) ||
-              type === 'matchfirstrowusingcrossapply' && projected && children(node,'link-entity').length)
-            fail(`${label} doesn't allow attribute or order clause in child linkentity.`,400,'InvalidFetchXml',{innerCode:'0x80041121'});
+            fail(`${label} doesn't support attribute inside linkentity expression.`, 400, 'InvalidFetchXml', {
+              innerCode: '0x80041121',
+            });
+          const selectedDescendant = (part) =>
+            part.children.some(
+              (child) => ['attribute', 'all-attributes', 'order'].includes(child.name) || selectedDescendant(child),
+            );
+          if (
+            children(node, 'link-entity').some(selectedDescendant) ||
+            (type === 'matchfirstrowusingcrossapply' && projected && children(node, 'link-entity').length)
+          )
+            fail(`${label} doesn't allow attribute or order clause in child linkentity.`, 400, 'InvalidFetchXml', {
+              innerCode: '0x80041121',
+            });
         }
         links.push(node);
-        if(parent?.name!=='filter')ordinaryLinks++;
+        if (parent?.name !== 'filter') ordinaryLinks++;
         nextLinkDepth++;
         if (ordinaryLinks > limits.links || links.length > limits.linksAndFilters)
-          fail(linkBudgetError==='reported-counts'?(ordinaryLinks>limits.links
-            ?`Number of link entity: ${ordinaryLinks} exceed limit ${limits.links}. isReport=False.`
-            :`Number of link entity: ${ordinaryLinks}, Number of link filter: ${links.length-ordinaryLinks} exceed limit ${limits.linksAndFilters}. isReport=False.`)
-            :"Number of link entities in query exceeded maximum limit.", 400, "UnsupportedQuery", {
-            innerCode: "0x8004430d",ordinaryLinks,filterLinks:links.length-ordinaryLinks,totalLinks:links.length,
-            limit:ordinaryLinks>limits.links?limits.links:limits.linksAndFilters,
-          });
+          fail(
+            linkBudgetError === 'reported-counts'
+              ? ordinaryLinks > limits.links
+                ? `Number of link entity: ${ordinaryLinks} exceed limit ${limits.links}. isReport=False.`
+                : `Number of link entity: ${ordinaryLinks}, Number of link filter: ${links.length - ordinaryLinks} exceed limit ${limits.linksAndFilters}. isReport=False.`
+              : 'Number of link entities in query exceeded maximum limit.',
+            400,
+            'UnsupportedQuery',
+            {
+              innerCode: '0x8004430d',
+              ordinaryLinks,
+              filterLinks: links.length - ordinaryLinks,
+              totalLinks: links.length,
+              limit: ordinaryLinks > limits.links ? limits.links : limits.linksAndFilters,
+            },
+          );
         if (nextLinkDepth > limits.linkDepth)
-          fail(`FetchXML link nesting exceeds ${limits.linkDepth} levels`, 400, "UnsupportedQuery");
+          fail(`FetchXML link nesting exceeds ${limits.linkDepth} levels`, 400, 'UnsupportedQuery');
         break;
       }
-      case "filter": {
-        if (!["and", "or"].includes(node.attrs.type ?? "and"))
-          fail(`Unsupported FetchXML filter type ${node.attrs.type}`, 400, "UnsupportedQuery");
+      case 'filter': {
+        if (!['and', 'or'].includes(node.attrs.type ?? 'and'))
+          fail(`Unsupported FetchXML filter type ${node.attrs.type}`, 400, 'UnsupportedQuery');
         const hint = node.attrs.hint;
         if (hint != null) {
           // Dataverse documents one value, union, for an or filter; one per query; moved to the
@@ -351,64 +441,81 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
           // Dataverse does with the other cases isn't documented, so they are reported and
           // the hint never changes the rows.
           const level = filterLevels.get(node);
-          const report = (code, message) => diagnostics.push({ code, element: "filter", attribute: "hint", value: hint, message });
-          if (hint !== "union")
-            report("FETCHXML_FILTER_HINT_UNKNOWN", `FetchXML filter hint '${hint}' is not documented; only union is, and it doesn't change the rows.`);
+          const report = (code, message) =>
+            diagnostics.push({ code, element: 'filter', attribute: 'hint', value: hint, message });
+          if (hint !== 'union')
+            report(
+              'FETCHXML_FILTER_HINT_UNKNOWN',
+              `FetchXML filter hint '${hint}' is not documented; only union is, and it doesn't change the rows.`,
+            );
           else {
             unionHints++;
-            if ((node.attrs.type ?? "and") !== "or")
-              report("FETCHXML_UNION_HINT_RESTRICTION", "The union hint needs a filter of type or (fetchxml/optimize-performance#union-hint).");
+            if ((node.attrs.type ?? 'and') !== 'or')
+              report(
+                'FETCHXML_UNION_HINT_RESTRICTION',
+                'The union hint needs a filter of type or (fetchxml/optimize-performance#union-hint).',
+              );
             if (unionHints === 2)
-              report("FETCHXML_UNION_HINT_RESTRICTION", "A query can contain only one union hint (fetchxml/optimize-performance#union-hint).");
+              report(
+                'FETCHXML_UNION_HINT_RESTRICTION',
+                'A query can contain only one union hint (fetchxml/optimize-performance#union-hint).',
+              );
             if (level > 3)
-              report("FETCHXML_UNION_HINT_IGNORED", `A union hint ${level} filter levels deep is ignored (more than three levels).`);
+              report(
+                'FETCHXML_UNION_HINT_IGNORED',
+                `A union hint ${level} filter levels deep is ignored (more than three levels).`,
+              );
           }
         }
         break;
       }
-      case "condition": {
+      case 'condition': {
         conditions++;
-        if (!node.attrs.attribute)
-          fail("FetchXML condition requires attribute", 400, "InvalidFetchXml");
+        if (!node.attrs.attribute) fail('FetchXML condition requires attribute', 400, 'InvalidFetchXml');
         const operator = node.attrs.operator;
         if (operator == null)
-          fail(`The required attribute 'operator' is missing on condition ${node.attrs.attribute}.`, 400, "InvalidFetchXml");
+          fail(
+            `The required attribute 'operator' is missing on condition ${node.attrs.attribute}.`,
+            400,
+            'InvalidFetchXml',
+          );
         // Identity operators are evaluated only for a Dataverse caller (identity.dataverse); hierarchy operators for every
         // caller, resolved when the condition compiles (dataverse-conditions.mjs runWithQueryResolvers).
-        const identityOperator = UNSUPPORTED_FETCH_OPERATORS.has(operator) && (dataverseIdentity || HIERARCHY_OPERATORS.has(operator));
+        const identityOperator =
+          UNSUPPORTED_FETCH_OPERATORS.has(operator) && (dataverseIdentity || HIERARCHY_OPERATORS.has(operator));
         if (UNSUPPORTED_FETCH_OPERATORS.has(operator) && !identityOperator)
           fail(
             `FetchXML operator ${operator} is not supported locally: ${UNSUPPORTED_FETCH_OPERATORS.get(operator)}.`,
             400,
-            "UnsupportedQuery",
+            'UnsupportedQuery',
           );
-        if (!identityOperator && !FETCH_OPERATORS.has(operator === "neq" ? "ne" : operator) && operator !== "neq")
+        if (!identityOperator && !FETCH_OPERATORS.has(operator === 'neq' ? 'ne' : operator) && operator !== 'neq')
           dataverseIdentity
-            ? fail(`Unknown Condition Operator: ${operator}`, 400, "UnsupportedQuery", { innerCode: "0x80041120" })
-            : fail(`Unsupported FetchXML operator ${operator}`, 400, "UnsupportedQuery");
+            ? fail(`Unknown Condition Operator: ${operator}`, 400, 'UnsupportedQuery', { innerCode: '0x80041120' })
+            : fail(`Unsupported FetchXML operator ${operator}`, 400, 'UnsupportedQuery');
         break;
       }
-      case "attribute":
-        if (!node.attrs.name) fail("The FetchXML attribute element requires a name.", 400, "InvalidFetchXml");
+      case 'attribute':
+        if (!node.attrs.name) fail('The FetchXML attribute element requires a name.', 400, 'InvalidFetchXml');
         if (node.attrs.aggregate != null && !FETCH_AGGREGATES.has(node.attrs.aggregate))
-          fail(`Unsupported aggregate ${node.attrs.aggregate}`, 400, "UnsupportedQuery");
+          fail(`Unsupported aggregate ${node.attrs.aggregate}`, 400, 'UnsupportedQuery');
         if (node.attrs.dategrouping != null && !FETCH_DATE_GROUPINGS.has(node.attrs.dategrouping))
-          fail(`Unsupported FetchXML dategrouping ${node.attrs.dategrouping}`, 400, "UnsupportedQuery");
+          fail(`Unsupported FetchXML dategrouping ${node.attrs.dategrouping}`, 400, 'UnsupportedQuery');
         break;
-      case "order":
+      case 'order':
         if (!node.attrs.attribute && !node.attrs.alias)
-          fail("A FetchXML order element requires an attribute or alias.", 400, "InvalidFetchXml");
+          fail('A FetchXML order element requires an attribute or alias.', 400, 'InvalidFetchXml');
         break;
     }
     if (conditions + links.length > limits.conditionsAndLinks)
-      fail("Number of conditions in query exceeded maximum limit.", 400, "UnsupportedQuery", {
-        innerCode: "0x8004430c",
+      fail('Number of conditions in query exceeded maximum limit.', 400, 'UnsupportedQuery', {
+        innerCode: '0x8004430c',
       });
     for (const child of node.children) visit(child, depth + 1, nextLinkDepth, node);
   };
   visit(fetch, 0, 0, null);
-  const entities = children(fetch, "entity");
-  if (entities.length !== 1) fail("FetchXML requires one entity", 400, "InvalidFetchXml");
+  const entities = children(fetch, 'entity');
+  if (entities.length !== 1) fail('FetchXML requires one entity', 400, 'InvalidFetchXml');
   const root = entities[0];
   const aliasOf = new Map(),
     byAlias = new Map(),
@@ -420,8 +527,8 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
       fail(
         `${alias} is not a unique alias. It clashes with an autogenerated alias or user provided alias`,
         400,
-        "InvalidFetchXml",
-        { innerCode: "0x80041130" },
+        'InvalidFetchXml',
+        { innerCode: '0x80041130' },
       );
     aliasOf.set(link, alias);
     byAlias.set(alias, link);
@@ -429,34 +536,30 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
   });
   const indexParents = (node, owner) => {
     for (const child of node.children) {
-      if (child.name === "link-entity") {
+      if (child.name === 'link-entity') {
         parentOf.set(child, owner);
         indexParents(child, child);
-      } else if (child.name === "filter") indexParents(child, owner);
+      } else if (child.name === 'filter') indexParents(child, owner);
     }
   };
   indexParents(root, root);
   const aggregate = bool(fetch.attrs.aggregate);
-  const top = integerAttribute(fetch, "top", { min: 1, max: FETCH_LIMITS.top });
-  const count = integerAttribute(fetch, "count", { min: 0 });
-  const page = integerAttribute(fetch, "page", { min: 1 });
+  const top = integerAttribute(fetch, 'top', { min: 1, max: FETCH_LIMITS.top });
+  const count = integerAttribute(fetch, 'count', { min: 0 });
+  const page = integerAttribute(fetch, 'page', { min: 1 });
   const returnTotal = bool(fetch.attrs.returntotalrecordcount);
   if (top != null && (count != null || page != null || returnTotal))
     fail(
       "The FetchXML top attribute can't be combined with the page, count or returntotalrecordcount attributes.",
       400,
-      "InvalidFetchXml",
+      'InvalidFetchXml',
     );
   const datasource = fetch.attrs.datasource;
   // Guess: bin (the recycle bin) is a Dataverse-only datasource, so a portal request is refused.
   const sources = dataverseIdentity ? /^(?:retained|default|bin)$/i : /^(?:retained|default)$/i;
   if (datasource != null && !sources.test(datasource))
-    fail(`Unsupported FetchXML datasource ${datasource}`, 400, "UnsupportedQuery");
-  const injectedTotal =
-    profile === "portal" &&
-    top == null &&
-    !aggregate &&
-    fetch.attrs.returntotalrecordcount == null;
+    fail(`Unsupported FetchXML datasource ${datasource}`, 400, 'UnsupportedQuery');
+  const injectedTotal = profile === 'portal' && top == null && !aggregate && fetch.attrs.returntotalrecordcount == null;
   return {
     limits,
     fetch,
@@ -474,35 +577,35 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
     pageSize: count ? Math.min(count, limits.pageSize) : limits.pageSize,
     totalRecordCountLimit: limits.totalRecordCount,
     page: page ?? 1,
-    pagingCookie: fetch.attrs["paging-cookie"] ?? null,
+    pagingCookie: fetch.attrs['paging-cookie'] ?? null,
     returnTotal: returnTotal || injectedTotal,
     rawChoiceOrder: bool(fetch.attrs.useraworderby),
-    aggregateLimit: integerAttribute(fetch, "aggregatelimit", {
+    aggregateLimit: integerAttribute(fetch, 'aggregatelimit', {
       min: 1,
       max: limits.aggregateRecords,
     }),
-    retained: /^retained$/i.test(datasource ?? ""),
-    datasource: (datasource ?? "default").toLowerCase(),
+    retained: /^retained$/i.test(datasource ?? ''),
+    datasource: (datasource ?? 'default').toLowerCase(),
     dataverseIdentity,
   };
 }
 
 /** Parse a native paging cookie (raw XML or the Web API wrapper with a double-encoded payload). */
 export function parsePagingCookie(value) {
-  if (value == null || String(value).trim() === "") return null;
+  if (value == null || String(value).trim() === '') return null;
   let text = String(value).trim();
   let node;
   try {
-    node = parseXmlDocument(text, { root: "cookie" });
+    node = parseXmlDocument(text, { root: 'cookie' });
   } catch {
-    fail("The FetchXML paging-cookie value is not a valid paging cookie.", 400, "InvalidPagingCookie");
+    fail('The FetchXML paging-cookie value is not a valid paging cookie.', 400, 'InvalidPagingCookie');
   }
   if (node.attrs.pagingcookie != null) {
     try {
       text = decodeURIComponent(decodeURIComponent(node.attrs.pagingcookie));
-      node = parseXmlDocument(text, { root: "cookie" });
+      node = parseXmlDocument(text, { root: 'cookie' });
     } catch {
-      fail("The FetchXML paging-cookie value is not a valid paging cookie.", 400, "InvalidPagingCookie");
+      fail('The FetchXML paging-cookie value is not a valid paging cookie.', 400, 'InvalidPagingCookie');
     }
   }
   const page = Number(node.attrs.page);
@@ -515,7 +618,7 @@ export function parsePagingCookie(value) {
 /** Lowercase double percent-encoding, matching documented Dataverse cookie bytes. */
 const cookieEncode = (value) =>
   encodeURIComponent(value)
-    .replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16))
+    .replace(/[!'()*]/g, (c) => '%' + c.charCodeAt(0).toString(16))
     .replace(/%[\dA-F]{2}/g, (escape) => escape.toLowerCase());
 /** Web API wrapper published as @Microsoft.Dynamics.CRM.fetchxmlpagingcookie. */
 export function webApiPagingCookie(cookie, page) {
@@ -531,18 +634,18 @@ export function fieldValue(row, attribute) {
   if (!lookup && own(row, `_${attribute}_value`)) return row[`_${attribute}_value`];
   return undefined;
 }
-const isEmpty = (value) => value == null || value === "" || (Array.isArray(value) && !value.length);
+const isEmpty = (value) => value == null || value === '' || (Array.isArray(value) && !value.length);
 const joinKey = (value) => {
   const raw = scalar(value);
-  if (raw == null || raw === "") return null;
-  return guidKey(raw) ?? (typeof raw === "number" ? String(raw) : foldText(raw));
+  if (raw == null || raw === '') return null;
+  return guidKey(raw) ?? (typeof raw === 'number' ? String(raw) : foldText(raw));
 };
 const cookieValue = (value) => {
   const raw = scalar(value);
-  if (raw == null) return "";
+  if (raw == null) return '';
   const guid = guidKey(raw);
   if (guid) return `{${guid.toUpperCase()}}`;
-  if (typeof raw === "boolean") return raw ? "1" : "0";
+  if (typeof raw === 'boolean') return raw ? '1' : '0';
   return String(raw);
 };
 
@@ -559,22 +662,24 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
   const structural = new Map();
   for (const link of plan.links) {
     const parent = plan.parentOf.get(link);
-    if (!parent || parent.name === "filter") continue;
+    if (!parent || parent.name === 'filter') continue;
     const parentMapping = mappingOf.get(parent);
     const lm = mappingOf.get(link);
-    if (children(link, "all-attributes").length) continue;
+    if (children(link, 'all-attributes').length) continue;
     const relation = Object.values(relationshipsFor(parentMapping)).find(
       (rel) =>
         rel.intersect?.entity === lm.logicalName &&
         rel.intersect.from === link.attrs.from &&
         rel.from === link.attrs.to &&
-        children(link, "attribute").every(attribute =>
-          [rel.intersect.from, rel.intersect.to].includes(attribute.attrs.name) && !attribute.attrs.aggregate && !attribute.attrs.groupby) &&
-        children(link, "link-entity").every(
+        children(link, 'attribute').every(
+          (attribute) =>
+            [rel.intersect.from, rel.intersect.to].includes(attribute.attrs.name) &&
+            !attribute.attrs.aggregate &&
+            !attribute.attrs.groupby,
+        ) &&
+        children(link, 'link-entity').every(
           (target) =>
-            target.attrs.name === rel.entity &&
-            target.attrs.from === rel.to &&
-            target.attrs.to === rel.intersect.to,
+            target.attrs.name === rel.entity && target.attrs.from === rel.to && target.attrs.to === rel.intersect.to,
         ),
     );
     if (relation)
@@ -595,37 +700,45 @@ export function structuralIntersects(plan, mappingOf, relationshipsFor = (mappin
  */
 export function executeFetch(plan, ctx) {
   const settings = ctx.settings ?? {};
-  if (settings.fetchAllWithoutFilter === 'sql-error' && plan.links.some(link =>
-      link.attrs['link-type'] === 'all' && !children(link,'filter').length))
-    fail('Generic SQL error while evaluating an unfiltered ALL link.',500,'FetchXmlExecutionFailure',{innerCode:'0x80044150'});
-  const collation = settings.collation ?? "CI_AI";
+  if (
+    settings.fetchAllWithoutFilter === 'sql-error' &&
+    plan.links.some((link) => link.attrs['link-type'] === 'all' && !children(link, 'filter').length)
+  )
+    fail('Generic SQL error while evaluating an unfiltered ALL link.', 500, 'FetchXmlExecutionFailure', {
+      innerCode: '0x80044150',
+    });
+  const collation = settings.collation ?? 'CI_AI';
   const now = ctx.now ?? Date.now();
   const { root } = plan;
   const mappingOf = new Map([[root, ctx.mapping(root.attrs.name)]]);
   for (const link of plan.links) mappingOf.set(link, ctx.mapping(link.attrs.name));
   const rootMapping = mappingOf.get(root);
   const aliasNode = (alias) => (alias == null ? root : plan.byAlias.get(alias));
-  const definition = (node, attribute) =>
-    ctx.definition?.(mappingOf.get(node).logicalName, attribute);
+  const definition = (node, attribute) => ctx.definition?.(mappingOf.get(node).logicalName, attribute);
   // An order the platform ignores (a calculated column over a parent or another calculated column) is dropped silently.
-  const sortable = (node, attribute) => attribute == null || node == null || ctx.sortable?.(mappingOf.get(node).logicalName, attribute) !== false;
+  const sortable = (node, attribute) =>
+    attribute == null || node == null || ctx.sortable?.(mappingOf.get(node).logicalName, attribute) !== false;
   const resolveEntityName = (name) => {
     if (plan.byAlias.has(name)) return plan.aliasOf.get(plan.byAlias.get(name));
     if (plan.byName.has(name)) return plan.aliasOf.get(plan.byName.get(name));
     if (name === root.attrs.name) return null;
-    fail(`The FetchXML entityname '${name}' does not match a link-entity alias or name.`, 400, "InvalidFetchXml");
+    fail(`The FetchXML entityname '${name}' does not match a link-entity alias or name.`, 400, 'InvalidFetchXml');
   };
   const pkSort = (rows, idColumn) =>
     rows
       .map((row, index) => ({ row, index, key: sqlGuidSortKey(row[idColumn]) }))
       .sort((a, b) =>
         a.key && b.key
-          ? a.key < b.key ? -1 : a.key > b.key ? 1 : a.index - b.index
+          ? a.key < b.key
+            ? -1
+            : a.key > b.key
+              ? 1
+              : a.index - b.index
           : a.key
             ? -1
             : b.key
               ? 1
-              : String(a.row[idColumn] ?? "").localeCompare(String(b.row[idColumn] ?? "")) || a.index - b.index,
+              : String(a.row[idColumn] ?? '').localeCompare(String(b.row[idColumn] ?? '')) || a.index - b.index,
       )
       .map((entry) => entry.row);
 
@@ -643,37 +756,48 @@ export function executeFetch(plan, ctx) {
   // intersect's own columns come from its relationship and aren't checked.
   const checkedColumns = new Set();
   const assertColumn = (node, attribute, use) => {
-    if (!ctx.column || node == null || attribute == null || attribute === "") return;
-    if (structural.has(node) && use === "join") return;
+    if (!ctx.column || node == null || attribute == null || attribute === '') return;
+    if (structural.has(node) && use === 'join') return;
     const logical = mappingOf.get(node)?.logicalName;
     if (!logical) return;
     const key = `${logical}\u0000${attribute}`;
     if (checkedColumns.has(key)) return;
     checkedColumns.add(key);
-    const status = plan.dataverseIdentity && DATAVERSE_SYSTEM_COLUMNS.has(attribute.toLowerCase()) ? "known" : ctx.column(logical, attribute);
+    const status =
+      plan.dataverseIdentity && DATAVERSE_SYSTEM_COLUMNS.has(attribute.toLowerCase())
+        ? 'known'
+        : ctx.column(logical, attribute);
     // The Dataverse caller rejects a column its metadata doesn't define, even when that metadata is incomplete
     // (0x80041103, the native text); the portal rejects only an unknown column under strict.
     const dataverse = plan.dataverseIdentity === true;
-    if ((status === "unknown" && (dataverse || settings.fetchColumnValidation === "strict")) || (status === "unverified" && dataverse))
-      fail(dataverse
-        ? `'${logical}' entity doesn't contain attribute with Name = '${attribute}' and NameMapping = 'Logical' (look up attribute by name is case-sensitive).`
-        : "The specified attribute does not exist on this entity.", 400, "InvalidFetchXml", {
-        innerCode: "0x80041103",
-        entity: logical,
-        attribute,
-        use,
-      });
-    if (status === "unknown")
+    if (
+      (status === 'unknown' && (dataverse || settings.fetchColumnValidation === 'strict')) ||
+      (status === 'unverified' && dataverse)
+    )
+      fail(
+        dataverse
+          ? `'${logical}' entity doesn't contain attribute with Name = '${attribute}' and NameMapping = 'Logical' (look up attribute by name is case-sensitive).`
+          : 'The specified attribute does not exist on this entity.',
+        400,
+        'InvalidFetchXml',
+        {
+          innerCode: '0x80041103',
+          entity: logical,
+          attribute,
+          use,
+        },
+      );
+    if (status === 'unknown')
       (plan.diagnostics ??= []).push({
-        code: "FETCHXML_COLUMN_UNKNOWN",
+        code: 'FETCHXML_COLUMN_UNKNOWN',
         entity: logical,
         attribute,
         use,
         message: `${logical}.${attribute} (${use}) isn't in the table's complete Solution metadata; Dataverse rejects it unless the environment defines it outside the exported Solutions.`,
       });
-    if (status === "unverified")
+    if (status === 'unverified')
       (plan.diagnostics ??= []).push({
-        code: "FETCHXML_COLUMN_UNVERIFIED",
+        code: 'FETCHXML_COLUMN_UNVERIFIED',
         entity: logical,
         attribute,
         use,
@@ -683,21 +807,21 @@ export function executeFetch(plan, ctx) {
   const columnOwner = (entityname, owner) => (entityname != null ? aliasNode(resolveEntityName(entityname)) : owner);
   const visitColumns = (node, owner) => {
     for (const child of node.children ?? []) {
-      if (child.name === "attribute") assertColumn(owner, child.attrs.name, "attribute");
-      else if (child.name === "order" && child.attrs.attribute)
-        assertColumn(columnOwner(child.attrs.entityname, owner), child.attrs.attribute, "order");
-      else if (child.name === "condition") {
-        assertColumn(columnOwner(child.attrs.entityname, owner), child.attrs.attribute, "condition");
+      if (child.name === 'attribute') assertColumn(owner, child.attrs.name, 'attribute');
+      else if (child.name === 'order' && child.attrs.attribute)
+        assertColumn(columnOwner(child.attrs.entityname, owner), child.attrs.attribute, 'order');
+      else if (child.name === 'condition') {
+        assertColumn(columnOwner(child.attrs.entityname, owner), child.attrs.attribute, 'condition');
         if (child.attrs.valueof != null) {
-          const [otherAlias, otherAttribute] = child.attrs.valueof.includes(".")
-            ? child.attrs.valueof.split(".", 2)
+          const [otherAlias, otherAttribute] = child.attrs.valueof.includes('.')
+            ? child.attrs.valueof.split('.', 2)
             : [child.attrs.entityname, child.attrs.valueof];
-          assertColumn(columnOwner(otherAlias, owner), otherAttribute, "condition");
+          assertColumn(columnOwner(otherAlias, owner), otherAttribute, 'condition');
         }
-      } else if (child.name === "filter") visitColumns(child, owner);
-      else if (child.name === "link-entity") {
-        assertColumn(child, child.attrs.from, "join");
-        if (!structural.has(owner) || !mappingOf.has(owner)) assertColumn(owner, child.attrs.to, "join");
+      } else if (child.name === 'filter') visitColumns(child, owner);
+      else if (child.name === 'link-entity') {
+        assertColumn(child, child.attrs.from, 'join');
+        if (!structural.has(owner) || !mappingOf.has(owner)) assertColumn(owner, child.attrs.to, 'join');
         visitColumns(child, child);
       }
     }
@@ -707,36 +831,40 @@ export function executeFetch(plan, ctx) {
     const link = alias == null ? null : plan.byAlias.get(alias);
     const info = link && structural.get(link);
     if (!info) return;
-    if (kind === "attribute" && !info.selectable.has(attribute))
-      fail("FetchXML intersection columns cannot be returned without table permission", 403, "InvalidIntersectionQuery");
+    if (kind === 'attribute' && !info.selectable.has(attribute))
+      fail(
+        'FetchXML intersection columns cannot be returned without table permission',
+        403,
+        'InvalidIntersectionQuery',
+      );
     if (!info.columns.has(attribute))
-      fail("FetchXML intersection may only inspect mapped structural columns", 403, "InvalidIntersectionQuery");
+      fail('FetchXML intersection may only inspect mapped structural columns', 403, 'InvalidIntersectionQuery');
   };
 
   // A selected portal language is public platform configuration. This
   // trusted renderer-only option permits an unprojected language catalog
   // constraint on already authorised articles, never direct table access.
   const isLanguageJoin = (link) => {
-    const filters = children(link, "filter");
+    const filters = children(link, 'filter');
     const condition = filters[0]?.children?.[0];
     const referencesAlias = (part, alias) =>
       part.attrs?.entityname === alias || (part.children ?? []).some((c) => referencesAlias(c, alias));
     return (
-      typeof ctx.platformLanguageCode === "string" &&
+      typeof ctx.platformLanguageCode === 'string' &&
       /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(ctx.platformLanguageCode) &&
       plan.parentOf.get(link) === root &&
-      root.attrs.name === "knowledgearticle" &&
-      mappingOf.get(link).logicalName === "languagelocale" &&
-      link.attrs.from === "languagelocaleid" &&
-      link.attrs.to === "languagelocaleid" &&
-      (link.attrs["link-type"] ?? "inner") === "inner" &&
+      root.attrs.name === 'knowledgearticle' &&
+      mappingOf.get(link).logicalName === 'languagelocale' &&
+      link.attrs.from === 'languagelocaleid' &&
+      link.attrs.to === 'languagelocaleid' &&
+      (link.attrs['link-type'] ?? 'inner') === 'inner' &&
       link.children.length === 1 &&
       filters.length === 1 &&
-      (!filters[0].attrs.type || filters[0].attrs.type === "and") &&
+      (!filters[0].attrs.type || filters[0].attrs.type === 'and') &&
       filters[0].children.length === 1 &&
-      condition?.name === "condition" &&
-      condition.attrs.attribute === "code" &&
-      condition.attrs.operator === "eq" &&
+      condition?.name === 'condition' &&
+      condition.attrs.attribute === 'code' &&
+      condition.attrs.operator === 'eq' &&
       condition.attrs.value === ctx.platformLanguageCode &&
       !condition.attrs.entityname &&
       !referencesAlias(plan.fetch, plan.aliasOf.get(link))
@@ -764,9 +892,7 @@ export function executeFetch(plan, ctx) {
       );
       rows = (ctx.tableRows(lm.logicalName) ?? [])
         .filter((edge) => readable.has(joinKey(fieldValue(edge, relation.intersect.to))))
-        .map((edge) =>
-          Object.fromEntries([...columns].filter((key) => own(edge, key)).map((key) => [key, edge[key]])),
-        );
+        .map((edge) => Object.fromEntries([...columns].filter((key) => own(edge, key)).map((key) => [key, edge[key]])));
     } else rows = pkSort(ctx.readableRows(lm.logicalName, link), lm.idColumn);
     candidates.set(link, rows);
     return rows;
@@ -774,21 +900,20 @@ export function executeFetch(plan, ctx) {
 
   // ---- filters
   const valuesOf = (condition) => {
-    const items = children(condition, "value").map((value) => value.text ?? "");
+    const items = children(condition, 'value').map((value) => value.text ?? '');
     if (items.length) return items;
-    return own(condition.attrs, "value") ? [condition.attrs.value] : [];
+    return own(condition.attrs, 'value') ? [condition.attrs.value] : [];
   };
   const referencesOtherAlias = (node, ownerAlias) =>
-    (node.name === "condition" &&
+    (node.name === 'condition' &&
       ((node.attrs.entityname != null && resolveEntityName(node.attrs.entityname) !== ownerAlias) ||
-        (node.attrs.valueof ?? "").includes("."))) ||
-    (node.name !== "link-entity" && node.children.some((child) => referencesOtherAlias(child, ownerAlias)));
+        (node.attrs.valueof ?? '').includes('.'))) ||
+    (node.name !== 'link-entity' && node.children.some((child) => referencesOtherAlias(child, ownerAlias)));
   const compileCondition = (condition, ownerAlias) => {
-    const targetAlias =
-      condition.attrs.entityname != null ? resolveEntityName(condition.attrs.entityname) : ownerAlias;
+    const targetAlias = condition.attrs.entityname != null ? resolveEntityName(condition.attrs.entityname) : ownerAlias;
     const targetNode = aliasNode(targetAlias);
     const attribute = condition.attrs.attribute;
-    assertStructural(targetAlias, attribute, "condition");
+    assertStructural(targetAlias, attribute, 'condition');
     const columnDefinition = definition(targetNode, attribute);
     const read = (item) => {
       const source = targetAlias == null ? item.base : item.aliases[targetAlias];
@@ -796,11 +921,11 @@ export function executeFetch(plan, ctx) {
     };
     const qualified = `${mappingOf.get(targetNode).logicalName}.${attribute}`;
     if (condition.attrs.valueof != null) {
-      const [otherAliasRaw, otherAttribute] = condition.attrs.valueof.includes(".")
-        ? condition.attrs.valueof.split(".", 2)
+      const [otherAliasRaw, otherAttribute] = condition.attrs.valueof.includes('.')
+        ? condition.attrs.valueof.split('.', 2)
         : [undefined, condition.attrs.valueof];
       const otherAlias = otherAliasRaw === undefined ? targetAlias : resolveEntityName(otherAliasRaw);
-      assertStructural(otherAlias, otherAttribute, "condition");
+      assertStructural(otherAlias, otherAttribute, 'condition');
       const compare = compileColumnComparison(condition.attrs.operator, {
         attribute: qualified,
         definition: columnDefinition,
@@ -825,17 +950,17 @@ export function executeFetch(plan, ctx) {
   };
   const compileFilter = (filter, ownerAlias) => {
     const parts = filter.children.map((child) => {
-      if (child.name === "filter") return compileFilter(child, ownerAlias);
-      if (child.name === "condition") return compileCondition(child, ownerAlias);
+      if (child.name === 'filter') return compileFilter(child, ownerAlias);
+      if (child.name === 'condition') return compileCondition(child, ownerAlias);
       return compileSemiJoin(child, ownerAlias);
     });
     if (!parts.length) return () => true;
-    return (filter.attrs.type ?? "and") === "or"
+    return (filter.attrs.type ?? 'and') === 'or'
       ? (item) => parts.some((part) => part(item))
       : (item) => parts.every((part) => part(item));
   };
   const compileFilters = (node, ownerAlias) => {
-    const parts = children(node, "filter").map((filter) => compileFilter(filter, ownerAlias));
+    const parts = children(node, 'filter').map((filter) => compileFilter(filter, ownerAlias));
     return parts.length ? (item) => parts.every((part) => part(item)) : null;
   };
 
@@ -846,38 +971,50 @@ export function executeFetch(plan, ctx) {
   // are required; an authored generated-looking alias supplies no authority.
   const permissionPredicates = new Map();
   if (plan.distinct && !plan.aggregate) {
-    const conditions = [], nodes = [];
-    const collect = node => {
+    const conditions = [],
+      nodes = [];
+    const collect = (node) => {
       nodes.push(node);
       if (node.name === 'condition') conditions.push(node);
       for (const child of node.children) collect(child);
     };
     collect(plan.fetch);
     const expectedConditions = ctx.permissionTerminalConditions ?? [];
-    const sameCondition = (actual, expected) => actual.name === 'condition' &&
+    const sameCondition = (actual, expected) =>
+      actual.name === 'condition' &&
       Object.keys(expected).length === Object.keys(actual.attrs).length &&
-      Object.keys(expected).every(key => expected[key] === actual.attrs[key]);
-    const generatedAliases = new Set(plan.links.filter(link => ctx.permissionLink?.(link)).map(link => plan.aliasOf.get(link)));
+      Object.keys(expected).every((key) => expected[key] === actual.attrs[key]);
+    const generatedAliases = new Set(
+      plan.links.filter((link) => ctx.permissionLink?.(link)).map((link) => plan.aliasOf.get(link)),
+    );
     // An observer can add root conditions referring to generated ancestors.
     // Those may require rows outside the terminal match, so retain the full
     // join semantics whenever generated aliases have additional dependencies.
-    const referencesGenerated = name => {
+    const referencesGenerated = (name) => {
       const target = plan.byAlias.get(name) ?? plan.byName.get(name);
       return target != null && generatedAliases.has(plan.aliasOf.get(target));
     };
-    const additionalDependency = nodes.some(node =>
-      referencesGenerated(node.attrs.entityname) && !expectedConditions.some(expected => sameCondition(node, expected)) ||
-      node.attrs.valueof?.includes('.') && referencesGenerated(node.attrs.valueof.split('.', 1)[0]));
+    const additionalDependency = nodes.some(
+      (node) =>
+        (referencesGenerated(node.attrs.entityname) &&
+          !expectedConditions.some((expected) => sameCondition(node, expected))) ||
+        (node.attrs.valueof?.includes('.') && referencesGenerated(node.attrs.valueof.split('.', 1)[0])),
+    );
     for (const expected of additionalDependency ? [] : expectedConditions) {
-      const alias = expected.entityname, link = plan.byAlias.get(alias);
+      const alias = expected.entityname,
+        link = plan.byAlias.get(alias);
       if (!link || !ctx.permissionLink?.(link)) continue;
-      const references = conditions.filter(condition => condition.attrs.entityname === alias);
+      const references = conditions.filter((condition) => condition.attrs.entityname === alias);
       if (references.length !== 1) continue;
       const actual = references[0];
       const fields = Object.keys(expected);
-      if (fields.length !== Object.keys(actual.attrs).length || fields.some(key => expected[key] !== actual.attrs[key])) continue;
+      if (
+        fields.length !== Object.keys(actual.attrs).length ||
+        fields.some((key) => expected[key] !== actual.attrs[key])
+      )
+        continue;
       const predicate = compileCondition(actual, alias);
-      permissionPredicates.set(link, row => predicate({base: null, aliases: {[alias]: row}}));
+      permissionPredicates.set(link, (row) => predicate({ base: null, aliases: { [alias]: row } }));
     }
   }
 
@@ -890,12 +1027,12 @@ export function executeFetch(plan, ctx) {
       fail(
         `No system many-to-many relationship exists between ${mappingOf.get(plan.parentOf.get(link)).logicalName} and ${link.attrs.name}.  If attempting to link through a custom many-to-many relationship ensure that you provide the from and to attributes.`,
         400,
-        "InvalidFetchXml",
-        { innerCode: "0x80041102" },
+        'InvalidFetchXml',
+        { innerCode: '0x80041102' },
       );
-    assertStructural(alias, link.attrs.from, "condition");
+    assertStructural(alias, link.attrs.from, 'condition');
     const filter = compileFilters(link, alias);
-    const local = !children(link, "filter").some((f) => referencesOtherAlias(f, alias));
+    const local = !children(link, 'filter').some((f) => referencesOtherAlias(f, alias));
     let rows = candidatesFor(link);
     if (filter && local) rows = rows.filter((row) => filter({ base: null, aliases: { [alias]: row } }));
     const permissionPredicate = permissionPredicates.get(link);
@@ -906,9 +1043,10 @@ export function executeFetch(plan, ctx) {
     if (plan.distinct && !plan.aggregate && ctx.permissionLink?.(link)) {
       const descendants = children(link, 'link-entity');
       if (descendants.length === 1 && ctx.permissionLink?.(descendants[0])) {
-        const child = descendants[0], childPlan = linkPlan(child);
+        const child = descendants[0],
+          childPlan = linkPlan(child);
         if (childPlan.permissionRestricted)
-          rows = rows.filter(row => childPlan.index.has(joinKey(fieldValue(row, child.attrs.to))));
+          rows = rows.filter((row) => childPlan.index.has(joinKey(fieldValue(row, child.attrs.to))));
       }
     }
     const index = new Map();
@@ -918,9 +1056,16 @@ export function executeFetch(plan, ctx) {
       if (!index.has(key)) index.set(key, []);
       index.get(key).push(row);
     }
-    const result = { alias, index, filter: local ? null : filter, unfiltered: null,
-      permissionRestricted: Boolean(permissionPredicate) || children(link, 'link-entity').some(child => linkPlans.get(child)?.permissionRestricted) };
-    if (link.attrs["link-type"] === "all") {
+    const result = {
+      alias,
+      index,
+      filter: local ? null : filter,
+      unfiltered: null,
+      permissionRestricted:
+        Boolean(permissionPredicate) ||
+        children(link, 'link-entity').some((child) => linkPlans.get(child)?.permissionRestricted),
+    };
+    if (link.attrs['link-type'] === 'all') {
       const all = new Map();
       for (const row of candidatesFor(link)) {
         const key = joinKey(fieldValue(row, link.attrs.from));
@@ -934,7 +1079,8 @@ export function executeFetch(plan, ctx) {
     return result;
   };
   const matchesFor = (row, link, parentAlias, unfiltered = false) => {
-    const linked = linkPlan(link), { alias, filter } = linked;
+    const linked = linkPlan(link),
+      { alias, filter } = linked;
     const index = unfiltered ? linked.unfiltered : linked.index;
     const parent = parentAlias == null ? row.base : row.aliases[parentAlias];
     const key = parent == null ? null : joinKey(fieldValue(parent, link.attrs.to));
@@ -946,12 +1092,12 @@ export function executeFetch(plan, ctx) {
     return filter && !unfiltered ? items.filter(filter) : items;
   };
   const semiJoinTest = (link, ownerAlias) => {
-    const type = link.attrs["link-type"] ?? "inner";
+    const type = link.attrs['link-type'] ?? 'inner';
     return (row) => {
       const items = joinTree(matchesFor(row, link, ownerAlias), link);
       const exists = items.length > 0;
-      if (type === "not any") return !exists;
-      if (type === "all") {
+      if (type === 'not any') return !exists;
+      if (type === 'all') {
         // Existence excludes this link's predicates but retains its descendant
         // joins. A child removed by an inner descendant is no ALL candidate.
         return !exists && joinTree(matchesFor(row, link, ownerAlias, true), link).length > 0;
@@ -974,14 +1120,14 @@ export function executeFetch(plan, ctx) {
       fail(
         `The FetchXML joins produce more than ${joinRowLimit} intermediate rows locally; narrow the query with conditions or fewer links.`,
         400,
-        "UnsupportedQuery",
+        'UnsupportedQuery',
         { joinRows: joinedRows, limit: joinRowLimit },
       );
   }
   function joinTree(rows, node) {
     const nodeAlias = node === root ? null : plan.aliasOf.get(node);
-    for (const link of children(node, "link-entity")) {
-      const type = link.attrs["link-type"] ?? "inner";
+    for (const link of children(node, 'link-entity')) {
+      const type = link.attrs['link-type'] ?? 'inner';
       if (SEMI_JOIN_TYPES.has(type)) {
         const test = semiJoinTest(link, nodeAlias);
         rows = rows.filter(test);
@@ -991,13 +1137,16 @@ export function executeFetch(plan, ctx) {
       const next = [];
       for (const row of rows) {
         const matches = matchesFor(row, link, nodeAlias);
-        if (type === "matchfirstrowusingcrossapply") {
+        if (type === 'matchfirstrowusingcrossapply') {
           const qualifying = joinTree(matches, link);
-          if (qualifying.length) { countJoined(1); next.push(qualifying[0]); }
+          if (qualifying.length) {
+            countJoined(1);
+            next.push(qualifying[0]);
+          }
         } else if (matches.length) {
           countJoined(matches.length);
           for (const match of matches) next.push(match);
-        } else if (type === "outer") {
+        } else if (type === 'outer') {
           countJoined(1);
           next.push({ base: row.base, aliases: { ...row.aliases, [alias]: null } });
         }
@@ -1027,9 +1176,9 @@ export function executeFetch(plan, ctx) {
    */
   function earlyLimit() {
     if (plan.aggregate || plan.distinct || plan.pagingCookie) return null;
-    if (children(root, "order").some((order) => order.attrs.entityname != null || !order.attrs.attribute)) return null;
+    if (children(root, 'order').some((order) => order.attrs.entityname != null || !order.attrs.attribute)) return null;
     const ordersLinks = (node) =>
-      children(node, "link-entity").some((link) => children(link, "order").length || ordersLinks(link));
+      children(node, 'link-entity').some((link) => children(link, 'order').length || ordersLinks(link));
     if (ordersLinks(root)) return null;
     let limit = plan.top != null ? plan.top : plan.page * plan.pageSize + 1;
     if (plan.returnTotal) limit = Math.max(limit, (plan.totalRecordCountLimit ?? FETCH_LIMITS.totalRecordCount) + 1);
@@ -1038,20 +1187,31 @@ export function executeFetch(plan, ctx) {
 
   // ---- evaluate
   // A Dataverse caller's bin and retained datasources read their own rows; portal retained answers none.
-  let inputs = plan.dataverseIdentity && plan.datasource !== "default"
-    ? (ctx.datasourceRows?.(plan.datasource, rootMapping.logicalName) ?? [])
-    : plan.retained ? [] : ctx.readableRows(rootMapping.logicalName, root);
+  let inputs =
+    plan.dataverseIdentity && plan.datasource !== 'default'
+      ? (ctx.datasourceRows?.(plan.datasource, rootMapping.logicalName) ?? [])
+      : plan.retained
+        ? []
+        : ctx.readableRows(rootMapping.logicalName, root);
   // Only ANDed root GUID equalities can narrow inputs before the complete predicate.
   // Text/numeric/date comparisons are left to the predicate's collation and coercion rules.
-  const narrow = filter => {
+  const narrow = (filter) => {
     if ((filter.attrs.type ?? 'and') !== 'and') return;
     for (const condition of filter.children) {
       if (condition.name === 'filter') narrow(condition);
-      else if (condition.name === 'condition' && condition.attrs.operator === 'eq' &&
-        !condition.attrs.entityname && !condition.attrs.valueof && condition.attrs.value != null) {
+      else if (
+        condition.name === 'condition' &&
+        condition.attrs.operator === 'eq' &&
+        !condition.attrs.entityname &&
+        !condition.attrs.valueof &&
+        condition.attrs.value != null
+      ) {
         const column = condition.attrs.attribute;
         const type = definition(root, column)?.dataverseType;
-        if (column === rootMapping.idColumn || ['lookup','customer','owner','uniqueidentifier','primarykey'].includes(type))
+        if (
+          column === rootMapping.idColumn ||
+          ['lookup', 'customer', 'owner', 'uniqueidentifier', 'primarykey'].includes(type)
+        )
           inputs = ctx.equalRows(inputs, column, condition.attrs.value);
       }
     }
@@ -1061,7 +1221,7 @@ export function executeFetch(plan, ctx) {
   const storageOrder = new Map(inputs.map((base, index) => [base, index]));
   let rows = pkSort(inputs, rootMapping.idColumn).map((base) => ({ base, aliases: {} }));
   const rootFilter = compileFilters(root, null);
-  const pushdown = rootFilter && !children(root, "filter").some((f) => referencesOtherAlias(f, null));
+  const pushdown = rootFilter && !children(root, 'filter').some((f) => referencesOtherAlias(f, null));
   if (pushdown) rows = rows.filter(rootFilter);
   const limit = earlyLimit();
   if (limit == null) {
@@ -1070,16 +1230,18 @@ export function executeFetch(plan, ctx) {
   } else {
     // Rows of one root stay together and roots keep the final order, so joining roots
     // in that order and stopping once `limit` rows exist gives the same first rows.
-    const specs = children(root, "order").filter((order) => sortable(root, order.attrs.attribute)).map((order) => ({
-      attribute: order.attrs.attribute,
-      descending: bool(order.attrs.descending),
-      definition: definition(root, order.attrs.attribute),
-    }));
+    const specs = children(root, 'order')
+      .filter((order) => sortable(root, order.attrs.attribute))
+      .map((order) => ({
+        attribute: order.attrs.attribute,
+        descending: bool(order.attrs.descending),
+        definition: definition(root, order.attrs.attribute),
+      }));
     const keyed = rows.map((row, index) => ({
       row,
       index,
       keys: specs.map((spec) => sortKeyOf(fieldValue(row.base, spec.attribute), spec.definition)),
-      pk: makeSortKey(row.base[rootMapping.idColumn], { definition: { dataverseType: "primarykey" } }),
+      pk: makeSortKey(row.base[rootMapping.idColumn], { definition: { dataverseType: 'primarykey' } }),
     }));
     keyed.sort((a, b) => {
       for (let i = 0; i < specs.length; i++) {
@@ -1122,29 +1284,25 @@ export function executeFetch(plan, ctx) {
       fail(
         `${key} is not a unique alias. It clashes with an autogenerated alias or user provided alias`,
         400,
-        "InvalidFetchXml",
-        { innerCode: "0x80041130" },
+        'InvalidFetchXml',
+        { innerCode: '0x80041130' },
       );
     }
     outputKeys.set(key, column);
     return true;
   };
   const collectColumns = (node, alias) => {
-    const type = node === root ? "inner" : (node.attrs["link-type"] ?? "inner");
+    const type = node === root ? 'inner' : (node.attrs['link-type'] ?? 'inner');
     if (SEMI_JOIN_TYPES.has(type)) return;
-    const crossApply = type === "matchfirstrowusingcrossapply";
+    const crossApply = type === 'matchfirstrowusingcrossapply';
     const lm = mappingOf.get(node);
-    for (const attribute of children(node, "attribute")) {
+    for (const attribute of children(node, 'attribute')) {
       const name = attribute.attrs.name;
-      assertStructural(alias, name, "attribute");
+      assertStructural(alias, name, 'attribute');
       const columnDefinition = definition(node, name);
       const key =
         attribute.attrs.alias ??
-        (alias == null
-          ? name
-          : crossApply
-            ? (columnDefinition?.schemaName ?? name)
-            : `${alias}.${name}`);
+        (alias == null ? name : crossApply ? (columnDefinition?.schemaName ?? name) : `${alias}.${name}`);
       const column = {
         key,
         alias,
@@ -1160,41 +1318,45 @@ export function executeFetch(plan, ctx) {
       };
       if (plan.aggregate) {
         if (!attribute.attrs.alias)
-          fail(`An alias is required for the aggregate query attribute ${name}.`, 400, "InvalidFetchXml");
+          fail(`An alias is required for the aggregate query attribute ${name}.`, 400, 'InvalidFetchXml');
         if (!column.groupby && !column.aggregate)
           fail(
             `Attribute ${name} must specify an aggregate function or groupby in an aggregate query.`,
             400,
-            "InvalidFetchXml",
+            'InvalidFetchXml',
           );
       } else if (column.aggregate || column.groupby)
-        fail("Aggregate attributes require <fetch aggregate=\"true\">.", 400, "InvalidFetchXml");
+        fail('Aggregate attributes require <fetch aggregate="true">.', 400, 'InvalidFetchXml');
       if (claim(key, column)) columns.push(column);
     }
-    for (const link of children(node, "link-entity")) collectColumns(link, plan.aliasOf.get(link));
+    for (const link of children(node, 'link-entity')) collectColumns(link, plan.aliasOf.get(link));
   };
   collectColumns(root, null);
   const allAttributeAliases = [];
   const collectAll = (node, alias) => {
-    const type = node === root ? "inner" : (node.attrs["link-type"] ?? "inner");
+    const type = node === root ? 'inner' : (node.attrs['link-type'] ?? 'inner');
     if (SEMI_JOIN_TYPES.has(type)) return;
-    if (children(node, "all-attributes").length) {
-      assertStructural(alias, "*", "attribute");
+    if (children(node, 'all-attributes').length) {
+      assertStructural(alias, '*', 'attribute');
       allAttributeAliases.push(alias);
     }
-    for (const link of children(node, "link-entity")) collectAll(link, plan.aliasOf.get(link));
+    for (const link of children(node, 'link-entity')) collectAll(link, plan.aliasOf.get(link));
   };
   collectAll(root, null);
-  const rootAll = allAttributeAliases.includes(null) || !children(root, "attribute").length;
+  const rootAll = allAttributeAliases.includes(null) || !children(root, 'attribute').length;
 
   // ---- ordering
   const orderSpecs = [];
-  for (const order of children(root, "order"))
-    orderSpecs.push({ order, alias: order.attrs.entityname != null ? resolveEntityName(order.attrs.entityname) : null, linked: order.attrs.entityname != null && resolveEntityName(order.attrs.entityname) != null });
+  for (const order of children(root, 'order'))
+    orderSpecs.push({
+      order,
+      alias: order.attrs.entityname != null ? resolveEntityName(order.attrs.entityname) : null,
+      linked: order.attrs.entityname != null && resolveEntityName(order.attrs.entityname) != null,
+    });
   const collectLinkOrders = (node) => {
-    for (const link of children(node, "link-entity")) {
-      if (SEMI_JOIN_TYPES.has(link.attrs["link-type"] ?? "inner")) continue;
-      for (const order of children(link, "order"))
+    for (const link of children(node, 'link-entity')) {
+      if (SEMI_JOIN_TYPES.has(link.attrs['link-type'] ?? 'inner')) continue;
+      for (const order of children(link, 'order'))
         orderSpecs.push({ order, alias: plan.aliasOf.get(link), linked: true });
       collectLinkOrders(link);
     }
@@ -1207,18 +1369,20 @@ export function executeFetch(plan, ctx) {
     ({ entities, keys } = aggregateRows());
     cookieSupported = false;
   } else {
-    const specs = orderSpecs.filter(({ order, alias }) => sortable(aliasNode(alias), order.attrs.attribute)).map(({ order, alias }) => {
-      if (order.attrs.alias && !order.attrs.attribute)
-        fail("An order alias is valid only in aggregate queries.", 400, "InvalidFetchXml");
-      const node = aliasNode(alias);
-      assertStructural(alias, order.attrs.attribute, "condition");
-      return {
-        alias,
-        attribute: order.attrs.attribute,
-        descending: bool(order.attrs.descending),
-        definition: definition(node, order.attrs.attribute),
-      };
-    });
+    const specs = orderSpecs
+      .filter(({ order, alias }) => sortable(aliasNode(alias), order.attrs.attribute))
+      .map(({ order, alias }) => {
+        if (order.attrs.alias && !order.attrs.attribute)
+          fail('An order alias is valid only in aggregate queries.', 400, 'InvalidFetchXml');
+        const node = aliasNode(alias);
+        assertStructural(alias, order.attrs.attribute, 'condition');
+        return {
+          alias,
+          attribute: order.attrs.attribute,
+          descending: bool(order.attrs.descending),
+          definition: definition(node, order.attrs.attribute),
+        };
+      });
     const pk = rootMapping.idColumn;
     const keyed = rows.map((row, index) => ({
       row,
@@ -1226,7 +1390,7 @@ export function executeFetch(plan, ctx) {
       keys: specs.map((spec) =>
         sortKeyOf(fieldValue(spec.alias == null ? row.base : row.aliases[spec.alias], spec.attribute), spec.definition),
       ),
-      pk: plan.distinct ? null : makeSortKey(row.base[pk], { definition: { dataverseType: "primarykey" } }),
+      pk: plan.distinct ? null : makeSortKey(row.base[pk], { definition: { dataverseType: 'primarykey' } }),
     }));
     keyed.sort((a, b) => {
       for (let i = 0; i < specs.length; i++) {
@@ -1247,22 +1411,29 @@ export function executeFetch(plan, ctx) {
       const position = (item) => storageOrder.get(item.entry.row.base) ?? Infinity;
       projected = projected.filter((item) => {
         const signature = JSON.stringify([
-          Object.keys(item.entity).sort().map((key) => [key, canonical(item.entity[key], collation)]),
-          item.entry.keys.map((key) => (key ? [key.t, key.t === "s" ? foldText(key.v, collation) : equalityKey(key.v)] : null)),
+          Object.keys(item.entity)
+            .sort()
+            .map((key) => [key, canonical(item.entity[key], collation)]),
+          item.entry.keys.map((key) =>
+            key ? [key.t, key.t === 's' ? foldText(key.v, collation) : equalityKey(key.v)] : null,
+          ),
         ]);
         const held = buckets.get(signature);
         if (!held) {
           buckets.set(signature, item);
           return true;
         }
-        if (position(item) < position(held)) Object.assign(held, { entity: item.entity, entry: { ...held.entry, row: item.entry.row } });
+        if (position(item) < position(held))
+          Object.assign(held, { entity: item.entity, entry: { ...held.entry, row: item.entry.row } });
         return false;
       });
     }
     entities = projected.map((item) => item.entity);
     keys = projected.map((item) => ({ ...item.entry, specs }));
-    cookieSupported = !specs.some((spec) => spec.alias != null) &&
-      (!plan.distinct || columns.some(column => column.alias == null && column.attribute === rootMapping.idColumn && !column.aliased));
+    cookieSupported =
+      !specs.some((spec) => spec.alias != null) &&
+      (!plan.distinct ||
+        columns.some((column) => column.alias == null && column.attribute === rootMapping.idColumn && !column.aliased));
   }
   total.value = entities.length;
 
@@ -1285,19 +1456,27 @@ export function executeFetch(plan, ctx) {
   const pageEntities = entities.slice(start, end);
   if (plan.top == null && cookieSupported && pageEntities.length)
     pagingCookie = buildCookie(plan.page, keys.slice(start, end));
-  else if(ctx.nativePagingCookies && !plan.aggregate && plan.top==null && orderSpecs.some(spec=>spec.alias!=null))
-    pagingCookie='';
-  else if(ctx.nativePagingCookies && !plan.aggregate && plan.top==null && cookieSupported && !pageEntities.length)
-    pagingCookie='';
+  else if (
+    ctx.nativePagingCookies &&
+    !plan.aggregate &&
+    plan.top == null &&
+    orderSpecs.some((spec) => spec.alias != null)
+  )
+    pagingCookie = '';
+  else if (ctx.nativePagingCookies && !plan.aggregate && plan.top == null && cookieSupported && !pageEntities.length)
+    pagingCookie = '';
   const result = {
     entities: pageEntities,
     more_records: more,
     paging_cookie: pagingCookie,
-    total_record_count: plan.returnTotal ? Math.min(total.value, plan.totalRecordCountLimit ?? FETCH_LIMITS.totalRecordCount) : -1,
-    total_record_count_limit_exceeded: plan.returnTotal && total.value > (plan.totalRecordCountLimit ?? FETCH_LIMITS.totalRecordCount),
+    total_record_count: plan.returnTotal
+      ? Math.min(total.value, plan.totalRecordCountLimit ?? FETCH_LIMITS.totalRecordCount)
+      : -1,
+    total_record_count_limit_exceeded:
+      plan.returnTotal && total.value > (plan.totalRecordCountLimit ?? FETCH_LIMITS.totalRecordCount),
     entity_name: rootMapping.logicalName,
   };
-  Object.defineProperty(result, "columns", {
+  Object.defineProperty(result, 'columns', {
     value: {
       root: rootMapping.logicalName,
       idColumn: rootMapping.idColumn,
@@ -1310,8 +1489,8 @@ export function executeFetch(plan, ctx) {
     },
     enumerable: false,
   });
-  Object.defineProperty(result, "diagnostics", { value: plan.diagnostics ?? [], enumerable: false });
-  Object.defineProperty(result, "stats", { value: stats, enumerable: false });
+  Object.defineProperty(result, 'diagnostics', { value: plan.diagnostics ?? [], enumerable: false });
+  Object.defineProperty(result, 'stats', { value: stats, enumerable: false });
   return result;
 
   function project(row) {
@@ -1320,11 +1499,11 @@ export function executeFetch(plan, ctx) {
     if (!plan.distinct && row.base[pk] != null) out[pk] = row.base[pk];
     if (rootAll)
       for (const [key, value] of Object.entries(row.base))
-        if (!isEmpty(value) && !key.includes("@")) out[key] = structuredClone(value);
+        if (!isEmpty(value) && !key.includes('@')) out[key] = structuredClone(value);
     for (const alias of allAttributeAliases) {
       if (alias == null) continue;
       for (const [key, value] of Object.entries(row.aliases[alias] ?? {}))
-        if (!isEmpty(value) && !key.includes("@")) out[`${alias}.${key}`] = structuredClone(value);
+        if (!isEmpty(value) && !key.includes('@')) out[`${alias}.${key}`] = structuredClone(value);
     }
     // Distinct queries don't add the primary key implicitly; an explicitly
     // selected key (attribute element or all-attributes) is an ordinary column.
@@ -1342,12 +1521,13 @@ export function executeFetch(plan, ctx) {
     const limit = plan.aggregateLimit;
     if (limit != null) input = input.slice(0, limit + 1);
     else if (input.length > (plan.limits?.aggregateRecords ?? FETCH_LIMITS.aggregateRecords))
-      fail("AggregateQueryRecordLimit exceeded. Cannot perform this operation.", 400, "AggregateQueryRecordLimit", {
-        innerCode: "0x8004e023",
+      fail('AggregateQueryRecordLimit exceeded. Cannot perform this operation.', 400, 'AggregateQueryRecordLimit', {
+        innerCode: '0x8004e023',
       });
     const groups = columns.filter((column) => column.groupby);
     const aggregates = columns.filter((column) => column.aggregate);
-    const read = (row, column) => fieldValue(column.alias == null ? row.base : row.aliases[column.alias], column.attribute);
+    const read = (row, column) =>
+      fieldValue(column.alias == null ? row.base : row.aliases[column.alias], column.attribute);
     let fiscal;
     const groupValue = (row, column) => {
       const value = read(row, column);
@@ -1367,7 +1547,7 @@ export function executeFetch(plan, ctx) {
       if (!buckets.has(signature)) buckets.set(signature, { values, rows: [] });
       buckets.get(signature).rows.push(row);
     }
-    if (!groups.length && !buckets.size) buckets.set("[]", { values: [], rows: [] });
+    if (!groups.length && !buckets.size) buckets.set('[]', { values: [], rows: [] });
     const out = [...buckets.values()].map((bucket) => {
       const entity = {};
       groups.forEach((column, index) => {
@@ -1385,32 +1565,32 @@ export function executeFetch(plan, ctx) {
           });
         }
         const numbers = () => values.map((value) => Number(scalar(value))).filter(Number.isFinite);
-        const exact=values.some(isExactNumeric)||['decimal','money'].includes(fieldKind(column.definition));
+        const exact = values.some(isExactNumeric) || ['decimal', 'money'].includes(fieldKind(column.definition));
         let result;
         switch (column.aggregate) {
-          case "count":
+          case 'count':
             result = bucket.rows.length;
             break;
-          case "countcolumn":
+          case 'countcolumn':
             result = values.length;
             break;
-          case "sum":
-            result = exact?sumNumeric(values):numbers().reduce((sum, value) => sum + value, 0);
+          case 'sum':
+            result = exact ? sumNumeric(values) : numbers().reduce((sum, value) => sum + value, 0);
             break;
-          case "avg": {
+          case 'avg': {
             const list = numbers();
             if (!list.length) result = null;
             else {
               const average = list.reduce((sum, value) => sum + value, 0) / list.length;
-              const integer = ["int", "integer", "bigint"].includes(
-                String(column.definition?.dataverseType ?? "").toLowerCase(),
+              const integer = ['int', 'integer', 'bigint'].includes(
+                String(column.definition?.dataverseType ?? '').toLowerCase(),
               );
-              result = exact?averageNumeric(values,{integer}):integer ? Math.trunc(average) : average;
+              result = exact ? averageNumeric(values, { integer }) : integer ? Math.trunc(average) : average;
             }
             break;
           }
-          case "min":
-          case "max": {
+          case 'min':
+          case 'max': {
             if (!values.length) {
               result = null;
               break;
@@ -1420,9 +1600,9 @@ export function executeFetch(plan, ctx) {
               key: makeSortKey(value, { definition: column.definition, rawChoice: true }),
             }));
             keyed.sort((a, b) => compareSortKeys(a.key, b.key, collation));
-            const chosen = column.aggregate === "min" ? keyed[0].value : keyed.at(-1).value;
+            const chosen = column.aggregate === 'min' ? keyed[0].value : keyed.at(-1).value;
             const date = parseDateValue(chosen);
-            result = typeof chosen === "string" && date && !date.dateOnly ? isoUtc(date.ms) : structuredClone(chosen);
+            result = typeof chosen === 'string' && date && !date.dateOnly ? isoUtc(date.ms) : structuredClone(chosen);
             break;
           }
         }
@@ -1430,21 +1610,34 @@ export function executeFetch(plan, ctx) {
       }
       return entity;
     });
-    const specs = children(root, "order").map((order) => {
+    const specs = children(root, 'order').map((order) => {
       const alias = order.attrs.alias;
       const column =
         (alias && columns.find((item) => item.key === alias)) ||
-        (!alias && columns.find((item) => item.groupby && item.alias == null && item.attribute === order.attrs.attribute));
+        (!alias &&
+          columns.find((item) => item.groupby && item.alias == null && item.attribute === order.attrs.attribute));
       if (!column)
-        fail("An order element in an aggregate query must reference a groupby or aggregate alias.", 400, "InvalidFetchXml");
+        fail(
+          'An order element in an aggregate query must reference a groupby or aggregate alias.',
+          400,
+          'InvalidFetchXml',
+        );
       return { column, descending: bool(order.attrs.descending) };
     });
     if (specs.length)
       out.sort((a, b) => {
         for (const spec of specs) {
           const result = compareSortKeys(
-            makeSortKey(a[spec.column.key], { definition: spec.column.aggregate ? null : spec.column.definition, rawChoice: plan.rawChoiceOrder, lookupName }),
-            makeSortKey(b[spec.column.key], { definition: spec.column.aggregate ? null : spec.column.definition, rawChoice: plan.rawChoiceOrder, lookupName }),
+            makeSortKey(a[spec.column.key], {
+              definition: spec.column.aggregate ? null : spec.column.definition,
+              rawChoice: plan.rawChoiceOrder,
+              lookupName,
+            }),
+            makeSortKey(b[spec.column.key], {
+              definition: spec.column.aggregate ? null : spec.column.definition,
+              rawChoice: plan.rawChoiceOrder,
+              lookupName,
+            }),
             collation,
           );
           if (result) return spec.descending ? -result : result;
@@ -1461,18 +1654,21 @@ export function executeFetch(plan, ctx) {
     for (const spec of specs) {
       const entry = cookie.values.get(spec.attribute);
       if (!entry || entry.last == null) return null;
-      const kind = String(spec.definition?.dataverseType ?? "").toLowerCase();
+      const kind = String(spec.definition?.dataverseType ?? '').toLowerCase();
       // ponytail: lookup and choice orders sort by name or label, which the cookie's raw value does not carry; they resume
       // at the page offset, so a cursor row deleted between pages shifts the next page by one row. Carrying the label in
       // the cookie (an extra attribute read here) is the upgrade.
-      if (["lookup", "customer", "owner", "picklist", "state", "status", "multiselectpicklist"].includes(kind)) return null;
+      if (['lookup', 'customer', 'owner', 'picklist', 'state', 'status', 'multiselectpicklist'].includes(kind))
+        return null;
       // An empty last is the null marker (cookieValue(null)), as the OData skip token reads it (data.mjs cursorValue):
       // makeSortKey(null) orders it first ascending, as compareSortKeys orders every null (keysetPage's compare).
-      lastValues.push(makeSortKey(entry.last === "" ? null : entry.last, { definition: spec.definition, rawChoice: true }));
+      lastValues.push(
+        makeSortKey(entry.last === '' ? null : entry.last, { definition: spec.definition, rawChoice: true }),
+      );
     }
     const pkEntry = cookie.values.get(pk);
     if (!pkEntry?.last) return null;
-    const lastPk = makeSortKey(pkEntry.last, { definition: { dataverseType: "primarykey" } });
+    const lastPk = makeSortKey(pkEntry.last, { definition: { dataverseType: 'primarykey' } });
     for (let index = 0; index < keyed.length; index++) {
       const item = keyed[index];
       let comparison = 0;
@@ -1504,17 +1700,17 @@ export function executeFetch(plan, ctx) {
       parts.push(
         `<${pk} last="${xmlEscapeAttribute(cookieValue(last.row.base[pk]))}" first="${xmlEscapeAttribute(cookieValue(first.row.base[pk]))}" />`,
       );
-    return `<cookie page="${page}">${parts.join("")}</cookie>`;
+    return `<cookie page="${page}">${parts.join('')}</cookie>`;
   }
 }
 
 // Equality key of a value under the collation: groupby, distinct and countcolumn distinct agree with filter equality.
-function canonical(value, collation = "CI_AI") {
+function canonical(value, collation = 'CI_AI') {
   if (value == null) return null;
   if (isExactNumeric(value)) return equalityKey(value, collation);
-  if (typeof value === "object" && !Array.isArray(value)) {
-    if (own(value, "id")) return ["ref", guidKey(value.id) ?? String(value.id)];
-    if (own(value, "value")) return ["choice", value.value];
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    if (own(value, 'id')) return ['ref', guidKey(value.id) ?? String(value.id)];
+    if (own(value, 'value')) return ['choice', value.value];
     return Object.keys(value)
       .sort()
       .map((key) => [key, canonical(value[key], collation)]);

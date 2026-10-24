@@ -32,18 +32,52 @@ export const COMMON_DEFAULTS = Object.freeze({ Visible: true, DisplayMode: 'Edit
 
 // pa.yaml `Control: [Classic/]Type@version` (the Classic/ prefix names the classic variant of a control that also has a modern one).
 // Type ids beyond Label, Gallery and Button are guessed from the control names.
-const PA_TYPES = { screen: 'screen', label: 'label', text: 'label', textinput: 'textinput', button: 'button', gallery: 'gallery', form: 'form', formviewer: 'formviewer',
-  typeddatacard: 'card', datacard: 'card', dropdown: 'dropdown', combobox: 'combobox', checkbox: 'checkbox', toggle: 'toggle', datepicker: 'datepicker',
-  image: 'image', groupcontainer: 'container', container: 'container' };
+const PA_TYPES = {
+  screen: 'screen',
+  label: 'label',
+  text: 'label',
+  textinput: 'textinput',
+  button: 'button',
+  gallery: 'gallery',
+  form: 'form',
+  formviewer: 'formviewer',
+  typeddatacard: 'card',
+  datacard: 'card',
+  dropdown: 'dropdown',
+  combobox: 'combobox',
+  checkbox: 'checkbox',
+  toggle: 'toggle',
+  datepicker: 'datepicker',
+  image: 'image',
+  groupcontainer: 'container',
+  container: 'container',
+};
 // .fx.yaml `Name As type[.variant]`; `text` is the text input there (a retired format with no published type list).
-const FX_TYPES = { screen: 'screen', label: 'label', text: 'textinput', button: 'button', gallery: 'gallery', form: 'form', formviewer: 'formviewer',
-  typeddatacard: 'card', datacard: 'card', dropdown: 'dropdown', combobox: 'combobox', checkbox: 'checkbox', toggleswitch: 'toggle', datepicker: 'datepicker',
-  image: 'image', groupcontainer: 'container' };
+const FX_TYPES = {
+  screen: 'screen',
+  label: 'label',
+  text: 'textinput',
+  button: 'button',
+  gallery: 'gallery',
+  form: 'form',
+  formviewer: 'formviewer',
+  typeddatacard: 'card',
+  datacard: 'card',
+  dropdown: 'dropdown',
+  combobox: 'combobox',
+  checkbox: 'checkbox',
+  toggleswitch: 'toggle',
+  datepicker: 'datepicker',
+  image: 'image',
+  groupcontainer: 'container',
+};
 
 /** The hosted kind of a source control type, or null when the runtime does not host it. */
 export function controlKind(control, format = 'pa.yaml') {
   if (!control) return null;
-  const bare = String(control).replace(/^classic\//i, '').replace(/@.*$/, '');
+  const bare = String(control)
+    .replace(/^classic\//i, '')
+    .replace(/@.*$/, '');
   const base = (format === 'fx.yaml' ? bare.split('.')[0] : bare).toLowerCase();
   return (format === 'fx.yaml' ? FX_TYPES : PA_TYPES)[base] ?? null;
 }
@@ -55,6 +89,10 @@ export function unsupportedControls(source) {
   for (const screen of source.tree?.screens ?? source.screens ?? [])
     for (const control of screen.controls ?? [])
       if (control.componentName || !controlKind(control.control, format))
-        rows.push({ screen: screen.name, name: control.name, control: control.componentName ? `component ${control.componentName}` : String(control.control ?? 'unknown') });
+        rows.push({
+          screen: screen.name,
+          name: control.name,
+          control: control.componentName ? `component ${control.componentName}` : String(control.control ?? 'unknown'),
+        });
   return rows;
 }

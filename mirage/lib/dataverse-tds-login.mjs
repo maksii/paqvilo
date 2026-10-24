@@ -25,7 +25,15 @@
 // Strings: B_VARCHAR (1-byte char count), US_VARCHAR (2-byte char count), UTF-16LE.
 // Constants: TOKEN, DONE_STATUS, FEDAUTH_LIBRARY and ENV_TYPE are exported for callers.
 
-export const TOKEN = Object.freeze({ ERROR: 0xaa, INFO: 0xab, LOGINACK: 0xad, FEATUREEXTACK: 0xae, ENVCHANGE: 0xe3, FEDAUTHINFO: 0xee, DONE: 0xfd });
+export const TOKEN = Object.freeze({
+  ERROR: 0xaa,
+  INFO: 0xab,
+  LOGINACK: 0xad,
+  FEATUREEXTACK: 0xae,
+  ENVCHANGE: 0xe3,
+  FEDAUTHINFO: 0xee,
+  DONE: 0xfd,
+});
 export const DONE_STATUS = Object.freeze({ MORE: 0x01, ERROR: 0x02, INXACT: 0x04, COUNT: 0x10, ATTN: 0x20 });
 export const FEDAUTH_LIBRARY = Object.freeze({ SECURITY_TOKEN: 0x01, ADAL: 0x02 });
 export const ENV_TYPE = Object.freeze({ DATABASE: 1, LANGUAGE: 2, CHARSET: 3, PACKET_SIZE: 4, SQL_COLLATION: 7 });
@@ -40,7 +48,13 @@ const NONCE_LENGTH = 32;
 
 // Returns buf[offset, offset + length) or throws when the range leaves the buffer.
 function slice(buf, offset, length, what) {
-  if (!Number.isInteger(offset) || !Number.isInteger(length) || offset < 0 || length < 0 || offset + length > buf.length) {
+  if (
+    !Number.isInteger(offset) ||
+    !Number.isInteger(length) ||
+    offset < 0 ||
+    length < 0 ||
+    offset + length > buf.length
+  ) {
     throw new RangeError(`TDS ${what} is outside its buffer`);
   }
   return buf.subarray(offset, offset + length);
@@ -64,7 +78,9 @@ export function decodeLogin7(buffer) {
   // (offset, length) pair at `at`, in characters, read as UTF-16LE.
   const text = (at, what) => slice(p, p.readUInt16LE(at), p.readUInt16LE(at + 2) * 2, what).toString('utf16le');
 
-  const password = unobfuscate(slice(p, p.readUInt16LE(44), p.readUInt16LE(46) * 2, 'LOGIN7 password')).toString('utf16le');
+  const password = unobfuscate(slice(p, p.readUInt16LE(44), p.readUInt16LE(46) * 2, 'LOGIN7 password')).toString(
+    'utf16le',
+  );
 
   const features = {};
   const flags3 = p[27];
@@ -145,17 +161,21 @@ function usVarChar(value) {
 
 export function loginAck({ tdsVersion = 0x74000004, progName = 'Microsoft SQL Server', version = '12.0.2000' } = {}) {
   const parts = String(version).split('.').map(Number);
-  if (parts.length !== 3 || parts.some((n) => !Number.isInteger(n) || n < 0)) throw new RangeError(`TDS version "${version}" is not major.minor.build`);
+  if (parts.length !== 3 || parts.some((n) => !Number.isInteger(n) || n < 0))
+    throw new RangeError(`TDS version "${version}" is not major.minor.build`);
   const [major, minor, build] = parts;
   if (major > 0xff || minor > 0xff || build > 0xffff) throw new RangeError(`TDS version "${version}" is out of range`);
   const tds = Buffer.alloc(4);
   tds.writeUInt32BE(tdsVersion);
-  return withLength16(TOKEN.LOGINACK, Buffer.concat([
-    Buffer.from([0x01]), // interface: SQL_TSQL
-    tds,
-    bVarChar(progName),
-    Buffer.from([major, minor, build >> 8, build & 0xff]),
-  ]));
+  return withLength16(
+    TOKEN.LOGINACK,
+    Buffer.concat([
+      Buffer.from([0x01]), // interface: SQL_TSQL
+      tds,
+      bVarChar(progName),
+      Buffer.from([major, minor, build >> 8, build & 0xff]),
+    ]),
+  );
 }
 
 export function envChange(type, newValue, oldValue = '') {
@@ -200,14 +220,20 @@ export function fedAuthInfo({ stsUrl, spn }) {
   return Buffer.concat([token, body]);
 }
 
-function messageToken(type, { number, state = 1, class: severity = 0, message, serverName = '', procName = '', line = 0 }) {
+function messageToken(
+  type,
+  { number, state = 1, class: severity = 0, message, serverName = '', procName = '', line = 0 },
+) {
   const head = Buffer.alloc(6);
   head.writeInt32LE(number, 0);
   head[4] = state;
   head[5] = severity;
   const lineNumber = Buffer.alloc(4);
   lineNumber.writeInt32LE(line, 0);
-  return withLength16(type, Buffer.concat([head, usVarChar(message), bVarChar(serverName), bVarChar(procName), lineNumber]));
+  return withLength16(
+    type,
+    Buffer.concat([head, usVarChar(message), bVarChar(serverName), bVarChar(procName), lineNumber]),
+  );
 }
 
 export function info(options) {

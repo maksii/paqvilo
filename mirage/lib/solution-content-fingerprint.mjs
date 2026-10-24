@@ -8,21 +8,31 @@ import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from './dataverse-sol
  * Top-level Solution folders that runtime importers read outside the schema scan: workflow XAML and cloud-flow JSON,
  * web resources, custom APIs, duplicate rules, PCF controls, portal components and plug-in assemblies.
  */
-export const SOLUTION_SIDE_FOLDERS = /^(?:workflows|webresources|customapis|fxexpressions|duplicaterules|controls|powerpagecomponents|pluginassemblies)$/i;
-const byName = (left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
-const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
-const stampOf = file => { const stat = fs.statSync(file, { bigint: true }); return `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`; };
+export const SOLUTION_SIDE_FOLDERS =
+  /^(?:workflows|webresources|customapis|fxexpressions|duplicaterules|controls|powerpagecomponents|pluginassemblies)$/i;
+const byName = (left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const stampOf = (file) => {
+  const stat = fs.statSync(file, { bigint: true });
+  return `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`;
+};
 
 function directoryFiles(dir, folders) {
   const files = [];
   const visit = (current, prefix) => {
     let entries;
-    try { entries = fs.readdirSync(current, { withFileTypes: true }); } catch { return; }
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
-      const name = prefix ? `${prefix}/${entry.name}` : entry.name, file = path.join(current, entry.name);
-      if (entry.isDirectory()) { if (prefix || folders.test(entry.name)) visit(file, name); }
-      else if (prefix && entry.isFile()) files.push({ name, file });
+      const name = prefix ? `${prefix}/${entry.name}` : entry.name,
+        file = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        if (prefix || folders.test(entry.name)) visit(file, name);
+      } else if (prefix && entry.isFile()) files.push({ name, file });
     }
   };
   visit(dir, '');
@@ -32,20 +42,29 @@ function directoryFiles(dir, folders) {
 // ponytail: the last 16 ZIP layers keep their selected entries in memory; switch to an LRU by bytes if layers grow huge.
 const zipListings = new Map();
 function zipLayerFiles(layer, folders) {
-  const stamp = stampOf(layer.dir), key = `${folders.source}/${folders.flags}`;
+  const stamp = stampOf(layer.dir),
+    key = `${folders.source}/${folders.flags}`;
   let cached = zipListings.get(layer.dir);
   zipListings.delete(layer.dir);
   if (cached?.stamp !== stamp) cached = { stamp, listings: new Map() };
   zipListings.set(layer.dir, cached);
   if (zipListings.size > 16) zipListings.delete(zipListings.keys().next().value);
   if (!cached.listings.has(key)) {
-    const selected = name => name.includes('/') && folders.test(name.split('/')[0]);
-    cached.listings.set(key, readSolutionAssetEntries(readLocalFileSync(layer.dir, { maxBytes: SOLUTION_ASSET_LIMITS.archiveBytes }), { include: selected })
-      .map(entry => ({ name: entry.name, read: (maxBytes = Infinity) => {
-        if (entry.data.length > maxBytes) throw new Error('Solution archive entry exceeds its read limit');
-        return entry.data;
-      } }))
-      .sort(byName));
+    const selected = (name) => name.includes('/') && folders.test(name.split('/')[0]);
+    cached.listings.set(
+      key,
+      readSolutionAssetEntries(readLocalFileSync(layer.dir, { maxBytes: SOLUTION_ASSET_LIMITS.archiveBytes }), {
+        include: selected,
+      })
+        .map((entry) => ({
+          name: entry.name,
+          read: (maxBytes = Infinity) => {
+            if (entry.data.length > maxBytes) throw new Error('Solution archive entry exceeds its read limit');
+            return entry.data;
+          },
+        }))
+        .sort(byName),
+    );
   }
   return [...cached.listings.get(key)];
 }
@@ -58,7 +77,10 @@ function zipLayerFiles(layer, folders) {
 export function solutionLayerFiles(layer, folders = SOLUTION_SIDE_FOLDERS) {
   if (!layer?.dir) return [];
   if (layer.type === 'zip') return zipLayerFiles(layer, folders);
-  return directoryFiles(layer.dir, folders).map(({ name, file }) => ({ name, read: (maxBytes = SOLUTION_ASSET_LIMITS.entryBytes) => readLocalFileSync(file, { root: layer.dir, maxBytes }) }));
+  return directoryFiles(layer.dir, folders).map(({ name, file }) => ({
+    name,
+    read: (maxBytes = SOLUTION_ASSET_LIMITS.entryBytes) => readLocalFileSync(file, { root: layer.dir, maxBytes }),
+  }));
 }
 
 // ponytail: one entry per physical side file or archive this process has hashed; prune by root if a host watches unbounded source sets.
@@ -76,11 +98,21 @@ function sideFileHashes(layer) {
   if (!layer.type || !layer.dir) return [];
   try {
     if (layer.type === 'zip') {
-      return cachedHash(layer.dir, stampOf(layer.dir), () => solutionLayerFiles(layer).map(file => [file.name, sha256(file.read())]));
+      return cachedHash(layer.dir, stampOf(layer.dir), () =>
+        solutionLayerFiles(layer).map((file) => [file.name, sha256(file.read())]),
+      );
     }
     return directoryFiles(layer.dir, SOLUTION_SIDE_FOLDERS).map(({ name, file }) => {
-      try { return [name, cachedHash(file, stampOf(file), () => sha256(readLocalFileSync(file, { root: layer.dir, maxBytes: SOLUTION_ASSET_LIMITS.entryBytes })))]; }
-      catch { return [name, 'unreadable']; }
+      try {
+        return [
+          name,
+          cachedHash(file, stampOf(file), () =>
+            sha256(readLocalFileSync(file, { root: layer.dir, maxBytes: SOLUTION_ASSET_LIMITS.entryBytes })),
+          ),
+        ];
+      } catch {
+        return [name, 'unreadable'];
+      }
     });
   } catch {
     return [['', 'unreadable']];
@@ -105,14 +137,14 @@ export function solutionContentFingerprint(layers, { lcid = 1033, files = [] } =
   digest.update(JSON.stringify(['solution-content-v2', lcid]));
   for (const [index, layer] of layers.entries()) {
     digest.update(JSON.stringify([index, layer.solution?.uniqueName ?? null, layer.solution?.version ?? null]));
-    const documents = new Map((layer.documents ?? []).map(document => [document.file, document.hash ?? '']));
-    const members = new Set((layer.files ?? []).map(file => file.path));
+    const documents = new Map((layer.documents ?? []).map((document) => [document.file, document.hash ?? '']));
+    const members = new Set((layer.files ?? []).map((file) => file.path));
     for (const file of files) {
       if (members.has(file.path)) documents.set(file.path, file.hash ?? documents.get(file.path) ?? '');
     }
     const entries = new Map([...documents].map(([file, hash]) => [solutionContentPath(layer, file), hash]));
     for (const [name, hash] of sideFileHashes(layer)) if (!entries.has(name)) entries.set(name, hash);
-    const sorted = [...entries].sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+    const sorted = [...entries].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
     for (const entry of sorted) digest.update(JSON.stringify(entry));
   }
   return digest.digest('hex');

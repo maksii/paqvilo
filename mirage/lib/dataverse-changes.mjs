@@ -6,7 +6,7 @@
 // A token's stamp is the log's epoch, so a token from another log (a restart, a reset) is expired, not replayed.
 // ponytail: in-memory ring, so a token outlives the process only as an "expired" answer; persist the log if that matters.
 // ponytail: epochs are whole seconds, made distinct per store; a new store in the same clock second as the old log aliases its tokens.
-import { DataError } from "./data-error.mjs";
+import { DataError } from './data-error.mjs';
 
 /** The org-wide row version: the persisted counter every Dataverse create, update and delete takes the next value of. */
 export const rowVersionOf = (store) => store.state?.rowVersion ?? 0;
@@ -16,9 +16,9 @@ export function nextRowVersion(store) {
 }
 
 const DEFAULT_LIMIT = 10000;
-const EXPIRED_MESSAGE = "Version stamp associated with the client has expired. Please perform a full sync.";
-const pad = (n) => String(n).padStart(2, "0");
-const lower = (value) => String(value ?? "").toLowerCase();
+const EXPIRED_MESSAGE = 'Version stamp associated with the client has expired. Please perform a full sync.';
+const pad = (n) => String(n).padStart(2, '0');
+const lower = (value) => String(value ?? '').toLowerCase();
 
 /** Dataverse-style stamp inside the token: MM/dd/yyyy HH:mm:ss (UTC). */
 function stamp(ms) {
@@ -28,17 +28,20 @@ function stamp(ms) {
 
 /** Dataverse escapes only a few characters in the token and keeps lowercase hex. */
 export function encodeDeltaToken(token) {
-  return encodeURIComponent(token).replace(/!/g, "%21").replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase());
+  return encodeURIComponent(token)
+    .replace(/!/g, '%21')
+    .replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase());
 }
 
 /** ExpiredVersionStamp (0x80044352): the answer for a token this log cannot continue from. */
 export function expiredVersionStamp() {
-  return new DataError(EXPIRED_MESSAGE, 400, "InvalidRequest", { innerCode: "0x80044352" });
+  return new DataError(EXPIRED_MESSAGE, 400, 'InvalidRequest', { innerCode: '0x80044352' });
 }
 
 // Each log takes an epoch later than any earlier log of the same store, from its own clock (no process-wide state, so a
 // fixed clock gives the same tokens in every run).
-const nextEpoch = (store, clock) => (store.changeLogEpoch = Math.max(Math.floor(clock() / 1000), (store.changeLogEpoch ?? 0) + 1));
+const nextEpoch = (store, clock) =>
+  (store.changeLogEpoch = Math.max(Math.floor(clock() / 1000), (store.changeLogEpoch ?? 0) + 1));
 
 export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Date.now() } = {}) {
   const entries = [];
@@ -53,7 +56,7 @@ export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Da
     try {
       return lower(row?.[store.resolveMapping(entity).idColumn]);
     } catch {
-      return "";
+      return '';
     }
   };
   const unsubscribe = store.addCommittedEvents((events) => {
@@ -61,7 +64,7 @@ export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Da
     const revision = (lastStamp = rowVersionOf(store));
     for (const event of events) {
       const id = idOf(event.entity, event.row);
-      if (id) entries.push({ revision, entity: lower(event.entity), id, deleted: event.operation === "delete" });
+      if (id) entries.push({ revision, entity: lower(event.entity), id, deleted: event.operation === 'delete' });
     }
     if (entries.length > limit) {
       const dropped = entries.splice(0, entries.length - limit);
@@ -81,11 +84,12 @@ export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Da
      * error for a token from another epoch, a revision ahead of the store, or one below the log's floor.
      */
     parse(text) {
-      const match = /^(\d+)!(.*)$/.exec(String(text ?? ""));
+      const match = /^(\d+)!(.*)$/.exec(String(text ?? ''));
       if (!match) return null;
       const revision = Number(match[1]);
       if (!Number.isSafeInteger(revision)) return null;
-      if (match[2] !== epochStamp() || revision > rowVersionOf(store) || revision < expiredBelow) throw expiredVersionStamp();
+      if (match[2] !== epochStamp() || revision > rowVersionOf(store) || revision < expiredBelow)
+        throw expiredVersionStamp();
       return { revision };
     },
 
@@ -93,7 +97,8 @@ export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Da
     async since(entity, revision) {
       await store.flushCommittedEvents?.();
       if (revision < expiredBelow) throw expiredVersionStamp();
-      const changed = new Set(), deleted = new Set();
+      const changed = new Set(),
+        deleted = new Set();
       for (const entry of entries) {
         if (entry.revision <= revision || entry.entity !== lower(entity)) continue;
         if (entry.deleted) {

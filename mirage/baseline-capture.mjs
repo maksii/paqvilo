@@ -1,90 +1,139 @@
-import { ensureCaptureDestination } from "./baseline-paths.mjs";
+import { ensureCaptureDestination } from './baseline-paths.mjs';
 // Baseline capture: one self-contained page runner executes a scripted scenario on a Playwright
 // page and collects raw evidence (ordered requests and responses, settled DOM, element inventory,
 // console, screenshot). The runner has no imports so the same source can run inside a browser
 // bridge sandbox (the user's signed-in profile) or in-process against a local Mirage. Redaction
 // and file writing happen in this process: tokens are never written, query values are redacted.
-import fs from "node:fs/promises";
-import path from "node:path";
-import { createHash } from "node:crypto";
-import { redactUrl, normalizeText } from "./parity-suite.mjs";
-import { redactCaptureControlEvidence, redactCaptureControlText } from "./lib/capture-control-redaction.mjs";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { redactUrl, normalizeText } from './parity-suite.mjs';
+import { redactCaptureControlEvidence, redactCaptureControlText } from './lib/capture-control-redaction.mjs';
 
-export const SIGN_IN_MARKERS = Object.freeze(["form#loginForm", "form[action*='/SignIn']", "[action*='login.microsoftonline']", ".login-heading-section", "#SubmitButton[value='Sign in']"]);
+export const SIGN_IN_MARKERS = Object.freeze([
+  'form#loginForm',
+  "form[action*='/SignIn']",
+  "[action*='login.microsoftonline']",
+  '.login-heading-section',
+  "#SubmitButton[value='Sign in']",
+]);
 
 /** Preserve surrounding markup/JSON and URL paths while removing query values. */
 export function redactEmbeddedQueryValues(text) {
-  return String(text ?? "").replace(/(?:https?:)?(?:\/|\\\/){2}[^\s<>"'`]+|\/(?!\/)[^\s<>"'`]*/gi, (raw) => {
-    const ending = raw.match(/[),.;\]}]+$/)?.[0] ?? "";
+  return String(text ?? '').replace(/(?:https?:)?(?:\/|\\\/){2}[^\s<>"'`]+|\/(?!\/)[^\s<>"'`]*/gi, (raw) => {
+    const ending = raw.match(/[),.;\]}]+$/)?.[0] ?? '';
     const body = ending ? raw.slice(0, -ending.length) : raw;
-    const escapedSlashes = body.includes("\\/");
+    const escapedSlashes = body.includes('\\/');
     const separator = body.match(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/i)?.[0];
-    const plain = body.replaceAll("\\/", "/").replace(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/gi, "&");
-    const question = plain.indexOf("?");
+    const plain = body.replaceAll('\\/', '/').replace(/&(?:amp;|#0*38;|#x0*26;)|\\u0026/gi, '&');
+    const question = plain.indexOf('?');
     if (question < 0) return raw;
     try {
-      new URL(plain, "https://redaction.invalid");
+      new URL(plain, 'https://redaction.invalid');
     } catch {
       return raw;
     }
-    const hash = plain.indexOf("#", question);
+    const hash = plain.indexOf('#', question);
     const query = plain.slice(question + 1, hash < 0 ? undefined : hash);
-    const fragment = hash < 0 ? "" : plain.slice(hash);
-    const safe = query.split("&").map((part) => {
-      const equals = part.indexOf("=");
-      if (equals < 0) return part;
-      const redacted = redactUrl("https://redaction.invalid/?" + part, { keepPaging: true });
-      return part.slice(0, equals + 1) + redacted.slice(redacted.lastIndexOf("=") + 1);
-    }).join(separator ?? "&");
+    const fragment = hash < 0 ? '' : plain.slice(hash);
+    const safe = query
+      .split('&')
+      .map((part) => {
+        const equals = part.indexOf('=');
+        if (equals < 0) return part;
+        const redacted = redactUrl('https://redaction.invalid/?' + part, { keepPaging: true });
+        return part.slice(0, equals + 1) + redacted.slice(redacted.lastIndexOf('=') + 1);
+      })
+      .join(separator ?? '&');
     const result = plain.slice(0, question + 1) + safe + fragment;
-    return (escapedSlashes ? result.replaceAll("/", "\\/") : result) + ending;
+    return (escapedSlashes ? result.replaceAll('/', '\\/') : result) + ending;
   });
 }
 
 function redactCaptureQueryValues(value) {
-  if (typeof value === "string") return redactEmbeddedQueryValues(value);
+  if (typeof value === 'string') return redactEmbeddedQueryValues(value);
   if (Array.isArray(value)) return value.map(redactCaptureQueryValues);
-  if (value && typeof value === "object") {
-    const result = Object.fromEntries(Object.entries(value).map(([key, item]) => [key, key === "screenshot" || key === "bodyHashInput" ? item : redactCaptureQueryValues(item)]));
-    if (typeof value.body === "string" && redactTokens(value.body) !== value.body) {
+  if (value && typeof value === 'object') {
+    const result = Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        key === 'screenshot' || key === 'bodyHashInput' ? item : redactCaptureQueryValues(item),
+      ]),
+    );
+    if (typeof value.body === 'string' && redactTokens(value.body) !== value.body) {
       result.body = redactTokens(value.body);
       delete result.bodyHashInput;
-      result.bodyHashProvenance = "redacted-text-sha256";
+      result.bodyHashProvenance = 'redacted-text-sha256';
     }
     return result;
   }
   return value;
 }
 
-const TOKEN_HEADERS = new Set(["cookie", "set-cookie", "authorization", "proxy-authorization", "x-csrf-token", "__requestverificationtoken", "x-ms-file-continuation-token", "x-ms-request-id", "x-request-id", "request-id", "x-azure-ref", "x-cache"]);
-const TOKEN_FIELDS = /(__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION|__CMSCsrfToken|__RequestVerificationToken_[\w-]+)=[^&]*/g;
-const TOKEN_ATTRIBUTES = /(name="?(?:__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION)"?[^>]*value=")[^"]*(")/g;
-const sha = (value) => createHash("sha256").update(value).digest("hex");
+const TOKEN_HEADERS = new Set([
+  'cookie',
+  'set-cookie',
+  'authorization',
+  'proxy-authorization',
+  'x-csrf-token',
+  '__requestverificationtoken',
+  'x-ms-file-continuation-token',
+  'x-ms-request-id',
+  'x-request-id',
+  'request-id',
+  'x-azure-ref',
+  'x-cache',
+]);
+const TOKEN_FIELDS =
+  /(__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION|__CMSCsrfToken|__RequestVerificationToken_[\w-]+)=[^&]*/g;
+const TOKEN_ATTRIBUTES =
+  /(name="?(?:__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION)"?[^>]*value=")[^"]*(")/g;
+const sha = (value) => createHash('sha256').update(value).digest('hex');
 
 /** Replace per-session tokens in text bodies and markup with a stable placeholder. */
 export function redactTokens(text) {
-  return redactEmbeddedQueryValues(redactCaptureControlText(text))
-    .replace(TOKEN_FIELDS, "$1={token}")
-    .replace(TOKEN_ATTRIBUTES, "$1{token}$2")
-    // The same fields in a multipart postback (forms with a file control): name="…" header line, blank line, value.
-    .replace(/(name="(?:__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION|__CMSCsrfToken)"\r?\n\r?\n)[^\r\n]*/g, "$1{token}")
-    .replace(/("__RequestVerificationToken"\s*:\s*")[^"]*(")/g, "$1{token}$2")
-    // Upload continuation tokens (file upload API responses and the bodies that echo them).
-    .replace(/((?:File)?ContinuationToken\\{0,2}"\s*:\s*\\{0,2}")[^"\\]{8,}/g, "$1{token}")
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{20,}/g, "$1{token}");
+  return (
+    redactEmbeddedQueryValues(redactCaptureControlText(text))
+      .replace(TOKEN_FIELDS, '$1={token}')
+      .replace(TOKEN_ATTRIBUTES, '$1{token}$2')
+      // The same fields in a multipart postback (forms with a file control): name="…" header line, blank line, value.
+      .replace(
+        /(name="(?:__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION|__CMSCsrfToken)"\r?\n\r?\n)[^\r\n]*/g,
+        '$1{token}',
+      )
+      .replace(/("__RequestVerificationToken"\s*:\s*")[^"]*(")/g, '$1{token}$2')
+      // Upload continuation tokens (file upload API responses and the bodies that echo them).
+      .replace(/((?:File)?ContinuationToken\\{0,2}"\s*:\s*\\{0,2}")[^"\\]{8,}/g, '$1{token}')
+      .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{20,}/g, '$1{token}')
+  );
 }
 
 // The capture's own origin (referer, origin, location headers) is reduced to the same `{site}` form the meta uses.
-export const siteOriginPlaceholder = (origin) => { try { const url = new URL(origin); return `${url.protocol}//${url.hostname.replace(/^[^.]+/, "{site}")}${url.port ? ":" + url.port : ""}`; } catch { return null; } };
+export const siteOriginPlaceholder = (origin) => {
+  try {
+    const url = new URL(origin);
+    return `${url.protocol}//${url.hostname.replace(/^[^.]+/, '{site}')}${url.port ? ':' + url.port : ''}`;
+  } catch {
+    return null;
+  }
+};
 function redactHeaders(headers, origin = null) {
   const out = {};
   const placeholder = siteOriginPlaceholder(origin);
   for (const [name, value] of Object.entries(headers ?? {})) {
     const key = name.toLowerCase();
     if (TOKEN_HEADERS.has(key)) {
-      out[key] = key === "cookie" || key === "set-cookie" ? String(value).split(/,(?=\s*\w+=)|;/).map((part) => part.split("=")[0].trim()).filter(Boolean).sort().join(";") : "{token}";
+      out[key] =
+        key === 'cookie' || key === 'set-cookie'
+          ? String(value)
+              .split(/,(?=\s*\w+=)|;/)
+              .map((part) => part.split('=')[0].trim())
+              .filter(Boolean)
+              .sort()
+              .join(';')
+          : '{token}';
     } else {
-      const text = Array.isArray(value) ? value.join(", ") : String(value);
+      const text = Array.isArray(value) ? value.join(', ') : String(value);
       out[key] = origin && placeholder ? text.split(origin).join(placeholder) : text;
     }
   }
@@ -93,7 +142,7 @@ function redactHeaders(headers, origin = null) {
 
 /** Resolve `{id:alias}` placeholders from the run's private id map. */
 export function resolvePlaceholders(text, ids = {}) {
-  return String(text ?? "").replace(/\{id:([\w.-]+)\}/g, (_, alias) => {
+  return String(text ?? '').replace(/\{id:([\w.-]+)\}/g, (_, alias) => {
     if (!Object.hasOwn(ids, alias)) throw new Error(`Unknown record alias {id:${alias}}`);
     return String(ids[alias]);
   });
@@ -106,13 +155,29 @@ export function resolvePlaceholders(text, ids = {}) {
  * options: { origin, scenario, ids, allowWrites, allowPaths, allowEntitySets, readPosts, signInMarkers, settle, textTypes, maxBody }
  */
 export async function pageRunner(page, options) {
-  const { origin, scenario, ids = {}, allowWrites = false, allowPaths = [], allowEntitySets = [], signInMarkers = [], settle: settleDefaults = {}, maxBody = 2 * 1024 * 1024, readPosts = ["^/_services/entity-(?:grid|subgrid)-data.json(?:/|$)", "^/_services/entity-notes/[^/]+$"] } = options;
-  const textTypes = new RegExp(options.textTypes ?? "^(?:text/|application/(?:json|xml|x-www-form-urlencoded|javascript|problem\\+json)|.*\\+json|.*\\+xml)", "i");
+  const {
+    origin,
+    scenario,
+    ids = {},
+    allowWrites = false,
+    allowPaths = [],
+    allowEntitySets = [],
+    signInMarkers = [],
+    settle: settleDefaults = {},
+    maxBody = 2 * 1024 * 1024,
+    readPosts = ['^/_services/entity-(?:grid|subgrid)-data.json(?:/|$)', '^/_services/entity-notes/[^/]+$'],
+  } = options;
+  const textTypes = new RegExp(
+    options.textTypes ??
+      '^(?:text/|application/(?:json|xml|x-www-form-urlencoded|javascript|problem\\+json)|.*\\+json|.*\\+xml)',
+    'i',
+  );
   const sleep = (ms) => page.waitForTimeout(ms);
-  const resolve = (text) => String(text ?? "").replace(/\{id:([\w.-]+)\}/g, (_, alias) => {
-    if (!Object.prototype.hasOwnProperty.call(ids, alias)) throw new Error(`Unknown record alias {id:${alias}}`);
-    return String(ids[alias]);
-  });
+  const resolve = (text) =>
+    String(text ?? '').replace(/\{id:([\w.-]+)\}/g, (_, alias) => {
+      if (!Object.prototype.hasOwnProperty.call(ids, alias)) throw new Error(`Unknown record alias {id:${alias}}`);
+      return String(ids[alias]);
+    });
   const context = page.context();
   const loopback = /^(?:127\.0\.0\.1|localhost|\[::1\])$/.test(new URL(origin).hostname);
   const allowWrite = (method, pathname) => {
@@ -126,7 +191,7 @@ export async function pageRunner(page, options) {
     return Boolean(api && allowEntitySets.includes(api[1]));
   };
   const raw = { requests: [], console: [], pageErrors: [], blockedWrites: [], identityTraffic: [], dialogs: [] };
-  const summary = { id: scenario.id, status: "captured", problems: [], steps: 0, startedAt: new Date().toISOString() };
+  const summary = { id: scenario.id, status: 'captured', problems: [], steps: 0, startedAt: new Date().toISOString() };
   const owned = await context.newPage();
   await owned.setViewportSize({ width: 1440, height: 1000 });
   const inflight = new Set();
@@ -144,81 +209,129 @@ export async function pageRunner(page, options) {
   const guard = async (route) => {
     const request = route.request();
     const method = request.method().toUpperCase();
-    if (method === "GET" || method === "HEAD" || method === "OPTIONS") return route.fallback();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return route.fallback();
     const pathname = new URL(request.url()).pathname;
     // The browser's own sign-in completion (an identity provider's form_post back to the portal)
     // is identity traffic, not a scenario write: let it through and record it.
     const headers = request.headers();
-    let referrer = "";
+    let referrer = '';
     try {
-      referrer = new URL(headers.referer || headers.origin || "").hostname;
+      referrer = new URL(headers.referer || headers.origin || '').hostname;
     } catch {
       /* no referrer */
     }
-    if (request.isNavigationRequest() && (identityHosts.test(referrer) || /^\/signin(?:-|\/|$|\?)/i.test(pathname) || /^\/Account\/Login\//i.test(pathname))) {
+    if (
+      request.isNavigationRequest() &&
+      (identityHosts.test(referrer) ||
+        /^\/signin(?:-|\/|$|\?)/i.test(pathname) ||
+        /^\/Account\/Login\//i.test(pathname))
+    ) {
       raw.identityTraffic.push({ method, path: pathname, from: referrer });
       return route.fallback();
     }
     if (allowWrite(method, pathname)) return route.fallback();
     raw.blockedWrites.push({ method, path: pathname });
-    return route.abort("blockedbyclient");
+    return route.abort('blockedbyclient');
   };
   await owned.route((url) => url.origin === origin, guard);
-  owned.on("request", (request) => {
+  owned.on('request', (request) => {
     lastActivity = Date.now();
     if (!sameOrigin(request.url())) return;
     const method = request.method().toUpperCase();
-    const entry = { seq: ++seq, method, url: request.url(), resourceType: request.resourceType(), headers: request.headers(), body: method === "GET" || method === "HEAD" ? null : request.postData() ?? "", response: null };
+    const entry = {
+      seq: ++seq,
+      method,
+      url: request.url(),
+      resourceType: request.resourceType(),
+      headers: request.headers(),
+      body: method === 'GET' || method === 'HEAD' ? null : (request.postData() ?? ''),
+      response: null,
+    };
     entries.set(request, entry);
     raw.requests.push(entry);
     // Persistent streams (a local runtime's /__sim/events, EventSource, WebSocket) never finish: not in-flight work.
-    if (!/^(?:eventsource|websocket)$/.test(entry.resourceType) && !/^\/__sim\//.test(new URL(entry.url).pathname)) inflight.add(request);
+    if (!/^(?:eventsource|websocket)$/.test(entry.resourceType) && !/^\/__sim\//.test(new URL(entry.url).pathname))
+      inflight.add(request);
   });
-  owned.on("requestfailed", (request) => {
+  owned.on('requestfailed', (request) => {
     inflight.delete(request);
     const entry = entries.get(request);
-    if (entry) entry.response = { status: 0, failure: (request.failure() && request.failure().errorText) || "failed" };
+    if (entry) entry.response = { status: 0, failure: (request.failure() && request.failure().errorText) || 'failed' };
   });
-  owned.on("requestfinished", (request) => inflight.delete(request));
-  owned.on("response", async (response) => {
+  owned.on('requestfinished', (request) => inflight.delete(request));
+  owned.on('response', async (response) => {
     lastActivity = Date.now();
     const entry = entries.get(response.request());
     if (!entry) return;
     const headers = response.headers();
-    const contentType = headers["content-type"] || "";
-    entry.response = { status: response.status(), headers, body: null, bodyBytes: null, bodySha256: null, binary: !textTypes.test(contentType) };
+    const contentType = headers['content-type'] || '';
+    entry.response = {
+      status: response.status(),
+      headers,
+      body: null,
+      bodyBytes: null,
+      bodySha256: null,
+      binary: !textTypes.test(contentType),
+    };
     try {
       const buffer = await response.body();
       entry.response.bodyBytes = buffer.length;
-      if (entry.response.binary) entry.response.base64 = buffer.toString("base64").slice(0, 64) + (buffer.length > 48 ? "…" : "");
-      else entry.response.body = buffer.length > maxBody ? null : buffer.toString("utf8");
-      if (entry.response.binary || buffer.length > maxBody) entry.response.bodyHashInput = buffer.toString("base64");
+      if (entry.response.binary)
+        entry.response.base64 = buffer.toString('base64').slice(0, 64) + (buffer.length > 48 ? '…' : '');
+      else entry.response.body = buffer.length > maxBody ? null : buffer.toString('utf8');
+      if (entry.response.binary || buffer.length > maxBody) entry.response.bodyHashInput = buffer.toString('base64');
     } catch {
       /* redirects and aborted responses expose no body */
     }
   });
-  owned.on("console", (message) => {
+  owned.on('console', (message) => {
     const location = message.location();
-    raw.console.push({ type: message.type(), text: String(message.text()).slice(0, 2000), url: location && location.url, line: location && location.lineNumber });
+    raw.console.push({
+      type: message.type(),
+      text: String(message.text()).slice(0, 2000),
+      url: location && location.url,
+      line: location && location.lineNumber,
+    });
   });
-  owned.on("pageerror", (error) => raw.pageErrors.push(String((error && error.message) || error).slice(0, 2000)));
-  owned.on("dialog", async (dialog) => {
+  owned.on('pageerror', (error) => raw.pageErrors.push(String((error && error.message) || error).slice(0, 2000)));
+  owned.on('dialog', async (dialog) => {
     raw.dialogs.push({ type: dialog.type(), message: String(dialog.message()).slice(0, 500) });
     await dialog.accept().catch(() => {});
   });
   const loadingProbe = () => {
-    const visible = element => element.getClientRects().length && getComputedStyle(element).display !== "none" && getComputedStyle(element).visibility !== "hidden";
+    const visible = (element) =>
+      element.getClientRects().length &&
+      getComputedStyle(element).display !== 'none' &&
+      getComputedStyle(element).visibility !== 'hidden';
     // A determinate wizard progress indicator describes position, not page loading.
     // Explicitly busy or indeterminate progress still blocks readiness.
-    if ([...document.querySelectorAll('[role="progressbar"]')].some(element => {
-      if (!visible(element) || element.getAttribute('aria-busy') === 'false') return false;
-      const value = element.getAttribute('aria-valuenow');
-      return element.getAttribute('aria-busy') === 'true' || value == null || value.trim() === '' || !Number.isFinite(Number(value));
-    })) return true;
-    const selectors = [".form-loading", ".loader", ".dataTables_processing", ".overlay:not([style*='display: none'])", ".modal.in .loading", ".modal.show .loading"];
-    return selectors.some(selector => {
-      try { return [...document.querySelectorAll(selector)].some(visible); }
-      catch { return false; }
+    if (
+      [...document.querySelectorAll('[role="progressbar"]')].some((element) => {
+        if (!visible(element) || element.getAttribute('aria-busy') === 'false') return false;
+        const value = element.getAttribute('aria-valuenow');
+        return (
+          element.getAttribute('aria-busy') === 'true' ||
+          value == null ||
+          value.trim() === '' ||
+          !Number.isFinite(Number(value))
+        );
+      })
+    )
+      return true;
+    const selectors = [
+      '.form-loading',
+      '.loader',
+      '.dataTables_processing',
+      ".overlay:not([style*='display: none'])",
+      '.modal.in .loading',
+      '.modal.show .loading',
+    ];
+    return selectors.some((selector) => {
+      try {
+        return [...document.querySelectorAll(selector)].some(visible);
+      } catch {
+        return false;
+      }
     });
   };
   const settle = async (opts = {}) => {
@@ -226,7 +339,8 @@ export async function pageRunner(page, options) {
     const timeout = opts.timeout ?? settleDefaults.timeout ?? 20000;
     const settleMs = opts.settleMs ?? settleDefaults.settleMs ?? 0;
     const started = Date.now();
-    let settled = false, loading = false;
+    let settled = false,
+      loading = false;
     while (Date.now() - started < timeout) {
       loading = await owned.evaluate(loadingProbe).catch(() => false);
       if (!loading && inflight.size === 0 && Date.now() - lastActivity >= quietMs) {
@@ -237,12 +351,15 @@ export async function pageRunner(page, options) {
     }
     if (settleMs) await sleep(Math.min(settleMs, 10000));
     (summary.settlements ??= []).push({ settled, timeoutMs: timeout, loading, inflight: inflight.size });
-    if (!settled) summary.problems.push("page did not settle within " + timeout + " ms");
+    if (!settled) summary.problems.push('page did not settle within ' + timeout + ' ms');
     return settled;
   };
   const observeStep = async (step, index, perform) => {
-    const action = ["goto", "fill", "type", "select", "check", "click", "press", "upload", "clear", "wait", "frame"].find(key => Object.hasOwn(step, key)) ?? "unsupported";
-    const outcome = { index, action, optional: Boolean(step.optional), status: "started" };
+    const action =
+      ['goto', 'fill', 'type', 'select', 'check', 'click', 'press', 'upload', 'clear', 'wait', 'frame'].find((key) =>
+        Object.hasOwn(step, key),
+      ) ?? 'unsupported';
+    const outcome = { index, action, optional: Boolean(step.optional), status: 'started' };
     summary.stepOutcomes.push(outcome);
     let probing = false;
     try {
@@ -251,20 +368,20 @@ export async function pageRunner(page, options) {
         probing = true;
         const locator = owned.locator(resolve(target)).first();
         const matched = await locator.count();
-        const visible = matched > 0 && await locator.isVisible();
+        const visible = matched > 0 && (await locator.isVisible());
         outcome.presence = { matched, visible };
         probing = false;
         if (!visible) {
-          outcome.status = "skipped";
-          outcome.reason = matched ? "optional-target-hidden" : "optional-target-absent";
+          outcome.status = 'skipped';
+          outcome.reason = matched ? 'optional-target-hidden' : 'optional-target-absent';
           return;
         }
       }
       await perform();
-      outcome.status = "performed";
+      outcome.status = 'performed';
     } catch (error) {
-      outcome.status = "error";
-      outcome.reason = probing ? "optional-probe-error" : "action-error";
+      outcome.status = 'error';
+      outcome.reason = probing ? 'optional-probe-error' : 'action-error';
       throw error;
     }
   };
@@ -273,86 +390,128 @@ export async function pageRunner(page, options) {
     const q = (selector, scope = owned) => scope.locator(resolve(selector)).first();
     if (step.goto !== undefined) {
       const target = new URL(resolve(step.goto), origin);
-      if (target.origin !== origin) throw new Error("Step navigates outside the portal origin");
+      if (target.origin !== origin) throw new Error('Step navigates outside the portal origin');
       // Commit the document, then let the quiet-network settle decide: a browser bridge can hold the
       // window load event open on third-party telemetry long after the portal page is complete.
-      await owned.goto(target.href, { waitUntil: "domcontentloaded", timeout: Math.max(timeout, 45000) });
-      await owned.waitForLoadState("load", { timeout: 15000 }).catch(() => {});
-    } else if (step.fill !== undefined) await q(step.fill).fill(resolve(step.value ?? ""), { timeout });
-    else if (step.type !== undefined) await q(step.type).pressSequentially(resolve(step.value ?? ""), { timeout });
-    else if (step.select !== undefined) await q(step.select).selectOption(step.label !== undefined ? { label: resolve(step.label) } : resolve(step.value ?? ""), { timeout });
+      await owned.goto(target.href, { waitUntil: 'domcontentloaded', timeout: Math.max(timeout, 45000) });
+      await owned.waitForLoadState('load', { timeout: 15000 }).catch(() => {});
+    } else if (step.fill !== undefined) await q(step.fill).fill(resolve(step.value ?? ''), { timeout });
+    else if (step.type !== undefined) await q(step.type).pressSequentially(resolve(step.value ?? ''), { timeout });
+    else if (step.select !== undefined)
+      await q(step.select).selectOption(
+        step.label !== undefined ? { label: resolve(step.label) } : resolve(step.value ?? ''),
+        { timeout },
+      );
     else if (step.check !== undefined) await q(step.check).setChecked(step.value !== false, { timeout });
     else if (step.click !== undefined) {
       // `dispatch` fires the DOM click without the hit-target check (a submit input the site CSS collapses to a few pixels).
-      if (step.dispatch) await q(step.click).dispatchEvent("click", {}, { timeout });
+      if (step.dispatch) await q(step.click).dispatchEvent('click', {}, { timeout });
       else await q(step.click).click({ timeout });
-    }
-    else if (step.press !== undefined) await q(step.press).press(step.key ?? "Enter", { timeout });
+    } else if (step.press !== undefined) await q(step.press).press(step.key ?? 'Enter', { timeout });
     else if (step.upload !== undefined) {
       // Files are inline payloads ({ name, mimeType, base64 }) or paths; with `accept` on the input only matching payloads
       // are sent, one unless the input takes several.
       const input = q(step.upload);
-      const accept = ((await input.getAttribute("accept").catch(() => "")) || "").split(",").map((item) => item.trim()).filter(Boolean);
+      const accept = ((await input.getAttribute('accept').catch(() => '')) || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
       const multiple = await input.evaluate((el) => Boolean(el.multiple)).catch(() => false);
-      const matches = (file) => !accept.length || accept.some((rule) => (rule.startsWith(".") ? file.name.toLowerCase().endsWith(rule.toLowerCase()) : rule.endsWith("/*") ? file.mimeType.startsWith(rule.slice(0, -1)) : rule === file.mimeType));
-      const files = (step.files || []).map((file) => (typeof file === "string" ? file : { name: file.name, mimeType: file.mimeType, buffer: Buffer.from(file.base64, "base64") })).filter((file) => typeof file === "string" || matches(file));
+      const matches = (file) =>
+        !accept.length ||
+        accept.some((rule) =>
+          rule.startsWith('.')
+            ? file.name.toLowerCase().endsWith(rule.toLowerCase())
+            : rule.endsWith('/*')
+              ? file.mimeType.startsWith(rule.slice(0, -1))
+              : rule === file.mimeType,
+        );
+      const files = (step.files || [])
+        .map((file) =>
+          typeof file === 'string'
+            ? file
+            : { name: file.name, mimeType: file.mimeType, buffer: Buffer.from(file.base64, 'base64') },
+        )
+        .filter((file) => typeof file === 'string' || matches(file));
       await input.setInputFiles(multiple ? files : files.slice(0, 1), { timeout });
-    }
-    else if (step.clear !== undefined) await q(step.clear).fill("", { timeout });
+    } else if (step.clear !== undefined) await q(step.clear).fill('', { timeout });
     else if (step.wait !== undefined) {
-      if (typeof step.wait === "number") await sleep(Math.min(step.wait, 15000));
-      else if (step.wait.selector) await q(step.wait.selector).waitFor({ state: step.wait.state ?? "visible", timeout });
-      else if (step.wait.url) await owned.waitForURL((url) => new RegExp(step.wait.url).test(url.pathname + url.search), { timeout });
-      else if (step.wait.navigation) await owned.waitForLoadState("load", { timeout });
+      if (typeof step.wait === 'number') await sleep(Math.min(step.wait, 15000));
+      else if (step.wait.selector)
+        await q(step.wait.selector).waitFor({ state: step.wait.state ?? 'visible', timeout });
+      else if (step.wait.url)
+        await owned.waitForURL((url) => new RegExp(step.wait.url).test(url.pathname + url.search), { timeout });
+      else if (step.wait.navigation) await owned.waitForLoadState('load', { timeout });
     } else if (step.frame !== undefined) {
       const frame = owned.frameLocator(resolve(step.frame));
       for (const inner of step.steps ?? []) {
-        if (inner.fill !== undefined) await q(inner.fill, frame).fill(resolve(inner.value ?? ""), { timeout });
+        if (inner.fill !== undefined) await q(inner.fill, frame).fill(resolve(inner.value ?? ''), { timeout });
         else if (inner.click !== undefined) await q(inner.click, frame).click({ timeout });
-        else if (inner.select !== undefined) await q(inner.select, frame).selectOption(inner.label !== undefined ? { label: resolve(inner.label) } : resolve(inner.value ?? ""), { timeout });
+        else if (inner.select !== undefined)
+          await q(inner.select, frame).selectOption(
+            inner.label !== undefined ? { label: resolve(inner.label) } : resolve(inner.value ?? ''),
+            { timeout },
+          );
         else if (inner.check !== undefined) await q(inner.check, frame).setChecked(inner.value !== false, { timeout });
-        else if (inner.wait && inner.wait.selector) await q(inner.wait.selector, frame).waitFor({ state: inner.wait.state ?? "visible", timeout });
-        else throw new Error("Unsupported frame step: " + Object.keys(inner).join(","));
+        else if (inner.wait && inner.wait.selector)
+          await q(inner.wait.selector, frame).waitFor({ state: inner.wait.state ?? 'visible', timeout });
+        else throw new Error('Unsupported frame step: ' + Object.keys(inner).join(','));
       }
-    } else throw new Error("Unsupported step: " + Object.keys(step).join(","));
+    } else throw new Error('Unsupported step: ' + Object.keys(step).join(','));
     if (step.settle !== false) await settle(step.settleOptions ?? {});
   };
   const elementInventory = () => {
     const selectorOf = (element) => {
       const parts = [];
-      for (let node = element; node && node.nodeType === 1 && node !== document.documentElement; node = node.parentElement) {
+      for (
+        let node = element;
+        node && node.nodeType === 1 && node !== document.documentElement;
+        node = node.parentElement
+      ) {
         let part = node.tagName.toLowerCase();
-        if (node.id) part += "#" + CSS.escape(node.id);
+        if (node.id) part += '#' + CSS.escape(node.id);
         else {
-          const siblings = [...((node.parentElement && node.parentElement.children) || [])].filter((item) => item.tagName === node.tagName);
-          if (siblings.length > 1) part += ":nth-of-type(" + (siblings.indexOf(node) + 1) + ")";
+          const siblings = [...((node.parentElement && node.parentElement.children) || [])].filter(
+            (item) => item.tagName === node.tagName,
+          );
+          if (siblings.length > 1) part += ':nth-of-type(' + (siblings.indexOf(node) + 1) + ')';
         }
         parts.unshift(part);
         if (node.id) break;
       }
-      return parts.join(">");
+      return parts.join('>');
     };
     const secret = /__RequestVerificationToken|__VIEWSTATE|__EVENTVALIDATION/;
     const out = [];
-    for (const element of document.body ? document.body.querySelectorAll("*") : []) {
-      if (["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"].includes(element.tagName)) continue;
+    for (const element of document.body ? document.body.querySelectorAll('*') : []) {
+      if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE'].includes(element.tagName)) continue;
       const style = getComputedStyle(element);
       const attributes = {};
       for (const attribute of element.attributes) {
-        if (attribute.name === "nonce") continue;
-        attributes[attribute.name] = secret.test(element.getAttribute("name") || "") && attribute.name === "value" ? "{token}" : attribute.value;
+        if (attribute.name === 'nonce') continue;
+        attributes[attribute.name] =
+          secret.test(element.getAttribute('name') || '') && attribute.name === 'value' ? '{token}' : attribute.value;
       }
-      const formControl = ["INPUT", "SELECT", "TEXTAREA"].includes(element.tagName) && element.type !== "password";
+      const formControl = ['INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName) && element.type !== 'password';
       out.push({
         selector: selectorOf(element),
         tag: element.tagName.toLowerCase(),
         classes: [...element.classList],
         attributes,
-        visible: Boolean(element.getClientRects().length) && style.display !== "none" && style.visibility !== "hidden",
-        disabled: Boolean(element.disabled) || element.getAttribute("aria-disabled") === "true",
-        readonly: Boolean(element.readOnly) || element.getAttribute("aria-readonly") === "true",
-        required: Boolean(element.required) || element.getAttribute("aria-required") === "true",
-        ...(formControl ? { value: element.type === "checkbox" || element.type === "radio" ? element.checked : secret.test(element.name) ? "{token}" : String(element.value ?? "") } : {}),
+        visible: Boolean(element.getClientRects().length) && style.display !== 'none' && style.visibility !== 'hidden',
+        disabled: Boolean(element.disabled) || element.getAttribute('aria-disabled') === 'true',
+        readonly: Boolean(element.readOnly) || element.getAttribute('aria-readonly') === 'true',
+        required: Boolean(element.required) || element.getAttribute('aria-required') === 'true',
+        ...(formControl
+          ? {
+              value:
+                element.type === 'checkbox' || element.type === 'radio'
+                  ? element.checked
+                  : secret.test(element.name)
+                    ? '{token}'
+                    : String(element.value ?? ''),
+            }
+          : {}),
       });
       if (out.length >= 20000) break;
     }
@@ -368,39 +527,79 @@ export async function pageRunner(page, options) {
     // records (requests, console entries, page errors, dialogs) is dropped once it has run, and a scenario that ends on one
     // is judged at the URL before it. Its errors still fail the scenario.
     for (const step of scenario.steps ?? []) {
-      const before = step.harness ? { requests: raw.requests.length, console: raw.console.length, pageErrors: raw.pageErrors.length, dialogs: raw.dialogs.length, seq, url: owned.url() } : null;
+      const before = step.harness
+        ? {
+            requests: raw.requests.length,
+            console: raw.console.length,
+            pageErrors: raw.pageErrors.length,
+            dialogs: raw.dialogs.length,
+            seq,
+            url: owned.url(),
+          }
+        : null;
       await observeStep(step, summary.steps + 1, () => runStep(step));
       summary.steps++;
-      mark("step " + summary.steps + " " + Object.keys(step)[0] + (step.harness ? " (harness)" : ""));
+      mark('step ' + summary.steps + ' ' + Object.keys(step)[0] + (step.harness ? ' (harness)' : ''));
       if (before) {
-        for (const key of ["requests", "console", "pageErrors", "dialogs"]) raw[key].splice(before[key]);
+        for (const key of ['requests', 'console', 'pageErrors', 'dialogs']) raw[key].splice(before[key]);
         for (const [request, entry] of entries) if (entry.seq > before.seq) entries.delete(request);
         seq = before.seq;
         urlBeforeHarness = before.url;
       } else urlBeforeHarness = null;
     }
     await settle();
-    mark("settled");
-    const url = new URL(urlBeforeHarness && urlBeforeHarness !== "about:blank" ? urlBeforeHarness : owned.url());
+    mark('settled');
+    const url = new URL(urlBeforeHarness && urlBeforeHarness !== 'about:blank' ? urlBeforeHarness : owned.url());
     const expect = scenario.expect || {};
     // A form that redirects off the site ends the scenario on another origin: with `expect.leavesOrigin` the hostname is
     // the evidence and the foreign page is not inventoried.
     if (url.origin !== origin) {
       if (expect.leavesOrigin) summary.leftOrigin = url.hostname;
-      else summary.problems.push("page left the portal origin (" + url.hostname + ")");
-    } else if (expect.leavesOrigin) summary.problems.push("page stayed on the portal origin");
-    for (const marker of signInMarkers) if (await owned.locator(marker).count().catch(() => 0)) summary.problems.push("sign-in marker present: " + marker);
-    for (const selector of expect.present || []) if (!(await owned.locator(selector).count().catch(() => 0))) summary.problems.push("expected element missing: " + selector);
-    for (const selector of expect.absent || []) if (await owned.locator(selector).count().catch(() => 0)) summary.problems.push("unexpected element present: " + selector);
-    for (const text of expect.text || []) if (!(await owned.locator("body").innerText().catch(() => "")).includes(text)) summary.problems.push("expected text missing: " + JSON.stringify(text));
-    if (expect.urlPattern && !new RegExp(expect.urlPattern).test(url.pathname + url.search)) summary.problems.push("url does not match expectation");
+      else summary.problems.push('page left the portal origin (' + url.hostname + ')');
+    } else if (expect.leavesOrigin) summary.problems.push('page stayed on the portal origin');
+    for (const marker of signInMarkers)
+      if (
+        await owned
+          .locator(marker)
+          .count()
+          .catch(() => 0)
+      )
+        summary.problems.push('sign-in marker present: ' + marker);
+    for (const selector of expect.present || [])
+      if (
+        !(await owned
+          .locator(selector)
+          .count()
+          .catch(() => 0))
+      )
+        summary.problems.push('expected element missing: ' + selector);
+    for (const selector of expect.absent || [])
+      if (
+        await owned
+          .locator(selector)
+          .count()
+          .catch(() => 0)
+      )
+        summary.problems.push('unexpected element present: ' + selector);
+    for (const text of expect.text || [])
+      if (
+        !(
+          await owned
+            .locator('body')
+            .innerText()
+            .catch(() => '')
+        ).includes(text)
+      )
+        summary.problems.push('expected text missing: ' + JSON.stringify(text));
+    if (expect.urlPattern && !new RegExp(expect.urlPattern).test(url.pathname + url.search))
+      summary.problems.push('url does not match expectation');
   } catch (error) {
-    summary.status = "error";
+    summary.status = 'error';
     summary.problems.push(String((error && error.message) || error).slice(0, 1200));
   }
-  if (summary.problems.length && summary.status === "captured") summary.status = "failed";
-  mark("checked");
-  raw.dom = summary.leftOrigin ? "" : await owned.evaluate(() => document.documentElement.outerHTML).catch(() => "");
+  if (summary.problems.length && summary.status === 'captured') summary.status = 'failed';
+  mark('checked');
+  raw.dom = summary.leftOrigin ? '' : await owned.evaluate(() => document.documentElement.outerHTML).catch(() => '');
   raw.elements = summary.leftOrigin ? [] : await owned.evaluate(elementInventory).catch(() => []);
   // Same-origin frames (modal forms, lookup create dialogs) are inventoried too: their DOM keyed by the frame path
   // (a repeated path gets #2, #3 …) and their elements with the selector prefixed by "frame(<path>) ".
@@ -417,22 +616,23 @@ export async function pageRunner(page, options) {
       }
       if (frameUrl.origin !== origin) continue;
       seen[frameUrl.pathname] = (seen[frameUrl.pathname] ?? 0) + 1;
-      const key = frameUrl.pathname + (seen[frameUrl.pathname] > 1 ? "#" + seen[frameUrl.pathname] : "");
+      const key = frameUrl.pathname + (seen[frameUrl.pathname] > 1 ? '#' + seen[frameUrl.pathname] : '');
       const dom = await frame.evaluate(() => document.documentElement.outerHTML).catch(() => null);
       if (dom === null) continue;
       raw.frames.push({ path: key, dom });
-      for (const element of await frame.evaluate(elementInventory).catch(() => [])) raw.elements.push({ ...element, selector: "frame(" + key + ") " + element.selector });
+      for (const element of await frame.evaluate(elementInventory).catch(() => []))
+        raw.elements.push({ ...element, selector: 'frame(' + key + ') ' + element.selector });
     }
   }
-  mark("inventoried");
-  raw.title = await owned.title().catch(() => "");
-  raw.finalUrl = urlBeforeHarness && urlBeforeHarness !== "about:blank" ? urlBeforeHarness : owned.url();
+  mark('inventoried');
+  raw.title = await owned.title().catch(() => '');
+  raw.finalUrl = urlBeforeHarness && urlBeforeHarness !== 'about:blank' ? urlBeforeHarness : owned.url();
   try {
-    raw.screenshot = (await owned.screenshot({ fullPage: true, timeout: 30000 })).toString("base64");
+    raw.screenshot = (await owned.screenshot({ fullPage: true, timeout: 30000 })).toString('base64');
   } catch (error) {
-    summary.problems.push("screenshot: " + String(error && error.message).slice(0, 200));
+    summary.problems.push('screenshot: ' + String(error && error.message).slice(0, 200));
   }
-  mark("screenshot");
+  mark('screenshot');
   await owned.unroute((url) => url.origin === origin, guard).catch(() => {});
   await owned.close().catch(() => {});
   summary.finishedAt = new Date().toISOString();
@@ -443,51 +643,77 @@ export async function pageRunner(page, options) {
 export const pageRunnerSource = () => pageRunner.toString();
 
 /** Redact raw evidence and write the scenario folder. Returns the capture meta. */
-export async function writeCapture({ summary, raw }, { outDir, outputRoot = outDir, origin, side, meta = {}, scenarioId = null }) {
+export async function writeCapture(
+  { summary, raw },
+  { outDir, outputRoot = outDir, origin, side, meta = {}, scenarioId = null },
+) {
   ({ summary, raw } = redactCaptureQueryValues(redactCaptureControlEvidence({ summary, raw })));
   // Evidence of another scenario (a late post of an abandoned bridge run) never lands in this folder.
-  if (scenarioId && summary?.id !== scenarioId) throw new Error(`Capture of ${summary?.id ?? "(unknown)"} refused for scenario ${scenarioId}`);
-  await ensureCaptureDestination(outDir, outputRoot, { files: ["requests.json", "dom.html", "elements.json", "frames.json", "console.json", "screenshot.png", "meta.json"] });
+  if (scenarioId && summary?.id !== scenarioId)
+    throw new Error(`Capture of ${summary?.id ?? '(unknown)'} refused for scenario ${scenarioId}`);
+  await ensureCaptureDestination(outDir, outputRoot, {
+    files: ['requests.json', 'dom.html', 'elements.json', 'frames.json', 'console.json', 'screenshot.png', 'meta.json'],
+  });
   const origins = [origin];
   // Mirage's own instrumentation (/__sim/ event stream, readiness probes) is not portal traffic and is not evidence.
-  const requests = raw.requests.filter((entry) => !/\/__sim\//.test(entry.url ?? "")).map((entry) => {
-    const response = entry.response
-      ? {
-          status: entry.response.status,
-          ...(entry.response.failure ? { failure: entry.response.failure } : {}),
-          headers: redactHeaders(entry.response.headers, origin),
-          body: entry.response.body === null || entry.response.body === undefined ? null : redactTokens(entry.response.body),
-          bodyBytes: entry.response.bodyBytes ?? null,
-          bodySha256: entry.response.bodyHashInput ? sha(Buffer.from(entry.response.bodyHashInput, "base64")) : entry.response.body ? sha(redactTokens(entry.response.body)) : null,
-          ...(entry.response.bodyHashProvenance ? { bodyHashProvenance: entry.response.bodyHashProvenance } : {}),
-        }
-      : null;
-    return {
-      seq: entry.seq,
-      method: entry.method,
-      url: redactUrl(entry.url, { origins, keepPaging: true }),
-      path: (() => {
-        try {
-          return new URL(entry.url).pathname;
-        } catch {
-          return entry.url;
-        }
-      })(),
-      resourceType: entry.resourceType,
-      headers: redactHeaders(entry.headers, origin),
-      body: entry.body === null || entry.body === undefined ? null : redactTokens(entry.body),
-      response,
-    };
-  });
-  const consoleEntries = raw.console.map((entry) => ({ type: entry.type, text: normalizeText(redactTokens(entry.text), { origins }).slice(0, 2000), ...(entry.url ? { url: redactUrl(entry.url, { origins }), line: entry.line } : {}) }));
+  const requests = raw.requests
+    .filter((entry) => !/\/__sim\//.test(entry.url ?? ''))
+    .map((entry) => {
+      const response = entry.response
+        ? {
+            status: entry.response.status,
+            ...(entry.response.failure ? { failure: entry.response.failure } : {}),
+            headers: redactHeaders(entry.response.headers, origin),
+            body:
+              entry.response.body === null || entry.response.body === undefined
+                ? null
+                : redactTokens(entry.response.body),
+            bodyBytes: entry.response.bodyBytes ?? null,
+            bodySha256: entry.response.bodyHashInput
+              ? sha(Buffer.from(entry.response.bodyHashInput, 'base64'))
+              : entry.response.body
+                ? sha(redactTokens(entry.response.body))
+                : null,
+            ...(entry.response.bodyHashProvenance ? { bodyHashProvenance: entry.response.bodyHashProvenance } : {}),
+          }
+        : null;
+      return {
+        seq: entry.seq,
+        method: entry.method,
+        url: redactUrl(entry.url, { origins, keepPaging: true }),
+        path: (() => {
+          try {
+            return new URL(entry.url).pathname;
+          } catch {
+            return entry.url;
+          }
+        })(),
+        resourceType: entry.resourceType,
+        headers: redactHeaders(entry.headers, origin),
+        body: entry.body === null || entry.body === undefined ? null : redactTokens(entry.body),
+        response,
+      };
+    });
+  const consoleEntries = raw.console.map((entry) => ({
+    type: entry.type,
+    text: normalizeText(redactTokens(entry.text), { origins }).slice(0, 2000),
+    ...(entry.url ? { url: redactUrl(entry.url, { origins }), line: entry.line } : {}),
+  }));
   const pageErrors = raw.pageErrors.map((text) => normalizeText(text, { origins }).slice(0, 2000));
-  await fs.writeFile(path.join(outDir, "requests.json"), JSON.stringify(requests, null, 2));
-  await fs.writeFile(path.join(outDir, "dom.html"), redactTokens(raw.dom ?? ""));
-  await fs.writeFile(path.join(outDir, "elements.json"), JSON.stringify(raw.elements ?? [], null, 2));
+  await fs.writeFile(path.join(outDir, 'requests.json'), JSON.stringify(requests, null, 2));
+  await fs.writeFile(path.join(outDir, 'dom.html'), redactTokens(raw.dom ?? ''));
+  await fs.writeFile(path.join(outDir, 'elements.json'), JSON.stringify(raw.elements ?? [], null, 2));
   // Same-origin frame documents (pageRunner): path → DOM, written only when the page has any.
-  if (raw.frames?.length) await fs.writeFile(path.join(outDir, "frames.json"), JSON.stringify(Object.fromEntries(raw.frames.map((frame) => [frame.path, redactTokens(frame.dom)])), null, 2));
-  await fs.writeFile(path.join(outDir, "console.json"), JSON.stringify({ console: consoleEntries, pageErrors, dialogs: raw.dialogs ?? [] }, null, 2));
-  if (raw.screenshot) await fs.writeFile(path.join(outDir, "screenshot.png"), Buffer.from(raw.screenshot, "base64"));
+  if (raw.frames?.length)
+    await fs.writeFile(
+      path.join(outDir, 'frames.json'),
+      JSON.stringify(Object.fromEntries(raw.frames.map((frame) => [frame.path, redactTokens(frame.dom)])), null, 2),
+    );
+  await fs.writeFile(
+    path.join(outDir, 'console.json'),
+    JSON.stringify({ console: consoleEntries, pageErrors, dialogs: raw.dialogs ?? [] }, null, 2),
+  );
+  if (raw.screenshot) await fs.writeFile(path.join(outDir, 'screenshot.png'), Buffer.from(raw.screenshot, 'base64'));
   const capture = {
     version: 1,
     scenario: summary.id,
@@ -499,8 +725,8 @@ export async function writeCapture({ summary, raw }, { outDir, outputRoot = outD
     stepOutcomes: summary.stepOutcomes ?? [],
     status: summary.status,
     problems: summary.problems,
-    title: normalizeText(raw.title ?? ""),
-    finalUrl: redactUrl(raw.finalUrl ?? "", { origins, keepPaging: true }),
+    title: normalizeText(raw.title ?? ''),
+    finalUrl: redactUrl(raw.finalUrl ?? '', { origins, keepPaging: true }),
     ...(summary.leftOrigin ? { leftOrigin: summary.leftOrigin } : {}),
     requests: requests.length,
     elements: (raw.elements ?? []).length,
@@ -508,7 +734,7 @@ export async function writeCapture({ summary, raw }, { outDir, outputRoot = outD
     blockedWrites: raw.blockedWrites ?? [],
     identityTraffic: raw.identityTraffic ?? [],
   };
-  await fs.writeFile(path.join(outDir, "meta.json"), JSON.stringify(capture, null, 2));
+  await fs.writeFile(path.join(outDir, 'meta.json'), JSON.stringify(capture, null, 2));
   return capture;
 }
 
@@ -529,7 +755,11 @@ export function runnerOptions({ scenario, origin, ids, matrix, allowWrites }) {
 }
 
 /** In-process capture (local Mirage): run the runner on `page`'s context and write the folder. */
-export async function captureScenario(page, scenario, { origin, outDir, outputRoot = outDir, ids = {}, side, meta = {}, matrix = {}, allowWrites = true }) {
+export async function captureScenario(
+  page,
+  scenario,
+  { origin, outDir, outputRoot = outDir, ids = {}, side, meta = {}, matrix = {}, allowWrites = true },
+) {
   await ensureCaptureDestination(outDir, outputRoot, { create: false });
   const result = await pageRunner(page, runnerOptions({ scenario, origin, ids, matrix, allowWrites }));
   return writeCapture(result, { outDir, outputRoot, origin, side, meta, scenarioId: scenario.id });

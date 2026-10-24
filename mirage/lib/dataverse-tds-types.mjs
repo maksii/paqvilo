@@ -27,7 +27,19 @@
 // ponytail: time, datetimeoffset, varchar, smallmoney and sql_variant are not implemented;
 //   add each when a catalog column needs it.
 
-const TYPE_ID = { intn: 0x26, bitn: 0x68, fltn: 0x6d, moneyn: 0x6e, decimaln: 0x6a, numericn: 0x6c, datetimen: 0x6f, date: 0x28, datetime2: 0x2a, guid: 0x24, nvarchar: 0xe7 };
+const TYPE_ID = {
+  intn: 0x26,
+  bitn: 0x68,
+  fltn: 0x6d,
+  moneyn: 0x6e,
+  decimaln: 0x6a,
+  numericn: 0x6c,
+  datetimen: 0x6f,
+  date: 0x28,
+  datetime2: 0x2a,
+  guid: 0x24,
+  nvarchar: 0xe7,
+};
 const INT_SIZE = { tinyint: 1, smallint: 2, int: 4, bigint: 8 };
 const INT_TYPE = { 1: 'tinyint', 2: 'smallint', 4: 'int', 8: 'bigint' };
 const COLLATION = Buffer.from([0x09, 0x04, 0xd0, 0x00, 0x34]); // Latin1_General_CI_AS
@@ -121,20 +133,24 @@ function normalize(column) {
   else if (t === 'decimal' || t === 'numeric') {
     const precision = column.precision ?? 18;
     const scale = column.scale ?? 0;
-    if (!Number.isInteger(precision) || precision < 1 || precision > 38) throw new RangeError(`precision ${precision} out of range`);
+    if (!Number.isInteger(precision) || precision < 1 || precision > 38)
+      throw new RangeError(`precision ${precision} out of range`);
     if (!Number.isInteger(scale) || scale < 0 || scale > precision) throw new RangeError(`scale ${scale} out of range`);
     const size = precision <= 9 ? 5 : precision <= 19 ? 9 : precision <= 28 ? 13 : 17;
     Object.assign(d, { id: t === 'decimal' ? TYPE_ID.decimaln : TYPE_ID.numericn, size, precision, scale });
-  } else if (t === 'datetime' || t === 'smalldatetime') Object.assign(d, { id: TYPE_ID.datetimen, size: t === 'datetime' ? 8 : 4 });
+  } else if (t === 'datetime' || t === 'smalldatetime')
+    Object.assign(d, { id: TYPE_ID.datetimen, size: t === 'datetime' ? 8 : 4 });
   else if (t === 'date') Object.assign(d, { id: TYPE_ID.date });
   else if (t === 'datetime2') {
     const scale = column.scale ?? 7;
-    if (!Number.isInteger(scale) || scale < 0 || scale > 7) throw new RangeError(`datetime2 scale ${scale} out of range`);
+    if (!Number.isInteger(scale) || scale < 0 || scale > 7)
+      throw new RangeError(`datetime2 scale ${scale} out of range`);
     Object.assign(d, { id: TYPE_ID.datetime2, scale });
   } else if (t === 'uniqueidentifier') Object.assign(d, { id: TYPE_ID.guid, size: 16 });
   else if (t === 'nvarchar') {
     const plp = column.length === undefined || column.length === 'max';
-    if (!plp && !(Number.isInteger(column.length) && column.length >= 1 && column.length <= 4000)) throw new RangeError(`nvarchar length ${column.length} out of range`);
+    if (!plp && !(Number.isInteger(column.length) && column.length >= 1 && column.length <= 4000))
+      throw new RangeError(`nvarchar length ${column.length} out of range`);
     Object.assign(d, { id: TYPE_ID.nvarchar, plp, maxBytes: plp ? 0xffff : column.length * 2 });
   } else throw new TypeError(`unsupported TDS column type: ${t}`);
   return d;
@@ -142,12 +158,17 @@ function normalize(column) {
 
 function typeInfo(d) {
   switch (d.id) {
-    case TYPE_ID.date: return Buffer.from([d.id]);
-    case TYPE_ID.datetime2: return Buffer.from([d.id, d.scale]);
+    case TYPE_ID.date:
+      return Buffer.from([d.id]);
+    case TYPE_ID.datetime2:
+      return Buffer.from([d.id, d.scale]);
     case TYPE_ID.decimaln:
-    case TYPE_ID.numericn: return Buffer.from([d.id, d.size, d.precision, d.scale]);
-    case TYPE_ID.nvarchar: return Buffer.concat([Buffer.from([d.id]), leBytes(d.maxBytes, 2), COLLATION]);
-    default: return Buffer.from([d.id, d.size]);
+    case TYPE_ID.numericn:
+      return Buffer.from([d.id, d.size, d.precision, d.scale]);
+    case TYPE_ID.nvarchar:
+      return Buffer.concat([Buffer.from([d.id]), leBytes(d.maxBytes, 2), COLLATION]);
+    default:
+      return Buffer.from([d.id, d.size]);
   }
 }
 
@@ -157,25 +178,54 @@ function parseTypeInfo(b, o) {
   const d = { id, nullable: true };
   let next = o + 2;
   switch (id) {
-    case TYPE_ID.intn: d.size = b[o + 1]; d.type = INT_TYPE[d.size]; break;
-    case TYPE_ID.bitn: d.size = 1; d.type = 'bit'; break;
-    case TYPE_ID.fltn: d.size = b[o + 1]; d.type = d.size === 4 ? 'real' : d.size === 8 ? 'float' : undefined; break;
-    case TYPE_ID.moneyn: d.size = b[o + 1]; d.type = d.size === 8 ? 'money' : undefined; break;
+    case TYPE_ID.intn:
+      d.size = b[o + 1];
+      d.type = INT_TYPE[d.size];
+      break;
+    case TYPE_ID.bitn:
+      d.size = 1;
+      d.type = 'bit';
+      break;
+    case TYPE_ID.fltn:
+      d.size = b[o + 1];
+      d.type = d.size === 4 ? 'real' : d.size === 8 ? 'float' : undefined;
+      break;
+    case TYPE_ID.moneyn:
+      d.size = b[o + 1];
+      d.type = d.size === 8 ? 'money' : undefined;
+      break;
     case TYPE_ID.decimaln:
     case TYPE_ID.numericn:
-      d.size = b[o + 1]; d.precision = b[o + 2]; d.scale = b[o + 3];
+      d.size = b[o + 1];
+      d.precision = b[o + 2];
+      d.scale = b[o + 3];
       d.type = id === TYPE_ID.decimaln ? 'decimal' : 'numeric';
       next = o + 4;
       break;
-    case TYPE_ID.datetimen: d.size = b[o + 1]; d.type = d.size === 8 ? 'datetime' : d.size === 4 ? 'smalldatetime' : undefined; break;
-    case TYPE_ID.date: d.type = 'date'; next = o + 1; break;
-    case TYPE_ID.datetime2: d.scale = b[o + 1]; d.type = 'datetime2'; break;
-    case TYPE_ID.guid: d.size = b[o + 1]; d.type = 'uniqueidentifier'; break;
+    case TYPE_ID.datetimen:
+      d.size = b[o + 1];
+      d.type = d.size === 8 ? 'datetime' : d.size === 4 ? 'smalldatetime' : undefined;
+      break;
+    case TYPE_ID.date:
+      d.type = 'date';
+      next = o + 1;
+      break;
+    case TYPE_ID.datetime2:
+      d.scale = b[o + 1];
+      d.type = 'datetime2';
+      break;
+    case TYPE_ID.guid:
+      d.size = b[o + 1];
+      d.type = 'uniqueidentifier';
+      break;
     case TYPE_ID.nvarchar:
-      d.maxBytes = b.readUInt16LE(o + 1); d.plp = d.maxBytes === 0xffff; d.type = 'nvarchar';
+      d.maxBytes = b.readUInt16LE(o + 1);
+      d.plp = d.maxBytes === 0xffff;
+      d.type = 'nvarchar';
       next = o + 8; // 2-byte length, 5-byte collation
       break;
-    default: throw new TypeError(`unsupported TDS type id 0x${id.toString(16)}`);
+    default:
+      throw new TypeError(`unsupported TDS type id 0x${id.toString(16)}`);
   }
   if (!d.type) throw new TypeError(`unsupported TDS type 0x${id.toString(16)} with length ${d.size}`);
   return { d, next };
@@ -194,8 +244,10 @@ function nullValue(d) {
 function encodeValue(d, v) {
   if (isNull(v)) return nullValue(d);
   switch (d.id) {
-    case TYPE_ID.intn: return encodeInt(d.size, v);
-    case TYPE_ID.bitn: return Buffer.from([1, v ? 1 : 0]);
+    case TYPE_ID.intn:
+      return encodeInt(d.size, v);
+    case TYPE_ID.bitn:
+      return Buffer.from([1, v ? 1 : 0]);
     case TYPE_ID.fltn: {
       const b = Buffer.alloc(d.size + 1);
       b[0] = d.size;
@@ -203,15 +255,26 @@ function encodeValue(d, v) {
       else b.writeDoubleLE(Number(v), 1);
       return b;
     }
-    case TYPE_ID.moneyn: return encodeMoney(v);
+    case TYPE_ID.moneyn:
+      return encodeMoney(v);
     case TYPE_ID.decimaln:
-    case TYPE_ID.numericn: return encodeDecimal(d, v);
-    case TYPE_ID.datetimen: return d.size === 8 ? encodeDatetime(v) : encodeSmalldatetime(v);
-    case TYPE_ID.date: return Buffer.concat([Buffer.from([3]), leBytes(inRange(parseDateTime(v).days - DAYS_0001, 0, DATE_MAX, 'date'), 3)]);
-    case TYPE_ID.datetime2: return encodeDatetime2(d.scale, v);
-    case TYPE_ID.guid: return Buffer.concat([Buffer.from([16]), guidWire(parseGuid(v))]);
-    case TYPE_ID.nvarchar: return encodeNvarchar(d, v);
-    default: throw new TypeError(`unsupported TDS type id 0x${d.id.toString(16)}`);
+    case TYPE_ID.numericn:
+      return encodeDecimal(d, v);
+    case TYPE_ID.datetimen:
+      return d.size === 8 ? encodeDatetime(v) : encodeSmalldatetime(v);
+    case TYPE_ID.date:
+      return Buffer.concat([
+        Buffer.from([3]),
+        leBytes(inRange(parseDateTime(v).days - DAYS_0001, 0, DATE_MAX, 'date'), 3),
+      ]);
+    case TYPE_ID.datetime2:
+      return encodeDatetime2(d.scale, v);
+    case TYPE_ID.guid:
+      return Buffer.concat([Buffer.from([16]), guidWire(parseGuid(v))]);
+    case TYPE_ID.nvarchar:
+      return encodeNvarchar(d, v);
+    default:
+      throw new TypeError(`unsupported TDS type id 0x${d.id.toString(16)}`);
   }
 }
 
@@ -222,9 +285,12 @@ function decodeValue(d, b, o) {
   const data = o + 1;
   const next = data + len;
   switch (d.id) {
-    case TYPE_ID.intn: return { value: readInt(d.size, b, data), next };
-    case TYPE_ID.bitn: return { value: b[data] !== 0, next };
-    case TYPE_ID.fltn: return { value: d.size === 4 ? b.readFloatLE(data) : b.readDoubleLE(data), next };
+    case TYPE_ID.intn:
+      return { value: readInt(d.size, b, data), next };
+    case TYPE_ID.bitn:
+      return { value: b[data] !== 0, next };
+    case TYPE_ID.fltn:
+      return { value: d.size === 4 ? b.readFloatLE(data) : b.readDoubleLE(data), next };
     case TYPE_ID.moneyn: {
       const unscaled = BigInt(b.readInt32LE(data)) * 4294967296n + BigInt(b.readUInt32LE(data + 4));
       return { value: formatDecimal(unscaled, 4), next };
@@ -234,8 +300,10 @@ function decodeValue(d, b, o) {
       const magnitude = leBig(b.subarray(data + 1, next));
       return { value: formatDecimal(b[data] === 0 ? -magnitude : magnitude, d.scale), next };
     }
-    case TYPE_ID.datetimen: return { value: d.size === 8 ? decodeDatetime(b, data) : decodeSmalldatetime(b, data), next };
-    case TYPE_ID.date: return { value: formatDate(leNum(b, data, 3) + DAYS_0001), next };
+    case TYPE_ID.datetimen:
+      return { value: d.size === 8 ? decodeDatetime(b, data) : decodeSmalldatetime(b, data), next };
+    case TYPE_ID.date:
+      return { value: formatDate(leNum(b, data, 3) + DAYS_0001), next };
     case TYPE_ID.datetime2: {
       const units = 10 ** d.scale;
       const ticks = leNum(b, data, len - 3);
@@ -243,8 +311,10 @@ function decodeValue(d, b, o) {
       const frac = d.scale ? '.' + String(ticks % units).padStart(d.scale, '0') : '';
       return { value: `${formatDate(days + DAYS_0001)} ${hms(Math.floor(ticks / units))}${frac}`, next };
     }
-    case TYPE_ID.guid: return { value: formatGuid(guidWire(b.subarray(data, next))), next };
-    default: throw new TypeError(`unsupported TDS type id 0x${d.id.toString(16)}`);
+    case TYPE_ID.guid:
+      return { value: formatGuid(guidWire(b.subarray(data, next))), next };
+    default:
+      throw new TypeError(`unsupported TDS type id 0x${d.id.toString(16)}`);
   }
 }
 
@@ -288,8 +358,11 @@ function encodeDecimal(d, v) {
 function encodeDatetime(v) {
   const p = parseDateTime(v);
   let days = p.days - DAYS_1900;
-  let ticks = Math.round(((p.sod * 1000) + Number(fraction(p.frac, 3))) * 300 / 1000);
-  if (ticks >= TICKS_PER_DAY) { days += 1; ticks -= TICKS_PER_DAY; } // rounds up to the next midnight
+  let ticks = Math.round(((p.sod * 1000 + Number(fraction(p.frac, 3))) * 300) / 1000);
+  if (ticks >= TICKS_PER_DAY) {
+    days += 1;
+    ticks -= TICKS_PER_DAY;
+  } // rounds up to the next midnight
   inRange(days, DATETIME_MIN, DATETIME_MAX, 'datetime');
   const b = Buffer.alloc(9);
   b[0] = 8;
@@ -299,7 +372,7 @@ function encodeDatetime(v) {
 }
 
 function decodeDatetime(b, o) {
-  const ms = Math.round(b.readUInt32LE(o + 4) * 1000 / 300);
+  const ms = Math.round((b.readUInt32LE(o + 4) * 1000) / 300);
   return `${formatDate(b.readInt32LE(o) + DAYS_1900)} ${hms(Math.floor(ms / 1000))}.${pad(ms % 1000, 3)}`;
 }
 
@@ -307,7 +380,10 @@ function encodeSmalldatetime(v) {
   const p = parseDateTime(v);
   let days = p.days - DAYS_1900;
   let minutes = Math.round((p.sod + Number('0.' + p.frac)) / 60);
-  if (minutes === 1440) { days += 1; minutes = 0; }
+  if (minutes === 1440) {
+    days += 1;
+    minutes = 0;
+  }
   inRange(days, 0, SMALLDATETIME_MAX, 'smalldatetime');
   const b = Buffer.alloc(5);
   b[0] = 4;
@@ -360,7 +436,8 @@ function decodeNvarchar(d, b, o) {
     p += 4 + n;
   }
   const body = Buffer.concat(parts);
-  if (total !== PLP_UNKNOWN && total !== BigInt(body.length)) throw new RangeError('PLP length does not match its chunks');
+  if (total !== PLP_UNKNOWN && total !== BigInt(body.length))
+    throw new RangeError('PLP length does not match its chunks');
   return { value: body.toString('utf16le'), next: p + 4 };
 }
 
@@ -409,7 +486,8 @@ function inRange(days, min, max, what) {
 }
 
 function parseGuid(text) {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(text))) throw new TypeError(`not a GUID: ${text}`);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(text)))
+    throw new TypeError(`not a GUID: ${text}`);
   return Buffer.from(String(text).replace(/-/g, ''), 'hex');
 }
 

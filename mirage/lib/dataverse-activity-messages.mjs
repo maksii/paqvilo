@@ -8,66 +8,87 @@
 // IssueSend false, queued for IssueSend true until BackgroundSendEmail returns the email and marks the entry delivered.
 // Queue membership is the queuemembership intersect table (queue to systemuser), one row per member; a team is expanded to its
 // users when it is added. Email attachments are activitymimeattachment rows of the email.
-import { randomUUID } from "node:crypto";
-import { DataError } from "./data-error.mjs";
-import { parseEntityReference } from "./data.mjs";
-import { objectTypeCode } from "./dataverse-metadata.mjs";
-import { modelOf } from "./dataverse-misc-messages.mjs";
-import { contextUrl, parseDataverseRoute, parsePrefer } from "./dataverse-odata.mjs";
-import { ownerColumns, teamsOfUser, uuidV5 } from "./dataverse-security.mjs";
-import { createThroughPipeline } from "./dataverse-files.mjs";
-import { standardTableDef } from "./dataverse-standard.mjs";
-import { toFetchXml } from "./dataverse-soap-query.mjs";
+import { randomUUID } from 'node:crypto';
+import { DataError } from './data-error.mjs';
+import { parseEntityReference } from './data.mjs';
+import { objectTypeCode } from './dataverse-metadata.mjs';
+import { modelOf } from './dataverse-misc-messages.mjs';
+import { contextUrl, parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
+import { ownerColumns, teamsOfUser, uuidV5 } from './dataverse-security.mjs';
+import { createThroughPipeline } from './dataverse-files.mjs';
+import { standardTableDef } from './dataverse-standard.mjs';
+import { toFetchXml } from './dataverse-soap-query.mjs';
 
 // Email statuscode values from the standard option set (Draft 1 ... Pending Send 6, Sent 3).
-const DRAFT = 1, SENT = 3, RECEIVED = 4, PENDING_SEND = 6;
+const DRAFT = 1,
+  SENT = 3,
+  RECEIVED = 4,
+  PENDING_SEND = 6;
 // activityparty.participationtypemask: "Related" (13) is the party type AppendRelatedParty adds.
 const PARTICIPATION_RELATED = 13;
 // The docs give no inner codes for these messages; 0x80040203 (invalid argument) stands in.
-const INVALID = "0x80040203";
+const INVALID = '0x80040203';
 const GUID = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
-const EDM_OBJECT = "EdmEntityObject passed should have the key property value set.";
+const EDM_OBJECT = 'EdmEntityObject passed should have the key property value set.';
 // Columns a caller may not set through QueueItemProperties: the queue item's identity, owner and assignment.
-const QUEUE_ITEM_PROTECTED = new Set(["queueitemid", "queueid", "objectid", "objecttypecode", "workerid", "workeridtype", "statecode", "statuscode", "enteredon"]);
+const QUEUE_ITEM_PROTECTED = new Set([
+  'queueitemid',
+  'queueid',
+  'objectid',
+  'objecttypecode',
+  'workerid',
+  'workeridtype',
+  'statecode',
+  'statuscode',
+  'enteredon',
+]);
 
-const invalid = (message, innerCode = INVALID) => new DataError(message, 400, "InvalidRequest", { innerCode });
-const notFound = (logical, id) => new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, "NotFound", { id, innerCode: "0x80040217" });
-const idText = (value) => String(value ?? "").toLowerCase();
-const refId = (value) => (value !== null && typeof value === "object" ? value.id : value) ?? null;
-const ref = (logical, id) => (id == null ? null : { id, logical_name: logical, name: "" });
-const logicalOf = (type) => /^#?Microsoft\.Dynamics\.CRM\.(\w+)$/.exec(String(type ?? ""))?.[1] ?? null;
-const stripOrigin = (text) => text.trim().replace(/^https?:\/\/[^/]+/i, "").replace(/^\/?api\/data\/v\d+\.\d+\//i, "");
+const invalid = (message, innerCode = INVALID) => new DataError(message, 400, 'InvalidRequest', { innerCode });
+const notFound = (logical, id) =>
+  new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, 'NotFound', { id, innerCode: '0x80040217' });
+const idText = (value) => String(value ?? '').toLowerCase();
+const refId = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? null;
+const ref = (logical, id) => (id == null ? null : { id, logical_name: logical, name: '' });
+const logicalOf = (type) => /^#?Microsoft\.Dynamics\.CRM\.(\w+)$/.exec(String(type ?? ''))?.[1] ?? null;
+const stripOrigin = (text) =>
+  text
+    .trim()
+    .replace(/^https?:\/\/[^/]+/i, '')
+    .replace(/^\/?api\/data\/v\d+\.\d+\//i, '');
 const isActivity = (mapping) => standardTableDef(mapping.logicalName)?.isActivity === true;
 
 // Arguments: an action's body (JSON, or the SOAP values) and a function's URL parameters, which the router passes as params.
-const argsOf = (c) => ({ ...(typeof c.body === "string" ? JSON.parse(c.body || "{}") : (c.body ?? {})), ...(c.params ?? {}) });
+const argsOf = (c) => ({
+  ...(typeof c.body === 'string' ? JSON.parse(c.body || '{}') : (c.body ?? {})),
+  ...(c.params ?? {}),
+});
 const requiredOf = (args, name) => {
   const value = args[name];
-  if (value === undefined || value === null || value === "") throw invalid(`The ${name} parameter is required.`);
+  if (value === undefined || value === null || value === '') throw invalid(`The ${name} parameter is required.`);
   return value;
 };
 const textOf = (args, name) => {
   const value = args[name];
   if (value == null) return null;
-  if (typeof value !== "string") throw invalid(`The ${name} parameter must be a string.`);
+  if (typeof value !== 'string') throw invalid(`The ${name} parameter must be a string.`);
   return value;
 };
 const flagOf = (args, name) => {
   const value = requiredOf(args, name);
-  if (typeof value !== "boolean") throw invalid(`The ${name} parameter must be a boolean.`);
+  if (typeof value !== 'boolean') throw invalid(`The ${name} parameter must be a boolean.`);
   return value;
 };
 const intOf = (args, name) => {
   const raw = args[name];
   if (raw == null) return null;
-  const value = raw !== null && typeof raw === "object" && "Value" in raw ? raw.Value : raw;
+  const value = raw !== null && typeof raw === 'object' && 'Value' in raw ? raw.Value : raw;
   if (!Number.isInteger(Number(value))) throw invalid(`The ${name} parameter must be an integer.`);
   return Number(value);
 };
 const guidOf = (args, name) => {
   const value = String(requiredOf(args, name));
   if (!GUID.test(value)) throw invalid(`The ${name} parameter is not a valid GUID.`);
-  return value.replace(/^\{(.*)\}$/, "$1");
+  return value.replace(/^\{(.*)\}$/, '$1');
 };
 const dateOf = (args, name) => {
   if (args[name] == null) return null;
@@ -80,21 +101,22 @@ const dateOf = (args, name) => {
 function refOf(api, value, name, allowed = null) {
   let mapping;
   let id;
-  if (value && typeof value === "object" && value["@odata.id"] !== undefined) {
-    const parsed = parseEntityReference(stripOrigin(String(value["@odata.id"])));
-    if (!parsed) throw invalid(`The ${name} parameter is not an entity reference.`, "0x80048d19");
+  if (value && typeof value === 'object' && value['@odata.id'] !== undefined) {
+    const parsed = parseEntityReference(stripOrigin(String(value['@odata.id'])));
+    if (!parsed) throw invalid(`The ${name} parameter is not an entity reference.`, '0x80048d19');
     mapping = api.store.resolveMapping(parsed.set);
     id = parsed.id;
-  } else if (value && typeof value === "object") {
-    const logical = logicalOf(value["@odata.type"]);
+  } else if (value && typeof value === 'object') {
+    const logical = logicalOf(value['@odata.type']);
     if (!logical) throw invalid(EDM_OBJECT);
     mapping = api.store.resolveMapping(logical);
     id = value[mapping.idColumn];
     if (id == null) throw invalid(EDM_OBJECT);
   } else {
-    throw invalid(`The ${name} parameter is not an entity reference.`, "0x80048d19");
+    throw invalid(`The ${name} parameter is not an entity reference.`, '0x80048d19');
   }
-  if (allowed && !allowed.has(mapping.logicalName)) throw invalid(`The ${name} parameter must be a ${[...allowed].join(" or ")} record.`);
+  if (allowed && !allowed.has(mapping.logicalName))
+    throw invalid(`The ${name} parameter must be a ${[...allowed].join(' or ')} record.`);
   return { mapping, id: String(id) };
 }
 
@@ -105,15 +127,25 @@ function rowOf(api, ctx, { mapping, id }) {
 }
 
 const authorize = (api, ctx, logical, operation, row = undefined) =>
-  api.principals.authorize({ user: ctx.user, entity: logical, operation, row, mapping: api.store.resolveMapping(logical) });
+  api.principals.authorize({
+    user: ctx.user,
+    entity: logical,
+    operation,
+    row,
+    mapping: api.store.resolveMapping(logical),
+  });
 const write = async (api, fn) => api.change(() => api.store.transact(fn, { isolated: true }));
 // Row writes of a message go through the organization's internal entries (dataverse-records.mjs): the state defaults, record
 // hooks, audit and version columns and the key answers apply as on a Web API write. The message has authorized the caller.
 const created = (api, ctx, logical, data) => api.records.createInternal(ctx, logical, data, { authorized: true });
-const updated = (api, ctx, logical, id, data) => api.records.updateInternal(ctx, logical, id, data, { authorized: true });
+const updated = (api, ctx, logical, id, data) =>
+  api.records.updateInternal(ctx, logical, id, data, { authorized: true });
 const removed = (api, ctx, logical, id) => api.records.removeInternal(ctx, logical, id, { authorized: true });
-const respond = (ctx, name, body) => ({ status: 200, body: { "@odata.context": contextUrl(ctx.origin, ctx.version, `Microsoft.Dynamics.CRM.${name}Response`), ...body } });
-const bodyOf = (name, value, ctx) => ({ "@odata.context": contextUrl(ctx.origin, ctx.version, name), ...value });
+const respond = (ctx, name, body) => ({
+  status: 200,
+  body: { '@odata.context': contextUrl(ctx.origin, ctx.version, `Microsoft.Dynamics.CRM.${name}Response`), ...body },
+});
+const bodyOf = (name, value, ctx) => ({ '@odata.context': contextUrl(ctx.origin, ctx.version, name), ...value });
 
 // The rows of a table as a Web API GET returns them to the caller (its row privileges, field security and lookup formatting).
 // fetchXml, when given, is the query the GET runs (the fetchXml parameter of the collection).
@@ -121,10 +153,19 @@ async function listed(api, ctx, logical, fetchXml = null) {
   const { entitySet } = api.store.resolveMapping(logical);
   const path = `/api/data/${ctx.version}/${entitySet}`;
   const url = new URL(`${ctx.origin}${path}`);
-  if (fetchXml != null) url.searchParams.set("fetchXml", fetchXml);
+  if (fetchXml != null) url.searchParams.set('fetchXml', fetchXml);
   const result = await api.records.handle({
-    method: "GET", route: parseDataverseRoute(path), url, origin: ctx.origin, version: ctx.version,
-    prefer: parsePrefer(undefined), headers: {}, user: ctx.user, caller: ctx.caller, identity: ctx.identity, requestId: ctx.requestId,
+    method: 'GET',
+    route: parseDataverseRoute(path),
+    url,
+    origin: ctx.origin,
+    version: ctx.version,
+    prefer: parsePrefer(undefined),
+    headers: {},
+    user: ctx.user,
+    caller: ctx.caller,
+    identity: ctx.identity,
+    requestId: ctx.requestId,
   });
   return result.body?.value ?? [];
 }
@@ -134,8 +175,17 @@ async function formatted(api, ctx, logical, id) {
   const { entitySet } = api.store.resolveMapping(logical);
   const path = `/api/data/${ctx.version}/${entitySet}(${id})`;
   const result = await api.records.handle({
-    method: "GET", route: parseDataverseRoute(path), url: new URL(`${ctx.origin}${path}`), origin: ctx.origin, version: ctx.version,
-    prefer: parsePrefer(undefined), headers: {}, user: ctx.user, caller: ctx.caller, identity: ctx.identity, requestId: ctx.requestId,
+    method: 'GET',
+    route: parseDataverseRoute(path),
+    url: new URL(`${ctx.origin}${path}`),
+    origin: ctx.origin,
+    version: ctx.version,
+    prefer: parsePrefer(undefined),
+    headers: {},
+    user: ctx.user,
+    caller: ctx.caller,
+    identity: ctx.identity,
+    requestId: ctx.requestId,
   });
   return result.body;
 }
@@ -143,29 +193,32 @@ async function formatted(api, ctx, logical, id) {
 // Creates one email row owned by the caller and returns its id. Outgoing mail starts as a Draft; the caller sets the state
 // that follows. The id is left to the store: an explicit activityid trips the activitypointer lookup in validateBindings.
 async function newEmail(api, ctx, fields) {
-  const owner = ownerColumns(api.store, { id: ctx.user.systemuserid, logical_name: "systemuser" });
-  return (await created(api, ctx, "email", { statecode: 0, statuscode: DRAFT, directioncode: true, ...owner, ...fields })).activityid;
+  const owner = ownerColumns(api.store, { id: ctx.user.systemuserid, logical_name: 'systemuser' });
+  return (
+    await created(api, ctx, 'email', { statecode: 0, statuscode: DRAFT, directioncode: true, ...owner, ...fields })
+  ).activityid;
 }
 
 // The state a send writes. There is no transport: a pending send waits for the router, which marks it Sent.
 // The docs give no statecode or statuscode for a send; the values are the option set's.
-const sendState = (issueSend) => (issueSend ? { statecode: 1, statuscode: PENDING_SEND } : { statecode: 1, statuscode: SENT });
+const sendState = (issueSend) =>
+  issueSend ? { statecode: 1, statuscode: PENDING_SEND } : { statecode: 1, statuscode: SENT };
 
 // Placeholders {column} or {table.column}, filled from the record's stored columns; an unknown column stays as written.
 // The placeholder syntax the template editor writes is a guess.
 const PLACEHOLDER = /\{(?:([a-z_]+)\.)?([a-z_][a-z0-9_]*)\}/gi;
 function fill(text, row, logical) {
-  if (typeof text !== "string") return text ?? null;
+  if (typeof text !== 'string') return text ?? null;
   return text.replace(PLACEHOLDER, (whole, table, column) => {
     if ((table && table.toLowerCase() !== logical) || !Object.hasOwn(row, column)) return whole;
     const value = row[column];
-    return value == null ? "" : typeof value === "object" ? String(value.name ?? value.id ?? "") : String(value);
+    return value == null ? '' : typeof value === 'object' ? String(value.name ?? value.id ?? '') : String(value);
   });
 }
 
 // The template row, which must be for the record's table (templatetypecode names it).
 function templateOf(api, ctx, templateId, logical) {
-  const template = rowOf(api, ctx, { mapping: api.store.resolveMapping("template"), id: templateId });
+  const template = rowOf(api, ctx, { mapping: api.store.resolveMapping('template'), id: templateId });
   if (template.templatetypecode && logical && String(template.templatetypecode).toLowerCase() !== logical) {
     throw invalid(`The template is not for the ${logical} table.`);
   }
@@ -178,7 +231,7 @@ function templatedFields(template, regarding) {
   return {
     subject: fill(template.subject, row, mapping.logicalName),
     description: fill(template.body, row, mapping.logicalName),
-    templateid: ref("template", template.templateid),
+    templateid: ref('template', template.templateid),
     regardingobjectid: ref(mapping.logicalName, id),
   };
 }
@@ -189,11 +242,11 @@ const addressOf = (row) => row.emailaddress1 ?? row.internalemailaddress ?? row.
 // From must be a user's or a queue's email address.
 function senderOf(api, from) {
   const same = (table, column) => api.store.tableRows(table).find((r) => idText(r[column]) === idText(from));
-  const user = same("systemuser", "internalemailaddress");
-  if (user) return ref("systemuser", user.systemuserid);
-  const queue = same("queue", "emailaddress");
-  if (queue) return ref("queue", queue.queueid);
-  throw invalid("The From parameter must be the email address of a user or queue.");
+  const user = same('systemuser', 'internalemailaddress');
+  if (user) return ref('systemuser', user.systemuserid);
+  const queue = same('queue', 'emailaddress');
+  if (queue) return ref('queue', queue.queueid);
+  throw invalid('The From parameter must be the email address of a user or queue.');
 }
 
 const hashOf = (text) => [...text].reduce((h, ch) => (h * 33 + ch.charCodeAt(0)) >>> 0, 5381);
@@ -202,10 +255,10 @@ const hashOf = (text) => [...text].reduce((h, ch) => (h * 33 + ch.charCodeAt(0))
 // ReasonCode values are a guess; the docs name the field and give no values.
 async function checkEmail(api, ctx, name, flag) {
   const args = argsOf(ctx);
-  const messageId = String(requiredOf(args, "MessageId"));
-  if (name === "CheckPromoteEmail") intOf(args, "DirectionCode");
-  authorize(api, ctx, "email", "create");
-  const duplicate = api.store.tableRows("email").some((row) => idText(row.messageid) === idText(messageId));
+  const messageId = String(requiredOf(args, 'MessageId'));
+  if (name === 'CheckPromoteEmail') intOf(args, 'DirectionCode');
+  authorize(api, ctx, 'email', 'create');
+  const duplicate = api.store.tableRows('email').some((row) => idText(row.messageid) === idText(messageId));
   return respond(ctx, name, { ReasonCode: duplicate ? 1 : 0, [flag]: !duplicate });
 }
 
@@ -214,26 +267,29 @@ async function checkEmail(api, ctx, name, flag) {
 // AppendRelatedParty: adds an activityparty row with the Related participation type. The Activity must be an activity table.
 async function appendRelatedParty(api, ctx) {
   const args = argsOf(ctx);
-  const activity = refOf(api, requiredOf(args, "Activity"), "Activity");
-  const party = refOf(api, requiredOf(args, "Party"), "Party");
-  if (!isActivity(activity.mapping)) throw invalid(`The Activity parameter must be an activity record, not ${activity.mapping.logicalName}.`);
-  authorize(api, ctx, activity.mapping.logicalName, "append", rowOf(api, ctx, activity));
-  authorize(api, ctx, party.mapping.logicalName, "appendto", rowOf(api, ctx, party));
-  await write(api, () => created(api, ctx, "activityparty", {
-    activitypartyid: randomUUID(),
-    activityid: ref(activity.mapping.logicalName, activity.id),
-    partyid: ref(party.mapping.logicalName, party.id),
-    participationtypemask: PARTICIPATION_RELATED,
-  }));
+  const activity = refOf(api, requiredOf(args, 'Activity'), 'Activity');
+  const party = refOf(api, requiredOf(args, 'Party'), 'Party');
+  if (!isActivity(activity.mapping))
+    throw invalid(`The Activity parameter must be an activity record, not ${activity.mapping.logicalName}.`);
+  authorize(api, ctx, activity.mapping.logicalName, 'append', rowOf(api, ctx, activity));
+  authorize(api, ctx, party.mapping.logicalName, 'appendto', rowOf(api, ctx, party));
+  await write(api, () =>
+    created(api, ctx, 'activityparty', {
+      activitypartyid: randomUUID(),
+      activityid: ref(activity.mapping.logicalName, activity.id),
+      partyid: ref(party.mapping.logicalName, party.id),
+      participationtypemask: PARTICIPATION_RELATED,
+    }),
+  );
   return { status: 204 };
 }
 
 // RemoveParent: clears the systemuser's parent (parentsystemuserid, the manager column).
 // The docs do not name the column that is cleared; parentsystemuserid is a guess.
 async function removeParent(api, ctx) {
-  const target = refOf(api, requiredOf(argsOf(ctx), "Target"), "Target", new Set(["systemuser"]));
-  authorize(api, ctx, "systemuser", "write", rowOf(api, ctx, target));
-  await write(api, () => updated(api, ctx, "systemuser", target.id, { parentsystemuserid: null }));
+  const target = refOf(api, requiredOf(argsOf(ctx), 'Target'), 'Target', new Set(['systemuser']));
+  authorize(api, ctx, 'systemuser', 'write', rowOf(api, ctx, target));
+  await write(api, () => updated(api, ctx, 'systemuser', target.id, { parentsystemuserid: null }));
   return { status: 204 };
 }
 
@@ -245,69 +301,91 @@ async function removeParent(api, ctx) {
 // Not known: whether the platform applies the Pending Send filter itself, and whether a sent row moves to Sending.
 async function backgroundSendEmail(api, ctx) {
   const query = argsOf(ctx).Query;
-  if (query != null && typeof query !== "object") throw invalid("The Query parameter must be a QueryBase object.");
-  authorize(api, ctx, "email", "read");
-  authorize(api, ctx, "email", "write");
+  if (query != null && typeof query !== 'object') throw invalid('The Query parameter must be a QueryBase object.');
+  authorize(api, ctx, 'email', 'read');
+  authorize(api, ctx, 'email', 'write');
   let rows;
   if (query == null) {
-    rows = await listed(api, ctx, "email");
-  } else if (logicalOf(query["@odata.type"]) === "FetchExpression") {
-    const xml = textOf(query, "Query");
-    if (!xml) throw invalid("The Query parameter must hold a FetchXML query.");
-    rows = await listed(api, ctx, "email", xml);
+    rows = await listed(api, ctx, 'email');
+  } else if (logicalOf(query['@odata.type']) === 'FetchExpression') {
+    const xml = textOf(query, 'Query');
+    if (!xml) throw invalid('The Query parameter must hold a FetchXML query.');
+    rows = await listed(api, ctx, 'email', xml);
   } else {
     const model = modelOf(query);
-    if (model.entityName.toLowerCase() !== "email") throw invalid("The Query must select the email table.");
-    rows = await listed(api, ctx, "email", toFetchXml(model, { primaryIdOf: () => "activityid" }));
+    if (model.entityName.toLowerCase() !== 'email') throw invalid('The Query must select the email table.');
+    rows = await listed(api, ctx, 'email', toFetchXml(model, { primaryIdOf: () => 'activityid' }));
   }
   // A QueryBase may project only subject (or field security may hide statuscode).
   // Keep the caller's projection intact and decide eligibility from the stored row.
-  const pendingIds = new Set(api.store.tableRows("email")
-    .filter((row) => Number(row.statuscode) === PENDING_SEND)
-    .map((row) => idText(row.activityid)));
+  const pendingIds = new Set(
+    api.store
+      .tableRows('email')
+      .filter((row) => Number(row.statuscode) === PENDING_SEND)
+      .map((row) => idText(row.activityid)),
+  );
   const pending = rows.filter((row) => pendingIds.has(idText(row.activityid)));
-  const attachments = api.store.tableRows("activitymimeattachment");
+  const attachments = api.store.tableRows('activitymimeattachment');
   // The router picked these emails up: their queued outbox entries (from SendEmail with IssueSend true) become delivered.
   const outbox = api.providers?.outbox ?? null;
   const picked = new Set(pending.map((row) => idText(row.activityid)));
-  const queued = outbox ? outbox.list().filter((entry) => entry.state === "queued" && entry.source?.kind === "SendEmail" && picked.has(idText(entry.source.id))) : [];
-  if (queued.length) await write(api, async () => { for (const entry of queued) await outbox.markDelivered(entry.id); });
-  return respond(ctx, "BackgroundSendEmail", {
+  const queued = outbox
+    ? outbox
+        .list()
+        .filter(
+          (entry) =>
+            entry.state === 'queued' && entry.source?.kind === 'SendEmail' && picked.has(idText(entry.source.id)),
+        )
+    : [];
+  if (queued.length)
+    await write(api, async () => {
+      for (const entry of queued) await outbox.markDelivered(entry.id);
+    });
+  return respond(ctx, 'BackgroundSendEmail', {
     HasAttachments: pending.map((row) => attachments.some((a) => idText(refId(a.objectid)) === idText(row.activityid))),
     EntityCollection: pending,
   });
 }
 
-const checkIncomingEmail = (api, ctx) => checkEmail(api, ctx, "CheckIncomingEmail", "ShouldDeliver");
-const checkPromoteEmail = (api, ctx) => checkEmail(api, ctx, "CheckPromoteEmail", "ShouldPromote");
+const checkIncomingEmail = (api, ctx) => checkEmail(api, ctx, 'CheckIncomingEmail', 'ShouldDeliver');
+const checkPromoteEmail = (api, ctx) => checkEmail(api, ctx, 'CheckPromoteEmail', 'ShouldPromote');
 
 // CreateAndSendNewEmail: creates the email from the arguments and sends it, so it ends Pending Send. Returns its id.
 async function createAndSendNewEmail(api, ctx) {
   const args = argsOf(ctx);
-  const regarding = args.Regarding == null ? null : refOf(api, args.Regarding, "Regarding");
-  const from = textOf(args, "From");
+  const regarding = args.Regarding == null ? null : refOf(api, args.Regarding, 'Regarding');
+  const from = textOf(args, 'From');
   if (from != null) senderOf(api, from);
   if (regarding) rowOf(api, ctx, regarding);
-  authorize(api, ctx, "email", "create");
+  authorize(api, ctx, 'email', 'create');
   let id;
   await write(api, async () => {
     id = await newEmail(api, ctx, {
-      subject: textOf(args, "Subject"), description: textOf(args, "Body"), sender: from, torecipients: textOf(args, "To"),
-      cc: textOf(args, "Cc"), bcc: textOf(args, "Bcc"), prioritycode: intOf(args, "Importance"),
-      regardingobjectid: regarding ? ref(regarding.mapping.logicalName, regarding.id) : null, ...sendState(true),
+      subject: textOf(args, 'Subject'),
+      description: textOf(args, 'Body'),
+      sender: from,
+      torecipients: textOf(args, 'To'),
+      cc: textOf(args, 'Cc'),
+      bcc: textOf(args, 'Bcc'),
+      prioritycode: intOf(args, 'Importance'),
+      regardingobjectid: regarding ? ref(regarding.mapping.logicalName, regarding.id) : null,
+      ...sendState(true),
     });
   });
-  return respond(ctx, "CreateAndSendNewEmail", { EmailId: id });
+  return respond(ctx, 'CreateAndSendNewEmail', { EmailId: id });
 }
 
 // Attachments of a delivery: a collection of { filename, mimetype, subject, body } objects, body base64. Checked and authorized
 // before the write; storeAttachments writes them inside it.
 function attachmentsOf(api, ctx, value) {
   if (value == null) return [];
-  if (!Array.isArray(value) || value.some((a) => a === null || typeof a !== "object" || (a.body != null && typeof a.body !== "string"))) {
-    throw invalid("The Attachments parameter must be a collection of attachment objects.");
+  if (
+    !Array.isArray(value) ||
+    value.some((a) => a === null || typeof a !== 'object' || (a.body != null && typeof a.body !== 'string'))
+  ) {
+    throw invalid('The Attachments parameter must be a collection of attachment objects.');
   }
-  authorize(api, ctx, "activitymimeattachment", "create");
+  authorize(api, ctx, 'activitymimeattachment', 'create');
   return value;
 }
 
@@ -315,10 +393,17 @@ function attachmentsOf(api, ctx, value) {
 // through the same record pipeline (dataverse-files.mjs createThroughPipeline): attachment policy, ownership, plug-ins, hooks.
 async function storeAttachments(api, ctx, emailId, list) {
   for (const [i, a] of list.entries()) {
-    await createThroughPipeline(api, ctx, "activitymimeattachment", {
-      activitymimeattachmentid: randomUUID(), objectid: ref("email", emailId), objecttypecode: "email", activityid: ref("email", emailId), attachmentnumber: i,
-      filename: a.filename ?? null, mimetype: a.mimetype ?? null, subject: a.subject ?? null, body: a.body ?? null,
-      filesize: a.body ? Buffer.from(a.body, "base64").length : 0,
+    await createThroughPipeline(api, ctx, 'activitymimeattachment', {
+      activitymimeattachmentid: randomUUID(),
+      objectid: ref('email', emailId),
+      objecttypecode: 'email',
+      activityid: ref('email', emailId),
+      attachmentnumber: i,
+      filename: a.filename ?? null,
+      mimetype: a.mimetype ?? null,
+      subject: a.subject ?? null,
+      body: a.body ?? null,
+      filesize: a.body ? Buffer.from(a.body, 'base64').length : 0,
     });
   }
 }
@@ -327,24 +412,32 @@ async function storeAttachments(api, ctx, emailId, list) {
 // The native refusal when ValidateBeforeCreate finds the MessageId already stored is not known.
 async function deliverIncomingEmail(api, ctx) {
   const args = argsOf(ctx);
-  const messageId = String(requiredOf(args, "MessageId"));
-  const received = dateOf(args, "ReceivedOn");
+  const messageId = String(requiredOf(args, 'MessageId'));
+  const received = dateOf(args, 'ReceivedOn');
   const validate = args.ValidateBeforeCreate === true;
   const attachments = attachmentsOf(api, ctx, args.Attachments);
-  authorize(api, ctx, "email", "create");
-  if (validate && api.store.tableRows("email").some((row) => idText(row.messageid) === idText(messageId))) {
+  authorize(api, ctx, 'email', 'create');
+  if (validate && api.store.tableRows('email').some((row) => idText(row.messageid) === idText(messageId))) {
     throw invalid(`An email with MessageId ${messageId} is already stored.`);
   }
   let id;
   await write(api, async () => {
     id = await newEmail(api, ctx, {
-      messageid: messageId, subject: textOf(args, "Subject"), description: textOf(args, "Body"), sender: textOf(args, "From"),
-      torecipients: textOf(args, "To"), cc: textOf(args, "Cc"), bcc: textOf(args, "Bcc"), actualstart: received,
-      directioncode: false, statecode: 1, statuscode: RECEIVED,
+      messageid: messageId,
+      subject: textOf(args, 'Subject'),
+      description: textOf(args, 'Body'),
+      sender: textOf(args, 'From'),
+      torecipients: textOf(args, 'To'),
+      cc: textOf(args, 'Cc'),
+      bcc: textOf(args, 'Bcc'),
+      actualstart: received,
+      directioncode: false,
+      statecode: 1,
+      statuscode: RECEIVED,
     });
     await storeAttachments(api, ctx, id, attachments);
   });
-  return { status: 200, body: await formatted(api, ctx, "email", id) };
+  return { status: 200, body: await formatted(api, ctx, 'email', id) };
 }
 
 // DeliverPromoteEmail and DeliverImmediatePromoteEmail (bound to one email): the bound email takes the message parts and its
@@ -353,51 +446,63 @@ async function deliverIncomingEmail(api, ctx) {
 // AttachmentIds, EWSUrl and AttachmentToken are accepted and ignored.
 async function deliverPromoteEmail(api, ctx) {
   const args = argsOf(ctx);
-  const messageId = String(requiredOf(args, "MessageId"));
+  const messageId = String(requiredOf(args, 'MessageId'));
   const row = ctx.target.row;
   const attachments = attachmentsOf(api, ctx, args.Attachments);
-  authorize(api, ctx, "email", "write", row);
+  authorize(api, ctx, 'email', 'write', row);
   await write(api, async () => {
-    await updated(api, ctx, "email", ctx.target.id, {
-      messageid: messageId, subject: textOf(args, "Subject"), description: textOf(args, "Body"), sender: textOf(args, "From"),
-      torecipients: textOf(args, "To"), cc: textOf(args, "Cc"), bcc: textOf(args, "Bcc"), actualstart: dateOf(args, "ReceivedOn"),
-      directioncode: false, statecode: 1, statuscode: RECEIVED,
+    await updated(api, ctx, 'email', ctx.target.id, {
+      messageid: messageId,
+      subject: textOf(args, 'Subject'),
+      description: textOf(args, 'Body'),
+      sender: textOf(args, 'From'),
+      torecipients: textOf(args, 'To'),
+      cc: textOf(args, 'Cc'),
+      bcc: textOf(args, 'Bcc'),
+      actualstart: dateOf(args, 'ReceivedOn'),
+      directioncode: false,
+      statecode: 1,
+      statuscode: RECEIVED,
     });
     await storeAttachments(api, ctx, ctx.target.id, attachments);
   });
-  return { status: 200, body: await formatted(api, ctx, "email", ctx.target.id) };
+  return { status: 200, body: await formatted(api, ctx, 'email', ctx.target.id) };
 }
 
 // GetTrackingTokenEmail: a token for the subject. The token format is a guess (the docs say only "a string").
 async function getTrackingTokenEmail(api, ctx) {
-  const subject = textOf(argsOf(ctx), "Subject") ?? "";
-  const token = `CRM:${String(hashOf(subject) % 10000).padStart(4, "0")}`;
-  return respond(ctx, "GetTrackingTokenEmail", { TrackingToken: token });
+  const subject = textOf(argsOf(ctx), 'Subject') ?? '';
+  const token = `CRM:${String(hashOf(subject) % 10000).padStart(4, '0')}`;
+  return respond(ctx, 'GetTrackingTokenEmail', { TrackingToken: token });
 }
 
 // InstantiateTemplate: creates a draft email from the template for the record (ObjectType, ObjectId). Returns the collection.
 async function instantiateTemplate(api, ctx) {
   const args = argsOf(ctx);
-  const templateId = guidOf(args, "TemplateId");
-  const logical = String(requiredOf(args, "ObjectType"));
-  const regarding = { mapping: api.store.resolveMapping(logical), id: guidOf(args, "ObjectId") };
+  const templateId = guidOf(args, 'TemplateId');
+  const logical = String(requiredOf(args, 'ObjectType'));
+  const regarding = { mapping: api.store.resolveMapping(logical), id: guidOf(args, 'ObjectId') };
   regarding.row = rowOf(api, ctx, regarding);
-  authorize(api, ctx, regarding.mapping.logicalName, "read", regarding.row);
+  authorize(api, ctx, regarding.mapping.logicalName, 'read', regarding.row);
   const template = templateOf(api, ctx, templateId, regarding.mapping.logicalName);
-  authorize(api, ctx, "email", "create");
+  authorize(api, ctx, 'email', 'create');
   let id;
-  await write(api, async () => { id = await newEmail(api, ctx, templatedFields(template, regarding)); });
-  const email = await formatted(api, ctx, "email", id);
-  return { status: 200, body: bodyOf("Collection(mscrm.crmbaseentity)", { value: [withoutContext(email)] }, ctx) };
+  await write(api, async () => {
+    id = await newEmail(api, ctx, templatedFields(template, regarding));
+  });
+  const email = await formatted(api, ctx, 'email', id);
+  return { status: 200, body: bodyOf('Collection(mscrm.crmbaseentity)', { value: [withoutContext(email)] }, ctx) };
 }
 
-const withoutContext = (body) => Object.fromEntries(Object.entries(body ?? {}).filter(([key]) => !key.startsWith("@")));
+const withoutContext = (body) => Object.fromEntries(Object.entries(body ?? {}).filter(([key]) => !key.startsWith('@')));
 
 // RetrieveMailboxTrackingFolders: the tracking folder mappings of one mailbox. The mapping shape is a guess.
 async function retrieveMailboxTrackingFolders(api, ctx) {
-  const mailboxId = String(requiredOf(argsOf(ctx), "MailboxId"));
-  const folders = (await listed(api, ctx, "mailboxtrackingfolder")).filter((row) => idText(row.mailboxid) === idText(mailboxId));
-  return respond(ctx, "RetrieveMailboxTrackingFolders", { MailboxTrackingFolderMappings: folders.map(withoutContext) });
+  const mailboxId = String(requiredOf(argsOf(ctx), 'MailboxId'));
+  const folders = (await listed(api, ctx, 'mailboxtrackingfolder')).filter(
+    (row) => idText(row.mailboxid) === idText(mailboxId),
+  );
+  return respond(ctx, 'RetrieveMailboxTrackingFolders', { MailboxTrackingFolderMappings: folders.map(withoutContext) });
 }
 
 // The outbox entry of one email: addresses from its text columns and its activityparty rows (1 from, 2 to, 3 cc, 4 bcc), and
@@ -405,86 +510,136 @@ async function retrieveMailboxTrackingFolders(api, ctx) {
 const PARTY_MASKS = { from: 1, to: 2, cc: 3, bcc: 4 };
 function outboxEntry(api, ctx, email, state) {
   const id = idText(email.activityid);
-  const parties = api.store.tableRows("activityparty").filter((row) => idText(refId(row.activityid)) === id);
-  const list = (column, mask) => [...new Set([
-    ...String(email[column] ?? "").split(/[;,]/),
-    ...parties.filter((row) => Number(row.participationtypemask) === mask).map((row) => row.addressused ?? ""),
-  ].map((item) => item.trim()).filter(Boolean))];
-  const attachments = api.store.tableRows("activitymimeattachment").filter((row) => idText(refId(row.objectid) ?? refId(row.activityid)) === id)
+  const parties = api.store.tableRows('activityparty').filter((row) => idText(refId(row.activityid)) === id);
+  const list = (column, mask) => [
+    ...new Set(
+      [
+        ...String(email[column] ?? '').split(/[;,]/),
+        ...parties.filter((row) => Number(row.participationtypemask) === mask).map((row) => row.addressused ?? ''),
+      ]
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  ];
+  const attachments = api.store
+    .tableRows('activitymimeattachment')
+    .filter((row) => idText(refId(row.objectid) ?? refId(row.activityid)) === id)
     .sort((a, b) => (a.attachmentnumber ?? 0) - (b.attachmentnumber ?? 0))
-    .map((row) => ({ name: row.filename ?? null, contentType: row.mimetype ?? null, size: row.filesize != null && Number.isSafeInteger(Number(row.filesize)) ? Number(row.filesize) : typeof row.body === "string" ? Buffer.byteLength(row.body, "base64") : null }));
+    .map((row) => ({
+      name: row.filename ?? null,
+      contentType: row.mimetype ?? null,
+      size:
+        row.filesize != null && Number.isSafeInteger(Number(row.filesize))
+          ? Number(row.filesize)
+          : typeof row.body === 'string'
+            ? Buffer.byteLength(row.body, 'base64')
+            : null,
+    }));
   return {
-    channel: "email", from: list("sender", PARTY_MASKS.from)[0] ?? null, to: list("torecipients", PARTY_MASKS.to), cc: list("cc", PARTY_MASKS.cc), bcc: list("bcc", PARTY_MASKS.bcc),
-    subject: email.subject ?? null, body: email.description ?? null, bodyType: "html", attachments,
-    correlationId: ctx.correlationId ?? ctx.requestId ?? null, source: { kind: "SendEmail", id: email.activityid }, state,
+    channel: 'email',
+    from: list('sender', PARTY_MASKS.from)[0] ?? null,
+    to: list('torecipients', PARTY_MASKS.to),
+    cc: list('cc', PARTY_MASKS.cc),
+    bcc: list('bcc', PARTY_MASKS.bcc),
+    subject: email.subject ?? null,
+    body: email.description ?? null,
+    bodyType: 'html',
+    attachments,
+    correlationId: ctx.correlationId ?? ctx.requestId ?? null,
+    source: { kind: 'SendEmail', id: email.activityid },
+    state,
   };
 }
 
 // SendEmail (bound to one email): IssueSend moves it to Pending Send or to Sent; TrackingToken is stored when given.
 async function sendEmail(api, ctx) {
   const args = argsOf(ctx);
-  const issueSend = flagOf(args, "IssueSend");
-  const trackingToken = textOf(args, "TrackingToken");
-  authorize(api, ctx, "email", "write", ctx.target.row);
+  const issueSend = flagOf(args, 'IssueSend');
+  const trackingToken = textOf(args, 'TrackingToken');
+  authorize(api, ctx, 'email', 'write', ctx.target.row);
   const outbox = api.providers?.outbox ?? null;
   await write(api, async () => {
-    await updated(api, ctx, "email", ctx.target.id, { ...sendState(issueSend), ...(trackingToken == null ? {} : { trackingtoken: trackingToken }) });
+    await updated(api, ctx, 'email', ctx.target.id, {
+      ...sendState(issueSend),
+      ...(trackingToken == null ? {} : { trackingtoken: trackingToken }),
+    });
     // nested: the entry joins this transaction, so a send that rolls back captures nothing.
-    if (outbox) await outbox.capture(outboxEntry(api, ctx, api.store.tableRows("email").find((row) => idText(row.activityid) === idText(ctx.target.id)) ?? ctx.target.row, issueSend ? "queued" : "delivered"), { nested: true });
+    if (outbox)
+      await outbox.capture(
+        outboxEntry(
+          api,
+          ctx,
+          api.store.tableRows('email').find((row) => idText(row.activityid) === idText(ctx.target.id)) ??
+            ctx.target.row,
+          issueSend ? 'queued' : 'delivered',
+        ),
+        { nested: true },
+      );
   });
-  return respond(ctx, "SendEmail", { Subject: ctx.target.row.subject ?? null });
+  return respond(ctx, 'SendEmail', { Subject: ctx.target.row.subject ?? null });
 }
 
 // SendEmailFromTemplate: a draft from the template for Regarding, addressed to Target, then sent (Pending Send).
 async function sendEmailFromTemplate(api, ctx) {
   const args = argsOf(ctx);
-  const templateId = guidOf(args, "TemplateId");
-  const regardingRef = refOf(api, requiredOf(args, "Regarding"), "Regarding");
-  const targetRef = refOf(api, requiredOf(args, "Target"), "Target");
+  const templateId = guidOf(args, 'TemplateId');
+  const regardingRef = refOf(api, requiredOf(args, 'Regarding'), 'Regarding');
+  const targetRef = refOf(api, requiredOf(args, 'Target'), 'Target');
   const regarding = { ...regardingRef, row: rowOf(api, ctx, regardingRef) };
   const target = rowOf(api, ctx, targetRef);
-  authorize(api, ctx, regarding.mapping.logicalName, "read", regarding.row);
-  authorize(api, ctx, targetRef.mapping.logicalName, "read", target);
+  authorize(api, ctx, regarding.mapping.logicalName, 'read', regarding.row);
+  authorize(api, ctx, targetRef.mapping.logicalName, 'read', target);
   const template = templateOf(api, ctx, templateId, regarding.mapping.logicalName);
-  authorize(api, ctx, "email", "create");
+  authorize(api, ctx, 'email', 'create');
   let id;
-  await write(api, async () => { id = await newEmail(api, ctx, { ...templatedFields(template, regarding), torecipients: addressOf(target), ...sendState(true) }); });
-  return { status: 200, body: await formatted(api, ctx, "email", id) };
+  await write(api, async () => {
+    id = await newEmail(api, ctx, {
+      ...templatedFields(template, regarding),
+      torecipients: addressOf(target),
+      ...sendState(true),
+    });
+  });
+  return { status: 200, body: await formatted(api, ctx, 'email', id) };
 }
 
 // SendFax: marks the fax Sent. ponytail: there is no fax transport, so IssueSend is validated and both values record Sent.
 async function sendFax(api, ctx) {
   const args = argsOf(ctx);
-  const faxId = guidOf(args, "FaxId");
-  flagOf(args, "IssueSend");
-  const fax = { mapping: api.store.resolveMapping("fax"), id: faxId };
-  authorize(api, ctx, "fax", "write", rowOf(api, ctx, fax));
-  await write(api, () => updated(api, ctx, "fax", faxId, { statecode: 1, statuscode: SENT }));
+  const faxId = guidOf(args, 'FaxId');
+  flagOf(args, 'IssueSend');
+  const fax = { mapping: api.store.resolveMapping('fax'), id: faxId };
+  authorize(api, ctx, 'fax', 'write', rowOf(api, ctx, fax));
+  await write(api, () => updated(api, ctx, 'fax', faxId, { statecode: 1, statuscode: SENT }));
   return { status: 204 };
 }
 
 // SendTemplate: one Pending Send draft per recipient, from the template, for Regarding, from Sender.
 async function sendTemplate(api, ctx) {
   const args = argsOf(ctx);
-  const templateId = guidOf(args, "TemplateId");
-  const sender = refOf(api, requiredOf(args, "Sender"), "Sender");
-  const regardingRef = refOf(api, requiredOf(args, "Regarding"), "Regarding");
-  const recipients = requiredOf(args, "Recipients");
-  if (!Array.isArray(recipients) || recipients.length === 0) throw invalid("The Recipients parameter must be a non-empty collection.");
+  const templateId = guidOf(args, 'TemplateId');
+  const sender = refOf(api, requiredOf(args, 'Sender'), 'Sender');
+  const regardingRef = refOf(api, requiredOf(args, 'Regarding'), 'Regarding');
+  const recipients = requiredOf(args, 'Recipients');
+  if (!Array.isArray(recipients) || recipients.length === 0)
+    throw invalid('The Recipients parameter must be a non-empty collection.');
   const regarding = { ...regardingRef, row: rowOf(api, ctx, regardingRef) };
   const targets = recipients.map((item) => {
-    const to = refOf(api, item, "Recipients");
+    const to = refOf(api, item, 'Recipients');
     return { row: rowOf(api, ctx, to) };
   });
   const senderRow = rowOf(api, ctx, sender);
-  authorize(api, ctx, regarding.mapping.logicalName, "read", regarding.row);
+  authorize(api, ctx, regarding.mapping.logicalName, 'read', regarding.row);
   const template = templateOf(api, ctx, templateId, regarding.mapping.logicalName);
-  authorize(api, ctx, "email", "create");
-  const priority = intOf(args, "DeliveryPriorityCode");
+  authorize(api, ctx, 'email', 'create');
+  const priority = intOf(args, 'DeliveryPriorityCode');
   await write(api, async () => {
     for (const { row } of targets) {
       await newEmail(api, ctx, {
-        ...templatedFields(template, regarding), torecipients: addressOf(row), sender: addressOf(senderRow), prioritycode: priority, ...sendState(true),
+        ...templatedFields(template, regarding),
+        torecipients: addressOf(row),
+        sender: addressOf(senderRow),
+        prioritycode: priority,
+        ...sendState(true),
       });
     }
   });
@@ -497,10 +652,15 @@ async function sendTemplate(api, ctx) {
 // Insert-only, as the other dataverse-only stand-in tables are (dataverse-duplicates.mjs seedTables).
 function seedQueueMembership(store) {
   store.state.mappings.queuemembership ??= {
-    logicalName: "queuemembership", entitySet: "queuememberships", idColumn: "queuemembershipid", userConfigured: true, dataverseOnly: true,
+    logicalName: 'queuemembership',
+    entitySet: 'queuememberships',
+    idColumn: 'queuemembershipid',
+    userConfigured: true,
+    dataverseOnly: true,
     fields: {
-      queuemembershipid: { dataverseType: "uniqueidentifier" }, queueid: { dataverseType: "uniqueidentifier" },
-      systemuserid: { dataverseType: "uniqueidentifier" },
+      queuemembershipid: { dataverseType: 'uniqueidentifier' },
+      queueid: { dataverseType: 'uniqueidentifier' },
+      systemuserid: { dataverseType: 'uniqueidentifier' },
     },
     relationships: {},
   };
@@ -510,17 +670,28 @@ function seedQueueMembership(store) {
 // AddPrincipalToQueue (bound to one queue): adds a systemuser as a member, or each user of a team, once per user.
 // ponytail: a user who joins the team after this call is not added.
 async function addPrincipalToQueue(api, ctx) {
-  const principal = refOf(api, requiredOf(argsOf(ctx), "Principal"), "Principal", new Set(["systemuser", "team"]));
+  const principal = refOf(api, requiredOf(argsOf(ctx), 'Principal'), 'Principal', new Set(['systemuser', 'team']));
   rowOf(api, ctx, principal);
-  authorize(api, ctx, "queue", "write", ctx.target.row);
-  const users = principal.mapping.logicalName === "team"
-    ? api.store.tableRows("systemuser").filter((u) => teamsOfUser(api.store, u.systemuserid).includes(idText(principal.id))).map((u) => u.systemuserid)
-    : [principal.id];
+  authorize(api, ctx, 'queue', 'write', ctx.target.row);
+  const users =
+    principal.mapping.logicalName === 'team'
+      ? api.store
+          .tableRows('systemuser')
+          .filter((u) => teamsOfUser(api.store, u.systemuserid).includes(idText(principal.id)))
+          .map((u) => u.systemuserid)
+      : [principal.id];
   await write(api, () => {
     const members = api.store.state.tables.queuemembership;
     for (const id of users) {
-      const exists = members.some((m) => idText(refId(m.queueid)) === idText(ctx.target.id) && idText(refId(m.systemuserid)) === idText(id));
-      if (!exists) members.push({ queuemembershipid: uuidV5(ctx.target.id, `member:${idText(id)}`), queueid: ctx.target.id, systemuserid: id });
+      const exists = members.some(
+        (m) => idText(refId(m.queueid)) === idText(ctx.target.id) && idText(refId(m.systemuserid)) === idText(id),
+      );
+      if (!exists)
+        members.push({
+          queuemembershipid: uuidV5(ctx.target.id, `member:${idText(id)}`),
+          queueid: ctx.target.id,
+          systemuserid: id,
+        });
     }
   });
   return { status: 204 };
@@ -529,58 +700,80 @@ async function addPrincipalToQueue(api, ctx) {
 // AddToQueue (bound to the destination queue): creates a queue item for Target, after removing it from SourceQueue when given.
 async function addToQueue(api, ctx) {
   const args = argsOf(ctx);
-  const target = refOf(api, requiredOf(args, "Target"), "Target");
+  const target = refOf(api, requiredOf(args, 'Target'), 'Target');
   const targetRow = rowOf(api, ctx, target);
-  const source = args.SourceQueue == null ? null : refOf(api, args.SourceQueue, "SourceQueue", new Set(["queue"]));
+  const source = args.SourceQueue == null ? null : refOf(api, args.SourceQueue, 'SourceQueue', new Set(['queue']));
   const props = args.QueueItemProperties ?? {};
-  if (typeof props !== "object" || Array.isArray(props)) throw invalid("The QueueItemProperties parameter must be a queueitem object.");
-  const fields = api.store.resolveMapping("queueitem").fields ?? {};
-  const extra = Object.fromEntries(Object.entries(props).filter(([name]) => fields[name] && !QUEUE_ITEM_PROTECTED.has(name)));
-  authorize(api, ctx, target.mapping.logicalName, "read", targetRow);
-  authorize(api, ctx, "queueitem", "create");
+  if (typeof props !== 'object' || Array.isArray(props))
+    throw invalid('The QueueItemProperties parameter must be a queueitem object.');
+  const fields = api.store.resolveMapping('queueitem').fields ?? {};
+  const extra = Object.fromEntries(
+    Object.entries(props).filter(([name]) => fields[name] && !QUEUE_ITEM_PROTECTED.has(name)),
+  );
+  authorize(api, ctx, target.mapping.logicalName, 'read', targetRow);
+  authorize(api, ctx, 'queueitem', 'create');
   const id = randomUUID();
   const now = new Date(api.clock ? api.clock() : Date.now()).toISOString();
   await write(api, async () => {
     if (source) {
-      const moved = api.store.tableRows("queueitem")
-        .filter((item) => idText(refId(item.queueid)) === idText(source.id) && idText(refId(item.objectid)) === idText(target.id));
-      for (const item of moved) await removed(api, ctx, "queueitem", item.queueitemid);
+      const moved = api.store
+        .tableRows('queueitem')
+        .filter(
+          (item) =>
+            idText(refId(item.queueid)) === idText(source.id) && idText(refId(item.objectid)) === idText(target.id),
+        );
+      for (const item of moved) await removed(api, ctx, 'queueitem', item.queueitemid);
     }
     // objecttypecode is platform-set (IsValidForCreate false) from the object's table, and the exported option set lists
     // only some queue-enabled tables: the platform-built row is stored as built, without request value coercion.
-    await api.records.createInternal(ctx, "queueitem", {
-      queueitemid: id, queueid: ref("queue", ctx.target.id), objectid: ref(target.mapping.logicalName, target.id),
-      objecttypecode: objectTypeCode(target.mapping.logicalName), title: targetRow[target.mapping.nameColumn] ?? target.id,
-      enteredon: now, statecode: 0, ...extra,
-    }, { authorized: true, writeOptions: { coerce: false } });
+    await api.records.createInternal(
+      ctx,
+      'queueitem',
+      {
+        queueitemid: id,
+        queueid: ref('queue', ctx.target.id),
+        objectid: ref(target.mapping.logicalName, target.id),
+        objecttypecode: objectTypeCode(target.mapping.logicalName),
+        title: targetRow[target.mapping.nameColumn] ?? target.id,
+        enteredon: now,
+        statecode: 0,
+        ...extra,
+      },
+      { authorized: true, writeOptions: { coerce: false } },
+    );
   });
-  return respond(ctx, "AddToQueue", { QueueItemId: id });
+  return respond(ctx, 'AddToQueue', { QueueItemId: id });
 }
 
 // PickFromQueue (bound to one queue item): assigns it to SystemUser, or removes it from the queue when RemoveQueueItem is true.
 async function pickFromQueue(api, ctx) {
   const args = argsOf(ctx);
-  const user = refOf(api, requiredOf(args, "SystemUser"), "SystemUser", new Set(["systemuser"]));
-  const remove = flagOf(args, "RemoveQueueItem");
+  const user = refOf(api, requiredOf(args, 'SystemUser'), 'SystemUser', new Set(['systemuser']));
+  const remove = flagOf(args, 'RemoveQueueItem');
   rowOf(api, ctx, user);
-  authorize(api, ctx, "queueitem", "write", ctx.target.row);
-  await write(api, () => remove
-    ? removed(api, ctx, "queueitem", ctx.target.id)
-    : updated(api, ctx, "queueitem", ctx.target.id, { workerid: ref("systemuser", user.id), workeridtype: "systemuser" }));
+  authorize(api, ctx, 'queueitem', 'write', ctx.target.row);
+  await write(api, () =>
+    remove
+      ? removed(api, ctx, 'queueitem', ctx.target.id)
+      : updated(api, ctx, 'queueitem', ctx.target.id, {
+          workerid: ref('systemuser', user.id),
+          workeridtype: 'systemuser',
+        }),
+  );
   return { status: 204 };
 }
 
 // ReleaseToQueue (bound to one queue item): clears the worker, so any member can pick it.
 async function releaseToQueue(api, ctx) {
-  authorize(api, ctx, "queueitem", "write", ctx.target.row);
-  await write(api, () => updated(api, ctx, "queueitem", ctx.target.id, { workerid: null, workeridtype: null }));
+  authorize(api, ctx, 'queueitem', 'write', ctx.target.row);
+  await write(api, () => updated(api, ctx, 'queueitem', ctx.target.id, { workerid: null, workeridtype: null }));
   return { status: 204 };
 }
 
 // RemoveFromQueue (bound to one queue item): deletes the queue item.
 async function removeFromQueue(api, ctx) {
-  authorize(api, ctx, "queueitem", "delete", ctx.target.row);
-  await write(api, () => removed(api, ctx, "queueitem", ctx.target.id));
+  authorize(api, ctx, 'queueitem', 'delete', ctx.target.row);
+  await write(api, () => removed(api, ctx, 'queueitem', ctx.target.id));
   return { status: 204 };
 }
 
@@ -588,35 +781,43 @@ async function removeFromQueue(api, ctx) {
 // and with IncludePublic the queues owned by a team or business unit (public). Rows come back as the caller reads them.
 // Which owners make a queue public is a guess.
 async function retrieveUserQueues(api, ctx) {
-  const includePublic = flagOf(argsOf(ctx), "IncludePublic");
+  const includePublic = flagOf(argsOf(ctx), 'IncludePublic');
   const userId = ctx.target.id;
-  const memberOf = new Set(api.store.tableRows("queuemembership")
-    .filter((m) => idText(refId(m.systemuserid)) === idText(userId))
-    .map((m) => idText(refId(m.queueid))));
-  const queues = api.store.tableRows("queue");
-  const ids = new Set(queues.filter((q) => {
-    const owner = q.ownerid?.logical_name ?? null;
-    const owned = idText(refId(q.ownerid)) === idText(userId);
-    if (owned || memberOf.has(idText(q.queueid))) return true;
-    return includePublic && owner !== "systemuser";
-  }).map((q) => idText(q.queueid)));
-  const value = (await listed(api, ctx, "queue")).filter((row) => ids.has(idText(row.queueid)));
-  return respond(ctx, "RetrieveUserQueues", { value: value.map(withoutContext) });
+  const memberOf = new Set(
+    api.store
+      .tableRows('queuemembership')
+      .filter((m) => idText(refId(m.systemuserid)) === idText(userId))
+      .map((m) => idText(refId(m.queueid))),
+  );
+  const queues = api.store.tableRows('queue');
+  const ids = new Set(
+    queues
+      .filter((q) => {
+        const owner = q.ownerid?.logical_name ?? null;
+        const owned = idText(refId(q.ownerid)) === idText(userId);
+        if (owned || memberOf.has(idText(q.queueid))) return true;
+        return includePublic && owner !== 'systemuser';
+      })
+      .map((q) => idText(q.queueid)),
+  );
+  const value = (await listed(api, ctx, 'queue')).filter((row) => ids.has(idText(row.queueid)));
+  return respond(ctx, 'RetrieveUserQueues', { value: value.map(withoutContext) });
 }
 
 // RouteTo: routes a queue item to a queue (unassigned) or to a systemuser or team (assigned to it).
 // QueueItem is required here; the docs do not say what a null QueueItem does.
 async function routeTo(api, ctx) {
   const args = argsOf(ctx);
-  const target = refOf(api, requiredOf(args, "Target"), "Target", new Set(["queue", "systemuser", "team"]));
-  const item = refOf(api, requiredOf(args, "QueueItem"), "QueueItem", new Set(["queueitem"]));
+  const target = refOf(api, requiredOf(args, 'Target'), 'Target', new Set(['queue', 'systemuser', 'team']));
+  const item = refOf(api, requiredOf(args, 'QueueItem'), 'QueueItem', new Set(['queueitem']));
   rowOf(api, ctx, target);
-  authorize(api, ctx, "queueitem", "write", rowOf(api, ctx, item));
+  authorize(api, ctx, 'queueitem', 'write', rowOf(api, ctx, item));
   await write(api, () => {
-    const fields = target.mapping.logicalName === "queue"
-      ? { queueid: ref("queue", target.id), workerid: null, workeridtype: null }
-      : { workerid: ref(target.mapping.logicalName, target.id), workeridtype: target.mapping.logicalName };
-    return updated(api, ctx, "queueitem", item.id, fields);
+    const fields =
+      target.mapping.logicalName === 'queue'
+        ? { queueid: ref('queue', target.id), workerid: null, workeridtype: null }
+        : { workerid: ref(target.mapping.logicalName, target.id), workeridtype: target.mapping.logicalName };
+    return updated(api, ctx, 'queueitem', item.id, fields);
   });
   return { status: 204 };
 }
@@ -625,53 +826,339 @@ async function routeTo(api, ctx) {
 
 // CSDL per operation: the bound parameter (entity, or the full collection type), parameters and return type. A response is a ComplexType.
 function csdlOf(kind, name, { bound = null, params = [], returns = null, response = null }) {
-  const tag = kind === "action" ? "Action" : "Function";
-  const complex = response ? `<ComplexType Name="${name}Response">${response.map(([p, t]) => `<Property Name="${p}" Type="${t}" />`).join("")}</ComplexType>` : null;
-  const parts = bound ? [`<Parameter Name="entity" Type="${bound.includes("(") ? bound : `mscrm.${bound}`}" Nullable="false" />`] : [];
+  const tag = kind === 'action' ? 'Action' : 'Function';
+  const complex = response
+    ? `<ComplexType Name="${name}Response">${response.map(([p, t]) => `<Property Name="${p}" Type="${t}" />`).join('')}</ComplexType>`
+    : null;
+  const parts = bound
+    ? [`<Parameter Name="entity" Type="${bound.includes('(') ? bound : `mscrm.${bound}`}" Nullable="false" />`]
+    : [];
   for (const [param, type] of params) parts.push(`<Parameter Name="${param}" Type="${type}" />`);
   if (response) returns = `mscrm.${name}Response`;
   if (returns) parts.push(`<ReturnType Type="${returns}" Nullable="false" />`);
-  const head = `<${tag} Name="${name}"${bound ? ' IsBound="true"' : ""}>`;
-  return [complex, `${head}\n  ${parts.join("\n  ")}\n</${tag}>`].filter(Boolean).join("\n");
+  const head = `<${tag} Name="${name}"${bound ? ' IsBound="true"' : ''}>`;
+  return [complex, `${head}\n  ${parts.join('\n  ')}\n</${tag}>`].filter(Boolean).join('\n');
 }
 
 // name, kind, binding (unbound, entity or collection), entity for the bound ones, handler, CSDL.
 const OPERATIONS = [
-  { name: "AppendRelatedParty", kind: "action", handle: appendRelatedParty, csdl: { params: [["Activity", "mscrm.crmbaseentity"], ["Party", "mscrm.crmbaseentity"]] } },
-  { name: "RemoveParent", kind: "action", handle: removeParent, csdl: { params: [["Target", "mscrm.crmbaseentity"]] } },
+  {
+    name: 'AppendRelatedParty',
+    kind: 'action',
+    handle: appendRelatedParty,
+    csdl: {
+      params: [
+        ['Activity', 'mscrm.crmbaseentity'],
+        ['Party', 'mscrm.crmbaseentity'],
+      ],
+    },
+  },
+  { name: 'RemoveParent', kind: 'action', handle: removeParent, csdl: { params: [['Target', 'mscrm.crmbaseentity']] } },
   // The native Query is mscrm.QueryBase and Attachments is Collection(mscrm.attachment); neither complex type is declared here, so Edm.Untyped stands in (as misc-messages does for QueryExpression).
-  { name: "BackgroundSendEmail", kind: "action", handle: backgroundSendEmail, csdl: { params: [["Query", "Edm.Untyped"]], response: [["HasAttachments", "Collection(Edm.Boolean)"], ["EntityCollection", "Collection(mscrm.email)"]] } },
-  { name: "CheckIncomingEmail", kind: "function", handle: checkIncomingEmail, csdl: { params: [["MessageId", "Edm.String"], ["Subject", "Edm.String"], ["From", "Edm.String"], ["To", "Edm.String"], ["Cc", "Edm.String"], ["Bcc", "Edm.String"]], response: [["ReasonCode", "Edm.Int32"], ["ShouldDeliver", "Edm.Boolean"]] } },
-  { name: "CheckPromoteEmail", kind: "function", handle: checkPromoteEmail, csdl: { params: [["MessageId", "Edm.String"], ["Subject", "Edm.String"], ["DirectionCode", "Edm.Int32"]], response: [["ReasonCode", "Edm.Int32"], ["ShouldPromote", "Edm.Boolean"]] } },
-  { name: "CreateAndSendNewEmail", kind: "action", handle: createAndSendNewEmail, csdl: { params: [["Subject", "Edm.String"], ["Body", "Edm.String"], ["From", "Edm.String"], ["To", "Edm.String"], ["Cc", "Edm.String"], ["Bcc", "Edm.String"], ["Regarding", "mscrm.crmbaseentity"], ["Importance", "Edm.Int32"]], response: [["EmailId", "Edm.Guid"]] } },
-  { name: "DeliverIncomingEmail", kind: "action", binding: "collection", entity: "email", handle: deliverIncomingEmail, csdl: { bound: "Collection(mscrm.email)", params: [["MessageId", "Edm.String"], ["From", "Edm.String"], ["To", "Edm.String"], ["Cc", "Edm.String"], ["Bcc", "Edm.String"], ["SubmittedBy", "Edm.String"], ["Importance", "Edm.String"], ["Body", "Edm.String"], ["Subject", "Edm.String"], ["ReceivedOn", "Edm.DateTimeOffset"], ["ValidateBeforeCreate", "Edm.Boolean"], ["Attachments", "Collection(Edm.Untyped)"], ["ExtraProperties", "mscrm.crmbaseentity"]], returns: "mscrm.email" } },
-  { name: "DeliverPromoteEmail", kind: "action", binding: "entity", entity: "email", handle: deliverPromoteEmail, csdl: { bound: "email", params: [["MessageId", "Edm.String"], ["From", "Edm.String"], ["To", "Edm.String"], ["Cc", "Edm.String"], ["Bcc", "Edm.String"], ["SubmittedBy", "Edm.String"], ["Importance", "Edm.String"], ["Body", "Edm.String"], ["Subject", "Edm.String"], ["ReceivedOn", "Edm.DateTimeOffset"], ["Attachments", "Collection(Edm.Untyped)"], ["ExtraProperties", "mscrm.crmbaseentity"]], returns: "mscrm.email" } },
-  { name: "DeliverImmediatePromoteEmail", kind: "action", binding: "entity", entity: "email", handle: deliverPromoteEmail, csdl: { bound: "email", params: [["MessageId", "Edm.String"], ["From", "Edm.String"], ["To", "Edm.String"], ["Cc", "Edm.String"], ["Bcc", "Edm.String"], ["SubmittedBy", "Edm.String"], ["Importance", "Edm.String"], ["Body", "Edm.String"], ["Subject", "Edm.String"], ["ReceivedOn", "Edm.DateTimeOffset"]], returns: "mscrm.email" } },
-  { name: "GetTrackingTokenEmail", kind: "action", handle: getTrackingTokenEmail, csdl: { params: [["Subject", "Edm.String"]], response: [["TrackingToken", "Edm.String"]] } },
-  { name: "InstantiateTemplate", kind: "action", handle: instantiateTemplate, csdl: { params: [["TemplateId", "Edm.Guid"], ["ObjectType", "Edm.String"], ["ObjectId", "Edm.Guid"]], returns: "Collection(mscrm.crmbaseentity)" } },
-  { name: "RetrieveMailboxTrackingFolders", kind: "function", handle: retrieveMailboxTrackingFolders, csdl: { params: [["MailboxId", "Edm.String"]], response: [["MailboxTrackingFolderMappings", "Collection(mscrm.mailboxtrackingfolder)"]] } },
-  { name: "SendEmail", kind: "action", binding: "entity", entity: "email", handle: sendEmail, csdl: { bound: "email", params: [["IssueSend", "Edm.Boolean"], ["TrackingToken", "Edm.String"]], response: [["Subject", "Edm.String"]] } },
-  { name: "SendEmailFromTemplate", kind: "action", handle: sendEmailFromTemplate, csdl: { params: [["TemplateId", "Edm.Guid"], ["Regarding", "mscrm.crmbaseentity"], ["Target", "mscrm.crmbaseentity"]], returns: "mscrm.email" } },
-  { name: "SendFax", kind: "action", handle: sendFax, csdl: { params: [["FaxId", "Edm.Guid"], ["IssueSend", "Edm.Boolean"]] } },
-  { name: "SendTemplate", kind: "action", handle: sendTemplate, csdl: { params: [["TemplateId", "Edm.Guid"], ["Sender", "mscrm.crmbaseentity"], ["Recipients", "Collection(mscrm.crmbaseentity)"], ["Regarding", "mscrm.crmbaseentity"], ["DeliveryPriorityCode", "Edm.Int32"]] } },
-  { name: "AddPrincipalToQueue", kind: "action", binding: "entity", entity: "queue", handle: addPrincipalToQueue, csdl: { bound: "queue", params: [["Principal", "mscrm.crmbaseentity"]] } },
-  { name: "AddToQueue", kind: "action", binding: "entity", entity: "queue", handle: addToQueue, csdl: { bound: "queue", params: [["Target", "mscrm.crmbaseentity"], ["SourceQueue", "mscrm.queue"], ["QueueItemProperties", "mscrm.queueitem"]], response: [["QueueItemId", "Edm.Guid"]] } },
-  { name: "PickFromQueue", kind: "action", binding: "entity", entity: "queueitem", handle: pickFromQueue, csdl: { bound: "queueitem", params: [["SystemUser", "mscrm.systemuser"], ["RemoveQueueItem", "Edm.Boolean"]] } },
-  { name: "ReleaseToQueue", kind: "action", binding: "entity", entity: "queueitem", handle: releaseToQueue, csdl: { bound: "queueitem" } },
-  { name: "RemoveFromQueue", kind: "action", binding: "entity", entity: "queueitem", handle: removeFromQueue, csdl: { bound: "queueitem" } },
-  { name: "RetrieveUserQueues", kind: "function", binding: "entity", entity: "systemuser", handle: retrieveUserQueues, csdl: { bound: "systemuser", params: [["IncludePublic", "Edm.Boolean"]], returns: "Collection(mscrm.queue)" } },
-  { name: "RouteTo", kind: "action", handle: routeTo, csdl: { params: [["Target", "mscrm.crmbaseentity"], ["QueueItem", "mscrm.queueitem"]] } },
+  {
+    name: 'BackgroundSendEmail',
+    kind: 'action',
+    handle: backgroundSendEmail,
+    csdl: {
+      params: [['Query', 'Edm.Untyped']],
+      response: [
+        ['HasAttachments', 'Collection(Edm.Boolean)'],
+        ['EntityCollection', 'Collection(mscrm.email)'],
+      ],
+    },
+  },
+  {
+    name: 'CheckIncomingEmail',
+    kind: 'function',
+    handle: checkIncomingEmail,
+    csdl: {
+      params: [
+        ['MessageId', 'Edm.String'],
+        ['Subject', 'Edm.String'],
+        ['From', 'Edm.String'],
+        ['To', 'Edm.String'],
+        ['Cc', 'Edm.String'],
+        ['Bcc', 'Edm.String'],
+      ],
+      response: [
+        ['ReasonCode', 'Edm.Int32'],
+        ['ShouldDeliver', 'Edm.Boolean'],
+      ],
+    },
+  },
+  {
+    name: 'CheckPromoteEmail',
+    kind: 'function',
+    handle: checkPromoteEmail,
+    csdl: {
+      params: [
+        ['MessageId', 'Edm.String'],
+        ['Subject', 'Edm.String'],
+        ['DirectionCode', 'Edm.Int32'],
+      ],
+      response: [
+        ['ReasonCode', 'Edm.Int32'],
+        ['ShouldPromote', 'Edm.Boolean'],
+      ],
+    },
+  },
+  {
+    name: 'CreateAndSendNewEmail',
+    kind: 'action',
+    handle: createAndSendNewEmail,
+    csdl: {
+      params: [
+        ['Subject', 'Edm.String'],
+        ['Body', 'Edm.String'],
+        ['From', 'Edm.String'],
+        ['To', 'Edm.String'],
+        ['Cc', 'Edm.String'],
+        ['Bcc', 'Edm.String'],
+        ['Regarding', 'mscrm.crmbaseentity'],
+        ['Importance', 'Edm.Int32'],
+      ],
+      response: [['EmailId', 'Edm.Guid']],
+    },
+  },
+  {
+    name: 'DeliverIncomingEmail',
+    kind: 'action',
+    binding: 'collection',
+    entity: 'email',
+    handle: deliverIncomingEmail,
+    csdl: {
+      bound: 'Collection(mscrm.email)',
+      params: [
+        ['MessageId', 'Edm.String'],
+        ['From', 'Edm.String'],
+        ['To', 'Edm.String'],
+        ['Cc', 'Edm.String'],
+        ['Bcc', 'Edm.String'],
+        ['SubmittedBy', 'Edm.String'],
+        ['Importance', 'Edm.String'],
+        ['Body', 'Edm.String'],
+        ['Subject', 'Edm.String'],
+        ['ReceivedOn', 'Edm.DateTimeOffset'],
+        ['ValidateBeforeCreate', 'Edm.Boolean'],
+        ['Attachments', 'Collection(Edm.Untyped)'],
+        ['ExtraProperties', 'mscrm.crmbaseentity'],
+      ],
+      returns: 'mscrm.email',
+    },
+  },
+  {
+    name: 'DeliverPromoteEmail',
+    kind: 'action',
+    binding: 'entity',
+    entity: 'email',
+    handle: deliverPromoteEmail,
+    csdl: {
+      bound: 'email',
+      params: [
+        ['MessageId', 'Edm.String'],
+        ['From', 'Edm.String'],
+        ['To', 'Edm.String'],
+        ['Cc', 'Edm.String'],
+        ['Bcc', 'Edm.String'],
+        ['SubmittedBy', 'Edm.String'],
+        ['Importance', 'Edm.String'],
+        ['Body', 'Edm.String'],
+        ['Subject', 'Edm.String'],
+        ['ReceivedOn', 'Edm.DateTimeOffset'],
+        ['Attachments', 'Collection(Edm.Untyped)'],
+        ['ExtraProperties', 'mscrm.crmbaseentity'],
+      ],
+      returns: 'mscrm.email',
+    },
+  },
+  {
+    name: 'DeliverImmediatePromoteEmail',
+    kind: 'action',
+    binding: 'entity',
+    entity: 'email',
+    handle: deliverPromoteEmail,
+    csdl: {
+      bound: 'email',
+      params: [
+        ['MessageId', 'Edm.String'],
+        ['From', 'Edm.String'],
+        ['To', 'Edm.String'],
+        ['Cc', 'Edm.String'],
+        ['Bcc', 'Edm.String'],
+        ['SubmittedBy', 'Edm.String'],
+        ['Importance', 'Edm.String'],
+        ['Body', 'Edm.String'],
+        ['Subject', 'Edm.String'],
+        ['ReceivedOn', 'Edm.DateTimeOffset'],
+      ],
+      returns: 'mscrm.email',
+    },
+  },
+  {
+    name: 'GetTrackingTokenEmail',
+    kind: 'action',
+    handle: getTrackingTokenEmail,
+    csdl: { params: [['Subject', 'Edm.String']], response: [['TrackingToken', 'Edm.String']] },
+  },
+  {
+    name: 'InstantiateTemplate',
+    kind: 'action',
+    handle: instantiateTemplate,
+    csdl: {
+      params: [
+        ['TemplateId', 'Edm.Guid'],
+        ['ObjectType', 'Edm.String'],
+        ['ObjectId', 'Edm.Guid'],
+      ],
+      returns: 'Collection(mscrm.crmbaseentity)',
+    },
+  },
+  {
+    name: 'RetrieveMailboxTrackingFolders',
+    kind: 'function',
+    handle: retrieveMailboxTrackingFolders,
+    csdl: {
+      params: [['MailboxId', 'Edm.String']],
+      response: [['MailboxTrackingFolderMappings', 'Collection(mscrm.mailboxtrackingfolder)']],
+    },
+  },
+  {
+    name: 'SendEmail',
+    kind: 'action',
+    binding: 'entity',
+    entity: 'email',
+    handle: sendEmail,
+    csdl: {
+      bound: 'email',
+      params: [
+        ['IssueSend', 'Edm.Boolean'],
+        ['TrackingToken', 'Edm.String'],
+      ],
+      response: [['Subject', 'Edm.String']],
+    },
+  },
+  {
+    name: 'SendEmailFromTemplate',
+    kind: 'action',
+    handle: sendEmailFromTemplate,
+    csdl: {
+      params: [
+        ['TemplateId', 'Edm.Guid'],
+        ['Regarding', 'mscrm.crmbaseentity'],
+        ['Target', 'mscrm.crmbaseentity'],
+      ],
+      returns: 'mscrm.email',
+    },
+  },
+  {
+    name: 'SendFax',
+    kind: 'action',
+    handle: sendFax,
+    csdl: {
+      params: [
+        ['FaxId', 'Edm.Guid'],
+        ['IssueSend', 'Edm.Boolean'],
+      ],
+    },
+  },
+  {
+    name: 'SendTemplate',
+    kind: 'action',
+    handle: sendTemplate,
+    csdl: {
+      params: [
+        ['TemplateId', 'Edm.Guid'],
+        ['Sender', 'mscrm.crmbaseentity'],
+        ['Recipients', 'Collection(mscrm.crmbaseentity)'],
+        ['Regarding', 'mscrm.crmbaseentity'],
+        ['DeliveryPriorityCode', 'Edm.Int32'],
+      ],
+    },
+  },
+  {
+    name: 'AddPrincipalToQueue',
+    kind: 'action',
+    binding: 'entity',
+    entity: 'queue',
+    handle: addPrincipalToQueue,
+    csdl: { bound: 'queue', params: [['Principal', 'mscrm.crmbaseentity']] },
+  },
+  {
+    name: 'AddToQueue',
+    kind: 'action',
+    binding: 'entity',
+    entity: 'queue',
+    handle: addToQueue,
+    csdl: {
+      bound: 'queue',
+      params: [
+        ['Target', 'mscrm.crmbaseentity'],
+        ['SourceQueue', 'mscrm.queue'],
+        ['QueueItemProperties', 'mscrm.queueitem'],
+      ],
+      response: [['QueueItemId', 'Edm.Guid']],
+    },
+  },
+  {
+    name: 'PickFromQueue',
+    kind: 'action',
+    binding: 'entity',
+    entity: 'queueitem',
+    handle: pickFromQueue,
+    csdl: {
+      bound: 'queueitem',
+      params: [
+        ['SystemUser', 'mscrm.systemuser'],
+        ['RemoveQueueItem', 'Edm.Boolean'],
+      ],
+    },
+  },
+  {
+    name: 'ReleaseToQueue',
+    kind: 'action',
+    binding: 'entity',
+    entity: 'queueitem',
+    handle: releaseToQueue,
+    csdl: { bound: 'queueitem' },
+  },
+  {
+    name: 'RemoveFromQueue',
+    kind: 'action',
+    binding: 'entity',
+    entity: 'queueitem',
+    handle: removeFromQueue,
+    csdl: { bound: 'queueitem' },
+  },
+  {
+    name: 'RetrieveUserQueues',
+    kind: 'function',
+    binding: 'entity',
+    entity: 'systemuser',
+    handle: retrieveUserQueues,
+    csdl: { bound: 'systemuser', params: [['IncludePublic', 'Edm.Boolean']], returns: 'Collection(mscrm.queue)' },
+  },
+  {
+    name: 'RouteTo',
+    kind: 'action',
+    handle: routeTo,
+    csdl: {
+      params: [
+        ['Target', 'mscrm.crmbaseentity'],
+        ['QueueItem', 'mscrm.queueitem'],
+      ],
+    },
+  },
 ];
 
 export function install(api) {
   api.store.transact(() => seedQueueMembership(api.store));
   for (const op of OPERATIONS) {
-    const { csdl, handle, binding = "unbound", entity, name, kind } = op;
+    const { csdl, handle, binding = 'unbound', entity, name, kind } = op;
     api.registry.register({
       name,
       kind,
       binding,
-      ...(binding === "unbound" ? {} : { entity }),
+      ...(binding === 'unbound' ? {} : { entity }),
       handle: (c) => handle(api, c),
       csdl: csdlOf(kind, name, csdl),
     });
@@ -683,4 +1170,4 @@ export function reset(api) {
   return api.store.transact(() => seedQueueMembership(api.store));
 }
 
-export const EXTENSION = { name: "activity-messages", install, reset };
+export const EXTENSION = { name: 'activity-messages', install, reset };

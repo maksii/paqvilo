@@ -15,13 +15,53 @@ const GRANTS = Object.keys(GRANT_TYPES);
 const USER_NAMESPACE = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 // The audience a federated identity credential accepts (Microsoft Entra workload identity federation).
 const TOKEN_EXCHANGE_AUDIENCE = 'api://AzureADTokenExchange';
-const TOP_KEYS = ['enabled', 'port', 'tls', 'tlsPort', 'tenantId', 'organizationId', 'uniqueName', 'friendlyName', 'version', 'applications', 'users', 'serviceProtection', 'managedIdentity', 'managedIdentities', 'federatedIssuers', 'auditing', 'duplicateDetection', 'pluginTimeoutSeconds', 'currencyCode', 'currencySymbol', 'localeId', 'tds', 'gitRemoteDirectory', 'maxUploadSessions', 'maxUploadBytes'];
-const APPLICATION_KEYS = ['appId', 'displayName', 'secretEnvironmentVariable', 'roles', 'publicClient', 'redirectUris', 'allowedGrants', 'federatedCredentials'];
+const TOP_KEYS = [
+  'enabled',
+  'port',
+  'tls',
+  'tlsPort',
+  'tenantId',
+  'organizationId',
+  'uniqueName',
+  'friendlyName',
+  'version',
+  'applications',
+  'users',
+  'serviceProtection',
+  'managedIdentity',
+  'managedIdentities',
+  'federatedIssuers',
+  'auditing',
+  'duplicateDetection',
+  'pluginTimeoutSeconds',
+  'currencyCode',
+  'currencySymbol',
+  'localeId',
+  'tds',
+  'gitRemoteDirectory',
+  'maxUploadSessions',
+  'maxUploadBytes',
+];
+const APPLICATION_KEYS = [
+  'appId',
+  'displayName',
+  'secretEnvironmentVariable',
+  'roles',
+  'publicClient',
+  'redirectUris',
+  'allowedGrants',
+  'federatedCredentials',
+];
 const USER_KEYS = ['domainname', 'fullname', 'objectId', 'roles'];
 const FEDERATED_CREDENTIAL_KEYS = ['issuer', 'subject', 'audiences'];
 const MANAGED_IDENTITY_KEYS = ['clientId', 'principalId', 'displayName', 'roles'];
 const FEDERATED_ISSUER_KEYS = ['issuer', 'jwks'];
-const SERVICE_PROTECTION_KEYS = ['requestsPer300s', 'executionMsPer300s', 'executionTimeMsPer300s', 'concurrentRequests'];
+const SERVICE_PROTECTION_KEYS = [
+  'requestsPer300s',
+  'executionMsPer300s',
+  'executionTimeMsPer300s',
+  'concurrentRequests',
+];
 const TDS_KEYS = ['enabled', 'port'];
 
 function plainObject(value, label) {
@@ -30,7 +70,8 @@ function plainObject(value, label) {
 }
 
 function knownKeys(value, keys, label) {
-  for (const key of Object.keys(value)) if (!keys.includes(key)) throw new Error(`${label}.${key} is not a supported setting`);
+  for (const key of Object.keys(value))
+    if (!keys.includes(key)) throw new Error(`${label}.${key} is not a supported setting`);
 }
 
 function required(value, label) {
@@ -56,7 +97,8 @@ function guid(value, label) {
 
 function integer(value, label, fallback, min, max) {
   if (value === undefined) return fallback;
-  if (!Number.isInteger(value) || value < min || value > max) throw new Error(`${label} must be an integer from ${min} to ${max}`);
+  if (!Number.isInteger(value) || value < min || value > max)
+    throw new Error(`${label} must be an integer from ${min} to ${max}`);
   return value;
 }
 
@@ -75,12 +117,14 @@ function text(value, label, fallback, pattern = null) {
 
 // Optional fields emit null when unset, so their normalized representation is
 // also a valid input when a project passes settings into a runtime host.
-const optionalText = (value, label, pattern = null) => value === null ? null : text(value, label, null, pattern);
-const optionalLimit = (value, label) => value === null ? null : integer(value, label, null, 1, Number.MAX_SAFE_INTEGER);
+const optionalText = (value, label, pattern = null) => (value === null ? null : text(value, label, null, pattern));
+const optionalLimit = (value, label) =>
+  value === null ? null : integer(value, label, null, 1, Number.MAX_SAFE_INTEGER);
 
 function textList(value, label, fallback) {
   if (value === undefined) return [...fallback];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim())) throw new Error(`${label} must be an array of non-empty text`);
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim()))
+    throw new Error(`${label} must be an array of non-empty text`);
   return [...value];
 }
 
@@ -96,18 +140,30 @@ function httpUrl(value, label) {
 
 function application(value, label) {
   plainObject(value, label);
-  for (const key of ['secret', 'clientSecret']) if (key in value) throw new Error(`${label}.${key}: secrets must come from secretEnvironmentVariable, never from configuration`);
+  for (const key of ['secret', 'clientSecret'])
+    if (key in value)
+      throw new Error(`${label}.${key}: secrets must come from secretEnvironmentVariable, never from configuration`);
   knownKeys(value, APPLICATION_KEYS, label);
   const redirectUris = value.redirectUris === undefined ? [] : value.redirectUris;
   if (!Array.isArray(redirectUris)) throw new Error(`${label}.redirectUris must be an array of http(s) URLs`);
   redirectUris.forEach((uri, index) => {
     let url;
-    try { url = new URL(uri); } catch { throw new Error(`${label}.redirectUris[${index}] must be an http(s) URL`); }
-    if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`${label}.redirectUris[${index}] must be an http(s) URL`);
+    try {
+      url = new URL(uri);
+    } catch {
+      throw new Error(`${label}.redirectUris[${index}] must be an http(s) URL`);
+    }
+    if (!['http:', 'https:'].includes(url.protocol))
+      throw new Error(`${label}.redirectUris[${index}] must be an http(s) URL`);
   });
   const allowedGrants = value.allowedGrants === undefined ? [...GRANTS] : value.allowedGrants;
-  if (!Array.isArray(allowedGrants) || allowedGrants.some((grant) => grantName(grant) === null)) throw new Error(`${label}.allowedGrants must be a subset of ${GRANTS.join(', ')}`);
-  const secretEnvironmentVariable = optionalText(value.secretEnvironmentVariable, `${label}.secretEnvironmentVariable`, /^[A-Z_][A-Z0-9_]*$/);
+  if (!Array.isArray(allowedGrants) || allowedGrants.some((grant) => grantName(grant) === null))
+    throw new Error(`${label}.allowedGrants must be a subset of ${GRANTS.join(', ')}`);
+  const secretEnvironmentVariable = optionalText(
+    value.secretEnvironmentVariable,
+    `${label}.secretEnvironmentVariable`,
+    /^[A-Z_][A-Z0-9_]*$/,
+  );
   const federated = value.federatedCredentials === undefined ? [] : value.federatedCredentials;
   if (!Array.isArray(federated)) throw new Error(`${label}.federatedCredentials must be an array`);
   return {
@@ -119,7 +175,9 @@ function application(value, label) {
     publicClient: boolean(value.publicClient, `${label}.publicClient`, false),
     redirectUris: [...redirectUris],
     allowedGrants: [...new Set(allowedGrants.map(grantName))],
-    federatedCredentials: federated.map((item, index) => federatedCredential(item, `${label}.federatedCredentials[${index}]`)),
+    federatedCredentials: federated.map((item, index) =>
+      federatedCredential(item, `${label}.federatedCredentials[${index}]`),
+    ),
   };
 }
 
@@ -142,9 +200,13 @@ function federatedIssuer(value, label) {
   knownKeys(value, FEDERATED_ISSUER_KEYS, label);
   const jwks = plainObject(required(value.jwks, `${label}.jwks`), `${label}.jwks`);
   knownKeys(jwks, ['keys'], `${label}.jwks`);
-  if (!Array.isArray(jwks.keys) || jwks.keys.some((key) => !key || typeof key !== 'object' || Array.isArray(key))) throw new Error(`${label}.jwks.keys must be an array of JSON Web Keys`);
+  if (!Array.isArray(jwks.keys) || jwks.keys.some((key) => !key || typeof key !== 'object' || Array.isArray(key)))
+    throw new Error(`${label}.jwks.keys must be an array of JSON Web Keys`);
   if (jwks.keys.some((key) => 'd' in key)) throw new Error(`${label}.jwks.keys must hold public keys only`);
-  return { issuer: httpUrl(required(value.issuer, `${label}.issuer`), `${label}.issuer`), jwks: { keys: jwks.keys.map((key) => ({ ...key })) } };
+  return {
+    issuer: httpUrl(required(value.issuer, `${label}.issuer`), `${label}.issuer`),
+    jwks: { keys: jwks.keys.map((key) => ({ ...key })) },
+  };
 }
 
 // A managed identity becomes an application user; its clientId is the token's appid.
@@ -162,12 +224,19 @@ function managedIdentity(value, label) {
 function user(value, label) {
   plainObject(value, label);
   knownKeys(value, USER_KEYS, label);
-  const domainname = text(required(value.domainname, `${label}.domainname`), `${label}.domainname`, null, /^[^\s@]+@[^\s@]+$/);
+  const domainname = text(
+    required(value.domainname, `${label}.domainname`),
+    `${label}.domainname`,
+    null,
+    /^[^\s@]+@[^\s@]+$/,
+  );
   return {
     domainname,
     fullname: text(required(value.fullname, `${label}.fullname`), `${label}.fullname`, null),
     // Deterministic per domain name, so the same configuration always yields the same Entra object id.
-    objectId: guid(value.objectId, `${label}.objectId`) ?? uuidV5(USER_NAMESPACE, `paqvilo-dataverse-user:${domainname.toLowerCase()}`),
+    objectId:
+      guid(value.objectId, `${label}.objectId`) ??
+      uuidV5(USER_NAMESPACE, `paqvilo-dataverse-user:${domainname.toLowerCase()}`),
     roles: textList(value.roles, `${label}.roles`, ['Basic User']),
   };
 }
@@ -179,7 +248,12 @@ function serviceProtection(value) {
   knownKeys(value, SERVICE_PROTECTION_KEYS, 'dataverse.serviceProtection');
   const bound = 'dataverse.serviceProtection';
   const { executionMsPer300s, executionTimeMsPer300s } = value;
-  if (executionMsPer300s !== undefined && executionTimeMsPer300s !== undefined && executionMsPer300s !== executionTimeMsPer300s) throw new Error(`${bound}.executionTimeMsPer300s must equal executionMsPer300s when both are set`);
+  if (
+    executionMsPer300s !== undefined &&
+    executionTimeMsPer300s !== undefined &&
+    executionMsPer300s !== executionTimeMsPer300s
+  )
+    throw new Error(`${bound}.executionTimeMsPer300s must equal executionMsPer300s when both are set`);
   const executionKey = executionMsPer300s !== undefined ? 'executionMsPer300s' : 'executionTimeMsPer300s';
   return {
     requestsPer300s: optionalLimit(value.requestsPer300s, `${bound}.requestsPer300s`),
@@ -193,7 +267,10 @@ function tds(value, label) {
   if (value === undefined) return { enabled: true, port: 0 };
   plainObject(value, label);
   knownKeys(value, TDS_KEYS, label);
-  return { enabled: boolean(value.enabled, `${label}.enabled`, true), port: integer(value.port, `${label}.port`, 0, 0, 65535) };
+  return {
+    enabled: boolean(value.enabled, `${label}.enabled`, true),
+    port: integer(value.port, `${label}.port`, 0, 0, 65535),
+  };
 }
 
 export function dataverseSettings(value, label = 'dataverse') {
@@ -203,7 +280,8 @@ export function dataverseSettings(value, label = 'dataverse') {
   if (input.managedIdentity !== undefined) {
     plainObject(input.managedIdentity, `${label}.managedIdentity`);
     knownKeys(input.managedIdentity, ['mode'], `${label}.managedIdentity`);
-    if (!['appservice', 'imds', 'arc'].includes(input.managedIdentity.mode ?? 'appservice')) throw new Error(`${label}.managedIdentity.mode must be appservice, imds or arc`);
+    if (!['appservice', 'imds', 'arc'].includes(input.managedIdentity.mode ?? 'appservice'))
+      throw new Error(`${label}.managedIdentity.mode must be appservice, imds or arc`);
   }
   const list = (items, name) => {
     if (items === undefined) return [];
@@ -220,12 +298,20 @@ export function dataverseSettings(value, label = 'dataverse') {
     uniqueName: text(input.uniqueName, `${label}.uniqueName`, 'orgsim', /^[a-z][a-z0-9]{1,23}$/),
     friendlyName: text(input.friendlyName, `${label}.friendlyName`, 'Simulated environment'),
     version: text(input.version, `${label}.version`, '9.2.25041.00000', /^\d+\.\d+\.\d+\.\d+$/),
-    applications: list(input.applications, 'applications').map((item, index) => application(item, `${label}.applications[${index}]`)),
+    applications: list(input.applications, 'applications').map((item, index) =>
+      application(item, `${label}.applications[${index}]`),
+    ),
     users: list(input.users, 'users').map((item, index) => user(item, `${label}.users[${index}]`)),
     serviceProtection: serviceProtection(input.serviceProtection),
-    ...(input.managedIdentity !== undefined ? { managedIdentity: { mode: input.managedIdentity.mode ?? 'appservice' } } : {}),
-    managedIdentities: list(input.managedIdentities, 'managedIdentities').map((item, index) => managedIdentity(item, `${label}.managedIdentities[${index}]`)),
-    federatedIssuers: list(input.federatedIssuers, 'federatedIssuers').map((item, index) => federatedIssuer(item, `${label}.federatedIssuers[${index}]`)),
+    ...(input.managedIdentity !== undefined
+      ? { managedIdentity: { mode: input.managedIdentity.mode ?? 'appservice' } }
+      : {}),
+    managedIdentities: list(input.managedIdentities, 'managedIdentities').map((item, index) =>
+      managedIdentity(item, `${label}.managedIdentities[${index}]`),
+    ),
+    federatedIssuers: list(input.federatedIssuers, 'federatedIssuers').map((item, index) =>
+      federatedIssuer(item, `${label}.federatedIssuers[${index}]`),
+    ),
     // organization.isauditenabled, organization.isduplicatedetectionenabled and the base currency and locale of the organization.
     auditing: boolean(input.auditing, `${label}.auditing`, false),
     duplicateDetection: boolean(input.duplicateDetection, `${label}.duplicateDetection`, true),
@@ -239,8 +325,20 @@ export function dataverseSettings(value, label = 'dataverse') {
     gitRemoteDirectory: optionalText(input.gitRemoteDirectory, `${label}.gitRemoteDirectory`),
     // Simulator memory bounds for in-flight file uploads (dataverse-files.mjs): open upload sessions, and bytes buffered across
     // them plus inline note/attachment SAS copies. Present only when configured; the module applies the defaults.
-    ...(input.maxUploadSessions !== undefined ? { maxUploadSessions: integer(input.maxUploadSessions, `${label}.maxUploadSessions`, MAX_UPLOAD_SESSIONS, 1, 4096) } : {}),
-    ...(input.maxUploadBytes !== undefined ? { maxUploadBytes: integer(input.maxUploadBytes, `${label}.maxUploadBytes`, MAX_UPLOAD_BYTES, 1, 8 * 1024 ** 3) } : {}),
+    ...(input.maxUploadSessions !== undefined
+      ? {
+          maxUploadSessions: integer(
+            input.maxUploadSessions,
+            `${label}.maxUploadSessions`,
+            MAX_UPLOAD_SESSIONS,
+            1,
+            4096,
+          ),
+        }
+      : {}),
+    ...(input.maxUploadBytes !== undefined
+      ? { maxUploadBytes: integer(input.maxUploadBytes, `${label}.maxUploadBytes`, MAX_UPLOAD_BYTES, 1, 8 * 1024 ** 3) }
+      : {}),
   };
 }
 

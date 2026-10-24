@@ -1,9 +1,9 @@
 // Standard Dataverse metadata entity contracts for the implemented read routes.
 // Declaration is separate from CRUD capability; only existing metadata read routes are advertised.
 export const METADATA_ENTITY_SETS = Object.freeze([
-  "EntityDefinitions",
-  "GlobalOptionSetDefinitions",
-  "RelationshipDefinitions",
+  'EntityDefinitions',
+  'GlobalOptionSetDefinitions',
+  'RelationshipDefinitions',
 ]);
 export const METADATA_ENTITY_TYPE_CSDL = `<EntityType Name="AttributeMetadata" BaseType="mscrm.MetadataBase">
   <Property Name="AttributeOf" Type="Edm.String" Unicode="false" />

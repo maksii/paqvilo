@@ -25,26 +25,39 @@
 // A cascaded child takes the same ownership columns a direct Assign writes (ownershipOptions).
 // ponytail: active workflows and business rules on reassigned rows are not deactivated (natively they are); add when a
 // test reads them.
-import { onceReporter } from "./dataverse-addon-common.mjs";
+import { onceReporter } from './dataverse-addon-common.mjs';
 
-const ASSIGN_BEHAVIOURS = new Set(["Cascade", "Active", "UserOwned"]);
+const ASSIGN_BEHAVIOURS = new Set(['Cascade', 'Active', 'UserOwned']);
 const NOT_SIMULATED = {
-  share: "CASCADE_SHARE_NOT_SIMULATED",
-  unshare: "CASCADE_UNSHARE_NOT_SIMULATED",
-  reparent: "CASCADE_REPARENT_NOT_SIMULATED",
-  merge: "CASCADE_MERGE_NOT_SIMULATED",
+  share: 'CASCADE_SHARE_NOT_SIMULATED',
+  unshare: 'CASCADE_UNSHARE_NOT_SIMULATED',
+  reparent: 'CASCADE_REPARENT_NOT_SIMULATED',
+  merge: 'CASCADE_MERGE_NOT_SIMULATED',
 };
-const OPERATIONS = ["CascadeAssign", "CascadeShare", "CascadeUnshare", "CascadeReparent", "CascadeMerge"];
-const OPERATION_LEVELS = { CascadeAssign: "behaviour", CascadeShare: "contract", CascadeUnshare: "contract", CascadeReparent: "contract", CascadeMerge: "contract" };
+const OPERATIONS = ['CascadeAssign', 'CascadeShare', 'CascadeUnshare', 'CascadeReparent', 'CascadeMerge'];
+const OPERATION_LEVELS = {
+  CascadeAssign: 'behaviour',
+  CascadeShare: 'contract',
+  CascadeUnshare: 'contract',
+  CascadeReparent: 'contract',
+  CascadeMerge: 'contract',
+};
 const SEAMS = {
-  CascadeShare: "mirage/lib/dataverse-security.mjs grantAccess(store, { target, principal, mask }) for each referencing row, from an afterWrite hook",
-  CascadeUnshare: "mirage/lib/dataverse-security.mjs revokeAccess(store, { target, principal }) for each referencing row",
-  CascadeReparent: "no existing seam: a beforeWrite/afterWrite hook on the referencing table where its lookup column changes (mirage/lib/dataverse-records.mjs updateData)",
-  CascadeMerge: "mirage/lib/dataverse-record-messages.mjs merge(api, ctx), the Merge action, after the subordinate's children move",
+  CascadeShare:
+    'mirage/lib/dataverse-security.mjs grantAccess(store, { target, principal, mask }) for each referencing row, from an afterWrite hook',
+  CascadeUnshare:
+    'mirage/lib/dataverse-security.mjs revokeAccess(store, { target, principal }) for each referencing row',
+  CascadeReparent:
+    'no existing seam: a beforeWrite/afterWrite hook on the referencing table where its lookup column changes (mirage/lib/dataverse-records.mjs updateData)',
+  CascadeMerge:
+    "mirage/lib/dataverse-record-messages.mjs merge(api, ctx), the Merge action, after the subordinate's children move",
 };
 
-const bare = (value) => String(value ?? "").replace(/[{}]/g, "").toLowerCase();
-const refId = (value) => (value !== null && typeof value === "object" ? value.id : value);
+const bare = (value) =>
+  String(value ?? '')
+    .replace(/[{}]/g, '')
+    .toLowerCase();
+const refId = (value) => (value !== null && typeof value === 'object' ? value.id : value);
 const sameId = (a, b) => a != null && b != null && bare(a) === bare(b);
 const keyOf = (logical, id) => `${logical}\u0000${bare(id)}`;
 
@@ -54,7 +67,11 @@ function stateOf(api) {
   return states.get(api);
 }
 
-function report(state, entry, key = `${entry.code}\u0000${entry.table}\u0000${entry.referencing ?? ""}\u0000${entry.column ?? ""}`) {
+function report(
+  state,
+  entry,
+  key = `${entry.code}\u0000${entry.table}\u0000${entry.referencing ?? ''}\u0000${entry.column ?? ''}`,
+) {
   state.reporter.report(entry, key);
 }
 
@@ -64,11 +81,19 @@ function scanDeclared(api, state) {
     for (const reference of api.store.referencesTo(logical, {})) {
       for (const [action, code] of Object.entries(NOT_SIMULATED)) {
         const behaviour = reference.cascade?.[action];
-        if (behaviour == null || behaviour === "NoCascade") continue;
-        report(state, {
-          code, table: logical, referencing: reference.entity, column: reference.column, relationship: reference.schemaName ?? null,
-          message: `The ${action} cascade (${behaviour}) of ${logical} is not simulated: referencing ${reference.entity} rows are left as they are.`,
-        }, `${code}\u0000${logical}`);
+        if (behaviour == null || behaviour === 'NoCascade') continue;
+        report(
+          state,
+          {
+            code,
+            table: logical,
+            referencing: reference.entity,
+            column: reference.column,
+            relationship: reference.schemaName ?? null,
+            message: `The ${action} cascade (${behaviour}) of ${logical} is not simulated: referencing ${reference.entity} rows are left as they are.`,
+          },
+          `${code}\u0000${logical}`,
+        );
       }
     }
   }
@@ -81,7 +106,10 @@ function* assignChildren(api, state, c, parent, previousOwner, newOwner, visited
     const behaviour = reference.cascade?.assign;
     if (behaviour == null) {
       report(state, {
-        code: "CASCADE_ASSIGN_DEFAULTED", table: parent.logicalName, referencing: reference.entity, column: reference.column,
+        code: 'CASCADE_ASSIGN_DEFAULTED',
+        table: parent.logicalName,
+        referencing: reference.entity,
+        column: reference.column,
         relationship: reference.schemaName ?? null,
         message: `No imported CascadeAssign for ${reference.entity}.${reference.column} -> ${parent.logicalName}; NoCascade, the default this simulator reports for Assign, was applied.`,
       });
@@ -93,10 +121,11 @@ function* assignChildren(api, state, c, parent, previousOwner, newOwner, visited
     const childMapping = api.store.resolveMapping(reference.entity);
     const children = api.store.tableRows(reference.entity).filter((child) => {
       const link = child[reference.column];
-      if (link && typeof link === "object" && link.logical_name && link.logical_name !== parent.logicalName) return false;
+      if (link && typeof link === 'object' && link.logical_name && link.logical_name !== parent.logicalName)
+        return false;
       if (!sameId(refId(link), target)) return false;
-      if (behaviour === "Active" && Number(child.statecode ?? 0) !== 0) return false;
-      if (behaviour === "UserOwned" && !sameId(refId(child.ownerid), previousOwner)) return false;
+      if (behaviour === 'Active' && Number(child.statecode ?? 0) !== 0) return false;
+      if (behaviour === 'UserOwned' && !sameId(refId(child.ownerid), previousOwner)) return false;
       return !sameId(refId(child.ownerid), refId(newOwner));
     });
     for (const child of children) {
@@ -105,9 +134,29 @@ function* assignChildren(api, state, c, parent, previousOwner, newOwner, visited
       if (visited.has(key)) continue;
       visited.add(key);
       const childPrevious = refId(child.ownerid);
-      api.principals?.authorize({ user: c.user, entity: reference.entity, operation: "assign", row: child, mapping: childMapping });
-      yield [reference.entity, childId, { ownerid: structuredClone(newOwner) }, { ...(c.identity ?? {}), admin: true }, ownershipOptions(api, c, newOwner)];
-      yield* assignChildren(api, state, c, { logicalName: reference.entity, idColumn: childMapping.idColumn, row: child }, childPrevious, newOwner, visited);
+      api.principals?.authorize({
+        user: c.user,
+        entity: reference.entity,
+        operation: 'assign',
+        row: child,
+        mapping: childMapping,
+      });
+      yield [
+        reference.entity,
+        childId,
+        { ownerid: structuredClone(newOwner) },
+        { ...(c.identity ?? {}), admin: true },
+        ownershipOptions(api, c, newOwner),
+      ];
+      yield* assignChildren(
+        api,
+        state,
+        c,
+        { logicalName: reference.entity, idColumn: childMapping.idColumn, row: child },
+        childPrevious,
+        newOwner,
+        visited,
+      );
     }
   }
 }
@@ -116,8 +165,15 @@ function* assignChildren(api, state, c, parent, previousOwner, newOwner, visited
 // writes with store.updateRecord; every other write awaits store.updateRecordAsync, so a child's synchronous service
 // endpoint step posts in process instead of on the synchronous I/O bridge.
 function cascadeAssign(api, writes, sync) {
-  if (sync) { for (const [table, id, values, identity, options] of writes) api.store.updateRecord(table, id, values, identity, options); return undefined; }
-  return (async () => { for (const [table, id, values, identity, options] of writes) await api.store.updateRecordAsync(table, id, values, identity, options); })();
+  if (sync) {
+    for (const [table, id, values, identity, options] of writes)
+      api.store.updateRecord(table, id, values, identity, options);
+    return undefined;
+  }
+  return (async () => {
+    for (const [table, id, values, identity, options] of writes)
+      await api.store.updateRecordAsync(table, id, values, identity, options);
+  })();
 }
 
 // The child's ownership columns through the pipeline a direct Assign uses (dataverse-records.mjs systemColumns ->
@@ -125,8 +181,11 @@ function cascadeAssign(api, writes, sync) {
 // unit) on a user-owned table, plus modifiedby/modifiedonbehalfby. A host without api.principals writes ownerid only.
 function ownershipOptions(api, c, newOwner) {
   if (!api.principals || !c.user) return {};
-  const owner = { id: refId(newOwner), logical_name: newOwner?.logical_name ?? "systemuser" };
-  return { systemColumns: (mapping) => api.principals.systemColumns({ user: c.user, caller: c.caller, mapping, owner, create: false }) };
+  const owner = { id: refId(newOwner), logical_name: newOwner?.logical_name ?? 'systemuser' };
+  return {
+    systemColumns: (mapping) =>
+      api.principals.systemColumns({ user: c.user, caller: c.caller, mapping, owner, create: false }),
+  };
 }
 
 /** install(api, { diagnostic }): diagnostic receives each diagnostic once. Exposes api.cascades = { diagnostics() }. */
@@ -134,13 +193,15 @@ function install(api, { diagnostic } = {}) {
   const state = stateOf(api);
   state.reporter = onceReporter(diagnostic ?? api.diagnostic ?? null);
   api.cascades = { diagnostics: () => [...state.reporter.diagnostics] };
-  api.recordHooks.add("beforeWrite", (c, mapping, { operation, existing }) => {
-    if ((operation !== "update" && operation !== "upsert") || !existing) return;
+  api.recordHooks.add('beforeWrite', (c, mapping, { operation, existing }) => {
+    if ((operation !== 'update' && operation !== 'upsert') || !existing) return;
     if (!state.previousOwner.has(c)) state.previousOwner.set(c, new Map());
-    state.previousOwner.get(c).set(keyOf(mapping.logicalName, existing[mapping.idColumn]), refId(existing.ownerid) ?? null);
+    state.previousOwner
+      .get(c)
+      .set(keyOf(mapping.logicalName, existing[mapping.idColumn]), refId(existing.ownerid) ?? null);
   });
-  api.recordHooks.add("afterWrite", (c, mapping, { operation, id, sync = false }) => {
-    if (operation !== "update" && operation !== "upsert") return;
+  api.recordHooks.add('afterWrite', (c, mapping, { operation, id, sync = false }) => {
+    if (operation !== 'update' && operation !== 'upsert') return;
     const key = keyOf(mapping.logicalName, id);
     const owners = state.previousOwner.get(c);
     if (!owners?.has(key)) return;
@@ -149,7 +210,19 @@ function install(api, { diagnostic } = {}) {
     const rows = api.store.tableRows(mapping.logicalName);
     const row = rows[api.store.rowIndex(mapping, rows, id)] ?? null;
     if (!row || !row.ownerid || sameId(previous, refId(row.ownerid))) return;
-    return cascadeAssign(api, assignChildren(api, state, c, { logicalName: mapping.logicalName, idColumn: mapping.idColumn, row }, previous, row.ownerid, new Set([key])), sync);
+    return cascadeAssign(
+      api,
+      assignChildren(
+        api,
+        state,
+        c,
+        { logicalName: mapping.logicalName, idColumn: mapping.idColumn, row },
+        previous,
+        row.ownerid,
+        new Set([key]),
+      ),
+      sync,
+    );
   });
   scanDeclared(api, state);
 }
@@ -164,18 +237,18 @@ function reset(api) {
 /** Capability record. Module level is behaviour because Assign executes; operationLevels is per operation. */
 function describe() {
   return {
-    name: "dataverse-cascade",
+    name: 'dataverse-cascade',
     version: 1,
-    kind: "dataverse-extension",
-    level: "behaviour",
+    kind: 'dataverse-extension',
+    level: 'behaviour',
     operations: OPERATIONS,
     operationLevels: OPERATION_LEVELS,
-    requires: ["metadata:relationship cascade"],
-    principal: "platform",
-    stateOwner: "none",
-    lifecycle: "per-request",
+    requires: ['metadata:relationship cascade'],
+    principal: 'platform',
+    stateOwner: 'none',
+    lifecycle: 'per-request',
     seams: SEAMS,
   };
 }
 
-export const EXTENSION = { name: "dataverse-cascade", install, reset, describe };
+export const EXTENSION = { name: 'dataverse-cascade', install, reset, describe };

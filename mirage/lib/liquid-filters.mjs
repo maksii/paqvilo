@@ -8,8 +8,8 @@
 // (default, round, ceil, floor, concat, where). Parameter handling follows DotLiquid's
 // Strainer: IConvertible arguments are converted with Convert.ChangeType and other
 // mismatches raise the .NET exception that renders as "Liquid error: ...".
-import sanitize from "sanitize-html";
-import { parseFragment, serializeOuter } from "parse5";
+import sanitize from 'sanitize-html';
+import { parseFragment, serializeOuter } from 'parse5';
 import {
   LiquidError,
   NetDecimal,
@@ -41,7 +41,7 @@ import {
   safeTypeInsensitiveEqual,
   numberToNetString,
   plainNumber,
-} from "./liquid-dotnet.mjs";
+} from './liquid-dotnet.mjs';
 import {
   LiquidHash,
   KeyValuePair,
@@ -51,7 +51,7 @@ import {
   formatItem,
   isPlainObject,
   ownKey,
-} from "./liquid-engine.mjs";
+} from './liquid-engine.mjs';
 
 // ---- Strainer signatures
 /**
@@ -66,159 +66,166 @@ import {
  * argument-count rules with them; filters without an entry (json, html_safe_escape) are not checked.
  */
 export const FILTER_SIGNATURES = Object.freeze({
-  abs: ["@context, input"],
-  add_query: ["url, parameterName, value"],
-  all: ["input"],
-  append: ["input, string"],
-  at_least: ["@context, input, atLeast"],
-  at_most: ["@context, input, atMost"],
-  base: ["url"],
-  base_currency: ["@context, value, format?"],
-  base64_decode: ["input"],
-  base64_encode: ["input"],
-  base64_url_safe_decode: ["input"],
-  base64_url_safe_encode: ["input"],
-  batch: ["input, batchSize"],
-  boolean: ["input"],
-  capitalize: ["@context, input"],
-  category_number: ["input, categoryNumber"],
-  ceil: ["value"],
-  compact: ["input"],
-  concat: ["first, second"],
-  currency: ["@context, input, languageTag?", "@context, value, record, attribute, format?"],
-  current_sort: ["sortExpression, attribute"],
-  date: ["@context, input, format"],
-  date_add_days: ["date, value"],
-  date_add_hours: ["date, value"],
-  date_add_minutes: ["date, value"],
-  date_add_months: ["date, value"],
-  date_add_seconds: ["date, value"],
-  date_add_years: ["date, value"],
-  date_to_iso8601: ["date"],
-  date_to_local: ["date"],
-  date_to_rfc822: ["date"],
-  date_to_utc: ["date"],
-  date_to_xml_schema: ["date"],
-  decimal: ["input"],
-  decimals: ["number, decimals, culture?"],
-  default: ["input, default"],
-  divided_by: ["@context, input, operand"],
-  downcase: ["input"],
-  escape: ["input"],
-  escape_once: ["input"],
-  except: ["input, key, value"],
-  file_size: ["value, precision?"],
-  first: ["array"],
-  floor: ["value"],
-  format: ["number, format, culture?"],
-  group_by: ["input, key"],
-  h: ["input"],
-  has_role: ["user, roleName"],
-  host: ["url"],
-  integer: ["input"],
-  invariant_culture_decimal_value: ["number, decimals"],
-  is_sitemap_ancestor: ["@context, url"],
-  is_sitemap_current: ["@context, url"],
-  join: ["input, glue?"],
-  last: ["array"],
-  liquid: ["@context, input"],
-  lstrip: ["input"],
-  map: ["enumerableInput, property"],
-  max_decimals: ["number, decimals, culture?"],
-  metafilters: ["entityList, query?, entityView?"],
-  minus: ["@context, input, operand"],
-  modulo: ["@context, input, operand"],
-  newline_to_br: ["input"],
-  order_by: ["input, key, direction?"],
-  orderby: ["input, key, direction?"],
-  paginate: ["input, index, count"],
-  path: ["url"],
-  path_and_query: ["url"],
-  plus: ["@context, input, operand"],
-  popular: ["input, pageSize, lang"],
-  port: ["url"],
-  prepend: ["input, string"],
-  random: ["@context, input"],
-  recent: ["input, pageSize, lang"],
-  related: ["input, categoryIdString, pageSize"],
-  remove: ["input, string"],
-  remove_first: ["@context, input, string"],
-  remove_query: ["url, parameterName"],
-  replace: ["@context, input, string, replacement?"],
-  replace_first: ["@context, input, string, replacement?"],
-  reverse: ["input"],
-  reverse_sort: ["sortDirection"],
-  round: ["value, decimals?"],
-  rstrip: ["input"],
-  scheme: ["url"],
-  search_filter_options: ["input"],
-  select: ["input, key"],
-  shuffle: ["@context, input"],
-  size: ["input"],
-  skip: ["input, count"],
-  slice: ["@context, input, offset, length?"],
-  sort: ["@context, input, property?"],
-  sort_natural: ["input, property?"],
-  split: ["input, pattern"],
-  string: ["input"],
-  strip: ["input"],
-  strip_html: ["input"],
-  strip_newlines: ["input"],
-  take: ["input, count"],
-  text_to_html: ["input, linkifyUrls?"],
-  then_by: ["input, key, direction?"],
-  thenby: ["input, key, direction?"],
-  times: ["@context, input, operand"],
-  top: ["input, pageSize, lang"],
-  top_level: ["input, pageSize"],
-  truncate: ["input, length?, truncateString?"],
-  truncate_words: ["input, words?, truncateString?"],
-  uniq: ["input"],
-  upcase: ["input"],
-  url_decode: ["input"],
-  url_encode: ["input"],
-  url_escape: ["input"],
-  web_template: ["@context, input"],
-  where: ["input, key, value"],
-  xml_escape: ["input"],
+  abs: ['@context, input'],
+  add_query: ['url, parameterName, value'],
+  all: ['input'],
+  append: ['input, string'],
+  at_least: ['@context, input, atLeast'],
+  at_most: ['@context, input, atMost'],
+  base: ['url'],
+  base_currency: ['@context, value, format?'],
+  base64_decode: ['input'],
+  base64_encode: ['input'],
+  base64_url_safe_decode: ['input'],
+  base64_url_safe_encode: ['input'],
+  batch: ['input, batchSize'],
+  boolean: ['input'],
+  capitalize: ['@context, input'],
+  category_number: ['input, categoryNumber'],
+  ceil: ['value'],
+  compact: ['input'],
+  concat: ['first, second'],
+  currency: ['@context, input, languageTag?', '@context, value, record, attribute, format?'],
+  current_sort: ['sortExpression, attribute'],
+  date: ['@context, input, format'],
+  date_add_days: ['date, value'],
+  date_add_hours: ['date, value'],
+  date_add_minutes: ['date, value'],
+  date_add_months: ['date, value'],
+  date_add_seconds: ['date, value'],
+  date_add_years: ['date, value'],
+  date_to_iso8601: ['date'],
+  date_to_local: ['date'],
+  date_to_rfc822: ['date'],
+  date_to_utc: ['date'],
+  date_to_xml_schema: ['date'],
+  decimal: ['input'],
+  decimals: ['number, decimals, culture?'],
+  default: ['input, default'],
+  divided_by: ['@context, input, operand'],
+  downcase: ['input'],
+  escape: ['input'],
+  escape_once: ['input'],
+  except: ['input, key, value'],
+  file_size: ['value, precision?'],
+  first: ['array'],
+  floor: ['value'],
+  format: ['number, format, culture?'],
+  group_by: ['input, key'],
+  h: ['input'],
+  has_role: ['user, roleName'],
+  host: ['url'],
+  integer: ['input'],
+  invariant_culture_decimal_value: ['number, decimals'],
+  is_sitemap_ancestor: ['@context, url'],
+  is_sitemap_current: ['@context, url'],
+  join: ['input, glue?'],
+  last: ['array'],
+  liquid: ['@context, input'],
+  lstrip: ['input'],
+  map: ['enumerableInput, property'],
+  max_decimals: ['number, decimals, culture?'],
+  metafilters: ['entityList, query?, entityView?'],
+  minus: ['@context, input, operand'],
+  modulo: ['@context, input, operand'],
+  newline_to_br: ['input'],
+  order_by: ['input, key, direction?'],
+  orderby: ['input, key, direction?'],
+  paginate: ['input, index, count'],
+  path: ['url'],
+  path_and_query: ['url'],
+  plus: ['@context, input, operand'],
+  popular: ['input, pageSize, lang'],
+  port: ['url'],
+  prepend: ['input, string'],
+  random: ['@context, input'],
+  recent: ['input, pageSize, lang'],
+  related: ['input, categoryIdString, pageSize'],
+  remove: ['input, string'],
+  remove_first: ['@context, input, string'],
+  remove_query: ['url, parameterName'],
+  replace: ['@context, input, string, replacement?'],
+  replace_first: ['@context, input, string, replacement?'],
+  reverse: ['input'],
+  reverse_sort: ['sortDirection'],
+  round: ['value, decimals?'],
+  rstrip: ['input'],
+  scheme: ['url'],
+  search_filter_options: ['input'],
+  select: ['input, key'],
+  shuffle: ['@context, input'],
+  size: ['input'],
+  skip: ['input, count'],
+  slice: ['@context, input, offset, length?'],
+  sort: ['@context, input, property?'],
+  sort_natural: ['input, property?'],
+  split: ['input, pattern'],
+  string: ['input'],
+  strip: ['input'],
+  strip_html: ['input'],
+  strip_newlines: ['input'],
+  take: ['input, count'],
+  text_to_html: ['input, linkifyUrls?'],
+  then_by: ['input, key, direction?'],
+  thenby: ['input, key, direction?'],
+  times: ['@context, input, operand'],
+  top: ['input, pageSize, lang'],
+  top_level: ['input, pageSize'],
+  truncate: ['input, length?, truncateString?'],
+  truncate_words: ['input, words?, truncateString?'],
+  uniq: ['input'],
+  upcase: ['input'],
+  url_decode: ['input'],
+  url_encode: ['input'],
+  url_escape: ['input'],
+  web_template: ['@context, input'],
+  where: ['input, key, value'],
+  xml_escape: ['input'],
 });
 export function createFilterSignatures(host = {}) {
-  return host.filterRegistration === "observed"
-    ? { ...FILTER_SIGNATURES, currency: ["@context, value, record, attribute, format?"] }
+  return host.filterRegistration === 'observed'
+    ? { ...FILTER_SIGNATURES, currency: ['@context, value, record, attribute, format?'] }
     : FILTER_SIGNATURES;
 }
 // ---- Strainer parameter conversion
 const isConvertible = (value) =>
-  typeof value === "string" || typeof value === "boolean" || isNumber(value) || isDate(value);
+  typeof value === 'string' || typeof value === 'boolean' || isNumber(value) || isDate(value);
 function cannotConvert(value, target) {
-  return new LiquidError(`Object of type '${netTypeName(value)}' cannot be converted to type '${target}'.`, "System.ArgumentException");
+  return new LiquidError(
+    `Object of type '${netTypeName(value)}' cannot be converted to type '${target}'.`,
+    'System.ArgumentException',
+  );
 }
 /** Parameter of type System.String. */
 export function asString(value) {
-  if (value == null || typeof value === "string") return value ?? null;
-  if (isConvertible(value)) return changeType(value, "string");
-  throw cannotConvert(value, "System.String");
+  if (value == null || typeof value === 'string') return value ?? null;
+  if (isConvertible(value)) return changeType(value, 'string');
+  throw cannotConvert(value, 'System.String');
 }
 /** Parameter of type System.Int32 (null -> default(int) = 0). */
 export function asInt(value) {
   if (value == null) return 0;
   if (isConvertible(value)) return toInt32(value);
-  throw cannotConvert(value, "System.Int32");
+  throw cannotConvert(value, 'System.Int32');
 }
 /** Parameter of type System.Double. */
 function asDouble(value) {
   if (value == null) return 0;
-  if (typeof value === "string") return toNumber(changeType(value, "decimal"));
-  if (typeof value === "boolean") return value ? 1 : 0;
+  if (typeof value === 'string') return toNumber(changeType(value, 'decimal'));
+  if (typeof value === 'boolean') return value ? 1 : 0;
   if (isNumber(value)) return toNumber(value);
-  throw cannotConvert(value, "System.Double");
+  throw cannotConvert(value, 'System.Double');
 }
 /** Parameter of type System.Collections.IEnumerable. */
 function asEnumerable(value) {
   if (value == null) return null;
   if (isEnumerable(value)) return toList(value);
-  if (isConvertible(value)) throw new LiquidError(`Invalid cast from '${netTypeName(value)}' to 'System.Collections.IEnumerable'.`, "System.InvalidCastException");
-  throw cannotConvert(value, "System.Collections.IEnumerable");
+  if (isConvertible(value))
+    throw new LiquidError(
+      `Invalid cast from '${netTypeName(value)}' to 'System.Collections.IEnumerable'.`,
+      'System.InvalidCastException',
+    );
+  throw cannotConvert(value, 'System.Collections.IEnumerable');
 }
 /** Parameter of type System.Nullable<DateTime>. */
 function asNullableDate(value) {
@@ -227,17 +234,18 @@ function asNullableDate(value) {
   if (isConvertible(value))
     throw new LiquidError(
       `Invalid cast from '${netTypeName(value)}' to 'System.Nullable\`1[[System.DateTime, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089]]'.`,
-      "System.InvalidCastException",
+      'System.InvalidCastException',
     );
-  throw cannotConvert(value, "System.Nullable`1[System.DateTime]");
+  throw cannotConvert(value, 'System.Nullable`1[System.DateTime]');
 }
 const isNullOrWhiteSpace = (value) => value == null || !String(value).trim();
 
 // ---- Math (DotLiquid DoMathsOperation, DotLiquid20 string rules)
 function integerResult(value, kindA, kindB) {
-  if (!Number.isSafeInteger(value)) throw new LiquidError("Arithmetic operation resulted in an overflow.", "System.OverflowException");
-  if (kindA === "int" && kindB === "int" && (value < -2147483648 || value > 2147483647))
-    throw new LiquidError("Arithmetic operation resulted in an overflow.", "System.OverflowException");
+  if (!Number.isSafeInteger(value))
+    throw new LiquidError('Arithmetic operation resulted in an overflow.', 'System.OverflowException');
+  if (kindA === 'int' && kindB === 'int' && (value < -2147483648 || value > 2147483647))
+    throw new LiquidError('Arithmetic operation resulted in an overflow.', 'System.OverflowException');
   return value;
 }
 function mathOperation(input, operand, operation) {
@@ -245,26 +253,38 @@ function mathOperation(input, operand, operation) {
   const kindA = numberKind(input),
     kindB = numberKind(operand);
   if (!kindA || !kindB) {
-    const symbol = { add: "Add", subtract: "Subtract", multiply: "Multiply", divide: "Divide", modulo: "Modulo" }[operation];
+    const symbol = { add: 'Add', subtract: 'Subtract', multiply: 'Multiply', divide: 'Divide', modulo: 'Modulo' }[
+      operation
+    ];
     throw new LiquidError(
       `The binary operator ${symbol} is not defined for the types '${netTypeName(input)}' and '${netTypeName(operand)}'.`,
-      "System.InvalidOperationException",
+      'System.InvalidOperationException',
     );
   }
-  if (kindA === "double" || kindB === "double") {
-    const a = toNumber(input), b = toNumber(operand);
-    const result = operation === "add" ? a + b : operation === "subtract" ? a - b : operation === "multiply" ? a * b : operation === "divide" ? a / b : a % b;
+  if (kindA === 'double' || kindB === 'double') {
+    const a = toNumber(input),
+      b = toNumber(operand);
+    const result =
+      operation === 'add'
+        ? a + b
+        : operation === 'subtract'
+          ? a - b
+          : operation === 'multiply'
+            ? a * b
+            : operation === 'divide'
+              ? a / b
+              : a % b;
     return new NetDouble(result);
   }
-  if (kindA === "decimal" || kindB === "decimal") {
+  if (kindA === 'decimal' || kindB === 'decimal') {
     const result =
-      operation === "add"
+      operation === 'add'
         ? decimalAdd(input, operand)
-        : operation === "subtract"
+        : operation === 'subtract'
           ? decimalAdd(input, operand, -1n)
-          : operation === "multiply"
+          : operation === 'multiply'
             ? decimalMultiply(input, operand)
-            : operation === "divide"
+            : operation === 'divide'
               ? decimalDivide(input, operand)
               : decimalModulo(input, operand);
     return result;
@@ -272,17 +292,17 @@ function mathOperation(input, operand, operation) {
   const a = Number(input),
     b = Number(operand);
   switch (operation) {
-    case "add":
+    case 'add':
       return integerResult(a + b, kindA, kindB);
-    case "subtract":
+    case 'subtract':
       return integerResult(a - b, kindA, kindB);
-    case "multiply":
+    case 'multiply':
       return integerResult(a * b, kindA, kindB);
-    case "divide":
-      if (b === 0) throw new LiquidError("Attempted to divide by zero.", "System.DivideByZeroException");
+    case 'divide':
+      if (b === 0) throw new LiquidError('Attempted to divide by zero.', 'System.DivideByZeroException');
       return Math.trunc(a / b);
     default:
-      if (b === 0) throw new LiquidError("Attempted to divide by zero.", "System.DivideByZeroException");
+      if (b === 0) throw new LiquidError('Attempted to divide by zero.', 'System.DivideByZeroException');
       return a % b;
   }
 }
@@ -298,10 +318,11 @@ function roundDecimal(value, decimals) {
   if (twice > factor || (twice === factor && quotient % 2n !== 0n)) rounded += decimal.mantissa < 0n ? -1n : 1n;
   return new NetDecimal(rounded, decimals);
 }
-const toDecimalValue = (value) => (typeof value === "string" ? toNetDecimal(value) : toNetDecimal(value));
+const toDecimalValue = (value) => (typeof value === 'string' ? toNetDecimal(value) : toNetDecimal(value));
 const decimalToInt = (decimal) => {
   const value = Number(decimal.toFixedString());
-  if (value < -2147483648 || value > 2147483647) throw new LiquidError("Value was either too large or too small for an Int32.", "System.OverflowException");
+  if (value < -2147483648 || value > 2147483647)
+    throw new LiquidError('Value was either too large or too small for an Int32.', 'System.OverflowException');
   return value;
 };
 
@@ -310,9 +331,10 @@ async function memberOf(item, key, context) {
   if (item == null || key == null) return null;
   if (item instanceof LiquidHash) return item.get(key) ?? null;
   if (isPlainObject(item) || item instanceof LiquidDrop) {
-    const dot = key.indexOf(".");
-    if (dot > 0 && dot < key.length - 1) return memberOf(await memberOf(item, key.slice(0, dot), context), key.slice(dot + 1), context);
-    if (typeof item.liquidGet === "function") return (await item.liquidGet(key, context)) ?? null;
+    const dot = key.indexOf('.');
+    if (dot > 0 && dot < key.length - 1)
+      return memberOf(await memberOf(item, key.slice(0, dot), context), key.slice(dot + 1), context);
+    if (typeof item.liquidGet === 'function') return (await item.liquidGet(key, context)) ?? null;
     const property = ownKey(item, key);
     return property === undefined ? null : (item[property] ?? null);
   }
@@ -333,12 +355,12 @@ function compareForOrder(a, b) {
   if (b == null) return 1;
   if (isNumber(a) && isNumber(b)) return Math.sign(toNumber(a) - toNumber(b));
   if (isDate(a) && isDate(b)) return Math.sign(a.getTime() - b.getTime());
-  if (typeof a === "string" && typeof b === "string") return Math.sign(COLLATOR.compare(a, b));
-  if (typeof a === "boolean" && typeof b === "boolean") return a === b ? 0 : a ? 1 : -1;
+  if (typeof a === 'string' && typeof b === 'string') return Math.sign(COLLATOR.compare(a, b));
+  if (typeof a === 'boolean' && typeof b === 'boolean') return a === b ? 0 : a ? 1 : -1;
   if (typeof a === typeof b) return 0;
-  throw new LiquidError("Failed to compare two elements in the array.", "System.InvalidOperationException");
+  throw new LiquidError('Failed to compare two elements in the array.', 'System.InvalidOperationException');
 }
-const COLLATOR = new Intl.Collator("en-US", { sensitivity: "variant" });
+const COLLATOR = new Intl.Collator('en-US', { sensitivity: 'variant' });
 /**
  * StandardFilters.Sort/SortNatural at DotLiquid20: StringComparer.OrdinalIgnoreCase.Compare(object,
  * object) inside List.Sort. Strings compare ignoring case, characters ordinally, and values that are
@@ -348,20 +370,22 @@ function sortCompare(a, b, characters) {
   if (a === b) return 0;
   if (a == null) return -1;
   if (b == null) return 1;
-  if (typeof a === "string" && typeof b === "string") {
+  if (typeof a === 'string' && typeof b === 'string') {
     const left = characters ? a : a.toUpperCase(),
       right = characters ? b : b.toUpperCase();
     return left < right ? -1 : left > right ? 1 : 0;
   }
-  const comparable = (item) => typeof item === "string" || typeof item === "boolean" || isNumber(item) || isDate(item);
-  if (!comparable(a) || !comparable(b)) throw new LiquidError("Failed to compare two elements in the array.", "System.InvalidOperationException");
+  const comparable = (item) => typeof item === 'string' || typeof item === 'boolean' || isNumber(item) || isDate(item);
+  if (!comparable(a) || !comparable(b))
+    throw new LiquidError('Failed to compare two elements in the array.', 'System.InvalidOperationException');
   return compareForOrder(a, b);
 }
 class OrderedList extends Array {}
 async function orderBy(items, key, direction, context, previous) {
-  const desc = /^(desc|descending)$/i.test(String(direction ?? ""));
+  const desc = /^(desc|descending)$/i.test(String(direction ?? ''));
   const keyed = [];
-  for (const [index, item] of items.entries()) keyed.push({ item, index, value: await memberOf(item, key, context), prior: previous?.get(item) });
+  for (const [index, item] of items.entries())
+    keyed.push({ item, index, value: await memberOf(item, key, context), prior: previous?.get(item) });
   keyed.sort((x, y) => {
     if (x.prior !== undefined && y.prior !== undefined && x.prior !== y.prior) return x.prior - y.prior;
     const order = compareForOrder(x.value, y.value);
@@ -372,7 +396,7 @@ async function orderBy(items, key, direction, context, previous) {
   let rank = -1,
     last;
   keyed.forEach((entry, index) => {
-    const signature = `${entry.prior}|${index === 0 ? "" : compareForOrder(last.value, entry.value)}`;
+    const signature = `${entry.prior}|${index === 0 ? '' : compareForOrder(last.value, entry.value)}`;
     if (index === 0 || entry.prior !== last.prior || compareForOrder(last.value, entry.value) !== 0) rank++;
     ranks.set(entry.item, rank);
     last = entry;
@@ -383,16 +407,17 @@ async function orderBy(items, key, direction, context, previous) {
 }
 
 // ---- URL helpers (Microsoft.Xrm.Portal UrlBuilder / QueryStringCollection)
-const PLACEHOLDER = "http://example.com";
+const PLACEHOLDER = 'http://example.com';
 
 function queryPairs(search) {
   const pairs = [];
-  const query = search.startsWith("?") ? search.slice(1) : search;
+  const query = search.startsWith('?') ? search.slice(1) : search;
   if (!query) return pairs;
-  for (const pair of query.split("&")) {
+  for (const pair of query.split('&')) {
     if (!pair) continue;
-    const index = pair.indexOf("=");
-    if (index >= 0) pairs.push([httpUtilityUrlDecode(pair.slice(0, index)), httpUtilityUrlDecode(pair.slice(index + 1))]);
+    const index = pair.indexOf('=');
+    if (index >= 0)
+      pairs.push([httpUtilityUrlDecode(pair.slice(0, index)), httpUtilityUrlDecode(pair.slice(index + 1))]);
     else pairs.push([null, httpUtilityUrlDecode(pair)]);
   }
   return pairs;
@@ -401,16 +426,18 @@ function buildQuery(pairs) {
   // NameValueCollection groups values by case-insensitive key in first-seen order.
   const groups = [];
   for (const [key, value] of pairs) {
-    const group = groups.find((entry) => (entry.key ?? "").toLowerCase() === (key ?? "").toLowerCase() && (entry.key == null) === (key == null));
+    const group = groups.find(
+      (entry) => (entry.key ?? '').toLowerCase() === (key ?? '').toLowerCase() && (entry.key == null) === (key == null),
+    );
     if (group) group.values.push(value);
     else groups.push({ key, values: [value] });
   }
   const parts = [];
   for (const group of groups)
     for (const value of group.values)
-      if (group.key) parts.push(`${antiXssUrlEncode(group.key)}=${value == null ? "" : antiXssUrlEncode(value)}`);
-      else parts.push(antiXssUrlEncode(value ?? ""));
-  return parts.length ? `?${parts.join("&")}` : "";
+      if (group.key) parts.push(`${antiXssUrlEncode(group.key)}=${value == null ? '' : antiXssUrlEncode(value)}`);
+      else parts.push(antiXssUrlEncode(value ?? ''));
+  return parts.length ? `?${parts.join('&')}` : '';
 }
 /**
  * add_query/remove_query: the query is rebuilt through QueryStringCollection (decoded, then
@@ -420,12 +447,12 @@ function buildQuery(pairs) {
 function rebuild(url, mutate) {
   if (url == null) return null;
   const text = String(url);
-  const hashIndex = text.indexOf("#");
-  const fragment = hashIndex >= 0 ? text.slice(hashIndex) : "";
+  const hashIndex = text.indexOf('#');
+  const fragment = hashIndex >= 0 ? text.slice(hashIndex) : '';
   const beforeHash = hashIndex >= 0 ? text.slice(0, hashIndex) : text;
-  const queryIndex = beforeHash.indexOf("?");
+  const queryIndex = beforeHash.indexOf('?');
   const path = queryIndex >= 0 ? beforeHash.slice(0, queryIndex) : beforeHash;
-  const search = queryIndex >= 0 ? beforeHash.slice(queryIndex) : "";
+  const search = queryIndex >= 0 ? beforeHash.slice(queryIndex) : '';
   try {
     const query = buildQuery(mutate(queryPairs(search)));
     if (/^[a-z][a-z0-9+.-]*:/i.test(text)) {
@@ -439,7 +466,7 @@ function rebuild(url, mutate) {
 }
 const portOf = (url) => {
   if (url.port) return Number(url.port);
-  return { "http:": 80, "https:": 443, "ftp:": 21 }[url.protocol] ?? -1;
+  return { 'http:': 80, 'https:': 443, 'ftp:': 21 }[url.protocol] ?? -1;
 };
 
 // ---- Text helpers
@@ -451,7 +478,7 @@ function toTitleCase(input) {
   });
 }
 /** Adxstudio SimpleHtmlFormatter (text_to_html). */
-function simpleHtml(input, linkify = true, lineBreak = "<br />") {
+function simpleHtml(input, linkify = true, lineBreak = '<br />') {
   let text = htmlEncode(input);
   if (linkify)
     text = text.replace(/http(s?):\/\/\S+[/\p{L}\p{Mn}\p{Nd}\p{Pc}]/giu, (match) => {
@@ -464,13 +491,13 @@ function simpleHtml(input, linkify = true, lineBreak = "<br />") {
     });
   return text
     .split(/\r\n\r\n|\n\n/)
-    .filter((block) => block !== "")
+    .filter((block) => block !== '')
     .map((block) => `<p>${block.replace(/\r\n/g, lineBreak).replace(/\n/g, lineBreak)}</p>`)
-    .join("");
+    .join('');
 }
 /** Adxstudio FileSize.ToString(precision). */
 function fileSize(value, precision) {
-  const units = ["bytes", "KB", "MB", "GB", "TB"];
+  const units = ['bytes', 'KB', 'MB', 'GB', 'TB'];
   const bytes = Math.max(0, Math.trunc(toNumber(value)));
   let pow = Math.floor((bytes > 0 ? Math.log(bytes) : 0) / Math.log(1024));
   pow = Math.min(pow, units.length - 1);
@@ -480,65 +507,73 @@ function fileSize(value, precision) {
 /** decimal.ToString("N<decimals>", en-US) with AwayFromZero midpoint formatting. */
 function formatN(value, decimals) {
   const decimal = NetDecimal.from(value);
-  const scaled = decimal.scale > decimals ? (() => {
-    const factor = 10n ** BigInt(decimal.scale - decimals);
-    let q = decimal.mantissa / factor;
-    const r = decimal.mantissa % factor;
-    if ((r < 0n ? -r : r) * 2n >= factor) q += decimal.mantissa < 0n ? -1n : 1n;
-    return new NetDecimal(q, decimals);
-  })() : new NetDecimal(decimal.mantissa * 10n ** BigInt(decimals - decimal.scale), decimals);
+  const scaled =
+    decimal.scale > decimals
+      ? (() => {
+          const factor = 10n ** BigInt(decimal.scale - decimals);
+          let q = decimal.mantissa / factor;
+          const r = decimal.mantissa % factor;
+          if ((r < 0n ? -r : r) * 2n >= factor) q += decimal.mantissa < 0n ? -1n : 1n;
+          return new NetDecimal(q, decimals);
+        })()
+      : new NetDecimal(decimal.mantissa * 10n ** BigInt(decimals - decimal.scale), decimals);
   const text = scaled.toFixedString();
-  const negative = text.startsWith("-");
-  const [whole, fraction] = text.replace("-", "").split(".");
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `${negative ? "-" : ""}${grouped}${fraction ? `.${fraction}` : ""}`;
+  const negative = text.startsWith('-');
+  const [whole, fraction] = text.replace('-', '').split('.');
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return `${negative ? '-' : ''}${grouped}${fraction ? `.${fraction}` : ''}`;
 }
 /** .NET numeric format strings used by the `format` filter (subset: N/F/C/P/D and custom 0/#). */
 function formatNumberString(value, format) {
   const decimal = NetDecimal.from(value);
-  const m = /^([NnFfCcPpDd])(\d*)$/.exec(format ?? "");
+  const m = /^([NnFfCcPpDd])(\d*)$/.exec(format ?? '');
   if (m) {
-    const precision = m[2] === "" ? (/[Dd]/.test(m[1]) ? 0 : 2) : Number(m[2]);
+    const precision = m[2] === '' ? (/[Dd]/.test(m[1]) ? 0 : 2) : Number(m[2]);
     if (/[Nn]/.test(m[1])) return formatN(decimal, precision);
-    if (/[Ff]/.test(m[1])) return formatN(decimal, precision).replace(/,/g, "");
+    if (/[Ff]/.test(m[1])) return formatN(decimal, precision).replace(/,/g, '');
     if (/[Cc]/.test(m[1])) {
       const text = formatN(decimal, precision);
-      return text.startsWith("-") ? `($${text.slice(1)})` : `$${text}`;
+      return text.startsWith('-') ? `($${text.slice(1)})` : `$${text}`;
     }
     if (/[Pp]/.test(m[1])) return `${formatN(decimalMultiply(decimal, 100), precision)} %`;
-    return String(Math.trunc(decimal.valueOf())).padStart(precision, "0");
+    return String(Math.trunc(decimal.valueOf())).padStart(precision, '0');
   }
-  if (/^[0#,.]+$/.test(format ?? "")) {
-    const [, fractionPattern = ""] = format.split(".");
+  if (/^[0#,.]+$/.test(format ?? '')) {
+    const [, fractionPattern = ''] = format.split('.');
     const required = (fractionPattern.match(/0/g) ?? []).length;
     const optional = (fractionPattern.match(/#/g) ?? []).length;
     let text = formatN(decimal, required + optional);
-    if (!format.includes(",")) text = text.replace(/,/g, "");
+    if (!format.includes(',')) text = text.replace(/,/g, '');
     if (optional) {
-      const [whole, fraction = ""] = text.split(".");
-      const trimmed = fraction.slice(0, required) + fraction.slice(required).replace(/0+$/, "");
+      const [whole, fraction = ''] = text.split('.');
+      const trimmed = fraction.slice(0, required) + fraction.slice(required).replace(/0+$/, '');
       text = trimmed ? `${whole}.${trimmed}` : whole;
     }
     return text;
   }
-  throw new LiquidError("Format specifier was invalid.", "System.FormatException");
+  throw new LiquidError('Format specifier was invalid.', 'System.FormatException');
 }
 
 // ---- html_safe_escape: closest local equivalent of the managed HTML sanitizer.
 function sanitizeHtml(input, { htmlSafeInput } = {}) {
   return sanitize(String(input), {
-    allowedTags: [...sanitize.defaults.allowedTags, "img", ...(htmlSafeInput === "observed" ? ["input"] : [])],
-    allowedEmptyAttributes: [...sanitize.defaults.allowedEmptyAttributes, ...(htmlSafeInput === "observed" ? ["disabled"] : [])],
+    allowedTags: [...sanitize.defaults.allowedTags, 'img', ...(htmlSafeInput === 'observed' ? ['input'] : [])],
+    allowedEmptyAttributes: [
+      ...sanitize.defaults.allowedEmptyAttributes,
+      ...(htmlSafeInput === 'observed' ? ['disabled'] : []),
+    ],
     allowedAttributes: {
-      "*": ["class", "id", "title", "lang", "dir", "style", "aria-*", "data-*"],
-      a: ["href", "name", "target", "rel"],
-      img: ["src", "alt", "width", "height", "loading"],
-      ...(htmlSafeInput === "observed" ? { input: ["type", "value", "disabled"] } : {}),
-      td: ["colspan", "rowspan", "headers"], th: ["colspan", "rowspan", "scope", "headers"],
-      ol: ["start", "reversed", "type"], li: ["value"],
+      '*': ['class', 'id', 'title', 'lang', 'dir', 'style', 'aria-*', 'data-*'],
+      a: ['href', 'name', 'target', 'rel'],
+      img: ['src', 'alt', 'width', 'height', 'loading'],
+      ...(htmlSafeInput === 'observed' ? { input: ['type', 'value', 'disabled'] } : {}),
+      td: ['colspan', 'rowspan', 'headers'],
+      th: ['colspan', 'rowspan', 'scope', 'headers'],
+      ol: ['start', 'reversed', 'type'],
+      li: ['value'],
     },
-    nonTextTags: ["script", "style", "textarea", "option", "iframe", "object", "embed", "applet", "frame", "frameset"],
-    allowedSchemes: ["http", "https", "ftp", "mailto", "tel"],
+    nonTextTags: ['script', 'style', 'textarea', 'option', 'iframe', 'object', 'embed', 'applet', 'frame', 'frameset'],
+    allowedSchemes: ['http', 'https', 'ftp', 'mailto', 'tel'],
     allowedStyles: {
       '*': {
         color: [/^(?:#[\da-f]{3,8}|[a-z]+|(?:rgb|rgba|hsl|hsla)\([\d\s.,%+-]+\))$/i],
@@ -559,7 +594,8 @@ function sanitizeHtml(input, { htmlSafeInput } = {}) {
 function htmlVoidSerialization(markup) {
   // Parse already-sanitized output to find real tag tokens. Attributes containing
   // '/>' remain data, and only void tags change serialization.
-  const replacements = [], voidTags = new Set(["img", "br", "hr", "area", "base", "basefont", "input", "link", "meta", "col"]);
+  const replacements = [],
+    voidTags = new Set(['img', 'br', 'hr', 'area', 'base', 'basefont', 'input', 'link', 'meta', 'col']);
   const visit = (node) => {
     if (voidTags.has(node.tagName) && node.sourceCodeLocation?.startTag) {
       const location = node.sourceCodeLocation.startTag;
@@ -585,33 +621,39 @@ function htmlVoidSerialization(markup) {
 // - other values are written like Json.NET defaults: nil as null, booleans and numbers as JSON, ISO
 //   dates, nested arrays and objects; a self-referencing graph raises Json.NET's loop error.
 // Json.NET also escapes NEL, LINE SEPARATOR and PARAGRAPH SEPARATOR.
-const JSON_EXTRA_ESCAPES = new RegExp(`[${String.fromCharCode(0x85, 0x2028, 0x2029)}]`, "g");
+const JSON_EXTRA_ESCAPES = new RegExp(`[${String.fromCharCode(0x85, 0x2028, 0x2029)}]`, 'g');
 const jsonString = (text) =>
-  JSON.stringify(text).replace(JSON_EXTRA_ESCAPES, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  JSON.stringify(text).replace(JSON_EXTRA_ESCAPES, (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`);
 function jsonDate(date) {
   const iso = date.toISOString();
-  return iso.endsWith(".000Z") ? `${iso.slice(0, -5)}Z` : iso;
+  return iso.endsWith('.000Z') ? `${iso.slice(0, -5)}Z` : iso;
 }
 function jsonSerialize(value, seen, property = null) {
-  if (value == null) return "null";
-  if (typeof value === "boolean") return value ? "true" : "false";
+  if (value == null) return 'null';
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
   if (isNumber(value)) return numberToNetString(value);
   if (isDate(value)) return jsonString(jsonDate(value));
-  if (typeof value === "string") return jsonString(value);
-  if (typeof value !== "object") return "null";
+  if (typeof value === 'string') return jsonString(value);
+  if (typeof value !== 'object') return 'null';
   if (seen.has(value))
-    throw new LiquidError(`Self referencing loop detected${property ? ` for property '${property}'` : ""}.`, "Newtonsoft.Json.JsonSerializationException");
+    throw new LiquidError(
+      `Self referencing loop detected${property ? ` for property '${property}'` : ''}.`,
+      'Newtonsoft.Json.JsonSerializationException',
+    );
   seen.add(value);
   try {
-    if (Array.isArray(value)) return `[${value.map((item) => jsonSerialize(item, seen)).join(",")}]`;
-    if (value instanceof KeyValuePair) return `{"Key":${jsonString(String(value.key))},"Value":${jsonSerialize(value.value, seen, "Value")}}`;
+    if (Array.isArray(value)) return `[${value.map((item) => jsonSerialize(item, seen)).join(',')}]`;
+    if (value instanceof KeyValuePair)
+      return `{"Key":${jsonString(String(value.key))},"Value":${jsonSerialize(value.value, seen, 'Value')}}`;
     const entries =
       value instanceof LiquidHash
         ? [...value.entries()]
         : value instanceof LiquidDrop
           ? []
-          : Object.entries(value).filter(([key, item]) => !key.startsWith("__") && typeof item !== "function" && item !== undefined);
-    return `{${entries.map(([key, item]) => `${jsonString(String(key))}:${jsonSerialize(item, seen, key)}`).join(",")}}`;
+          : Object.entries(value).filter(
+              ([key, item]) => !key.startsWith('__') && typeof item !== 'function' && item !== undefined,
+            );
+    return `{${entries.map(([key, item]) => `${jsonString(String(key))}:${jsonSerialize(item, seen, key)}`).join(',')}}`;
   } finally {
     seen.delete(value);
   }
@@ -622,11 +664,11 @@ function jsonSerialize(value, seen, property = null) {
 export function createFilters(host = {}) {
   const filters = {
     // ---- DotLiquid StandardFilters (DotLiquid20)
-    size: (input) => (typeof input === "string" ? input.length : isEnumerable(input) ? toList(input).length : 0),
+    size: (input) => (typeof input === 'string' ? input.length : isEnumerable(input) ? toList(input).length : 0),
     slice(input, offset, length = 1) {
       const start = asInt(offset),
         len = asInt(length ?? 1);
-      if (typeof input === "string") {
+      if (typeof input === 'string') {
         let s = start,
           l = len;
         if (s > input.length) return null;
@@ -677,46 +719,48 @@ export function createFilters(host = {}) {
     },
     escape: (input) => {
       const s = asString(input);
-      return s == null || s === "" ? s : htmlEncode(s);
+      return s == null || s === '' ? s : htmlEncode(s);
     },
     // StandardFilters.H: alias of Escape (documented by Power Pages as "h").
     h: (input) => {
       const s = asString(input);
-      return s == null || s === "" ? s : htmlEncode(s);
+      return s == null || s === '' ? s : htmlEncode(s);
     },
     escape_once: (input) => {
       const s = asString(input);
-      return s == null || s === "" ? s : htmlEncode(htmlDecode(s));
+      return s == null || s === '' ? s : htmlEncode(htmlDecode(s));
     },
-    truncate(input, length = 50, truncateString = "...") {
+    truncate(input, length = 50, truncateString = '...') {
       const s = asString(input);
-      if (s == null || s === "") return s;
+      if (s == null || s === '') return s;
       const max = arguments.length > 1 ? asInt(length) : 50;
-      const tail = arguments.length > 2 ? (asString(truncateString) ?? "") : "...";
+      const tail = arguments.length > 2 ? (asString(truncateString) ?? '') : '...';
       if (max < 0) return tail;
       const keep = max - tail.length;
       return s.length > max ? s.slice(0, keep < 0 ? 0 : keep) + tail : s;
     },
-    truncate_words(input, words = 15, truncateString = "...") {
+    truncate_words(input, words = 15, truncateString = '...') {
       const s = asString(input);
-      if (s == null || s === "") return s;
+      if (s == null || s === '') return s;
       const count = arguments.length > 1 ? asInt(words) : 15;
-      const tail = arguments.length > 2 ? (asString(truncateString) ?? "") : "...";
+      const tail = arguments.length > 2 ? (asString(truncateString) ?? '') : '...';
       if (count <= 0) return tail;
-      const list = s.split(" ");
-      return list.length > count ? list.slice(0, count).join(" ") + tail : s;
+      const list = s.split(' ');
+      return list.length > count ? list.slice(0, count).join(' ') + tail : s;
     },
     split(input, pattern) {
       const s = asString(input);
       if (isNullOrWhiteSpace(s)) return [s];
       const separator = asString(pattern);
-      if (separator == null || separator === "") return [...s];
-      return s.split(separator).filter((part) => part !== "");
+      if (separator == null || separator === '') return [...s];
+      return s.split(separator).filter((part) => part !== '');
     },
     strip_html: (input) => {
       const s = asString(input);
       if (isNullOrWhiteSpace(s)) return s;
-      return s.replace(/<script[\s\S]*?<\/script>|<!--[\s\S]*?-->|<style[\s\S]*?<\/style>/gi, "").replace(/<[\s\S]*?>/g, "");
+      return s
+        .replace(/<script[\s\S]*?<\/script>|<!--[\s\S]*?-->|<style[\s\S]*?<\/style>/gi, '')
+        .replace(/<[\s\S]*?>/g, '');
     },
     strip: (input) => {
       const s = asString(input);
@@ -732,12 +776,12 @@ export function createFilters(host = {}) {
     },
     strip_newlines: (input) => {
       const s = asString(input);
-      return isNullOrWhiteSpace(s) ? s : s.replace(/\r?\n/g, "");
+      return isNullOrWhiteSpace(s) ? s : s.replace(/\r?\n/g, '');
     },
-    join(input, glue = " ") {
+    join(input, glue = ' ') {
       const list = asEnumerable(input);
       if (list == null) return null;
-      const separator = arguments.length > 1 ? (asString(glue) ?? "") : " ";
+      const separator = arguments.length > 1 ? (asString(glue) ?? '') : ' ';
       return list.map(formatItem).join(separator);
     },
     sort(input, property) {
@@ -745,8 +789,15 @@ export function createFilters(host = {}) {
       const list = isEnumerable(input) ? [...toList(input)].flat(Infinity) : [input];
       const key = asString(property);
       // A string input sorts its characters, which compare ordinally (char.CompareTo).
-      const characters = typeof input === "string";
-      const value = (item) => (key ? (item instanceof LiquidHash ? item.get(key) : isPlainObject(item) ? item[ownKey(item, key) ?? key] : null) : item);
+      const characters = typeof input === 'string';
+      const value = (item) =>
+        key
+          ? item instanceof LiquidHash
+            ? item.get(key)
+            : isPlainObject(item)
+              ? item[ownKey(item, key) ?? key]
+              : null
+          : item;
       return list
         .map((item, index) => ({ item, index }))
         .sort((x, y) => sortCompare(value(x.item), value(y.item), characters) || x.index - y.index)
@@ -763,42 +814,48 @@ export function createFilters(host = {}) {
       for (const item of list) result.push(await memberOf(item, key, this));
       return result;
     },
-    replace(input, search, replacement = "") {
+    replace(input, search, replacement = '') {
       const s = asString(input),
         pattern = asString(search);
-      if (s == null || s === "" || pattern == null || pattern === "") return s;
-      return netRegexReplace(s, pattern, asString(replacement) ?? "");
+      if (s == null || s === '' || pattern == null || pattern === '') return s;
+      return netRegexReplace(s, pattern, asString(replacement) ?? '');
     },
-    replace_first(input, search, replacement = "") {
+    replace_first(input, search, replacement = '') {
       const s = asString(input),
         pattern = asString(search);
-      if (s == null || s === "" || pattern == null || pattern === "") return s;
-      return netRegexReplace(s, pattern, asString(replacement) ?? "", { first: true });
+      if (s == null || s === '' || pattern == null || pattern === '') return s;
+      return netRegexReplace(s, pattern, asString(replacement) ?? '', { first: true });
     },
     remove(input, search) {
       const s = asString(input);
       if (isNullOrWhiteSpace(s)) return s;
       const pattern = asString(search);
-      if (pattern == null || pattern === "") throw new LiquidError("String cannot be of zero length.\r\nParameter name: oldValue", "System.ArgumentException");
-      return s.split(pattern).join("");
+      if (pattern == null || pattern === '')
+        throw new LiquidError(
+          'String cannot be of zero length.\r\nParameter name: oldValue',
+          'System.ArgumentException',
+        );
+      return s.split(pattern).join('');
     },
     remove_first(input, search) {
       const s = asString(input);
       if (isNullOrWhiteSpace(s)) return s;
-      return filters.replace_first.call(this, s, search, "");
+      return filters.replace_first.call(this, s, search, '');
     },
     // master: $"{input}{@string}" and $"{@string}{input}" (nil renders as nothing).
     append(input, value) {
-      const s = asString(input) ?? "";
-      return s + (asString(value) ?? "");
+      const s = asString(input) ?? '';
+      return s + (asString(value) ?? '');
     },
     prepend(input, value) {
-      const s = asString(input) ?? "";
-      return (asString(value) ?? "") + s;
+      const s = asString(input) ?? '';
+      return (asString(value) ?? '') + s;
     },
     newline_to_br: (input) => {
       const s = asString(input);
-      return isNullOrWhiteSpace(s) ? s : s.replace(/(\r?\n)/g, (newline) => (host.htmlVoidSerialization === "html" ? "<br>" : "<br />") + newline);
+      return isNullOrWhiteSpace(s)
+        ? s
+        : s.replace(/(\r?\n)/g, (newline) => (host.htmlVoidSerialization === 'html' ? '<br>' : '<br />') + newline);
     },
     date(input, format) {
       if (input == null) return null;
@@ -826,51 +883,72 @@ export function createFilters(host = {}) {
     },
     plus(input, operand) {
       // DotLiquid20: a string input concatenates (string.Concat uses object.ToString()).
-      if (typeof input === "string") return input + netToString(operand);
-      return mathOperation(input, operand, "add");
+      if (typeof input === 'string') return input + netToString(operand);
+      return mathOperation(input, operand, 'add');
     },
     minus(input, operand) {
-      if (host.filterErrors === "observed" && typeof input === "string" && numberKind(operand) === "int")
-        throw new LiquidError("Parameter count mismatch.", "System.Reflection.TargetParameterCountException");
-      if (host.filterErrors === "observed" && typeof input === "string" && numberKind(operand) === "decimal")
-        return mathOperation(toNetDecimal(input), operand, "subtract");
-      return mathOperation(input, operand, "subtract");
+      if (host.filterErrors === 'observed' && typeof input === 'string' && numberKind(operand) === 'int')
+        throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
+      if (host.filterErrors === 'observed' && typeof input === 'string' && numberKind(operand) === 'decimal')
+        return mathOperation(toNetDecimal(input), operand, 'subtract');
+      return mathOperation(input, operand, 'subtract');
     },
     times(input, operand) {
-      if (host.timesDispatch === "observed") {
-        const stringArray = Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === "string");
-        if ((numberKind(input) === "int" && typeof operand === "string") || (stringArray && numberKind(operand) === "int"))
-          throw new LiquidError("Parameter count mismatch.", "System.Reflection.TargetParameterCountException");
-        if (stringArray && numberKind(operand) === "decimal")
-          throw new LiquidError("Unable to cast object of type 'System.String[]' to type 'System.IConvertible'.", "System.InvalidCastException");
+      if (host.timesDispatch === 'observed') {
+        const stringArray = Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === 'string');
+        if (
+          (numberKind(input) === 'int' && typeof operand === 'string') ||
+          (stringArray && numberKind(operand) === 'int')
+        )
+          throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
+        if (stringArray && numberKind(operand) === 'decimal')
+          throw new LiquidError(
+            "Unable to cast object of type 'System.String[]' to type 'System.IConvertible'.",
+            'System.InvalidCastException',
+          );
       }
       // An observed portal can opt into decimal string conversion without changing
       // the pinned DotLiquid20 string repetition and operator contracts elsewhere.
-      if (host.decimalStringMultiply === "convert" && typeof input === "string" && numberKind(operand) === "decimal")
-        return mathOperation(toNetDecimal(input), operand, "multiply");
-      if (typeof input === "string" && numberKind(operand) && numberKind(operand) !== "decimal")
+      if (host.decimalStringMultiply === 'convert' && typeof input === 'string' && numberKind(operand) === 'decimal')
+        return mathOperation(toNetDecimal(input), operand, 'multiply');
+      if (typeof input === 'string' && numberKind(operand) && numberKind(operand) !== 'decimal')
         return Array.from({ length: Math.max(0, Number(operand)) }, () => input);
-      return mathOperation(input, operand, "multiply");
+      return mathOperation(input, operand, 'multiply');
     },
     divided_by(input, operand) {
-      if (host.filterErrors === "observed" && numberKind(input) === "int" && numberKind(operand) === "int" && asInt(operand) === 0)
-        throw new LiquidError("Exception has been thrown by the target of an invocation.", "System.Reflection.TargetInvocationException");
-      if (host.filterErrors === "observed" && numberKind(input) === "int" && typeof operand === "string")
-        throw new LiquidError("Parameter count mismatch.", "System.Reflection.TargetParameterCountException");
-      if (host.filterErrors === "observed" && numberKind(input) === "int" && asInt(input) !== 0 && numberKind(operand) === "decimal" && toNumber(operand) === 0)
+      if (
+        host.filterErrors === 'observed' &&
+        numberKind(input) === 'int' &&
+        numberKind(operand) === 'int' &&
+        asInt(operand) === 0
+      )
+        throw new LiquidError(
+          'Exception has been thrown by the target of an invocation.',
+          'System.Reflection.TargetInvocationException',
+        );
+      if (host.filterErrors === 'observed' && numberKind(input) === 'int' && typeof operand === 'string')
+        throw new LiquidError('Parameter count mismatch.', 'System.Reflection.TargetParameterCountException');
+      if (
+        host.filterErrors === 'observed' &&
+        numberKind(input) === 'int' &&
+        asInt(input) !== 0 &&
+        numberKind(operand) === 'decimal' &&
+        toNumber(operand) === 0
+      )
         return new NetDouble(toNumber(input) / toNumber(operand));
-      return mathOperation(input, operand, "divide");
+      return mathOperation(input, operand, 'divide');
     },
-    modulo: (input, operand) => mathOperation(input, operand, "modulo"),
+    modulo: (input, operand) => mathOperation(input, operand, 'modulo'),
     uniq(input) {
       if (input == null) return null;
       const list = isEnumerable(input) ? [...toList(input)].flat(Infinity) : [input];
       const result = [];
-      for (const item of list) if (!result.some((existing) => strictEquals(existing, item) || existing === item)) result.push(item);
+      for (const item of list)
+        if (!result.some((existing) => strictEquals(existing, item) || existing === item)) result.push(item);
       return result;
     },
     abs(input) {
-      const parsed = Number(String(formatItem(input)).replace(/,/g, ""));
+      const parsed = Number(String(formatItem(input)).replace(/,/g, ''));
       return Number.isFinite(parsed) ? Math.abs(parsed) : 0;
     },
     at_least(input, minimum) {
@@ -889,31 +967,36 @@ export function createFilters(host = {}) {
       return list.filter((item) => item != null);
     },
     reverse(input) {
-      if (input == null || typeof input === "string") return input;
+      if (input == null || typeof input === 'string') return input;
       const list = asEnumerable(input);
       return [...list].reverse();
     },
-    base64_encode: (input) => (input == null ? "" : Buffer.from(asString(input), "utf8").toString("base64")),
+    base64_encode: (input) => (input == null ? '' : Buffer.from(asString(input), 'utf8').toString('base64')),
     base64_decode(input) {
-      if (input == null) return "";
+      if (input == null) return '';
       const text = asString(input);
-      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 !== 0) throw new LiquidError("Invalid base64 provided to base64_decode", "System.ArgumentException");
-      return Buffer.from(text, "base64").toString("utf8");
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 !== 0)
+        throw new LiquidError('Invalid base64 provided to base64_decode', 'System.ArgumentException');
+      return Buffer.from(text, 'base64').toString('utf8');
     },
-    base64_url_safe_encode: (input) => (input == null ? "" : Buffer.from(asString(input), "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_")),
+    base64_url_safe_encode: (input) =>
+      input == null
+        ? ''
+        : Buffer.from(asString(input), 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_'),
     base64_url_safe_decode(input) {
-      if (input == null || input === "") return "";
-      let text = asString(input).replace(/_/g, "/").replace(/-/g, "+");
-      if (!text.endsWith("=")) text += text.length % 4 === 2 ? "==" : text.length % 4 === 3 ? "=" : "";
-      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 !== 0) throw new LiquidError("Invalid base64 provided to base64_url_safe_decode", "System.ArgumentException");
-      return Buffer.from(text, "base64").toString("utf8");
+      if (input == null || input === '') return '';
+      let text = asString(input).replace(/_/g, '/').replace(/-/g, '+');
+      if (!text.endsWith('=')) text += text.length % 4 === 2 ? '==' : text.length % 4 === 3 ? '=' : '';
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(text) || text.length % 4 !== 0)
+        throw new LiquidError('Invalid base64 provided to base64_url_safe_decode', 'System.ArgumentException');
+      return Buffer.from(text, 'base64').toString('utf8');
     },
     currency(input, languageTag) {
       if (input == null) return null;
       void languageTag;
-      if (isNumber(input)) return formatNumberString(input, "C");
+      if (isNumber(input)) return formatNumberString(input, 'C');
       try {
-        return formatNumberString(toNetDecimal(String(input).replace(/[$\s]/g, "")), "C");
+        return formatNumberString(toNetDecimal(String(input).replace(/[$\s]/g, '')), 'C');
       } catch {
         return formatItem(input);
       }
@@ -927,9 +1010,11 @@ export function createFilters(host = {}) {
     },
     has_role(user, roleName) {
       if (user == null) return false;
-      if (typeof user.liquidHasRole === "function") return user.liquidHasRole(asString(roleName));
+      if (typeof user.liquidHasRole === 'function') return user.liquidHasRole(asString(roleName));
       const roles = isPlainObject(user) ? user.roles : null;
-      return (Array.isArray(roles) ? roles : []).some((role) => (typeof role === "object" && role ? role.name : role) === asString(roleName));
+      return (Array.isArray(roles) ? roles : []).some(
+        (role) => (typeof role === 'object' && role ? role.name : role) === asString(roleName),
+      );
     },
     async liquid(input) {
       if (input == null) return null;
@@ -952,11 +1037,11 @@ export function createFilters(host = {}) {
     date_to_utc: (date) => asNullableDate(date),
     date_to_iso8601(date) {
       const value = asNullableDate(date);
-      return value == null ? null : `${formatNetDate(value, "s")}Z`;
+      return value == null ? null : `${formatNetDate(value, 's')}Z`;
     },
     date_to_xml_schema(date) {
       const value = asNullableDate(date);
-      return value == null ? null : `${formatNetDate(value, "s")}Z`;
+      return value == null ? null : `${formatNetDate(value, 's')}Z`;
     },
     date_to_rfc822(date) {
       const value = asNullableDate(date);
@@ -968,14 +1053,14 @@ export function createFilters(host = {}) {
       const expression = asString(sortExpression),
         name = asString(attribute);
       if (!expression || !name) return null;
-      const match = netRegex(`${name} (?<direction>ASC|DESC)`, "i").exec(expression);
+      const match = netRegex(`${name} (?<direction>ASC|DESC)`, 'i').exec(expression);
       return match ? match.groups.direction.toUpperCase() : null;
     },
     reverse_sort(direction) {
       const value = asString(direction);
       if (!value) return null;
-      if (value.trim().toLowerCase() === "asc") return "DESC";
-      if (value.trim().toLowerCase() === "desc") return "ASC";
+      if (value.trim().toLowerCase() === 'asc') return 'DESC';
+      if (value.trim().toLowerCase() === 'desc') return 'ASC';
       return null;
     },
     async metafilters(entityList, query, entityView) {
@@ -987,9 +1072,16 @@ export function createFilters(host = {}) {
     batch(input, batchSize) {
       const list = asEnumerable(input) ?? [];
       const size = asInt(batchSize);
-      if (host.filterErrors === "observed" && numberKind(batchSize) === "int" && size <= 0)
-        throw new LiquidError("Value must be positive and non-zero.\r\nParameter name: size", "System.ArgumentOutOfRangeException");
-      if (size <= 0) throw new LiquidError("Specified argument was out of the range of valid values.\r\nParameter name: size", "System.ArgumentOutOfRangeException");
+      if (host.filterErrors === 'observed' && numberKind(batchSize) === 'int' && size <= 0)
+        throw new LiquidError(
+          'Value must be positive and non-zero.\r\nParameter name: size',
+          'System.ArgumentOutOfRangeException',
+        );
+      if (size <= 0)
+        throw new LiquidError(
+          'Specified argument was out of the range of valid values.\r\nParameter name: size',
+          'System.ArgumentOutOfRangeException',
+        );
       const batches = [];
       for (let index = 0; index < list.length; index += size) batches.push(list.slice(index, index + size));
       return batches;
@@ -1015,22 +1107,34 @@ export function createFilters(host = {}) {
       }
       return groups.map((group) => new LiquidHash({ key: group.key, items: group.items }));
     },
-    async order_by(input, key, direction = "asc") {
+    async order_by(input, key, direction = 'asc') {
       if (!isEnumerable(input) && !Array.isArray(input)) return input;
       return orderBy(toList(input), asString(key), asString(direction), this);
     },
-    async orderby(input, key, direction = "asc") {
+    async orderby(input, key, direction = 'asc') {
       return filters.order_by.call(this, input, key, direction);
     },
-    async then_by(input, key, direction = "asc") {
+    async then_by(input, key, direction = 'asc') {
       if (!(input instanceof OrderedList)) {
-        const stringArray = host.filterErrors === "observed" && Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === "string");
-        const type = host.filterErrors === "observed" && Array.isArray(input) && input.length === 0 ? "System.Linq.Enumerable+WhereArrayIterator`1[System.Object]" : stringArray ? "System.String[]" : netTypeName(input);
-        throw new LiquidError(`Object of type '${type}' cannot be converted to type 'System.Linq.IOrderedEnumerable\`1[System.Object]'.`, "System.ArgumentException");
+        const stringArray =
+          host.filterErrors === 'observed' &&
+          Array.isArray(input) &&
+          input.length > 0 &&
+          input.every((item) => typeof item === 'string');
+        const type =
+          host.filterErrors === 'observed' && Array.isArray(input) && input.length === 0
+            ? 'System.Linq.Enumerable+WhereArrayIterator`1[System.Object]'
+            : stringArray
+              ? 'System.String[]'
+              : netTypeName(input);
+        throw new LiquidError(
+          `Object of type '${type}' cannot be converted to type 'System.Linq.IOrderedEnumerable\`1[System.Object]'.`,
+          'System.ArgumentException',
+        );
       }
       return orderBy([...input], asString(key), asString(direction), this, input.ranks);
     },
-    async thenby(input, key, direction = "asc") {
+    async thenby(input, key, direction = 'asc') {
       return filters.then_by.call(this, input, key, direction);
     },
     paginate(input, index, count) {
@@ -1040,7 +1144,11 @@ export function createFilters(host = {}) {
     },
     random(input) {
       const list = asEnumerable(input) ?? [];
-      if (!list.length) throw new LiquidError("Specified argument was out of the range of valid values.", "System.ArgumentOutOfRangeException");
+      if (!list.length)
+        throw new LiquidError(
+          'Specified argument was out of the range of valid values.',
+          'System.ArgumentOutOfRangeException',
+        );
       return list[Math.floor(Math.random() * list.length)];
     },
     async select(input, key) {
@@ -1081,14 +1189,20 @@ export function createFilters(host = {}) {
       if (value == null) return 0;
       const decimal = toDecimalValue(value);
       const scaled = decimal.scale ? decimal.mantissa / 10n ** BigInt(decimal.scale) : decimal.mantissa;
-      const ceiling = decimal.scale && decimal.mantissa > 0n && decimal.mantissa % 10n ** BigInt(decimal.scale) !== 0n ? scaled + 1n : scaled;
+      const ceiling =
+        decimal.scale && decimal.mantissa > 0n && decimal.mantissa % 10n ** BigInt(decimal.scale) !== 0n
+          ? scaled + 1n
+          : scaled;
       return decimalToInt(new NetDecimal(ceiling, 0));
     },
     floor(value) {
       if (value == null) return 0;
       const decimal = toDecimalValue(value);
       const scaled = decimal.scale ? decimal.mantissa / 10n ** BigInt(decimal.scale) : decimal.mantissa;
-      const floor = decimal.scale && decimal.mantissa < 0n && decimal.mantissa % 10n ** BigInt(decimal.scale) !== 0n ? scaled - 1n : scaled;
+      const floor =
+        decimal.scale && decimal.mantissa < 0n && decimal.mantissa % 10n ** BigInt(decimal.scale) !== 0n
+          ? scaled - 1n
+          : scaled;
       return decimalToInt(new NetDecimal(floor, 0));
     },
     round(value, decimals = 0) {
@@ -1097,7 +1211,10 @@ export function createFilters(host = {}) {
       const number = toDecimalValue(value);
       // Math.Round(decimal, int) accepts 0 to 28 decimals.
       if (places < 0 || places > 28)
-        throw new LiquidError("Decimal can only round to between 0 and 28 digits of precision.\r\nParameter name: decimals", "System.ArgumentOutOfRangeException");
+        throw new LiquidError(
+          'Decimal can only round to between 0 and 28 digits of precision.\r\nParameter name: decimals',
+          'System.ArgumentOutOfRangeException',
+        );
       const rounded = roundDecimal(number, places);
       return places === 0 ? decimalToInt(rounded) : rounded;
     },
@@ -1106,17 +1223,19 @@ export function createFilters(host = {}) {
     boolean(input) {
       if (input == null) return null;
       try {
-        if (typeof input === "boolean") return input;
+        if (typeof input === 'boolean') return input;
         if (isNumber(input)) return toNumber(input) !== 0;
-        if (typeof input === "string") {
+        if (typeof input === 'string') {
           const text = input.trim().toLowerCase();
-          if (text === "true") return true;
-          if (text === "false") return false;
+          if (text === 'true') return true;
+          if (text === 'false') return false;
         }
       } catch {
         // FormatException/InvalidCastException fall through to the named values.
       }
-      const mapped = { on: true, enabled: true, yes: true, off: false, disabled: false, no: false }[formatItem(input).toLowerCase()];
+      const mapped = { on: true, enabled: true, yes: true, off: false, disabled: false, no: false }[
+        formatItem(input).toLowerCase()
+      ];
       return mapped ?? null;
     },
     decimal(input) {
@@ -1138,9 +1257,9 @@ export function createFilters(host = {}) {
       }
     },
     string(input) {
-      if (input == null) return "";
-      if (typeof input === "string") return input;
-      if (typeof input === "boolean") return input ? "True" : "False";
+      if (input == null) return '';
+      if (typeof input === 'string') return input;
+      if (typeof input === 'boolean') return input ? 'True' : 'False';
       if (isNumber(input)) return numberToNetString(input);
       if (isDate(input)) return dateToNetString(input);
       return formatItem(input);
@@ -1150,14 +1269,18 @@ export function createFilters(host = {}) {
     text_to_html(input, linkifyUrls = true) {
       const s = asString(input);
       if (s == null) return null;
-      return simpleHtml(s, arguments.length > 1 ? linkifyUrls !== false && linkifyUrls !== "false" : true, host.htmlVoidSerialization === "html" ? "<br>" : "<br />");
+      return simpleHtml(
+        s,
+        arguments.length > 1 ? linkifyUrls !== false && linkifyUrls !== 'false' : true,
+        host.htmlVoidSerialization === 'html' ? '<br>' : '<br />',
+      );
     },
     url_escape: (input) => {
       const s = asString(input);
       return s == null ? null : webUrlEncode(s);
     },
     json(input) {
-      if (typeof input !== "string") return jsonSerialize(input, new Set());
+      if (typeof input !== 'string') return jsonSerialize(input, new Set());
       if (this?.encodedFilterSource) return input;
       return `"${input.trim()}"`;
     },
@@ -1169,7 +1292,7 @@ export function createFilters(host = {}) {
       const s = asString(input);
       if (s == null) return null;
       const sanitized = sanitizeHtml(s, host);
-      return host.htmlVoidSerialization === "html" ? htmlVoidSerialization(sanitized) : sanitized;
+      return host.htmlVoidSerialization === 'html' ? htmlVoidSerialization(sanitized) : sanitized;
     },
 
     // ---- Adxstudio NumberFormatFilters (en-US current UI culture)
@@ -1181,14 +1304,18 @@ export function createFilters(host = {}) {
     },
     max_decimals(number, decimals) {
       let result = formatN(toNetDecimal(number), asInt(decimals));
-      if (result.includes(".")) result = result.replace(/0+$/, "").replace(/\.$/, "");
+      if (result.includes('.')) result = result.replace(/0+$/, '').replace(/\.$/, '');
       return result;
     },
     invariant_culture_decimal_value(number, decimals) {
-      if (arguments.length < 2) throw new LiquidError("Error - Filter 'invariant_culture_decimal_value' does not have a default value for 'decimals' and no value was supplied", "DotLiquid.Exceptions.SyntaxException");
+      if (arguments.length < 2)
+        throw new LiquidError(
+          "Error - Filter 'invariant_culture_decimal_value' does not have a default value for 'decimals' and no value was supplied",
+          'DotLiquid.Exceptions.SyntaxException',
+        );
       return roundDecimal(toNetDecimal(number ?? 0), asInt(decimals)).toFixedString();
     },
-    base_currency: (value) => formatNumberString(toNetDecimal(value ?? 0), "C"),
+    base_currency: (value) => formatNumberString(toNetDecimal(value ?? 0), 'C'),
 
     // ---- Adxstudio UrlFilters
     add_query(url, parameterName, value) {
@@ -1196,13 +1323,16 @@ export function createFilters(host = {}) {
       if (target == null) return null;
       const name = asString(parameterName);
       if (isNullOrWhiteSpace(name)) return target;
-      const text = value == null ? "" : formatItem(value);
+      const text = value == null ? '' : formatItem(value);
       return rebuild(target, (pairs) => {
         const existing = pairs.filter(([key]) => key != null && key.toLowerCase() === name.toLowerCase());
         if (existing.length) {
           const first = pairs.indexOf(existing[0]);
           const remaining = pairs.filter((pair) => !existing.includes(pair));
-          remaining.splice(first - pairs.slice(0, first).filter((pair) => existing.includes(pair)).length, 0, [existing[0][0], text]);
+          remaining.splice(first - pairs.slice(0, first).filter((pair) => existing.includes(pair)).length, 0, [
+            existing[0][0],
+            text,
+          ]);
           return remaining;
         }
         return [...pairs, [name, text]];
@@ -1213,7 +1343,9 @@ export function createFilters(host = {}) {
       if (target == null) return null;
       const name = asString(parameterName);
       if (isNullOrWhiteSpace(name)) return target;
-      return rebuild(target, (pairs) => pairs.filter(([key]) => key == null || key.toLowerCase() !== name.toLowerCase()));
+      return rebuild(target, (pairs) =>
+        pairs.filter(([key]) => key == null || key.toLowerCase() !== name.toLowerCase()),
+      );
     },
     base(url) {
       const target = asString(url);
@@ -1237,10 +1369,16 @@ export function createFilters(host = {}) {
     },
     path_and_query(url) {
       // UrlBuilder.PathWithQueryString re-encodes the query through QueryStringCollection.
-      return urlPart(url, this, (u) => u.pathname + buildQuery(queryPairs(u.search + (host.pathAndQueryFragment === "query" && u.search ? u.hash : ""))));
+      return urlPart(
+        url,
+        this,
+        (u) =>
+          u.pathname +
+          buildQuery(queryPairs(u.search + (host.pathAndQueryFragment === 'query' && u.search ? u.hash : ''))),
+      );
     },
     scheme(url) {
-      return urlPart(url, this, (u) => u.protocol.replace(/:$/, ""));
+      return urlPart(url, this, (u) => u.protocol.replace(/:$/, ''));
     },
     is_sitemap_ancestor(url) {
       return host.isSitemapAncestor ? host.isSitemapAncestor(asString(url), this) : false;
@@ -1251,24 +1389,27 @@ export function createFilters(host = {}) {
 
     // ---- Adxstudio SearchFilterOptionFilters
     search_filter_options(input) {
-      const text = input == null ? "" : formatItem(input);
+      const text = input == null ? '' : formatItem(input);
       if (!text) return null;
       const options = [];
       for (const m of text.matchAll(/\s*([^:;]+?)\s*:\s*([^;]+)\s*/g)) {
-        const value = m[2].replace(/ /g, "");
-        options.push({ display_name: host.localizeRecordType ? host.localizeRecordType(value.split(",")[0]) : value.split(",")[0], value });
+        const value = m[2].replace(/ /g, '');
+        options.push({
+          display_name: host.localizeRecordType ? host.localizeRecordType(value.split(',')[0]) : value.split(',')[0],
+          value,
+        });
       }
       return options.length ? options : null;
     },
   };
-  if (host.filterRegistration === "observed") {
+  if (host.filterRegistration === 'observed') {
     delete filters.json;
     delete filters.sort_natural;
   }
   return filters;
 }
 function isConvertibleForNumber(value) {
-  return typeof value === "string" || typeof value === "boolean" || isNumber(value);
+  return typeof value === 'string' || typeof value === 'boolean' || isNumber(value);
 }
 function addTime(date, milliseconds) {
   const value = asNullableDate(date);
@@ -1297,9 +1438,9 @@ function urlPart(url, context, select) {
   if (target == null) return null;
   try {
     let parsed;
-    if (target.startsWith("/") || target.startsWith("~/")) {
+    if (target.startsWith('/') || target.startsWith('~/')) {
       const origin = context?.engine?.requestOrigin?.(context) ?? `${PLACEHOLDER}`;
-      parsed = new URL(target.startsWith("~/") ? target.slice(1) : target, `${origin}/`);
+      parsed = new URL(target.startsWith('~/') ? target.slice(1) : target, `${origin}/`);
     } else if (/^[a-z][a-z0-9+.-]*:/i.test(target)) parsed = new URL(target);
     else parsed = new URL(`http://${target}`);
     return select(parsed);
@@ -1309,9 +1450,9 @@ function urlPart(url, context, select) {
 }
 /** Convert.ToString / object.ToString used by string.Concat. */
 function netToString(value) {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value === "boolean") return value ? "True" : "False";
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'boolean') return value ? 'True' : 'False';
   if (isNumber(value)) return numberToNetString(value);
   if (isDate(value)) return dateToNetString(value);
   return formatItem(value);

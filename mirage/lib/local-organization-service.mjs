@@ -17,16 +17,23 @@ export function sdkRecordKey(store, entity, target, partitionId) {
   const keys = target && typeof target === 'object' ? target.keyAttributes : null;
   if (keys && Object.keys(keys).length) {
     const values = Object.fromEntries(Object.entries(keys).map(([name, value]) => [name, sdkValueToRecord(value)]));
-    if (isElastic(mapping) && !own(values, mapping.idColumn) && uuid.test(target.id ?? '')) values[mapping.idColumn] = target.id;
-    return Object.entries(values).map(([name, value]) => {
-      if (!/^[a-z][\w]*$/i.test(name) || RESERVED_NAMES.includes(name)) fail('Invalid SDK key attribute.');
-      if (typeof value === 'string') return `${name}=${uuid.test(value) ? value : `'${value.replaceAll("'", "''")}'`}`;
-      if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean') return `${name}=${value}`;
-      fail('SDK key attributes require scalar values.');
-    }).join(',');
+    if (isElastic(mapping) && !own(values, mapping.idColumn) && uuid.test(target.id ?? ''))
+      values[mapping.idColumn] = target.id;
+    return Object.entries(values)
+      .map(([name, value]) => {
+        if (!/^[a-z][\w]*$/i.test(name) || RESERVED_NAMES.includes(name)) fail('Invalid SDK key attribute.');
+        if (typeof value === 'string')
+          return `${name}=${uuid.test(value) ? value : `'${value.replaceAll("'", "''")}'`}`;
+        if ((typeof value === 'number' && Number.isFinite(value)) || typeof value === 'boolean')
+          return `${name}=${value}`;
+        fail('SDK key attributes require scalar values.');
+      })
+      .join(',');
   }
-  const id = target && typeof target === 'object' ? target.id ?? target.value : target;
-  return isElastic(mapping) && partitionId != null ? recordKey(mapping, { [mapping.idColumn]: id, partitionid: partitionId }) : id;
+  const id = target && typeof target === 'object' ? (target.id ?? target.value) : target;
+  return isElastic(mapping) && partitionId != null
+    ? recordKey(mapping, { [mapping.idColumn]: id, partitionid: partitionId })
+    : id;
 }
 
 const OPERATIONS = ['read', 'create', 'update', 'delete', 'associate', 'disassociate'];
@@ -34,31 +41,53 @@ const BULK_MESSAGES = ['CreateMultiple', 'UpdateMultiple'];
 const tableName = (value) => /^[a-z][a-z0-9_]*$/i.test(value ?? '');
 const evidenced = (value) => typeof value === 'string' && Boolean(value.trim());
 // A message grant ({ message, operations: ['execute'] }) authorizes executeMessageInternal (dataverse-customapi.mjs).
-const messageGrant = (grant) => typeof grant?.message === 'string' && Boolean(grant.message) && grant.entity === undefined
-  && Array.isArray(grant.operations) && grant.operations.length > 0 && grant.operations.every((op) => op === 'execute') && grant.predicate === undefined;
-const invalidGrant = (grant) => !messageGrant(grant) && (!grant
-  || !tableName(grant.entity)
-  || !Array.isArray(grant.operations)
-  || grant.operations.some((op) => !OPERATIONS.includes(op))
-  || (grant.predicate !== undefined && typeof grant.predicate !== 'function'));
-const invalidBulkTable = (table) => !table
-  || !tableName(table.entity)
-  || table.tableType !== 'standard'
-  || !evidenced(table.evidence)
-  || !Array.isArray(table.messages)
-  || !table.messages.length
-  || table.messages.some((message) => !BULK_MESSAGES.includes(message));
+const messageGrant = (grant) =>
+  typeof grant?.message === 'string' &&
+  Boolean(grant.message) &&
+  grant.entity === undefined &&
+  Array.isArray(grant.operations) &&
+  grant.operations.length > 0 &&
+  grant.operations.every((op) => op === 'execute') &&
+  grant.predicate === undefined;
+const invalidGrant = (grant) =>
+  !messageGrant(grant) &&
+  (!grant ||
+    !tableName(grant.entity) ||
+    !Array.isArray(grant.operations) ||
+    grant.operations.some((op) => !OPERATIONS.includes(op)) ||
+    (grant.predicate !== undefined && typeof grant.predicate !== 'function'));
+const invalidBulkTable = (table) =>
+  !table ||
+  !tableName(table.entity) ||
+  table.tableType !== 'standard' ||
+  !evidenced(table.evidence) ||
+  !Array.isArray(table.messages) ||
+  !table.messages.length ||
+  table.messages.some((message) => !BULK_MESSAGES.includes(message));
 
 /** Explicit local backend grants are independent of portal roles. No default system user. */
 export function validateServiceProfile(profile) {
   if (!profile || !uuid.test(profile.userId ?? '') || !evidenced(profile.evidence) || !Array.isArray(profile.grants))
-    fail('A project-supplied backend user ID, evidence and explicit grants are required.', 'LocalBackendIdentityRequired', 409);
+    fail(
+      'A project-supplied backend user ID, evidence and explicit grants are required.',
+      'LocalBackendIdentityRequired',
+      409,
+    );
   for (const grant of profile.grants) {
     if (invalidGrant(grant)) fail('Invalid local backend grant.', 'LocalBackendIdentityRequired', 409);
   }
   const bulk = profile.bulkTables;
-  if (bulk !== undefined && (!Array.isArray(bulk) || new Set(bulk.map((table) => table?.entity)).size !== bulk.length || bulk.some(invalidBulkTable)))
-    fail('Bulk capabilities require unique source-evidenced standard tables and explicit supported message names.', 'LocalBackendIdentityRequired', 409);
+  if (
+    bulk !== undefined &&
+    (!Array.isArray(bulk) ||
+      new Set(bulk.map((table) => table?.entity)).size !== bulk.length ||
+      bulk.some(invalidBulkTable))
+  )
+    fail(
+      'Bulk capabilities require unique source-evidenced standard tables and explicit supported message names.',
+      'LocalBackendIdentityRequired',
+      409,
+    );
   return profile;
 }
 
@@ -86,7 +115,12 @@ export function authorizeGrant(store, profile, entity, operation, row) {
  * operations (dataverse-virtual-providers.mjs readSync), never from its local mirror: 501 VirtualProviderMissing without a
  * provider, 501 SdkVirtualReadUnsupported without the synchronous operation. Without an organization on the store the
  * service writes the store directly (no organization rules exist). */
-export function localOrganizationService(store, profile, records = store.recordPipeline, { diagnostic = () => {} } = {}) {
+export function localOrganizationService(
+  store,
+  profile,
+  records = store.recordPipeline,
+  { diagnostic = () => {} } = {},
+) {
   validateServiceProfile(profile);
   // Bypass portal grants only AFTER the separate backend grant check below.
   const localIdentity = { id: profile.userId, admin: true };
@@ -98,18 +132,25 @@ export function localOrganizationService(store, profile, records = store.recordP
     const deferred = [];
     const result = run({ sync: true, deferred, authorized: true });
     for (const effect of deferred) {
-      Promise.resolve(effect).catch((error) => diagnostic({
-        code: 'SDK_DEFERRED_EFFECT',
-        severity: 'warning',
-        entity: store.resolveMapping(entity).logicalName,
-        operation,
-        message: 'An asynchronous record hook of a synchronous SDK ' + operation + ' failed after the call returned: ' + String(error?.message ?? error),
-      }));
+      Promise.resolve(effect).catch((error) =>
+        diagnostic({
+          code: 'SDK_DEFERRED_EFFECT',
+          severity: 'warning',
+          entity: store.resolveMapping(entity).logicalName,
+          operation,
+          message:
+            'An asynchronous record hook of a synchronous SDK ' +
+            operation +
+            ' failed after the call returned: ' +
+            String(error?.message ?? error),
+        }),
+      );
     }
     return result;
   };
   // A virtual table's synchronous provider read ({ rows }), or null when the table is read locally.
-  const virtualRead = (entity, options) => records?.virtualProviders?.readSync(context(), store.resolveMapping(entity).logicalName, options) ?? null;
+  const virtualRead = (entity, options) =>
+    records?.virtualProviders?.readSync(context(), store.resolveMapping(entity).logicalName, options) ?? null;
   const rawGet = (entity, id) => {
     const row = store.get(entity, id, localIdentity, { skipPluginRead: true });
     if (!row) fail('Record not found.', 'NotFound', 404);
@@ -130,18 +171,21 @@ export function localOrganizationService(store, profile, records = store.recordP
     if (!raw) fail('Record not found.', 'NotFound', 404);
     authorize(entity, 'read', raw);
     const options = { sdkColumns: columns, sdkResponseToken: responseToken };
-    const row = records ? records.readInternal(context(), entity, key, { ...options, unmask }) : store.get(entity, key, localIdentity, options);
+    const row = records
+      ? records.readInternal(context(), entity, key, { ...options, unmask })
+      : store.get(entity, key, localIdentity, options);
     return structuredClone(row);
   };
   const isChoiceList = (entity, key) => {
     const definition = store.fieldDefinition(entity, key);
     return String(definition?.dataverseType ?? definition?.type ?? '').toLowerCase() === 'multiselectpicklist';
   };
-  const invalidChoice = (options, option) => typeof option !== 'number'
-    || !Number.isInteger(option)
-    || option < -2147483648
-    || option > 2147483647
-    || (options?.length && !options.some((allowed) => Number(allowed.value) === option));
+  const invalidChoice = (options, option) =>
+    typeof option !== 'number' ||
+    !Number.isInteger(option) ||
+    option < -2147483648 ||
+    option > 2147483647 ||
+    (options?.length && !options.some((allowed) => Number(allowed.value) === option));
   const writeGraph = (values, entity) => {
     for (const [key, value] of Object.entries(values ?? {})) {
       if (key.endsWith('@odata.bind')) {
@@ -170,12 +214,17 @@ export function localOrganizationService(store, profile, records = store.recordP
         } else fail('Record not found.', 'NotFound', 404);
       } else if (Array.isArray(value) && isChoiceList(entity, key)) {
         const options = store.fieldDefinition(entity, key)?.options;
-        if (value.some((option) => invalidChoice(options, option))) fail('Backend choices require source-valid Int32 option values.');
-      } else if (value && typeof value === 'object' && !isExactNumeric(value)) fail('Backend deep writes require an explicit security adapter.');
+        if (value.some((option) => invalidChoice(options, option)))
+          fail('Backend choices require source-valid Int32 option values.');
+      } else if (value && typeof value === 'object' && !isExactNumeric(value))
+        fail('Backend deep writes require an explicit security adapter.');
     }
   };
   // The explicit-grant checks of a write, shared by the synchronous and asynchronous drives; answer the store key.
-  const prepareCreate = (entity, values) => { authorize(entity, 'create', values); writeGraph(values, entity); };
+  const prepareCreate = (entity, values) => {
+    authorize(entity, 'create', values);
+    writeGraph(values, entity);
+  };
   const prepareUpdate = (entity, id, values) => {
     const key = sdkRecordKey(store, entity, id, values.partitionid);
     const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
@@ -193,20 +242,36 @@ export function localOrganizationService(store, profile, records = store.recordP
     return key;
   };
   const association = (entity, id, relationship, related, associate, responseToken, awaitIo) => {
-    const options = { store, entity, id, relationship, related, identity: localIdentity, authorize, associate, responseToken };
+    const options = {
+      store,
+      entity,
+      id,
+      relationship,
+      related,
+      identity: localIdentity,
+      authorize,
+      associate,
+      responseToken,
+    };
     const run = () => (awaitIo ? executeAssociationAsync : executeAssociation)(options);
     const savepoint = awaitIo ? (fn) => store.sdkMutationAsync(fn) : (fn) => store.sdkMutation(fn);
     if (!records) return savepoint(run);
     if (!uuid.test(id)) fail('SDK association requires a valid source ID.', 'LocalSdkRelationshipInput', 400);
     const { mapping, navigation, rel } = associationBinding(store, entity, relationship, related, localIdentity);
     const operation = associate ? 'associate' : 'disassociate';
-    const [logical, rowId, via, ids] = rel.many !== false
-      ? [mapping.logicalName, id, navigation, related.values.map((ref) => ref.id)]
-      : [rel.entity, related.values[0].id, rel.partner, [id]];
+    const [logical, rowId, via, ids] =
+      rel.many !== false
+        ? [mapping.logicalName, id, navigation, related.values.map((ref) => ref.id)]
+        : [rel.entity, related.values[0].id, rel.partner, [id]];
     const entry = associate ? 'associateInternal' : 'disassociateInternal';
     // records' association steps yield the write's promise without sync (dataverse-records.mjs associationSteps).
-    if (awaitIo) return savepoint(() => records[entry](context(), logical, rowId, via, ids, { authorized: true, write: run }));
-    return savepoint(() => internal(operation, entity, (opts) => records[entry](context(), logical, rowId, via, ids, { ...opts, write: run })));
+    if (awaitIo)
+      return savepoint(() => records[entry](context(), logical, rowId, via, ids, { authorized: true, write: run }));
+    return savepoint(() =>
+      internal(operation, entity, (opts) =>
+        records[entry](context(), logical, rowId, via, ids, { ...opts, write: run }),
+      ),
+    );
   };
   const readGrants = (logical) => {
     const grants = profile.grants.filter((g) => g.entity === logical && g.operations.includes('read'));
@@ -216,23 +281,45 @@ export function localOrganizationService(store, profile, records = store.recordP
   return {
     get,
     query(entity, params = {}, { responseToken, sdkQuery, unmask = false } = {}) {
-      if (params instanceof URLSearchParams ? params.has('$expand') : params.$expand) fail('Backend query expansion requires an explicit security adapter.');
+      if (params instanceof URLSearchParams ? params.has('$expand') : params.$expand)
+        fail('Backend query expansion requires an explicit security adapter.');
       const logical = store.resolveMapping(entity).logicalName;
       const grants = readGrants(logical);
       const constrained = !grants.some((g) => !g.predicate);
       const p = params instanceof URLSearchParams ? Object.fromEntries(params) : params;
       const navigates = (name) => String(p[name] ?? '').includes('/');
       if (constrained && (p.$apply || navigates('$filter') || navigates('$select') || navigates('$orderby')))
-        fail('Predicate-backed queries support direct root fields only; navigation/aggregate needs a row-security adapter.');
-      const allowed = constrained ? (row) => grants.some((g) => g.predicate(structuredClone(row), 'read') === true) : undefined;
-      const virtual = virtualRead(entity, { request: { select: p.$select ?? null, filter: p.$filter ?? null, orderby: p.$orderby ?? null, top: p.$top == null ? null : Number(p.$top) } });
+        fail(
+          'Predicate-backed queries support direct root fields only; navigation/aggregate needs a row-security adapter.',
+        );
+      const allowed = constrained
+        ? (row) => grants.some((g) => g.predicate(structuredClone(row), 'read') === true)
+        : undefined;
+      const virtual = virtualRead(entity, {
+        request: {
+          select: p.$select ?? null,
+          filter: p.$filter ?? null,
+          orderby: p.$orderby ?? null,
+          top: p.$top == null ? null : Number(p.$top),
+        },
+      });
       if (virtual) {
         const c = context();
-        return { value: virtual.rows.filter((row) => !allowed || allowed(row)).map((row) => records.projectInternal(c, logical, row, { unmask, single: false })) };
+        return {
+          value: virtual.rows
+            .filter((row) => !allowed || allowed(row))
+            .map((row) => records.projectInternal(c, logical, row, { unmask, single: false })),
+        };
       }
       // Column security as the Web API applies it: masked operands refused, hidden columns evaluated as null.
       const secured = records?.secureInternal?.(context(), logical, { params, unmask }) ?? {};
-      const answer = store.query(entity, params, localIdentity, undefined, { dialect: 'dataverse', sdkResponseToken: responseToken, sdkQuery, backendRowFilter: allowed, ...secured });
+      const answer = store.query(entity, params, localIdentity, undefined, {
+        dialect: 'dataverse',
+        sdkResponseToken: responseToken,
+        sdkQuery,
+        backendRowFilter: allowed,
+        ...secured,
+      });
       if (records && !answer.sdkCollection && Array.isArray(answer.value)) {
         const c = context();
         for (const row of answer.value) records.projectInternal(c, logical, row, { unmask, single: false });
@@ -250,28 +337,52 @@ export function localOrganizationService(store, profile, records = store.recordP
       }
       // A virtual table in the query is refused before the store reads its mirror (no request shape carries FetchXML).
       for (const name of tables) virtualRead(name, { fetchXml: true });
-      const backendRowsFilter = (logical, row) => (grants.get(logical) ?? []).some((g) => !g.predicate || g.predicate(structuredClone(row), 'read') === true);
+      const backendRowsFilter = (logical, row) =>
+        (grants.get(logical) ?? []).some((g) => !g.predicate || g.predicate(structuredClone(row), 'read') === true);
       const secured = records?.secureInternal?.(context(), tables[0], { fetchXml: xml, unmask }) ?? {};
       const answer = store.fetchXml(xml, localIdentity, { ...options, backendRowsFilter, ...secured });
-      return records && !answer.sdkCollection ? records.projectFetchedInternal({ ...context(), unmasked: unmask === true }, tables[0], answer) : answer;
+      return records && !answer.sdkCollection
+        ? records.projectFetchedInternal({ ...context(), unmasked: unmask === true }, tables[0], answer)
+        : answer;
     },
     create(entity, values, { responseToken } = {}) {
       prepareCreate(entity, values);
-      return store.sdkMutation(() => records
-        ? internal('create', entity, (options) => records.createInternal(context(), entity, values, { ...options, writeOptions: { sdkResponseToken: responseToken } }))
-        : store.createRecord(entity, values, localIdentity, { coerce: true, sdkResponseToken: responseToken }));
+      return store.sdkMutation(() =>
+        records
+          ? internal('create', entity, (options) =>
+              records.createInternal(context(), entity, values, {
+                ...options,
+                writeOptions: { sdkResponseToken: responseToken },
+              }),
+            )
+          : store.createRecord(entity, values, localIdentity, { coerce: true, sdkResponseToken: responseToken }),
+      );
     },
     update(entity, id, values, { responseToken } = {}) {
       const key = prepareUpdate(entity, id, values);
-      return store.sdkMutation(() => records
-        ? internal('update', entity, (options) => records.updateInternal(context(), entity, key, values, { ...options, writeOptions: { sdkResponseToken: responseToken } }))
-        : store.updateRecord(entity, key, values, localIdentity, { coerce: true, sdkResponseToken: responseToken }));
+      return store.sdkMutation(() =>
+        records
+          ? internal('update', entity, (options) =>
+              records.updateInternal(context(), entity, key, values, {
+                ...options,
+                writeOptions: { sdkResponseToken: responseToken },
+              }),
+            )
+          : store.updateRecord(entity, key, values, localIdentity, { coerce: true, sdkResponseToken: responseToken }),
+      );
     },
     remove(entity, id, { responseToken, partitionId } = {}) {
       const key = prepareRemove(entity, id, partitionId);
-      return store.sdkMutation(() => records
-        ? internal('delete', entity, (options) => records.removeInternal(context(), entity, key, { ...options, writeOptions: { sdkResponseToken: responseToken } }))
-        : store.removeRecord(entity, key, localIdentity, { sdkResponseToken: responseToken }));
+      return store.sdkMutation(() =>
+        records
+          ? internal('delete', entity, (options) =>
+              records.removeInternal(context(), entity, key, {
+                ...options,
+                writeOptions: { sdkResponseToken: responseToken },
+              }),
+            )
+          : store.removeRecord(entity, key, localIdentity, { sdkResponseToken: responseToken }),
+      );
     },
     // The same writes on the asynchronous pipeline, for a caller that is not nested inside a plug-in (a flow Dataverse
     // action): the internal entries without sync, inside one awaited SDK savepoint (store.sdkMutationAsync), so a
@@ -279,21 +390,39 @@ export function localOrganizationService(store, profile, records = store.recordP
     // afterWrite hooks finish before the call returns. Each answers a promise of the stored row.
     createAsync(entity, values, { responseToken } = {}) {
       prepareCreate(entity, values);
-      return store.sdkMutationAsync(() => records
-        ? records.createInternal(context(), entity, values, { authorized: true, writeOptions: { sdkResponseToken: responseToken } })
-        : store.createRecordAsync(entity, values, localIdentity, { coerce: true, sdkResponseToken: responseToken }));
+      return store.sdkMutationAsync(() =>
+        records
+          ? records.createInternal(context(), entity, values, {
+              authorized: true,
+              writeOptions: { sdkResponseToken: responseToken },
+            })
+          : store.createRecordAsync(entity, values, localIdentity, { coerce: true, sdkResponseToken: responseToken }),
+      );
     },
     updateAsync(entity, id, values, { responseToken } = {}) {
       const key = prepareUpdate(entity, id, values);
-      return store.sdkMutationAsync(() => records
-        ? records.updateInternal(context(), entity, key, values, { authorized: true, writeOptions: { sdkResponseToken: responseToken } })
-        : store.updateRecordAsync(entity, key, values, localIdentity, { coerce: true, sdkResponseToken: responseToken }));
+      return store.sdkMutationAsync(() =>
+        records
+          ? records.updateInternal(context(), entity, key, values, {
+              authorized: true,
+              writeOptions: { sdkResponseToken: responseToken },
+            })
+          : store.updateRecordAsync(entity, key, values, localIdentity, {
+              coerce: true,
+              sdkResponseToken: responseToken,
+            }),
+      );
     },
     removeAsync(entity, id, { responseToken, partitionId } = {}) {
       const key = prepareRemove(entity, id, partitionId);
-      return store.sdkMutationAsync(() => records
-        ? records.removeInternal(context(), entity, key, { authorized: true, writeOptions: { sdkResponseToken: responseToken } })
-        : store.removeRecordAsync(entity, key, localIdentity, { sdkResponseToken: responseToken }));
+      return store.sdkMutationAsync(() =>
+        records
+          ? records.removeInternal(context(), entity, key, {
+              authorized: true,
+              writeOptions: { sdkResponseToken: responseToken },
+            })
+          : store.removeRecordAsync(entity, key, localIdentity, { sdkResponseToken: responseToken }),
+      );
     },
     // Associate/Disassociate: executeAssociation (explicit grants, the plug-in stages, the store association writes) runs as
     // the write of the organization's association pipeline (records.associateInternal/disassociateInternal), so the record
@@ -315,18 +444,35 @@ export function localOrganizationService(store, profile, records = store.recordP
       const entity = targets?.[0]?.logicalName;
       const source = (profile.bulkTables ?? []).find((table) => table.entity === entity);
       if (!source || !source.messages.includes(operation === 'createmultiple' ? 'CreateMultiple' : 'UpdateMultiple'))
-        fail('Bulk requires explicit source-evidenced standard table and available SDK message capability.', 'LocalPluginBulkUnsupported');
+        fail(
+          'Bulk requires explicit source-evidenced standard table and available SDK message capability.',
+          'LocalPluginBulkUnsupported',
+        );
       const write = records
-        ? (update, id, values) => internal(update ? 'update' : 'create', entity, (options) => update
-          ? records.updateInternal(context(), entity, id, values, options)
-          : records.createInternal(context(), entity, values, options))
+        ? (update, id, values) =>
+            internal(update ? 'update' : 'create', entity, (options) =>
+              update
+                ? records.updateInternal(context(), entity, id, values, options)
+                : records.createInternal(context(), entity, values, options),
+            )
         : undefined;
       const authorizeRow = (op, row, previous) => {
         if (previous) authorize(entity, op, previous);
         authorize(entity, op, row);
         writeGraph(row, entity);
       };
-      return store.sdkMutation(() => executeBulkRecords({ store, entity, operation, targets: structuredClone(targets), identity: localIdentity, responseToken, write, authorize: authorizeRow }));
+      return store.sdkMutation(() =>
+        executeBulkRecords({
+          store,
+          entity,
+          operation,
+          targets: structuredClone(targets),
+          identity: localIdentity,
+          responseToken,
+          write,
+          authorize: authorizeRow,
+        }),
+      );
     },
     mapping: (entity) => store.resolveMapping(entity),
     profile: {
@@ -335,11 +481,15 @@ export function localOrganizationService(store, profile, records = store.recordP
       securityModel: 'Explicit project local backend grants; not inferred Dataverse security-role parity',
       pipeline: records
         ? {
-          level: 'behaviour',
-          asyncHookEffects: 'contract',
-          description: 'Create, Update, Delete and Retrieve run the organization record pipeline (state defaults, synchronous record hooks, audit and version columns, alternate-key answers, read projection). Synchronous service endpoint steps (web hooks, Service Bus emulator sends) post through the synchronous I/O bridge and fail the call when the post fails. An asynchronous pre-operation hook refuses the call (501 SdkAsyncPreOperationUnsupported); asynchronous post-operation remainders finish after the synchronous call returns (SDK_DEFERRED_EFFECT on failure).',
-        }
-        : { level: 'inventory', description: 'No organization on the store: writes go to the store without organization rules.' },
+            level: 'behaviour',
+            asyncHookEffects: 'contract',
+            description:
+              'Create, Update, Delete and Retrieve run the organization record pipeline (state defaults, synchronous record hooks, audit and version columns, alternate-key answers, read projection). Synchronous service endpoint steps (web hooks, Service Bus emulator sends) post through the synchronous I/O bridge and fail the call when the post fails. An asynchronous pre-operation hook refuses the call (501 SdkAsyncPreOperationUnsupported); asynchronous post-operation remainders finish after the synchronous call returns (SDK_DEFERRED_EFFECT on failure).',
+          }
+        : {
+            level: 'inventory',
+            description: 'No organization on the store: writes go to the store without organization rules.',
+          },
     },
   };
 }
@@ -360,7 +510,12 @@ export function sdkValueToRecord(value) {
       return exactNumeric(value.value, 'Int64');
     case 'Double': {
       const raw = value.value;
-      const number = typeof raw === 'number' ? raw : typeof raw === 'string' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw) ? Number(raw) : NaN;
+      const number =
+        typeof raw === 'number'
+          ? raw
+          : typeof raw === 'string' && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(raw)
+            ? Number(raw)
+            : NaN;
       if (!Number.isFinite(number)) fail('SDK Double requires a finite numeric value.');
       return number;
     }
@@ -369,7 +524,12 @@ export function sdkValueToRecord(value) {
     case 'OptionSetValue':
       return value.value;
     case 'EntityReference':
-      return { id: value.id, logical_name: value.logicalName, ...(value.name ? { name: value.name } : {}), ...(value.keyAttributes ? { keyAttributes: sdkValueToRecord(value.keyAttributes) } : {}) };
+      return {
+        id: value.id,
+        logical_name: value.logicalName,
+        ...(value.name ? { name: value.name } : {}),
+        ...(value.keyAttributes ? { keyAttributes: sdkValueToRecord(value.keyAttributes) } : {}),
+      };
     case 'AliasedValue':
       return sdkValueToRecord(value.value);
     case 'Entity':
