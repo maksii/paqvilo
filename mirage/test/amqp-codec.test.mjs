@@ -2,7 +2,23 @@
 // (types 1.6, transport 2.2-2.3, security 5.2), independent of the fake broker that shares the codec.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AMQP_HEADER, CODE, Described, SASL_HEADER, decode, decodeMessage, described, encode, encodeMessage, frame, readFrame, sym, ubyte, uint, ulong } from '../lib/amqp-client.mjs';
+import {
+  AMQP_HEADER,
+  CODE,
+  Described,
+  SASL_HEADER,
+  decode,
+  decodeMessage,
+  described,
+  encode,
+  encodeMessage,
+  frame,
+  readFrame,
+  sym,
+  ubyte,
+  uint,
+  ulong,
+} from '../lib/amqp-client.mjs';
 import { fakeCodec } from '../testing/amqp-fake-broker.mjs';
 
 const hex = (buffer) => Buffer.from(buffer).toString('hex');
@@ -28,7 +44,12 @@ test('primitive encodings follow the types section byte layouts', () => {
 test('the decoder reads lists, maps, arrays of symbols and described values', () => {
   const sasl = Buffer.from('e01202a305504c41494e09414e4f4e594d4f5553', 'hex'); // array8 of sym: PLAIN, ANONYMOUS (as a broker sends sasl-server-mechanisms)
   assert.deepEqual(decode(sasl)[0], ['PLAIN', 'ANONYMOUS']);
-  const value = { list: [1, 'two', null, true, 2.5, 2 ** 40], map: { k: 'v' }, at: new Date(1_700_000_000_000), bin: Buffer.from('xyz') };
+  const value = {
+    list: [1, 'two', null, true, 2.5, 2 ** 40],
+    map: { k: 'v' },
+    at: new Date(1_700_000_000_000),
+    bin: Buffer.from('xyz'),
+  };
   const [round] = decode(encode(value));
   assert.deepEqual(round, value);
   const [open] = decode(encode(described(CODE.open, ['container', null, uint(65536)])));
@@ -55,8 +76,13 @@ test('frames carry size, doff 2, type and channel; an empty frame is a heartbeat
 
 test('message sections round-trip: annotations, properties, application properties and a data body', () => {
   const at = new Date(1_800_000_000_000);
-  const bytes = encodeMessage({ header: [null, null, null, null, uint(2)], annotations: new Map([[sym('x-opt-scheduled-enqueue-time'), at]]),
-    properties: ['fx-id', null, null, null, null, null, sym('application/json')], applicationProperties: { x_kind: 'fx', n: 3 }, body: Buffer.from('{"a":1}') });
+  const bytes = encodeMessage({
+    header: [null, null, null, null, uint(2)],
+    annotations: new Map([[sym('x-opt-scheduled-enqueue-time'), at]]),
+    properties: ['fx-id', null, null, null, null, null, sym('application/json')],
+    applicationProperties: { x_kind: 'fx', n: 3 },
+    body: Buffer.from('{"a":1}'),
+  });
   assert.equal(hex(bytes.subarray(0, 3)), '005370', 'the header section comes first');
   const message = decodeMessage(bytes);
   assert.equal(message.header[4], 2);
@@ -65,26 +91,57 @@ test('message sections round-trip: annotations, properties, application properti
   assert.equal(message.properties[6], 'application/json');
   assert.deepEqual(message.applicationProperties, { x_kind: 'fx', n: 3 });
   assert.equal(message.body.toString(), '{"a":1}');
-  assert.deepEqual(decodeMessage(encodeMessage({ body: { v: 1 } })).body, { v: 1 }, 'a non-binary body is an amqp-value section');
+  assert.deepEqual(
+    decodeMessage(encodeMessage({ body: { v: 1 } })).body,
+    { v: 1 },
+    'a non-binary body is an amqp-value section',
+  );
 });
 
 // Golden performatives written by hand from the transport field tables (2.7.3 attach, 2.7.4 flow, 2.7.5 transfer,
 // 2.7.6 disposition) with the compact encodings of types 1.6; both the client codec and the fake broker's own codec must agree.
 const GOLDEN = [
-  { name: 'attach (receiver of q, local l)', fields: ['l', 0, true, 0, 0, [CODE.source, ['q']], [CODE.target, ['l']]],
-    value: described(CODE.attach, ['l', uint(0), true, ubyte(0), ubyte(0), described(CODE.source, ['q']), described(CODE.target, ['l'])]),
-    hex: '005312' + 'c01c07' + 'a1016c' + '43' + '41' + '5000' + '5000' + '005328c00401a10171' + '005329c00401a1016c' },
-  { name: 'flow (handle 1, credit 10, drain)', fields: [0, 5000, 0, 5000, 1, 0, 10, null, true],
+  {
+    name: 'attach (receiver of q, local l)',
+    fields: ['l', 0, true, 0, 0, [CODE.source, ['q']], [CODE.target, ['l']]],
+    value: described(CODE.attach, [
+      'l',
+      uint(0),
+      true,
+      ubyte(0),
+      ubyte(0),
+      described(CODE.source, ['q']),
+      described(CODE.target, ['l']),
+    ]),
+    hex: '005312' + 'c01c07' + 'a1016c' + '43' + '41' + '5000' + '5000' + '005328c00401a10171' + '005329c00401a1016c',
+  },
+  {
+    name: 'flow (handle 1, credit 10, drain)',
+    fields: [0, 5000, 0, 5000, 1, 0, 10, null, true],
     value: described(CODE.flow, [uint(0), uint(5000), uint(0), uint(5000), uint(1), uint(0), uint(10), null, true]),
-    hex: '005313' + 'c01409' + '43' + '7000001388' + '43' + '7000001388' + '5201' + '43' + '520a' + '40' + '41' },
-  { name: 'transfer (handle 0, delivery 0, tag aa, unsettled)', fields: [0, 0, Buffer.from([0xaa]), 0, false, false],
+    hex: '005313' + 'c01409' + '43' + '7000001388' + '43' + '7000001388' + '5201' + '43' + '520a' + '40' + '41',
+  },
+  {
+    name: 'transfer (handle 0, delivery 0, tag aa, unsettled)',
+    fields: [0, 0, Buffer.from([0xaa]), 0, false, false],
     value: described(CODE.transfer, [uint(0), uint(0), Buffer.from([0xaa]), uint(0), false, false]),
-    hex: '005314' + 'c00906' + '43' + '43' + 'a001aa' + '43' + '42' + '42' },
-  { name: 'disposition (receiver settles 1 accepted)', fields: [true, 1, 1, true, [CODE.accepted, []]],
+    hex: '005314' + 'c00906' + '43' + '43' + 'a001aa' + '43' + '42' + '42',
+  },
+  {
+    name: 'disposition (receiver settles 1 accepted)',
+    fields: [true, 1, 1, true, [CODE.accepted, []]],
     value: described(CODE.disposition, [true, uint(1), uint(1), true, described(CODE.accepted, [])]),
-    hex: '005315' + 'c00b05' + '41' + '5201' + '5201' + '41' + '00532445' },
+    hex: '005315' + 'c00b05' + '41' + '5201' + '5201' + '41' + '00532445',
+  },
 ];
-const plain = (value) => (value instanceof Described ? [value.descriptor, plain(value.value)] : value?.d !== undefined ? [value.d, plain(value.v)] : Array.isArray(value) ? value.map(plain) : value);
+const plain = (value) =>
+  value instanceof Described
+    ? [value.descriptor, plain(value.value)]
+    : value?.d !== undefined
+      ? [value.d, plain(value.v)]
+      : Array.isArray(value)
+        ? value.map(plain)
+        : value;
 
 test('golden performative bytes: the client encodes them, and both codecs read every field at its spec position', () => {
   for (const { name, value, hex: golden, fields } of GOLDEN) {

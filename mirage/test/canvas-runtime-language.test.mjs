@@ -11,24 +11,34 @@ const formula = 'Set(fxLanguage, Language()); Set(fxValue, Value("1.234,5")); Se
 async function run(t, setup) {
   const org = await organization(t);
   setup(org);
-  const instance = createCanvasApp({ app: await fixtureApp(), evaluator: createPowerFxEvaluator(), principal: org.admin, api: org.api, caller: org.caller });
+  const instance = createCanvasApp({
+    app: await fixtureApp(),
+    evaluator: createPowerFxEvaluator(),
+    principal: org.admin,
+    api: org.api,
+    caller: org.caller,
+  });
   await instance.start();
   const { errors, snapshot } = await instance.act({ action: 'run', formula });
   assert.deepEqual(errors, []);
   return snapshot.variables;
 }
 
-test('a de-DE staff user (usersettings uilanguageid 1031) reads numbers and Language() in de-DE', async t => {
-  const variables = await run(t, org => {
-    (org.store.state.tables.usersettings ??= []).push({ usersettingsid: org.admin.principalId, systemuserid: org.admin.principalId, uilanguageid: 1031 });
+test('a de-DE staff user (usersettings uilanguageid 1031) reads numbers and Language() in de-DE', async (t) => {
+  const variables = await run(t, (org) => {
+    (org.store.state.tables.usersettings ??= []).push({
+      usersettingsid: org.admin.principalId,
+      systemuserid: org.admin.principalId,
+      uilanguageid: 1031,
+    });
   });
   assert.equal(variables.fxLanguage, 'de-DE');
   assert.equal(variables.fxValue, 1234.5);
   assert.equal(variables.fxFloat, 2.5);
 });
 
-test('without a usersettings row the organization base language applies', async t => {
-  const variables = await run(t, org => {
+test('without a usersettings row the organization base language applies', async (t) => {
+  const variables = await run(t, (org) => {
     const organizationRow = org.store.state.tables.organization?.[0];
     assert.ok(organizationRow, 'the organization row is seeded');
     organizationRow.languagecode = 1031;

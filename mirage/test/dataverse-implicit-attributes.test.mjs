@@ -17,11 +17,23 @@ const fields = {
   x_cost: { dataverseType: 'money', precision: 4 },
 };
 const mappings = {
-  x_component: { entitySet: 'x_components', idColumn: 'x_componentid', nameColumn: 'x_name', ownership: 'UserOwned', fields },
-  x_other: { entitySet: 'x_others', idColumn: 'x_otherid', nameColumn: 'x_name', fields: { x_name: { dataverseType: 'nvarchar' } } },
+  x_component: {
+    entitySet: 'x_components',
+    idColumn: 'x_componentid',
+    nameColumn: 'x_name',
+    ownership: 'UserOwned',
+    fields,
+  },
+  x_other: {
+    entitySet: 'x_others',
+    idColumn: 'x_otherid',
+    nameColumn: 'x_name',
+    fields: { x_name: { dataverseType: 'nvarchar' } },
+  },
 };
-const service = extra => createMetadataService({ organizationId: ORG, mappings: { ...mappings, ...extra } });
-const byName = metadata => Object.fromEntries(metadata.attributes('x_component').map(attribute => [attribute.LogicalName, attribute]));
+const service = (extra) => createMetadataService({ organizationId: ORG, mappings: { ...mappings, ...extra } });
+const byName = (metadata) =>
+  Object.fromEntries(metadata.attributes('x_component').map((attribute) => [attribute.LogicalName, attribute]));
 
 test('lookup and enum companion definitions preserve native metadata categories and OData visibility', () => {
   const attrs = byName(service());
@@ -80,7 +92,12 @@ test('file, image and money companions expose the distinct native base and suppo
   assert.equal(attrs.exchangerate.IsValidForUpdate, false);
   assert.equal(attrs.x_cost_base.AttributeType, 'Money');
   assert.equal(attrs.x_cost_base.IsValidForUpdate, false);
-  assert.equal(service().attributes('x_other').some(attribute => ['transactioncurrencyid', 'exchangerate'].includes(attribute.LogicalName)), false);
+  assert.equal(
+    service()
+      .attributes('x_other')
+      .some((attribute) => ['transactioncurrencyid', 'exchangerate'].includes(attribute.LogicalName)),
+    false,
+  );
 });
 
 test('regular custom tables gain omitted platform metadata and explicit exported flags remain authoritative', () => {
@@ -91,12 +108,22 @@ test('regular custom tables gain omitted platform metadata and explicit exported
   assert.equal(attrs.importsequencenumber.IsValidForUpdate, false);
   assert.equal(attrs.overriddencreatedon.IsValidForUpdate, false);
   assert.equal(attrs.timezoneruleversionnumber.IsValidForUpdate, true);
-  const metadata = service({ x_component: { ...mappings.x_component, fields: { ...fields,
-    x_assigneename: { dataverseType: 'nvarchar', validForCreate: true, maxLength: 72,
-      columnMetadata: { type: 'nvarchar', validForRead: false, isLogical: false, attributeOf: null },
-      dataverseMetadata: { IsValidODataAttribute: true } },
-    x_file: { dataverseType: 'file', columnMetadata: { type: 'file', validForCreate: true } },
-  } } });
+  const metadata = service({
+    x_component: {
+      ...mappings.x_component,
+      fields: {
+        ...fields,
+        x_assigneename: {
+          dataverseType: 'nvarchar',
+          validForCreate: true,
+          maxLength: 72,
+          columnMetadata: { type: 'nvarchar', validForRead: false, isLogical: false, attributeOf: null },
+          dataverseMetadata: { IsValidODataAttribute: true },
+        },
+        x_file: { dataverseType: 'file', columnMetadata: { type: 'file', validForCreate: true } },
+      },
+    },
+  });
   const explicit = byName(metadata);
   assert.equal(explicit.x_assigneename.IsValidForCreate, true);
   assert.equal(explicit.x_assigneename.IsValidForRead, false);
@@ -107,26 +134,53 @@ test('regular custom tables gain omitted platform metadata and explicit exported
 });
 
 test('virtual, intersect and elastic tables receive no inferred platform companions', () => {
-  for (const source of [{ isVirtual: true }, { s: { isIntersect: true } }, { m: { intersect: true } }, { m: { tableType: 'Elastic' } }, { m: { tableType: 'Virtual' } }]) {
+  for (const source of [
+    { isVirtual: true },
+    { s: { isIntersect: true } },
+    { m: { intersect: true } },
+    { m: { tableType: 'Elastic' } },
+    { m: { tableType: 'Virtual' } },
+  ]) {
     const declared = { ...fields };
     assert.equal(implicitAttributes({ logical: 'x_component', ...source }, declared), declared);
   }
 });
 
 function solutionSchema(table = {}) {
-  return { tables: { x_component: { logicalName: 'x_component', primaryIdAttribute: 'x_componentid', primaryNameAttribute: 'x_name',
-    attributes: { x_name: { name: 'x_name', type: 'nvarchar', maxLength: 80 }, x_untouched: { name: 'x_untouched', type: 'int' } }, ...table } },
-  relationships: {}, targets: {}, optionSets: {} };
+  return {
+    tables: {
+      x_component: {
+        logicalName: 'x_component',
+        primaryIdAttribute: 'x_componentid',
+        primaryNameAttribute: 'x_name',
+        attributes: {
+          x_name: { name: 'x_name', type: 'nvarchar', maxLength: 80 },
+          x_untouched: { name: 'x_untouched', type: 'int' },
+        },
+        ...table,
+      },
+    },
+    relationships: {},
+    targets: {},
+    optionSets: {},
+  };
 }
 
 test('metadata API columns remain visible above Solution fields without admitting unrelated thin mapping fields', () => {
-  const metadata = createMetadataService({ organizationId: ORG, schema: solutionSchema(), mappings: {
-    x_component: { ...mappings.x_component, fields: {
-      x_name: { dataverseType: 'nvarchar', maxLength: 7 },
-      x_transient: { dataverseType: 'nvarchar' },
-      x_added: { dataverseType: 'int', columnMetadata: { type: 'int', isManaged: false, isCustomizable: true } },
-    } },
-  } });
+  const metadata = createMetadataService({
+    organizationId: ORG,
+    schema: solutionSchema(),
+    mappings: {
+      x_component: {
+        ...mappings.x_component,
+        fields: {
+          x_name: { dataverseType: 'nvarchar', maxLength: 7 },
+          x_transient: { dataverseType: 'nvarchar' },
+          x_added: { dataverseType: 'int', columnMetadata: { type: 'int', isManaged: false, isCustomizable: true } },
+        },
+      },
+    },
+  });
   const attrs = byName(metadata);
   assert.equal(attrs.x_added.AttributeType, 'Integer');
   assert.equal(attrs.x_name.MaxLength, 80, 'unrelated selected Solution facts retain precedence');
@@ -135,15 +189,27 @@ test('metadata API columns remain visible above Solution fields without admittin
 });
 
 test('mapping virtual facts survive an omitted Solution flag while explicit source false takes precedence', () => {
-  for (const virtualFact of [{ tableType: 'Virtual' }, { dataverseMetadata: { TableType: 'Virtual' } }, { isVirtual: true }]) {
-    const metadata = createMetadataService({ organizationId: ORG, schema: solutionSchema(), mappings: { x_component: { ...mappings.x_component, ...virtualFact } } });
+  for (const virtualFact of [
+    { tableType: 'Virtual' },
+    { dataverseMetadata: { TableType: 'Virtual' } },
+    { isVirtual: true },
+  ]) {
+    const metadata = createMetadataService({
+      organizationId: ORG,
+      schema: solutionSchema(),
+      mappings: { x_component: { ...mappings.x_component, ...virtualFact } },
+    });
     assert.equal(metadata.entity('x_component').TableType, 'Virtual');
     assert.equal(byName(metadata).createdon, undefined);
     assert.equal(byName(metadata).importsequencenumber, undefined);
   }
-  const explicit = createMetadataService({ organizationId: ORG, schema: solutionSchema({ isVirtual: false }), mappings: {
-    x_component: { ...mappings.x_component, tableType: 'Virtual' },
-  } });
+  const explicit = createMetadataService({
+    organizationId: ORG,
+    schema: solutionSchema({ isVirtual: false }),
+    mappings: {
+      x_component: { ...mappings.x_component, tableType: 'Virtual' },
+    },
+  });
   assert.equal(explicit.entity('x_component').TableType, 'Standard');
   assert.ok(byName(explicit).createdon, 'explicit non-virtual Solution source controls standard system attributes');
   assert.ok(byName(explicit).importsequencenumber, 'explicit source false also takes precedence over helper fallbacks');
@@ -152,8 +218,17 @@ test('mapping virtual facts survive an omitted Solution flag while explicit sour
 test('virtual metadata exposes provider facts with explicit source precedence and nulls for ordinary custom tables', () => {
   const sourceId = '11111111-1111-4111-8111-111111111111';
   const providerId = '22222222-2222-4222-8222-222222222222';
-  const metadata = createMetadataService({ organizationId: ORG, schema: solutionSchema({ tableType: 'Virtual', dataSourceId: sourceId, dataProviderId: providerId }),
-    mappings: { x_component: { ...mappings.x_component, isVirtual: false, dataverseMetadata: { TableType: 'Standard', DataSourceId: 'different', DataProviderId: 'different' } } } });
+  const metadata = createMetadataService({
+    organizationId: ORG,
+    schema: solutionSchema({ tableType: 'Virtual', dataSourceId: sourceId, dataProviderId: providerId }),
+    mappings: {
+      x_component: {
+        ...mappings.x_component,
+        isVirtual: false,
+        dataverseMetadata: { TableType: 'Standard', DataSourceId: 'different', DataProviderId: 'different' },
+      },
+    },
+  });
   const entity = metadata.entity('x_component');
   assert.equal(entity.TableType, 'Virtual');
   assert.equal(entity.DataSourceId, sourceId);
@@ -166,15 +241,36 @@ test('virtual metadata exposes provider facts with explicit source precedence an
 });
 
 test('base Attributes omit only proven generic GUID discriminators, including under selected projections', () => {
-  const metadata = service({ x_component: { ...mappings.x_component, fields: { ...fields, x_correlation: { dataverseType: 'uniqueidentifier' } } } });
-  for (const options of [{}, { select: 'LogicalName,AttributeType' }, { cast: 'AttributeMetadata', select: 'LogicalName' }]) {
-    const attrs = Object.fromEntries(metadata.attributes('x_component', options).map(attribute => [attribute.LogicalName, attribute]));
+  const metadata = service({
+    x_component: {
+      ...mappings.x_component,
+      fields: { ...fields, x_correlation: { dataverseType: 'uniqueidentifier' } },
+    },
+  });
+  for (const options of [
+    {},
+    { select: 'LogicalName,AttributeType' },
+    { cast: 'AttributeMetadata', select: 'LogicalName' },
+  ]) {
+    const attrs = Object.fromEntries(
+      metadata.attributes('x_component', options).map((attribute) => [attribute.LogicalName, attribute]),
+    );
     assert.equal(Object.hasOwn(attrs.x_componentid, '@odata.type'), false);
     assert.equal(Object.hasOwn(attrs.x_imageid, '@odata.type'), false);
-    assert.equal(attrs.x_correlation['@odata.type'], '#Microsoft.Dynamics.CRM.UniqueIdentifierAttributeMetadata', 'an ordinary custom GUID is outside the captured generic cases');
+    assert.equal(
+      attrs.x_correlation['@odata.type'],
+      '#Microsoft.Dynamics.CRM.UniqueIdentifierAttributeMetadata',
+      'an ordinary custom GUID is outside the captured generic cases',
+    );
   }
   // Preserve internal/SOAP metadata contracts independently of the Web API base collection's JSON representation.
   const sdk = metadata.retrieveEntityResponse('x_component', 2).EntityMetadata.Attributes;
-  assert.equal(sdk.find(attribute => attribute.LogicalName === 'x_componentid')['@odata.type'], '#Microsoft.Dynamics.CRM.UniqueIdentifierAttributeMetadata');
-  assert.equal(sdk.find(attribute => attribute.LogicalName === 'x_imageid')['@odata.type'], '#Microsoft.Dynamics.CRM.UniqueIdentifierAttributeMetadata');
+  assert.equal(
+    sdk.find((attribute) => attribute.LogicalName === 'x_componentid')['@odata.type'],
+    '#Microsoft.Dynamics.CRM.UniqueIdentifierAttributeMetadata',
+  );
+  assert.equal(
+    sdk.find((attribute) => attribute.LogicalName === 'x_imageid')['@odata.type'],
+    '#Microsoft.Dynamics.CRM.UniqueIdentifierAttributeMetadata',
+  );
 });

@@ -1,19 +1,77 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {FUNCTIONS, callFunction, castValue, returnType, systemVariable} from '../lib/dataverse-tds-sql-functions.mjs';
+import { FUNCTIONS, callFunction, castValue, returnType, systemVariable } from '../lib/dataverse-tds-sql-functions.mjs';
 
 const utc = (y, mo, d, h = 0, mi = 0, s = 0, ms = 0) => new Date(Date.UTC(y, mo - 1, d, h, mi, s, ms));
-const dec = (decimal) => ({decimal});
+const dec = (decimal) => ({ decimal });
 const call = (name, args, ctx) => callFunction(name, args, ctx);
 const fails = (number, message) => (e) => e.number === number && (message === undefined || e.message === message);
 
 const REQUIRED = [
-  'LEN', 'DATALENGTH', 'LEFT', 'RIGHT', 'SUBSTRING', 'CHARINDEX', 'PATINDEX', 'REPLACE', 'REPLICATE', 'REVERSE',
-  'LOWER', 'UPPER', 'LTRIM', 'RTRIM', 'TRIM', 'CONCAT', 'CONCAT_WS', 'STUFF', 'SPACE', 'STR', 'FORMAT', 'QUOTENAME',
-  'ASCII', 'CHAR', 'UNICODE', 'NCHAR', 'GETDATE', 'GETUTCDATE', 'SYSDATETIME', 'SYSUTCDATETIME', 'DATEADD', 'DATEDIFF',
-  'DATEPART', 'DATENAME', 'YEAR', 'MONTH', 'DAY', 'EOMONTH', 'DATEFROMPARTS', 'ISDATE', 'ABS', 'CEILING', 'FLOOR',
-  'ROUND', 'POWER', 'SQRT', 'SQUARE', 'SIGN', 'EXP', 'LOG', 'LOG10', 'PI', 'RAND', 'ISNULL', 'COALESCE', 'NULLIF',
-  'IIF', 'CHOOSE', 'NEWID', 'CONVERT', 'TRY_CONVERT', 'ISNUMERIC', 'ROWCOUNT_BIG', 'GETANSINULL',
+  'LEN',
+  'DATALENGTH',
+  'LEFT',
+  'RIGHT',
+  'SUBSTRING',
+  'CHARINDEX',
+  'PATINDEX',
+  'REPLACE',
+  'REPLICATE',
+  'REVERSE',
+  'LOWER',
+  'UPPER',
+  'LTRIM',
+  'RTRIM',
+  'TRIM',
+  'CONCAT',
+  'CONCAT_WS',
+  'STUFF',
+  'SPACE',
+  'STR',
+  'FORMAT',
+  'QUOTENAME',
+  'ASCII',
+  'CHAR',
+  'UNICODE',
+  'NCHAR',
+  'GETDATE',
+  'GETUTCDATE',
+  'SYSDATETIME',
+  'SYSUTCDATETIME',
+  'DATEADD',
+  'DATEDIFF',
+  'DATEPART',
+  'DATENAME',
+  'YEAR',
+  'MONTH',
+  'DAY',
+  'EOMONTH',
+  'DATEFROMPARTS',
+  'ISDATE',
+  'ABS',
+  'CEILING',
+  'FLOOR',
+  'ROUND',
+  'POWER',
+  'SQRT',
+  'SQUARE',
+  'SIGN',
+  'EXP',
+  'LOG',
+  'LOG10',
+  'PI',
+  'RAND',
+  'ISNULL',
+  'COALESCE',
+  'NULLIF',
+  'IIF',
+  'CHOOSE',
+  'NEWID',
+  'CONVERT',
+  'TRY_CONVERT',
+  'ISNUMERIC',
+  'ROWCOUNT_BIG',
+  'GETANSINULL',
 ];
 
 test('every required function is registered and refuses a call outside its arity with 174', () => {
@@ -66,12 +124,12 @@ const cases = [
   ['CHARINDEX', ['bike', 'Reflectors are vital safety components of your bicycle.'], 0],
   ['CHARINDEX', ['vital', 'Reflectors are vital safety components of your bicycle.', 17], 0],
   ['CHARINDEX', ['TEST', 'This is a Test'], 11],
-  ['CHARINDEX', ['TEST', 'This is a Test', 1], 0, {caseSensitive: true}],
+  ['CHARINDEX', ['TEST', 'This is a Test', 1], 0, { caseSensitive: true }],
   ['PATINDEX', ['%[0-9]%', 'abc4'], 4],
   ['PATINDEX', ['a_c', 'zabc'], 2],
   ['PATINDEX', ['%x%', 'abc'], 0],
   ['REPLACE', ['abcabc', 'B', 'X'], 'aXcaXc'],
-  ['REPLACE', ['abcabc', 'B', 'X'], 'abcabc', {caseSensitive: true}],
+  ['REPLACE', ['abcabc', 'B', 'X'], 'abcabc', { caseSensitive: true }],
   ['REPLICATE', ['ab', 3], 'ababab'],
   ['REPLICATE', ['a', -1], null],
   ['REVERSE', ['abc'], 'cba'],
@@ -208,16 +266,16 @@ test('unknown and unsupported functions are rejected with the documented shape',
 
 test('datetime functions read the statement clock and seeded RAND is repeatable', () => {
   const now = utc(2026, 1, 2, 3, 4, 5);
-  assert.deepStrictEqual(call('GETDATE', [], {now}), now);
-  assert.deepStrictEqual(call('SYSUTCDATETIME', [], {now: () => now}), now);
+  assert.deepStrictEqual(call('GETDATE', [], { now }), now);
+  assert.deepStrictEqual(call('SYSUTCDATETIME', [], { now: () => now }), now);
   const a = {};
   const first = call('RAND', [42], a);
   assert.equal(call('RAND', [], a) < 1, true);
   assert.equal(call('RAND', [42], {}), first);
-  const id = call('NEWID', [], {newId: () => 'FIXED'});
+  const id = call('NEWID', [], { newId: () => 'FIXED' });
   assert.equal(id, 'FIXED');
   assert.match(call('NEWID', []), /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/);
-  assert.equal(call('ROWCOUNT_BIG', [], {rowCount: 5}), 5n);
+  assert.equal(call('ROWCOUNT_BIG', [], { rowCount: 5 }), 5n);
 });
 
 const FORMATMESSAGE_CASES = [
@@ -238,7 +296,10 @@ for (const [message, args, expected] of FORMATMESSAGE_CASES) {
 }
 
 test('FORMATMESSAGE rejects a message number and missing parameters', () => {
-  assert.throws(() => call('FORMATMESSAGE', [50001, 'x']), fails(195, "'FORMATMESSAGE' is not supported in Dataverse SQL."));
+  assert.throws(
+    () => call('FORMATMESSAGE', [50001, 'x']),
+    fails(195, "'FORMATMESSAGE' is not supported in Dataverse SQL."),
+  );
   assert.throws(() => call('FORMATMESSAGE', ['%s %s', 'a']), fails(2787));
 });
 
@@ -258,7 +319,7 @@ test('NEWSEQUENTIALID returns increasing GUIDs in SQL Server order', () => {
 
 test('systemVariable exposes @@VERSION and @@ROWCOUNT and rejects unsupported variables', () => {
   assert.equal(systemVariable('@@VERSION'), 'Microsoft SQL Azure (RTM) - 12.0.2000.8');
-  assert.equal(systemVariable('@@ROWCOUNT', {rowCount: 3}), 3);
+  assert.equal(systemVariable('@@ROWCOUNT', { rowCount: 3 }), 3);
   assert.throws(() => systemVariable('@@ERROR'), fails(195));
 });
 
@@ -267,10 +328,14 @@ test('castValue follows CAST rules and raises the T-SQL conversion errors', () =
   assert.equal(castValue(12.9, 'int'), 12);
   assert.equal(castValue(dec('-12.9'), 'int'), -12);
   assert.equal(castValue(7, 'bigint'), 7n);
-  assert.throws(() => castValue('12.5', 'int'),
-    fails(245, "Conversion failed when converting the nvarchar value '12.5' to data type int."));
-  assert.throws(() => castValue('abc', 'int'),
-    fails(245, "Conversion failed when converting the nvarchar value 'abc' to data type int."));
+  assert.throws(
+    () => castValue('12.5', 'int'),
+    fails(245, "Conversion failed when converting the nvarchar value '12.5' to data type int."),
+  );
+  assert.throws(
+    () => castValue('abc', 'int'),
+    fails(245, "Conversion failed when converting the nvarchar value 'abc' to data type int."),
+  );
   assert.throws(() => castValue('3000000000', 'int'), fails(8115));
   assert.deepStrictEqual(castValue('12.345', 'decimal(10,2)'), dec('12.35'));
   assert.throws(() => castValue('1234567890123', 'decimal(5,2)'), fails(8115));
@@ -282,7 +347,10 @@ test('castValue follows CAST rules and raises the T-SQL conversion errors', () =
   assert.equal(castValue(dec('10.50'), 'nvarchar(10)'), '10.50');
   assert.equal(castValue(true, 'nvarchar'), '1');
   assert.equal(castValue(null, 'int'), null);
-  assert.equal(castValue('0f8fad5b-d9cb-469f-a165-70867728950e', 'uniqueidentifier'), '0F8FAD5B-D9CB-469F-A165-70867728950E');
+  assert.equal(
+    castValue('0f8fad5b-d9cb-469f-a165-70867728950e', 'uniqueidentifier'),
+    '0F8FAD5B-D9CB-469F-A165-70867728950E',
+  );
   assert.throws(() => castValue('nope', 'uniqueidentifier'), fails(8169));
   assert.deepStrictEqual(castValue('1', 'binary'), Buffer.from([0x31]));
   assert.deepStrictEqual(castValue('2026-10-19', 'datetime'), utc(2026, 10, 19));
@@ -333,7 +401,11 @@ test('CONVERT and TRY_CONVERT edge cases', () => {
 const hex = (buf) => (buf === null ? null : Buffer.from(buf).toString('hex'));
 const binaryCases = [
   ['nvarchar text to varbinary is UTF-16LE', () => hex(castValue('ab', 'varbinary(8)')), '61006200'],
-  ['varchar text to varbinary is single-byte', () => hex(castValue('ab', 'varbinary(8)', { fromType: 'varchar' })), '6162'],
+  [
+    'varchar text to varbinary is single-byte',
+    () => hex(castValue('ab', 'varbinary(8)', { fromType: 'varchar' })),
+    '6162',
+  ],
   ['varbinary truncates text bytes', () => hex(castValue('abcd', 'varbinary(3)', { fromType: 'varchar' })), '616263'],
   ['binary(n) pads with zero bytes', () => hex(castValue('a', 'binary(4)', { fromType: 'varchar' })), '61000000'],
   ['binary(n) truncates', () => hex(castValue('abcd', 'binary(2)', { fromType: 'varchar' })), '6162'],
@@ -343,7 +415,11 @@ const binaryCases = [
   ['bigint is eight big-endian bytes', () => hex(castValue(258n, 'varbinary(8)')), '0000000000000102'],
   ['bit true is one byte', () => hex(castValue(true, 'binary(2)')), '0100'],
   ['bit false pads', () => hex(castValue(false, 'varbinary(2)')), '00'],
-  ['binary to varbinary(max) keeps all bytes', () => hex(castValue(Buffer.from('0102', 'hex'), 'varbinary(max)')), '0102'],
+  [
+    'binary to varbinary(max) keeps all bytes',
+    () => hex(castValue(Buffer.from('0102', 'hex'), 'varbinary(max)')),
+    '0102',
+  ],
   ['binary to binary(4) pads on the right', () => hex(castValue(Buffer.from('0102', 'hex'), 'binary(4)')), '01020000'],
   ['binary to varbinary(1) truncates', () => hex(castValue(Buffer.from('0102', 'hex'), 'varbinary(1)')), '01'],
   ['bare binary is one byte', () => hex(castValue('ab', 'binary', { fromType: 'varchar' })), '61'],
@@ -370,30 +446,105 @@ const typeCases = [
   ['LEN is int', 'LEN', [{ type: 'nvarchar', length: 9 }], {}, { type: 'int' }],
   ['UPPER keeps the input length', 'UPPER', [{ type: 'varchar', length: 9 }], {}, { type: 'nvarchar', length: 9 }],
   ['UPPER of a non-text is nvarchar(4000)', 'UPPER', [{ type: 'int' }], {}, { type: 'nvarchar', length: 4000 }],
-  ['LEFT keeps the input length', 'LEFT', [{ type: 'nvarchar', length: 12 }, { type: 'int' }], {}, { type: 'nvarchar', length: 12 }],
-  ['CONCAT is nvarchar(4000)', 'CONCAT', [{ type: 'nvarchar', length: 3 }, { type: 'int' }], {}, { type: 'nvarchar', length: 4000 }],
+  [
+    'LEFT keeps the input length',
+    'LEFT',
+    [{ type: 'nvarchar', length: 12 }, { type: 'int' }],
+    {},
+    { type: 'nvarchar', length: 12 },
+  ],
+  [
+    'CONCAT is nvarchar(4000)',
+    'CONCAT',
+    [{ type: 'nvarchar', length: 3 }, { type: 'int' }],
+    {},
+    { type: 'nvarchar', length: 4000 },
+  ],
   ['CHAR is nvarchar(1)', 'CHAR', [{ type: 'int' }], {}, { type: 'nvarchar', length: 1 }],
-  ['DATENAME is nvarchar(4000)', 'DATENAME', [{ type: 'nvarchar' }, { type: 'datetime' }], {}, { type: 'nvarchar', length: 4000 }],
-  ['ABS keeps a decimal type and scale', 'ABS', [{ type: 'decimal', precision: 10, scale: 2 }], {}, { type: 'decimal', precision: 10, scale: 2 }],
+  [
+    'DATENAME is nvarchar(4000)',
+    'DATENAME',
+    [{ type: 'nvarchar' }, { type: 'datetime' }],
+    {},
+    { type: 'nvarchar', length: 4000 },
+  ],
+  [
+    'ABS keeps a decimal type and scale',
+    'ABS',
+    [{ type: 'decimal', precision: 10, scale: 2 }],
+    {},
+    { type: 'decimal', precision: 10, scale: 2 },
+  ],
   ['ROUND keeps an int', 'ROUND', [{ type: 'int' }, { type: 'int' }], {}, { type: 'int' }],
   ['CEILING keeps bigint', 'CEILING', [{ type: 'bigint' }], {}, { type: 'bigint' }],
   ['ABS of a string is float', 'ABS', [{ type: 'varchar', length: 5 }], {}, { type: 'float' }],
   ['SQRT of an int is float', 'SQRT', [{ type: 'int' }], {}, { type: 'float' }],
   ['LOG is float', 'LOG', [{ type: 'decimal', precision: 9, scale: 1 }], {}, { type: 'float' }],
-  ['DATEADD is datetime', 'DATEADD', [{ type: 'nvarchar' }, { type: 'int' }, { type: 'datetime' }], {}, { type: 'datetime' }],
-  ['DATEDIFF is int', 'DATEDIFF', [{ type: 'nvarchar' }, { type: 'datetime' }, { type: 'datetime' }], {}, { type: 'int' }],
+  [
+    'DATEADD is datetime',
+    'DATEADD',
+    [{ type: 'nvarchar' }, { type: 'int' }, { type: 'datetime' }],
+    {},
+    { type: 'datetime' },
+  ],
+  [
+    'DATEDIFF is int',
+    'DATEDIFF',
+    [{ type: 'nvarchar' }, { type: 'datetime' }, { type: 'datetime' }],
+    {},
+    { type: 'int' },
+  ],
   ['DATEPART is int', 'DATEPART', [{ type: 'nvarchar' }, { type: 'datetime' }], {}, { type: 'int' }],
   ['GETDATE is datetime', 'GETDATE', [], {}, { type: 'datetime' }],
   ['NEWID is uniqueidentifier', 'NEWID', [], {}, { type: 'uniqueidentifier' }],
   ['ROWCOUNT_BIG is bigint', 'ROWCOUNT_BIG', [], {}, { type: 'bigint' }],
-  ['ISNULL takes the first argument type', 'ISNULL', [{ type: 'nvarchar', length: 5 }, { type: 'int' }], {}, { type: 'nvarchar', length: 5 }],
+  [
+    'ISNULL takes the first argument type',
+    'ISNULL',
+    [{ type: 'nvarchar', length: 5 }, { type: 'int' }],
+    {},
+    { type: 'nvarchar', length: 5 },
+  ],
   ['ISNULL of a NULL takes the second', 'ISNULL', [{ type: 'null' }, { type: 'int' }], {}, { type: 'int' }],
   ['NULLIF takes the first argument type', 'NULLIF', [{ type: 'bigint' }, { type: 'int' }], {}, { type: 'bigint' }],
-  ['COALESCE takes the highest precedence branch', 'COALESCE', [{ type: 'int' }, { type: 'bigint' }], {}, { type: 'bigint' }],
-  ['COALESCE of text takes the longer length', 'COALESCE', [{ type: 'nvarchar', length: 3 }, { type: 'varchar', length: 9 }], {}, { type: 'nvarchar', length: 9 }],
-  ['IIF ignores the condition type', 'IIF', [{ type: 'bit' }, { type: 'decimal', precision: 5, scale: 2 }, { type: 'int' }], {}, { type: 'decimal', precision: 5, scale: 2 }],
-  ['CONVERT takes the target type', 'CONVERT', [{ type: 'nvarchar' }, { type: 'int' }], { target: 'varbinary(4)' }, { type: 'varbinary', length: 4 }],
-  ['TRY_CONVERT takes the target precision', 'TRY_CONVERT', [{ type: 'nvarchar' }, { type: 'int' }], { target: 'decimal(10,3)' }, { type: 'decimal', precision: 10, scale: 3 }],
+  [
+    'COALESCE takes the highest precedence branch',
+    'COALESCE',
+    [{ type: 'int' }, { type: 'bigint' }],
+    {},
+    { type: 'bigint' },
+  ],
+  [
+    'COALESCE of text takes the longer length',
+    'COALESCE',
+    [
+      { type: 'nvarchar', length: 3 },
+      { type: 'varchar', length: 9 },
+    ],
+    {},
+    { type: 'nvarchar', length: 9 },
+  ],
+  [
+    'IIF ignores the condition type',
+    'IIF',
+    [{ type: 'bit' }, { type: 'decimal', precision: 5, scale: 2 }, { type: 'int' }],
+    {},
+    { type: 'decimal', precision: 5, scale: 2 },
+  ],
+  [
+    'CONVERT takes the target type',
+    'CONVERT',
+    [{ type: 'nvarchar' }, { type: 'int' }],
+    { target: 'varbinary(4)' },
+    { type: 'varbinary', length: 4 },
+  ],
+  [
+    'TRY_CONVERT takes the target precision',
+    'TRY_CONVERT',
+    [{ type: 'nvarchar' }, { type: 'int' }],
+    { target: 'decimal(10,3)' },
+    { type: 'decimal', precision: 10, scale: 3 },
+  ],
   ['an unknown function has no static type', 'NO_SUCH_FUNCTION', [], {}, null],
 ];
 for (const [label, name, args, extra, expected] of typeCases) {

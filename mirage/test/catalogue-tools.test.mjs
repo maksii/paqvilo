@@ -14,8 +14,18 @@ import { withProcessSlot } from './process-slots.mjs';
 
 const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
 // Resolves with the exit status instead of rejecting, so callers can assert failures too.
-const runMirage = (args, timeout) => withProcessSlot(() => new Promise(resolve => execFile(process.execPath, [bin, 'mirage', ...args], { cwd: os.tmpdir(), encoding: 'utf8', windowsHide: true, timeout },
-  (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }))));
+const runMirage = (args, timeout) =>
+  withProcessSlot(
+    () =>
+      new Promise((resolve) =>
+        execFile(
+          process.execPath,
+          [bin, 'mirage', ...args],
+          { cwd: os.tmpdir(), encoding: 'utf8', windowsHide: true, timeout },
+          (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
+        ),
+      ),
+  );
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-'));
@@ -23,9 +33,12 @@ async function fixture(t) {
   const files = {
     'portal/web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
     'portal/web-pages/home/Home.webpage.copy.html': '<html><head></head><body><p>Fixture</p></body></html>',
-    'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>Synthetic</UniqueName></SolutionManifest></ImportExportXml>',
-    'solution/Entities/sample_item/Entity.xml': '<Entity><Name>sample_item</Name><EntityInfo><entity Name="sample_item"><attributes><attribute PhysicalName="sample_name"><Type>nvarchar</Type><LogicalName>sample_name</LogicalName></attribute></attributes></entity></EntityInfo></Entity>',
-    'paqvilo.config.yml': 'sourceRoot: .\nsites:\n  synthetic:\n    source: portal\n    environments: { dev: https://synthetic.example.test }\n    mirage:\n      solutionRoots: [./solution]\n',
+    'solution/Other/Solution.xml':
+      '<ImportExportXml><SolutionManifest><UniqueName>Synthetic</UniqueName></SolutionManifest></ImportExportXml>',
+    'solution/Entities/sample_item/Entity.xml':
+      '<Entity><Name>sample_item</Name><EntityInfo><entity Name="sample_item"><attributes><attribute PhysicalName="sample_name"><Type>nvarchar</Type><LogicalName>sample_name</LogicalName></attribute></attributes></entity></EntityInfo></Entity>',
+    'paqvilo.config.yml':
+      'sourceRoot: .\nsites:\n  synthetic:\n    source: portal\n    environments: { dev: https://synthetic.example.test }\n    mirage:\n      solutionRoots: [./solution]\n',
   };
   for (const [name, body] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
@@ -34,7 +47,7 @@ async function fixture(t) {
   return { root, config: path.join(root, 'paqvilo.config.yml') };
 }
 
-test('catalogue reports reuse their project cache and sweep selects the same project state', async t => {
+test('catalogue reports reuse their project cache and sweep selects the same project state', async (t) => {
   const { root, config } = await fixture(t);
   const input = await resolveReportInputs({ config, site: 'synthetic' });
   assert.equal(input.cacheFile, path.join(root, '.paqvilo/simulator/synthetic/cache/solution-sources.json'));
@@ -51,18 +64,24 @@ test('catalogue reports reuse their project cache and sweep selects the same pro
   assert.equal(uncached.summary.timings.cache.hits, 0);
 });
 
-test('generated output rejects the installed package and a junction back into it', async t => {
+test('generated output rejects the installed package and a junction back into it', async (t) => {
   const { root } = await fixture(t);
   const installed = path.join(root, 'node_modules/paqvilo');
   await fs.mkdir(installed, { recursive: true });
-  assert.throws(() => assertProjectOutput(path.join(installed, '.paqvilo/cache.json'), installed), /inside the installed package/);
+  assert.throws(
+    () => assertProjectOutput(path.join(installed, '.paqvilo/cache.json'), installed),
+    /inside the installed package/,
+  );
   assert.doesNotThrow(() => assertProjectOutput(path.join(root, '.paqvilo/cache.json'), installed));
   const alias = path.join(root, 'aliased-package');
   await fs.symlink(installed, alias, process.platform === 'win32' ? 'junction' : 'dir');
-  assert.throws(() => assertProjectOutput(path.join(alias, '.paqvilo/cache.json'), installed), /inside the installed package/);
+  assert.throws(
+    () => assertProjectOutput(path.join(alias, '.paqvilo/cache.json'), installed),
+    /inside the installed package/,
+  );
 });
 
-test('catalogue option tables produce registry help accepted by each parser and execute outside the project cwd', async t => {
+test('catalogue option tables produce registry help accepted by each parser and execute outside the project cwd', async (t) => {
   const { root, config } = await fixture(t);
   const runs = [];
   for (const [name, definitions] of Object.entries(TOOL_OPTIONS)) {
@@ -70,13 +89,18 @@ test('catalogue option tables produce registry help accepted by each parser and 
     for (const [key, definition] of Object.entries(definitions)) {
       if (key === 'help') continue;
       assert.ok(help.includes(`--${key}`), `${name}: ${key}`);
-      const value = definition.label === 'SITE=ENV' ? 'synthetic=dev' : definition.label === 'PORTAL=NAME' ? 'synthetic=fixture' : 'fixture';
+      const value =
+        definition.label === 'SITE=ENV'
+          ? 'synthetic=dev'
+          : definition.label === 'PORTAL=NAME'
+            ? 'synthetic=fixture'
+            : 'fixture';
       assert.doesNotThrow(() => parseToolArgs(name, [`--${key}`, ...(definition.type === 'string' ? [value] : [])]));
     }
     const args = [name, '--config', config, '--json'];
     if (name !== 'portal-matrix') args.push('--site', 'synthetic');
     if (name === 'portal-matrix') args.push('--only', 'import,bootstrap,liquid,webapi');
-    runs.push(runMirage(args, 30000).then(result => ({ name, result })));
+    runs.push(runMirage(args, 30000).then((result) => ({ name, result })));
   }
   for (const { name, result } of await Promise.all(runs)) {
     assert.equal(result.status, 0, `${name}: ${result.stdout}\n${result.stderr}`);
@@ -85,16 +109,28 @@ test('catalogue option tables produce registry help accepted by each parser and 
   assert.ok((await fs.readdir(path.join(root, '.paqvilo/portal-matrix'))).length);
 });
 
-test('parity and conformance help name their real required plan options', async t => {
+test('parity and conformance help name their real required plan options', async (t) => {
   const { root, config } = await fixture(t);
   const missing = path.join(root, 'missing-plan.json');
   assert.ok(MIRAGE_TOOLS['parity-suite'].includes('--scenarios FILE'));
   assert.ok(!MIRAGE_TOOLS['parity-suite'].includes('--plan'));
   assert.ok(MIRAGE_TOOLS['liquid-conformance'].includes('--suite FILE'));
-  const results = await Promise.all([
-    ['parity-suite', '--config', config, '--site', 'synthetic', '--out', path.join(root, '.paqvilo/parity'), '--scenarios', missing],
-    ['liquid-conformance', '--suite', missing, '--json'],
-  ].map(args => runMirage(args, 10000)));
+  const results = await Promise.all(
+    [
+      [
+        'parity-suite',
+        '--config',
+        config,
+        '--site',
+        'synthetic',
+        '--out',
+        path.join(root, '.paqvilo/parity'),
+        '--scenarios',
+        missing,
+      ],
+      ['liquid-conformance', '--suite', missing, '--json'],
+    ].map((args) => runMirage(args, 10000)),
+  );
   for (const result of results) {
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /ENOENT/);

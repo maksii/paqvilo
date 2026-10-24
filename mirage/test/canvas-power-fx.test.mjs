@@ -12,22 +12,56 @@ test('the default Power Fx evaluator is the core engine at behaviour', async () 
   assert.equal(evaluator.available, true);
   assert.equal(evaluator.source, 'core');
   const behaviour = { level: 'behaviour' };
-  assert.deepEqual(evaluator.describe(), { name: 'power-fx', version: 1, kind: 'provider', level: 'behaviour', source: 'core', operations: [
-    { name: 'evaluate', ...behaviour }, { name: 'evaluateSync', ...behaviour }, { name: 'check', ...behaviour }, { name: 'checkSync', ...behaviour }],
-    requires: [], principal: 'caller', stateOwner: 'none', lifecycle: 'stateless' });
+  assert.deepEqual(evaluator.describe(), {
+    name: 'power-fx',
+    version: 1,
+    kind: 'provider',
+    level: 'behaviour',
+    source: 'core',
+    operations: [
+      { name: 'evaluate', ...behaviour },
+      { name: 'evaluateSync', ...behaviour },
+      { name: 'check', ...behaviour },
+      { name: 'checkSync', ...behaviour },
+    ],
+    requires: [],
+    principal: 'caller',
+    stateOwner: 'none',
+    lifecycle: 'stateless',
+  });
 });
 
 test('the explicitly disabled engine answers 501 PowerFxNotImplemented and reports contract level', async () => {
   const evaluator = createPowerFxEvaluator({ engine: false });
-  await assert.rejects(evaluator.evaluate('1 + 1'), error => error.name === 'DataError' && error.status === 501 && error.code === 'PowerFxNotImplemented'
-    && error.message === 'Power Fx evaluation is disabled; enable the engine or register a pack powerFx adapter.');
+  await assert.rejects(
+    evaluator.evaluate('1 + 1'),
+    (error) =>
+      error.name === 'DataError' &&
+      error.status === 501 &&
+      error.code === 'PowerFxNotImplemented' &&
+      error.message === 'Power Fx evaluation is disabled; enable the engine or register a pack powerFx adapter.',
+  );
   const checked = await evaluator.check('1 + 1', { symbols: {} });
   assert.equal(checked.ok, false);
   assert.equal(checked.diagnostics[0].code, 'POWERFX_NOT_IMPLEMENTED');
   const contract = { level: 'contract' };
-  assert.deepEqual(evaluator.describe(), { name: 'power-fx', version: 1, kind: 'provider', level: 'contract', source: 'disabled', operations: [
-    { name: 'evaluate', ...contract }, { name: 'evaluateSync', ...contract }, { name: 'check', ...contract }, { name: 'checkSync', ...contract }],
-    requires: ['adapter:powerFx'], principal: 'caller', stateOwner: 'none', lifecycle: 'stateless' });
+  assert.deepEqual(evaluator.describe(), {
+    name: 'power-fx',
+    version: 1,
+    kind: 'provider',
+    level: 'contract',
+    source: 'disabled',
+    operations: [
+      { name: 'evaluate', ...contract },
+      { name: 'evaluateSync', ...contract },
+      { name: 'check', ...contract },
+      { name: 'checkSync', ...contract },
+    ],
+    requires: ['adapter:powerFx'],
+    principal: 'caller',
+    stateOwner: 'none',
+    lifecycle: 'stateless',
+  });
   assert.throws(() => notImplementedPowerFx.evaluate('1'), { status: 501 });
   assert.throws(() => evaluator.evaluateSync('1'), { status: 501, code: 'PowerFxNotImplemented' });
   assert.throws(() => evaluator.checkSync('1'), { status: 501, code: 'PowerFxNotImplemented' });
@@ -36,14 +70,30 @@ test('the explicitly disabled engine answers 501 PowerFxNotImplemented and repor
 test('registered Power Fx adapter receives expression, symbols, values and principal', async () => {
   const calls = [];
   const adapter = {
-    evaluate: async (expression, context) => { calls.push(['evaluate', expression, context]); return { value: context.values.fxCount + 1 }; },
-    check: (expression, context) => { calls.push(['check', expression, context]); return { ok: true, diagnostics: [], returnType: 'Number' }; },
+    evaluate: async (expression, context) => {
+      calls.push(['evaluate', expression, context]);
+      return { value: context.values.fxCount + 1 };
+    },
+    check: (expression, context) => {
+      calls.push(['check', expression, context]);
+      return { ok: true, diagnostics: [], returnType: 'Number' };
+    },
   };
   const evaluator = createPowerFxEvaluator({ adapter });
-  const symbols = { fxCount: 'Number' }, principal = { id: '77777777-7777-4777-8777-777777777777' };
-  assert.deepEqual(await evaluator.evaluate('fxCount + 1', { symbols, values: { fxCount: 2 }, principal }), { value: 3 });
-  assert.deepEqual(await evaluator.check('fxCount + 1', { symbols }), { ok: true, diagnostics: [], returnType: 'Number' });
-  assert.deepEqual(calls, [['evaluate', 'fxCount + 1', { symbols, values: { fxCount: 2 }, principal }], ['check', 'fxCount + 1', { symbols }]]);
+  const symbols = { fxCount: 'Number' },
+    principal = { id: '77777777-7777-4777-8777-777777777777' };
+  assert.deepEqual(await evaluator.evaluate('fxCount + 1', { symbols, values: { fxCount: 2 }, principal }), {
+    value: 3,
+  });
+  assert.deepEqual(await evaluator.check('fxCount + 1', { symbols }), {
+    ok: true,
+    diagnostics: [],
+    returnType: 'Number',
+  });
+  assert.deepEqual(calls, [
+    ['evaluate', 'fxCount + 1', { symbols, values: { fxCount: 2 }, principal }],
+    ['check', 'fxCount + 1', { symbols }],
+  ]);
   assert.equal(evaluator.describe().level, 'behaviour');
 });
 
@@ -71,11 +121,20 @@ test('a synchronous adapter answers evaluateSync and checkSync, and the async ev
   };
   const evaluator = createPowerFxEvaluator({ adapter });
   assert.deepEqual(evaluator.evaluateSync('n', { values: { n: 4 } }), { value: 8 });
-  assert.deepEqual(evaluator.checkSync('n', { symbols: { n: 'Number' } }), { ok: true, diagnostics: [], returnType: 'Number' });
+  assert.deepEqual(evaluator.checkSync('n', { symbols: { n: 'Number' } }), {
+    ok: true,
+    diagnostics: [],
+    returnType: 'Number',
+  });
   assert.deepEqual(await evaluator.evaluate('n', { values: { n: 5 } }), { value: 10 });
   assert.deepEqual(await evaluator.check('n'), { ok: true, diagnostics: [], returnType: 'Number' });
   const operations = Object.fromEntries(evaluator.describe().operations.map(({ name, level }) => [name, level]));
-  assert.deepEqual(operations, { evaluate: 'behaviour', evaluateSync: 'behaviour', check: 'behaviour', checkSync: 'behaviour' });
+  assert.deepEqual(operations, {
+    evaluate: 'behaviour',
+    evaluateSync: 'behaviour',
+    check: 'behaviour',
+    checkSync: 'behaviour',
+  });
 });
 
 test('an adapter that answers with a promise is refused on the synchronous path with PowerFxAsyncAdapter', async () => {
@@ -84,12 +143,19 @@ test('an adapter that answers with a promise is refused on the synchronous path 
   const asyncFunction = createPowerFxEvaluator({ adapter: { evaluate: async () => ({ value: 1 }) } });
   assert.throws(() => asyncFunction.evaluateSync('1'), { status: 501, code: 'PowerFxAsyncAdapter' });
   assert.deepEqual(await asyncFunction.evaluate('1'), { value: 1 });
-  assert.equal(Object.fromEntries(asyncFunction.describe().operations.map(({ name, level }) => [name, level])).evaluateSync, 'contract');
+  assert.equal(
+    Object.fromEntries(asyncFunction.describe().operations.map(({ name, level }) => [name, level])).evaluateSync,
+    'contract',
+  );
 });
 
 test('a check-only adapter without checkSync answers checkSync through its synchronous check', () => {
-  const evaluator = createPowerFxEvaluator({ adapter: { evaluate: () => ({ value: 1 }), check: () => ({ ok: true, diagnostics: [] }) } });
+  const evaluator = createPowerFxEvaluator({
+    adapter: { evaluate: () => ({ value: 1 }), check: () => ({ ok: true, diagnostics: [] }) },
+  });
   assert.deepEqual(evaluator.checkSync('1'), { ok: true, diagnostics: [] });
-  const asyncCheck = createPowerFxEvaluator({ adapter: { evaluate: () => ({ value: 1 }), check: async () => ({ ok: true, diagnostics: [] }) } });
+  const asyncCheck = createPowerFxEvaluator({
+    adapter: { evaluate: () => ({ value: 1 }), check: async () => ({ ok: true, diagnostics: [] }) },
+  });
   assert.throws(() => asyncCheck.checkSync('1'), { code: 'PowerFxAsyncAdapter' });
 });

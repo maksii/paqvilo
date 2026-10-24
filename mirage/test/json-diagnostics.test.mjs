@@ -32,31 +32,58 @@ test('malformed JSON syntax locations do not depend on Node error-message wordin
     assert.throws(() => JSON.parse(source), SyntaxError, name);
     assert.deepEqual(jsonErrorLocation(source), { line, column }, name);
   }
-  const depth = 20000, deeplyNested = '['.repeat(depth) + 'x' + ']'.repeat(depth);
+  const depth = 20000,
+    deeplyNested = '['.repeat(depth) + 'x' + ']'.repeat(depth);
   assert.throws(() => JSON.parse(deeplyNested), SyntaxError);
-  assert.deepEqual(jsonErrorLocation(deeplyNested), { line: 1, column: depth + 1 }, 'deep nesting is inspected without recursive calls');
+  assert.deepEqual(
+    jsonErrorLocation(deeplyNested),
+    { line: 1, column: depth + 1 },
+    'deep nesting is inspected without recursive calls',
+  );
 });
 
-test('export-wide lint and selected profile loading agree on JSON syntax locations without echoing values', async t => {
+test('export-wide lint and selected profile loading agree on JSON syntax locations without echoing values', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'profile-json-locations-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const profiles = path.join(root, 'deployment-profiles'); await fs.mkdir(profiles);
+  const profiles = path.join(root, 'deployment-profiles');
+  await fs.mkdir(profiles);
   for (const row of malformed) await fs.writeFile(path.join(profiles, row.name + '.json'), row.source);
   const diagnostics = inspectExportProfiles(root);
   assert.equal(diagnostics.length, malformed.length);
   for (const { name, line, column } of malformed) {
-    const diagnostic = diagnostics.find(row => row.file === 'deployment-profiles/' + name + '.json');
+    const diagnostic = diagnostics.find((row) => row.file === 'deployment-profiles/' + name + '.json');
     assert.equal(JSON.stringify(diagnostic).includes('PRIVATE_SENTINEL'), false);
-    assert.deepEqual({ code: diagnostic.code, line: diagnostic.line, column: diagnostic.column }, { code: 'JSON_SYNTAX_ERROR', line, column }, name);
-    const config = resolveDeploymentProfiles({ default: 'dev', profiles: { dev: { pages: 'deployment-profiles/' + name + '.json' } } }, root);
-    await assert.rejects(loadDeploymentProfiles(config), error => {
-      assert.deepEqual({ code: error.details.parserCode, line: error.details.line, column: error.details.column }, { code: 'JSON_SYNTAX_ERROR', line, column }, name);
-      assert.equal(JSON.stringify({message:error.message,details:error.details}).includes('PRIVATE_SENTINEL'), false);
-      assert.equal(error.message.includes('unterminated'), name === 'unterminated-string', 'only the filename can identify this fixture');
+    assert.deepEqual(
+      { code: diagnostic.code, line: diagnostic.line, column: diagnostic.column },
+      { code: 'JSON_SYNTAX_ERROR', line, column },
+      name,
+    );
+    const config = resolveDeploymentProfiles(
+      { default: 'dev', profiles: { dev: { pages: 'deployment-profiles/' + name + '.json' } } },
+      root,
+    );
+    await assert.rejects(loadDeploymentProfiles(config), (error) => {
+      assert.deepEqual(
+        { code: error.details.parserCode, line: error.details.line, column: error.details.column },
+        { code: 'JSON_SYNTAX_ERROR', line, column },
+        name,
+      );
+      assert.equal(
+        JSON.stringify({ message: error.message, details: error.details }).includes('PRIVATE_SENTINEL'),
+        false,
+      );
+      assert.equal(
+        error.message.includes('unterminated'),
+        name === 'unterminated-string',
+        'only the filename can identify this fixture',
+      );
       return true;
     });
   }
   await fs.writeFile(path.join(profiles, 'valid.json'), '{"adx_contentsnippet":[]}\r\n\t ');
-  const valid = resolveDeploymentProfiles({ default: 'dev', profiles: { dev: { pages: 'deployment-profiles/valid.json' } } }, root);
+  const valid = resolveDeploymentProfiles(
+    { default: 'dev', profiles: { dev: { pages: 'deployment-profiles/valid.json' } } },
+    root,
+  );
   assert.equal((await loadDeploymentProfiles(valid)).profile, 'dev');
 });

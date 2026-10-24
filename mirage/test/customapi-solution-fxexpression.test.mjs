@@ -14,20 +14,26 @@ import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 import { importSolutionData } from '../lib/solution-data.mjs';
 import { parseCustomApiFiles, parseFxExpressionFiles } from '../lib/dataverse-customapi.mjs';
-import { ownedFixture } from "../testing/owned-fixture.mjs";
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const FX = '77777777-7777-4777-8777-777777777741';
 const api = (name, reference) => ({
   [`customapis/${name}/customapi.xml`]: `<customapi uniquename="${name}"><bindingtype>0</bindingtype><isfunction>1</isfunction><name>${name}</name>${reference}</customapi>`,
-  ...Object.fromEntries(['Budget', 'Spent'].map((p) => [`customapis/${name}/customapirequestparameters/${p}/customapirequestparameter.xml`,
-    `<customapirequestparameter uniquename="${p}"><name>${name}.${p}</name><type>6</type><isoptional>0</isoptional></customapirequestparameter>`])),
+  ...Object.fromEntries(
+    ['Budget', 'Spent'].map((p) => [
+      `customapis/${name}/customapirequestparameters/${p}/customapirequestparameter.xml`,
+      `<customapirequestparameter uniquename="${p}"><name>${name}.${p}</name><type>6</type><isoptional>0</isoptional></customapirequestparameter>`,
+    ]),
+  ),
   [`customapis/${name}/customapiresponseproperties/Ratio/customapiresponseproperty.xml`]: `<customapiresponseproperty uniquename="Ratio"><name>${name}.Ratio</name><type>6</type></customapiresponseproperty>`,
 });
 const files = {
-  'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedFx</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+  'Other/Solution.xml':
+    '<ImportExportXml><SolutionManifest><UniqueName>InventedFx</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
   'fxexpressions/x_Health/fxexpression.xml': `<fxexpression uniquename="x_Health"><fxexpressionid>{${FX}}</fxexpressionid><name>x_Health</name><expression>{ Ratio: If(Budget = 0, 0, (Budget - Spent) / Budget) }</expression><statecode>0</statecode></fxexpression>`,
-  'fxexpressions/x_Half/fxexpression.xml': '<fxexpression uniquename="x_Half"><name>x_Half</name><expression>{ Ratio: Budget / 2 }</expression></fxexpression>',
+  'fxexpressions/x_Half/fxexpression.xml':
+    '<fxexpression uniquename="x_Half"><name>x_Half</name><expression>{ Ratio: Budget / 2 }</expression></fxexpression>',
   ...api('x_Health', `<fxexpressionid><fxexpressionid>{${FX}}</fxexpressionid></fxexpressionid>`),
   ...api('x_Half', '<fxexpressionid><uniquename>x_Half</uniquename></fxexpressionid>'),
   ...api('x_Plain', ''),
@@ -42,17 +48,43 @@ async function organization(t) {
   }
   const variable = `PAQVILO_FXSOL_${process.pid}_${Math.random().toString(36).slice(2).toUpperCase()}`;
   process.env[variable] = 'invented';
-  ownedFixture(t).add(() => { delete process.env[variable]; });
+  ownedFixture(t).add(() => {
+    delete process.env[variable];
+  });
   const store = await new DataStore({ state: emptyState() }).init();
-  const runtime = await createOrganizationRuntime({ store, providers: { powerFx: createPowerFxEvaluator({}) },
+  const runtime = await createOrganizationRuntime({
+    store,
+    providers: { powerFx: createPowerFxEvaluator({}) },
     extensions: await sourceOrganizationExtensions({ layers: (await importSolutionData([root])).layers }),
-    settings: dataverseSettings({ enabled: true, applications: [{ appId: APP, displayName: 'Invented', secretEnvironmentVariable: variable, roles: ['System Administrator'] }] }) });
+    settings: dataverseSettings({
+      enabled: true,
+      applications: [
+        { appId: APP, displayName: 'Invented', secretEnvironmentVariable: variable, roles: ['System Administrator'] },
+      ],
+    }),
+  });
   const transport = await startDataverseApi({ organization: runtime });
-  ownedFixture(t).add(async () => { await transport.close(); await runtime.close(); });
-  const token = (await (await fetch(transport.authority + '/oauth2/v2.0/token', { method: 'POST',
-    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: APP, client_secret: 'invented', scope: transport.origin + '/.default' }) })).json()).access_token;
+  ownedFixture(t).add(async () => {
+    await transport.close();
+    await runtime.close();
+  });
+  const token = (
+    await (
+      await fetch(transport.authority + '/oauth2/v2.0/token', {
+        method: 'POST',
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: APP,
+          client_secret: 'invented',
+          scope: transport.origin + '/.default',
+        }),
+      })
+    ).json()
+  ).access_token;
   return async (route) => {
-    const response = await fetch(transport.origin + '/api/data/v9.2/' + route, { headers: { authorization: `Bearer ${token}` } });
+    const response = await fetch(transport.origin + '/api/data/v9.2/' + route, {
+      headers: { authorization: `Bearer ${token}` },
+    });
     return { status: response.status, body: await response.json() };
   };
 }
@@ -71,7 +103,10 @@ test('a Solution Function linked to its fxexpression (by id or by unique name) e
 
 test('the parsers link customapi.fxexpressionid to the fxexpression row of the same Solution', () => {
   const entries = Object.entries(files).map(([name, text]) => ({ name, text }));
-  const under = (folder) => entries.filter((e) => e.name.startsWith(folder + '/')).map((e) => ({ path: e.name.slice(folder.length + 1), text: e.text }));
+  const under = (folder) =>
+    entries
+      .filter((e) => e.name.startsWith(folder + '/'))
+      .map((e) => ({ path: e.name.slice(folder.length + 1), text: e.text }));
   const { fxexpression } = parseFxExpressionFiles(under('fxexpressions'));
   assert.deepEqual(fxexpression.map((r) => r.uniquename).sort(), ['x_Half', 'x_Health']);
   assert.equal(fxexpression.find((r) => r.uniquename === 'x_Health').fxexpressionid, FX);

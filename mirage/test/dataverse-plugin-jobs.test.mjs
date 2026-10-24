@@ -8,7 +8,13 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
-import { pluginCatalogue, pluginHandlers, pluginPhaseRequiresCheckpoint, pluginStepMatchesEntity, runPluginPhase } from '../lib/exported-plugins.mjs';
+import {
+  pluginCatalogue,
+  pluginHandlers,
+  pluginPhaseRequiresCheckpoint,
+  pluginStepMatchesEntity,
+  runPluginPhase,
+} from '../lib/exported-plugins.mjs';
 import { customApiHandlers, install as installCustomApis } from '../lib/dataverse-customapi.mjs';
 import { install as installRegistration } from '../lib/dataverse-plugin-registration.mjs';
 
@@ -20,15 +26,33 @@ const TYPE = 'Contoso.Plugins.WidgetAudit';
 const ROUTED_TYPE = 'Contoso.Plugins.RoutedApi';
 
 const step = (over = {}) => ({
-  id: STEP, name: 'Invented asynchronous audit', entity: 'contoso_widget', message: 'Create', enabled: true, stage: 40, rank: 1, mode: 1,
-  typeName: TYPE, typeId: TYPE_ID, assemblyId: ASSEMBLY, supportedDeployment: 0, filteringAttributes: [], images: [], ...over,
+  id: STEP,
+  name: 'Invented asynchronous audit',
+  entity: 'contoso_widget',
+  message: 'Create',
+  enabled: true,
+  stage: 40,
+  rank: 1,
+  mode: 1,
+  typeName: TYPE,
+  typeId: TYPE_ID,
+  assemblyId: ASSEMBLY,
+  supportedDeployment: 0,
+  filteringAttributes: [],
+  images: [],
+  ...over,
 });
 
 function fixtureState() {
   const state = emptyState();
   state.mappings.contoso_widget = {
-    logicalName: 'contoso_widget', entitySet: 'contoso_widgets', idColumn: 'contoso_widgetid', nameColumn: 'contoso_name', userConfigured: true,
-    fields: { contoso_name: { dataverseType: 'nvarchar' } }, relationships: {},
+    logicalName: 'contoso_widget',
+    entitySet: 'contoso_widgets',
+    idColumn: 'contoso_widgetid',
+    nameColumn: 'contoso_name',
+    userConfigured: true,
+    fields: { contoso_name: { dataverseType: 'nvarchar' } },
+    relationships: {},
   };
   state.tables.contoso_widget = [];
   return state;
@@ -40,13 +64,18 @@ async function world({ dataverse, handlers, items: _items = () => [], traceLevel
   const store = await new DataStore({ state: fixtureState() }).init();
   const diagnostics = [];
   const diagnostic = (entry) => diagnostics.push(entry);
-  const api = dataverse ? await startDataverseApi({
-    store, settings: dataverseSettings({ enabled: true }), log: () => {}, extensions: [...EXTENSIONS],
-  }) : null;
+  const api = dataverse
+    ? await startDataverseApi({
+        store,
+        settings: dataverseSettings({ enabled: true }),
+        log: () => {},
+        extensions: [...EXTENSIONS],
+      })
+    : null;
   if (traceLevel !== null) {
     // The organization row: the Dataverse API seeds one; a store without the API gets a bare one.
     await store.transact(() => {
-      const rows = store.state.tables.organization ??= [];
+      const rows = (store.state.tables.organization ??= []);
       if (rows[0]) rows[0].plugintracelogsetting = traceLevel;
       else store.insertRow('organization', rows, { organizationid: 'org-1', plugintracelogsetting: traceLevel });
     });
@@ -54,16 +83,39 @@ async function world({ dataverse, handlers, items: _items = () => [], traceLevel
   const pluginSteps = () => pluginCatalogue({ plugins: { steps: [...steps] }, handlers });
   store.setPluginPipeline(
     (context) => runPluginPhase({ ...context, store, items: pluginSteps(), handlers, diagnostic }),
-    ({ entity, operation }) => pluginSteps().some((item) => item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation),
+    ({ entity, operation }) =>
+      pluginSteps().some(
+        (item) =>
+          item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation,
+      ),
     (context) => pluginPhaseRequiresCheckpoint(pluginSteps(), context),
   );
-  const runner = createAsyncPluginRunner({ store, items: pluginSteps, handlers, runtimes: new Map(), diagnostic, systemJobs: () => Boolean(api) });
-  return { store, api, runner, diagnostics, close: async () => { await runner.close(); await api?.close(); } };
+  const runner = createAsyncPluginRunner({
+    store,
+    items: pluginSteps,
+    handlers,
+    runtimes: new Map(),
+    diagnostic,
+    systemJobs: () => Boolean(api),
+  });
+  return {
+    store,
+    api,
+    runner,
+    diagnostics,
+    close: async () => {
+      await runner.close();
+      await api?.close();
+    },
+  };
 }
 
 describe('async steps write asyncoperation system jobs when the Dataverse API is on', () => {
   let world_;
-  afterEach(async () => { await world_?.close(); world_ = null; });
+  afterEach(async () => {
+    await world_?.close();
+    world_ = null;
+  });
 
   it('a succeeded run ends Completed/Succeeded with the step, the regarding row and the System Event type', async () => {
     const handlers = pluginHandlers([{ id: 'invented', pluginSteps: { [STEP]: () => {} } }]);
@@ -83,7 +135,16 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
   });
 
   it('a failing run ends Completed/Failed with the message, the friendly message and error code 0 for an error without a Dataverse code', async () => {
-    const handlers = pluginHandlers([{ id: 'invented', pluginSteps: { [STEP]: () => { throw new Error('Invented asynchronous rejection'); } } }]);
+    const handlers = pluginHandlers([
+      {
+        id: 'invented',
+        pluginSteps: {
+          [STEP]: () => {
+            throw new Error('Invented asynchronous rejection');
+          },
+        },
+      },
+    ]);
     world_ = await world({ dataverse: true, handlers, steps: [step()] });
     await world_.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: 'beta' }, { admin: true });
     await world_.runner.drain();
@@ -96,15 +157,36 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
   });
 
   it('asyncautodelete removes a succeeded job row only, and a failed one stays', async () => {
-    const handlers = pluginHandlers([{ id: 'invented', pluginSteps: { [STEP]: (args) => { if (args.record.contoso_name === 'fail') throw new Error('Invented'); } } }]);
+    const handlers = pluginHandlers([
+      {
+        id: 'invented',
+        pluginSteps: {
+          [STEP]: (args) => {
+            if (args.record.contoso_name === 'fail') throw new Error('Invented');
+          },
+        },
+      },
+    ]);
     world_ = await world({ dataverse: true, handlers, steps: [step()] });
-    await world_.store.transact(() => world_.store.insertRow('sdkmessageprocessingstep', (world_.store.state.tables.sdkmessageprocessingstep ??= []), { sdkmessageprocessingstepid: STEP, asyncautodelete: true }));
+    await world_.store.transact(() =>
+      world_.store.insertRow('sdkmessageprocessingstep', (world_.store.state.tables.sdkmessageprocessingstep ??= []), {
+        sdkmessageprocessingstepid: STEP,
+        asyncautodelete: true,
+      }),
+    );
     await world_.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: 'ok' }, { admin: true });
     await world_.runner.drain();
     assert.equal(world_.store.tableRows('asyncoperation').length, 0);
-    await world_.store.create('contoso_widget', { contoso_widgetid: 'bbbbbbbb-0000-4000-8000-000000000002', contoso_name: 'fail' }, { admin: true });
+    await world_.store.create(
+      'contoso_widget',
+      { contoso_widgetid: 'bbbbbbbb-0000-4000-8000-000000000002', contoso_name: 'fail' },
+      { admin: true },
+    );
     await world_.runner.drain();
-    assert.deepEqual(world_.store.tableRows('asyncoperation').map((job) => job.statuscode), [31]);
+    assert.deepEqual(
+      world_.store.tableRows('asyncoperation').map((job) => job.statuscode),
+      [31],
+    );
   });
 });
 
@@ -116,7 +198,11 @@ describe('the portal path is unchanged by system jobs', () => {
       mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-19T12:00:00Z') });
       const world_ = await world({ dataverse, handlers, steps: [step()] });
       try {
-        const response = await world_.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: 'portal' }, { admin: true });
+        const response = await world_.store.create(
+          'contoso_widget',
+          { contoso_widgetid: WIDGET, contoso_name: 'portal' },
+          { admin: true },
+        );
         await world_.runner.drain();
         return {
           response: JSON.stringify(response),
@@ -140,9 +226,21 @@ describe('the portal path is unchanged by system jobs', () => {
 });
 
 describe('plugintracelog follows organization.plugintracelogsetting', () => {
-  const handlerWithTrace = (behaviour) => pluginHandlers([{ id: 'invented', pluginSteps: { [STEP]: ({ trace }) => { trace('Invented trace line'); if (behaviour.fail) throw new Error('Invented trace failure'); } } }]);
+  const handlerWithTrace = (behaviour) =>
+    pluginHandlers([
+      {
+        id: 'invented',
+        pluginSteps: {
+          [STEP]: ({ trace }) => {
+            trace('Invented trace line');
+            if (behaviour.fail) throw new Error('Invented trace failure');
+          },
+        },
+      },
+    ]);
   const syncStep = step({ mode: 0, stage: 20 });
-  const write = (world_, name) => world_.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: name }, { admin: true });
+  const write = (world_, name) =>
+    world_.store.create('contoso_widget', { contoso_widgetid: WIDGET, contoso_name: name }, { admin: true });
 
   it('setting 2 keeps every execution with its trace lines and timing', async () => {
     const world_ = await world({ dataverse: true, handlers: handlerWithTrace({}), steps: [syncStep], traceLevel: 2 });
@@ -158,28 +256,58 @@ describe('plugintracelog follows organization.plugintracelogsetting', () => {
       assert.equal(row.exceptiondetails, null);
       assert.equal(row.pluginstepid.id, STEP);
       assert.equal(Number.isInteger(row.performanceexecutionduration), true);
-    } finally { await world_.close(); }
+    } finally {
+      await world_.close();
+    }
   });
 
   it('setting 1 keeps only failed executions, with their exception details', async () => {
-    const world_ = await world({ dataverse: true, handlers: handlerWithTrace({ fail: false }), steps: [syncStep], traceLevel: 1 });
+    const world_ = await world({
+      dataverse: true,
+      handlers: handlerWithTrace({ fail: false }),
+      steps: [syncStep],
+      traceLevel: 1,
+    });
     try {
       await write(world_, 'quiet');
       assert.equal(world_.store.tableRows('plugintracelog').length, 0);
-    } finally { await world_.close(); }
-    const failing = await world({ dataverse: true, handlers: handlerWithTrace({ fail: true }), steps: [syncStep], traceLevel: 1 });
+    } finally {
+      await world_.close();
+    }
+    const failing = await world({
+      dataverse: true,
+      handlers: handlerWithTrace({ fail: true }),
+      steps: [syncStep],
+      traceLevel: 1,
+    });
     try {
       await assert.rejects(write(failing, 'loud'), /Invented trace failure/);
-      assert.equal(failing.store.tableRows('plugintracelog').length, 0, 'a rolled-back write takes its trace row with it');
-    } finally { await failing.close(); }
+      assert.equal(
+        failing.store.tableRows('plugintracelog').length,
+        0,
+        'a rolled-back write takes its trace row with it',
+      );
+    } finally {
+      await failing.close();
+    }
     // An asynchronous failure runs after commit, so its trace row stays.
-    const asyncFailing = await world({ dataverse: true, handlers: handlerWithTrace({ fail: true }), steps: [step()], traceLevel: 1 });
+    const asyncFailing = await world({
+      dataverse: true,
+      handlers: handlerWithTrace({ fail: true }),
+      steps: [step()],
+      traceLevel: 1,
+    });
     try {
       await write(asyncFailing, 'later');
       await asyncFailing.runner.drain();
       const rows = asyncFailing.store.tableRows('plugintracelog');
-      assert.deepEqual(rows.map((row) => [row.mode, row.messageblock, row.exceptiondetails]), [[1, 'Invented trace line', 'Invented trace failure']]);
-    } finally { await asyncFailing.close(); }
+      assert.deepEqual(
+        rows.map((row) => [row.mode, row.messageblock, row.exceptiondetails]),
+        [[1, 'Invented trace line', 'Invented trace failure']],
+      );
+    } finally {
+      await asyncFailing.close();
+    }
   });
 
   it('setting 0 writes nothing, and a Dataverse-off store has no plugintracelog table to write to', async () => {
@@ -187,21 +315,36 @@ describe('plugintracelog follows organization.plugintracelogsetting', () => {
     try {
       await write(world_, 'off');
       assert.equal(world_.store.tableRows('plugintracelog').length, 0);
-    } finally { await world_.close(); }
+    } finally {
+      await world_.close();
+    }
     const portal = await world({ dataverse: false, handlers: handlerWithTrace({}), steps: [syncStep], traceLevel: 2 });
     try {
       await write(portal, 'portal');
       assert.equal(portal.store.state.tables.plugintracelog, undefined);
-    } finally { await portal.close(); }
+    } finally {
+      await portal.close();
+    }
   });
 
   it('a pluginTypes handler traces through context.trace as well', async () => {
-    const handlers = pluginHandlers([{ id: 'invented', pluginTypes: { [TYPE]: ({ context }) => { context.trace('Typed trace line'); } } }]);
+    const handlers = pluginHandlers([
+      {
+        id: 'invented',
+        pluginTypes: {
+          [TYPE]: ({ context }) => {
+            context.trace('Typed trace line');
+          },
+        },
+      },
+    ]);
     const world_ = await world({ dataverse: true, handlers, steps: [syncStep], traceLevel: 2 });
     try {
       await write(world_, 'typed');
       assert.equal(world_.store.tableRows('plugintracelog')[0].messageblock, 'Typed trace line');
-    } finally { await world_.close(); }
+    } finally {
+      await world_.close();
+    }
   });
 });
 
@@ -212,20 +355,55 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
   // A Custom API with no response properties (an action, 204). Its plugintypeid names the plug-in type ROUTED_TYPE.
   function routed({ customApis = new Map(), typeName = ROUTED_TYPE } = {}) {
     const state = emptyState();
-    state.tables.customapi = [{ customapiid: API_ID, uniquename: 'sample_Routed', isfunction: false, bindingtype: 0, isprivate: false, plugintypeid: 'cccccccc-0000-4000-8000-000000000002' }];
+    state.tables.customapi = [
+      {
+        customapiid: API_ID,
+        uniquename: 'sample_Routed',
+        isfunction: false,
+        bindingtype: 0,
+        isprivate: false,
+        plugintypeid: 'cccccccc-0000-4000-8000-000000000002',
+      },
+    ];
     state.tables.plugintype = [{ plugintypeid: 'cccccccc-0000-4000-8000-000000000002', typename: typeName }];
     state.tables.customapirequestparameter = [];
     state.tables.customapiresponseproperty = [];
     const store = new DataStore({ state });
     const ops = [];
     const grants = new Map();
-    const registry = { register: (op) => ops.push(op), has: (name) => ops.some((o) => o.name === name), find: () => null };
+    const registry = {
+      register: (op) => ops.push(op),
+      has: (name) => ops.some((o) => o.name === name),
+      find: () => null,
+    };
     const calls = [];
     // The Custom API context (name, inputs, target, caller, trace) is what a plug-in type handler receives for a custom API call.
-    const pluginTypes = pluginHandlers([{ id: 'invented', pluginTypes: { [ROUTED_TYPE]: (args) => { calls.push(args.name); return { outputs: { fromType: true } }; } } }]);
-    installCustomApis({ store, change: (fn) => fn(), registry, principals: { privileges: () => grants } }, { handlers: customApis, pluginTypes });
+    const pluginTypes = pluginHandlers([
+      {
+        id: 'invented',
+        pluginTypes: {
+          [ROUTED_TYPE]: (args) => {
+            calls.push(args.name);
+            return { outputs: { fromType: true } };
+          },
+        },
+      },
+    ]);
+    installCustomApis(
+      { store, change: (fn) => fn(), registry, principals: { privileges: () => grants } },
+      { handlers: customApis, pluginTypes },
+    );
     const op = ops.find((o) => o.name === 'sample_Routed');
-    const call = () => op.handle({ method: 'POST', url: new URL('/api/data/v9.2/sample_Routed', ORIGIN), origin: ORIGIN, version: 'v9.2', params: {}, body: {}, user: ADMIN });
+    const call = () =>
+      op.handle({
+        method: 'POST',
+        url: new URL('/api/data/v9.2/sample_Routed', ORIGIN),
+        origin: ORIGIN,
+        version: 'v9.2',
+        params: {},
+        body: {},
+        user: ADMIN,
+      });
     return { call, calls, store };
   }
 
@@ -238,7 +416,17 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
 
   it('a customApis entry for the same API takes precedence over the type handler', async () => {
     const used = [];
-    const handlers = customApiHandlers([{ id: 'p', customApis: { sample_Routed: () => { used.push('customApis'); return { outputs: {} }; } } }]);
+    const handlers = customApiHandlers([
+      {
+        id: 'p',
+        customApis: {
+          sample_Routed: () => {
+            used.push('customApis');
+            return { outputs: {} };
+          },
+        },
+      },
+    ]);
     const { call, calls } = routed({ customApis: handlers });
     await call();
     assert.deepEqual(used, ['customApis']);
@@ -254,19 +442,32 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
 
 describe('TriggerServiceEndpointCheck probes a loopback webhook endpoint', () => {
   let server;
-  afterEach(() => { server?.close(); server = null; });
+  afterEach(() => {
+    server?.close();
+    server = null;
+  });
 
   // install registers the action; the probe is called with the endpoint row as its bound target.
   function action() {
     const ops = [];
-    installRegistration({ store: new DataStore({ state: emptyState() }), recordHooks: { add() {} }, registry: { register: (op) => ops.push(op) }, principals: {}, settings: {} });
+    installRegistration({
+      store: new DataStore({ state: emptyState() }),
+      recordHooks: { add() {} },
+      registry: { register: (op) => ops.push(op) },
+      principals: {},
+      settings: {},
+    });
     return ops.find((op) => op.name === 'TriggerServiceEndpointCheck');
   }
   const probe = (row) => action().handle({ target: { id: 'row', row }, body: {}, user: { systemuserid: 'x' } });
 
   it('a loopback webhook that answers 2xx is 204, and it receives a POST', async () => {
     const seen = [];
-    server = createServer((req, res) => { seen.push(req.method); res.writeHead(200); res.end(); });
+    server = createServer((req, res) => {
+      seen.push(req.method);
+      res.writeHead(200);
+      res.end();
+    });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const { port } = server.address();
     assert.deepEqual(await probe({ contract: 8, url: `http://127.0.0.1:${port}/hook` }), { status: 204 });
@@ -274,17 +475,30 @@ describe('TriggerServiceEndpointCheck probes a loopback webhook endpoint', () =>
   });
 
   it('a loopback endpoint that fails is refused with the endpoint error', async () => {
-    server = createServer((req, res) => { res.writeHead(500); res.end(); });
+    server = createServer((req, res) => {
+      res.writeHead(500);
+      res.end();
+    });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    await assert.rejects(probe({ contract: 8, url: `http://127.0.0.1:${server.address().port}/hook` }), (error) => error.status === 400 && /Endpoint unavailable/.test(error.message));
+    await assert.rejects(
+      probe({ contract: 8, url: `http://127.0.0.1:${server.address().port}/hook` }),
+      (error) => error.status === 400 && /Endpoint unavailable/.test(error.message),
+    );
   });
 
   it('a non-loopback URL and another contract are never contacted', async () => {
     const seen = [];
-    server = createServer((req, res) => { seen.push(req.method); res.writeHead(200); res.end(); });
+    server = createServer((req, res) => {
+      seen.push(req.method);
+      res.writeHead(200);
+      res.end();
+    });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     await assert.rejects(probe({ contract: 8, url: 'https://example.test/hook' }), (error) => error.status === 400);
-    await assert.rejects(probe({ contract: 2, url: `http://127.0.0.1:${server.address().port}/hook` }), (error) => error.status === 400);
+    await assert.rejects(
+      probe({ contract: 2, url: `http://127.0.0.1:${server.address().port}/hook` }),
+      (error) => error.status === 400,
+    );
     assert.deepEqual(seen, []);
   });
 });
