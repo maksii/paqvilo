@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as prettier from 'prettier';
+import { readLocalFileSync } from '../lense/local-file.mjs';
 
 const cli = fileURLToPath(import.meta.resolve('prettier/bin/prettier.cjs'));
 export async function formatProject(directory) {
@@ -23,22 +24,18 @@ export async function formatProject(directory) {
   fs.mkdirSync(temporary, { recursive: true });
   for (const name of pending) {
     const target = path.resolve(root, name);
-    const relative = path.relative(root, fs.realpathSync(target));
-    if (
-      relative === '..' ||
-      relative.startsWith(`..${path.sep}`) ||
-      path.isAbsolute(relative) ||
-      fs.lstatSync(target).isSymbolicLink()
-    ) {
-      throw new Error(`Refusing to format a source link outside this checkout: ${name}`);
-    }
+    const metadata = fs.lstatSync(target);
+    if (metadata.isSymbolicLink()) throw new Error(`Refusing to format a source link: ${name}`);
+    const original = readLocalFileSync(target, { root, encoding: 'utf8' });
     const config = await prettier.resolveConfig(target, { editorconfig: true });
-    const formatted = await prettier.format(fs.readFileSync(target, 'utf8'), { ...config, filepath: target });
+    const formatted = await prettier.format(original, { ...config, filepath: target });
     const staging = path.join(temporary, `${randomUUID()}.tmp`);
     try {
-      fs.writeFileSync(staging, formatted, { mode: fs.statSync(target).mode });
+      fs.writeFileSync(staging, formatted, { flag: 'wx', mode: metadata.mode });
       // Creation permissions are masked by umask; replacement keeps the source mode exactly.
-      fs.chmodSync(staging, fs.statSync(target).mode);
+      fs.chmodSync(staging, metadata.mode);
+      if (readLocalFileSync(target, { root, encoding: 'utf8' }) !== original)
+        throw new Error(`Source changed while formatting: ${name}`);
       fs.renameSync(staging, target);
     } finally {
       fs.rmSync(staging, { force: true });

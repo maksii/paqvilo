@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -49,3 +50,19 @@ test(
     assert.equal((await fs.stat(target)).mode & 0o777, 0o755);
   },
 );
+
+test('formatting preserves a concurrent source save instead of overwriting it', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-format-concurrent-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const target = path.join(root, 'source.mjs');
+  await fs.writeFile(target, 'const value={x:1};\n');
+  const chmod = fsSync.chmodSync;
+  t.mock.method(fsSync, 'chmodSync', (file, mode) => {
+    // Model an editor save while the formatter prepares its replacement.
+    if (file.startsWith(path.join(root, '.paqvilo', 'format'))) fsSync.writeFileSync(target, '// concurrent save\n');
+    return chmod(file, mode);
+  });
+  await assert.rejects(formatProject(root), /Source changed while formatting/);
+  assert.equal(await fs.readFile(target, 'utf8'), '// concurrent save\n');
+  assert.deepEqual(await fs.readdir(path.join(root, '.paqvilo', 'format')), []);
+});
