@@ -76,3 +76,9 @@ there is no GitHub cleanup workflow or maintenance token.
 pull requests without deployment; deployment uses main and the `github-pages` environment.
 Check the demo instructions and coverage links on desktop and narrow screens when changing
 the site. Discussion categories and npm access settings are maintained in their respective UIs.
+
+## Review CodeQL results
+
+The extended suite includes review queries for intentional flows, such as pinned archive downloads, deterministic identifiers and owned loopback protocols. The security gate requires zero open alerts after fixes or individual review; it does not mean the analyzer produced zero results. Preserve compatibility behavior when a diagnostic is not a security sanitizer.
+
+Before dismissing an exact false positive, verify the current source, sink, caller authority, destination constraints and relevant regressions. Record the evidence in `.github/security/` and in the GitHub alert disposition. Formatting can change fingerprints and reopen an earlier finding: a historical rule/path match is a review aid, not permission to dismiss it automatically. Do not disable a query, exclude all tests or reuse an old decision without checking current behavior.
