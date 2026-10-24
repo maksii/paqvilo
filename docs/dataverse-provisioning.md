@@ -2,7 +2,7 @@
 
 `paqvilo dataverse` creates schema in Dataverse through its Web API and exports the server-generated solution. Its implementation and public API are reusable; a project's manifest owns table names, publisher, relationships, component ownership and XML templates. This is an explicit provisioning workflow, independent of Lense overlays and Mirage simulation.
 
-Node 22+, PAC and an authenticated administrator are required for initial app registration. Metadata operations then use the application's own client credentials, without switching the active PAC profile. Only the public Microsoft cloud is supported. Windows connections use DPAPI CurrentUser; other hosts can supply an environment-secret reference. Access tokens stay in memory. Do not commit connections, registration recovery files, real exports or provisioning journals.
+Node 24.22.1+ (24.x LTS), PAC and an authenticated administrator are required for initial app registration. Metadata operations then use the application's own client credentials, without switching the active PAC profile. Only the public Microsoft cloud is supported. Windows connections use DPAPI CurrentUser; other hosts can supply an environment-secret reference. Access tokens stay in memory. Do not commit connections, registration recovery files, real exports or provisioning journals.
 
 ## Application and connection
 

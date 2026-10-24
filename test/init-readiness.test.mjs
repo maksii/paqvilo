@@ -175,7 +175,7 @@ test('completion excludes Windows case aliases of private paths while retaining 
 test('readiness validates project-owned paths without importing project packs', async t => {
   const { directory, config, save } = await fixture(t);
   config.sites.classic.mirage.project = './project.json'; await save();
-  let result = await check(directory), report = JSON.parse(result.stdout);
+  const result = await check(directory), report = JSON.parse(result.stdout);
   assert.equal(result.status, 1); assert.ok(report.paths.diagnostics.some(item => item.code === 'PROJECT_FILE_MISSING'));
   await write(directory, 'project.json', JSON.stringify({ version: 2, portals: [{ id: 'local', path: './sources/classic', deploymentProfiles: { profiles: { alternative: { environmentVariables: './absent-project-profile.json' } } } }], solutions: ['./sources/solution'], dataPacks: [{ id: 'project-pack', module: './absent-project-pack.mjs' }] }));
   const paths = await inspectProjectPaths(directory, { config: configFile, processEnv: {} });

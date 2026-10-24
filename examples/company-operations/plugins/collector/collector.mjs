@@ -1,5 +1,5 @@
 import http from 'node:http';
-import{createHash,createPublicKey,verify}from'node:crypto';
+import{createPublicKey,verify}from'node:crypto';
 import{guid,claimsValid,validateEnvelope}from'./protocol.mjs';
 const required=(name)=>{const v=process.env[name];if(!v)throw new Error(`Missing ${name}`);return v;};
 const tenant=required('CO_COLLECTOR_TENANT');const audience=required('CO_COLLECTOR_AUDIENCE');const storage=new URL(required('CO_COLLECTOR_BLOB_URL'));const container=required('CO_COLLECTOR_CONTAINER');

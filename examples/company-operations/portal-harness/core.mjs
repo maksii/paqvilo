@@ -97,7 +97,7 @@ export function assessScenario(scenario, observations, manifest) {
   });
 }
 export function laneOutcome(result) {
-  const pages=(result?.pages||[]).map(page=>{let error;try{error=JSON.parse(page.body||'null')?.error;}catch{}return {httpStatus:page.httpStatus??null,portalCode:error?.code||null,platformCode:error?.cdscode||error?.innererror?.code||null,error:page.error||null};});
+  const pages=(result?.pages||[]).map(page=>{let error;try{error=JSON.parse(page.body||'null')?.error;}catch{ /* Optional payload or browser capability is unavailable. */ }return {httpStatus:page.httpStatus??null,portalCode:error?.code||null,platformCode:error?.cdscode||error?.innererror?.code||null,error:page.error||null};});
   return {outcome:result?.outcome??'missing',complete:result?.complete===true,pages};
 }
 export function diffObservation(previous,current,plan) {

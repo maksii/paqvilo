@@ -30,6 +30,6 @@ test('generated guides link correctly for single/multi/no-pack variants and agre
     assert.ok(report.next.indexOf('npm run configure')>report.next.indexOf('npm run setup'));
     if(!options.noVscode)assert.ok(report.next.indexOf('npm run editor:refresh')>report.next.indexOf('npm run configure'));
     const guide=await fs.readFile(path.join(directory,'README.md'),'utf8');
-    for(const phrase of ['Node **22','lockfile','ci failure','version-matched','PAC','configured','source-free','confinePortalPages'])assert.ok(guide.toLowerCase().includes(phrase.toLowerCase()),phrase);
+    for(const phrase of ['Node **24','lockfile','ci failure','version-matched','PAC','configured','source-free','confinePortalPages'])assert.ok(guide.toLowerCase().includes(phrase.toLowerCase()),phrase);
   }
 });

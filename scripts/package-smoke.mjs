@@ -128,6 +128,7 @@ for (const kind of ['dataverse-api', 'model-driven']) {
   const inspect = standaloneCli('inspect');
   if (inspect.runtime.kind !== kind || inspect.portals.length) throw new Error('Installed standalone inspection invented a portal.');
   let local;
+  const failures = [];
   try {
     local = standaloneCli('start', '--port', '0');
     if (!standaloneCli('status').sessions.some(item => item.pid === local.pid && item.ready)) throw new Error('Installed standalone status did not find its runtime.');
@@ -161,12 +162,20 @@ for (const kind of ['dataverse-api', 'model-driven']) {
       if (read.row?.x_name !== 'Installed record') throw new Error('Installed model-only record service did not read its created row.');
     }
     if (fs.existsSync(local.stateFile)) throw new Error('Installed standalone dry run wrote a runtime checkpoint.');
+  } catch (error) {
+    failures.push(error);
   } finally {
     if (local) {
-      const stopped = standaloneCli('stop');
-      if (!stopped.stopped.some(item => item.pid === local.pid)) throw new Error('Installed standalone stop did not stop its owned runtime.');
+      try {
+        const stopped = standaloneCli('stop');
+        if (!stopped.stopped.some(item => item.pid === local.pid)) failures.push(new Error('Installed standalone stop did not stop its owned runtime.'));
+      } catch (error) {
+        failures.push(error);
+      }
     }
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length) throw new AggregateError(failures, 'Installed standalone verification and cleanup failed.');
   if (standaloneCli('status').sessions.some(item => item.processAlive)) throw new Error('Installed standalone lifecycle left an owned runtime running.');
   if (fs.readFileSync(file, 'utf8') !== configuration) throw new Error('Installed lifecycle changed the standalone project configuration.');
 }

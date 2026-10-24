@@ -40,7 +40,7 @@ async function fixture(t) {
 // The rejection message of one owned call, or null when it resolves.
 const rejectionOf = (page, value) =>
   page.evaluate(
-    (value) => inventedEcho(value).then(() => null, (error) => error.message),
+    (value) => window.inventedEcho(value).then(() => null, (error) => error.message),
     value,
   );
 
@@ -111,7 +111,7 @@ test(
       },
     });
     t.after(() => bridge.close());
-    assert.equal(await f.page.evaluate(() => inventedEcho("valid")), "valid");
+    assert.equal(await f.page.evaluate(() => window.inventedEcho("valid")), "valid");
     assert.equal(
       await rejectionOf(f.page, "x".repeat(300)),
       "The owned page request is too large.",
@@ -177,15 +177,15 @@ test(
     });
     t.after(() => bridge.close());
     const old = f.page
-      .evaluate(() => inventedEcho("old"))
+      .evaluate(() => window.inventedEcho("old"))
       .catch(() => "document-retired");
     await started;
     await f.page.reload();
-    assert.equal(await f.page.evaluate(() => inventedEcho("fresh")), "fresh");
+    assert.equal(await f.page.evaluate(() => window.inventedEcho("fresh")), "fresh");
     release("old-reply");
     assert.equal(await old, "document-retired");
     assert.equal(
-      await f.page.evaluate(() => inventedEcho("still-fresh")),
+      await f.page.evaluate(() => window.inventedEcho("still-fresh")),
       "still-fresh",
     );
   },
@@ -219,8 +219,9 @@ test(
     await debuggerSession.send("Debugger.enable");
     assert.equal(
       await f.page.evaluate(() => {
+// eslint-disable-next-line no-debugger -- The debugger pause is the synthetic lifecycle boundary under test.
         debugger;
-        return inventedEcho("after-debugger");
+        return window.inventedEcho("after-debugger");
       }),
       "after-debugger",
     );
@@ -256,7 +257,7 @@ test(
       ),
       0,
     );
-    assert.equal(await f.page.evaluate(() => inventedEcho), "occupied");
+    assert.equal(await f.page.evaluate(() => window.inventedEcho), "occupied");
   },
 );
 
@@ -320,6 +321,7 @@ test(
       resumed = true;
     });
     const execution = f.page.evaluate(() => {
+// eslint-disable-next-line no-debugger -- The debugger pause is the synthetic lifecycle boundary under test.
       debugger;
       return "continued";
     });
@@ -367,7 +369,7 @@ test(
     await f.page.evaluate(() => {
       window.ownedDeliveryProbe = Promise.all(
         Array.from({ length: 32 }, () =>
-          inventedEcho("held").then(
+          window.inventedEcho("held").then(
             () => "incorrect-success",
             (error) => error.message,
           ),
@@ -382,7 +384,7 @@ test(
     await new Promise((resolve) => setTimeout(resolve, 1600));
     blocked = false;
     assert.equal(
-      await f.page.evaluate(() => inventedEcho("fresh-after-deadlines")),
+      await f.page.evaluate(() => window.inventedEcho("fresh-after-deadlines")),
       "fresh-after-deadlines",
     );
     for (const params of delayed) await send("Runtime.callFunctionOn", params);
@@ -415,7 +417,7 @@ test(
     });
     t.after(() => bridge.close());
     const result = await f.page.evaluate(async () => {
-      const value = await inventedEcho("valid");
+      const value = await window.inventedEcho("valid");
       return {
         lines: value.lines.length,
         added: value.added,
@@ -465,7 +467,7 @@ test(
       origin: f.origin,
       bindings: { inventedEcho: (_source, value) => value },
     });
-    assert.equal(await f.page.evaluate(() => inventedEcho("before")), "before");
+    assert.equal(await f.page.evaluate(() => window.inventedEcho("before")), "before");
     await f.page.goto(f.origin.replace("127.0.0.1", "localhost"));
     await bridge.close();
     assert.equal(absenceObserved, true);

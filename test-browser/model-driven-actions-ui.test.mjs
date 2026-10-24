@@ -37,12 +37,12 @@ async function fixture(t) {
   await page.evaluate(() => {
     window.uiRequests = []; window.secret = 'PRIVATE_NATIVE_VALUE';
     window.__paqviloModelAction = async request => {
-      uiRequests.push(request);
+      window.uiRequests.push(request);
       const host = document.getElementById('paqvilo-panel');
-      const result = request.action === 'identity:users' ? { status:'ok', title:'Directory', users:[{ label:'Invented user', objectId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }] } : { status:'ok', title:'Invented result', columns:['Value'], rows:[[secret], ['<img src=x onerror=alert(1)>']], copyText:secret, links:[{ label:'Native record', url:location.origin + '/main.aspx?pagetype=entityrecord' }, { label:'Unsafe link', url:'javascript:alert(1)' }] };
+      const result = request.action === 'identity:users' ? { status:'ok', title:'Directory', users:[{ label:'Invented user', objectId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }] } : { status:'ok', title:'Invented result', columns:['Value'], rows:[[window.secret], ['<img src=x onerror=alert(1)>']], copyText:window.secret, links:[{ label:'Native record', url:location.origin + '/main.aspx?pagetype=entityrecord' }, { label:'Unsafe link', url:'javascript:alert(1)' }] };
       queueMicrotask(() => host.__paqModelActions.receive(request.requestId, result)); return { accepted:true, requestId:request.requestId };
     };
-    window.__paqviloModelIdentity = async request => { uiRequests.push(request); queueMicrotask(() => document.getElementById('paqvilo-panel').__paqModelActions.receive(request.requestId, { status:'ok', title:'Identity', message:'Updated', identity:{ active:Boolean(request.objectId), label:'Invented user' } })); return { accepted:true, requestId:request.requestId }; };
+    window.__paqviloModelIdentity = async request => { window.uiRequests.push(request); queueMicrotask(() => document.getElementById('paqvilo-panel').__paqModelActions.receive(request.requestId, { status:'ok', title:'Identity', message:'Updated', identity:{ active:Boolean(request.objectId), label:'Invented user' } })); return { accepted:true, requestId:request.requestId }; };
   });
   await page.evaluate(modelDrivenActionsUi, update);
   return { page, update, errors };
@@ -54,9 +54,9 @@ test('Actions groups, reasons, label-only favorites, inert results, responsive l
   await page.getByRole('button', { name:/^Open table/ }).click();
   assert.equal(await page.getByRole('button', { name:'Run action', exact:true }).isDisabled(), true); assert.equal(await page.getByText('Native navigation is unavailable.', { exact:true }).last().isVisible(), true);
   await page.getByRole('button', { name:/^Open by ID/ }).click(); await page.getByRole('textbox', { name:'Table logical name', exact:true }).fill('x_item'); await page.getByRole('textbox', { name:'Record ID', exact:true }).fill('invalid-guid');
-  await page.getByRole('button', { name:'Run action', exact:true }).click(); assert.equal(await page.evaluate(() => uiRequests.length), 0, 'invalid IDs never leave the browser form');
+  await page.getByRole('button', { name:'Run action', exact:true }).click(); assert.equal(await page.evaluate(() => window.uiRequests.length), 0, 'invalid IDs never leave the browser form');
   await page.getByRole('textbox', { name:'Record ID', exact:true }).fill('{aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa}'); assert.equal(await page.getByRole('textbox', { name:'Record ID', exact:true }).evaluate(node => node.checkValidity()), true);
-  await page.getByRole('textbox', { name:'Table logical name', exact:true }).fill('x item'); await page.getByRole('button', { name:'Run action', exact:true }).click(); assert.equal(await page.evaluate(() => uiRequests.length), 0, 'invalid table names never leave the browser form');
+  await page.getByRole('textbox', { name:'Table logical name', exact:true }).fill('x item'); await page.getByRole('button', { name:'Run action', exact:true }).click(); assert.equal(await page.evaluate(() => window.uiRequests.length), 0, 'invalid table names never leave the browser form');
   await page.getByRole('searchbox', { name:'Find actions', exact:true }).fill('Read values');
   await page.getByRole('button', { name:/^Read values/ }).click(); await page.getByRole('button', { name:'Run action', exact:true }).click();
   await page.getByRole('cell', { name:'PRIVATE_NATIVE_VALUE', exact:true }).waitFor(); assert.equal(await page.locator('.actions-result img').count(), 0);
@@ -70,7 +70,7 @@ test('Actions groups, reasons, label-only favorites, inert results, responsive l
   await page.evaluate(() => { window.__paqviloModelAction = async request => ({ accepted:false, requestId:request.requestId, reason:'invalid-input' }); }); await page.getByRole('button', { name:'Run action', exact:true }).click(); await page.getByText('Check the action inputs and try again.', { exact:true }).waitFor();
   await page.evaluate(() => { window.__paqviloModelAction = async request => { window.stalledRequest = request; return { accepted:true, requestId:request.requestId }; }; });
   await page.getByRole('button', { name:'Run action', exact:true }).click(); await page.getByRole('button', { name:'Stop waiting', exact:true }).click();
-  await page.evaluate(() => document.getElementById('paqvilo-panel').__paqModelActions.receive(stalledRequest.requestId, { status:'ok', title:'Late', message:'LATE_PRIVATE_RESULT' }));
+  await page.evaluate(() => document.getElementById('paqvilo-panel').__paqModelActions.receive(window.stalledRequest.requestId, { status:'ok', title:'Late', message:'LATE_PRIVATE_RESULT' }));
   assert.equal(await page.getByText('LATE_PRIVATE_RESULT', { exact:true }).count(), 0); assert.equal(await page.getByRole('button', { name:'Run action', exact:true }).isEnabled(), true);
   await page.setViewportSize({ width:390, height:844 }); assert.equal(await page.locator('.actions-panel').evaluate(node => { const rect = node.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth; }), true);
   await capture(page, 'actions-mobile');
@@ -92,22 +92,22 @@ test('the full action registry keeps keyboard focus through tool tabs, execution
 
 test('late native operation errors replace only the current completed result and never resurrect cleared or older results', async t => {
   const { page, errors } = await fixture(t); await page.getByRole('tab', { name:'Actions', exact:true }).click(); await page.getByRole('button', { name:/^Read values/ }).click(); await page.getByRole('button', { name:'Run action', exact:true }).click(); await page.getByRole('heading', { name:'Invented result', exact:true }).waitFor();
-  await page.evaluate(() => { window.firstResultId = uiRequests.at(-1).requestId; document.getElementById('paqvilo-panel').__paqModelActions.followup(firstResultId, { status:'error', title:'Native form error', message:'The requested native form failed.' }); }); await page.getByText('The requested native form failed.', { exact:true }).waitFor();
+  await page.evaluate(() => { window.firstResultId = window.uiRequests.at(-1).requestId; document.getElementById('paqvilo-panel').__paqModelActions.followup(window.firstResultId, { status:'error', title:'Native form error', message:'The requested native form failed.' }); }); await page.getByText('The requested native form failed.', { exact:true }).waitFor();
   await page.getByRole('button', { name:'Run action', exact:true }).click(); await page.getByRole('heading', { name:'Invented result', exact:true }).waitFor();
-  await page.evaluate(() => document.getElementById('paqvilo-panel').__paqModelActions.followup(firstResultId, { status:'error', message:'OLD_RESULT_MUST_NOT_REPLACE' })); assert.equal(await page.getByText('OLD_RESULT_MUST_NOT_REPLACE', { exact:true }).count(), 0);
-  await page.getByRole('button', { name:'Clear', exact:true }).click(); await page.evaluate(() => document.getElementById('paqvilo-panel').__paqModelActions.followup(uiRequests.at(-1).requestId, { status:'error', message:'CLEARED_RESULT_MUST_NOT_RETURN' })); assert.equal(await page.getByText('CLEARED_RESULT_MUST_NOT_RETURN', { exact:true }).count(), 0); assert.deepEqual(errors, []);
+  await page.evaluate(() => document.getElementById('paqvilo-panel').__paqModelActions.followup(window.firstResultId, { status:'error', message:'OLD_RESULT_MUST_NOT_REPLACE' })); assert.equal(await page.getByText('OLD_RESULT_MUST_NOT_REPLACE', { exact:true }).count(), 0);
+  await page.getByRole('button', { name:'Clear', exact:true }).click(); await page.evaluate(() => document.getElementById('paqvilo-panel').__paqModelActions.followup(window.uiRequests.at(-1).requestId, { status:'error', message:'CLEARED_RESULT_MUST_NOT_RETURN' })); assert.equal(await page.getByText('CLEARED_RESULT_MUST_NOT_RETURN', { exact:true }).count(), 0); assert.deepEqual(errors, []);
 });
 
 test('Identity requires explicit selection and Start, keeps visible Stop when closed, and survives metadata updates', async t => {
   const { page, update, errors } = await fixture(t); await page.getByRole('tab', { name:'Actions', exact:true }).click(); await page.getByRole('button', { name:'Identity', exact:true }).click();
   await page.getByRole('textbox', { name:'Directory search', exact:true }).fill('Invented'); await page.getByRole('button', { name:'Run action', exact:true }).click();
-  await page.getByRole('button', { name:'Invented user', exact:true }).click(); assert.equal(await page.evaluate(() => uiRequests.some(request => 'objectId' in request)), false);
+  await page.getByRole('button', { name:'Invented user', exact:true }).click(); assert.equal(await page.evaluate(() => window.uiRequests.some(request => 'objectId' in request)), false);
   await page.evaluate(modelDrivenActionsUi, { ...update, availability:update.availability.map(item => item.id === 'identity:status' ? { ...item, available:false, reason:'Native privilege API unavailable.' } : item) }); assert.equal(await page.getByRole('button', { name:'Start acting as selected user', exact:true }).isDisabled(), true); assert.equal(await page.getByText('Native privilege API unavailable.', { exact:true }).isVisible(), true); await page.evaluate(modelDrivenActionsUi, update);
   await page.getByRole('button', { name:'Start acting as selected user', exact:true }).click(); await page.locator('.actions-bar-identity').waitFor();
   await page.evaluate(modelDrivenActionsUi, update); await page.getByRole('tab', { name:/^Overrides/ }).click();
   await page.setViewportSize({ width:390, height:844 }); await capture(page, 'identity-closed-mobile');
   assert.equal(await page.locator('.actions-bar-identity').isVisible(), true); await page.locator('.actions-bar-identity').getByRole('button', { name:'Stop', exact:true }).click();
-  await page.locator('.actions-bar-identity').waitFor({ state:'hidden' }); assert.deepEqual(await page.evaluate(() => uiRequests.filter(request => 'objectId' in request).map(request => request.objectId)), ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', null]);
+  await page.locator('.actions-bar-identity').waitFor({ state:'hidden' }); assert.deepEqual(await page.evaluate(() => window.uiRequests.filter(request => 'objectId' in request).map(request => request.objectId)), ['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', null]);
   assert.equal(await page.evaluate(() => JSON.stringify({ ...localStorage }).includes('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')), false); assert.deepEqual(errors, []);
 });
 

@@ -1,4 +1,3 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {readCatalogue,loadConnection,connectedClient} from '../../../lense/dataverse/index.mjs';

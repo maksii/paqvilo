@@ -56,7 +56,7 @@ administration endpoints.
 - **Security principals are ordinary rows** (`organization`, `businessunit`, `systemuser`, `team`, `role`, `privilege` and
   their intersect tables) with user-configured mappings, so a Solution re-import never drops them. Default identifiers are
   deterministic (`uuidV5` from the organization id), so fixtures can quote them.
-- **No new dependencies.** ESM, Node 22+, `node:crypto` only.
+- **No new dependencies.** ESM, Node 24.22.1+ (24.x LTS), `node:crypto` only.
 
 ## Tests
 

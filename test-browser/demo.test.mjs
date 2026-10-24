@@ -21,7 +21,7 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   const cli = process.env.PAQVILO_DEMO_CLI || fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
   const child = spawn(process.execPath, [cli, 'mirage', 'demo', '--dir', directory, '--headless', '--debug-port', String(debugPort), '--browser', process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium')], { cwd: work, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  let output = '', browser, context, url;
+  let output = '', browser;
   child.stdout.on('data', (data) => { output += data; });
   child.stderr.on('data', (data) => { output += data; });
   const exited = once(child, 'exit');
@@ -55,7 +55,7 @@ test('demo command opens a populated browser, supports the walkthrough and stops
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
-  context = browser.contexts()[0];
+  const context = browser.contexts()[0];
   context.setDefaultTimeout(15_000);
   // The normal dev lifecycle creates and navigates the first tab itself.
   let page;
@@ -65,7 +65,7 @@ test('demo command opens a populated browser, supports the walkthrough and stops
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(page, 'the command must open and navigate a browser without a manual console link');
-  url = new URL(page.url()).origin;
+  const url = new URL(page.url()).origin;
   // Keep the CLI's own interception intact. These authored sources and sign-in use only loopback.
   const errors = [];
   page.on('pageerror', (error) => {

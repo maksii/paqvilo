@@ -770,7 +770,7 @@ export function buildSite(identity = readIdentity()) {
   // permissions", roles are inherited from the parent table permission), so the parent-scope chain gets its own root:
   // with the shared lookup-read permission as its parent, every baseline role read every item through the chain
   // (on live the contact- and account-scope personas rendered a foreign item read-only).
-  const parentGlobal = perm("Baseline parent global read", PARENT, 756150000, READ_APPEND, personaRoles.filter((name) => name !== "Baseline Parent Scope"), {}, "parent lookup read for the baseline roles outside the parent-scope chain");
+  perm("Baseline parent global read", PARENT, 756150000, READ_APPEND, personaRoles.filter((name) => name !== "Baseline Parent Scope"), {}, "parent lookup read for the baseline roles outside the parent-scope chain");
   const parentScopeRoot = perm("Baseline Parent Scope parents", PARENT, 756150000, READ_APPEND, ["Baseline Parent Scope"], {}, "root of the parent-scope chain; its child permissions inherit this role");
   perm("Baseline Editors parents", PARENT, 756150000, ALL, ["Baseline Editors"], {}, "editors edit parents and associate items");
   withChildren(perm("Baseline Editors items", ITEM, 756150000, ALL, ["Baseline Editors"], {}, "global full privileges"), "Baseline Editors items", ALL, ["Baseline Editors"]);

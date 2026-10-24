@@ -13,7 +13,7 @@ export function qualifyNativePaging({captures,plan}) {
    if(lane==='liquid'){
     const result=capture.liquidPages.find(page=>page.operationId===request.operationId);pages.push({page:request.page??1,operationId:request.operationId,success:result?.outcome==='success',rows:result?.rows,more:result?.more});
    }else{
-    const response=capture.results.find(result=>result.operationId===request.operationId&&result.lane==='webapi');let body;try{body=JSON.parse(response.body);}catch{}
+    const response=capture.results.find(result=>result.operationId===request.operationId&&result.lane==='webapi');let body;try{body=JSON.parse(response.body);}catch{ /* Optional payload or browser capability is unavailable. */ }
     pages.push({page:request.page??1,operationId:request.operationId,success:response?.status===200&&Array.isArray(body?.value),rows:body?.value,more:body?!!body['@odata.nextLink']||body.value?.length===plan.pageSize:undefined});
    }
   }

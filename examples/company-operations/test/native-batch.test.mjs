@@ -23,7 +23,7 @@ const input = () => ({portalOrigin: 'https://portal.example.test', capturePort: 
 });
 
 test('native batch program treats hostile request metadata as data and uses bounded read workers', async () => {
-  const data = input(), hostile = '\"});globalThis.injected=true;//\\` ${globalThis.injected=true}\u2028\u2029';
+  const data = input(), hostile = '"});globalThis.injected=true;//\\` ${globalThis.injected=true}\u2028\u2029';
   data.requests = Array.from({length: 7}, (_, index) => JSON.parse(JSON.stringify({lane: 'webapi', url: '/_api/widgets?index=' + index, operationId: String(index), authoredFetchXml: hostile, ['__proto__']: {injected: true}})));
   data.requests.push({lane: 'liquid', operationId: 'two', authoredFetchXml: hostile});
   let running = 0, maximum = 0, saved, evaluated;

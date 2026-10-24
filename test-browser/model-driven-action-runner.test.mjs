@@ -54,7 +54,7 @@ test('passive action availability never reads record identity or form values; ex
   const { page, origin, run, requests } = await fixture(t);
   const availability = await page.evaluate(modelDrivenActionAvailability, { origin, actions: MODEL_DRIVEN_ACTIONS });
   assert.equal(availability.find(item => item.id === 'form:record-id').available, true);
-  assert.deepEqual(await page.evaluate(() => [nativeFixture.idReads, nativeFixture.valueReads]), [0, 0]);
+  assert.deepEqual(await page.evaluate(() => [window.nativeFixture.idReads, window.nativeFixture.valueReads]), [0, 0]);
   const id = await run('form:record-id'); assert.equal(id.copyText, recordId);
   const dirty = await run('form:changed-fields'); assert.deepEqual(dirty.rows, [['x_name', 'string', 'PRIVATE_FORM_VALUE']]);
   const saved = await run('form:all-fields'); assert.ok(saved.rows.some(row => row[0] === 'x_false' && row[1] === 'false')); assert.ok(saved.rows.some(row => row[1] === 'PRIVATE_SERVER_VALUE')); assert.match(saved.message, /Saved server state/);
@@ -74,48 +74,48 @@ test('native reads, copy links, choices, source-safe table processes and navigat
   assert.ok(plainNavigation.length > 0);
   for (const action of plainNavigation) assert.equal((await run(action.id, action.inputs.length ? { entity: 'x_person' } : {})).status, 'ok', action.id);
   await run('navigation:open-mobile-client'); await run('navigation:pin-to-side-panel');
-  const opened = await page.evaluate(() => nativeFixture.opened); assert.ok(opened.some(item => item.url?.includes('/s/' + solutionId + '/entity/x_person/form/edit/' + formId))); assert.ok(opened.some(item => item.url?.includes('/x_people('))); assert.ok(opened.some(item => item.pane?.canClose));
+  const opened = await page.evaluate(() => window.nativeFixture.opened); assert.ok(opened.some(item => item.url?.includes('/s/' + solutionId + '/entity/x_person/form/edit/' + formId))); assert.ok(opened.some(item => item.url?.includes('/x_people('))); assert.ok(opened.some(item => item.pane?.canClose));
   assert.equal(requests.some(request => request.method !== 'GET'), false);
 });
 
 test('clone preparation preserves typed zero, false, empty, lookup and date values and performs no writes', async t => {
   const { page, run, requests } = await fixture(t);
   const outcome = await run('form:clone-record'); assert.equal(outcome.status, 'ok');
-  const clone = await page.evaluate(() => nativeFixture.opened.at(-1)); assert.equal(clone.options.entityName, 'x_person'); assert.equal(clone.options.entityId, undefined); assert.equal(clone.params.x_zero, 0); assert.equal(clone.params.x_false, false); assert.equal(clone.params.x_empty, ''); assert.equal(clone.params.x_parent, recordId); assert.equal(clone.params.x_parenttype, 'x_person'); assert.equal(clone.params.x_due, '2026-10-21T13:25:00.000Z'); assert.equal(clone.params.x_readonly, undefined); assert.equal(clone.params.x_choices, '1,3');
+  const clone = await page.evaluate(() => window.nativeFixture.opened.at(-1)); assert.equal(clone.options.entityName, 'x_person'); assert.equal(clone.options.entityId, undefined); assert.equal(clone.params.x_zero, 0); assert.equal(clone.params.x_false, false); assert.equal(clone.params.x_empty, ''); assert.equal(clone.params.x_parent, recordId); assert.equal(clone.params.x_parenttype, 'x_person'); assert.equal(clone.params.x_due, '2026-10-21T13:25:00.000Z'); assert.equal(clone.params.x_readonly, undefined); assert.equal(clone.params.x_choices, '1,3');
   assert.equal(requests.some(request => request.method !== 'GET'), false);
 });
 
 test('client overrides restore exact states and autosave guard blocks only 70 with owned cleanup', async t => {
   const { page, origin, run } = await fixture(t);
   assert.equal((await run('form:god-mode')).status, 'ok');
-  assert.deepEqual(await page.evaluate(() => [nativeFixture.required, nativeFixture.disabled, nativeFixture.visible, nativeFixture.tabVisible, nativeFixture.sectionVisible]), ['none', false, true, true, true]);
-  await run('form:restore-overrides'); assert.deepEqual(await page.evaluate(() => [nativeFixture.required, nativeFixture.disabled, nativeFixture.visible, nativeFixture.tabVisible, nativeFixture.sectionVisible]), ['required', true, false, false, false]);
+  assert.deepEqual(await page.evaluate(() => [window.nativeFixture.required, window.nativeFixture.disabled, window.nativeFixture.visible, window.nativeFixture.tabVisible, window.nativeFixture.sectionVisible]), ['none', false, true, true, true]);
+  await run('form:restore-overrides'); assert.deepEqual(await page.evaluate(() => [window.nativeFixture.required, window.nativeFixture.disabled, window.nativeFixture.visible, window.nativeFixture.tabVisible, window.nativeFixture.sectionVisible]), ['required', true, false, false, false]);
   await run('form:toggle-autosave', { enabled: true });
-  assert.deepEqual(await page.evaluate(() => [70, 1, 2].map(mode => { let blocked = false; for (const handler of nativeFixture.saveHandlers) handler({ getEventArgs: () => ({ getSaveMode: () => mode, preventDefault: () => blocked = true }) }); return blocked; })), [true, false, false]);
-  await run('form:refresh-subgrids'); assert.equal(await page.evaluate(() => nativeFixture.gridRefreshes), 1);
-  page.once('dialog', dialog => dialog.accept()); await run('form:refresh-autosave-off'); assert.deepEqual(await page.evaluate(() => nativeFixture.refreshes), [false]);
+  assert.deepEqual(await page.evaluate(() => [70, 1, 2].map(mode => { let blocked = false; for (const handler of window.nativeFixture.saveHandlers) handler({ getEventArgs: () => ({ getSaveMode: () => mode, preventDefault: () => (blocked = true) }) }); return blocked; })), [true, false, false]);
+  await run('form:refresh-subgrids'); assert.equal(await page.evaluate(() => window.nativeFixture.gridRefreshes), 1);
+  page.once('dialog', dialog => dialog.accept()); await run('form:refresh-autosave-off'); assert.deepEqual(await page.evaluate(() => window.nativeFixture.refreshes), [false]);
   await run('form:show-logical-names'); assert.equal(await page.locator('[data-paq-model-logical-name]').count(), 1);
-  await page.evaluate(disposeModelDrivenActions, { origin, token: 'invented-owned-session' }); assert.equal(await page.evaluate(() => nativeFixture.saveHandlers.length), 0); assert.equal(await page.locator('[data-paq-model-logical-name]').count(), 0);
+  await page.evaluate(disposeModelDrivenActions, { origin, token: 'invented-owned-session' }); assert.equal(await page.evaluate(() => window.nativeFixture.saveHandlers.length), 0); assert.equal(await page.locator('[data-paq-model-logical-name]').count(), 0);
 });
 
 test('late server results cancel after record navigation and retired, foreign or unowned sessions cannot execute', async t => {
   const { page, origin, waits } = await fixture(t); const blocked = {}; waits.set('record', blocked);
   const pending = page.evaluate(runModelDrivenAction, { origin, token: 'invented-owned-session', action: 'form:all-fields', params: {}, requestId: 'slow' });
-  await page.waitForFunction(() => nativeFixture.idReads > 1); while (!blocked.pending) await new Promise(resolve => setTimeout(resolve, 5));
-  await page.evaluate(() => nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'); blocked.release(); assert.deepEqual(await pending, { accepted: true, requestId: 'slow' });
+  await page.waitForFunction(() => window.nativeFixture.idReads > 1); while (!blocked.pending) await new Promise(resolve => setTimeout(resolve, 5));
+  await page.evaluate(() => (window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee')); blocked.release(); assert.deepEqual(await pending, { accepted: true, requestId: 'slow' });
   const outcome = await page.evaluate(() => document.getElementById('paqvilo-model-inspector').__paqModelActions.results.at(-1).result); assert.equal(outcome.status, 'cancelled'); assert.doesNotMatch(JSON.stringify(outcome), /PRIVATE_/);
   for (const extra of [{ token: 'foreign' }, { origin: 'https://foreign.invalid' }]) assert.equal((await page.evaluate(runModelDrivenAction, { origin, token: 'invented-owned-session', action: 'form:record-id', params: {}, requestId: 'denied', ...extra })).accepted, false);
-  await page.evaluate(() => window.__paqviloRetiredModelInspectors = ['invented-owned-session']); assert.equal((await page.evaluate(runModelDrivenAction, { origin, token: 'invented-owned-session', action: 'form:record-id', params: {}, requestId: 'retired' })).accepted, false);
+  await page.evaluate(() => (window.__paqviloRetiredModelInspectors = ['invented-owned-session'])); assert.equal((await page.evaluate(runModelDrivenAction, { origin, token: 'invented-owned-session', action: 'form:record-id', params: {}, requestId: 'retired' })).accepted, false);
 });
 
 
 test('native identity reads use exact privilege names and bounded active-user queries with browser-only choices', async t => {
   const { page, run, requests } = await fixture(t);
-  await page.evaluate(() => nativeFixture.privileges = { role: { name: 'System Administrator' } });
+  await page.evaluate(() => (window.nativeFixture.privileges = { role: { name: 'System Administrator' } }));
   assert.equal((await run('identity:status')).identity.canImpersonate, false);
-  await page.evaluate(() => nativeFixture.privileges = { role: { name: 'prvActOnBehalfOfAnotherUser' } });
+  await page.evaluate(() => (window.nativeFixture.privileges = { role: { name: 'prvActOnBehalfOfAnotherUser' } }));
   assert.equal((await run('identity:status')).identity.canImpersonate, false, 'a name field is not the native privilegeName contract');
-  await page.evaluate(() => nativeFixture.privileges = { privilege: { privilegeName: 'prvActOnBehalfOfAnotherUser', depth: 1 } });
+  await page.evaluate(() => (window.nativeFixture.privileges = { privilege: { privilegeName: 'prvActOnBehalfOfAnotherUser', depth: 1 } }));
   assert.equal((await run('identity:status')).identity.canImpersonate, true);
   const users = await run('identity:users', { query: "O'Neal" }); assert.equal(users.users.length, 1); assert.equal(users.users[0].objectId, environmentId); assert.equal(users.users[0].label, 'Invented active user');
   const read = requests.find(request => request.path.endsWith('/systemusers')); assert.equal(read.query.$top, '100'); assert.match(read.query.$filter, /isdisabled eq false and applicationid eq null/); assert.match(read.query.$filter, /O''Neal/); assert.equal(requests.some(request => request.method !== 'GET'), false);
@@ -124,22 +124,22 @@ test('native identity reads use exact privilege names and bounded active-user qu
 test('owned target lifetime restores fields and guards after SPA navigation while native panes persist until session cleanup', async t => {
   const { page, origin, run } = await fixture(t);
   await run('form:god-mode'); await run('form:toggle-autosave', { enabled: true }); await run('form:show-logical-names'); await run('navigation:pin-to-side-panel');
-  await page.evaluate(() => { nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'; history.replaceState({}, '', '?pagetype=entityrecord&etn=x_person&id=' + nativeFixture.id); });
-  await page.waitForFunction(() => nativeFixture.required === 'required' && nativeFixture.saveHandlers.length === 0 && !document.querySelector('[data-paq-model-logical-name]'));
-  assert.equal(await page.evaluate(() => nativeFixture.closedPanes), 0, 'pinning retains the earlier record while navigating the main app');
+  await page.evaluate(() => { window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'; history.replaceState({}, '', '?pagetype=entityrecord&etn=x_person&id=' + window.nativeFixture.id); });
+  await page.waitForFunction(() => window.nativeFixture.required === 'required' && window.nativeFixture.saveHandlers.length === 0 && !document.querySelector('[data-paq-model-logical-name]'));
+  assert.equal(await page.evaluate(() => window.nativeFixture.closedPanes), 0, 'pinning retains the earlier record while navigating the main app');
   assert.equal((await run('form:record-id')).copyText, 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'a new action can target the new record after automatic cleanup');
-  await page.evaluate(disposeModelDrivenActions, { origin, token: 'invented-owned-session' }); assert.equal(await page.evaluate(() => nativeFixture.closedPanes), 1);
+  await page.evaluate(disposeModelDrivenActions, { origin, token: 'invented-owned-session' }); assert.equal(await page.evaluate(() => window.nativeFixture.closedPanes), 1);
 });
 
 test('explicit stop waiting cancels pending SDK work without discarding owned form adjustments', async t => {
   const { page, run } = await fixture(t);
   await run('form:god-mode'); await run('form:toggle-autosave', { enabled: true }); await run('form:show-logical-names');
-  await page.evaluate(() => { nativeFixture.dirty = false; Xrm.Page.data.refresh = () => new Promise(resolve => { window.releaseNativeRefresh = resolve; }); });
+  await page.evaluate(() => { window.nativeFixture.dirty = false; window.Xrm.Page.data.refresh = () => new Promise(resolve => { window.releaseNativeRefresh = resolve; }); });
   const pending = run('form:refresh-autosave-off');
   await page.waitForFunction(() => Boolean(window.releaseNativeRefresh));
   await page.evaluate(() => document.getElementById('paqvilo-model-inspector').__paqModelActionState.cancelPending());
-  assert.equal(await page.evaluate(() => nativeFixture.required), 'none');
-  assert.equal(await page.evaluate(() => nativeFixture.saveHandlers.length), 1);
+  assert.equal(await page.evaluate(() => window.nativeFixture.required), 'none');
+  assert.equal(await page.evaluate(() => window.nativeFixture.saveHandlers.length), 1);
   assert.equal(await page.locator('[data-paq-model-logical-name]').count(), 1);
   assert.equal((await run('form:record-id')).copyText, recordId);
   await page.evaluate(() => window.releaseNativeRefresh());
@@ -153,7 +153,7 @@ test('explicit action lifetime clears displayed values after a same-URL record c
   await page.evaluate(() => {
     const actions = document.getElementById('paqvilo-model-inspector').__paqModelActions;
     actions.contextChanged = () => { actions.results = []; window.privateContextChanges = (window.privateContextChanges ?? 0) + 1; };
-    nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
   });
   await page.waitForFunction(() => window.privateContextChanges === 1);
   assert.equal(page.url(), originalUrl, 'record identity can change without a route change');
@@ -161,7 +161,7 @@ test('explicit action lifetime clears displayed values after a same-URL record c
   assert.equal((await run('form:record-id')).copyText, 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee');
   // Exercise a new dispatch before the interval can see the next target. Its
   // own request must survive the synchronous target-state transition.
-  await page.evaluate(() => { clearInterval(document.getElementById('paqvilo-model-inspector').__paqModelActionState.timer); nativeFixture.id = 'ffffffff-ffff-4fff-8fff-ffffffffffff'; });
+  await page.evaluate(() => { clearInterval(document.getElementById('paqvilo-model-inspector').__paqModelActionState.timer); window.nativeFixture.id = 'ffffffff-ffff-4fff-8fff-ffffffffffff'; });
   assert.equal((await run('form:record-id')).copyText, 'ffffffff-ffff-4fff-8fff-ffffffffffff');
   assert.equal(await page.evaluate(() => window.privateContextChanges), 1);
 });
@@ -170,31 +170,31 @@ test('native main-form requests acknowledge dispatch without waiting for quick-c
   const { page, run } = await fixture(t);
   await page.evaluate(() => {
     window.nativeFormRejects = []; window.nativeFormFollowups = [];
-    Xrm.Navigation.openForm = () => new Promise((_resolve, reject) => nativeFormRejects.push(reject));
-    document.getElementById('paqvilo-model-inspector').__paqModelActions.followup = (requestId, result) => nativeFormFollowups.push({ requestId, result });
+    window.Xrm.Navigation.openForm = () => new Promise((_resolve, reject) => window.nativeFormRejects.push(reject));
+    document.getElementById('paqvilo-model-inspector').__paqModelActions.followup = (requestId, result) => window.nativeFormFollowups.push({ requestId, result });
   });
   const record = await run('navigation:open-record-by-id', { entity: 'x_person', id: recordId });
   assert.equal(record.status, 'ok'); assert.match(record.message, /Requested.*do not report opening completion/);
   const clone = await run('form:clone-record'); assert.equal(clone.status, 'ok'); assert.match(clone.message, /No record was created/);
-  assert.equal(await page.evaluate(() => nativeFormRejects.length), 2);
-  await page.evaluate(() => nativeFormRejects[1](Error('PRIVATE_NATIVE_ERROR')));
-  await page.waitForFunction(() => nativeFormFollowups.length === 1);
-  assert.equal(await page.evaluate(() => nativeFormFollowups[0].result.message), 'PRIVATE_NATIVE_ERROR');
-  await page.evaluate(() => { nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'; nativeFormRejects[0](Error('STALE_NATIVE_ERROR')); });
-  await page.waitForTimeout(30); assert.equal(await page.evaluate(() => nativeFormFollowups.length), 1);
+  assert.equal(await page.evaluate(() => window.nativeFormRejects.length), 2);
+  await page.evaluate(() => window.nativeFormRejects[1](Error('PRIVATE_NATIVE_ERROR')));
+  await page.waitForFunction(() => window.nativeFormFollowups.length === 1);
+  assert.equal(await page.evaluate(() => window.nativeFormFollowups[0].result.message), 'PRIVATE_NATIVE_ERROR');
+  await page.evaluate(() => { window.nativeFixture.id = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'; window.nativeFormRejects[0](Error('STALE_NATIVE_ERROR')); });
+  await page.waitForTimeout(30); assert.equal(await page.evaluate(() => window.nativeFormFollowups.length), 1);
 });
 
 test('maker and admin navigation preserve an actual Default-prefixed environment identity without guessing an organization ID', async t => {
   const { page, run } = await fixture(t), nativeId = 'Default-AAAAAAAA-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-  await page.evaluate(id => { const context = Xrm.Utility.getGlobalContext(); context.organizationSettings.bapEnvironmentId = id; Xrm.Utility.getGlobalContext = () => context; }, nativeId);
+  await page.evaluate(id => { const context = window.Xrm.Utility.getGlobalContext(); context.organizationSettings.bapEnvironmentId = id; window.Xrm.Utility.getGlobalContext = () => context; }, nativeId);
   assert.equal((await run('navigation:open-power-platform-admin')).status, 'ok');
   assert.equal((await run('form:open-editor')).status, 'ok');
-  const urls = await page.evaluate(() => nativeFixture.opened.map(item => item.url));
+  const urls = await page.evaluate(() => window.nativeFixture.opened.map(item => item.url));
   assert.ok(urls.some(url => url.includes(`/environments/environment/${nativeId}/hub`)));
   assert.ok(urls.some(url => url.includes(`/e/${nativeId}/s/`)));
-  await page.evaluate(() => { Xrm.Utility.getGlobalContext().organizationSettings.bapEnvironmentId = '../untrusted'; });
+  await page.evaluate(() => { window.Xrm.Utility.getGlobalContext().organizationSettings.bapEnvironmentId = '../untrusted'; });
   assert.equal((await run('navigation:open-power-platform-admin')).status, 'unsupported');
-  assert.equal(await page.evaluate(() => nativeFixture.opened.length), 2);
+  assert.equal(await page.evaluate(() => window.nativeFixture.opened.length), 2);
 });
 
 

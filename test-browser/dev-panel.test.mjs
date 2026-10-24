@@ -60,7 +60,7 @@ test('chunked and sized JSON failures retain escaped details; oversized bodies k
   const rows=panel.stateFor(page).problems;
   assert.equal(rows.length,3);assert.equal(rows.find(row=>row.text.endsWith('/error-large')).where,'');
   for(const route of ['/error-small','/error-sized'])assert.match(rows.find(row=>row.text.endsWith(route)).where,/<img.*Missing parent · Internal cause/);
-  await page.evaluate(()=>{window.hangingDone=false;void fetch('/error-hanging').then(response=>response.text()).then(()=>window.hangingDone=true).catch(()=>{});});
+  await page.evaluate(()=>{window.hangingDone=false;void fetch('/error-hanging').then(response=>response.text()).then(()=>(window.hangingDone=true)).catch(()=>{});});
   const bodyDeadline=Date.now()+5000;while(!panel.stateFor(page).problems.some(row=>row.text.endsWith('/error-hanging'))&&Date.now()<bodyDeadline)await page.waitForTimeout(20);
   assert.equal(panel.stateFor(page).problems.find(row=>row.text.endsWith('/error-hanging'))?.status,400);
   assert.equal(await page.evaluate(()=>window.hangingDone),false,'observation must not cancel or finish the original stalled response');

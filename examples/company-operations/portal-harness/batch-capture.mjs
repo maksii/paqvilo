@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dispatcher } from './compile.mjs';
 import { componentId } from './deploy.mjs';

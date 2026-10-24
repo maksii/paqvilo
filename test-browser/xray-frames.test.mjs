@@ -46,7 +46,7 @@ test('nested, dynamic and navigated frames keep their own form context; cross-or
   await page.evaluate(()=>{const f=document.createElement('iframe');f.id='dynamic';f.src='/form?entityformid=B';f.style.cssText='position:absolute;left:100px;top:550px;transform:scale(.8);transform-origin:top left';document.body.append(f);});
   const dynamic=page.frameLocator('#dynamic');await dynamic.locator('#title').waitFor();
   selected=await pick(page,dynamic.locator('#title'));assert.equal(selected.identity.title,'B title');
-  await page.locator('#dynamic').evaluate(node=>node.src='/form?entityformid=A');await dynamic.locator('#title').waitFor();
+  await page.locator('#dynamic').evaluate(node=>(node.src='/form?entityformid=A'));await dynamic.locator('#title').waitFor();
   selected=await pick(page,dynamic.locator('#title'));assert.equal(selected.identity.title,'A title');
   selected=await pick(page,page.locator('#cross'));assert.equal(selected.element.id,'cross');assert.equal(selected.identity.forms.length,0);
   assert.match(await page.locator('#paqvilo-xray .content').innerText(),/cross-origin and sandbox restrictions/);
@@ -78,7 +78,7 @@ test('frame scrolling follows controls and clips highlights to the visible embed
   const {page}=await fixture(t),inner=page.frameLocator('#first');
   await inner.locator('body').evaluate(node=>{node.style.height='1000px';window.scrollTo(0,50);});
   const selected=await pick(page,inner.locator('#notes'));assert.equal(selected.element.id,'notes');
-  await inner.locator('#notes').evaluate(node=>node.style.width='1000px');
+  await inner.locator('#notes').evaluate(node=>(node.style.width='1000px'));
   const outer=await page.locator('#first').boundingBox();
   await page.waitForFunction(outer=>{const node=document.getElementById('paqvilo-xray').shadowRoot.querySelector('.mark.selected');if(!node)return false;const r=node.getBoundingClientRect();return r.width>250&&r.right<=outer.x+outer.width;},outer);
   assert.equal(await page.evaluate(()=>window.actions),0);
@@ -232,6 +232,6 @@ test('focus cannot stay in closed-shadow-root or cross-origin frames while inspe
   const boundary=await guardFixture(t,top);
   await boundary.page.waitForFunction(f=>Boolean((0,eval)(f)),closedNext);
   await boundary.page.evaluate(f=>(0,eval)(f).focus(),closedNext);
-  await boundary.page.evaluate(({f,data})=>{const api=document.getElementById('paqvilo-xray').__px;api.update(data,null);api.toggle(true);},{f:closedNext,data});
+  await boundary.page.evaluate(({data})=>{const api=document.getElementById('paqvilo-xray').__px;api.update(data,null);api.toggle(true);},{f:closedNext,data});
   await boundary.page.keyboard.press('Enter');assert.equal(await actions(boundary.page),0);
 });

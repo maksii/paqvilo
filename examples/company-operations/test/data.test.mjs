@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
 import {readManifest,readCatalogue} from 'paqvilo/dataverse';
 const schema=await readManifest(new URL('../dataverse/manifest.json',import.meta.url)),data=await readCatalogue(new URL('../data/catalogue.json',import.meta.url));
 const rows=table=>data.records.filter(r=>r.table===table),byKey=new Map(data.records.map(r=>[r.key,r]));

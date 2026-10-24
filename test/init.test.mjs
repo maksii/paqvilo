@@ -40,7 +40,7 @@ test('defaults generate a complete empty project, valid catalogue and bound offl
   const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(manifest.devDependencies.paqvilo, `^${toolkit.version}`);
   assert.equal(manifest.engines.node, toolkit.engines.node);
-  assert.equal((await read(directory, '.node-version')).trim(), toolkit.engines.node.match(/\d+/)[0]);
+  assert.equal((await read(directory, '.node-version')).trim(), toolkit.engines.node.match(/\d+\.\d+\.\d+/)[0]);
   assert.equal(manifest.private, true);
   assert.equal(manifest.paqvilo.scaffold, 1);
   assert.match(manifest.scripts.dev, /--profile lense --portals all/);
@@ -374,13 +374,13 @@ test('editor refresh follows catalogue/.env/worktree paths and preserves edited 
   await prepareProject(directory, { name: 'sample' });
   const sources = path.join(directory, 'external');
   await fs.mkdir(path.join(sources, 'portal-portal'), { recursive: true });
-  let config = await read(directory, 'paqvilo.config.yml');
+  const config = await read(directory, 'paqvilo.config.yml');
   await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), config.replace('./sources', './external'));
   const report = await refreshEditor(directory, { processEnv: {} });
   assert.ok(report.updated.includes('.vscode/launch.json'));
   let launches = await readJson(directory, '.vscode/launch.json');
   assert.equal(launches.configurations[0].webRoot, '${workspaceFolder}/external');
-  let workspace = await readJson(directory, 'sample.code-workspace');
+  const workspace = await readJson(directory, 'sample.code-workspace');
   assert.deepEqual(workspace.folders.map(item => item.path), [directory]);
   const worktree = path.join(directory, 'worktree');
   await fs.mkdir(path.join(worktree, 'portal-portal'), { recursive: true });

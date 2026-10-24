@@ -57,7 +57,8 @@ test('strict reporter counts structured successful site cases and rejects skips,
     return [options,await run(other,['tools/test-browser.mjs','--strict'])];
   }));
   await fs.writeFile(file,body('{}'));
-  let [result,filtered]=await Promise.all([run(root,['tools/test-browser.mjs','--strict']),run(root,['tools/test-browser.mjs','--strict','--test-name-pattern=unmatched-case'])]);
+  const initial=await Promise.all([run(root,['tools/test-browser.mjs','--strict']),run(root,['tools/test-browser.mjs','--strict','--test-name-pattern=unmatched-case'])]);
+  let result=initial[0]; const filtered=initial[1];
   assert.equal(result.code,0,result.output);assert.equal(filtered.code,1,filtered.output);
   for(const [options,skipped] of await unexecuted){assert.equal(skipped.code,1,options+skipped.output);assert.match(skipped.output,/Missing: portal/,options);}
   // Effective personal catalogue changes must join the gate without regeneration.

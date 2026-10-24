@@ -34,6 +34,7 @@ export function nativeBatchProgram({portalOrigin, requests, liquidUrls, captureP
     throw new Error('Capture requires an owned loopback port.');
   if (!Array.isArray(requests) || !Array.isArray(liquidUrls)) throw new Error('Batch request arrays required.');
   const localRead = (value, prefix) => {
+// eslint-disable-next-line no-control-regex -- Control characters are deliberately rejected at the native request boundary.
     if (typeof value !== 'string' || !value.startsWith(prefix) || value.includes('\\') || /[\x00-\x1f\x7f]/.test(value))
       throw new Error('Batch reads must use portal-relative paths.');
     const url = new URL(value, origin);
@@ -56,7 +57,7 @@ export function nativeBatchProgram({portalOrigin, requests, liquidUrls, captureP
 async function runNativeBatch(page, input) {
   await page.goto(input.portalUrl, {waitUntil: 'domcontentloaded'});
   const capture = await page.evaluate(async ({requests, liquidUrls}) => {
-    const token = await new Promise((resolve, reject) => shell.getTokenDeferred().done(resolve).fail(reject));
+    const token = await new Promise((resolve, reject) => window.shell.getTokenDeferred().done(resolve).fail(reject));
     const results = [], start = Date.now(), api = requests.filter(request => request.lane === 'webapi');
     let index = 0;
     const workers = Array.from({length: Math.min(4, api.length)}, async () => {

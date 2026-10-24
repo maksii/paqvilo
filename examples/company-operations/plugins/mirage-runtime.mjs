@@ -15,7 +15,7 @@ const spanDto=value=>value?.type==='String'&&value.truncated===false&&/^[a-f\d]{
 const generatedGuid=value=>typeof value==='string'&&/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(value)?'[generated GUID]':value;
 const generatedTime=value=>typeof value==='string'&&/^\/Date\(-?\d+\)\/$/.test(value)?'[generated UTC DateTime]':value;
 const generatedCaptureTime=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/.test(value)&&Number.isFinite(Date.parse(value))?'[generated UTC capture string]':value;
-const normalizeWire=value=>Array.isArray(value)?value.map(normalizeWire):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).map(([key,item])=>{if(['@odata.context','@odata.nextLink'].includes(key)&&typeof item==='string'){try{const url=new URL(item);return[key,'[owned origin]'+url.pathname+url.search+url.hash];}catch{}}return[key,normalizeWire(item)];})):value;
+const normalizeWire=value=>Array.isArray(value)?value.map(normalizeWire):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).map(([key,item])=>{if(['@odata.context','@odata.nextLink'].includes(key)&&typeof item==='string'){try{const url=new URL(item);return[key,'[owned origin]'+url.pathname+url.search+url.hash];}catch{ /* Optional payload or browser capability is unavailable. */ }}return[key,normalizeWire(item)];})):value;
 const child=(node,name)=>node.children?.find(item=>item.name.toLowerCase()===name.toLowerCase());
 const value=(node,name)=>child(node,name)?.text??node.attrs?.[name]??null;
 async function regular(file){

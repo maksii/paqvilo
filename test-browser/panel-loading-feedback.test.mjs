@@ -52,22 +52,22 @@ test('X-ray immediately shows its scan, survives exit during loading, and expose
   await page.evaluate(()=>{window.__inspectionMode='pass';window.__releaseInspection();});await response;
   assert.equal(await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.enabled),false,'late inspection never reopens X-ray');
   await page.keyboard.press('Alt+Shift+X');await xray.getByRole('toolbar').waitFor();await xray.locator('.scan-state').waitFor({state:'hidden'});
-  await page.evaluate(()=>window.__inspectionMode='failure');await xray.getByRole('button',{name:'Refresh source inspection'}).click();await xray.locator('.scan-state').getByText('Details: Invented source unavailable',{exact:true}).waitFor();
+  await page.evaluate(()=>(window.__inspectionMode='failure'));await xray.getByRole('button',{name:'Refresh source inspection'}).click();await xray.locator('.scan-state').getByText('Details: Invented source unavailable',{exact:true}).waitFor();
   assert.equal(await xray.locator('.ui').getAttribute('aria-busy'),'false');await evidence('portal-xray-inspection-error');
-  await page.evaluate(()=>window.__inspectionMode='delay');await xray.getByRole('button',{name:'Retry',exact:true}).click();await xray.locator('.scan-orbit').waitFor();assert.equal(await xray.getByRole('button',{name:'Refresh source inspection'}).isDisabled(),true);
+  await page.evaluate(()=>(window.__inspectionMode='delay'));await xray.getByRole('button',{name:'Retry',exact:true}).click();await xray.locator('.scan-orbit').waitFor();assert.equal(await xray.getByRole('button',{name:'Refresh source inspection'}).isDisabled(),true);
   const count=await page.evaluate(()=>window.__inspectionRequests);await page.evaluate(()=>document.getElementById('paqvilo-xray').dispatchEvent(new CustomEvent('paqvilo-xray',{bubbles:true,detail:{action:'refresh'}})));await page.waitForTimeout(50);assert.equal(await page.evaluate(()=>window.__inspectionRequests),count,'refresh is coalesced during an active inspection');
   await page.evaluate(()=>{window.__inspectionMode='pass';window.__releaseInspection();});await xray.locator('.scan-state').waitFor({state:'hidden'});
   await xray.getByRole('button',{name:'Turn off X-ray'}).click();await scope.locator('.pill').click();await scope.getByRole('tab',{name:'Explore'}).click();
   await scope.getByText('Source catalogue unavailable',{exact:true}).waitFor();assert.equal(await scope.getByText('Nothing found',{exact:true}).count(),0,'failed catalogue is never presented as an empty successful result');
-  await page.evaluate(()=>window.__catalogMode='delay');await scope.getByRole('button',{name:'Retry',exact:true}).click();await scope.getByText('Reading the source catalogue…',{exact:true}).waitFor();
+  await page.evaluate(()=>(window.__catalogMode='delay'));await scope.getByRole('button',{name:'Retry',exact:true}).click();await scope.getByText('Reading the source catalogue…',{exact:true}).waitFor();
   await evidence('portal-panel-catalogue-loading');
   await page.evaluate(()=>{window.__catalogMode='pass';window.__releaseCatalogue();});await scope.locator('.loading-state').waitFor({state:'hidden'});
   await scope.locator('[data-act="open"]').first().click();await scope.locator('.working').getByText('Opening the source editor…',{exact:true}).waitFor();
   assert.equal(await scope.locator('[data-act="open"]').first().isDisabled(),true);
   await page.evaluate(()=>{const node=document.getElementById('paqvilo-panel').shadowRoot.querySelector('[data-act="open"]');node.dispatchEvent(new MouseEvent('click',{bubbles:true}));});await page.waitForTimeout(30);assert.equal(openCalls,1,'duplicate source opening is coalesced');
   await scope.getByRole('tab',{name:'Activity'}).click();await scope.locator('.working').waitFor();releaseOpen();await scope.locator('.working').waitFor({state:'hidden'});await scope.locator('.toast').getByText(/Opened .+ in the editor/).waitFor();
-  await scope.getByRole('tab',{name:'Explore'}).click();await page.evaluate(()=>window.__fastDeadline=true);await scope.locator('[data-act="open"]').first().click();
-  await scope.locator('.toast').getByText('The request timed out. Check the dev loop and retry.',{exact:true}).waitFor();assert.equal(await scope.locator('.working').isVisible(),false);assert.equal(await scope.locator('[data-act="open"]').first().isDisabled(),false,'a timed-out action restores its controls');assert.equal(openCalls,2,'timeouts never automatically retry the operation');releaseOpen();await page.evaluate(()=>window.__fastDeadline=false);
+  await scope.getByRole('tab',{name:'Explore'}).click();await page.evaluate(()=>(window.__fastDeadline=true));await scope.locator('[data-act="open"]').first().click();
+  await scope.locator('.toast').getByText('The request timed out. Check the dev loop and retry.',{exact:true}).waitFor();assert.equal(await scope.locator('.working').isVisible(),false);assert.equal(await scope.locator('[data-act="open"]').first().isDisabled(),false,'a timed-out action restores its controls');assert.equal(openCalls,2,'timeouts never automatically retry the operation');releaseOpen();await page.evaluate(()=>(window.__fastDeadline=false));
   assert.deepEqual(errors,[]);
 });
 

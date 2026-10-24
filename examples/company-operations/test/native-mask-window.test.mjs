@@ -82,8 +82,8 @@ test('mask qualification checks original archive bytes and distinct SDK operatio
 
 test('an unchanged archive checksum cannot qualify tampered passed query/context/SDK readback inventory', async t => {
   const state = await setup(t), original = await capture(state.directory, 1);
-  for (const mutate of [value => value.requests[0].authoredFetchXml = '<fetch page="9"/>',
-    value => value.recordingInputs.operations[0].pqvd_testoperationid = contactId,
+  for (const mutate of [value => (value.requests[0].authoredFetchXml = '<fetch page="9"/>'),
+    value => (value.recordingInputs.operations[0].pqvd_testoperationid = contactId),
     value => value.qualification.physical[0].queries.push({ invented: true })]) {
     const changed = structuredClone(original); mutate(changed);
     await assert.rejects(appendNativeMaskPage({ journalFile: state.journalFile, page: 1, capture: changed,

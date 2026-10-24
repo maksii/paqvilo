@@ -75,7 +75,7 @@ export async function prepare({resolvedIds={}, readiness={}, navigation={},overl
     const table=catalogue.tables.find(t=>t.name===fixture.table),scalar=fixture.table==='contact'?'firstname':primaryName(fixture.table);
     fixture.originals={};for(const side of ['A','B']) {
       const row=catalogue.records.find(r=>r.key===`CANARY-${side}-${fixture.table}`);fixture.originals[side]=row.fields[scalar];fixture.scalarField=scalar;
-      const source=manifest.cases.find(c=>c.table===fixture.table);let fetchXml=source.fetchXml.replace(/<entity[^>]*>[\s\S]*?<filter type="or">/,`<entity name="${fixture.table}"><attribute name="${table.primaryId}"></attribute><attribute name="${scalar}"></attribute><order attribute="${table.primaryId}"></order><filter type="and"><condition attribute="${table.primaryId}" operator="eq" value="${fixture.targets[side]}"></condition></filter><filter type="or">`);
+      const source=manifest.cases.find(c=>c.table===fixture.table);const fetchXml=source.fetchXml.replace(/<entity[^>]*>[\s\S]*?<filter type="or">/,`<entity name="${fixture.table}"><attribute name="${table.primaryId}"></attribute><attribute name="${scalar}"></attribute><order attribute="${table.primaryId}"></order><filter type="and"><condition attribute="${table.primaryId}" operator="eq" value="${fixture.targets[side]}"></condition></filter><filter type="or">`);
       const plan={...source,fragments:undefined,id:`CRUD-${fixture.table}-${side}`,name:`Canary ${fixture.table} ${side}`,variant:'canary-verification',fetchXml,fields:[{name:table.primaryId,source:table.primaryId,type:'guid'},{name:scalar,source:scalar,type:'string'}],logicalQueryHash:hash(fetchXml)};manifest.crudReadCases.push(plan);
     }
   }

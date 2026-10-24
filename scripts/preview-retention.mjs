@@ -70,7 +70,8 @@ function npm(args) {
   } catch (error) {
     // Never echo npm configuration, authentication details or full child-process errors.
     const code = /(?:npm (?:error|ERR!) code )([A-Z0-9_]+)/.exec(error.stderr ?? '')?.[1] ?? 'FAILED';
-    throw new Error(`npm ${args[0]} failed (${code}). Check maintenance authentication, 2FA and npm's unpublish policy.`, { cause: undefined });
+    // eslint-disable-next-line preserve-caught-error -- npm's raw error/cause may expose authentication details.
+    throw new Error(`npm ${args[0]} failed (${code}). Check maintenance authentication, 2FA and npm's unpublish policy.`);
   }
 }
 

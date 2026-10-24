@@ -47,10 +47,10 @@ export async function boundedReplayBytes(file,limit=64*1024*1024){
 const boundedBytes=boundedReplayBytes;
 async function archiveBytes(directory,bytes){
  const digest=sha(bytes),file=path.join(directory,digest+'.bin'),temporary=path.join(directory,digest+'.'+randomUUID()+'.tmp');await fs.mkdir(directory,{recursive:true});let handle;
- try{handle=await fs.open(temporary,'wx',0o600);await handle.writeFile(bytes);await handle.sync();await handle.close();handle=null;try{await fs.link(temporary,file);}catch(error){if(error.code!=='EEXIST')throw error;if(sha(await boundedBytes(file,bytes.length))!==digest)throw new Error('An immutable replay input archive changed.');}}finally{await handle?.close();await fs.unlink(temporary).catch(error=>{if(error.code!=='ENOENT')throw error;});}
+ try{handle=await fs.open(temporary,'wx',0o600);await handle.writeFile(bytes);await handle.sync();await handle.close();handle=null;try{await fs.link(temporary,file);}catch(error){if(error.code!=='EEXIST')throw error;if(sha(await boundedBytes(file,bytes.length))!==digest)throw new Error('An immutable replay input archive changed.', {cause:error});}}finally{await handle?.close();await fs.unlink(temporary).catch(error=>{if(error.code!=='ENOENT')throw error;});}
  return {file,sha256:digest};
 }
-async function input(spec,archive){if(!spec||!/^[a-f\d]{64}$/.test(spec.sha256??''))throw new Error('Every replay input requires an absolute local file and immutable SHA256 receipt.');const receipt=await jsonReceipt(spec.file,{sha256:spec.sha256});return {value:receipt.value,archive:await archiveBytes(archive,receipt.bytes)};}
+
 export async function loadReplayCellInputs(job,cell,{archiveRoot}={}){
  const loaded=Object.fromEntries(await Promise.all(Object.entries({...job.inputs,...cell.inputs}).map(async([key,spec])=>{if(!spec||!/^[a-f\d]{64}$/.test(spec.sha256??''))throw new Error('Every replay input requires its immutable receipt.');const receipt=await jsonReceipt(spec.file,{sha256:spec.sha256});return [key,{value:receipt.value,archive:archiveRoot?await archiveBytes(archiveRoot,receipt.bytes):undefined}];})));
  return {inputs:Object.fromEntries(Object.entries(loaded).map(([key,receipt])=>[key,receipt.value])),inputArchives:Object.fromEntries(Object.entries(loaded).filter(([,receipt])=>receipt.archive).map(([key,receipt])=>[key,receipt.archive]))};
@@ -131,7 +131,7 @@ export async function runMirageReplayCampaign(job,{replay=replayCell}={}){
    await savePrivateJson(ledgerFile,ledger);
   }
   const latest=cells.map(cell=>ledger.cells.filter(entry=>entry.id===cell.id).at(-1)),qualified=latest.filter(entry=>entry.allQualified).length,expectedCells=job.expectedCells??cells.length;return {pid:process.pid,jobSha256,runtimeSha256,expectedCells,cells:latest.length,complete:latest.filter(entry=>entry.state==='complete').length,qualified,allQualified:qualified===expectedCells,coverageScope:job.roleCampaign?'Frozen native role-mask lattice':'Physical-only diagnostic; exhaustive roles unqualified',exhaustiveRoleCoverageQualified:Boolean(job.roleCampaign)&&!job.shard&&expectedCells===4096&&roleMasks.size===4096&&qualified===4096,physicalReads:latest.reduce((sum,entry)=>sum+(entry.physicalReads??0),0),qualifiedReads:latest.reduce((sum,entry)=>sum+(entry.qualifiedReads??0),0),ledgerFile};
- }finally{let actual;try{actual=JSON.parse(await boundedBytes(lease,65536));}catch{}if(actual?.owner===owner)await fs.unlink(lease);}
+ }finally{let actual;try{actual=JSON.parse(await boundedBytes(lease,65536));}catch{ /* Optional payload or browser capability is unavailable. */ }if(actual?.owner===owner)await fs.unlink(lease);}
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const args=process.argv.slice(2);if(args.length!==2||args[0]!=='--job')throw new Error('Usage: node mirage-campaign-replay.mjs --job <private offline job.json>');

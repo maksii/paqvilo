@@ -187,7 +187,7 @@ test('mapped runtime locations open the exact selected source at one-based line 
 
 
 test('inspector drains shared-panel DOM and listeners even when owned discovery removal fails', {timeout:10000}, async t => {
-  const f=await modelPanelFixture(t), token=f.inspector.snapshot().token;
+  const f=await modelPanelFixture(t);
   const discovery=f.inspector.agent.discoveryFile;
   await fs.rm(discovery);await fs.mkdir(discovery);
   await assert.rejects(f.inspector.close(),cause=>['EPERM','EISDIR','ERR_FS_EISDIR'].includes(cause.code));

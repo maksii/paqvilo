@@ -68,6 +68,7 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   const all = await (await call('/v1/pages/1/dom', {})).json();
   for (const secret of ['inputSecret', 'textareaSecret', 'editableSecret', 'linkSecret']) assert.equal(JSON.stringify(all).includes(secret), false);
   const invalidSelector=await call('/v1/pages/1/dom',{selector:'div[[['});assert.equal(invalidSelector.status,400);
+// eslint-disable-next-line no-control-regex -- Control-character matching is deliberate validation or redaction at this boundary.
   const selectorError=await invalidSelector.json();assert.equal(selectorError.error.code,'invalid_selector');assert.doesNotMatch(selectorError.error.message,/\bat |Call log|\u001b/);
   const invalidPage=await call('/v1/pages/abc/state');assert.equal(invalidPage.status,400);assert.equal((await invalidPage.json()).error.code,'invalid_argument');
   const future=await (await call('/v1/events?after=999999999')).json();assert.equal(future.cursorAhead,true);assert.equal(future.sessionId,discovery.id);assert.ok(future.latestSequence<999999999);assert.equal(future.hasMore,false);
@@ -78,7 +79,7 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   // Either the browser abandons the slow document or it arrives late; neither may commit.
   await slowDone;await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,100)));assert.equal(page.url(),beforeTimeout,'timed-out navigation must not commit later');
   const command=spawn(process.execPath,[fileURLToPath(new URL('../lense/cli.mjs',import.meta.url)),'agent','navigate','--session',agent.discoveryFile,'--page-id','1','--path','/never','--timeout','2000'],{windowsHide:true});
-  let output='';command.stdout.on('data',chunk=>output+=chunk);const [code]=await once(command,'close');
+  let output='';command.stdout.on('data',chunk=>(output+=chunk));const [code]=await once(command,'close');
   const deadlineError=JSON.parse(output);assert.equal(code,1);assert.equal(deadlineError.action,'navigate');assert.equal(deadlineError.error.code,'action_timeout');assert.equal(deadlineError.error.status,504);assert.equal(page.url(),beforeTimeout);
   const timeoutEvents=await (await call('/v1/events')).json();assert.doesNotMatch(JSON.stringify(timeoutEvents.events.filter(event=>event.type==='action-error')),/Call log|\\u001b/);
   const history = await (await call('/v1/events')).json();
@@ -133,7 +134,7 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   await agent.close();
   assert.equal(fs.existsSync(agent.discoveryFile), false);
   const stoppedCommand=spawn(process.execPath,[fileURLToPath(new URL('../lense/cli.mjs',import.meta.url)),'agent','status','--session',agent.discoveryFile],{windowsHide:true});
-  let stoppedOutput='';stoppedCommand.stdout.on('data',chunk=>stoppedOutput+=chunk);assert.equal((await once(stoppedCommand,'close'))[0],1);
+  let stoppedOutput='';stoppedCommand.stdout.on('data',chunk=>(stoppedOutput+=chunk));assert.equal((await once(stoppedCommand,'close'))[0],1);
   assert.equal(JSON.parse(stoppedOutput).error.code,'session_not_found');assert.equal(JSON.parse(stoppedOutput).action,'status');
   finished = true;
 });

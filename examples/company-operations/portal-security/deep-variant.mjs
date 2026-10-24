@@ -65,7 +65,7 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
   const onProgress=async entry=>{journal.entries.push({...entry,time:new Date().toISOString()});journal.state=entry.state;await privateJson(journalFile,journal);};
   try {
     if(recoveryFile)await restoreDeepVariant(client,journal,{siteId,expectedOrganisationId:connection.organisationId,onProgress});
-    else await withDeepVariant(client,siteId,async()=>{console.log(JSON.stringify({state:'active',variant:deepVariant,journal:journalFile,releaseFile,timeoutSeconds:duration}));const deadline=Date.now()+duration*1000;while(!stopped&&Date.now()<deadline){try{await fs.access(releaseFile);break;}catch{}await new Promise(resolve=>setTimeout(resolve,1000));}},{onProgress});
+    else await withDeepVariant(client,siteId,async()=>{console.log(JSON.stringify({state:'active',variant:deepVariant,journal:journalFile,releaseFile,timeoutSeconds:duration}));const deadline=Date.now()+duration*1000;while(!stopped&&Date.now()<deadline){try{await fs.access(releaseFile);break;}catch{ /* Optional payload or browser capability is unavailable. */ }await new Promise(resolve=>setTimeout(resolve,1000));}},{onProgress});
   } catch(error){journal.error={code:error.code??'VARIANT_INTERRUPTED',message:error.message};journal.state='failed-or-drift';throw error;}
   finally {journal.finishedAt=new Date().toISOString();await privateJson(journalFile,journal);}
   console.log(JSON.stringify({state:journal.state,journal:journalFile}));

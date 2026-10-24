@@ -12,7 +12,7 @@ After configuring your export/catalogue, run `npx paqvilo lense doctor --config 
 
 | Tool | Why you need it |
 | --- | --- |
-| [Node.js 22 or later](https://nodejs.org/en/download) | Runs Paqvilo and includes npm and npx. |
+| [Node.js 24.22.1 or later in the 24.x LTS line](https://nodejs.org/en/download) | Runs Paqvilo and includes npm and npx. |
 | Edge or Chrome | Displays your portal and the integrated development panel. Edge is the default. |
 | [Git](https://git-scm.com/downloads) | Provides source baselines for browser overlays and change comparisons. |
 | [Visual Studio Code](https://code.visualstudio.com/download) | Recommended editor for your exported sources and configuration. |

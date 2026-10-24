@@ -11,7 +11,7 @@ for(const short of [false,true]){
     const file='content-snippets/inline/en-US/Inline.contentsnippet.yml';
     const record={[id]:'inline-snippet',[k('name')]:'Inline',[k('value')]:'<p>Old inline snippet</p>',[k('contentsnippetlanguageid')]:'language-en',[k('type')]:756150001,sibling:'retained'};
     fx.write(file,YAML.stringify(record));
-    let model=await PortalModel.create(fx.dir);const source=model.inlineSources.find(s=>s.rel===file+'#'+k('value'));
+    const model=await PortalModel.create(fx.dir);const source=model.inlineSources.find(s=>s.rel===file+'#'+k('value'));
     assert.ok(source);assert.equal(sourceText(source),record[k('value')]);assert.equal(source.recordId,'inline-snippet');
     editSource(source,text=>text.replace('Old','New'));
     assert.deepEqual(YAML.parse(fx.read(file)),{...record,[k('value')]:'<p>New inline snippet</p>'});

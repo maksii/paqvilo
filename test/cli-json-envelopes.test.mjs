@@ -103,7 +103,7 @@ test('every JSON command failure has a truthful envelope and status retains comp
     assert.ok(report.errors.every(error=>typeof error.code==='string'&&typeof error.message==='string'),command);
   }
   const child=spawn(process.execPath,[cli,'lense','status','--config',config,'--json'],{windowsHide:true,env});
-  let output='',stderr='';child.stdout.on('data',chunk=>output+=chunk);child.stderr.on('data',chunk=>stderr+=chunk);
+  let output='',stderr='';child.stdout.on('data',chunk=>(output+=chunk));child.stderr.on('data',chunk=>(stderr+=chunk));
   const [code]=await once(child,'close');assert.equal(code,1,output+stderr);
   const report=JSON.parse(output);assert.equal(report.ok,false);assert.equal(report.offline,false);
   assert.ok(report.results.length>0);assert.ok(report.errors.length>0);assert.ok(!Object.hasOwn(report,'0'));

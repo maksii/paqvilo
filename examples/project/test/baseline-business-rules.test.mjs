@@ -23,15 +23,15 @@ test('business rule fingerprints retain comparison and assignment literals, mess
  const rule={id:'12345678-1234-4567-8123-123456789abc',name:'Synthetic literals',table:'exa_record',when:{field:'exa_flag',equals:true},guard:{field:'exa_count',greaterThan:3},actions:[{type:'setValue',field:'exa_text',value:'  A "quoted" value  '},{type:'setDefault',field:'exa_number',value:42},{type:'error',field:'exa_text',message:'  A < B & C  '}],otherwise:[{type:'clearValue',field:'exa_text'}]};
  const fingerprint=value=>ruleFingerprint(businessRuleXaml(value)),before=fingerprint(rule);
  const changes=[
-  value=>value.when.equals=false,
-  value=>value.guard.greaterThan=4,
-  value=>value.actions[0].value=' A "quoted" value  ',
-  value=>value.actions[1].value=43,
-  value=>value.actions[1].value='42',
-  value=>value.actions[2].message='A < B & C',
-  value=>value.actions[2].field='exa_number',
+  value=>(value.when.equals=false),
+  value=>(value.guard.greaterThan=4),
+  value=>(value.actions[0].value=' A "quoted" value  '),
+  value=>(value.actions[1].value=43),
+  value=>(value.actions[1].value='42'),
+  value=>(value.actions[2].message='A < B & C'),
+  value=>(value.actions[2].field='exa_number'),
   value=>value.actions.reverse(),
-  value=>value.otherwise=[],
+  value=>(value.otherwise=[]),
  ];
  for(const change of changes){const changed=structuredClone(rule);change(changed);assert.notEqual(fingerprint(changed),before,change.toString());}
  const xaml=businessRuleXaml(rule);

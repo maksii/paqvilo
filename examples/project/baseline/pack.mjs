@@ -30,7 +30,7 @@ const mutate = ({ target }) => {
   if (Object.hasOwn(target, "pqvd_textarea") && target.pqvd_textarea === "mutate-me") result.pqvd_textarea = "mutated by plugin";
   return { target: result };
 };
-let pluginSteps = {};
+const pluginSteps = {};
 try {
   const registered = JSON.parse(fs.readFileSync(new URL("./plugins.json", import.meta.url), "utf8"));
   for (const step of registered.steps ?? []) pluginSteps[step.id] = step.kind === "mutate" ? mutate : failing(step.message.toLowerCase(), step.stage);

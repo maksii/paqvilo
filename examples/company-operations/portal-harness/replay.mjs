@@ -89,10 +89,10 @@ export function replayLane(native, plan, {store, identity, compile}) {
     let xml = page.authoredFetchXml;
     if (!xml && native.engine === 'liquid' && page.body) {
       const find = node => node.name === 'authored-fetchxml' ? node : node.children.map(find).find(Boolean);
-      try {xml = find(parseXmlDocument(page.body, {root: 'co-test-response'}))?.text;} catch {}
+      try {xml = find(parseXmlDocument(page.body, {root: 'co-test-response'}))?.text;} catch { /* Optional payload or browser capability is unavailable. */ }
     }
     if (!xml && page.authoredRequest) {
-      try {xml = new URL(typeof page.authoredRequest === 'string' ? page.authoredRequest : page.authoredRequest.url, 'http://127.0.0.1').searchParams.get('fetchXml');} catch {}
+      try {xml = new URL(typeof page.authoredRequest === 'string' ? page.authoredRequest : page.authoredRequest.url, 'http://127.0.0.1').searchParams.get('fetchXml');} catch { /* Optional payload or browser capability is unavailable. */ }
     }
     if (!xml) { differences.push({kind: 'missing-authored-query', verdict: 'unqualified'}); continue; }
     let expansion, result, error;

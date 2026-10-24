@@ -220,7 +220,7 @@ async function runQualificationPortalRequest(page, input) {
     };
     const roleNames=roles.map(role=>decode(role[1]));
     if(input.anonymous?actor&&actor!=='00000000-0000-0000-0000-000000000000':actor!==input.actor)throw new Error('Native portal actor changed');
-    const token=await new Promise((resolve,reject)=>shell.getTokenDeferred().done(resolve).fail(reject));
+    const token=await new Promise((resolve,reject)=>window.shell.getTokenDeferred().done(resolve).fail(reject));
     const response=await fetch(input.request.url,{method:input.request.method,headers:{Accept:'application/json','Content-Type':'application/json','__RequestVerificationToken':token,...(input.request.ifMatch?{'If-Match':input.request.ifMatch}:{})},body:input.request.body===undefined?undefined:JSON.stringify(input.request.body),credentials:'same-origin',redirect:'error',cache:'no-store'});
     return {identityReceipt:{serverVerified:true,contactId:actor||'00000000-0000-0000-0000-000000000000',roleNames},wire:{status:response.status,mime:response.headers.get('content-type'),body:await response.text()},entityId:response.headers.get('entityid')};
   }, input);
@@ -505,7 +505,7 @@ export function createNativeConfigurationAdapters({ client, browser, anonymousBr
       await savePrivateJson(path.join(directory, `native-source-before-${repeat}.json`), state.sourceBefore, { exclusive: true });
       return state.sourceBefore.witnesses;
     },
-    async collectNativeCell({ cell, configuration, cache, directory, repeat, expectedRoleIds }) {
+    async collectNativeCell({ cell, configuration, cache, directory, repeat }) {
       const state = cells.get(directory + ':' + repeat), anonymous = configuration.roles.some(role => role.anonymous);
       let request = state.request;
       if (cell.operation === 'read') {
@@ -524,7 +524,7 @@ export function createNativeConfigurationAdapters({ client, browser, anonymousBr
       if (cell.operation === 'read' && ['webapi', 'webapi-odata'].includes(cell.lane)) {
         try { const value = JSON.parse(response.wire.body); if (Array.isArray(value.value)) {
           rows = canonicalRows(value.value, configuration.query); completePages = !value['@odata.nextLink'] && value.value.length < configuration.query.pageSize;
-        } else completePages = response.wire.status >= 400; } catch {}
+        } else completePages = response.wire.status >= 400; } catch { /* Optional payload or browser capability is unavailable. */ }
       } else if (cell.operation === 'read' && cell.lane === 'liquid') {
         try {
           const body = response.wire.body.replace(/^\s*<\?xml[^?]*\?>/, '');

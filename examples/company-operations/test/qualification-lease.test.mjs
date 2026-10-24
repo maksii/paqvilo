@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildBlueprint } from '../portal-security/blueprint.mjs';
 import { highRiskNativeConfigurations, equipmentLifecycleConfigurations } from '../portal-security/qualification-priority.mjs';
-import { planQualificationLease, withQualificationLease, inspectQualificationLease, restoreQualificationLease } from '../portal-security/qualification-lease.mjs';
+import { planQualificationLease, withQualificationLease, restoreQualificationLease } from '../portal-security/qualification-lease.mjs';
 import { planQualificationFixtures, bindQualificationFixtureRequests } from '../portal-security/qualification-fixtures.mjs';
 
 const schema = JSON.parse(await readFile(new URL('../dataverse/manifest.json', import.meta.url)));

@@ -107,22 +107,7 @@ async function ensureExtraColumn(client, column, { apply, solution, journal }) {
   log(entry);
 }
 
-async function ensureTableFlags(client, table, flags, { apply, solution, journal }) {
-  const current = await client.optional(`EntityDefinitions(LogicalName='${table}')`);
-  if (!current) {
-    journal.push({ kind: "table-flags", table, action: "skipped", reason: "table not provisioned yet" });
-    return;
-  }
-  const patch = {};
-  for (const [key, value] of Object.entries(flags)) if (current[key] !== value && value === true) patch[key] = value;
-  const entry = { kind: "table-flags", table, action: Object.keys(patch).length ? "update" : "exists", flags: Object.keys(patch) };
-  if (apply && Object.keys(patch).length) {
-    const { "@odata.context": _context, Attributes: _attributes, ...body } = current;
-    await client.request(`EntityDefinitions(LogicalName='${table}')`, { method: "PUT", body: { ...body, ...patch }, solution, mergeLabels: true });
-  }
-  journal.push(entry);
-  log(entry);
-}
+
 
 async function ensureCustomerLookup(client, spec, { apply, solution, journal }) {
   const existing = await attribute(client, spec.table, spec.name);
@@ -375,7 +360,7 @@ export function ruleFingerprint(xaml) {
       if (["TypeArguments", "TargetType"].includes(key) || local(node) === "ReferenceLiteral" && key === "Value") value = value.replace(/\b[\w]+:[\w]+/g, (type) => resolve(type, scope));
       return [name.includes(":") ? resolve(name, scope) : name, expression(value)];
     }).sort(([a], [b]) => a.localeCompare(b));
-    let children = node.children.map(canonical);
+    const children = node.children.map(canonical);
     // These property bags are dictionaries. Activity collections retain execution order.
     if (["ActivityReference-Arguments", "ActivityReference-Properties"].includes(local(node))) {
       children.sort((a, b) => JSON.stringify(a.attrs.find(([key]) => key.endsWith("}Key"))?.[1] ?? "").localeCompare(JSON.stringify(b.attrs.find(([key]) => key.endsWith("}Key"))?.[1] ?? "")));

@@ -27,6 +27,7 @@ export async function withNativeCampaignWorkerLease(config,work) {
  await savePrivateJson(workerLock,lease,{exclusive:true});
  try{return await work();}finally{
   const actual=JSON.parse(await readFile(workerLock,'utf8'));
+// eslint-disable-next-line no-unsafe-finally -- Ownership drift must prevent cleanup of a foreign lease even after an operation failure.
   if(stable(actual)!==stable(lease))throw new Error('Native campaign worker lock ownership changed; recovery refused.');
   await unlink(workerLock);
  }
@@ -40,7 +41,7 @@ export function continuationCases(capture,manifest) {
  const plans=[...(manifest.cases??[]),...(manifest.stressCases??[])],pending=new Set();
  for(const request of capture.requests??[]){const plan=plans.find(plan=>plan.id===request.caseId);if(!plan)throw new Error('Continuation request is outside the frozen query catalogue.');
   if(request.lane==='liquid'){const result=capture.liquidPages?.find(page=>page.operationId===request.operationId);if(result?.outcome==='success'&&result.more===true)pending.add(plan.id);}
-  else if(request.lane==='webapi'){const response=capture.results?.find(result=>result.operationId===request.operationId&&result.lane==='webapi');let body;try{body=JSON.parse(response?.body);}catch{}
+  else if(request.lane==='webapi'){const response=capture.results?.find(result=>result.operationId===request.operationId&&result.lane==='webapi');let body;try{body=JSON.parse(response?.body);}catch{ /* Optional payload or browser capability is unavailable. */ }
    if(response?.status===200&&Array.isArray(body?.value)&&(body['@odata.nextLink']||body.value.length===plan.pageSize))pending.add(plan.id);
   }
  }

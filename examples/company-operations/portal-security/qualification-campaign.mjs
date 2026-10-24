@@ -148,7 +148,7 @@ export function compareConfigurationCell(configuration, cell, native, local, { d
     }
   }
   let code;
-  try { code = JSON.parse(pages[0]?.wire?.body).error?.code; } catch {}
+  try { code = JSON.parse(pages[0]?.wire?.body).error?.code; } catch { /* Optional payload or browser capability is unavailable. */ }
   const liquidReceipt = cell.operation === 'read' && cell.lane === 'liquid' && !nativePayloads.length
     ? validateLiquidNoReadReceipt(configuration, native, local) : null;
   const permissionDenied = pages[0]?.wire?.status === 403 && permissionCodes.has(code) && nativePayloads.length === 0 || liquidReceipt?.verified === true;
@@ -364,6 +364,7 @@ export async function runNativeConfigurationCampaign({ directory, domain, client
   } finally {
     await handle.close();
     const latest = await load(lock);
+// eslint-disable-next-line no-unsafe-finally -- Ownership drift must prevent cleanup of a foreign lease even after an operation failure.
     if (latest.leaseId !== ownership.leaseId) throw new Error('Configuration writer lock changed; refusing foreign cleanup.');
     // An unresolved cleanup needs explicit recovery under the retained lock.
     if (!journal?.entries?.some(entry => entry.state !== 'restored')) await fs.unlink(lock);

@@ -55,12 +55,12 @@ async function run(large,index){
       return page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(performance.now()-window.toggleStarted)))));
     };
     const coldToggleMs=await toggle();
-    await page.evaluate(()=>window.selectionProbe={samples:[],armed:false});
+    await page.evaluate(()=>(window.selectionProbe={samples:[],armed:false}));
     for(let selection=0;selection<5;selection++){
       if(selection)await page.keyboard.press('Escape');
       const rect=await page.locator('.dynamic-message').boundingBox();if(!rect)throw new Error('Dynamic snippet selection target is missing');
       await page.mouse.move(rect.x+rect.width/2,rect.y+rect.height/2);
-      await page.evaluate(()=>window.selectionProbe.armed=true);
+      await page.evaluate(()=>(window.selectionProbe.armed=true));
       await page.mouse.down();await page.mouse.up();
       await page.waitForFunction(count=>window.selectionProbe.samples.length===count,selection+1);
     }

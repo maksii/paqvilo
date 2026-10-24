@@ -95,7 +95,7 @@ test('descent remembers the selected child, native controls are picked without f
   // Wait for pending pointer/layout events to settle even when the full suite is busy.
   // A recurring geometry poll cannot pass this quiet window.
   await page.waitForFunction(()=>{const now=performance.now();if(window.lastGeometryReads!==window.geometryReads){window.lastGeometryReads=window.geometryReads;window.geometryQuietSince=now;}return now-window.geometryQuietSince>450;},null,{timeout:5000});
-  await page.evaluate(()=>window.geometryReads=0);
+  await page.evaluate(()=>(window.geometryReads=0));
   await page.waitForTimeout(1100);assert.equal(await page.evaluate(()=>window.geometryReads),0);
 });
 
@@ -163,7 +163,7 @@ test('Web Animations started after enabling X-ray and element resizes move the s
   await page.evaluate(()=>document.getElementById('moving').animate([{transform:'translateX(0px)'},{transform:'translateX(150px)'}],{duration:350,fill:'forwards'}).finished);
   await outlineMatches('x');
   assert.ok(await page.evaluate(()=>document.getElementById('moving').getBoundingClientRect().x)>170);
-  await page.evaluate(()=>document.getElementById('moving').style.width='170px');
+  await page.evaluate(()=>(document.getElementById('moving').style.width='170px'));
   await outlineMatches('width');
   await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.toggle(false));
   assert.equal(await page.evaluate(()=>Element.prototype.animate===window.hookedAnimate),false,'disabling removes the temporary animate wrapper');
@@ -379,7 +379,7 @@ test('idless list grids retain the sole referenced list and view; shared views s
 test('script-set frame form IDs resolve the whole export and selection emits shared identity in one-shot mode',async t=>{
   const report={forms:[],componentIndex:{forms:[{id:'F',name:'Exported form',entity:'item',pageReferenced:false}]}};
   const {page,identify}=await fixture(t,'<iframe id="frame"></iframe>',report);
-  await page.locator('#frame').evaluate(node=>node.src='/f/?entityformid=F&token=not-collected');
+  await page.locator('#frame').evaluate(node=>(node.src='/f/?entityformid=F&token=not-collected'));
   assert.equal((await identify('#frame')).title,'Exported form');
   await page.evaluate(()=>{const api=document.getElementById('paqvilo-xray').__px;api.toggle(false);document.addEventListener('paqvilo-xray',event=>{if(event.detail.action==='selected')window.selectedIdentity=event.detail;});api.pickOnce();api.select(document.getElementById('frame'));});
   const result=await page.evaluate(()=>({identity:window.selectedIdentity.identity,once:window.selectedIdentity.oneShot,enabled:document.getElementById('paqvilo-xray').__px.enabled}));

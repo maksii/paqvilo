@@ -79,7 +79,7 @@ test('script-rendered unreferenced snippets remain attributable with bounded pag
   assert.equal(result.title,'Dynamic notice');
   assert.ok(result.ms<5,'synthetic element identification stays below the 5 ms target');
   t.diagnostic(JSON.stringify({identificationMs:result.ms}));
-  await page.locator('.notice-message').evaluate(node=>node.className='replacement-message');
+  await page.locator('.notice-message').evaluate(node=>(node.className='replacement-message'));
   const after=await inspect();
   assert.ok(after.elementSources.some(row=>row.selector==='#dynamic-banner'),'the enclosing source ID survives script class changes');
   fs.appendFileSync(path.join(fx.portal,'content-snippets/Dynamic.contentsnippet.value.html'),'<span id="edited-dynamic"></span>');
@@ -139,7 +139,7 @@ test('unreferenced snippets inserted in open shadow roots retain source candidat
   const {fx,page,inspect}=await fixture(t,'<section id="host"><b id="slotted-light">Invented</b></section>');
   fs.writeFileSync(path.join(fx.portal,'content-snippets/Shadow.contentsnippet.yml'),'adx_contentsnippetid: shadow\nadx_name: Shadow notice');
   fs.writeFileSync(path.join(fx.portal,'content-snippets/Shadow.contentsnippet.value.html'),markup);
-  await page.evaluate(markup=>document.getElementById('host').attachShadow({mode:'open'}).innerHTML=markup,markup);
+  await page.evaluate(markup=>(document.getElementById('host').attachShadow({mode:'open'}).innerHTML=markup),markup);
   const report=await inspect();
   assert.ok(report.elementSources.some(row=>row.name==='Shadow notice'));
   assert.equal(await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.identify(document.getElementById('host').shadowRoot.querySelector('aside')).title),'Shadow notice');
@@ -154,7 +154,7 @@ test('an exact shadow ID remains attributable after an earlier common class reac
   const rows=Array.from({length:1250},(_,index)=>({adx_contentsnippetid:'crowded-'+index,adx_name:'Crowded '+index,adx_value:'<b class="crowded"></b>'}));
   rows.push({adx_contentsnippetid:'rare-shadow',adx_name:'Exact shadow identity',adx_value:'<aside id="rare-shadow"></aside>'});
   fs.writeFileSync(path.join(fx.portal,'contentsnippet.yml'),JSON.stringify(rows));
-  await page.evaluate(()=>document.getElementById('host').attachShadow({mode:'open'}).innerHTML='<aside id="rare-shadow"></aside>');
+  await page.evaluate(()=>(document.getElementById('host').attachShadow({mode:'open'}).innerHTML='<aside id="rare-shadow"></aside>'));
   const report=await inspect();
   assert.equal(report.elementSourceLimits.candidateTruncated,true);
   assert.equal(await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.identify(document.getElementById('host').shadowRoot.querySelector('aside')).title),'Exact shadow identity');

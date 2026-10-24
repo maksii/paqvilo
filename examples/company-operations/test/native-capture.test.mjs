@@ -48,7 +48,7 @@ test('native snapshots read declared identities, memberships and projections; st
 });
 
 test('native actor Account scope resolves unannotated external customers and rejects ambiguous references',async()=>{
- const calls=[],client={list:async()=>[],get:async query=>({contactid:'actor',_parentcustomerid_value:'external','@odata.etag':'W/"9"'}),optional:async query=>{calls.push(query);return query.startsWith('accounts(')?{accountid:'external',name:'Owned reference','@odata.etag':'W/"12"'}:null;}};
+ const calls=[],client={list:async()=>[],get:async()=>({contactid:'actor',_parentcustomerid_value:'external','@odata.etag':'W/"9"'}),optional:async query=>{calls.push(query);return query.startsWith('accounts(')?{accountid:'external',name:'Owned reference','@odata.etag':'W/"12"'}:null;}};
  const input={siteId:'site',contactId:'actor',catalogue:{tables:[],records:[],associations:[]}};
  const before=await captureNativeSnapshot(client,input);
  assert.equal(before.actorBinding.customer.type,'account');assert.equal(before.actorBinding.customer.id,'external');assert.equal(before.rowVersions.actor.contact,'9');assert.equal(before.rowVersions.actor.customer,'12');assert.equal(calls.length,2);

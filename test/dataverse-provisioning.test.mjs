@@ -58,7 +58,7 @@ async function serverFixture(t) {
       return send(res,404,{});
     }
     if(req.method==='POST') {
-      let id=randomUUID(),actual=structuredClone(body);
+      let id=randomUUID(); const actual=structuredClone(body);
       if(route==='publishers') {actual.publisherid=id;state.publishers.push(actual);}
       else if(route==='systemforms'){assert.ok(body.formid);assert.equal(body.systemformid,undefined);id=body.formid;state.forms.set(id,actual);}
       else if(route==='solutions') {actual.solutionid=id;actual._publisherid_value=body['publisherid@odata.bind'].match(/\(([^)]+)\)/)[1];state.solutions.push(actual);}
