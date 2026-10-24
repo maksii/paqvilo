@@ -21,6 +21,67 @@ const user = '10000000-0000-0000-0000-000000000001',
   rowId = '20000000-0000-0000-0000-000000000001';
 const available = process.platform === 'win32' && process.env.PAQ_TEST_XRM_SDK;
 
+test(
+  'cold CLR parent identification has a separate bounded startup allowance',
+  { skip: process.platform !== 'win32' },
+  async (t) => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-parent-start-')));
+    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+    const source = path.join(root, 'Protocol.cs'),
+      executable = path.join(root, 'Protocol.exe');
+    await fs.writeFile(
+      source,
+      `using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){
+if(args.Length==2&&args[0]=="--process-start"){var mode=Environment.GetEnvironmentVariable("INVENTED_PARENT_MODE");if(mode=="exit")Environment.Exit(73);if(mode=="invalid"){Console.Write("invalid");return;}System.Threading.Thread.Sleep(3500);Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}
+Console.ReadLine();Console.WriteLine("{\\"kind\\":\\"result\\"}");}}`,
+    );
+    const build = spawnSync(
+      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
+      ['/nologo', '/target:exe', '/out:' + executable, source],
+      { windowsHide: true, encoding: 'utf8', timeout: 20000 },
+    );
+    assert.equal(build.status, 0, build.stdout + build.stderr);
+    const assembly = path.join(root, 'Original.dll');
+    await fs.writeFile(assembly, 'invented assembly');
+    const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+    const runtime = {
+      directory: root,
+      assembly,
+      executable,
+      allowedFiles: ['Protocol.cs', 'Protocol.exe', 'Original.dll', 'runtime.json', 'invoke.mjs'],
+      files: await Promise.all(
+        [assembly, executable].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
+      ),
+      descriptor: { typeName: 'Invented.Original', timeoutMs: 5000 },
+      provenance: { hostSourceSha256: hash(await fs.readFile(new URL('../lib/plugin-clr-host.cs', import.meta.url))) },
+    };
+    await fs.writeFile(path.join(root, 'runtime.json'), JSON.stringify(runtime));
+    await fs.writeFile(
+      path.join(root, 'invoke.mjs'),
+      `import fs from'node:fs';import{executeClrPlugin}from${JSON.stringify(new URL('../lib/plugin-clr.mjs', import.meta.url).href)};
+const runtime=JSON.parse(fs.readFileSync(new URL('./runtime.json',import.meta.url)));
+const mode=process.env.INVENTED_PARENT_MODE;
+try{const result=executeClrPlugin(runtime,{}, {store:{}});if(mode!=='valid')throw Error('Invalid parent probe was admitted');console.log(result.executionMode);}
+catch(error){if(mode==='valid'||error.code!=='LocalPluginParentUnavailable')throw error;console.log(error.code);}`,
+    );
+    for (const mode of ['valid', 'invalid', 'exit']) {
+      const result = spawnSync(process.execPath, [path.join(root, 'invoke.mjs')], {
+        env: { ...process.env, INVENTED_PARENT_MODE: mode },
+        windowsHide: true,
+        encoding: 'utf8',
+        timeout: 45000,
+      });
+      assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
+      assert.equal(result.stdout.trim(), mode === 'valid' ? 'fresh-host' : 'LocalPluginParentUnavailable');
+      assert.deepEqual(
+        (await fs.readdir(root)).sort(),
+        [...runtime.allowedFiles].sort(),
+        'every execution snapshot is removed after success or probe rejection',
+      );
+    }
+  },
+);
+
 test('persistent CLR hosts require explicit Boolean opt-in', () => {
   const descriptor = {
     trust: 'execute-local-assembly',

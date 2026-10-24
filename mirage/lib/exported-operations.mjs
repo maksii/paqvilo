@@ -165,7 +165,7 @@ export async function runExportedServerLogic({
   body = '',
   input = '',
   query = {},
-  timeout = 2000,
+  timeout = 5000,
   environmentVariables,
   services = {},
 }) {
@@ -181,7 +181,7 @@ export async function runExportedServerLogic({
   });
   // ServerLogic/TimeoutInSeconds (default 120, at most 240) bounds the run; the local bound (at most 5 s) is lower.
   const seconds = Math.min(Number(settingOf(portal, 'ServerLogic/TimeoutInSeconds')) || 120, 240);
-  const bound = Math.max(100, Math.min(Number(timeout) || 2000, 5000, seconds * 1000));
+  const bound = Math.max(100, Math.min(Number(timeout) || 5000, 5000, seconds * 1000));
   const settings = Object.fromEntries(
     Object.entries(portal.settings ?? {}).map(([name, value]) => [name, value?.value ?? value]),
   );
