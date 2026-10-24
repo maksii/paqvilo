@@ -16,13 +16,13 @@ The result lists:
 
 Formula rows contain only the formula text; the runtime described below evaluates them.
 
-| Diagnostic | Meaning |
-| --- | --- |
-| `CANVAS_SOURCE_LEGACY_FXYAML` | The app was read from retired `.fx.yaml` files (`pac canvas unpack`); next to `Src/*.pa.yaml` they are ignored |
-| `CANVAS_SOURCE_NO_PAYAML` | No `Src/*.pa.yaml` was found. Re-save the app in Power Apps Studio |
-| `CANVAS_SOURCE_SCHEMA_UNKNOWN` | A `$schema` modeline names an unknown pa.yaml version, or a file uses a top-level key outside the v3.0 schema |
-| `CANVAS_SOURCE_YAML_INVALID` | A file does not parse. The message gives only the file, line and parser code, never the content |
-| `CANVAS_SOURCE_ARCHIVE_INVALID` | The `.msapp` bytes are not a readable ZIP archive |
+| Diagnostic                      | Meaning                                                                                                        |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `CANVAS_SOURCE_LEGACY_FXYAML`   | The app was read from retired `.fx.yaml` files (`pac canvas unpack`); next to `Src/*.pa.yaml` they are ignored |
+| `CANVAS_SOURCE_NO_PAYAML`       | No `Src/*.pa.yaml` was found. Re-save the app in Power Apps Studio                                             |
+| `CANVAS_SOURCE_SCHEMA_UNKNOWN`  | A `$schema` modeline names an unknown pa.yaml version, or a file uses a top-level key outside the v3.0 schema  |
+| `CANVAS_SOURCE_YAML_INVALID`    | A file does not parse. The message gives only the file, line and parser code, never the content                |
+| `CANVAS_SOURCE_ARCHIVE_INVALID` | The `.msapp` bytes are not a readable ZIP archive                                                              |
 
 `canvasInventoryRecord(source, { id, solution, layer, file, format })` turns a result into a Solution inventory record: `component: 'canvasapp'`, `componentType: 300`, `dependencies` derived from the data sources (`table` and `connector`, the inventory component vocabulary), and `level: 'behaviour'` when the source parses; an app without readable source stays at `inventory` with its source diagnostic as the reason.
 
@@ -44,12 +44,12 @@ A Dataverse table data source is read and written as the person running the app,
 
 `/_apps/canvas/<app>` shows the app's inventory and, for a selected staff user or a signed-in portal visitor, the headless app: the current screen and history, every control with its current property values (gallery rows included), variables, context variables, collections, data sources, forms, notifications, launches, errors, diagnostics and recent activity, with forms that select a control, set a control's input, navigate, go back or run a behaviour formula. The page states that the app is not rendered and lists the controls that are not hosted. `GET /_apps/api/canvas/<app>` answers the same snapshot as JSON and `POST /_apps/api/canvas/<app>` takes one action: `{ "action": "select", "control", "item"? }`, `{ "action": "input", "control", "value", "item"? }`, `{ "action": "navigate", "screen" }`, `{ "action": "back" }`, `{ "action": "run", "formula" }`, `{ "action": "evaluate", "formula" }`, `{ "action": "refresh" }`, `{ "action": "start" }` or `{ "action": "reset" }`. Reading never starts an app: until a POST starts it (the page's Start form, or any action), the page offers the Start form and the GET answers `{ "started": false }`. The API answers loopback callers with the `x-sim-csrf` header; a refused data write answers its status (403) with the snapshot after it. The app runs as the selected staff user or, on the Power Pages host, as the Dataverse user enhanced authorization maps a signed-in visitor to; an anonymous visitor, or a visitor of a site in the standard authorization model, is refused with `401 CanvasPrincipalRequired`. Each person has an app instance of their own.
 
-| Route | Response |
-| --- | --- |
-| `GET /_apps/canvas/` | List of apps. Returns JSON when the request has `Accept: application/json`, otherwise HTML |
-| `GET /_apps/canvas/<uniqueName>` | The app page described above |
-| `GET /_apps/canvas/api/<uniqueName>` | The JSON inventory with the app's level |
-| `GET`, `POST /_apps/api/canvas/<uniqueName>` | The snapshot, or one action and the snapshot after it |
+| Route                                        | Response                                                                                   |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| `GET /_apps/canvas/`                         | List of apps. Returns JSON when the request has `Accept: application/json`, otherwise HTML |
+| `GET /_apps/canvas/<uniqueName>`             | The app page described above                                                               |
+| `GET /_apps/canvas/api/<uniqueName>`         | The JSON inventory with the app's level                                                    |
+| `GET`, `POST /_apps/api/canvas/<uniqueName>` | The snapshot, or one action and the snapshot after it                                      |
 
 An unknown app returns 404 `CanvasAppNotFound`. A page path answers 405 to any method other than GET. Every response sends `cache-control: no-store`, `x-content-type-options: nosniff` and a `content-security-policy` that allows no scripts. Every value on a page is HTML-escaped.
 

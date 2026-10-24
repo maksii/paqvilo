@@ -17,50 +17,179 @@ const LEARN_URL = 'https://learn.microsoft.com/power-apps/developer/data-platfor
 const LCID = '1033';
 
 export const TABLES = [
-  'account', 'contact', 'customeraddress',
-  'activitypointer', 'activityparty', 'task', 'email', 'phonecall', 'appointment', 'letter', 'fax',
-  'recurringappointmentmaster', 'socialactivity',
-  'annotation', 'queue', 'queueitem', 'connection', 'connectionrole', 'post', 'socialprofile', 'template',
-  'mailbox', 'sharepointsite', 'sharepointdocumentlocation',
-  'knowledgearticle', 'category', 'subject',
-  'organization', 'businessunit', 'systemuser', 'team', 'role', 'position', 'transactioncurrency', 'privilege',
-  'roleprivileges', 'principalobjectaccess', 'principalobjectattributeaccess', 'fieldsecurityprofile',
-  'fieldpermission', 'teamtemplate',
-  'savedquery', 'userquery', 'solution', 'publisher', 'webresource', 'environmentvariabledefinition',
+  'account',
+  'contact',
+  'customeraddress',
+  'activitypointer',
+  'activityparty',
+  'task',
+  'email',
+  'phonecall',
+  'appointment',
+  'letter',
+  'fax',
+  'recurringappointmentmaster',
+  'socialactivity',
+  'annotation',
+  'queue',
+  'queueitem',
+  'connection',
+  'connectionrole',
+  'post',
+  'socialprofile',
+  'template',
+  'mailbox',
+  'sharepointsite',
+  'sharepointdocumentlocation',
+  'knowledgearticle',
+  'category',
+  'subject',
+  'organization',
+  'businessunit',
+  'systemuser',
+  'team',
+  'role',
+  'position',
+  'transactioncurrency',
+  'privilege',
+  'roleprivileges',
+  'principalobjectaccess',
+  'principalobjectattributeaccess',
+  'fieldsecurityprofile',
+  'fieldpermission',
+  'teamtemplate',
+  'savedquery',
+  'userquery',
+  'solution',
+  'publisher',
+  'webresource',
+  'environmentvariabledefinition',
   'environmentvariablevalue',
-  'asyncoperation', 'bulkdeleteoperation', 'bulkdeletefailure', 'backgroundoperation', 'audit', 'duplicaterule',
-  'duplicaterulecondition', 'customapi', 'customapirequestparameter', 'customapiresponseproperty',
+  'asyncoperation',
+  'bulkdeleteoperation',
+  'bulkdeletefailure',
+  'backgroundoperation',
+  'audit',
+  'duplicaterule',
+  'duplicaterulecondition',
+  'customapi',
+  'customapirequestparameter',
+  'customapiresponseproperty',
   // plug-in registration and processes
-  'pluginassembly', 'plugintype', 'sdkmessage', 'sdkmessagefilter', 'sdkmessageprocessingstep',
-  'sdkmessageprocessingstepimage', 'sdkmessageprocessingstepsecureconfig', 'serviceendpoint', 'pluginpackage',
-  'plugintracelog', 'workflow', 'workflowlog', 'processsession', 'appnotification',
+  'pluginassembly',
+  'plugintype',
+  'sdkmessage',
+  'sdkmessagefilter',
+  'sdkmessageprocessingstep',
+  'sdkmessageprocessingstepimage',
+  'sdkmessageprocessingstepsecureconfig',
+  'serviceendpoint',
+  'pluginpackage',
+  'plugintracelog',
+  'workflow',
+  'workflowlog',
+  'processsession',
+  'appnotification',
   // further platform tables of the native base environment
-  'calendar', 'calendarrule', 'appmodule', 'appmodulecomponent', 'import', 'importfile', 'importmap', 'importlog',
-  'recyclebinconfig', 'retentionconfig', 'mailboxtrackingfolder', 'kbarticle', 'timezonedefinition', 'timezonerule',
-  'timezonelocalizedname', 'report', 'savedqueryvisualization', 'dependency', 'solutioncomponent',
-  'activitymimeattachment', 'systemform', 'theme', 'fxexpression', 'maskingrule', 'attributemaskingrule',
-  'deleteditemreference', 'connectioninstance', 'recurrencerule',
-  'postcomment', 'postfollow', 'postregarding',
-  'mobileofflineprofile', 'mobileofflineprofileitem', 'mobileofflineprofileitemassociation', 'mobileofflineprofileitemfilter',
-  'delegatedauthorization', 'privilegecheckerrun', 'privilegecheckerlog',
-  'knowledgearticleviews', 'languagelocale', 'certificatecredential', 'processstage', 'reportcategory', 'newprocess',
-  'translationprocess', 'expiredprocess', 'virtualentitymetadata',
-  'columnmapping', 'picklistmapping', 'lookupmapping', 'ownermapping', 'importentitymapping', 'transformationmapping',
-  'transformationparametermapping', 'retaineddataexcel',
-  'duplicaterecord', 'workqueue', 'workqueueitem',
-  'sourcecontrolconfiguration', 'sourcecontrolbranchconfiguration', 'sourcecontrolcomponent',
-  'sourcecontrolcomponentpayload', 'githubappconfig',
-  'featurecontrolsetting', 'card',
-  'goal', 'metric', 'rollupfield', 'goalrollupquery',
-  'flowsession', 'flowmachine', 'flowmachinegroup', 'flowmachinenetwork', 'flowmachineimage', 'flowmachineimageversion',
-  'desktopflowmodule', 'desktopflowbinary', 'flowcredentialapplication', 'flowgroup', 'flowtrigger', 'flowrun',
-  'credential', 'connectionreference', 'businessprocess', 'bot', 'botcomponent', 'botcomponentcollection', 'chat',
+  'calendar',
+  'calendarrule',
+  'appmodule',
+  'appmodulecomponent',
+  'import',
+  'importfile',
+  'importmap',
+  'importlog',
+  'recyclebinconfig',
+  'retentionconfig',
+  'mailboxtrackingfolder',
+  'kbarticle',
+  'timezonedefinition',
+  'timezonerule',
+  'timezonelocalizedname',
+  'report',
+  'savedqueryvisualization',
+  'dependency',
+  'solutioncomponent',
+  'activitymimeattachment',
+  'systemform',
+  'theme',
+  'fxexpression',
+  'maskingrule',
+  'attributemaskingrule',
+  'deleteditemreference',
+  'connectioninstance',
+  'recurrencerule',
+  'postcomment',
+  'postfollow',
+  'postregarding',
+  'mobileofflineprofile',
+  'mobileofflineprofileitem',
+  'mobileofflineprofileitemassociation',
+  'mobileofflineprofileitemfilter',
+  'delegatedauthorization',
+  'privilegecheckerrun',
+  'privilegecheckerlog',
+  'knowledgearticleviews',
+  'languagelocale',
+  'certificatecredential',
+  'processstage',
+  'reportcategory',
+  'newprocess',
+  'translationprocess',
+  'expiredprocess',
+  'virtualentitymetadata',
+  'columnmapping',
+  'picklistmapping',
+  'lookupmapping',
+  'ownermapping',
+  'importentitymapping',
+  'transformationmapping',
+  'transformationparametermapping',
+  'retaineddataexcel',
+  'duplicaterecord',
+  'workqueue',
+  'workqueueitem',
+  'sourcecontrolconfiguration',
+  'sourcecontrolbranchconfiguration',
+  'sourcecontrolcomponent',
+  'sourcecontrolcomponentpayload',
+  'githubappconfig',
+  'featurecontrolsetting',
+  'card',
+  'goal',
+  'metric',
+  'rollupfield',
+  'goalrollupquery',
+  'flowsession',
+  'flowmachine',
+  'flowmachinegroup',
+  'flowmachinenetwork',
+  'flowmachineimage',
+  'flowmachineimageversion',
+  'desktopflowmodule',
+  'desktopflowbinary',
+  'flowcredentialapplication',
+  'flowgroup',
+  'flowtrigger',
+  'flowrun',
+  'credential',
+  'connectionreference',
+  'businessprocess',
+  'bot',
+  'botcomponent',
+  'botcomponentcollection',
+  'chat',
   'sharedworkspace',
 ];
 
 // Tables whose msdyn_ columns and relationships the generator keeps (curated add-on tables). Every other msdyn_ table stays excluded.
 export const PREFIXED_TABLES = [
-  'msdyn_aimodel', 'msdyn_aiconfiguration', 'msdyn_aitemplate', 'msdyn_aibfeedbackloop', 'msdyn_pminferredtask', 'msdyn_pmrecording',
+  'msdyn_aimodel',
+  'msdyn_aiconfiguration',
+  'msdyn_aitemplate',
+  'msdyn_aibfeedbackloop',
+  'msdyn_pminferredtask',
+  'msdyn_pmrecording',
 ];
 
 // Tables the add-on families read as solution components (their rows are seeded by the add-on modules).
@@ -71,11 +200,28 @@ const CACHE_ROOT = path.join(ROOT, '.paqvilo', 'standard-tables-cache');
 const DEFAULT_OUT = path.join(ROOT, 'mirage', 'lib', 'dataverse-standard-tables.json');
 
 const TYPES = {
-  String: 'nvarchar', Memo: 'memo', Integer: 'int', BigInt: 'bigint', Double: 'float', Decimal: 'decimal',
-  Money: 'money', Boolean: 'bit', DateTime: 'datetime', Lookup: 'lookup', Customer: 'customer', Owner: 'owner',
-  Picklist: 'picklist', State: 'state', Status: 'status', EntityName: 'entityname',
-  Uniqueidentifier: 'uniqueidentifier', PartyList: 'partylist', ManagedProperty: 'managedproperty',
-  Image: 'image', File: 'file', MultiSelectPicklist: 'multiselectpicklist',
+  String: 'nvarchar',
+  Memo: 'memo',
+  Integer: 'int',
+  BigInt: 'bigint',
+  Double: 'float',
+  Decimal: 'decimal',
+  Money: 'money',
+  Boolean: 'bit',
+  DateTime: 'datetime',
+  Lookup: 'lookup',
+  Customer: 'customer',
+  Owner: 'owner',
+  Picklist: 'picklist',
+  State: 'state',
+  Status: 'status',
+  EntityName: 'entityname',
+  Uniqueidentifier: 'uniqueidentifier',
+  PartyList: 'partylist',
+  ManagedProperty: 'managedproperty',
+  Image: 'image',
+  File: 'file',
+  MultiSelectPicklist: 'multiselectpicklist',
 };
 const OPTION_TYPES = new Set(['picklist', 'bit', 'state', 'status']);
 const RELATIONSHIP_SECTIONS = new Set(['many-to-one', 'one-to-many', 'many-to-many']);
@@ -94,7 +240,12 @@ const label = (value) => (plain(value) ? { [LCID]: plain(value) } : undefined);
 const excluded = (name) => EXCLUDED_PREFIXES.some((prefix) => name.startsWith(prefix));
 const flag = (value) => (plain(value) === 'True' ? true : plain(value) === 'False' ? false : undefined);
 const numberOrUndefined = (value) => (plain(value) === '' ? undefined : Number(plain(value)));
-const sortObject = (object) => Object.fromEntries(Object.keys(object).sort().map((key) => [key, object[key]]));
+const sortObject = (object) =>
+  Object.fromEntries(
+    Object.keys(object)
+      .sort()
+      .map((key) => [key, object[key]]),
+  );
 
 // Learn "details" cells: Label: **X**<br />DefaultStatus: 1<br />InvariantName: `X`
 function details(text) {
@@ -137,7 +288,9 @@ function choiceBody(type, block, name, complain) {
       states: block.choices.map((choice) => {
         const d = details(choice.text);
         return {
-          value: choice.value, labels: label(d.Label), defaultStatus: numberOrUndefined(d.DefaultStatus),
+          value: choice.value,
+          labels: label(d.Label),
+          defaultStatus: numberOrUndefined(d.DefaultStatus),
           invariantName: d.InvariantName || undefined,
         };
       }),
@@ -202,15 +355,29 @@ export function parseEntityPage(markdown, logical, { prefixedTables = PREFIXED_T
 
   const p = {};
   for (const [key, value] of Object.entries(props)) p[key] = plain(value);
-  for (const key of ['LogicalName', 'SchemaName', 'EntitySetName', 'PrimaryIdAttribute', 'OwnershipType', 'TableType']) {
+  for (const key of [
+    'LogicalName',
+    'SchemaName',
+    'EntitySetName',
+    'PrimaryIdAttribute',
+    'OwnershipType',
+    'TableType',
+  ]) {
     if (!p[key]) complain(`Properties has no ${key}`);
   }
-  if (p.LogicalName && p.LogicalName !== logical) complain(`LogicalName ${p.LogicalName} differs from the requested table`);
+  if (p.LogicalName && p.LogicalName !== logical)
+    complain(`LogicalName ${p.LogicalName} differs from the requested table`);
   const table = {
-    logicalName: logical, schemaName: p.SchemaName, entitySet: p.EntitySetName,
-    logicalCollectionName: p.LogicalCollectionName, primaryIdAttribute: p.PrimaryIdAttribute,
-    primaryNameAttribute: p.PrimaryNameAttribute, ownershipType: p.OwnershipType, tableType: p.TableType,
-    labels: label(p.DisplayName), collectionLabels: label(p.DisplayCollectionName),
+    logicalName: logical,
+    schemaName: p.SchemaName,
+    entitySet: p.EntitySetName,
+    logicalCollectionName: p.LogicalCollectionName,
+    primaryIdAttribute: p.PrimaryIdAttribute,
+    primaryNameAttribute: p.PrimaryNameAttribute,
+    ownershipType: p.OwnershipType,
+    tableType: p.TableType,
+    labels: label(p.DisplayName),
+    collectionLabels: label(p.DisplayCollectionName),
   };
 
   const attributes = {};
@@ -236,12 +403,22 @@ export function parseEntityPage(markdown, logical, { prefixedTables = PREFIXED_T
     if (type === 'uniqueidentifier' && name === table.primaryIdAttribute) type = 'primarykey';
     const writable = column.section === 'writable';
     const attr = {
-      name, schemaName: column.schemaName, type, requiredLevel: lower(r.RequiredLevel) || undefined,
-      validForCreate: writable, validForUpdate: writable, validForRead: plain(r.IsValidForRead) === 'True',
+      name,
+      schemaName: column.schemaName,
+      type,
+      requiredLevel: lower(r.RequiredLevel) || undefined,
+      validForCreate: writable,
+      validForUpdate: writable,
+      validForRead: plain(r.IsValidForRead) === 'True',
       labels: label(r.DisplayName),
     };
-    for (const [source, target] of [['MaxLength', 'maxLength'], ['MinValue', 'minValue'], ['MaxValue', 'maxValue'],
-      ['Precision', 'precision'], ['PrecisionSource', 'precisionSource']]) {
+    for (const [source, target] of [
+      ['MaxLength', 'maxLength'],
+      ['MinValue', 'minValue'],
+      ['MaxValue', 'maxValue'],
+      ['Precision', 'precision'],
+      ['PrecisionSource', 'precisionSource'],
+    ]) {
       const text = plain(r[source]);
       if (!text) continue;
       // PrecisionSource reads "2 (Entity.Attribute)": only the leading integer is the value.
@@ -258,9 +435,17 @@ export function parseEntityPage(markdown, logical, { prefixedTables = PREFIXED_T
     if (plain(r.ImeMode)) attr.imeMode = lower(r.ImeMode);
     if (plain(r.IsLocalizable)) attr.isLocalizable = flag(r.IsLocalizable);
     if (plain(r.DateTimeBehavior)) attr.dateTimeBehavior = plain(r.DateTimeBehavior);
-    if (plain(r.Targets)) attr.targets = plain(r.Targets).split(',').map((item) => item.trim()).filter(Boolean);
+    if (plain(r.Targets))
+      attr.targets = plain(r.Targets)
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
     if (type === 'bit' && plain(r.DefaultValue)) attr.appDefaultValue = flag(r.DefaultValue) ? '1' : '0';
-    if (['picklist', 'state', 'status'].includes(type) && plain(r.DefaultFormValue) && plain(r.DefaultFormValue) !== '-1') {
+    if (
+      ['picklist', 'state', 'status'].includes(type) &&
+      plain(r.DefaultFormValue) &&
+      plain(r.DefaultFormValue) !== '-1'
+    ) {
       attr.appDefaultValue = plain(r.DefaultFormValue);
     }
     if (OPTION_TYPES.has(type)) {
@@ -286,16 +471,23 @@ export function parseEntityPage(markdown, logical, { prefixedTables = PREFIXED_T
     const r = item.rows;
     if (item.section === 'many-to-one') {
       relationships.push({
-        kind: 'many-to-one', schemaName: item.schemaName, referencingEntity: logical,
-        referencedEntity: plain(r.ReferencedEntity), referencedAttribute: plain(r.ReferencedAttribute),
+        kind: 'many-to-one',
+        schemaName: item.schemaName,
+        referencingEntity: logical,
+        referencedEntity: plain(r.ReferencedEntity),
+        referencedAttribute: plain(r.ReferencedAttribute),
         referencingAttribute: plain(r.ReferencingAttribute),
         referencingNavigation: plain(r.ReferencingEntityNavigationPropertyName),
-        isHierarchical: flag(r.IsHierarchical), cascade: cascadeOf(r.CascadeConfiguration),
+        isHierarchical: flag(r.IsHierarchical),
+        cascade: cascadeOf(r.CascadeConfiguration),
       });
     } else if (item.section === 'one-to-many') {
       relationships.push({
-        kind: 'one-to-many', schemaName: item.schemaName, referencedEntity: logical,
-        referencingEntity: plain(r.ReferencingEntity), referencingAttribute: plain(r.ReferencingAttribute),
+        kind: 'one-to-many',
+        schemaName: item.schemaName,
+        referencedEntity: logical,
+        referencingEntity: plain(r.ReferencingEntity),
+        referencingAttribute: plain(r.ReferencingAttribute),
         referencedNavigation: plain(r.ReferencedEntityNavigationPropertyName),
       });
     } else {
@@ -304,13 +496,32 @@ export function parseEntityPage(markdown, logical, { prefixedTables = PREFIXED_T
       const selfReferencing = r.Entity1IntersectAttribute !== undefined;
       const sides = selfReferencing
         ? {
-          entity1: { intersectAttribute: plain(r.Entity1IntersectAttribute), navigation: plain(r.Entity1NavigationPropertyName) },
-          entity2: { intersectAttribute: plain(r.Entity2IntersectAttribute), navigation: plain(r.Entity2NavigationPropertyName) },
-        }
-        : item.otherEntity ? { [logical]: { intersectAttribute: plain(r.IntersectAttribute), navigation: plain(r.NavigationPropertyName) } } : undefined;
+            entity1: {
+              intersectAttribute: plain(r.Entity1IntersectAttribute),
+              navigation: plain(r.Entity1NavigationPropertyName),
+            },
+            entity2: {
+              intersectAttribute: plain(r.Entity2IntersectAttribute),
+              navigation: plain(r.Entity2NavigationPropertyName),
+            },
+          }
+        : item.otherEntity
+          ? {
+              [logical]: {
+                intersectAttribute: plain(r.IntersectAttribute),
+                navigation: plain(r.NavigationPropertyName),
+              },
+            }
+          : undefined;
       relationships.push({
-        kind: 'many-to-many', schemaName: item.schemaName, intersectEntity: plain(r.IntersectEntityName),
-        entities: selfReferencing ? [logical, logical] : item.otherEntity ? [logical, item.otherEntity].sort() : undefined,
+        kind: 'many-to-many',
+        schemaName: item.schemaName,
+        intersectEntity: plain(r.IntersectEntityName),
+        entities: selfReferencing
+          ? [logical, logical]
+          : item.otherEntity
+            ? [logical, item.otherEntity].sort()
+            : undefined,
         sides,
       });
     }
@@ -324,22 +535,31 @@ export function parseEntityPage(markdown, logical, { prefixedTables = PREFIXED_T
 function mergeRelationship(pending, rel, problems) {
   const type = rel.kind === 'many-to-many' ? 'many-to-many' : 'one-to-many';
   const entry = pending.get(rel.schemaName) ?? { schemaName: rel.schemaName, type };
-  const fields = rel.kind === 'many-to-one'
-    ? {
-      referencingEntity: rel.referencingEntity, referencedEntity: rel.referencedEntity,
-      referencedAttribute: rel.referencedAttribute, referencingAttribute: rel.referencingAttribute,
-      referencingNavigation: rel.referencingNavigation, isHierarchical: rel.isHierarchical, cascade: rel.cascade,
-    }
-    : rel.kind === 'one-to-many'
+  const fields =
+    rel.kind === 'many-to-one'
       ? {
-        referencedEntity: rel.referencedEntity, referencingEntity: rel.referencingEntity,
-        referencingAttribute: rel.referencingAttribute, referencedNavigation: rel.referencedNavigation,
-      }
-      : { entities: rel.entities, intersectEntity: rel.intersectEntity };
+          referencingEntity: rel.referencingEntity,
+          referencedEntity: rel.referencedEntity,
+          referencedAttribute: rel.referencedAttribute,
+          referencingAttribute: rel.referencingAttribute,
+          referencingNavigation: rel.referencingNavigation,
+          isHierarchical: rel.isHierarchical,
+          cascade: rel.cascade,
+        }
+      : rel.kind === 'one-to-many'
+        ? {
+            referencedEntity: rel.referencedEntity,
+            referencingEntity: rel.referencingEntity,
+            referencingAttribute: rel.referencingAttribute,
+            referencedNavigation: rel.referencedNavigation,
+          }
+        : { entities: rel.entities, intersectEntity: rel.intersectEntity };
   for (const [key, value] of Object.entries(fields)) {
     if (value === undefined || value === '') continue;
     if (entry[key] !== undefined && JSON.stringify(entry[key]) !== JSON.stringify(value)) {
-      problems.push(`${rel.schemaName}: ${key} differs between pages (${JSON.stringify(entry[key])} vs ${JSON.stringify(value)})`);
+      problems.push(
+        `${rel.schemaName}: ${key} differs between pages (${JSON.stringify(entry[key])} vs ${JSON.stringify(value)})`,
+      );
     } else {
       entry[key] = value;
     }
@@ -356,7 +576,17 @@ export function buildStandardFile(pages, { commit = DEFAULT_COMMIT, prefixedTabl
   const tables = {};
   const optionSets = {};
   const pending = new Map();
-  const stats = { tables: 0, columns: 0, excludedColumns: 0, localOptionSets: 0, globalOptionSets: 0, optionValues: 0, relationships: 0, oneToManyRelationships: 0, manyToManyRelationships: 0 };
+  const stats = {
+    tables: 0,
+    columns: 0,
+    excludedColumns: 0,
+    localOptionSets: 0,
+    globalOptionSets: 0,
+    optionValues: 0,
+    relationships: 0,
+    oneToManyRelationships: 0,
+    manyToManyRelationships: 0,
+  };
   for (const logical of Object.keys(pages).sort()) {
     const parsed = parseEntityPage(pages[logical], logical, { prefixedTables });
     problems.push(...parsed.problems);
@@ -387,19 +617,29 @@ export function buildStandardFile(pages, { commit = DEFAULT_COMMIT, prefixedTabl
   const relationships = {};
   for (const name of [...pending.keys()].sort()) {
     const rel = pending.get(name);
-    const ends = rel.type === 'many-to-many' ? rel.entities ?? [] : [rel.referencingEntity, rel.referencedEntity];
+    const ends = rel.type === 'many-to-many' ? (rel.entities ?? []) : [rel.referencingEntity, rel.referencedEntity];
     if (ends.length === 0 || !ends.every((end) => end && Object.hasOwn(pages, end))) continue;
     const sideNames = Object.values(rel.sides ?? {}).flatMap((side) => [side.intersectAttribute, side.navigation]);
-    const names = [...ends, rel.referencingAttribute, rel.referencedAttribute, rel.referencingNavigation,
-      rel.referencedNavigation, ...sideNames].filter(Boolean);
+    const names = [
+      ...ends,
+      rel.referencingAttribute,
+      rel.referencedAttribute,
+      rel.referencingNavigation,
+      rel.referencedNavigation,
+      ...sideNames,
+    ].filter(Boolean);
     // A prefixed name is kept only for an allow-listed end whose referencing column survived the parse.
     if (names.some(excluded)) {
       const referencing = tables[rel.referencingEntity]?.attributes ?? {};
-      const throughAllowed = ends.some((end) => prefixedTables.includes(end))
-        && Boolean(rel.referencingAttribute && referencing[rel.referencingAttribute]);
+      const throughAllowed =
+        ends.some((end) => prefixedTables.includes(end)) &&
+        Boolean(rel.referencingAttribute && referencing[rel.referencingAttribute]);
       if (!throughAllowed) continue;
     }
-    if (rel.type === 'one-to-many' && !(rel.referencingAttribute && rel.referencedAttribute && rel.referencingNavigation && rel.referencedNavigation)) {
+    if (
+      rel.type === 'one-to-many' &&
+      !(rel.referencingAttribute && rel.referencedAttribute && rel.referencingNavigation && rel.referencedNavigation)
+    ) {
       problems.push(`${name}: one-to-many relationship is incomplete`);
       continue;
     }
@@ -419,12 +659,17 @@ export function buildStandardFile(pages, { commit = DEFAULT_COMMIT, prefixedTabl
       if (set) stats.optionValues += (set.options ?? set.states ?? set.statuses ?? []).length;
     }
   }
-  for (const set of Object.values(optionSets)) stats.optionValues += (set.options ?? set.states ?? set.statuses ?? []).length;
+  for (const set of Object.values(optionSets))
+    stats.optionValues += (set.options ?? set.states ?? set.statuses ?? []).length;
 
   const file = {
     commit,
     source: {
-      repo: REPO, path: PAGE_DIR, url: LEARN_URL, excludedPrefixes: EXCLUDED_PREFIXES, descriptionsOmitted: true,
+      repo: REPO,
+      path: PAGE_DIR,
+      url: LEARN_URL,
+      excludedPrefixes: EXCLUDED_PREFIXES,
+      descriptionsOmitted: true,
       prefixedTables: [...prefixedTables],
     },
     licence: LICENCE,
@@ -438,7 +683,8 @@ export function buildStandardFile(pages, { commit = DEFAULT_COMMIT, prefixedTabl
 // Reads each page from the commit's cache directory, fetching only the missing ones.
 export async function loadPages(commit, { cacheRoot = CACHE_ROOT, fetchFn = fetch, tables = TABLES } = {}) {
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error('Reference cache requires a full commit SHA.');
-  if (tables.some(name => !/^[a-z][a-z0-9_]*$/.test(name))) throw new Error('Reference table names must be logical identifiers.');
+  if (tables.some((name) => !/^[a-z][a-z0-9_]*$/.test(name)))
+    throw new Error('Reference table names must be logical identifiers.');
   const dir = path.join(cacheRoot, commit);
   fs.mkdirSync(dir, { recursive: true });
   const pages = {};
@@ -455,7 +701,9 @@ export async function loadPages(commit, { cacheRoot = CACHE_ROOT, fetchFn = fetc
         // executable path. The parser extracts declarative table facts only.
         fs.writeFileSync(temp, await response.text(), { flag: 'wx', mode: 0o600 });
         fs.renameSync(temp, file);
-      } finally { fs.rmSync(temp, { force: true }); }
+      } finally {
+        fs.rmSync(temp, { force: true });
+      }
     }
     pages[name] = fs.readFileSync(file, 'utf8');
   }
@@ -469,8 +717,10 @@ function parseArgs(argv) {
     if (arg === '--check') options.check = true;
     else if (arg === '--commit') options.commit = argv[++i];
     else if (arg === '--out') options.out = path.resolve(argv[++i] ?? '');
-    else if (arg === '--allow') for (const name of String(argv[++i] ?? '').split(',')) if (name.trim()) options.allow.add(name.trim());
-    else throw new Error(`Unknown argument ${arg}`);
+    else if (arg === '--allow')
+      for (const name of String(argv[++i] ?? '').split(','))
+        if (name.trim()) options.allow.add(name.trim());
+        else throw new Error(`Unknown argument ${arg}`);
   }
   if (!/^[0-9a-f]{40}$/.test(options.commit)) throw new Error('--commit must be a full commit SHA.');
   return options;
@@ -479,7 +729,10 @@ function parseArgs(argv) {
 export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   const pages = await loadPages(options.commit, { tables: [...TABLES, ...PREFIXED_TABLES] });
-  const { file, problems, stats } = buildStandardFile(pages, { commit: options.commit, prefixedTables: PREFIXED_TABLES });
+  const { file, problems, stats } = buildStandardFile(pages, {
+    commit: options.commit,
+    prefixedTables: PREFIXED_TABLES,
+  });
   for (const problem of problems) console.error(problem);
   const blocking = problems.filter((problem) => ![...options.allow].some((table) => problem.startsWith(`${table}: `)));
   if (blocking.length > 0) {
@@ -503,8 +756,13 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  main().then((code) => { process.exitCode = code; }, (error) => {
-    console.error(error.message);
-    process.exitCode = 1;
-  });
+  main().then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (error) => {
+      console.error(error.message);
+      process.exitCode = 1;
+    },
+  );
 }

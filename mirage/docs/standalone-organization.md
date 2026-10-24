@@ -52,11 +52,11 @@ Status (`GET /_sim/api/status`) adds `inventory` (Solution inventory counts per 
 
 ## Choose a surface
 
-| `runtime.kind` | Available surfaces |
-| --- | --- |
-| `power-pages` | Portal rendering, portal visitor personas, model-driven apps and optional organization HTTP API |
-| `model-driven` | Imported model-driven apps and optional organization HTTP API; no portal rendering |
-| `dataverse-api` | Organization HTTP API and local administration; no portal rendering or app shell |
+| `runtime.kind`  | Available surfaces                                                                              |
+| --------------- | ----------------------------------------------------------------------------------------------- |
+| `power-pages`   | Portal rendering, portal visitor personas, model-driven apps and optional organization HTTP API |
+| `model-driven`  | Imported model-driven apps and optional organization HTTP API; no portal rendering              |
+| `dataverse-api` | Organization HTTP API and local administration; no portal rendering or app shell                |
 
 For API only, set `runtime.kind: dataverse-api`. The HTTP API is enabled by default for that profile; explicitly disabling it is rejected. For model-driven apps without an external API listener, use `runtime.kind: model-driven` and `dataverse.enabled: false`. The shared organization core still handles the app's records and staff security. `runtime.defaultApp` can select an imported application's GUID for a model-driven surface; omit it to use the available default. The Mirage Site Manager provider is available on Power Pages runtimes and derives its records from the selected export.
 

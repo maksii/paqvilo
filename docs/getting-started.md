@@ -10,12 +10,12 @@ After configuring your export/catalogue, run `npx paqvilo lense doctor --config 
 
 ### Prepare your computer
 
-| Tool | Why you need it |
-| --- | --- |
-| [Node.js 24.22.1 or later in the 24.x LTS line](https://nodejs.org/en/download) | Runs Paqvilo and includes npm and npx. |
-| Edge or Chrome | Displays your portal and the integrated development panel. Edge is the default. |
-| [Git](https://git-scm.com/downloads) | Provides source baselines for browser overlays and change comparisons. |
-| [Visual Studio Code](https://code.visualstudio.com/download) | Recommended editor for your exported sources and configuration. |
+| Tool                                                                            | Why you need it                                                                 |
+| ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| [Node.js 24.22.1 or later in the 24.x LTS line](https://nodejs.org/en/download) | Runs Paqvilo and includes npm and npx.                                          |
+| Edge or Chrome                                                                  | Displays your portal and the integrated development panel. Edge is the default. |
+| [Git](https://git-scm.com/downloads)                                            | Provides source baselines for browser overlays and change comparisons.          |
+| [Visual Studio Code](https://code.visualstudio.com/download)                    | Recommended editor for your exported sources and configuration.                 |
 
 After installing Node.js, reopen VS Code. Open **Terminal > New Terminal** and enter:
 
@@ -143,11 +143,11 @@ npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
 
 The first command creates a local runtime project under `.paqvilo/`. The second opens your rendered portal in a dedicated browser. **Alt+Shift+P** opens the panel:
 
-| Tool | Use it for |
-| --- | --- |
-| **Inspect** | Follow templates, snippets, settings, forms, tables and access rules to their sources. |
-| **Tweaks** | Sign this browser in as a local persona and select permission or data scenarios. |
-| **`/_sim/`** | Manage simulated records and runtime settings. |
+| Tool         | Use it for                                                                             |
+| ------------ | -------------------------------------------------------------------------------------- |
+| **Inspect**  | Follow templates, snippets, settings, forms, tables and access rules to their sources. |
+| **Tweaks**   | Sign this browser in as a local persona and select permission or data scenarios.       |
+| **`/_sim/`** | Manage simulated records and runtime settings.                                         |
 
 New states contain portal configuration and empty business tables. Local sign-in is separate from your Microsoft account. Each runtime has its own session cookie.
 
@@ -183,17 +183,17 @@ Lense previews supported local resources while Liquid and Dataverse execute onli
 
 ## Troubleshooting
 
-| Problem | Action |
-| --- | --- |
-| `node` or `npm` is not recognized | Install Node.js, then reopen the terminal and VS Code. |
-| PowerShell blocks `npm.ps1` | Choose **Command Prompt** from VS Code's terminal dropdown and run the same commands. |
-| The Paqvilo command is missing | Open the folder containing `package.json`, then run `npm install --save-dev paqvilo`. |
-| A demo folder is rejected | Choose a new folder with `--dir ./another-demo`; the command protects existing projects. |
-| Edge cannot launch | Install Edge or add `--browser chrome` to `mirage dev` or `lense dev` for installed Chrome. |
-| Exported pages are missing | Check the directory containing your exported site and run `mirage inspect` again. |
-| Mirage lists are empty or access is denied | Add simulated rows and sign this browser in as a local persona; inspect its table permissions. |
-| A saved change is missing | Check applied resources, unmatched patches, `needsDeploy` and failed requests in the panel. |
-| Inspect cannot open the editor | Set the top-level `editor` in `paqvilo.config.yml`, or `PAQVILO_EDITOR`, to your editor CLI's name or actual executable path, then restart the session. VS Code uses `code` or its installed `code.cmd`. |
+| Problem                                    | Action                                                                                                                                                                                                   |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node` or `npm` is not recognized          | Install Node.js, then reopen the terminal and VS Code.                                                                                                                                                   |
+| PowerShell blocks `npm.ps1`                | Choose **Command Prompt** from VS Code's terminal dropdown and run the same commands.                                                                                                                    |
+| The Paqvilo command is missing             | Open the folder containing `package.json`, then run `npm install --save-dev paqvilo`.                                                                                                                    |
+| A demo folder is rejected                  | Choose a new folder with `--dir ./another-demo`; the command protects existing projects.                                                                                                                 |
+| Edge cannot launch                         | Install Edge or add `--browser chrome` to `mirage dev` or `lense dev` for installed Chrome.                                                                                                              |
+| Exported pages are missing                 | Check the directory containing your exported site and run `mirage inspect` again.                                                                                                                        |
+| Mirage lists are empty or access is denied | Add simulated rows and sign this browser in as a local persona; inspect its table permissions.                                                                                                           |
+| A saved change is missing                  | Check applied resources, unmatched patches, `needsDeploy` and failed requests in the panel.                                                                                                              |
+| Inspect cannot open the editor             | Set the top-level `editor` in `paqvilo.config.yml`, or `PAQVILO_EDITOR`, to your editor CLI's name or actual executable path, then restart the session. VS Code uses `code` or its installed `code.cmd`. |
 
 [Documentation index](index.md) | [Project starter](../examples/project/README.md)
 

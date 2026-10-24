@@ -5,9 +5,7 @@
       "label": "paqvilo: setup",
       "type": "process",
       "command": "node",
-      "args": [
-        "scripts/ensure-dependencies.mjs"
-      ],
+      "args": ["scripts/ensure-dependencies.mjs"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -21,11 +19,7 @@
       "label": "paqvilo: dev",
       "type": "process",
       "command": "node",
-      "args": [
-        "bin/paqvilo.mjs",
-        "lense",
-        "dev"
-      ],
+      "args": ["bin/paqvilo.mjs", "lense", "dev"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -54,13 +48,7 @@
       "label": "paqvilo: dev + debugger",
       "type": "process",
       "command": "node",
-      "args": [
-        "bin/paqvilo.mjs",
-        "lense",
-        "dev",
-        "--debug-port",
-        "9222"
-      ],
+      "args": ["bin/paqvilo.mjs", "lense", "dev", "--debug-port", "9222"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -89,11 +77,7 @@
       "label": "paqvilo: mirage dev",
       "type": "process",
       "command": "node",
-      "args": [
-        "bin/paqvilo.mjs",
-        "mirage",
-        "dev"
-      ],
+      "args": ["bin/paqvilo.mjs", "mirage", "dev"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -108,13 +92,7 @@
       "label": "paqvilo: mirage dev + debugger",
       "type": "process",
       "command": "node",
-      "args": [
-        "bin/paqvilo.mjs",
-        "mirage",
-        "dev",
-        "--debug-port",
-        "9223"
-      ],
+      "args": ["bin/paqvilo.mjs", "mirage", "dev", "--debug-port", "9223"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -143,11 +121,7 @@
       "label": "paqvilo: mirage init",
       "type": "process",
       "command": "node",
-      "args": [
-        "bin/paqvilo.mjs",
-        "mirage",
-        "init"
-      ],
+      "args": ["bin/paqvilo.mjs", "mirage", "init"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -163,11 +137,7 @@
       "label": "paqvilo: mirage status",
       "type": "process",
       "command": "node",
-      "args": [
-        "bin/paqvilo.mjs",
-        "mirage",
-        "status"
-      ],
+      "args": ["bin/paqvilo.mjs", "mirage", "status"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -182,11 +152,7 @@
       "label": "paqvilo: mirage stop",
       "type": "process",
       "command": "node",
-      "args": [
-        "bin/paqvilo.mjs",
-        "mirage",
-        "stop"
-      ],
+      "args": ["bin/paqvilo.mjs", "mirage", "stop"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -201,11 +167,7 @@
       "label": "paqvilo: choose portal",
       "type": "process",
       "command": "node",
-      "args": [
-        "bin/paqvilo.mjs",
-        "lense",
-        "use"
-      ],
+      "args": ["bin/paqvilo.mjs", "lense", "use"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -221,11 +183,7 @@
       "label": "paqvilo: list",
       "type": "process",
       "command": "node",
-      "args": [
-        "bin/paqvilo.mjs",
-        "lense",
-        "list"
-      ],
+      "args": ["bin/paqvilo.mjs", "lense", "list"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -240,12 +198,7 @@
       "label": "paqvilo: doctor",
       "type": "process",
       "command": "node",
-      "args": [
-        "bin/paqvilo.mjs",
-        "lense",
-        "doctor",
-        "--all"
-      ],
+      "args": ["bin/paqvilo.mjs", "lense", "doctor", "--all"],
       "options": {
         "cwd": "${workspaceFolder}"
       },

@@ -6,12 +6,12 @@ Mirage reports what each local module, provider, operation and source component 
 
 Every capability record has one of four levels, from lowest to highest:
 
-| Level | Meaning |
-| --- | --- |
-| `inventory` | The component is listed from source. Nothing runs it locally, or it answers with a placeholder or a documented `501`/diagnostic. |
-| `contract` | The request and response shapes are honoured and documented. The answer comes from a fixture, a mock, a declared-only adapter or a reduced rule set. |
-| `behaviour` | The local runtime executes the documented behaviour. |
-| `native-qualified` | `behaviour` that has been compared with a native environment in at least one named scenario. |
+| Level              | Meaning                                                                                                                                              |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `inventory`        | The component is listed from source. Nothing runs it locally, or it answers with a placeholder or a documented `501`/diagnostic.                     |
+| `contract`         | The request and response shapes are honoured and documented. The answer comes from a fixture, a mock, a declared-only adapter or a reduced rule set. |
+| `behaviour`        | The local runtime executes the documented behaviour.                                                                                                 |
+| `native-qualified` | `behaviour` that has been compared with a native environment in at least one named scenario.                                                         |
 
 A placeholder or a mock never counts as `behaviour`. `native-qualified` is attached only to records whose `evidence` names a compared scenario (`{ scenario: '<id>' }`). The registry refuses a `native-qualified` record or operation without one.
 
@@ -56,12 +56,12 @@ A record's level is the lowest level among its operations. When a record states 
 
 ### Registry API
 
-| Call | Result |
-| --- | --- |
-| `get(name)`, `list({ kind, level })` | Records (copies). |
-| `summary()` | The legacy runtime capabilities: `runtimeCapabilities(runtime)` (`powerPages`, `modelDriven`, `organization`), plus one boolean per `host-surface` record, taken from its `enabled` flag (default `true`). |
-| `report({ scenario })` | `{ modules, missing, unsupported }`. `missing` lists `requires` names without a `kind:` prefix that no record provides. Prefixed prerequisites such as `table:`, `metadata:` and `secret:` are resolved by preflight. `unsupported` lists records and operations below `behaviour`. When a scenario is given, only those matching `scenario.requires` are listed. |
-| `assertExecutable(patterns)` | Returns `true` when every pattern matches a record or an operation (`<record>/<operation>`) at `behaviour` or above. Otherwise it throws `DataError` with code `CapabilityUnavailable` and `details.gaps`. |
+| Call                                 | Result                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get(name)`, `list({ kind, level })` | Records (copies).                                                                                                                                                                                                                                                                                                                                                 |
+| `summary()`                          | The legacy runtime capabilities: `runtimeCapabilities(runtime)` (`powerPages`, `modelDriven`, `organization`), plus one boolean per `host-surface` record, taken from its `enabled` flag (default `true`).                                                                                                                                                        |
+| `report({ scenario })`               | `{ modules, missing, unsupported }`. `missing` lists `requires` names without a `kind:` prefix that no record provides. Prefixed prerequisites such as `table:`, `metadata:` and `secret:` are resolved by preflight. `unsupported` lists records and operations below `behaviour`. When a scenario is given, only those matching `scenario.requires` are listed. |
+| `assertExecutable(patterns)`         | Returns `true` when every pattern matches a record or an operation (`<record>/<operation>`) at `behaviour` or above. Otherwise it throws `DataError` with code `CapabilityUnavailable` and `details.gaps`.                                                                                                                                                        |
 
 ### Runtime status
 
@@ -110,17 +110,52 @@ Each entry is a requirement id or a pattern. `*` matches any run of characters, 
 {
   "schemaVersion": 1,
   "kind": "paqvilo.mirage.preflight",
-  "runtime": { "kind": "power-pages", "simulation": "dry-run", "capabilities": { "powerPages": true, "modelDriven": true, "organization": true, "canvas": "behaviour", "codeApps": "contract" } },
-  "scope": { "scenario": { "id": "approval-flow", "file": "scenarios/approval.json" }, "requires": ["cloud-flow:*"], "strict": false },
-  "sources": { "graphFingerprint": "…", "portal": { "sourceDir": "…", "layout": "standard-yaml", "dataModel": "standard" },
-    "layers": [{ "index": 0, "solution": "InventedCore", "version": "1.0.0.0", "type": "xml", "input": "…" }] },
-  "modules": [ /* registry.list() records */ ],
+  "runtime": {
+    "kind": "power-pages",
+    "simulation": "dry-run",
+    "capabilities": {
+      "powerPages": true,
+      "modelDriven": true,
+      "organization": true,
+      "canvas": "behaviour",
+      "codeApps": "contract",
+    },
+  },
+  "scope": {
+    "scenario": { "id": "approval-flow", "file": "scenarios/approval.json" },
+    "requires": ["cloud-flow:*"],
+    "strict": false,
+  },
+  "sources": {
+    "graphFingerprint": "…",
+    "portal": { "sourceDir": "…", "layout": "standard-yaml", "dataModel": "standard" },
+    "layers": [{ "index": 0, "solution": "InventedCore", "version": "1.0.0.0", "type": "xml", "input": "…" }],
+  },
+  "modules": [/* registry.list() records */],
   "requirements": [
-    { "id": "cloud-flow:2222…", "kind": "cloud-flow", "source": { "file": "…" }, "status": "placeholder", "reason": null,
-      "resolution": { "by": null, "mode": "placeholder" }, "message": "…", "inScope": true, "blocking": true }
+    {
+      "id": "cloud-flow:2222…",
+      "kind": "cloud-flow",
+      "source": { "file": "…" },
+      "status": "placeholder",
+      "reason": null,
+      "resolution": { "by": null, "mode": "placeholder" },
+      "message": "…",
+      "inScope": true,
+      "blocking": true,
+    },
   ],
-  "summary": { "total": 1, "satisfied": 0, "missing": 0, "placeholder": 1, "unsupported": 0, "disabled": 0, "secret": 0, "blocking": 1 },
-  "diagnostics": [{ "code": "PACK_EXPORT_UNKNOWN", "pack": "invented-pack", "key": "customAPIs" }]
+  "summary": {
+    "total": 1,
+    "satisfied": 0,
+    "missing": 0,
+    "placeholder": 1,
+    "unsupported": 0,
+    "disabled": 0,
+    "secret": 0,
+    "blocking": 1,
+  },
+  "diagnostics": [{ "code": "PACK_EXPORT_UNKNOWN", "pack": "invented-pack", "key": "customAPIs" }],
 }
 ```
 
@@ -132,6 +167,7 @@ Each entry is a requirement id or a pattern. `*` matches any run of characters, 
 - `unsupported`: an inventory-level component, an unsupported plug-in step, or an inventory record with an error diagnostic (the code is the `reason`). It also covers what a host detects but does not run, with `resolution.level`: `portal:modern-list` (`MODERN_LIST_RENDERED_CLASSIC`, a modern list include the local adapter cannot serve: map, calendar and code component lists render classic; `contract`), `portal:modern-list/<list>` (`MODERN_LIST_FEATURES_UNSERVED`, a served modern list that configures actions other than details, edit, create, delete and download; the local modern list is local markup over the classic grid engine with views, search, filters, sort and those actions; `contract`), `portal:sharepoint-documents` (`PORTAL_SHAREPOINT_DOCUMENTS_LOCAL`, a basic form or advanced form step whose Solution form has a Document Locations subgrid; `contract`), `model-driven:custom-page/<app>/<subarea>` (`MD_NAV_CUSTOM_PAGE`; `inventory`), `model-driven:pcf/<control>` (`PCF_VIRTUAL_UNSUPPORTED`, a virtual component whose platform libraries the project does not supply; `contract`), `portal:pcf/<control>` (the same refusal for a Solution code component under a portal source: the Power Pages host supplies no platform libraries), `model-driven:offline/<profile>` (`MD_OFFLINE_FILTER_UNSUPPORTED` naming the profile items whose filter the simulator cannot evaluate, `contract`; `MD_OFFLINE_PROFILE_MISSING` for an app that names a profile the sources do not hold, keyed by the app, `inventory`), a YAML component file the adapter cannot read (`SOLUTION_YAML_COMPONENT_NOT_IMPORTED`), a custom connector whose compilation has a blocking diagnostic (`connector:<name>`, that code as reason) and an unread Solution role or field security profile (`ROLE_NOT_IMPORTED`, `FIELD_SECURITY_NOT_IMPORTED`). The `model-driven:offline` capability is at `behaviour`, and `portal:enhanced-authorization` (`ENHANCED_AUTHORIZATION`, site states 1 Migration in progress, 2 Migration Failed and 3 Enabled) is `satisfied` at `behaviour`.
 
 Every `portal:` row carries `surface: 'portalRendering'` and every `model-driven:` row `surface: 'staff'`. A scenario names gaps in either form: by row id or pattern (`portal:*`, `model-driven:offline/*`), or by host surface (`portalRendering`, `staff`, or `portalRendering/<row id>`). A surface pattern brings all of that surface's rows into scope and adds a `host-surface` row for the surface, which is `satisfied` only when none of those rows is unsatisfied; otherwise it is `unsupported` and its message lists them.
+
 - `disabled`: an inactive workflow or a disabled operation.
 - `secret`: a Secret environment variable (`ENVIRONMENT_VARIABLE_SECRET`); the secret resolver (`resolution.by`: `secret-resolver`) must satisfy it at run time, so preflight neither reads nor reports its value.
 
@@ -147,10 +183,10 @@ The report never contains configured values. Secrets, connection strings and con
 
 ### Exit codes
 
-| Code | Meaning |
-| --- | --- |
-| `0` | No blocking requirement in scope. |
-| `1` | At least one blocking requirement. |
-| `2` | Invocation or configuration error, such as an unknown option, an unreadable or invalid scenario, or an invalid source. |
+| Code | Meaning                                                                                                                |
+| ---- | ---------------------------------------------------------------------------------------------------------------------- |
+| `0`  | No blocking requirement in scope.                                                                                      |
+| `1`  | At least one blocking requirement.                                                                                     |
+| `2`  | Invocation or configuration error, such as an unknown option, an unreadable or invalid scenario, or an invalid source. |
 
 `preflightExitCode(report)` from `mirage/lib/capability-report.mjs` returns the same codes.

@@ -48,11 +48,11 @@ a toolkit session with different profile settings.
 
 The three sections are independently mapped and enabled:
 
-| Section | File content | Local effect |
-| --- | --- | --- |
-| `pages` | PAC Pages table-to-record-patch YAML, or the equivalent JSON | Overlays exported portal records before rendering and permission compilation |
-| `environmentVariables` | PAC deployment-settings object containing an `EnvironmentVariables` array | Sets current values of exported Solution variable definitions |
-| `connectionReferences` | PAC deployment-settings object containing a `ConnectionReferences` array | Seeds local `connectionreference` records with deterministic IDs |
+| Section                | File content                                                              | Local effect                                                                 |
+| ---------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `pages`                | PAC Pages table-to-record-patch YAML, or the equivalent JSON              | Overlays exported portal records before rendering and permission compilation |
+| `environmentVariables` | PAC deployment-settings object containing an `EnvironmentVariables` array | Sets current values of exported Solution variable definitions                |
+| `connectionReferences` | PAC deployment-settings object containing a `ConnectionReferences` array  | Seeds local `connectionreference` records with deterministic IDs             |
 
 Both Solution sections can point to the same JSON file or to separate files, and accept
 ordered lists of files. Later files replace entries with the same case-insensitive schema
@@ -74,11 +74,13 @@ An individual Solution settings file has this structure:
 ```json
 {
   "EnvironmentVariables": [{ "SchemaName": "sample_ServiceUrl", "Value": "https://service.example.test" }],
-  "ConnectionReferences": [{
-    "LogicalName": "sample_Api",
-    "ConnectionId": "synthetic-connection",
-    "ConnectorId": "/providers/Microsoft.PowerApps/apis/shared_sample"
-  }]
+  "ConnectionReferences": [
+    {
+      "LogicalName": "sample_Api",
+      "ConnectionId": "synthetic-connection",
+      "ConnectorId": "/providers/Microsoft.PowerApps/apis/shared_sample"
+    }
+  ]
 }
 ```
 
@@ -171,21 +173,20 @@ this machine when it is read:
 ```yaml
 secrets:
   fx-vault/func-key:
-    source: environment          # read process.env[variable] at resolve time
+    source: environment # read process.env[variable] at resolve time
     variable: FX_FUNC_KEY
-    versions: { current: v2 }    # optional: a reference naming another version is missing
-    expiresOn: 2026-12-31T00:00:00Z   # optional: expired after this instant
-    allow: [77777777-7777-4777-8777-777777777777]  # principal ids; absent means nobody (fail closed)
+    versions: { current: v2 } # optional: a reference naming another version is missing
+    expiresOn: 2026-12-31T00:00:00Z # optional: expired after this instant
+    allow: [77777777-7777-4777-8777-777777777777] # principal ids; absent means nobody (fail closed)
     disabled: false
   fx-vault/other:
-    source: protected            # a Windows DPAPI blob (current user), as lense/dataverse/connection.mjs stores credentials
-    protectedValue: "<base64 DPAPI blob>"
+    source: protected # a Windows DPAPI blob (current user), as lense/dataverse/connection.mjs stores credentials
+    protectedValue: '<base64 DPAPI blob>'
 ```
 
 A `value` key is refused: secret values never live in config, state or profiles. `RetrieveEnvironmentVariableSecretValue`
 resolves the reference for the calling user when a `secrets` config exists: resolved 200, a principal not in `allow`
-403, an unbound or missing secret 404, an expired or disabled one 400, a definition that is not a Key Vault Secret
-400. Without a `secrets` config the message answers 501.
+403, an unbound or missing secret 404, an expired or disabled one 400, a definition that is not a Key Vault Secret 400. Without a `secrets` config the message answers 501.
 `NotifyEnvironmentVariableSecretChange` only validates its arguments.
 
 What is never revealed: `RetrieveEnvironmentVariables`, OData reads of `environmentvariablevalues` and

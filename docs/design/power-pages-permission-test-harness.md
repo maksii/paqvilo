@@ -39,14 +39,14 @@ The API lane's business data must come only from `/_api` calls, never from the L
 
 Own these components in the Company Operations portal project, using discovered export paths/IDs. They import after the solution structure. Proposed names are stable component names, not assumptions about an existing site's record GUIDs.
 
-| Component | Name / purpose |
-| --- | --- |
-| Web page and page template | `CO Permission Lab`, route `/permission-lab/`; renders the shell web template inside the site header and footer. |
-| Web template | `CO Permission Lab Shell`; renders current Contact/roles, controls and empty result containers, with the test script, styles and generated query manifest inline; no business query results inserted into the API lane. |
-| Web page and page template | `CO Permission Lab Liquid Data`, route `/permission-lab/liquid/`; web-template type, Use Website Header and Footer false. |
-| Web template | `CO Permission Lab Liquid Dispatcher`; MIME `application/xml`; checks signed-in user, suite version and allowlisted case ID, then invokes the selected case partial. |
-| Case web templates | `CO Query R01` through `CO Query R36`; generated from the same query manifest as the API plans. Each emits summary, typed rows, authored XML, resultant XML and paging metadata. |
-| Website configuration | `CO Test Runner` role; page access rules for shell/data route; instantiated business permission blueprint; recorder/probe permissions below; explicit Web API table/field settings. |
+| Component                  | Name / purpose                                                                                                                                                                                                          |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web page and page template | `CO Permission Lab`, route `/permission-lab/`; renders the shell web template inside the site header and footer.                                                                                                        |
+| Web template               | `CO Permission Lab Shell`; renders current Contact/roles, controls and empty result containers, with the test script, styles and generated query manifest inline; no business query results inserted into the API lane. |
+| Web page and page template | `CO Permission Lab Liquid Data`, route `/permission-lab/liquid/`; web-template type, Use Website Header and Footer false.                                                                                               |
+| Web template               | `CO Permission Lab Liquid Dispatcher`; MIME `application/xml`; checks signed-in user, suite version and allowlisted case ID, then invokes the selected case partial.                                                    |
+| Case web templates         | `CO Query R01` through `CO Query R36`; generated from the same query manifest as the API plans. Each emits summary, typed rows, authored XML, resultant XML and paging metadata.                                        |
+| Website configuration      | `CO Test Runner` role; page access rules for shell/data route; instantiated business permission blueprint; recorder/probe permissions below; explicit Web API table/field settings.                                     |
 
 A web template can control the full response and MIME type when its page template omits site header/footer. This permits a clean machine-readable Liquid endpoint. [Web-template response configuration](https://learn.microsoft.com/en-us/power-pages/configure/web-templates).
 
@@ -117,44 +117,44 @@ Preflight checks session identity, support-table API configuration, history Crea
 
 R01–R21 cover every table in the first inventory. Baseline selection is the primary GUID only, with deterministic GUID order and page size 50; use explicit filters for optional named variants. These cases test row visibility with minimal payload. R22–R36 add joins, collisions, aggregates, paging and typed-field comparisons. Expected results come from the independent scenario oracle in the first document, not one engine's output.
 
-| ID | Query name / root table | Required comparison |
-| --- | --- | --- |
-| R01 | Visible organisations / `account` | Complete visible Account IDs, including intentional profile-leaf visibility; no implicit ancestors. |
-| R02 | Contact identity leaves / `contact` | Own Contact enabled by recorder support, plus any separately configured business leaf; no shared-person workforce bridge. |
-| R03 | Organisation directory / `pqvd_orgcontact` | Company versus department directory scope under combined roles. |
-| R04 | Departments / `pqvd_department` | Branch, department and multi-branch grant sets. |
-| R05 | Engagements / `pqvd_employment` | Concurrent own employments and HR/IT/team scope unions. |
-| R06 | Private terms / `pqvd_employmentterms` | HR-only terms IDs; other roles disclose no terms records. |
-| R07 | Sites / `pqvd_site` | Scoped physical sites. |
-| R08 | Buildings / `pqvd_building` | Scoped descendants of permitted sites. |
-| R09 | Equipment / `pqvd_equipment` | Own custody, branch scope and read-wide/write-narrow fixtures. |
-| R10 | Rooms / `pqvd_room` | Location scope does not become all-equipment Write. |
-| R11 | Equipment finance / `pqvd_equipmentfinance` | Cost-record scope separately from equipment visibility. |
-| R12 | Assignment history / `pqvd_assignment` | Current/returned assignments for eligible engagements/organisations. |
-| R13 | Service requests / `pqvd_servicerequest` | Requester/assignment/equipment paths, including stock requests. |
-| R14 | Work orders / `pqvd_workorder` | Request-dependent scope. |
-| R15 | Work tasks / `pqvd_worktask` | Deep descendants and team scopes. |
-| R16 | Checklist / `pqvd_checklistitem` | Task-dependent scope. |
-| R17 | Inspection attempts / `pqvd_inspection` | Repeated verification attempts. |
-| R18 | Findings / `pqvd_finding` | Eleven-level deepest endpoints. |
-| R19 | Effective access records / `pqvd_accesspermission` | Visible effective grant IDs; generic-grantee root must not multiply role scope. |
-| R20 | Role catalogue / `pqvd_accessrole` | Backend-only catalogue remains undisclosed unless an explicit scoped leaf is installed; no Global grant. |
-| R21 | Observable currency references / `pqvd_currencyreference` | Only configured scoped custom references; preserve the immutable system-Currency mapping. No Global reference access. |
-| R22 | Same-root and sibling filters / `pqvd_equipment` | Apply the same A-RIV/A-HILL/B-LAKE fixture filters; scope cannot be supplied by the caller. |
-| R23 | Known permitted GUID / `pqvd_equipment` | One row or oracle-specified absence; exact primary-key filter. |
-| R24 | Known outside-scope GUID / `pqvd_equipment` | No data disclosure; absence of data is compared alongside original outcome/status. |
-| R25 | Company–membership–engagement join / `pqvd_orgcontact` | Explicit linked engagement GUID alias; canonical tuple identity, not root-only deduplication. |
-| R26 | Access-to-Account N:N join / `pqvd_accesspermission` | Grant/Account GUID tuples and distinct variants; inspect emitted permission XML. |
-| R27 | Deep Finding through workforce / `pqvd_finding` | Minimal Finding query evaluated through the declared eleven-node permission tree; full provenance blueprint and authorised endpoint IDs. A fully explicit reverse-chain join is a separate stress variant. |
-| R28 | Foreign deep Finding / `pqvd_finding` | Same deep shape against the other company's canary ID; no endpoint disclosure. |
-| R29 | Secondary equipment-to-service path / `pqvd_servicerequest` | Same relevant service IDs reached by the secondary path; differences in scope remain explicit. |
-| R30 | Equipment-finance inner/outer joins / `pqvd_equipment` | Equipment/finance GUID tuples, outer-null preservation and no private-cost disclosure to denied roles. |
-| R31 | Equipment counts by Account / `pqvd_equipment` | FetchXML group-by lookup plus distinct equipment count, aliases declared; match group keys and numeric totals. |
-| R32 | Employment counts by engagement kind / `pqvd_employment` | Group-by choice counts reflect simultaneous employments and scope. |
-| R33 | Multi-page directory / `pqvd_orgcontact` | Page size 5, complete stitched rows and page evidence; detect duplicates/omissions. |
-| R34 | Distinct directory names / `pqvd_orgcontact` | Distinct name-only selection ordered by name; rows need scalar identity, not fabricated GUIDs. |
-| R35 | Valid empty filter / `pqvd_equipment` | Known nonmatching synthetic value produces success with zero rows, separate from denied/error outcomes. |
-| R36 | Typed data and escaping / `pqvd_employmentterms` | Explicit employment join for DateOnly/kind plus salary/day-rate/currency/contract reference; typed normalization and strings containing quotes, ampersands and Unicode. |
+| ID  | Query name / root table                                     | Required comparison                                                                                                                                                                                        |
+| --- | ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R01 | Visible organisations / `account`                           | Complete visible Account IDs, including intentional profile-leaf visibility; no implicit ancestors.                                                                                                        |
+| R02 | Contact identity leaves / `contact`                         | Own Contact enabled by recorder support, plus any separately configured business leaf; no shared-person workforce bridge.                                                                                  |
+| R03 | Organisation directory / `pqvd_orgcontact`                  | Company versus department directory scope under combined roles.                                                                                                                                            |
+| R04 | Departments / `pqvd_department`                             | Branch, department and multi-branch grant sets.                                                                                                                                                            |
+| R05 | Engagements / `pqvd_employment`                             | Concurrent own employments and HR/IT/team scope unions.                                                                                                                                                    |
+| R06 | Private terms / `pqvd_employmentterms`                      | HR-only terms IDs; other roles disclose no terms records.                                                                                                                                                  |
+| R07 | Sites / `pqvd_site`                                         | Scoped physical sites.                                                                                                                                                                                     |
+| R08 | Buildings / `pqvd_building`                                 | Scoped descendants of permitted sites.                                                                                                                                                                     |
+| R09 | Equipment / `pqvd_equipment`                                | Own custody, branch scope and read-wide/write-narrow fixtures.                                                                                                                                             |
+| R10 | Rooms / `pqvd_room`                                         | Location scope does not become all-equipment Write.                                                                                                                                                        |
+| R11 | Equipment finance / `pqvd_equipmentfinance`                 | Cost-record scope separately from equipment visibility.                                                                                                                                                    |
+| R12 | Assignment history / `pqvd_assignment`                      | Current/returned assignments for eligible engagements/organisations.                                                                                                                                       |
+| R13 | Service requests / `pqvd_servicerequest`                    | Requester/assignment/equipment paths, including stock requests.                                                                                                                                            |
+| R14 | Work orders / `pqvd_workorder`                              | Request-dependent scope.                                                                                                                                                                                   |
+| R15 | Work tasks / `pqvd_worktask`                                | Deep descendants and team scopes.                                                                                                                                                                          |
+| R16 | Checklist / `pqvd_checklistitem`                            | Task-dependent scope.                                                                                                                                                                                      |
+| R17 | Inspection attempts / `pqvd_inspection`                     | Repeated verification attempts.                                                                                                                                                                            |
+| R18 | Findings / `pqvd_finding`                                   | Eleven-level deepest endpoints.                                                                                                                                                                            |
+| R19 | Effective access records / `pqvd_accesspermission`          | Visible effective grant IDs; generic-grantee root must not multiply role scope.                                                                                                                            |
+| R20 | Role catalogue / `pqvd_accessrole`                          | Backend-only catalogue remains undisclosed unless an explicit scoped leaf is installed; no Global grant.                                                                                                   |
+| R21 | Observable currency references / `pqvd_currencyreference`   | Only configured scoped custom references; preserve the immutable system-Currency mapping. No Global reference access.                                                                                      |
+| R22 | Same-root and sibling filters / `pqvd_equipment`            | Apply the same A-RIV/A-HILL/B-LAKE fixture filters; scope cannot be supplied by the caller.                                                                                                                |
+| R23 | Known permitted GUID / `pqvd_equipment`                     | One row or oracle-specified absence; exact primary-key filter.                                                                                                                                             |
+| R24 | Known outside-scope GUID / `pqvd_equipment`                 | No data disclosure; absence of data is compared alongside original outcome/status.                                                                                                                         |
+| R25 | Company–membership–engagement join / `pqvd_orgcontact`      | Explicit linked engagement GUID alias; canonical tuple identity, not root-only deduplication.                                                                                                              |
+| R26 | Access-to-Account N:N join / `pqvd_accesspermission`        | Grant/Account GUID tuples and distinct variants; inspect emitted permission XML.                                                                                                                           |
+| R27 | Deep Finding through workforce / `pqvd_finding`             | Minimal Finding query evaluated through the declared eleven-node permission tree; full provenance blueprint and authorised endpoint IDs. A fully explicit reverse-chain join is a separate stress variant. |
+| R28 | Foreign deep Finding / `pqvd_finding`                       | Same deep shape against the other company's canary ID; no endpoint disclosure.                                                                                                                             |
+| R29 | Secondary equipment-to-service path / `pqvd_servicerequest` | Same relevant service IDs reached by the secondary path; differences in scope remain explicit.                                                                                                             |
+| R30 | Equipment-finance inner/outer joins / `pqvd_equipment`      | Equipment/finance GUID tuples, outer-null preservation and no private-cost disclosure to denied roles.                                                                                                     |
+| R31 | Equipment counts by Account / `pqvd_equipment`              | FetchXML group-by lookup plus distinct equipment count, aliases declared; match group keys and numeric totals.                                                                                             |
+| R32 | Employment counts by engagement kind / `pqvd_employment`    | Group-by choice counts reflect simultaneous employments and scope.                                                                                                                                         |
+| R33 | Multi-page directory / `pqvd_orgcontact`                    | Page size 5, complete stitched rows and page evidence; detect duplicates/omissions.                                                                                                                        |
+| R34 | Distinct directory names / `pqvd_orgcontact`                | Distinct name-only selection ordered by name; rows need scalar identity, not fabricated GUIDs.                                                                                                             |
+| R35 | Valid empty filter / `pqvd_equipment`                       | Known nonmatching synthetic value produces success with zero rows, separate from denied/error outcomes.                                                                                                    |
+| R36 | Typed data and escaping / `pqvd_employmentterms`            | Explicit employment join for DateOnly/kind plus salary/day-rate/currency/contract reference; typed normalization and strings containing quotes, ampersands and Unicode.                                    |
 
 Generate complete static FetchXML for each case/variant, including exact attribute/alias lists and link from/to columns from the metadata registry. Primary GUID ordering is used for ordinary rows; joined tuples add relevant alias GUID ordering; aggregates/distinct scalars use their group/selected keys. Cases with no entity IDs use scalar/group row keys and retain `ids=[]` rather than inventing GUIDs. Inner/outer/distinct variants remain separately identified observations.
 
@@ -188,10 +188,7 @@ Both lane renderers produce this shape; GUIDs below are example invented values,
   "httpStatus": 200,
   "returnedCount": 2,
   "uniqueIdCount": 2,
-  "ids": [
-    "11111111-1111-4111-8111-111111111111",
-    "22222222-2222-4222-8222-222222222222"
-  ],
+  "ids": ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"],
   "complete": true,
   "pages": 1,
   "canonicalHash": "sha256-of-canonical-payload",
@@ -261,24 +258,24 @@ The schema alone does not provide mutable projection/validation automation. Posi
 
 Add a separate support solution `PaqviloPermissionTestSupport`, depending on Company Operations Core, using `pqvd` and stable IDs. Its three custom organisation-owned tables have standard GUID/name/audit/state fields. Keep history outside the thirty-six business-read cases so saving a result does not alter their counts. Enable auditing; standard createdon/modifiedon are server timestamps, whereas captured/render/client timestamps have their labelled origins.
 
-| Table / entity set | Columns | Keys and relationships |
-| --- | --- | --- |
-| `pqvd_testrun` / `pqvd_testruns` | `pqvd_name` Text(160)!, `pqvd_runkey` Text(40)!, `pqvd_runnercontactid` L(contact)!, `pqvd_suiteversion` Text(40)!, `pqvd_manifesthash` Text(64)!, `pqvd_datasetversion` Text(80)!, `pqvd_sourcehash` Text(64), `pqvd_environment` Text(80)!, `pqvd_portalversion` Text(40), `pqvd_startedat` Time!, `pqvd_finishedat` Time, `pqvd_runstate` Choice!, `pqvd_rolesnapshot` Multiline(65536)!, `pqvd_grantsnapshot` Multiline(65536), `pqvd_summaryjson` Multiline(65536), `pqvd_baselinerunid` L(pqvd_testrun) | `pqvd_ak_testrun_key` on run key. `pqvd_contact_testruns`: Contact -> run via runner lookup. `pqvd_testrun_baselines`: run -> run via baseline lookup. |
+| Table / entity set                     | Columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Keys and relationships                                                                                                                                                                       |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pqvd_testrun` / `pqvd_testruns`       | `pqvd_name` Text(160)!, `pqvd_runkey` Text(40)!, `pqvd_runnercontactid` L(contact)!, `pqvd_suiteversion` Text(40)!, `pqvd_manifesthash` Text(64)!, `pqvd_datasetversion` Text(80)!, `pqvd_sourcehash` Text(64), `pqvd_environment` Text(80)!, `pqvd_portalversion` Text(40), `pqvd_startedat` Time!, `pqvd_finishedat` Time, `pqvd_runstate` Choice!, `pqvd_rolesnapshot` Multiline(65536)!, `pqvd_grantsnapshot` Multiline(65536), `pqvd_summaryjson` Multiline(65536), `pqvd_baselinerunid` L(pqvd_testrun)                                                                                                                       | `pqvd_ak_testrun_key` on run key. `pqvd_contact_testruns`: Contact -> run via runner lookup. `pqvd_testrun_baselines`: run -> run via baseline lookup.                                       |
 | `pqvd_testresult` / `pqvd_testresults` | `pqvd_name` Text(160)!, `pqvd_runid` L(pqvd_testrun)!, `pqvd_observationkey` Text(64)!, `pqvd_caseid` Text(64)!, `pqvd_variant` Text(40)!, `pqvd_engine` Choice!, `pqvd_phase` Choice!, `pqvd_operation` Choice!, `pqvd_artifactkind` Choice!, `pqvd_attempt` Integer!, `pqvd_pagenumber` Integer!, `pqvd_partnumber` Integer!, `pqvd_partcount` Integer!, `pqvd_httpstatus` Integer, `pqvd_verdict` Choice!, `pqvd_recordcount` Integer, `pqvd_durationms` Integer, `pqvd_capturetime` Time!, `pqvd_contenttype` Text(80)!, `pqvd_payloadtext` Multiline(262144)!, `pqvd_payloadhash` Text(64)!, `pqvd_actorfingerprint` Text(64)! | `pqvd_ak_testresult_part` on run, observation key, artifact kind, part number. `pqvd_testrun_results`: run -> result via run lookup. Required key components only; payload is never indexed. |
-| `pqvd_crudprobe` / `pqvd_crudprobes` | `pqvd_name` Text(160)!, `pqvd_token` Text(80)!, `pqvd_ownercontactid` L(contact)!, `pqvd_runid` L(pqvd_testrun)!, `pqvd_value` Text(160), `pqvd_counter` Integer, `pqvd_equipmentid` L(pqvd_equipment) | `pqvd_ak_crudprobe_token` on token. `pqvd_contact_crudprobes`: Contact -> probe. `pqvd_testrun_crudprobes`: run -> probe. Disposable positive-control data, not history. |
+| `pqvd_crudprobe` / `pqvd_crudprobes`   | `pqvd_name` Text(160)!, `pqvd_token` Text(80)!, `pqvd_ownercontactid` L(contact)!, `pqvd_runid` L(pqvd_testrun)!, `pqvd_value` Text(160), `pqvd_counter` Integer, `pqvd_equipmentid` L(pqvd_equipment)                                                                                                                                                                                                                                                                                                                                                                                                                              | `pqvd_ak_crudprobe_token` on token. `pqvd_contact_crudprobes`: Contact -> probe. `pqvd_testrun_crudprobes`: run -> probe. Disposable positive-control data, not history.                     |
 
 All Time columns use UserLocal date/time. Attempts/pages/parts start at 1, duration/count are nonnegative. New 1:N relations use Restrict Delete and Cascade None for Assign/Share/Unshare/Reparent/Merge. The optional Source5 `pqvd_equipment_crudprobes` lookup, absent from the committed Source4 manifest, uses RemoveLink Delete, with Assign/Share/Unshare/Reparent/Merge set to NoCascade; deleting a disposable Equipment canary clears the optional probe link. All other lookup Delete policies remain Restrict. The run/result history is not deleted by ordinary users. Probes can be deleted individually before privileged history retention cleanup.
 
 Create global choices with ordered values 183270000 upwards for each independent set:
 
-| Choice | Ordered labels |
-| --- | --- |
-| `pqvd_runstate` | Running, Completed, Interrupted, Failed, Incomplete |
-| `pqvd_engine` | Liquid, WebAPI, Comparator, Recorder |
-| `pqvd_phase` | Baseline, CRUD, Verification, Comparison, Cleanup |
-| `pqvd_operation` | Read, Create, Update, Delete, Bind, Identity, Compare, Diagnostic |
+| Choice              | Ordered labels                                                                                           |
+| ------------------- | -------------------------------------------------------------------------------------------------------- |
+| `pqvd_runstate`     | Running, Completed, Interrupted, Failed, Incomplete                                                      |
+| `pqvd_engine`       | Liquid, WebAPI, Comparator, Recorder                                                                     |
+| `pqvd_phase`        | Baseline, CRUD, Verification, Comparison, Cleanup                                                        |
+| `pqvd_operation`    | Read, Create, Update, Delete, Bind, Identity, Compare, Diagnostic                                        |
 | `pqvd_artifactkind` | Summary, AuthoredXml, EffectiveXml, Request, RawResponse, CanonicalResult, Comparison, Identity, Cleanup |
-| `pqvd_verdict` | Pass, Fail, Incomplete, Unsupported, NotApplicable |
+| `pqvd_verdict`      | Pass, Fail, Incomplete, Unsupported, NotApplicable                                                       |
 
 One run contains both engines. Observations identify case/variant/phase/operation/target/attempt/page; observation key is SHA-256 of that stable tuple, distinct from content hash. Artifacts store summary JSON, authored XML, effective Liquid XML, raw response, canonical JSON, CRUD request/result, cleanup or comparison JSON. XML has content type application/xml; JSON application/json; error/plain bodies retain their type.
 
@@ -292,15 +289,15 @@ PluginEvidence adds operation/event/node tables without changing these three bas
 
 `CO Test Runner` support role gets these dedicated grants, no Global grants and no business write privileges:
 
-| Permission | Scope / relationship | Privileges |
-| --- | --- | --- |
-| Own recorder Contact | Self on Contact, with explicit minimal fields | R and Append To for binding own run/probe; no Contact C/U/D. This deliberately adds own-Contact Read to R02. |
-| Own test runs | Contact via `pqvd_contact_testruns` | C/R/U/Append/Append To; no D. |
-| Results of own runs | Parent via `pqvd_testrun_results` | C/R/U/Append; no D; inherits recorder role. |
-| Own disposable probes | Contact via `pqvd_contact_crudprobes` | C/R/U/D/Append; no cross-contact rights. |
-| Operations of own runs | Parent via `pqvd_testrun_operations` | C/R/U/Append/Append To; no D. Guard enforces immutable identity and server-owned fields. |
-| Events of own operations | Parent via `pqvd_testoperation_events` | R only; no portal event writes. |
-| Nodes of own operations | Parent via `pqvd_testoperation_chainnodes` | R only; SDK fixture writes are a separate identity/surface. |
+| Permission               | Scope / relationship                          | Privileges                                                                                                   |
+| ------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Own recorder Contact     | Self on Contact, with explicit minimal fields | R and Append To for binding own run/probe; no Contact C/U/D. This deliberately adds own-Contact Read to R02. |
+| Own test runs            | Contact via `pqvd_contact_testruns`           | C/R/U/Append/Append To; no D.                                                                                |
+| Results of own runs      | Parent via `pqvd_testrun_results`             | C/R/U/Append; no D; inherits recorder role.                                                                  |
+| Own disposable probes    | Contact via `pqvd_contact_crudprobes`         | C/R/U/D/Append; no cross-contact rights.                                                                     |
+| Operations of own runs   | Parent via `pqvd_testrun_operations`          | C/R/U/Append/Append To; no D. Guard enforces immutable identity and server-owned fields.                     |
+| Events of own operations | Parent via `pqvd_testoperation_events`        | R only; no portal event writes.                                                                              |
+| Nodes of own operations  | Parent via `pqvd_testoperation_chainnodes`    | R only; SDK fixture writes are a separate identity/surface.                                                  |
 
 Only bind the runner/probe owner to the signed-in Contact; Self Append To prevents ordinary association to someone else's identity. Result attachment requires permitted run Append To. Backend binding guards from document 3 also reject moving an observation/probe between runs/actors or editing protected ownership, regardless of UI controls. Probe/run ownership consistency must be qualified with direct association probes; no hidden assumption of ownership enforcement from the field label.
 

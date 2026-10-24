@@ -18,11 +18,11 @@ Keep the existing account demo intact. Its global account grants, including anon
 
 This model defines the schema; the companion permission harness and plugin design define the portal, plugins and flow. Initialise every declared table/column/relationship/key through the Dataverse API manifest before importing segmented exports. Update import order is Core -> Forms and TestSupport -> PluginEvidence -> BehaviorPlugins, with no reverse dependency from Core. Segmented native exports require their tables to exist and are not standalone first-install packages. A fresh environment uses the toolkit's API bootstrap; full-table packaging requires its own dependency audit. [Microsoft's initial-table segmentation limitation](https://learn.microsoft.com/en-us/power-platform/alm/segmented-solutions-alm). The complete set has 22 business/reference tables (19 custom plus Account/Contact/Transaction Currency), three custom support tables and three custom evidence tables: **28 tables, 25 custom**. Existing platform metadata/configuration tables are dependencies outside that count.
 
-| Addition | Owner / implementation reference |
-| --- | --- |
-| `pqvd_testrun`, `pqvd_testresult`, `pqvd_crudprobe` | `PaqviloPermissionTestSupport`; all columns, keys, six choices, forms/views and Contact-scoped permissions in document 2. |
-| `pqvd_testoperation`, `pqvd_pluginevent`, `pqvd_chainnode` | `PaqviloPluginEvidence`; complete schema, three choices, forms/views and evidence relationships in document 3. ChainNode is user/team-owned to test Assign; business ownership stays as specified below. |
-| Result-to-operation lookup and probe operation/nonce/scenario/budget columns | Extensions owned by `PaqviloBehaviorPlugins`, added after PluginEvidence; exact columns/relationships in document 3. |
+| Addition                                                                                           | Owner / implementation reference                                                                                                                                                                             |
+| -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pqvd_testrun`, `pqvd_testresult`, `pqvd_crudprobe`                                                | `PaqviloPermissionTestSupport`; all columns, keys, six choices, forms/views and Contact-scoped permissions in document 2.                                                                                    |
+| `pqvd_testoperation`, `pqvd_pluginevent`, `pqvd_chainnode`                                         | `PaqviloPluginEvidence`; complete schema, three choices, forms/views and evidence relationships in document 3. ChainNode is user/team-owned to test Assign; business ownership stays as specified below.     |
+| Result-to-operation lookup and probe operation/nonce/scenario/budget columns                       | Extensions owned by `PaqviloBehaviorPlugins`, added after PluginEvidence; exact columns/relationships in document 3.                                                                                         |
 | Observer, pipeline/context plugins, guards, secret-verification flow and configuration definitions | `PaqviloBehaviorPlugins`; registration/stage/image/configuration contract in document 3. Business invariant/projection enforcement remains a required readiness prerequisite for mutable business scenarios. |
 
 Do not reuse business inspection `pqvd_finding` for technical observations. An operation's primary GUID joins caller intent, Liquid/API artifacts and server-owned event parts. One pair ID connects two distinct Liquid/API operation IDs. Actor/role snapshots belong to the run; backend system-user identities are recorded separately and never treated as portal Contacts.
@@ -33,14 +33,14 @@ Every deep permission and multi-role collision fixture below must be available t
 
 ## Official permission model and design consequences
 
-| Platform rule | Consequence for this specification |
-| --- | --- |
-| Portal identities are Contacts; web roles provide cumulative access | One person may combine roles. There is no invented deny precedence or ban on conflicting responsibilities. [Power Pages security](https://learn.microsoft.com/en-us/power-pages/security/power-pages-security). |
-| Contact access follows a relationship to the signed-in Contact; Account access uses their associated account | Multi-organisation membership needs explicit rows/relationships, not one `parentcustomerid`. [Access scopes](https://learn.microsoft.com/en-us/power-pages/security/table-permissions). |
-| Child permissions name a relationship and inherit parent roles | Separate capability trees. A custom Role column is not automatically an authorization filter. [Parent and child permissions](https://learn.microsoft.com/en-us/power-pages/security/table-permissions). |
-| Polymorphic lookups are unsupported in parent/child permissions | Every deep-chain lookup is single-target; standard customer lookup is not a chain anchor. [Relationship limitation](https://learn.microsoft.com/en-us/power-pages/security/table-permissions). |
-| Web API column permissions do not protect every data surface; enhanced authorization uses a different mechanism | Private HR and finance are separate tables; forms/views are not security boundaries. [Column permissions](https://learn.microsoft.com/en-us/power-pages/security/column-permissions). |
-| Multi-level scoped 1:N/N:N permissions have a documented GET query issue; FetchXML is the documented workaround | Preserve the graph and qualify it against the target site/version; never add Global Read as a workaround. [Known issues](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview). |
+| Platform rule                                                                                                   | Consequence for this specification                                                                                                                                                                              |
+| --------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Portal identities are Contacts; web roles provide cumulative access                                             | One person may combine roles. There is no invented deny precedence or ban on conflicting responsibilities. [Power Pages security](https://learn.microsoft.com/en-us/power-pages/security/power-pages-security). |
+| Contact access follows a relationship to the signed-in Contact; Account access uses their associated account    | Multi-organisation membership needs explicit rows/relationships, not one `parentcustomerid`. [Access scopes](https://learn.microsoft.com/en-us/power-pages/security/table-permissions).                         |
+| Child permissions name a relationship and inherit parent roles                                                  | Separate capability trees. A custom Role column is not automatically an authorization filter. [Parent and child permissions](https://learn.microsoft.com/en-us/power-pages/security/table-permissions).         |
+| Polymorphic lookups are unsupported in parent/child permissions                                                 | Every deep-chain lookup is single-target; standard customer lookup is not a chain anchor. [Relationship limitation](https://learn.microsoft.com/en-us/power-pages/security/table-permissions).                  |
+| Web API column permissions do not protect every data surface; enhanced authorization uses a different mechanism | Private HR and finance are separate tables; forms/views are not security boundaries. [Column permissions](https://learn.microsoft.com/en-us/power-pages/security/column-permissions).                           |
+| Multi-level scoped 1:N/N:N permissions have a documented GET query issue; FetchXML is the documented workaround | Preserve the graph and qualify it against the target site/version; never add Global Read as a workaround. [Known issues](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview).             |
 
 Baseline authorization is traditional relationship-based permissions, with no preview Custom Access dependency. There are zero Global roots for business, directory, grant or role-catalogue tables. Power Pages web roles remain distinct from backend Dataverse security roles. [Portal identity and backend connectivity](https://learn.microsoft.com/en-us/power-pages/admin/connectivity).
 
@@ -79,73 +79,73 @@ All custom column names in the inventory are full logical names. Standard curren
 
 The business/reference inventory contains nineteen custom tables plus Account, Contact and Transaction Currency, twenty-two tables total. Custom tables also include the common columns above.
 
-| Table / entity set | Additional columns | Alternate key definitions |
-| --- | --- | --- |
-| `account` / `accounts` | Standard `name`, `accountnumber`, `parentaccountid`; `pqvd_orgkind` Choice!, `pqvd_rootaccountid` L(account) S | `pqvd_ak_account_number`: account number, required for demo records. Root lookup required for descendants; null for Company/Vendor. Company canonical root = its own ID. |
-| `contact` / `contacts` | Standard first/last/full name, email/telephone, `parentcustomerid`; `pqvd_personcode` Text(40)! | `pqvd_ak_contact_personcode`: person code. Customer lookup is optional default/home context, not a membership/security anchor. |
-| `transactioncurrency` / `transactioncurrencies` | Standard ID, name, ISO code, precision, exchange rate | System Money dependency; reuse existing currencies and rates. Direct native observer registration/execution is not assumed. |
-| `pqvd_currencyreference` / `pqvd_currencyreferences` | `pqvd_code` Text(3)!, `pqvd_symbol` Text(10), `pqvd_precision` Integer(0..4), `pqvd_systemcurrencyid` L(transactioncurrency)! | `pqvd_ak_currencyreference_code`: ISO code; `pqvd_ak_currencyreference_currency`: required system-currency lookup. Enforces at most one reference per system currency; a required lookup is N:1, not a native 1:1 relationship. |
-| `pqvd_accessrole` / `pqvd_accessroles` | `pqvd_code` Text(24)!, `pqvd_description` Text(1000), `pqvd_principalcolumn` Text(80)! | `pqvd_ak_accessrole_code`: code. Twelve business role records; not Dataverse/website security-role records. |
-| `pqvd_accesspermission` / `pqvd_accesspermissions` | `pqvd_number` Text(40)!, `pqvd_granteecontactid` L(contact)!, `pqvd_scopeaccountid` L(account)!, `pqvd_roleid` L(pqvd_accessrole)!, `pqvd_scopekind` Choice!, `pqvd_scopekey` Text(40)! S, `pqvd_includedescendants` Boolean!, `pqvd_departmentid` L(pqvd_department), `pqvd_employmentid` L(pqvd_employment), `pqvd_validfrom` Time!, `pqvd_validuntil` Time, `pqvd_accessstate` Choice!, `pqvd_reason` Text(1000); twelve principal columns below, all S | `pqvd_ak_accesspermission_number`: number. `pqvd_ak_accesspermission_scope`: grantee, scope Account, role, scope key. Scope key is ORG-SELF, ORG-TREE, DEPT-<32 hex GUID> or ENG-<32 hex GUID>, never null. |
-| `pqvd_orgcontact` / `pqvd_orgcontacts` | `pqvd_code` Text(40)!, `pqvd_accountid` L(account)!, `pqvd_contactid` L(contact)!, `pqvd_displayname` Text(160)!, `pqvd_workemail` Text(254), `pqvd_workphone` Text(40), `pqvd_membershipstate` Choice! | `pqvd_ak_orgcontact_code`: code. `pqvd_ak_orgcontact_member`: Account + Contact. No salary, personal address or identity-provider fields. |
-| `pqvd_department` / `pqvd_departments` | `pqvd_code` Text(40)!, `pqvd_accountid` L(account)!, `pqvd_managerorgcontactid` L(pqvd_orgcontact), `pqvd_description` Text(1000) | `pqvd_ak_department_code`: Account + code. Manager is a membership in the same Account. |
-| `pqvd_employment` / `pqvd_employments` | `pqvd_number` Text(40)!, `pqvd_orgcontactid` L(pqvd_orgcontact)!, `pqvd_departmentid` L(pqvd_department)!, `pqvd_manageremploymentid` L(pqvd_employment), `pqvd_engagementkind` Choice!, `pqvd_ftefraction` Decimal!, `pqvd_startdate` Date!, `pqvd_enddate` Date, `pqvd_jobtitle` Text(100)!, `pqvd_supplieraccountid` L(account), `pqvd_employmentstate` Choice! | `pqvd_ak_employment_number`: number. Organisation/person derive from membership; no redundant writable Account/Contact lookup. |
-| `pqvd_employmentterms` / `pqvd_employmenttermrecords` | `pqvd_employmentid` L(pqvd_employment)!, `pqvd_annualsalary` Money, `pqvd_dayrate` Money, standard `transactioncurrencyid` L(transactioncurrency)!, `pqvd_weeklyhours` Decimal, `pqvd_noticeperioddays` Integer, `pqvd_contractreference` Text(80)! | `pqvd_ak_employmentterms_employment`: employment. Unique required lookup enforces optional 0:1 dependent, not a native 1:1 relationship. |
-| `pqvd_site` / `pqvd_sites` | `pqvd_code` Text(40)!, `pqvd_accountid` L(account)!, `pqvd_address` Text(500), `pqvd_sitekind` Choice! | `pqvd_ak_site_code`: Account + code. |
-| `pqvd_building` / `pqvd_buildings` | `pqvd_code` Text(40)!, `pqvd_siteid` L(pqvd_site)!, `pqvd_floors` Integer | `pqvd_ak_building_code`: site + code. |
-| `pqvd_room` / `pqvd_rooms` | `pqvd_code` Text(40)!, `pqvd_buildingid` L(pqvd_building)!, `pqvd_floor` Integer, `pqvd_capacity` Integer, `pqvd_roomkind` Choice! | `pqvd_ak_room_code`: building + code. Floor can be negative, capacity cannot. |
-| `pqvd_equipment` / `pqvd_equipments` | `pqvd_assettag` Text(40)!, `pqvd_serialnumber` Text(100), `pqvd_accountid` L(account)!, `pqvd_roomid` L(pqvd_room), `pqvd_equipmentkind` Choice!, `pqvd_manufacturer` Text(100), `pqvd_model` Text(100), `pqvd_condition` Choice!, `pqvd_equipmentstate` Choice!, `pqvd_currentassignmentid` L(pqvd_assignment) S, `pqvd_purchasedate` Date, `pqvd_warrantyend` Date | `pqvd_ak_equipment_tag`: tag. Serial deliberately not unique. Owning organisation and physical placement are different relationships. |
-| `pqvd_equipmentfinance` / `pqvd_equipmentfinances` | `pqvd_equipmentid` L(pqvd_equipment)!, `pqvd_purchasecost` Money!, `pqvd_replacementvalue` Money, standard `transactioncurrencyid` L(transactioncurrency)!, `pqvd_supplieraccountid` L(account), `pqvd_invoicereference` Text(80), `pqvd_costcentre` Text(40) | `pqvd_ak_equipmentfinance_equipment`: equipment. Costs never enter shared equipment views. |
-| `pqvd_assignment` / `pqvd_assignments` | `pqvd_number` Text(40)!, `pqvd_equipmentid` L(pqvd_equipment)!, `pqvd_employmentid` L(pqvd_employment)!, `pqvd_issuedat` Time, `pqvd_returnedat` Time, `pqvd_issuerorgcontactid` L(pqvd_orgcontact), `pqvd_issuecondition` Choice, `pqvd_returncondition` Choice, `pqvd_assignmentstate` Choice! | `pqvd_ak_assignment_number`: number. Payload-bearing history association; one Issued assignment per asset needs execution-time validation. |
-| `pqvd_servicerequest` / `pqvd_servicerequests` | `pqvd_number` Text(40)!, `pqvd_equipmentid` L(pqvd_equipment)!, `pqvd_assignmentid` L(pqvd_assignment), `pqvd_requesterorgcontactid` L(pqvd_orgcontact)!, `pqvd_requestkind` Choice!, `pqvd_priority` Choice!, `pqvd_description` Multiline(4000)!, `pqvd_reportedat` Time!, `pqvd_workstate` Choice! | `pqvd_ak_servicerequest_number`: number. Assignment optional for stock maintenance, present in the mandatory deep fixture. |
-| `pqvd_workorder` / `pqvd_workorders` | `pqvd_number` Text(40)!, `pqvd_requestid` L(pqvd_servicerequest)!, `pqvd_responsibleorgcontactid` L(pqvd_orgcontact), `pqvd_duedate` Date, `pqvd_workstate` Choice! | `pqvd_ak_workorder_number`: number. |
-| `pqvd_worktask` / `pqvd_worktasks` | `pqvd_workorderid` L(pqvd_workorder)!, `pqvd_sequence` Integer!, `pqvd_assigneeorgcontactid` L(pqvd_orgcontact), `pqvd_estimatedminutes` Integer, `pqvd_actualminutes` Integer, `pqvd_workstate` Choice! | `pqvd_ak_worktask_sequence`: order + sequence. |
-| `pqvd_checklistitem` / `pqvd_checklistitems` | `pqvd_taskid` L(pqvd_worktask)!, `pqvd_sequence` Integer!, `pqvd_instruction` Text(1000)!, `pqvd_checkresult` Choice! | `pqvd_ak_checklistitem_sequence`: task + sequence. |
-| `pqvd_inspection` / `pqvd_inspections` | `pqvd_checklistitemid` L(pqvd_checklistitem)!, `pqvd_attempt` Integer!, `pqvd_inspectororgcontactid` L(pqvd_orgcontact)!, `pqvd_inspectedat` Time!, `pqvd_checkresult` Choice!, `pqvd_measuredvalue` Decimal(4), `pqvd_measurementunit` Text(24) | `pqvd_ak_inspection_attempt`: checklist item + attempt. Supports repeated verification attempts. |
-| `pqvd_finding` / `pqvd_findings` | `pqvd_inspectionid` L(pqvd_inspection)!, `pqvd_sequence` Integer!, `pqvd_severity` Choice!, `pqvd_description` Multiline(4000)!, `pqvd_workstate` Choice! | `pqvd_ak_finding_sequence`: inspection + sequence. Defects/remedial findings from inspections. |
+| Table / entity set                                    | Additional columns                                                                                                                                                                                                                                                                                                                                                                                                                                         | Alternate key definitions                                                                                                                                                                                                       |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `account` / `accounts`                                | Standard `name`, `accountnumber`, `parentaccountid`; `pqvd_orgkind` Choice!, `pqvd_rootaccountid` L(account) S                                                                                                                                                                                                                                                                                                                                             | `pqvd_ak_account_number`: account number, required for demo records. Root lookup required for descendants; null for Company/Vendor. Company canonical root = its own ID.                                                        |
+| `contact` / `contacts`                                | Standard first/last/full name, email/telephone, `parentcustomerid`; `pqvd_personcode` Text(40)!                                                                                                                                                                                                                                                                                                                                                            | `pqvd_ak_contact_personcode`: person code. Customer lookup is optional default/home context, not a membership/security anchor.                                                                                                  |
+| `transactioncurrency` / `transactioncurrencies`       | Standard ID, name, ISO code, precision, exchange rate                                                                                                                                                                                                                                                                                                                                                                                                      | System Money dependency; reuse existing currencies and rates. Direct native observer registration/execution is not assumed.                                                                                                     |
+| `pqvd_currencyreference` / `pqvd_currencyreferences`  | `pqvd_code` Text(3)!, `pqvd_symbol` Text(10), `pqvd_precision` Integer(0..4), `pqvd_systemcurrencyid` L(transactioncurrency)!                                                                                                                                                                                                                                                                                                                              | `pqvd_ak_currencyreference_code`: ISO code; `pqvd_ak_currencyreference_currency`: required system-currency lookup. Enforces at most one reference per system currency; a required lookup is N:1, not a native 1:1 relationship. |
+| `pqvd_accessrole` / `pqvd_accessroles`                | `pqvd_code` Text(24)!, `pqvd_description` Text(1000), `pqvd_principalcolumn` Text(80)!                                                                                                                                                                                                                                                                                                                                                                     | `pqvd_ak_accessrole_code`: code. Twelve business role records; not Dataverse/website security-role records.                                                                                                                     |
+| `pqvd_accesspermission` / `pqvd_accesspermissions`    | `pqvd_number` Text(40)!, `pqvd_granteecontactid` L(contact)!, `pqvd_scopeaccountid` L(account)!, `pqvd_roleid` L(pqvd_accessrole)!, `pqvd_scopekind` Choice!, `pqvd_scopekey` Text(40)! S, `pqvd_includedescendants` Boolean!, `pqvd_departmentid` L(pqvd_department), `pqvd_employmentid` L(pqvd_employment), `pqvd_validfrom` Time!, `pqvd_validuntil` Time, `pqvd_accessstate` Choice!, `pqvd_reason` Text(1000); twelve principal columns below, all S | `pqvd_ak_accesspermission_number`: number. `pqvd_ak_accesspermission_scope`: grantee, scope Account, role, scope key. Scope key is ORG-SELF, ORG-TREE, DEPT-<32 hex GUID> or ENG-<32 hex GUID>, never null.                     |
+| `pqvd_orgcontact` / `pqvd_orgcontacts`                | `pqvd_code` Text(40)!, `pqvd_accountid` L(account)!, `pqvd_contactid` L(contact)!, `pqvd_displayname` Text(160)!, `pqvd_workemail` Text(254), `pqvd_workphone` Text(40), `pqvd_membershipstate` Choice!                                                                                                                                                                                                                                                    | `pqvd_ak_orgcontact_code`: code. `pqvd_ak_orgcontact_member`: Account + Contact. No salary, personal address or identity-provider fields.                                                                                       |
+| `pqvd_department` / `pqvd_departments`                | `pqvd_code` Text(40)!, `pqvd_accountid` L(account)!, `pqvd_managerorgcontactid` L(pqvd_orgcontact), `pqvd_description` Text(1000)                                                                                                                                                                                                                                                                                                                          | `pqvd_ak_department_code`: Account + code. Manager is a membership in the same Account.                                                                                                                                         |
+| `pqvd_employment` / `pqvd_employments`                | `pqvd_number` Text(40)!, `pqvd_orgcontactid` L(pqvd_orgcontact)!, `pqvd_departmentid` L(pqvd_department)!, `pqvd_manageremploymentid` L(pqvd_employment), `pqvd_engagementkind` Choice!, `pqvd_ftefraction` Decimal!, `pqvd_startdate` Date!, `pqvd_enddate` Date, `pqvd_jobtitle` Text(100)!, `pqvd_supplieraccountid` L(account), `pqvd_employmentstate` Choice!                                                                                         | `pqvd_ak_employment_number`: number. Organisation/person derive from membership; no redundant writable Account/Contact lookup.                                                                                                  |
+| `pqvd_employmentterms` / `pqvd_employmenttermrecords` | `pqvd_employmentid` L(pqvd_employment)!, `pqvd_annualsalary` Money, `pqvd_dayrate` Money, standard `transactioncurrencyid` L(transactioncurrency)!, `pqvd_weeklyhours` Decimal, `pqvd_noticeperioddays` Integer, `pqvd_contractreference` Text(80)!                                                                                                                                                                                                        | `pqvd_ak_employmentterms_employment`: employment. Unique required lookup enforces optional 0:1 dependent, not a native 1:1 relationship.                                                                                        |
+| `pqvd_site` / `pqvd_sites`                            | `pqvd_code` Text(40)!, `pqvd_accountid` L(account)!, `pqvd_address` Text(500), `pqvd_sitekind` Choice!                                                                                                                                                                                                                                                                                                                                                     | `pqvd_ak_site_code`: Account + code.                                                                                                                                                                                            |
+| `pqvd_building` / `pqvd_buildings`                    | `pqvd_code` Text(40)!, `pqvd_siteid` L(pqvd_site)!, `pqvd_floors` Integer                                                                                                                                                                                                                                                                                                                                                                                  | `pqvd_ak_building_code`: site + code.                                                                                                                                                                                           |
+| `pqvd_room` / `pqvd_rooms`                            | `pqvd_code` Text(40)!, `pqvd_buildingid` L(pqvd_building)!, `pqvd_floor` Integer, `pqvd_capacity` Integer, `pqvd_roomkind` Choice!                                                                                                                                                                                                                                                                                                                         | `pqvd_ak_room_code`: building + code. Floor can be negative, capacity cannot.                                                                                                                                                   |
+| `pqvd_equipment` / `pqvd_equipments`                  | `pqvd_assettag` Text(40)!, `pqvd_serialnumber` Text(100), `pqvd_accountid` L(account)!, `pqvd_roomid` L(pqvd_room), `pqvd_equipmentkind` Choice!, `pqvd_manufacturer` Text(100), `pqvd_model` Text(100), `pqvd_condition` Choice!, `pqvd_equipmentstate` Choice!, `pqvd_currentassignmentid` L(pqvd_assignment) S, `pqvd_purchasedate` Date, `pqvd_warrantyend` Date                                                                                       | `pqvd_ak_equipment_tag`: tag. Serial deliberately not unique. Owning organisation and physical placement are different relationships.                                                                                           |
+| `pqvd_equipmentfinance` / `pqvd_equipmentfinances`    | `pqvd_equipmentid` L(pqvd_equipment)!, `pqvd_purchasecost` Money!, `pqvd_replacementvalue` Money, standard `transactioncurrencyid` L(transactioncurrency)!, `pqvd_supplieraccountid` L(account), `pqvd_invoicereference` Text(80), `pqvd_costcentre` Text(40)                                                                                                                                                                                              | `pqvd_ak_equipmentfinance_equipment`: equipment. Costs never enter shared equipment views.                                                                                                                                      |
+| `pqvd_assignment` / `pqvd_assignments`                | `pqvd_number` Text(40)!, `pqvd_equipmentid` L(pqvd_equipment)!, `pqvd_employmentid` L(pqvd_employment)!, `pqvd_issuedat` Time, `pqvd_returnedat` Time, `pqvd_issuerorgcontactid` L(pqvd_orgcontact), `pqvd_issuecondition` Choice, `pqvd_returncondition` Choice, `pqvd_assignmentstate` Choice!                                                                                                                                                           | `pqvd_ak_assignment_number`: number. Payload-bearing history association; one Issued assignment per asset needs execution-time validation.                                                                                      |
+| `pqvd_servicerequest` / `pqvd_servicerequests`        | `pqvd_number` Text(40)!, `pqvd_equipmentid` L(pqvd_equipment)!, `pqvd_assignmentid` L(pqvd_assignment), `pqvd_requesterorgcontactid` L(pqvd_orgcontact)!, `pqvd_requestkind` Choice!, `pqvd_priority` Choice!, `pqvd_description` Multiline(4000)!, `pqvd_reportedat` Time!, `pqvd_workstate` Choice!                                                                                                                                                      | `pqvd_ak_servicerequest_number`: number. Assignment optional for stock maintenance, present in the mandatory deep fixture.                                                                                                      |
+| `pqvd_workorder` / `pqvd_workorders`                  | `pqvd_number` Text(40)!, `pqvd_requestid` L(pqvd_servicerequest)!, `pqvd_responsibleorgcontactid` L(pqvd_orgcontact), `pqvd_duedate` Date, `pqvd_workstate` Choice!                                                                                                                                                                                                                                                                                        | `pqvd_ak_workorder_number`: number.                                                                                                                                                                                             |
+| `pqvd_worktask` / `pqvd_worktasks`                    | `pqvd_workorderid` L(pqvd_workorder)!, `pqvd_sequence` Integer!, `pqvd_assigneeorgcontactid` L(pqvd_orgcontact), `pqvd_estimatedminutes` Integer, `pqvd_actualminutes` Integer, `pqvd_workstate` Choice!                                                                                                                                                                                                                                                   | `pqvd_ak_worktask_sequence`: order + sequence.                                                                                                                                                                                  |
+| `pqvd_checklistitem` / `pqvd_checklistitems`          | `pqvd_taskid` L(pqvd_worktask)!, `pqvd_sequence` Integer!, `pqvd_instruction` Text(1000)!, `pqvd_checkresult` Choice!                                                                                                                                                                                                                                                                                                                                      | `pqvd_ak_checklistitem_sequence`: task + sequence.                                                                                                                                                                              |
+| `pqvd_inspection` / `pqvd_inspections`                | `pqvd_checklistitemid` L(pqvd_checklistitem)!, `pqvd_attempt` Integer!, `pqvd_inspectororgcontactid` L(pqvd_orgcontact)!, `pqvd_inspectedat` Time!, `pqvd_checkresult` Choice!, `pqvd_measuredvalue` Decimal(4), `pqvd_measurementunit` Text(24)                                                                                                                                                                                                           | `pqvd_ak_inspection_attempt`: checklist item + attempt. Supports repeated verification attempts.                                                                                                                                |
+| `pqvd_finding` / `pqvd_findings`                      | `pqvd_inspectionid` L(pqvd_inspection)!, `pqvd_sequence` Integer!, `pqvd_severity` Choice!, `pqvd_description` Multiline(4000)!, `pqvd_workstate` Choice!                                                                                                                                                                                                                                                                                                  | `pqvd_ak_finding_sequence`: inspection + sequence. Defects/remedial findings from inspections.                                                                                                                                  |
 
 ## Choices and twelve roles
 
 Create these seventeen global choices. Ordered labels in each row map to values 183270000, 183270001, etc.; values may repeat across different choice definitions. Preserve mappings in the registry.
 
-| Choice | Ordered labels |
-| --- | --- |
-| `pqvd_orgkind` | Company, Subsidiary, Region, Branch, Operating unit, Vendor |
-| `pqvd_scopekind` | Organisation, Department, Engagement |
-| `pqvd_accessstate` | Pending, Active, Suspended, Expired, Revoked |
-| `pqvd_membershipstate` | Pending, Active, Suspended, Ended |
-| `pqvd_engagementkind` | Permanent employee, Fixed-term employee, External contractor |
-| `pqvd_employmentstate` | Draft, Active, Suspended, Ended |
-| `pqvd_sitekind` | Office, Workshop, Warehouse |
-| `pqvd_roomkind` | Office, Meeting room, Workshop, Storage |
-| `pqvd_equipmentkind` | Laptop, Phone, Network, Production equipment, Vehicle, Safety equipment |
-| `pqvd_condition` | New, Good, Worn, Damaged |
-| `pqvd_equipmentstate` | Stock, Assigned, In repair, Retired |
-| `pqvd_assignmentstate` | Planned, Issued, Returned, Cancelled |
-| `pqvd_requestkind` | Fault, Inspection, Replacement |
-| `pqvd_priority` | Low, Normal, High, Critical |
-| `pqvd_workstate` | New, Planned, In progress, Blocked, Completed, Cancelled |
-| `pqvd_checkresult` | Not run, Pass, Fail, Not applicable |
-| `pqvd_severity` | Advisory, Minor, Major, Critical |
+| Choice                 | Ordered labels                                                          |
+| ---------------------- | ----------------------------------------------------------------------- |
+| `pqvd_orgkind`         | Company, Subsidiary, Region, Branch, Operating unit, Vendor             |
+| `pqvd_scopekind`       | Organisation, Department, Engagement                                    |
+| `pqvd_accessstate`     | Pending, Active, Suspended, Expired, Revoked                            |
+| `pqvd_membershipstate` | Pending, Active, Suspended, Ended                                       |
+| `pqvd_engagementkind`  | Permanent employee, Fixed-term employee, External contractor            |
+| `pqvd_employmentstate` | Draft, Active, Suspended, Ended                                         |
+| `pqvd_sitekind`        | Office, Workshop, Warehouse                                             |
+| `pqvd_roomkind`        | Office, Meeting room, Workshop, Storage                                 |
+| `pqvd_equipmentkind`   | Laptop, Phone, Network, Production equipment, Vehicle, Safety equipment |
+| `pqvd_condition`       | New, Good, Worn, Damaged                                                |
+| `pqvd_equipmentstate`  | Stock, Assigned, In repair, Retired                                     |
+| `pqvd_assignmentstate` | Planned, Issued, Returned, Cancelled                                    |
+| `pqvd_requestkind`     | Fault, Inspection, Replacement                                          |
+| `pqvd_priority`        | Low, Normal, High, Critical                                             |
+| `pqvd_workstate`       | New, Planned, In progress, Blocked, Completed, Cancelled                |
+| `pqvd_checkresult`     | Not run, Pass, Fail, Not applicable                                     |
+| `pqvd_severity`        | Advisory, Minor, Major, Critical                                        |
 
 Choice columns with the same logical name bind to the corresponding global choice. The exceptions are `pqvd_issuecondition` and `pqvd_returncondition`, which both bind to `pqvd_condition`. Standard state/status choices retain their platform definitions; do not replace them with custom work/access states. Set `pqvd_includedescendants` default false, membership/access state default Pending, employment state Draft, assignment state Planned, equipment state Stock, work state New and check result Not run. Leave role principals null by default. Other choices must be supplied explicitly rather than inheriting a meaningful authorization default.
 
 Seed these role records. Every principal is a nullable Contact lookup on Access permission, with relationship `pqvd_contact_access_<lowercase role code>`.
 
-| Code | Name | Principal column | Typical scope |
-| --- | --- | --- | --- |
-| `COMPANYMANAGER` | Company manager | `pqvd_companymanagerprincipalid` | Company/subsidiary subtree |
-| `BRANCHMANAGER` | Branch manager | `pqvd_branchmanagerprincipalid` | Branch subtree |
-| `TEAMLEADER` | Team leader | `pqvd_teamleaderprincipalid` | Department |
-| `EMPLOYEE` | Employee | `pqvd_employeeprincipalid` | Selected permanent/fixed-term engagement |
-| `CONTRACTOR` | External contractor | `pqvd_contractorprincipalid` | Selected external-contract engagement |
-| `HR` | HR officer | `pqvd_hrprincipalid` | Organisation/subtree |
-| `IT` | IT asset administrator | `pqvd_itprincipalid` | Organisation/subtree |
-| `FACILITIES` | Facilities coordinator | `pqvd_facilitiesprincipalid` | Branch/subtree |
-| `PROCUREMENT` | Procurement officer | `pqvd_procurementprincipalid` | Organisation/subtree |
-| `AUDITOR` | Operations auditor | `pqvd_auditorprincipalid` | Organisation/subtree |
-| `ORGADMIN` | Organisation administrator | `pqvd_orgadminprincipalid` | Organisation/subtree |
-| `CTO` | CTO | `pqvd_ctoprincipalid` | Company/subsidiary subtree |
+| Code             | Name                       | Principal column                 | Typical scope                            |
+| ---------------- | -------------------------- | -------------------------------- | ---------------------------------------- |
+| `COMPANYMANAGER` | Company manager            | `pqvd_companymanagerprincipalid` | Company/subsidiary subtree               |
+| `BRANCHMANAGER`  | Branch manager             | `pqvd_branchmanagerprincipalid`  | Branch subtree                           |
+| `TEAMLEADER`     | Team leader                | `pqvd_teamleaderprincipalid`     | Department                               |
+| `EMPLOYEE`       | Employee                   | `pqvd_employeeprincipalid`       | Selected permanent/fixed-term engagement |
+| `CONTRACTOR`     | External contractor        | `pqvd_contractorprincipalid`     | Selected external-contract engagement    |
+| `HR`             | HR officer                 | `pqvd_hrprincipalid`             | Organisation/subtree                     |
+| `IT`             | IT asset administrator     | `pqvd_itprincipalid`             | Organisation/subtree                     |
+| `FACILITIES`     | Facilities coordinator     | `pqvd_facilitiesprincipalid`     | Branch/subtree                           |
+| `PROCUREMENT`    | Procurement officer        | `pqvd_procurementprincipalid`    | Organisation/subtree                     |
+| `AUDITOR`        | Operations auditor         | `pqvd_auditorprincipalid`        | Organisation/subtree                     |
+| `ORGADMIN`       | Organisation administrator | `pqvd_orgadminprincipalid`       | Organisation/subtree                     |
+| `CTO`            | CTO                        | `pqvd_ctoprincipalid`            | Company/subsidiary subtree               |
 
 OrgAdmin administers operational structure/directory, not the environment, website or unrestricted grant provisioning. CTO has technical operational scope, not private payroll.
 
@@ -157,14 +157,14 @@ HR root permission: Contact scope via `pqvd_contact_access_hr`, HR web role. IT 
 
 Create these six native N:N relationships. Intersect entity name equals relationship schema name. Intersect columns are the participants' primary IDs. There are no payload columns or intersect-table forms.
 
-| Relationship | Participants | Intersect columns |
-| --- | --- | --- |
-| `pqvd_access_accounts` | `pqvd_accesspermission` ↔ `account` | `pqvd_accesspermissionid`, `accountid` |
-| `pqvd_access_orgcontacts` | `pqvd_accesspermission` ↔ `pqvd_orgcontact` | `pqvd_accesspermissionid`, `pqvd_orgcontactid` |
-| `pqvd_access_departments` | `pqvd_accesspermission` ↔ `pqvd_department` | `pqvd_accesspermissionid`, `pqvd_departmentid` |
-| `pqvd_access_employments` | `pqvd_accesspermission` ↔ `pqvd_employment` | `pqvd_accesspermissionid`, `pqvd_employmentid` |
+| Relationship                     | Participants                                        | Intersect columns                                     |
+| -------------------------------- | --------------------------------------------------- | ----------------------------------------------------- |
+| `pqvd_access_accounts`           | `pqvd_accesspermission` ↔ `account`                 | `pqvd_accesspermissionid`, `accountid`                |
+| `pqvd_access_orgcontacts`        | `pqvd_accesspermission` ↔ `pqvd_orgcontact`         | `pqvd_accesspermissionid`, `pqvd_orgcontactid`        |
+| `pqvd_access_departments`        | `pqvd_accesspermission` ↔ `pqvd_department`         | `pqvd_accesspermissionid`, `pqvd_departmentid`        |
+| `pqvd_access_employments`        | `pqvd_accesspermission` ↔ `pqvd_employment`         | `pqvd_accesspermissionid`, `pqvd_employmentid`        |
 | `pqvd_access_currencyreferences` | `pqvd_accesspermission` -> `pqvd_currencyreference` | `pqvd_accesspermissionid`, `pqvd_currencyreferenceid` | Observable scoped ISO-code references. |
-| `pqvd_access_equipments` | `pqvd_accesspermission` ↔ `pqvd_equipment` | `pqvd_accesspermissionid`, `pqvd_equipmentid` |
+| `pqvd_access_equipments`         | `pqvd_accesspermission` ↔ `pqvd_equipment`          | `pqvd_accesspermissionid`, `pqvd_equipmentid`         |
 
 Native intersections carry associations; Access rows carry dates/roles/reasons. [Dataverse N:N modelling](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/create-edit-nn-relationships-portal).
 
@@ -182,46 +182,46 @@ Consumers also associate each Contact with website web roles matching effective 
 
 The referenced table is on the left; the referencing table holds the lookup. The lookup name is the proposed single-valued navigation name. Preserve actual exported names and ID columns in the relationship inventory. Never infer field/navigation names from labels.
 
-| Relationship schema | Referenced table | Referencing table | Lookup |
-| --- | --- | --- | --- |
-| `pqvd_account_root` | `account` | `account` | `pqvd_rootaccountid` |
-| `pqvd_contact_access_grantee` | `contact` | `pqvd_accesspermission` | `pqvd_granteecontactid` |
-| `pqvd_account_access_scope` | `account` | `pqvd_accesspermission` | `pqvd_scopeaccountid` |
-| `pqvd_accessrole_access` | `pqvd_accessrole` | `pqvd_accesspermission` | `pqvd_roleid` |
-| `pqvd_department_access` | `pqvd_department` | `pqvd_accesspermission` | `pqvd_departmentid` |
-| `pqvd_employment_access` | `pqvd_employment` | `pqvd_accesspermission` | `pqvd_employmentid` |
-| `pqvd_account_orgcontacts` | `account` | `pqvd_orgcontact` | `pqvd_accountid` |
-| `pqvd_contact_orgcontacts` | `contact` | `pqvd_orgcontact` | `pqvd_contactid` |
-| `pqvd_account_departments` | `account` | `pqvd_department` | `pqvd_accountid` |
-| `pqvd_orgcontact_manageddepartments` | `pqvd_orgcontact` | `pqvd_department` | `pqvd_managerorgcontactid` |
-| `pqvd_orgcontact_employments` | `pqvd_orgcontact` | `pqvd_employment` | `pqvd_orgcontactid` |
-| `pqvd_department_employments` | `pqvd_department` | `pqvd_employment` | `pqvd_departmentid` |
-| `pqvd_employment_reports` | `pqvd_employment` | `pqvd_employment` | `pqvd_manageremploymentid` |
-| `pqvd_account_suppliedemployments` | `account` | `pqvd_employment` | `pqvd_supplieraccountid` |
-| `pqvd_employment_terms` | `pqvd_employment` | `pqvd_employmentterms` | `pqvd_employmentid` |
-| `pqvd_account_sites` | `account` | `pqvd_site` | `pqvd_accountid` |
-| `pqvd_site_buildings` | `pqvd_site` | `pqvd_building` | `pqvd_siteid` |
-| `pqvd_building_rooms` | `pqvd_building` | `pqvd_room` | `pqvd_buildingid` |
-| `pqvd_transactioncurrency_references` | `transactioncurrency` | `pqvd_currencyreference` | `pqvd_systemcurrencyid` |
-| `pqvd_account_equipments` | `account` | `pqvd_equipment` | `pqvd_accountid` |
-| `pqvd_room_equipments` | `pqvd_room` | `pqvd_equipment` | `pqvd_roomid` |
-| `pqvd_assignment_currentequipment` | `pqvd_assignment` | `pqvd_equipment` | `pqvd_currentassignmentid` |
-| `pqvd_equipment_finance` | `pqvd_equipment` | `pqvd_equipmentfinance` | `pqvd_equipmentid` |
-| `pqvd_account_equipmentvendors` | `account` | `pqvd_equipmentfinance` | `pqvd_supplieraccountid` |
-| `pqvd_equipment_assignments` | `pqvd_equipment` | `pqvd_assignment` | `pqvd_equipmentid` |
-| `pqvd_employment_assignments` | `pqvd_employment` | `pqvd_assignment` | `pqvd_employmentid` |
-| `pqvd_orgcontact_issuedassignments` | `pqvd_orgcontact` | `pqvd_assignment` | `pqvd_issuerorgcontactid` |
-| `pqvd_assignment_requests` | `pqvd_assignment` | `pqvd_servicerequest` | `pqvd_assignmentid` |
-| `pqvd_equipment_requests` | `pqvd_equipment` | `pqvd_servicerequest` | `pqvd_equipmentid` |
-| `pqvd_orgcontact_requests` | `pqvd_orgcontact` | `pqvd_servicerequest` | `pqvd_requesterorgcontactid` |
-| `pqvd_request_workorders` | `pqvd_servicerequest` | `pqvd_workorder` | `pqvd_requestid` |
-| `pqvd_orgcontact_responsibleorders` | `pqvd_orgcontact` | `pqvd_workorder` | `pqvd_responsibleorgcontactid` |
-| `pqvd_workorder_tasks` | `pqvd_workorder` | `pqvd_worktask` | `pqvd_workorderid` |
-| `pqvd_orgcontact_assignedtasks` | `pqvd_orgcontact` | `pqvd_worktask` | `pqvd_assigneeorgcontactid` |
-| `pqvd_task_checklistitems` | `pqvd_worktask` | `pqvd_checklistitem` | `pqvd_taskid` |
-| `pqvd_checklistitem_inspections` | `pqvd_checklistitem` | `pqvd_inspection` | `pqvd_checklistitemid` |
-| `pqvd_orgcontact_inspections` | `pqvd_orgcontact` | `pqvd_inspection` | `pqvd_inspectororgcontactid` |
-| `pqvd_inspection_findings` | `pqvd_inspection` | `pqvd_finding` | `pqvd_inspectionid` |
+| Relationship schema                   | Referenced table      | Referencing table        | Lookup                         |
+| ------------------------------------- | --------------------- | ------------------------ | ------------------------------ |
+| `pqvd_account_root`                   | `account`             | `account`                | `pqvd_rootaccountid`           |
+| `pqvd_contact_access_grantee`         | `contact`             | `pqvd_accesspermission`  | `pqvd_granteecontactid`        |
+| `pqvd_account_access_scope`           | `account`             | `pqvd_accesspermission`  | `pqvd_scopeaccountid`          |
+| `pqvd_accessrole_access`              | `pqvd_accessrole`     | `pqvd_accesspermission`  | `pqvd_roleid`                  |
+| `pqvd_department_access`              | `pqvd_department`     | `pqvd_accesspermission`  | `pqvd_departmentid`            |
+| `pqvd_employment_access`              | `pqvd_employment`     | `pqvd_accesspermission`  | `pqvd_employmentid`            |
+| `pqvd_account_orgcontacts`            | `account`             | `pqvd_orgcontact`        | `pqvd_accountid`               |
+| `pqvd_contact_orgcontacts`            | `contact`             | `pqvd_orgcontact`        | `pqvd_contactid`               |
+| `pqvd_account_departments`            | `account`             | `pqvd_department`        | `pqvd_accountid`               |
+| `pqvd_orgcontact_manageddepartments`  | `pqvd_orgcontact`     | `pqvd_department`        | `pqvd_managerorgcontactid`     |
+| `pqvd_orgcontact_employments`         | `pqvd_orgcontact`     | `pqvd_employment`        | `pqvd_orgcontactid`            |
+| `pqvd_department_employments`         | `pqvd_department`     | `pqvd_employment`        | `pqvd_departmentid`            |
+| `pqvd_employment_reports`             | `pqvd_employment`     | `pqvd_employment`        | `pqvd_manageremploymentid`     |
+| `pqvd_account_suppliedemployments`    | `account`             | `pqvd_employment`        | `pqvd_supplieraccountid`       |
+| `pqvd_employment_terms`               | `pqvd_employment`     | `pqvd_employmentterms`   | `pqvd_employmentid`            |
+| `pqvd_account_sites`                  | `account`             | `pqvd_site`              | `pqvd_accountid`               |
+| `pqvd_site_buildings`                 | `pqvd_site`           | `pqvd_building`          | `pqvd_siteid`                  |
+| `pqvd_building_rooms`                 | `pqvd_building`       | `pqvd_room`              | `pqvd_buildingid`              |
+| `pqvd_transactioncurrency_references` | `transactioncurrency` | `pqvd_currencyreference` | `pqvd_systemcurrencyid`        |
+| `pqvd_account_equipments`             | `account`             | `pqvd_equipment`         | `pqvd_accountid`               |
+| `pqvd_room_equipments`                | `pqvd_room`           | `pqvd_equipment`         | `pqvd_roomid`                  |
+| `pqvd_assignment_currentequipment`    | `pqvd_assignment`     | `pqvd_equipment`         | `pqvd_currentassignmentid`     |
+| `pqvd_equipment_finance`              | `pqvd_equipment`      | `pqvd_equipmentfinance`  | `pqvd_equipmentid`             |
+| `pqvd_account_equipmentvendors`       | `account`             | `pqvd_equipmentfinance`  | `pqvd_supplieraccountid`       |
+| `pqvd_equipment_assignments`          | `pqvd_equipment`      | `pqvd_assignment`        | `pqvd_equipmentid`             |
+| `pqvd_employment_assignments`         | `pqvd_employment`     | `pqvd_assignment`        | `pqvd_employmentid`            |
+| `pqvd_orgcontact_issuedassignments`   | `pqvd_orgcontact`     | `pqvd_assignment`        | `pqvd_issuerorgcontactid`      |
+| `pqvd_assignment_requests`            | `pqvd_assignment`     | `pqvd_servicerequest`    | `pqvd_assignmentid`            |
+| `pqvd_equipment_requests`             | `pqvd_equipment`      | `pqvd_servicerequest`    | `pqvd_equipmentid`             |
+| `pqvd_orgcontact_requests`            | `pqvd_orgcontact`     | `pqvd_servicerequest`    | `pqvd_requesterorgcontactid`   |
+| `pqvd_request_workorders`             | `pqvd_servicerequest` | `pqvd_workorder`         | `pqvd_requestid`               |
+| `pqvd_orgcontact_responsibleorders`   | `pqvd_orgcontact`     | `pqvd_workorder`         | `pqvd_responsibleorgcontactid` |
+| `pqvd_workorder_tasks`                | `pqvd_workorder`      | `pqvd_worktask`          | `pqvd_workorderid`             |
+| `pqvd_orgcontact_assignedtasks`       | `pqvd_orgcontact`     | `pqvd_worktask`          | `pqvd_assigneeorgcontactid`    |
+| `pqvd_task_checklistitems`            | `pqvd_worktask`       | `pqvd_checklistitem`     | `pqvd_taskid`                  |
+| `pqvd_checklistitem_inspections`      | `pqvd_checklistitem`  | `pqvd_inspection`        | `pqvd_checklistitemid`         |
+| `pqvd_orgcontact_inspections`         | `pqvd_orgcontact`     | `pqvd_inspection`        | `pqvd_inspectororgcontactid`   |
+| `pqvd_inspection_findings`            | `pqvd_inspection`     | `pqvd_finding`           | `pqvd_inspectionid`            |
 
 Additionally create twelve Contact principal relationships from the role catalogue. Reuse standard `account_parent_account` for organisation parents; make it the intended hierarchical Account relationship where supported. Only one self-referential relationship per table is designated hierarchical. Root-account and employment-manager relationships are not hierarchical. [Hierarchy limitation](https://learn.microsoft.com/en-us/power-apps/maker/data-platform/define-query-hierarchical-data).
 
@@ -237,19 +237,19 @@ Retain all standard `transactioncurrencyid` Money lookups in Employment Terms an
 
 The signed-in Contact is an anchor, not an extra counted permission level. Mandatory IT workforce path:
 
-| Level | Table | Scope and relationship | Parent |
-| --- | --- | --- | --- |
-| 1 | `pqvd_accesspermission` | Contact, `pqvd_contact_access_it` | None |
-| 2 | `account` | Parent, `pqvd_access_accounts` N:N | IT level 1 |
-| 3 | `pqvd_orgcontact` | Parent, `pqvd_account_orgcontacts` | IT level 2 |
-| 4 | `pqvd_employment` | Parent, `pqvd_orgcontact_employments` | IT level 3 |
-| 5 | `pqvd_assignment` | Parent, `pqvd_employment_assignments` | IT level 4 |
-| 6 | `pqvd_servicerequest` | Parent, `pqvd_assignment_requests` | IT level 5 |
-| 7 | `pqvd_workorder` | Parent, `pqvd_request_workorders` | IT level 6 |
-| 8 | `pqvd_worktask` | Parent, `pqvd_workorder_tasks` | IT level 7 |
-| 9 | `pqvd_checklistitem` | Parent, `pqvd_task_checklistitems` | IT level 8 |
-| 10 | `pqvd_inspection` | Parent, `pqvd_checklistitem_inspections` | IT level 9 |
-| 11 | `pqvd_finding` | Parent, `pqvd_inspection_findings` | IT level 10 |
+| Level | Table                   | Scope and relationship                   | Parent      |
+| ----- | ----------------------- | ---------------------------------------- | ----------- |
+| 1     | `pqvd_accesspermission` | Contact, `pqvd_contact_access_it`        | None        |
+| 2     | `account`               | Parent, `pqvd_access_accounts` N:N       | IT level 1  |
+| 3     | `pqvd_orgcontact`       | Parent, `pqvd_account_orgcontacts`       | IT level 2  |
+| 4     | `pqvd_employment`       | Parent, `pqvd_orgcontact_employments`    | IT level 3  |
+| 5     | `pqvd_assignment`       | Parent, `pqvd_employment_assignments`    | IT level 4  |
+| 6     | `pqvd_servicerequest`   | Parent, `pqvd_assignment_requests`       | IT level 5  |
+| 7     | `pqvd_workorder`        | Parent, `pqvd_request_workorders`        | IT level 6  |
+| 8     | `pqvd_worktask`         | Parent, `pqvd_workorder_tasks`           | IT level 7  |
+| 9     | `pqvd_checklistitem`    | Parent, `pqvd_task_checklistitems`       | IT level 8  |
+| 10    | `pqvd_inspection`       | Parent, `pqvd_checklistitem_inspections` | IT level 9  |
+| 11    | `pqvd_finding`          | Parent, `pqvd_inspection_findings`       | IT level 10 |
 
 Eleven nodes and ten Parent edges exceed eight under either counting convention. Retain this path and populated fixtures even when IT has a shorter equipment route. Inspections record repeated verification; findings record real defects, not meaningless depth padding.
 
@@ -263,20 +263,20 @@ Secondary routes, only for roles permitted below: Account -> Equipment -> Reques
 
 R=Read, C=Create, U=Write/Update. No general Delete. Access roots are Read-only. Association rights are explicit, not blanket. Row privileges are additive; absence of U in one role is not a deny against another. This matrix supplies no field-level approval rules.
 
-| Role | Organisation / departments | Directory memberships | Employment | Private terms | Equipment / assignment | Finance | Locations | Service chain |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| COMPANYMANAGER | RCU subtree | RCU subtree | R | — | RCU / RCU | R | RCU | RCU |
-| BRANCHMANAGER | RU anchor, RCU units/departments | RCU subtree | R | — | RCU / RCU | R | RCU | RCU |
-| TEAMLEADER | R profile leaf / selected department | R team leaf | R projected team engagements | — | R team / R team | — | — | RCU team work |
-| EMPLOYEE | R own/root profiles | R company directory leaf | R selected own engagement | — | R current / R own history | — | — | R engagement history/current equipment; C request |
-| CONTRACTOR | R own profile | R department directory leaf | R selected own engagement | — | R current / R own history | — | — | R engagement history/current equipment; C request |
-| HR | R | RCU | RCU | RCU | R / R | — | — | — |
-| IT | R | R | R operational | — | RCU / RCU | — | R | RCU |
-| FACILITIES | R | R | — | — | R / — | — | RCU | RCU equipment route |
-| PROCUREMENT | R profile leaf | — | — | — | RC / — | RCU | — | — |
-| AUDITOR | R | R | R operational | — | R / R | R | R | R |
-| ORGADMIN | RCU | RCU | R operational | — | R / R | — | RCU | R |
-| CTO | R | R | R operational | — | RCU / RCU | R | R | RCU |
+| Role           | Organisation / departments           | Directory memberships       | Employment                   | Private terms | Equipment / assignment    | Finance | Locations | Service chain                                     |
+| -------------- | ------------------------------------ | --------------------------- | ---------------------------- | ------------- | ------------------------- | ------- | --------- | ------------------------------------------------- |
+| COMPANYMANAGER | RCU subtree                          | RCU subtree                 | R                            | —             | RCU / RCU                 | R       | RCU       | RCU                                               |
+| BRANCHMANAGER  | RU anchor, RCU units/departments     | RCU subtree                 | R                            | —             | RCU / RCU                 | R       | RCU       | RCU                                               |
+| TEAMLEADER     | R profile leaf / selected department | R team leaf                 | R projected team engagements | —             | R team / R team           | —       | —         | RCU team work                                     |
+| EMPLOYEE       | R own/root profiles                  | R company directory leaf    | R selected own engagement    | —             | R current / R own history | —       | —         | R engagement history/current equipment; C request |
+| CONTRACTOR     | R own profile                        | R department directory leaf | R selected own engagement    | —             | R current / R own history | —       | —         | R engagement history/current equipment; C request |
+| HR             | R                                    | RCU                         | RCU                          | RCU           | R / R                     | —       | —         | —                                                 |
+| IT             | R                                    | R                           | R operational                | —             | RCU / RCU                 | —       | R         | RCU                                               |
+| FACILITIES     | R                                    | R                           | —                            | —             | R / —                     | —       | RCU       | RCU equipment route                               |
+| PROCUREMENT    | R profile leaf                       | —                           | —                            | —             | RC / —                    | RCU     | —         | —                                                 |
+| AUDITOR        | R                                    | R                           | R operational                | —             | R / R                     | R       | R         | R                                                 |
+| ORGADMIN       | RCU                                  | RCU                         | R operational                | —             | R / R                     | —       | RCU       | R                                                 |
+| CTO            | R                                    | R                           | R operational                | —             | RCU / RCU                 | R       | R         | RCU                                               |
 
 Every cell is bounded by its own role grant. Branch manager + Employee is valid: company directory Read broadens intentionally while branch equipment Write stays narrow. HR + IT in the same org gives both permissions; HR in A + IT in B gives terms access only A and equipment Write only B. OrgAdmin/CTO do not implicitly give HR access. Own-contract editing can be permitted by HR; separation-of-duties approval is business logic outside this model, not a fabricated table-permission denial.
 
@@ -286,28 +286,28 @@ For ordinary lookup binding require allowed C/U plus referencing-record Append a
 
 Create new named main forms using normal platform controls, no scripts/PCF/iframes/custom actions. Do not replace standard forms. Every custom table has one Administration form; terms/finance names below are their Administration forms. Portable forms are minimal reusable Dataverse forms, not Power Pages Basic Forms. Locked controls are presentation, not security. [Form metadata](https://learn.microsoft.com/en-us/power-apps/maker/model-driven-apps/form-designer-overview).
 
-| Table | Required form names and sections / related subgrids |
-| --- | --- |
-| `account` | `CO Organisation Administration`: identity/kind/parent/root; contacts/departments/equipment/sites. `CO Organisation Profile`: name/number/kind only, no parent/root display. |
-| `contact` | `CO Person Administration`: person code and business identity; memberships. No portable shared-Contact form. |
-| `pqvd_accessrole` | `CO Access Role Administration`: code/name/description/principal mapping. |
-| `pqvd_accesspermission` | `CO Access Permission Administration`: grantee/role/scope/sponsor/dates/state; read-only principals/scope key; five association subgrids. |
-| `pqvd_orgcontact` | `CO Organisation Contact Administration`: identity/state/work profile; engagements. `CO Organisation Contact Profile`: display name/work email/phone/state only. |
-| `pqvd_department` | `CO Department Administration`: Account/code/manager/description; engagements. `CO Department Profile`: name/code/description. |
-| `pqvd_employment` | `CO Employment Administration`: membership/department/manager/kind/workload/dates/state; assignments. `CO Employment Summary`: number/kind/title/workload/dates/state; no terms subgrid. |
-| `pqvd_employmentterms` | `CO Private Employment Terms`: employment/contract/currency/salary/rate/hours/notice, backend restricted. |
-| `pqvd_site` | `CO Site Administration`: Account/code/address/kind; buildings. `CO Site Summary`: code/address/kind. |
-| `pqvd_building` | `CO Building Administration`: site/code/floors; rooms. |
-| `pqvd_room` | `CO Room Administration`: building/code/floor/capacity/kind; equipment. |
-| `pqvd_equipment` | `CO Equipment Administration`: organisation/location/tag/serial/type/model/state/condition/warranty; assignments/requests. `CO Equipment Summary`: tag/name/type/model/state/condition/warranty; no costs/ancestry/current-assignment display. |
-| `pqvd_equipmentfinance` | `CO Equipment Finance`: equipment/currency/values/supplier/invoice/cost centre, backend restricted. |
-| `pqvd_assignment` | `CO Assignment Administration`: equipment/employment/issue/return/actor/conditions/state; requests. `CO Assignment Summary`: number/dates/conditions/state. |
-| `pqvd_servicerequest` | `CO Service Request Administration`: equipment/assignment/requester/description/category/priority/time/state; orders. `CO Service Request Summary`: number/name/description/category/priority/time/state. |
-| `pqvd_workorder` | `CO Work Order Administration`: request/responsible/due/state; tasks. |
-| `pqvd_worktask` | `CO Work Task Administration`: order/sequence/assignee/estimate/actual/state; checklist. |
-| `pqvd_checklistitem` | `CO Checklist Item Administration`: task/sequence/instruction/result; inspections. |
-| `pqvd_inspection` | `CO Inspection Administration`: checklist/attempt/inspector/time/result/value/unit; findings. |
-| `pqvd_finding` | `CO Finding Administration`: inspection/sequence/severity/description/state. |
+| Table                   | Required form names and sections / related subgrids                                                                                                                                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `account`               | `CO Organisation Administration`: identity/kind/parent/root; contacts/departments/equipment/sites. `CO Organisation Profile`: name/number/kind only, no parent/root display.                                                                   |
+| `contact`               | `CO Person Administration`: person code and business identity; memberships. No portable shared-Contact form.                                                                                                                                   |
+| `pqvd_accessrole`       | `CO Access Role Administration`: code/name/description/principal mapping.                                                                                                                                                                      |
+| `pqvd_accesspermission` | `CO Access Permission Administration`: grantee/role/scope/sponsor/dates/state; read-only principals/scope key; five association subgrids.                                                                                                      |
+| `pqvd_orgcontact`       | `CO Organisation Contact Administration`: identity/state/work profile; engagements. `CO Organisation Contact Profile`: display name/work email/phone/state only.                                                                               |
+| `pqvd_department`       | `CO Department Administration`: Account/code/manager/description; engagements. `CO Department Profile`: name/code/description.                                                                                                                 |
+| `pqvd_employment`       | `CO Employment Administration`: membership/department/manager/kind/workload/dates/state; assignments. `CO Employment Summary`: number/kind/title/workload/dates/state; no terms subgrid.                                                       |
+| `pqvd_employmentterms`  | `CO Private Employment Terms`: employment/contract/currency/salary/rate/hours/notice, backend restricted.                                                                                                                                      |
+| `pqvd_site`             | `CO Site Administration`: Account/code/address/kind; buildings. `CO Site Summary`: code/address/kind.                                                                                                                                          |
+| `pqvd_building`         | `CO Building Administration`: site/code/floors; rooms.                                                                                                                                                                                         |
+| `pqvd_room`             | `CO Room Administration`: building/code/floor/capacity/kind; equipment.                                                                                                                                                                        |
+| `pqvd_equipment`        | `CO Equipment Administration`: organisation/location/tag/serial/type/model/state/condition/warranty; assignments/requests. `CO Equipment Summary`: tag/name/type/model/state/condition/warranty; no costs/ancestry/current-assignment display. |
+| `pqvd_equipmentfinance` | `CO Equipment Finance`: equipment/currency/values/supplier/invoice/cost centre, backend restricted.                                                                                                                                            |
+| `pqvd_assignment`       | `CO Assignment Administration`: equipment/employment/issue/return/actor/conditions/state; requests. `CO Assignment Summary`: number/dates/conditions/state.                                                                                    |
+| `pqvd_servicerequest`   | `CO Service Request Administration`: equipment/assignment/requester/description/category/priority/time/state; orders. `CO Service Request Summary`: number/name/description/category/priority/time/state.                                      |
+| `pqvd_workorder`        | `CO Work Order Administration`: request/responsible/due/state; tasks.                                                                                                                                                                          |
+| `pqvd_worktask`         | `CO Work Task Administration`: order/sequence/assignee/estimate/actual/state; checklist.                                                                                                                                                       |
+| `pqvd_checklistitem`    | `CO Checklist Item Administration`: task/sequence/instruction/result; inspections.                                                                                                                                                             |
+| `pqvd_inspection`       | `CO Inspection Administration`: checklist/attempt/inspector/time/result/value/unit; findings.                                                                                                                                                  |
+| `pqvd_finding`          | `CO Finding Administration`: inspection/sequence/severity/description/state.                                                                                                                                                                   |
 
 No system Currency form. Create `CO Currency Reference Administration` with name/ISO code/symbol/precision/system Currency; expose it to the trusted backend maintenance role only. Administration subgrids use the named backend public views below and relationship context; portable forms omit all security/private fields and relationship subgrids not explicitly listed. Backend form access is governed by backend roles, not by the custom business role catalogue.
 
@@ -319,28 +319,28 @@ Create public SavedQuery views, not personal views. Each has explicit FetchXML a
 
 Each custom table additionally has `CO <display name> All`, displaying primary name, business code/number or sequence, state and required parent lookup for backend use; use the restricted All views specified for terms/finance instead of duplicating them. Sort by code/number/sequence then GUID. One default public view per custom table: Active/Open where listed, restricted All for terms/finance, Checklist Items/Inspection Results/Open Findings for those tables.
 
-| Table | Required named public views | Columns besides primary GUID; filter and sort |
-| --- | --- | --- |
-| `account` | `CO Active Organisations`, `CO Organisation Profiles`, `CO Organisation Lookup Candidates`, `CO Vendors` | name/number/kind; Active non-Vendor for first three, Vendor for last; number/GUID. Profiles omit parent/root. |
-| `contact` | `CO Person Lookup Candidates`, `CO People Administration` | person code/full name; Active candidates, all administration; code/GUID. No private or joined membership fields. |
-| `pqvd_accessrole` | `CO Active Access Roles` | code/name; Active; code/GUID. Backend only. |
-| `pqvd_accesspermission` | `CO Active Access Permissions`, `CO Suspended Access Permissions`, `CO Access Permission Diagnostics` | number/role/scope/kind/state/dates; Active, Suspended/Expired/Revoked, all respectively; number/GUID. Diagnostics include principals only in backend layout. |
-| `pqvd_orgcontact` | `CO Active Organisation Contacts`, `CO Directory Contacts` | code/display name/work email/phone/state; Active membership; display name/code/GUID. Directory excludes canonical Contact lookup and Employment data. |
-| `pqvd_department` | `CO Active Departments`, `CO Department Summaries` | code/name/description; Active; code/GUID. Summaries omit manager. |
-| `pqvd_employment` | `CO Active Engagements`, `CO Ended Engagements`, `CO Engagement Summaries` | number/title/kind/FTE/dates/state; Active, Ended, all respectively; number/GUID. No terms or joined Contact fields. |
-| `pqvd_employmentterms` | `CO Private Employment Terms All` | name/employment/contract/salary/rate/currency; all; name/GUID, backend restricted. |
-| `pqvd_site` | `CO Active Sites`, `CO Site Summaries` | code/name/kind/address; Active; code/GUID. |
-| `pqvd_building` | `CO Active Buildings` | code/name/floors; Active; code/GUID. |
-| `pqvd_room` | `CO Active Rooms` | code/name/floor/capacity/kind; Active; code/GUID. |
-| `pqvd_equipment` | `CO Available Equipment`, `CO Assigned Equipment`, `CO Retired Equipment`, `CO Equipment Summaries` | tag/name/type/manufacturer/model/condition/state/warranty; Stock, Assigned, Retired, all respectively; tag/GUID. No finance or custody join. |
-| `pqvd_equipmentfinance` | `CO Equipment Finance All` | name/equipment/cost/replacement/currency/invoice/cost centre; all; name/GUID, backend restricted. |
-| `pqvd_assignment` | `CO Open Assignments`, `CO Assignment History`, `CO Assignment Summaries` | number/issue/return/conditions/state; Issued, all, all respectively; issue descending, number/GUID. No canonical Contact join. |
-| `pqvd_servicerequest` | `CO Open Service Requests`, `CO Service Request Summaries` | number/name/category/priority/time/state; exclude Completed/Cancelled for Open, all summaries; priority descending, number/GUID. |
-| `pqvd_workorder` | `CO Open Work Orders` | number/name/due/state; exclude Completed/Cancelled; due/number/GUID. |
-| `pqvd_worktask` | `CO Open Work Tasks` | sequence/name/estimate/actual/state; exclude Completed/Cancelled; sequence/GUID. |
-| `pqvd_checklistitem` | `CO Checklist Items` | sequence/name/instruction/result; all; sequence/GUID. |
-| `pqvd_inspection` | `CO Inspection Results` | attempt/time/result/value/unit; all; attempt/GUID. |
-| `pqvd_finding` | `CO Open Findings`, `CO Finding History` | sequence/severity/description/state; exclude Completed/Cancelled or all; sequence/GUID. |
+| Table                   | Required named public views                                                                              | Columns besides primary GUID; filter and sort                                                                                                                |
+| ----------------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `account`               | `CO Active Organisations`, `CO Organisation Profiles`, `CO Organisation Lookup Candidates`, `CO Vendors` | name/number/kind; Active non-Vendor for first three, Vendor for last; number/GUID. Profiles omit parent/root.                                                |
+| `contact`               | `CO Person Lookup Candidates`, `CO People Administration`                                                | person code/full name; Active candidates, all administration; code/GUID. No private or joined membership fields.                                             |
+| `pqvd_accessrole`       | `CO Active Access Roles`                                                                                 | code/name; Active; code/GUID. Backend only.                                                                                                                  |
+| `pqvd_accesspermission` | `CO Active Access Permissions`, `CO Suspended Access Permissions`, `CO Access Permission Diagnostics`    | number/role/scope/kind/state/dates; Active, Suspended/Expired/Revoked, all respectively; number/GUID. Diagnostics include principals only in backend layout. |
+| `pqvd_orgcontact`       | `CO Active Organisation Contacts`, `CO Directory Contacts`                                               | code/display name/work email/phone/state; Active membership; display name/code/GUID. Directory excludes canonical Contact lookup and Employment data.        |
+| `pqvd_department`       | `CO Active Departments`, `CO Department Summaries`                                                       | code/name/description; Active; code/GUID. Summaries omit manager.                                                                                            |
+| `pqvd_employment`       | `CO Active Engagements`, `CO Ended Engagements`, `CO Engagement Summaries`                               | number/title/kind/FTE/dates/state; Active, Ended, all respectively; number/GUID. No terms or joined Contact fields.                                          |
+| `pqvd_employmentterms`  | `CO Private Employment Terms All`                                                                        | name/employment/contract/salary/rate/currency; all; name/GUID, backend restricted.                                                                           |
+| `pqvd_site`             | `CO Active Sites`, `CO Site Summaries`                                                                   | code/name/kind/address; Active; code/GUID.                                                                                                                   |
+| `pqvd_building`         | `CO Active Buildings`                                                                                    | code/name/floors; Active; code/GUID.                                                                                                                         |
+| `pqvd_room`             | `CO Active Rooms`                                                                                        | code/name/floor/capacity/kind; Active; code/GUID.                                                                                                            |
+| `pqvd_equipment`        | `CO Available Equipment`, `CO Assigned Equipment`, `CO Retired Equipment`, `CO Equipment Summaries`      | tag/name/type/manufacturer/model/condition/state/warranty; Stock, Assigned, Retired, all respectively; tag/GUID. No finance or custody join.                 |
+| `pqvd_equipmentfinance` | `CO Equipment Finance All`                                                                               | name/equipment/cost/replacement/currency/invoice/cost centre; all; name/GUID, backend restricted.                                                            |
+| `pqvd_assignment`       | `CO Open Assignments`, `CO Assignment History`, `CO Assignment Summaries`                                | number/issue/return/conditions/state; Issued, all, all respectively; issue descending, number/GUID. No canonical Contact join.                               |
+| `pqvd_servicerequest`   | `CO Open Service Requests`, `CO Service Request Summaries`                                               | number/name/category/priority/time/state; exclude Completed/Cancelled for Open, all summaries; priority descending, number/GUID.                             |
+| `pqvd_workorder`        | `CO Open Work Orders`                                                                                    | number/name/due/state; exclude Completed/Cancelled; due/number/GUID.                                                                                         |
+| `pqvd_worktask`         | `CO Open Work Tasks`                                                                                     | sequence/name/estimate/actual/state; exclude Completed/Cancelled; sequence/GUID.                                                                             |
+| `pqvd_checklistitem`    | `CO Checklist Items`                                                                                     | sequence/name/instruction/result; all; sequence/GUID.                                                                                                        |
+| `pqvd_inspection`       | `CO Inspection Results`                                                                                  | attempt/time/result/value/unit; all; attempt/GUID.                                                                                                           |
+| `pqvd_finding`          | `CO Open Findings`, `CO Finding History`                                                                 | sequence/severity/description/state; exclude Completed/Cancelled or all; sequence/GUID.                                                                      |
 
 No currency view. Lookup adjustments for each custom table show name and business code/number or sequence, apply Active state where appropriate and use default-view safe sorting. Quick Find searches name/code/number, or name only for sequence tables; never salary, principal columns or secrets. Portable summary/directory views select primary-table fields only, with no all-columns selection or unrestricted Contact/Account joins.
 
@@ -371,24 +371,24 @@ Seed/import order is currency and role catalogue; Account/Contact identities; Ac
 
 Manifest aliases include A-RIV, A-HILL, A-EAST, B-LAKE, C-STUDIO, assets EQ-A-RIV/EQ-A-HILL/EQ-B-LAKE and terms TERM-A/TERM-B. Expected outcomes below are independent oracles, not evaluator-generated output.
 
-| Scenario ID | Same person's engagements/grants | Allowed outcome | Denial or collision explanation |
-| --- | --- | --- | --- |
-| `multi-org-worker` | Permanent A-RIV + contractor B-LAKE, corresponding engagement grants | Own two engagements/history, A company directory and B department directory | Other B departments, HR terms/finance denied. Home account A does not remove B access. |
-| `hr-a-it-b` | HR A-RIV, IT B-LAKE | U TERM-A, U EQ-B-LAKE, R assignments in both | U EQ-A-RIV and R/U TERM-B denied; globally held web roles cannot multiply scopes. |
-| `hr-it-same-org` | HR + IT A-RIV | U terms and assets there | HR's R-only asset grant does not deny IT U; no A-HILL/B access. |
-| `small-company-many-hats` | Contractor engagement C-STUDIO plus HR/IT/ORGADMIN/CTO there | Union of all these roles in C | No cross-company rights or implicit System Administrator. HR may permit own terms U; approval restriction is not inferred. |
-| `read-wide-write-narrow` | Auditor Arcwell subtree, IT only A-RIV | R assets A-RIV/A-HILL/A-EAST, U A-RIV | U A-HILL/A-EAST denied; broad Account Read is not IT's parent. |
-| `two-branch-manager` | Branch manager A-RIV + A-HILL | R/U operational records in both and their units | No A-EAST, root Company profile or B without another grant. |
-| `subsidiary-manager` | Company manager at Arcwell Services | Services/A-RIV/A-HILL/units | Manufacturing/A-EAST/Northstar denied; no implicit ancestor access. |
-| `branch-manager-employee` | Branch manager + Employee A-RIV | Branch writes, company-directory Read | Directory broadening is intentional; operational Write stays narrow. Combination valid. |
-| `team-and-it` | Team leader one A-RIV department, IT A-HILL | Team workforce/service A-RIV and IT A-HILL | No other A-RIV department via the same person's additional engagement. |
-| `shared-contact-bridge` | Person in A-RIV and B-LAKE; viewer HR A-RIV only | A membership/employment/terms | A profile/shared person cannot grant B engagements/grants/terms. |
-| `multi-grant-one-target` | Auditor/CTO/IT paths overlap on EQ-A-RIV | One row, several grant provenance entries | No duplicate rows/inflated counts or Write acquired by merging unrelated roots. |
-| `role-without-scope` | Mapped web role, no corresponding effective access row | No operational access through that role | No default Authenticated/Anonymous business grants. |
-| `expired-one-org` | Ended A-sponsored grants, Active B engagement/grants | B remains; A history retained backend | A projections cleared; Contact/B roles not globally revoked. |
-| `deep-allow-deny` | IT A-RIV; deepest chains A-RIV/B-LAKE | Intended A Finding entitlement via all eleven nodes; qualify the single-route variant separately | B Finding must not disclose. The baseline dual-route graph may fail the platform join limit before either allowed/denied result is evaluated. |
-| `append-union` | One role supplies C/U/Append, another scoped Append To | Valid binding when all record/privilege checks pass | Read alone insufficient, cross-company target denied, grant links provisioner-only. |
-| `revoked-parent-tree` | Inactive parent permission in a consumer fixture | Independent active trees still contribute | Its own descendants ineffective even if child permission records Active. Business row state is not permission-record state. |
+| Scenario ID               | Same person's engagements/grants                                     | Allowed outcome                                                                                  | Denial or collision explanation                                                                                                               |
+| ------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `multi-org-worker`        | Permanent A-RIV + contractor B-LAKE, corresponding engagement grants | Own two engagements/history, A company directory and B department directory                      | Other B departments, HR terms/finance denied. Home account A does not remove B access.                                                        |
+| `hr-a-it-b`               | HR A-RIV, IT B-LAKE                                                  | U TERM-A, U EQ-B-LAKE, R assignments in both                                                     | U EQ-A-RIV and R/U TERM-B denied; globally held web roles cannot multiply scopes.                                                             |
+| `hr-it-same-org`          | HR + IT A-RIV                                                        | U terms and assets there                                                                         | HR's R-only asset grant does not deny IT U; no A-HILL/B access.                                                                               |
+| `small-company-many-hats` | Contractor engagement C-STUDIO plus HR/IT/ORGADMIN/CTO there         | Union of all these roles in C                                                                    | No cross-company rights or implicit System Administrator. HR may permit own terms U; approval restriction is not inferred.                    |
+| `read-wide-write-narrow`  | Auditor Arcwell subtree, IT only A-RIV                               | R assets A-RIV/A-HILL/A-EAST, U A-RIV                                                            | U A-HILL/A-EAST denied; broad Account Read is not IT's parent.                                                                                |
+| `two-branch-manager`      | Branch manager A-RIV + A-HILL                                        | R/U operational records in both and their units                                                  | No A-EAST, root Company profile or B without another grant.                                                                                   |
+| `subsidiary-manager`      | Company manager at Arcwell Services                                  | Services/A-RIV/A-HILL/units                                                                      | Manufacturing/A-EAST/Northstar denied; no implicit ancestor access.                                                                           |
+| `branch-manager-employee` | Branch manager + Employee A-RIV                                      | Branch writes, company-directory Read                                                            | Directory broadening is intentional; operational Write stays narrow. Combination valid.                                                       |
+| `team-and-it`             | Team leader one A-RIV department, IT A-HILL                          | Team workforce/service A-RIV and IT A-HILL                                                       | No other A-RIV department via the same person's additional engagement.                                                                        |
+| `shared-contact-bridge`   | Person in A-RIV and B-LAKE; viewer HR A-RIV only                     | A membership/employment/terms                                                                    | A profile/shared person cannot grant B engagements/grants/terms.                                                                              |
+| `multi-grant-one-target`  | Auditor/CTO/IT paths overlap on EQ-A-RIV                             | One row, several grant provenance entries                                                        | No duplicate rows/inflated counts or Write acquired by merging unrelated roots.                                                               |
+| `role-without-scope`      | Mapped web role, no corresponding effective access row               | No operational access through that role                                                          | No default Authenticated/Anonymous business grants.                                                                                           |
+| `expired-one-org`         | Ended A-sponsored grants, Active B engagement/grants                 | B remains; A history retained backend                                                            | A projections cleared; Contact/B roles not globally revoked.                                                                                  |
+| `deep-allow-deny`         | IT A-RIV; deepest chains A-RIV/B-LAKE                                | Intended A Finding entitlement via all eleven nodes; qualify the single-route variant separately | B Finding must not disclose. The baseline dual-route graph may fail the platform join limit before either allowed/denied result is evaluated. |
+| `append-union`            | One role supplies C/U/Append, another scoped Append To               | Valid binding when all record/privilege checks pass                                              | Read alone insufficient, cross-company target denied, grant links provisioner-only.                                                           |
+| `revoked-parent-tree`     | Inactive parent permission in a consumer fixture                     | Independent active trees still contribute                                                        | Its own descendants ineffective even if child permission records Active. Business row state is not permission-record state.                   |
 
 At least one persona for each single role plus these combination scenarios. The same Contact can appear in reset scenario variants. Role conflicts are cases to explain, not reasons to discard assignments.
 

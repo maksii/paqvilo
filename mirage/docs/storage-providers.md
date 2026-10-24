@@ -2,30 +2,30 @@
 
 Mirage has one small storage contract for file bytes, one default implementation on local disk, and an Azurite provider over the Blob REST API. Dataverse file and image columns, notes and email attachments are routed through it by `dataverse-storage-routing.mjs` (see [Routing](#routing)); the Power Pages host reads and writes portal notes, web files, cloud attachments and staged uploads through the same router (see [Portal routes](#portal-routes)). The modules below are the contract, the providers, the router and the shared test suite.
 
-| Module | Content | Level |
-| --- | --- | --- |
-| `mirage/lib/storage-provider.mjs` | `ProviderError`, `validateKey`, `assertProvider`, `guardProvider`, `storageSettings`, `createStorageRouter` | behaviour |
-| `mirage/lib/storage-local-disk.mjs` | `createLocalDiskStorage({ root, id, clock, ids, maxBytes, sasBaseUrl })` | behaviour |
-| `mirage/lib/storage-memory.mjs` | `createMemoryStorage({ id, clock, ids })` | behaviour |
-| `mirage/lib/storage-azurite.mjs` | `createAzuriteStorage({ id, settings, env, clock })` (alias `create`), `azuriteDescriptor`, `parseConnectionString(text, source)`, `sharedKeyStringToSign(...)`, `serviceSasStringToSign(...)`, `BLOB_API_VERSION`, `preflight({ blobEndpoint, timeoutMs, source })` | behaviour with a usable connection string, else contract |
-| `paqvilo/mirage/testing` | `runStorageContract(test, makeProvider, { skip, label, clock })`, `STORAGE_CONTRACT_CASES` | test helper |
+| Module                              | Content                                                                                                                                                                                                                                                              | Level                                                    |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `mirage/lib/storage-provider.mjs`   | `ProviderError`, `validateKey`, `assertProvider`, `guardProvider`, `storageSettings`, `createStorageRouter`                                                                                                                                                          | behaviour                                                |
+| `mirage/lib/storage-local-disk.mjs` | `createLocalDiskStorage({ root, id, clock, ids, maxBytes, sasBaseUrl })`                                                                                                                                                                                             | behaviour                                                |
+| `mirage/lib/storage-memory.mjs`     | `createMemoryStorage({ id, clock, ids })`                                                                                                                                                                                                                            | behaviour                                                |
+| `mirage/lib/storage-azurite.mjs`    | `createAzuriteStorage({ id, settings, env, clock })` (alias `create`), `azuriteDescriptor`, `parseConnectionString(text, source)`, `sharedKeyStringToSign(...)`, `serviceSasStringToSign(...)`, `BLOB_API_VERSION`, `preflight({ blobEndpoint, timeoutMs, source })` | behaviour with a usable connection string, else contract |
+| `paqvilo/mirage/testing`            | `runStorageContract(test, makeProvider, { skip, label, clock })`, `STORAGE_CONTRACT_CASES`                                                                                                                                                                           | test helper                                              |
 
 ## Contract
 
 A provider is an object with a `descriptor` and the operations the descriptor declares:
 
-| Member | Semantics |
-| --- | --- |
-| `descriptor` | `{ id, name, kind, version, level, operations, requires, principal, stateOwner, lifecycle, fidelity: { notes } }` (capability record shape) |
-| `put(key, body, { contentType, metadata, ifMatch, ifNoneMatch, blockId, signal })` | `body` is a Buffer or an AsyncIterable of Buffers. Atomic; returns `{ key, size, sha256, etag, version, lastModified, contentType, metadata }`. With `blockId` it stages a block and returns `{ key, blockId, size }`. |
-| `commit(key, blockIds, options)` | Assembles staged blocks in the listed order (a block may repeat) and publishes them like `put`. |
-| `get(key, { range: { start, end }, ifNoneMatch, signal })` | Metadata plus `body` (AsyncIterable). `end` is inclusive. A matching `ifNoneMatch` returns `notModified: true` and `body: null`. |
-| `head(key)` | Metadata, or `null` when absent. |
-| `delete(key, { ifMatch })` | Idempotent; returns whether the object existed. |
-| `list(prefix, { pageSize, continuation })` | `{ items: [{ key, size, etag, lastModified }], continuation }`, sorted by key. The prefix may end with `/`. |
-| `sas(key, { permission: 'r' \| 'w' \| 'rw', expiresOn })` and `verifySas(url, { permission })` | Signed URL and its server-side check. `verifySas` returns `{ key, permission, expiresOn }`. |
-| `close()` | Releases handles; later calls answer `Unavailable`. |
-| `preflight()` (optional) | Returns `{ ready, reason? }` within 2 s; absent means declared (placeholder). |
+| Member                                                                                         | Semantics                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `descriptor`                                                                                   | `{ id, name, kind, version, level, operations, requires, principal, stateOwner, lifecycle, fidelity: { notes } }` (capability record shape)                                                                            |
+| `put(key, body, { contentType, metadata, ifMatch, ifNoneMatch, blockId, signal })`             | `body` is a Buffer or an AsyncIterable of Buffers. Atomic; returns `{ key, size, sha256, etag, version, lastModified, contentType, metadata }`. With `blockId` it stages a block and returns `{ key, blockId, size }`. |
+| `commit(key, blockIds, options)`                                                               | Assembles staged blocks in the listed order (a block may repeat) and publishes them like `put`.                                                                                                                        |
+| `get(key, { range: { start, end }, ifNoneMatch, signal })`                                     | Metadata plus `body` (AsyncIterable). `end` is inclusive. A matching `ifNoneMatch` returns `notModified: true` and `body: null`.                                                                                       |
+| `head(key)`                                                                                    | Metadata, or `null` when absent.                                                                                                                                                                                       |
+| `delete(key, { ifMatch })`                                                                     | Idempotent; returns whether the object existed.                                                                                                                                                                        |
+| `list(prefix, { pageSize, continuation })`                                                     | `{ items: [{ key, size, etag, lastModified }], continuation }`, sorted by key. The prefix may end with `/`.                                                                                                            |
+| `sas(key, { permission: 'r' \| 'w' \| 'rw', expiresOn })` and `verifySas(url, { permission })` | Signed URL and its server-side check. `verifySas` returns `{ key, permission, expiresOn }`.                                                                                                                            |
+| `close()`                                                                                      | Releases handles; later calls answer `Unavailable`.                                                                                                                                                                    |
+| `preflight()` (optional)                                                                       | Returns `{ ready, reason? }` within 2 s; absent means declared (placeholder).                                                                                                                                          |
 
 Preflight (offline and live) calls `preflight()` with a 2-second bound, as local-service probes are: `ready: true` is `satisfied`, `ready: false` (or no answer in time, or a throw) is `missing` with the reason. An instantiated provider without `preflight()` is reported `placeholder` with `resolution: { by: 'declared' }` and the message that its reachability is not probed; it is never `satisfied`. The built-in `local-disk` provider answers ready once its root opens; the in-memory provider answers ready while open. `assertProvider` rejects a `preflight` that is not a function.
 
@@ -45,13 +45,13 @@ At `simulation` and `deep`, a note body (`annotation.documentbody`) or attachmen
 
 ## Routes
 
-| Route | Default | Intended consumer | Mock vs behaviour |
-| --- | --- | --- | --- |
-| `dataverseFiles` | `local` | Dataverse file and image columns | behaviour (local disk) |
-| `annotations` | `local` | `annotation.documentbody`, `activitymimeattachment.body` | behaviour (local disk) |
-| `portalWebFiles` | `export` | portal web files; `export` serves them from the export directory; read from the provider when `WebFiles/StorageLocation` is `AzureBlobStorage` | behaviour |
-| `portalCloudAttachments` | unset | portal form attachments when `FileStorage/CloudStorageAccount` is set | unset → `forRoute` throws `Unsupported` with diagnostic `PROVIDER_ROUTE_MISSING`, never a silent fallback |
-| `sharepointDocuments` | `local` | SharePoint document integration | behaviour (local disk) |
+| Route                    | Default  | Intended consumer                                                                                                                              | Mock vs behaviour                                                                                         |
+| ------------------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `dataverseFiles`         | `local`  | Dataverse file and image columns                                                                                                               | behaviour (local disk)                                                                                    |
+| `annotations`            | `local`  | `annotation.documentbody`, `activitymimeattachment.body`                                                                                       | behaviour (local disk)                                                                                    |
+| `portalWebFiles`         | `export` | portal web files; `export` serves them from the export directory; read from the provider when `WebFiles/StorageLocation` is `AzureBlobStorage` | behaviour                                                                                                 |
+| `portalCloudAttachments` | unset    | portal form attachments when `FileStorage/CloudStorageAccount` is set                                                                          | unset → `forRoute` throws `Unsupported` with diagnostic `PROVIDER_ROUTE_MISSING`, never a silent fallback |
+| `sharepointDocuments`    | `local`  | SharePoint document integration                                                                                                                | behaviour (local disk)                                                                                    |
 
 `createStorageRouter({ config, providers })` takes `storageSettings()` output and a map of created providers. `forRoute(name)` returns the guarded provider, `null` for `export`, and throws `Unavailable` with diagnostic `PROVIDER_NOT_READY` when the route names a declared provider that was not created. `routes()` returns the route table; `describe()` lists each configured provider with its descriptor, `ready` and the routes that use it.
 
@@ -59,10 +59,10 @@ At `simulation` and `deep`, a note body (`annotation.documentbody`) or attachmen
 
 The Dataverse extension `dataverse-storage-routing` (`mirage/lib/dataverse-storage-routing.mjs`, installed after `dataverse-files`) takes the router from its `storage` install option, else `api.providers.storage`. With a router:
 
-| What | Provider key | State keeps |
-| --- | --- | --- |
-| File and image columns, temporary files (route `dataverseFiles`) | `files/<fileId>` | `state.dataverse.files[fileId]`: `entity`, `recordId`, `column`, `name`, `mimeType`, `size`, `createdOn`, `key`; no `data` |
-| `annotation.documentbody`, `activitymimeattachment.body` (route `annotations`) | `annotations/<rowId>/<n>`, `n` growing with each new body | the row with a null body column, its `filename`, `mimetype`, `filesize` and an internal `__blobkey` |
+| What                                                                           | Provider key                                              | State keeps                                                                                                                |
+| ------------------------------------------------------------------------------ | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| File and image columns, temporary files (route `dataverseFiles`)               | `files/<fileId>`                                          | `state.dataverse.files[fileId]`: `entity`, `recordId`, `column`, `name`, `mimeType`, `size`, `createdOn`, `key`; no `data` |
+| `annotation.documentbody`, `activitymimeattachment.body` (route `annotations`) | `annotations/<rowId>/<n>`, `n` growing with each new body | the row with a null body column, its `filename`, `mimetype`, `filesize` and an internal `__blobkey`                        |
 
 - Per key: `dataverse-files` picks the provider from the key, so an `annotations/` key goes to route `annotations` and every other key to route `dataverseFiles`. One route can be served while the other is not; bytes whose route has no provider stay inline base64 in state. Reading a key whose provider this runtime does not have answers 503 `StorageUnavailable`.
 - Writes: `PATCH` uploads, chunked uploads, block messages and SAS uploads stage their bytes in the provider (`put` with `blockId`, then `commit`), so a block upload is never joined in memory. Image values on record writes, and note or attachment bodies on Web API, SOAP and block-commit creates, are put in a `beforeWrite` hook. Only canonical base64 bodies move; other text stays inline and reads back as written. The note size rule (`MaxUploadFileSize`) is checked before a body leaves the row.
@@ -93,23 +93,29 @@ The Power Pages host reads and writes these routes:
 ```yaml
 providers:
   storage:
-    local:   { kind: local-disk, root: blobs }          # root resolves under the state directory
-    emulator: { kind: azurite, connectionString: env:PAQVILO_AZURITE_CONNECTION, container: paqvilo-attachments, start: external }
+    local: { kind: local-disk, root: blobs } # root resolves under the state directory
+    emulator:
+      {
+        kind: azurite,
+        connectionString: env:PAQVILO_AZURITE_CONNECTION,
+        container: paqvilo-attachments,
+        start: external,
+      }
   routes:
     portalCloudAttachments: emulator
 ```
 
-| Key | Rule |
-| --- | --- |
-| `storage.<id>` | id matches `[a-z][a-z0-9-]{0,63}`; `local` (`kind: local-disk`) always exists |
-| `storage.<id>.kind` | `local-disk`, `azurite` or `pack:<packId>/<name>`; keys are strict per kind |
-| `storage.<id>.root` | local-disk only; resolves under the runtime's private state directory and must stay inside it. A runtime without one (dry run) and the offline `mirage preflight` check the same rule and use in-memory storage for that id, so a `root` the running host accepts never fails preflight |
-| `storage.<id>.connectionString` | `env:NAME` only; literal strings are rejected and never echoed |
-| `storage.<id>.container` | Blob container name rules; azurite default `paqvilo` |
-| `storage.<id>.start` | azurite only; `external` (Paqvilo never starts Azurite) |
-| `storage.<id>.timeoutMs` | azurite only; per-request bound until the response headers arrive, 100 to 600000 ms, default 30000 |
-| `storage.<id>.options` | pack kinds only; plain object passed to the pack factory |
-| `routes.<route>` | one of the routes above; value is a storage id, or `export` for `portalWebFiles` only |
+| Key                             | Rule                                                                                                                                                                                                                                                                                    |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage.<id>`                  | id matches `[a-z][a-z0-9-]{0,63}`; `local` (`kind: local-disk`) always exists                                                                                                                                                                                                           |
+| `storage.<id>.kind`             | `local-disk`, `azurite` or `pack:<packId>/<name>`; keys are strict per kind                                                                                                                                                                                                             |
+| `storage.<id>.root`             | local-disk only; resolves under the runtime's private state directory and must stay inside it. A runtime without one (dry run) and the offline `mirage preflight` check the same rule and use in-memory storage for that id, so a `root` the running host accepts never fails preflight |
+| `storage.<id>.connectionString` | `env:NAME` only; literal strings are rejected and never echoed                                                                                                                                                                                                                          |
+| `storage.<id>.container`        | Blob container name rules; azurite default `paqvilo`                                                                                                                                                                                                                                    |
+| `storage.<id>.start`            | azurite only; `external` (Paqvilo never starts Azurite)                                                                                                                                                                                                                                 |
+| `storage.<id>.timeoutMs`        | azurite only; per-request bound until the response headers arrive, 100 to 600000 ms, default 30000                                                                                                                                                                                      |
+| `storage.<id>.options`          | pack kinds only; plain object passed to the pack factory                                                                                                                                                                                                                                |
+| `routes.<route>`                | one of the routes above; value is a storage id, or `export` for `portalWebFiles` only                                                                                                                                                                                                   |
 
 ## Pack storage providers
 
@@ -144,11 +150,15 @@ import test from 'node:test';
 import { runStorageContract } from 'paqvilo/mirage/testing';
 import { createInventedBlobStorage } from '../storage/blob.mjs';
 
-runStorageContract(test, async (t) => {
-  const storage = await createInventedBlobStorage({ container: `contract-${Date.now()}` });
-  t.after(() => storage.close());
-  return storage;
-}, { label: 'project blob', skip: [] });
+runStorageContract(
+  test,
+  async (t) => {
+    const storage = await createInventedBlobStorage({ container: `contract-${Date.now()}` });
+    t.after(() => storage.close());
+    return storage;
+  },
+  { label: 'project blob', skip: [] },
+);
 ```
 
 `makeProvider(t)` must return a fresh, empty provider. `clock` (default the system clock) sets the SAS expiries, so a provider built on a fixed clock passes the same way. Cases (`STORAGE_CONTRACT_CASES`): `round-trip`, `range`, `conditions`, `block-commit`, `list-paging`, `sas`, `key-rejection`, `large-stream` (a 20 MiB AsyncIterable body with a reused chunk buffer, read back in chunks), `unavailable` (closed provider and connection-failure mapping), `delete`, `head`. Skip a case only when the adapter does not declare the matching operation.

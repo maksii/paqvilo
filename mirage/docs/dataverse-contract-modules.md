@@ -8,18 +8,18 @@ Module authors share two helpers from `mirage/lib/dataverse-addon-common.mjs`. `
 
 Each module below is installed by the organization runtime through the extension list in `mirage/lib/dataverse-extensions.mjs`. The level is the module's capability level as its section states it.
 
-| Module | Extension name | Level | Pack export |
-| --- | --- | --- | --- |
-| Calculated columns | `dataverse-calculated` | contract (behaviour when pack functions cover every calculated column) | `calculatedColumns` |
-| Business rules | `dataverse-business-rules` | contract (behaviour when pack functions cover every Entity-scope rule) | `businessRules` |
-| Currency | `dataverse-currency` | behaviour | none |
-| Record hierarchy | `dataverse-hierarchy` | behaviour once the organization runtime wires the query operators, else contract (resolve operations behaviour) | `hierarchies` |
-| State transitions | `dataverse-state-transitions` | behaviour | `transitions` |
-| Cascade | `dataverse-cascade` | behaviour (Assign); other cascades contract | none |
-| Rollup | `dataverse-rollup` | behaviour | `rollups` |
-| Formula columns | `dataverse-formula` | contract (behaviour when a synchronous evaluator or pack function covers the column) | `formulaColumns` |
-| Virtual providers | `dataverse-virtual-providers` | behaviour for the operations a registered provider implements (create, update, delete, retrieve, retrieveMultiple); contract otherwise and for external events | `virtualTableProviders`, `virtualTables` (declarations, `fallback: 'local'`) |
-| Business process flows | `dataverse-bpf` | contract | none |
+| Module                 | Extension name                | Level                                                                                                                                                          | Pack export                                                                  |
+| ---------------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Calculated columns     | `dataverse-calculated`        | contract (behaviour when pack functions cover every calculated column)                                                                                         | `calculatedColumns`                                                          |
+| Business rules         | `dataverse-business-rules`    | contract (behaviour when pack functions cover every Entity-scope rule)                                                                                         | `businessRules`                                                              |
+| Currency               | `dataverse-currency`          | behaviour                                                                                                                                                      | none                                                                         |
+| Record hierarchy       | `dataverse-hierarchy`         | behaviour once the organization runtime wires the query operators, else contract (resolve operations behaviour)                                                | `hierarchies`                                                                |
+| State transitions      | `dataverse-state-transitions` | behaviour                                                                                                                                                      | `transitions`                                                                |
+| Cascade                | `dataverse-cascade`           | behaviour (Assign); other cascades contract                                                                                                                    | none                                                                         |
+| Rollup                 | `dataverse-rollup`            | behaviour                                                                                                                                                      | `rollups`                                                                    |
+| Formula columns        | `dataverse-formula`           | contract (behaviour when a synchronous evaluator or pack function covers the column)                                                                           | `formulaColumns`                                                             |
+| Virtual providers      | `dataverse-virtual-providers` | behaviour for the operations a registered provider implements (create, update, delete, retrieve, retrieveMultiple); contract otherwise and for external events | `virtualTableProviders`, `virtualTables` (declarations, `fallback: 'local'`) |
+| Business process flows | `dataverse-bpf`               | contract                                                                                                                                                       | none                                                                         |
 
 ## Calculated columns
 
@@ -29,16 +29,16 @@ Module: `mirage/lib/dataverse-calculated.mjs`. Capability record: requires `meta
 
 The supported `FormulaDefinition` subset uses XML elements. Element names are case-insensitive and namespace prefixes are ignored. The root element is either an optional `<Formula>` wrapper around exactly one expression, or the expression itself.
 
-| Element | Meaning |
-| --- | --- |
-| `<Constant Value="…" Type="number\|string\|boolean\|datetime\|null"/>` | A literal value. If `Type` is omitted, a numeric value is a number and anything else is text. |
-| `<Field Name="column"/>`, `<Field Name="lookup.column"/>` | A column of the same row, or a column of the parent row one hop away |
-| `<Add>`, `<Subtract>`, `<Multiply>`, `<Divide>` | Number arithmetic. A null operand gives null, and dividing by zero gives null. |
-| `<Concat>` | Text concatenation. A null operand counts as empty text. |
-| `<If>` condition, then, else | A conditional. When `else` is absent and the condition is false, the result is null. |
-| `<Equal>`, `<NotEqual>`, `<GreaterThan>`, `<GreaterEqual>`, `<LessThan>`, `<LessEqual>`, `<And>`, `<Or>`, `<Not>`, `<IsNull>` | Comparisons and logical operators |
-| `<AddDays>`, `<AddHours>`, `<AddWeeks>`, `<AddMonths>`, `<AddYears>` (date, amount) | Date arithmetic in UTC |
-| `<DiffInDays>`, `<DiffInHours>`, `<DiffInMinutes>`, `<DiffInWeeks>`, `<DiffInMonths>`, `<DiffInYears>` (from, to) | Date differences in whole units |
+| Element                                                                                                                       | Meaning                                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `<Constant Value="…" Type="number\|string\|boolean\|datetime\|null"/>`                                                        | A literal value. If `Type` is omitted, a numeric value is a number and anything else is text. |
+| `<Field Name="column"/>`, `<Field Name="lookup.column"/>`                                                                     | A column of the same row, or a column of the parent row one hop away                          |
+| `<Add>`, `<Subtract>`, `<Multiply>`, `<Divide>`                                                                               | Number arithmetic. A null operand gives null, and dividing by zero gives null.                |
+| `<Concat>`                                                                                                                    | Text concatenation. A null operand counts as empty text.                                      |
+| `<If>` condition, then, else                                                                                                  | A conditional. When `else` is absent and the condition is false, the result is null.          |
+| `<Equal>`, `<NotEqual>`, `<GreaterThan>`, `<GreaterEqual>`, `<LessThan>`, `<LessEqual>`, `<And>`, `<Or>`, `<Not>`, `<IsNull>` | Comparisons and logical operators                                                             |
+| `<AddDays>`, `<AddHours>`, `<AddWeeks>`, `<AddMonths>`, `<AddYears>` (date, amount)                                           | Date arithmetic in UTC                                                                        |
+| `<DiffInDays>`, `<DiffInHours>`, `<DiffInMinutes>`, `<DiffInWeeks>`, `<DiffInMonths>`, `<DiffInYears>` (from, to)             | Date differences in whole units                                                               |
 
 Arithmetic uses JavaScript numbers. Money and decimal results can therefore differ from the platform in the last digits.
 
@@ -65,13 +65,13 @@ Module: `mirage/lib/dataverse-business-rules.mjs`. Capability record: requires `
 
 Rules run in the `beforeWrite` hook for create, update and upsert, before the row is stored and inside the write's transaction. They are evaluated synchronously in workflow-table order against the merged row: the existing values, with the request payload applied on top. A rule can change only the payload. It cannot write other rows, so it never increases plug-in depth. If a rule fails, the whole write is rolled back. The hook runs for every write surface: the Web API, SDK calls from plug-ins, flow Dataverse actions, the portal `/_api` and portal forms, and the rows messages create.
 
-| Action (XAML step) | Server behaviour |
-| --- | --- |
-| `<SetAttributeValueStep Attribute Value/>` | Sets the value in the payload |
-| `<SetDefaultValueStep Attribute Value/>` | On create only, sets the value when the merged value is empty |
-| `<SetMessageStep Message/>` | Fails the write with HTTP 400. The error message is the rule's message and the code is `0x80040265`. |
-| `<SetFieldRequiredLevelStep Attribute RequiredLevel="required"/>` | Fails the write with HTTP 400 `0x80040203` when the merged value is empty |
-| `<ConditionBranchStep Logic="and\|or">` with `<Condition Attribute Operator Value/>`, `<Then>` and `<Else>` | One condition branch. Supported operators: `eq`, `ne`, `gt`, `ge`, `lt`, `le`, `null`, `not-null`. |
+| Action (XAML step)                                                                                          | Server behaviour                                                                                     |
+| ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `<SetAttributeValueStep Attribute Value/>`                                                                  | Sets the value in the payload                                                                        |
+| `<SetDefaultValueStep Attribute Value/>`                                                                    | On create only, sets the value when the merged value is empty                                        |
+| `<SetMessageStep Message/>`                                                                                 | Fails the write with HTTP 400. The error message is the rule's message and the code is `0x80040265`. |
+| `<SetFieldRequiredLevelStep Attribute RequiredLevel="required"/>`                                           | Fails the write with HTTP 400 `0x80040203` when the merged value is empty                            |
+| `<ConditionBranchStep Logic="and\|or">` with `<Condition Attribute Operator Value/>`, `<Then>` and `<Else>` | One condition branch. Supported operators: `eq`, `ne`, `gt`, `ge`, `lt`, `le`, `null`, `not-null`.   |
 
 The steps are the child elements of the root element. Each `Value` is parsed as JSON when it is valid JSON, for example a number, `true`, `false` or `null`. Otherwise it is used as text. Condition branches nest at most 64 deep; a deeper rule reports `BUSINESS_RULE_UNSUPPORTED`. Parsed rules are cached per workflow id and replaced when the rule's XAML changes, and the activated rules are indexed by table once per store revision.
 
@@ -100,10 +100,10 @@ Module: `mirage/lib/dataverse-currency.mjs`. Capability record: level `behaviour
 
 The base currency is `organization.basecurrencyid` when set, else the first `transactioncurrency` row. Tables without a money column are not touched.
 
-| Operation | Supported subset |
-| --- | --- |
-| `CurrencyStamp` | create and update: currency, rate and `_base` on money tables |
-| `BaseAmount` | `_base` = column / rate, at the currency precision |
+| Operation              | Supported subset                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `CurrencyStamp`        | create and update: currency, rate and `_base` on money tables                                                                         |
+| `BaseAmount`           | `_base` = column / rate, at the currency precision                                                                                    |
 | `RetrieveExchangeRate` | executed by `dataverse-predefined.mjs` (not registered again here): 200 with `ExchangeRate`, 404 `0x80040217` for an unknown currency |
 
 **Inventory / contract.** Nothing is retained that is not executed. An unknown currency on an update is refused with the lookup inner code. Exchange rates are read at write time only. A change to a rate does not restate stored base amounts.
@@ -120,18 +120,19 @@ Module: `mirage/lib/dataverse-hierarchy.mjs`. Capability record: requires `metad
 
 **Behaviour.** `api.hierarchy.resolve(table, rootId, direction)` walks a table's self-referencing lookup breadth first over its rows and returns the matching record ids as a Set of lowercase GUIDs. It returns `null` when the table is not hierarchical or has no mapping. A lookup value may be an `{ id }` object or a bare GUID. Each record is visited once; a root that is not a row yields an empty set.
 
-| Direction | Records returned |
-| --- | --- |
-| `under` | descendants of the root, excluding the root |
-| `eq-or-under` | the root and its descendants |
-| `above` | ancestors of the root, excluding the root |
-| `eq-or-above` | the root and its ancestors |
+| Direction     | Records returned                            |
+| ------------- | ------------------------------------------- |
+| `under`       | descendants of the root, excluding the root |
+| `eq-or-under` | the root and its descendants                |
+| `above`       | ancestors of the root, excluding the root   |
+| `eq-or-above` | the root and its ancestors                  |
 
 A table is hierarchical when a one-to-many relationship references the table from itself and carries `IsHierarchical` (read from the metadata relationship records). `api.hierarchy.isHierarchical(table)` returns `{ column }` (the lookup column) or `null`.
 
 **Query operators.** The FetchXML and OData operators `under`, `eq-or-under`, `above`, `eq-or-above` and `not-under` are compiled in `mirage/lib/dataverse-conditions.mjs`. The organization runtime sets `store.hierarchyResolver` to `api.hierarchy.resolve` and marks the operators wired. A Dataverse caller resolves them through `identity.hierarchy`, which asks that resolver first. Every other caller (portal FetchXML, Liquid and the portal Web API) resolves them through the runtime's query scope (`runWithQueryResolvers`), which the organization host enters per request. `not-under` selects the rows outside the `under` set. On a table that is not hierarchical the query is refused with 400, inner code `0x80040203` and reason `HIERARCHY_NOT_HIERARCHICAL`. Outside any query scope the operators keep the unsupported-operator refusal.
 
 **Diagnostics.**
+
 - `HIERARCHY_DEPTH_EXCEEDED`: once per table when a walk exceeds `maxDepth` (default 100). The walk stops there and returns the records found so far; it never throws.
 - `HIERARCHY_CYCLE`: once per table when a lookup loops back to a record already visited. The loop is not followed.
 
@@ -145,18 +146,19 @@ Module: `mirage/lib/dataverse-state-transitions.mjs`. Capability record: level `
 
 A table enforces transitions when the install option `transitions` names it, or when its metadata has `EnforceStateTransitions` true (`dataverseMetadata.EnforceStateTransitions`). Other tables are untouched.
 
-| Allowed targets of a status | Source |
-| --- | --- |
-| explicit list for the status in `transitions` | pack or test configuration, wins over metadata |
-| `TransitionData` of the status option, an array of statuscodes | exported metadata form |
+| Allowed targets of a status                                                | Source                                                  |
+| -------------------------------------------------------------------------- | ------------------------------------------------------- |
+| explicit list for the status in `transitions`                              | pack or test configuration, wins over metadata          |
+| `TransitionData` of the status option, an array of statuscodes             | exported metadata form                                  |
 | `TransitionData` of the status option, the native `allowedtransitions` XML | `sourcestatusid` is the status, `tostatusid` the target |
-| none listed: any target is allowed | `STATE_TRANSITIONS_UNCONFIGURED` diagnostic |
+| none listed: any target is allowed                                         | `STATE_TRANSITIONS_UNCONFIGURED` diagnostic             |
 
 `TransitionData` is read from the status being left (the current status).
 
 **Inventory / contract.** This module registers no message, and `CloseIncidentRequest` is not implemented here.
 
 **Diagnostics.**
+
 - `STATE_TRANSITIONS_UNCONFIGURED`: a status that is left on an enforced table has no allowed-target list, so any change from it is allowed. Once per table and status.
 
 **Pack override.** `install(api, { transitions })`. Export name `transitions`, a map `{ "<table logical name>": { "<statuscode>": [<statuscode>, ...] } }`. Keys are lowercased table names and whole-number statuscodes, values are arrays of whole-number statuscodes (an empty array allows no target). An explicit table entry enforces even when the metadata flag is false, and its lists replace the metadata lists for the statuses it names; a status it does not name keeps its metadata list. Validator: `validateTransitions(map)`, which throws a TypeError naming the bad key.
@@ -167,18 +169,19 @@ Module: `mirage/lib/dataverse-cascade.mjs`. Capability record: level `behaviour`
 
 **Behaviour.** When an update changes a row's `ownerid`, the afterWrite hook gives its one-to-many children the new owner inside the write's transaction. Before each child is written, the caller's Assign privilege on that child is checked (`api.principals.authorize`, operation `assign`); a refusal fails the whole write, the parent included. A host without `api.principals` (portal only) cascades without that check. The children are written through `store.updateRecord` with the caller's identity marked admin, which skips only the portal table-permission layer, and their row journal rolls back with the write. A child whose owner changed applies its own relationships the same way; a visited set bounds the depth. Children already owned by the new owner are not written. Only `ownerid` is written.
 
-| Assign value | Children that receive the new owner |
-| --- | --- |
-| `Cascade` | every child |
-| `Active` | children with `statecode` 0 |
-| `UserOwned` | children owned by the parent's owner from before the write |
-| `NoCascade`, `RemoveLink`, anything else | none |
+| Assign value                             | Children that receive the new owner                        |
+| ---------------------------------------- | ---------------------------------------------------------- |
+| `Cascade`                                | every child                                                |
+| `Active`                                 | children with `statecode` 0                                |
+| `UserOwned`                              | children owned by the parent's owner from before the write |
+| `NoCascade`, `RemoveLink`, anything else | none                                                       |
 
 `UserOwned` means "owned by the same user as the primary row". The primary row already has the new owner after the write, so the owner from before the write is compared.
 
 **Inventory / contract.** Share, Unshare, Reparent and Merge are not executed: no access is granted or revoked, no row is re-parented, no child is merged. Nothing answers success for them.
 
 **Diagnostics.** Each is emitted once per key and again only after reset (every reseed):
+
 - `CASCADE_ASSIGN_DEFAULTED`: once per relationship (parent table, child table, lookup column) whose metadata has no Assign value, when an owner change reaches it. NoCascade is applied.
 - `CASCADE_SHARE_NOT_SIMULATED`, `CASCADE_UNSHARE_NOT_SIMULATED`, `CASCADE_REPARENT_NOT_SIMULATED`, `CASCADE_MERGE_NOT_SIMULATED`: once per table that declares that cascade with a value other than NoCascade. Checked at install and on every reseed. The default extensions seed standard metadata that declares Share cascades on many standard tables, so these fire for those tables too.
 
@@ -204,12 +207,12 @@ The rollup columns per table and the child-to-parent links are memoised per `sto
 
 **Supported subset.** The FetchXML subset recalculated by this module:
 
-| Part | Meaning |
-| --- | --- |
-| `<fetch aggregate="true">` with one `<entity>` | The child table is the rollup source. |
-| `<attribute name="c" aggregate="count\|sum\|min\|max\|avg">` (exactly one) | The aggregate. `count` counts non-null values; the others read numbers and ignore nulls. |
-| `<filter type="and">` with `<condition attribute="p" operator="eq" value="{id}"/>` | The parent link: rows whose `p` holds the parent id. |
-| optional `<condition attribute="statecode" operator="eq" value="0"/>` | Only active child rows. A row without a statecode counts as active. |
+| Part                                                                               | Meaning                                                                                  |
+| ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `<fetch aggregate="true">` with one `<entity>`                                     | The child table is the rollup source.                                                    |
+| `<attribute name="c" aggregate="count\|sum\|min\|max\|avg">` (exactly one)         | The aggregate. `count` counts non-null values; the others read numbers and ignore nulls. |
+| `<filter type="and">` with `<condition attribute="p" operator="eq" value="{id}"/>` | The parent link: rows whose `p` holds the parent id.                                     |
+| optional `<condition attribute="statecode" operator="eq" value="0"/>`              | Only active child rows. A row without a statecode counts as active.                      |
 
 Anything else (a `link-entity`, an or-filter, another condition, a second attribute or filter, a non-numeric value under sum, min, max or avg) is outside the subset.
 
@@ -220,6 +223,7 @@ Anything else (a `link-entity`, an or-filter, another condition, a second attrib
 **Pack override.** Export `rollups`, a map of `'<table>.<column>'` keys to synchronous functions `(row, ctx) => value`. `row` is a copy of the parent row and `ctx` is `{ table, column }`. The override wins over the definition and stores its value with `_state = 1`. Precedence: pack override, then the supported subset, then `ROLLUP_UNSUPPORTED` with state 2. The validator is `validateRollups(map)`; install is `install(api, { rollups, diagnostic })`.
 
 **Limits.**
+
 - SUM over no matching child rows is 0; MIN, MAX and AVG over none are null.
 - An unsupported definition stores state 2 (OverflowError), the nearest platform error state.
 - A write to a rollup column is refused with the invalid-property shape (`0x80048d19`).
@@ -233,11 +237,11 @@ Module: `mirage/lib/dataverse-formula.mjs`. Capability record: level `behaviour`
 
 **Evaluator.** The evaluator is the install option, else the host's `api.providers.powerFx` (the core Power Fx engine, or a pack `powerFx` adapter), else `createPowerFxEvaluator()` from `canvas-power-fx.mjs`, the core engine. The formula reads the row's columns by name or through `ThisRecord`, follows lookups to the related row, and reads other formula columns of the row, at most 10 deep; a decimal result keeps the column's precision (default 2), and a formula that answers an error value reads `null` with `FORMULA_ERROR` once per column (see [Dataverse](dataverse-parity.md)). With the engine explicitly disabled (`engine: false`) it answers 501 and the column reads `null`. Read projection is synchronous: an evaluator without `evaluateSync`, or one that answers with a promise, leaves the column `null` with `FORMULA_NOT_EVALUATED`. The capability record reports `behaviour` when the evaluator lists `evaluateSync` at behaviour.
 
-| Source | Meaning |
-| --- | --- |
-| `SourceType 3` | formula column (0 simple, 1 calculated, 2 rollup, 3 formula, 4 prompt) |
-| `FormulaDefinition` | the formula text, passed to the evaluator whole |
-| evaluator `{ value }` | the column's value on read, when synchronous |
+| Source                | Meaning                                                                |
+| --------------------- | ---------------------------------------------------------------------- |
+| `SourceType 3`        | formula column (0 simple, 1 calculated, 2 rollup, 3 formula, 4 prompt) |
+| `FormulaDefinition`   | the formula text, passed to the evaluator whole                        |
+| evaluator `{ value }` | the column's value on read, when synchronous                           |
 
 **Inventory / contract.** Without a synchronous evaluator or a pack override (the engine disabled), the answer is `null`.
 
@@ -257,23 +261,23 @@ The provider is the write's main operation, as data providers handle Create, Upd
 
 A provider's write runs inside the operation's transaction (stage 30, the core transaction stage). A provider joins that transaction by exposing all three of `begin(ctx)`, `commit(ctx)` and `rollback(ctx)` (`ctx.operation` is `transaction`). Mirage calls `begin` once per provider and outermost transaction, before the provider's first write in it. It calls `commit` after that transaction commits. It calls `rollback` when that transaction rolls back for any reason: a provider failure, a later request of the `$batch` change set or `ExecuteTransaction` refused locally (412, 400, a plug-in), or a failed post-operation step. A failed `commit` or `rollback` is reported as `VIRTUAL_PROVIDER_TRANSACTION_FAILED`, and the transaction's outcome stands. A provider without these operations is not enlisted. Its write stays when the transaction rolls back, and `VIRTUAL_PROVIDER_EFFECT_UNCOMPENSATED` names each such row. Mirage never calls an inverse operation to undo a write, so the external change stays. The capability record lists `TransactionEnlistment` as `behaviour` when a registered provider declares the transaction contract, else `contract`.
 
-| Write | Provider call | Mirror |
-| --- | --- | --- |
-| create, or an upsert that creates | `create(row, ctx)` | the returned row (must carry the primary key); it replaces the stored row's key and columns |
-| update, or an upsert that updates | `update(id, patch, ctx)` | the returned row, merged (the primary key is kept); nothing returned keeps the patch |
-| delete | `delete(id, ctx)` | the local row is removed by the write itself |
+| Write                             | Provider call            | Mirror                                                                                      |
+| --------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------- |
+| create, or an upsert that creates | `create(row, ctx)`       | the returned row (must carry the primary key); it replaces the stored row's key and columns |
+| update, or an upsert that updates | `update(id, patch, ctx)` | the returned row, merged (the primary key is kept); nothing returned keeps the patch        |
+| delete                            | `delete(id, ctx)`        | the local row is removed by the write itself                                                |
 
 **Reads.** Before a Web API read answers, the records layer runs the `source` record hook. A collection, `$count` or navigation read calls the provider's `retrieveMultiple({ select, filter, orderby, top }, ctx)`: `select`, `filter` and `orderby` are the caller's `$select`, `$filter` and `$orderby` text, `top` is `$top` as a number, each `null` when absent. A single record, property or `$value` read calls `retrieve(id, ctx)`; `null` means the row does not exist (404). An alternate-key read asks `retrieveMultiple` and matches the key locally. The answer replaces the table's mirror rows (a returned row merges over its mirror row) without running write hooks, and the read then answers through the shared read path, so `$filter`, `$select`, `$orderby`, paging, `$expand`, column security and masking apply to the provider's rows as to any rows. `api.virtualProviders.query(table, { select, filter, orderby, top })` calls `retrieveMultiple` directly and resolves with its rows, or `null` when the table is not virtual, declares the local fallback, or its provider has no `retrieveMultiple`. Portal reads outside the Web API read the mirror as the last Web API read or write left it.
 
 **SDK reads.** SDK `Retrieve`, `RetrieveMultiple` and FetchXML (a CLR plug-in's `IOrganizationService`, the flow Dataverse connector) are synchronous and never read the mirror. A virtual table without a provider (and without the local fallback) answers them with 501 `VirtualProviderMissing`. A table with a provider is served only through the provider's optional synchronous operations; without them the read answers 501 `SdkVirtualReadUnsupported`, and a FetchXML read of a virtual table always does (no request shape carries FetchXML). `api.virtualProviders.status(table)` answers `{ virtual, provider, fallback }` synchronously.
 
-| Provider operation | Called for | Arguments | Answer |
-|---|---|---|---|
-| `retrieveSync` (optional) | SDK `Retrieve` | `(ctx, id)` | the row, or `null` (404); a promise answers 501 `SdkVirtualReadUnsupported` |
-| `retrieveMultipleSync` (optional) | SDK `RetrieveMultiple` (QueryExpression) | `(ctx, { select, filter, orderby, top })`, the request shape `retrieveMultiple` gets | an array of rows; a promise answers 501 `SdkVirtualReadUnsupported` |
-| `createSync` (optional) | SDK `Create` (and a Web API create when `create` is absent) | `(row, ctx)`, as `create` | the created row, synchronously |
-| `updateSync` (optional) | SDK `Update` (and a Web API update when `update` is absent) | `(id, patch, ctx)`, as `update` | the updated row or nothing, synchronously |
-| `deleteSync` (optional) | SDK `Delete` (and a Web API delete when `delete` is absent) | `(id, ctx)`, as `delete` | nothing, synchronously |
+| Provider operation                | Called for                                                  | Arguments                                                                            | Answer                                                                      |
+| --------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- |
+| `retrieveSync` (optional)         | SDK `Retrieve`                                              | `(ctx, id)`                                                                          | the row, or `null` (404); a promise answers 501 `SdkVirtualReadUnsupported` |
+| `retrieveMultipleSync` (optional) | SDK `RetrieveMultiple` (QueryExpression)                    | `(ctx, { select, filter, orderby, top })`, the request shape `retrieveMultiple` gets | an array of rows; a promise answers 501 `SdkVirtualReadUnsupported`         |
+| `createSync` (optional)           | SDK `Create` (and a Web API create when `create` is absent) | `(row, ctx)`, as `create`                                                            | the created row, synchronously                                              |
+| `updateSync` (optional)           | SDK `Update` (and a Web API update when `update` is absent) | `(id, patch, ctx)`, as `update`                                                      | the updated row or nothing, synchronously                                   |
+| `deleteSync` (optional)           | SDK `Delete` (and a Web API delete when `delete` is absent) | `(id, ctx)`, as `delete`                                                             | nothing, synchronously                                                      |
 
 The rows pass the profile's grants and the read projection (column security, masking) as local rows do. An SDK write to a providerless virtual table answers 501 `VirtualProviderMissing` and stores nothing; an SDK write calls only the provider's declared synchronous write operation; without it the write answers 501 `SdkAsyncPreOperationUnsupported` before any provider call, and the local row stays unchanged. A declared synchronous operation that answers a promise fails the write with 400 `VirtualProviderFailed` (the provider has then been called; a provider without `begin`/`commit`/`rollback` keeps that write).
 
@@ -301,12 +305,13 @@ Module: `mirage/lib/dataverse-bpf.mjs`. Capability record: level `contract`, req
 
 The module registers no message. `RetrieveProcessInstances`, `RetrieveActivePath` and `SetProcess` are already answered by `mirage/lib/dataverse-misc-messages.mjs`. `RetrieveProcessInstances` and `RetrieveActivePath` read the instance rows that `createInstance` writes. `SetProcess` answers 501 (see below).
 
-| Operation | Level | Meaning |
-| --- | --- | --- |
-| `BusinessProcessFlowInventory` | `inventory` | Lists category-4 workflow rows as `{ workflowid, name, uniquename, primaryentity, stages: [{ id, name, entity }] }`. |
-| `BusinessProcessFlowInstance` | `contract` | `createInstance`: inserts `{ <pk>, businessprocessflowinstanceid, processid, activestageid, traversedpath, bpf_<primaryentity>id }`. Executes only when the instance table exists. |
+| Operation                      | Level       | Meaning                                                                                                                                                                            |
+| ------------------------------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BusinessProcessFlowInventory` | `inventory` | Lists category-4 workflow rows as `{ workflowid, name, uniquename, primaryentity, stages: [{ id, name, entity }] }`.                                                               |
+| `BusinessProcessFlowInstance`  | `contract`  | `createInstance`: inserts `{ <pk>, businessprocessflowinstanceid, processid, activestageid, traversedpath, bpf_<primaryentity>id }`. Executes only when the instance table exists. |
 
 **Inventory / contract.**
+
 - The stage list is read only when it is simple: clientdata JSON `{ "stages": [{ "stageid", "stagename", "entityname"? }] }`, or XAML with `stage` elements that carry `stageid` (or `id`) and `stagename` (or `name`). A stage without an entity takes the flow's primary entity. A flow without a simple list has `stages: []`.
 - Stage validation and stage moves are not implemented. There is no `moveStage`. No operation rewrites `activestageid` or `traversedpath` of an existing instance row; those are the two columns `createInstance` writes.
 - `createInstance` does not create `processstage` rows. `RetrieveActivePath` reads those rows, so an instance whose stages are not in the store has an empty path.
@@ -314,12 +319,12 @@ The module registers no message. `RetrieveProcessInstances`, `RetrieveActivePath
 
 **Diagnostics.** Each fires once per flow (per code and workflow id) until reset.
 
-| Code | When |
-| --- | --- |
-| `BPF_DEFINITION_UNPARSED` | A category-4 flow has no primary entity or no simple stage list. Its `stages` is `[]`. Reported by the inventory and by `createInstance`. |
-| `BPF_DEFINITION_MISSING` | `createInstance` names a workflow id that is not a category-4 row. Creates nothing. |
-| `BPF_DEFINITION_NOT_ACTIVE` | `createInstance` names a flow whose `statecode` is not activated. Creates nothing. |
-| `BPF_INSTANCE_TABLE_MISSING` | No mapping exists for the flow's `uniquename`. `createInstance` returns `null` and creates nothing. |
+| Code                         | When                                                                                                                                      |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `BPF_DEFINITION_UNPARSED`    | A category-4 flow has no primary entity or no simple stage list. Its `stages` is `[]`. Reported by the inventory and by `createInstance`. |
+| `BPF_DEFINITION_MISSING`     | `createInstance` names a workflow id that is not a category-4 row. Creates nothing.                                                       |
+| `BPF_DEFINITION_NOT_ACTIVE`  | `createInstance` names a flow whose `statecode` is not activated. Creates nothing.                                                        |
+| `BPF_INSTANCE_TABLE_MISSING` | No mapping exists for the flow's `uniquename`. `createInstance` returns `null` and creates nothing.                                       |
 
 `createInstance` throws a `TypeError` when the target id is not a GUID (a programming error, not a Dataverse answer).
 

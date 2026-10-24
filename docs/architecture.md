@@ -2,22 +2,22 @@
 
 Paqvilo owns reusable Power Pages behavior. Your portal project owns its sources, configuration, datasets and acceptance criteria.
 
-| Directory | Responsibility |
-| --- | --- |
-| `bin/` | Public setup, Lense, Mirage and Dataverse command routing |
-| `lense/` | Source models, mapping, editing, overlays, browser sessions, panel and agent API |
-| `mirage/lib/`, `mirage/server.mjs` | Importing, Liquid, FetchXML/Web API, forms/lists, permissions, platform compatibility and simulation; the organization runtime, app hosts, connectors and providers as flat modules |
-| `mirage/admin/` | Local `/_sim/` administration |
-| `mirage/testing/` | Reusable local sign-in, session and runtime helpers and the storage provider contract suite for project-owned tests |
-| `lense/dataverse/` | Explicit project-owned Dataverse provisioning, comparison and export APIs |
-| `test/`, `test-browser/` | Synthetic Lense and integration regressions |
-| `mirage/test/`, `mirage/test-browser/`, `mirage/test-volume/` | Synthetic Mirage regressions; the write-volume gate runs explicitly |
-| `templates/project/` | Empty consumer scaffold used by `paqvilo init` |
-| `examples/project/` | Populated standalone demo, external pack and native component fixture |
-| `examples/company-operations/` | Separate synthetic regression project for deep permissions and plugin observations |
-| `docs/`, `mirage/docs/` | Reusable contracts, configuration and workflow guidance |
-| `scripts/`, `.github/` | Contributor checks, package validation, repository maintenance and CI |
-| `site/` | Public website sources; `dist/` contains ignored generated output |
+| Directory                                                     | Responsibility                                                                                                                                                                      |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bin/`                                                        | Public setup, Lense, Mirage and Dataverse command routing                                                                                                                           |
+| `lense/`                                                      | Source models, mapping, editing, overlays, browser sessions, panel and agent API                                                                                                    |
+| `mirage/lib/`, `mirage/server.mjs`                            | Importing, Liquid, FetchXML/Web API, forms/lists, permissions, platform compatibility and simulation; the organization runtime, app hosts, connectors and providers as flat modules |
+| `mirage/admin/`                                               | Local `/_sim/` administration                                                                                                                                                       |
+| `mirage/testing/`                                             | Reusable local sign-in, session and runtime helpers and the storage provider contract suite for project-owned tests                                                                 |
+| `lense/dataverse/`                                            | Explicit project-owned Dataverse provisioning, comparison and export APIs                                                                                                           |
+| `test/`, `test-browser/`                                      | Synthetic Lense and integration regressions                                                                                                                                         |
+| `mirage/test/`, `mirage/test-browser/`, `mirage/test-volume/` | Synthetic Mirage regressions; the write-volume gate runs explicitly                                                                                                                 |
+| `templates/project/`                                          | Empty consumer scaffold used by `paqvilo init`                                                                                                                                      |
+| `examples/project/`                                           | Populated standalone demo, external pack and native component fixture                                                                                                               |
+| `examples/company-operations/`                                | Separate synthetic regression project for deep permissions and plugin observations                                                                                                  |
+| `docs/`, `mirage/docs/`                                       | Reusable contracts, configuration and workflow guidance                                                                                                                             |
+| `scripts/`, `.github/`                                        | Contributor checks, package validation, repository maintenance and CI                                                                                                               |
+| `site/`                                                       | Public website sources; `dist/` contains ignored generated output                                                                                                                   |
 
 The two products share the catalogue, source model and browser integration. Lense's Mirage lifecycle wrapper starts and stops only owned processes. Mirage imports Lense's source/configuration utilities; it does not require a live portal for local rendering.
 
@@ -25,16 +25,16 @@ The empty scaffold and populated demo serve different purposes: use `paqvilo ini
 
 ## Runtime scope
 
-| Input or behavior | Available support | Boundary |
-| --- | --- | --- |
-| Standard and enhanced portal exports | Source mapping and local import of pages, templates and configuration | Incomplete or ambiguous exports produce diagnostics. |
-| `.powerpages-site` code-site exports | Source import and supported resource handling | SPA application builds and deployment use their own tooling. |
-| Liquid, FetchXML, Web API, forms and lists | Local implementations driven by export and Solution metadata | Local behavior is a simulation; use recorded comparisons for parity claims. |
-| Dataverse business behavior | Synthetic rows, supported exported operations, trusted handlers, explicitly configured original CLR plugins and contract modules for calculated, rollup, formula and business-rule logic | Unsupported SDK services and modules below `behaviour` report their level and diagnostics; project packs supply the missing models. |
-| Cloud flows and connectors | A bounded flow interpreter with tracked runs, waits, approvals, retries and child flows; a connector runtime that resolves connection references to declared connections and providers | Connectors without a provider need a pack connector, an HTTP fixture or a per-action mock. Outbound calls reach loopback services only. |
-| Files, messages and external services | Storage routes for file, note and portal bytes, a local message bus, an outbox, declared loopback services (Functions, Azurite, the Service Bus emulator), and core transports to Azurite (Blob REST) and the Service Bus emulator (AMQP 1.0) | Paqvilo probes external services but never starts them; cloud endpoints are refused. |
-| Canvas and code apps | Headless canvas app runtime on the core Power Fx engine, and code app context, token and Dataverse proxy under `/_apps/` | No canvas app is rendered. |
-| Browser automation | Origin-confined session, page, event, snapshot and navigation APIs | Live browser actions still use the portal's backend. |
+| Input or behavior                          | Available support                                                                                                                                                                                                                             | Boundary                                                                                                                                |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| Standard and enhanced portal exports       | Source mapping and local import of pages, templates and configuration                                                                                                                                                                         | Incomplete or ambiguous exports produce diagnostics.                                                                                    |
+| `.powerpages-site` code-site exports       | Source import and supported resource handling                                                                                                                                                                                                 | SPA application builds and deployment use their own tooling.                                                                            |
+| Liquid, FetchXML, Web API, forms and lists | Local implementations driven by export and Solution metadata                                                                                                                                                                                  | Local behavior is a simulation; use recorded comparisons for parity claims.                                                             |
+| Dataverse business behavior                | Synthetic rows, supported exported operations, trusted handlers, explicitly configured original CLR plugins and contract modules for calculated, rollup, formula and business-rule logic                                                      | Unsupported SDK services and modules below `behaviour` report their level and diagnostics; project packs supply the missing models.     |
+| Cloud flows and connectors                 | A bounded flow interpreter with tracked runs, waits, approvals, retries and child flows; a connector runtime that resolves connection references to declared connections and providers                                                        | Connectors without a provider need a pack connector, an HTTP fixture or a per-action mock. Outbound calls reach loopback services only. |
+| Files, messages and external services      | Storage routes for file, note and portal bytes, a local message bus, an outbox, declared loopback services (Functions, Azurite, the Service Bus emulator), and core transports to Azurite (Blob REST) and the Service Bus emulator (AMQP 1.0) | Paqvilo probes external services but never starts them; cloud endpoints are refused.                                                    |
+| Canvas and code apps                       | Headless canvas app runtime on the core Power Fx engine, and code app context, token and Dataverse proxy under `/_apps/`                                                                                                                      | No canvas app is rendered.                                                                                                              |
+| Browser automation                         | Origin-confined session, page, event, snapshot and navigation APIs                                                                                                                                                                            | Live browser actions still use the portal's backend.                                                                                    |
 
 The [Mirage reference](../mirage/docs/README.md) describes each runtime contract and its evidence. [Platform stack coverage](../mirage/docs/platform-stack.md) maps each Dataverse and Power Platform area to its module and capability level, and states what is external or out of scope. Microsoft's [developer tools](https://learn.microsoft.com/en-us/power-pages/configure/developer-overview) remain part of the source and release workflow.
 

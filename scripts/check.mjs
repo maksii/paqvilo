@@ -17,7 +17,11 @@ function walk(dir) {
 for (const dir of ['bin', 'lense', 'scripts', 'test', 'test-browser', 'mirage', 'examples']) walk(path.join(root, dir));
 let failed = false;
 for (const file of files) {
-  const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+  const result = spawnSync(process.execPath, ['--check', file], {
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 10_000,
+  });
   if (result.status !== 0) {
     failed = true;
     console.error(`${path.relative(root, file)}: ${result.error?.message ?? result.stderr}`);

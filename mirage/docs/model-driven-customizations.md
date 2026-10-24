@@ -30,14 +30,14 @@ Keep fixture records, script sources and their acceptance tests in the project.
 
 ## Supported baseline
 
-| Exported component | Local behavior |
-| --- | --- |
-| Main form XML | Tabs, sections, fields, labels, supported related grids and controls |
-| JavaScript WebResources | Declared local files load in exported form-library order; no remote lookup or expression evaluation |
-| Form events | OnLoad, column OnChange, OnSave; execution context, named functions, handler parameters and save cancellation |
-| Client API | Bounded form attributes and controls, dirty values, required/visible/disabled states, notifications, local navigation and staff-authorized record operations |
-| Classic ribbon and modern AppAction JavaScript actions | Exported buttons, named handlers and supported parameters/rules; the modern baseline supports `PrimaryControl` |
-| Standard field PCF | Declared compiled bundle and CSS, manifest properties, initialization, updates, output notification, outputs and disposal |
+| Exported component                                     | Local behavior                                                                                                                                               |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Main form XML                                          | Tabs, sections, fields, labels, supported related grids and controls                                                                                         |
+| JavaScript WebResources                                | Declared local files load in exported form-library order; no remote lookup or expression evaluation                                                          |
+| Form events                                            | OnLoad, column OnChange, OnSave; execution context, named functions, handler parameters and save cancellation                                                |
+| Client API                                             | Bounded form attributes and controls, dirty values, required/visible/disabled states, notifications, local navigation and staff-authorized record operations |
+| Classic ribbon and modern AppAction JavaScript actions | Exported buttons, named handlers and supported parameters/rules; the modern baseline supports `PrimaryControl`                                               |
+| Standard field PCF                                     | Declared compiled bundle and CSS, manifest properties, initialization, updates, output notification, outputs and disposal                                    |
 
 The runtime follows the documented [form Client API](https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/clientapi/reference/),
 [ribbon parameters](https://learn.microsoft.com/en-us/dynamics365/customer-engagement/developer/customize-dev/pass-dynamics-365-data-page-parameter-ribbon-actions),
@@ -190,9 +190,7 @@ prefixes and PCF bundle paths vary; bind paths actually observed in the app:
 ```json
 {
   "version": 1,
-  "resources": [
-    { "path": "/observed-controls/Example.Input/bundle.js", "resource": "x_Example.Input/bundle.js" }
-  ]
+  "resources": [{ "path": "/observed-controls/Example.Input/bundle.js", "resource": "x_Example.Input/bundle.js" }]
 }
 ```
 

@@ -14,11 +14,11 @@ simulation:
 paqvilo mirage start --project ./mirage.project.yml --simulation dry-run
 ```
 
-| Level | Record edits | Schema changes | Restart |
-| --- | --- | --- | --- |
-| `dry-run` | Allowed in memory | Refused | Reloads source and pack DATA; memory edits and local credentials disappear |
-| `simulation` | Writes existing, explicitly declared pack DATA files | Refused | Reads updated pack DATA |
-| `deep` | Writes declared pack DATA | Allowed with a declared schema location | Reads updated DATA and normalized schema |
+| Level        | Record edits                                         | Schema changes                          | Restart                                                                    |
+| ------------ | ---------------------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------- |
+| `dry-run`    | Allowed in memory                                    | Refused                                 | Reloads source and pack DATA; memory edits and local credentials disappear |
+| `simulation` | Writes existing, explicitly declared pack DATA files | Refused                                 | Reads updated pack DATA                                                    |
+| `deep`       | Writes declared pack DATA                            | Allowed with a declared schema location | Reads updated DATA and normalized schema                                   |
 
 Source/bootstrap imports establish the runtime's initial schema in every level.
 Creating a table, adding a column or importing schema through a running API is a
@@ -44,17 +44,19 @@ export default {
   description: 'Project-owned development data',
   matches: () => true,
   presets: () => ({}),
-  dataFiles: [{
-    file: 'data/records.json',
-    tables: {
-      sample_item: {
-        path: ['items'],
-        idColumn: 'sample_itemid',
+  dataFiles: [
+    {
+      file: 'data/records.json',
+      tables: {
+        sample_item: {
+          path: ['items'],
+          idColumn: 'sample_itemid',
+        },
       },
+      newTablesPath: ['createdTables'],
+      schemaPath: ['schema'],
     },
-    newTablesPath: ['createdTables'],
-    schemaPath: ['schema'],
-  }],
+  ],
 };
 ```
 

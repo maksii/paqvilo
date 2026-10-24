@@ -19,12 +19,12 @@
 
 ## Choose your workflow
 
-| | Lense | Mirage |
-| --- | --- | --- |
-| Use it to | Preview JavaScript, CSS, images and supported literal HTML edits without uploading each change | Develop independently with local rendering, identities and test data |
-| How it works | Overlays local sources in a dedicated browser; Liquid and Dataverse stay online | Renders exported sources locally; simulates Dataverse, forms, lists and permissions |
-| Inspect and compare | **Inspect** traces page sources, components and exported access rules; **Online / Local** compares responses | **Inspect** for page dependencies, **Tweaks** for identity and scenarios, `/_sim/` for administration |
-| Learn more | <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/lense-icon.png" width="96" alt="Read the Lense guide"></a> | <a href="https://github.com/maksii/paqvilo/blob/main/mirage/README.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/mirage-icon.png" width="96" alt="Read the Mirage guide"></a> |
+|                     | Lense                                                                                                                                                                                                      | Mirage                                                                                                                                                                                                          |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Use it to           | Preview JavaScript, CSS, images and supported literal HTML edits without uploading each change                                                                                                             | Develop independently with local rendering, identities and test data                                                                                                                                            |
+| How it works        | Overlays local sources in a dedicated browser; Liquid and Dataverse stay online                                                                                                                            | Renders exported sources locally; simulates Dataverse, forms, lists and permissions                                                                                                                             |
+| Inspect and compare | **Inspect** traces page sources, components and exported access rules; **Online / Local** compares responses                                                                                               | **Inspect** for page dependencies, **Tweaks** for identity and scenarios, `/_sim/` for administration                                                                                                           |
+| Learn more          | <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/lense-icon.png" width="96" alt="Read the Lense guide"></a> | <a href="https://github.com/maksii/paqvilo/blob/main/mirage/README.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/mirage-icon.png" width="96" alt="Read the Mirage guide"></a> |
 
 Mirage also gives automated tests and coding agents a local runtime with controlled data. Keep your scenarios and acceptance tests in your own project.
 
@@ -34,11 +34,11 @@ Use the separate [`paqvilo dataverse` workflow](docs/dataverse-provisioning.md) 
 
 Paqvilo is a Power Pages-specific alternative for developers who need source mapping, live reload and local portal simulation alongside resource overrides.
 
-| Existing workflow | What it provides | What Paqvilo adds |
-| --- | --- | --- |
-| [Fiddler Classic AutoResponder](https://www.telerik.com/fiddler/fiddler-classic/documentation/knowledge-base/autoresponder) / [Fiddler Everywhere rules](https://www.telerik.com/fiddler/fiddler-everywhere/documentation/rules-presets/modify-traffic/modify-reponse-body) | Request matching, local file responses and response modification | Power Pages export mapping, Git baseline comparisons and refresh on source saves |
-| [Chrome DevTools Local Overrides](https://developer.chrome.com/docs/devtools/overrides) / [Edge Overrides](https://learn.microsoft.com/en-us/microsoft-edge/devtools-guide-chromium/javascript/overrides) | Replace browser resources with local copies | Portal record and field identity, supported inline edits and integrated Online / Local comparison |
-| [Power Platform CLI and VS Code](https://learn.microsoft.com/en-us/power-pages/configure/developer-overview) | Source editing and portal download/upload | A local Liquid and Dataverse simulation for independent development and repeatable tests |
+| Existing workflow                                                                                                                                                                                                                                                           | What it provides                                                 | What Paqvilo adds                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| [Fiddler Classic AutoResponder](https://www.telerik.com/fiddler/fiddler-classic/documentation/knowledge-base/autoresponder) / [Fiddler Everywhere rules](https://www.telerik.com/fiddler/fiddler-everywhere/documentation/rules-presets/modify-traffic/modify-reponse-body) | Request matching, local file responses and response modification | Power Pages export mapping, Git baseline comparisons and refresh on source saves                  |
+| [Chrome DevTools Local Overrides](https://developer.chrome.com/docs/devtools/overrides) / [Edge Overrides](https://learn.microsoft.com/en-us/microsoft-edge/devtools-guide-chromium/javascript/overrides)                                                                   | Replace browser resources with local copies                      | Portal record and field identity, supported inline edits and integrated Online / Local comparison |
+| [Power Platform CLI and VS Code](https://learn.microsoft.com/en-us/power-pages/configure/developer-overview)                                                                                                                                                                | Source editing and portal download/upload                        | A local Liquid and Dataverse simulation for independent development and repeatable tests          |
 
 Use Lense for live portal previews and Mirage for isolated local environments. DevTools and Fiddler remain useful for general browser and HTTP debugging.
 
@@ -95,15 +95,15 @@ Lense interactions use the live portal's backend and can change live data. Mirag
 
 ## Documentation
 
-| Task | Guide |
-| --- | --- |
-| Set up your first project | [Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) |
-| Explore the demo and deploy its sources | [Demo walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md) |
-| Configure sources, browsers and several sites | [Configuration](https://github.com/maksii/paqvilo/blob/main/docs/configuration.md) |
-| Add personas, datasets and acceptance tests | [Project starter](https://github.com/maksii/paqvilo/blob/main/examples/project/README.md), [extensions](https://github.com/maksii/paqvilo/blob/main/docs/project-extensions.md) |
-| Understand runtime support and evidence | [Mirage reference](https://github.com/maksii/paqvilo/blob/main/mirage/docs/README.md), [architecture](https://github.com/maksii/paqvilo/blob/main/docs/architecture.md) |
-| Check support and common questions | [Coverage](https://github.com/maksii/paqvilo/blob/main/docs/coverage.md), [FAQ](https://github.com/maksii/paqvilo/blob/main/docs/faq.md) |
-| Contribute | [Contributing](https://github.com/maksii/paqvilo/blob/main/CONTRIBUTING.md) |
+| Task                                          | Guide                                                                                                                                                                           |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Set up your first project                     | [Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md)                                                                                          |
+| Explore the demo and deploy its sources       | [Demo walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md)                                                                                                    |
+| Configure sources, browsers and several sites | [Configuration](https://github.com/maksii/paqvilo/blob/main/docs/configuration.md)                                                                                              |
+| Add personas, datasets and acceptance tests   | [Project starter](https://github.com/maksii/paqvilo/blob/main/examples/project/README.md), [extensions](https://github.com/maksii/paqvilo/blob/main/docs/project-extensions.md) |
+| Understand runtime support and evidence       | [Mirage reference](https://github.com/maksii/paqvilo/blob/main/mirage/docs/README.md), [architecture](https://github.com/maksii/paqvilo/blob/main/docs/architecture.md)         |
+| Check support and common questions            | [Coverage](https://github.com/maksii/paqvilo/blob/main/docs/coverage.md), [FAQ](https://github.com/maksii/paqvilo/blob/main/docs/faq.md)                                        |
+| Contribute                                    | [Contributing](https://github.com/maksii/paqvilo/blob/main/CONTRIBUTING.md)                                                                                                     |
 
 > **Microsoft notice:** Paqvilo is independent and is not affiliated with, sponsored or endorsed by Microsoft. Microsoft, Dataverse, Power Pages, Power Platform and other Microsoft names referenced here are trademarks of the Microsoft group of companies ([guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks)). Other trademarks belong to their respective owners.
 

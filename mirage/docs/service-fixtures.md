@@ -8,20 +8,20 @@ Module: `mirage/lib/service-fixtures.mjs`, created with `createServiceFixtureReg
 
 **Behaviour.** The registry resolves a service and operation pair to one answer. Resolution order matches `registerAddon`: a trusted pack's `serviceFixtures[service][operation]` (level `fixture`, source `pack:<id>`) wins; else a registered handler (level `behaviour`, source `core`); else the default fallback (level `disabled`, source `core`). Operations never registered resolve to the default fallback. Packs and the host call `resolve(service, operation).run(ctx)`. Paqvilo executes nothing for a disabled service.
 
-| Level | Meaning |
-| --- | --- |
-| `disabled` | Not executed. The default answer is `{ error: { code: "ServiceDisabled", service, operation } }`. |
-| `fixture` | A trusted pack supplies the answer. The fixture decides its own result shape (for example `{ html }` or `{ error }`). |
-| `behaviour` | A registered deterministic handler answers. Only registered by code, not by packs. |
+| Level       | Meaning                                                                                                               |
+| ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| `disabled`  | Not executed. The default answer is `{ error: { code: "ServiceDisabled", service, operation } }`.                     |
+| `fixture`   | A trusted pack supplies the answer. The fixture decides its own result shape (for example `{ html }` or `{ error }`). |
+| `behaviour` | A registered deterministic handler answers. Only registered by code, not by packs.                                    |
 
 **Built-in services.** The built-in catalogue holds three operations, each with the default fallback only. Every other service is added by packs.
 
-| Service | Built-in operations | Answer without a pack fixture |
-| --- | --- | --- |
-| `powerBi` | `embed` | `ServiceDisabled` |
-| `aiBuilder` | `predict` | `ServiceDisabled` |
-| `copilot` | `ask` | `ServiceDisabled` |
-| `dynamics` | none; a pack adds its operations | `ServiceDisabled` |
+| Service     | Built-in operations              | Answer without a pack fixture |
+| ----------- | -------------------------------- | ----------------------------- |
+| `powerBi`   | `embed`                          | `ServiceDisabled`             |
+| `aiBuilder` | `predict`                        | `ServiceDisabled`             |
+| `copilot`   | `ask`                            | `ServiceDisabled`             |
+| `dynamics`  | none; a pack adds its operations | `ServiceDisabled`             |
 
 **Out of scope.** Power BI and Fabric rendering, AI Builder model inference and Copilot orchestration are not implemented. The registry answers them with a pack fixture or the disabled error only.
 

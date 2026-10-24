@@ -2,10 +2,10 @@
 
 Two separate adapters cover SharePoint. Neither reaches a SharePoint tenant. Adapter A stores Dataverse document locations and their files through the storage provider. Adapter B is a fixture server that answers Graph and SharePoint REST requests from declared data.
 
-| Adapter | Module | Level |
-| --- | --- | --- |
-| A: Dataverse document integration | `mirage/lib/sharepoint-documents.mjs` | `behaviour` when a storage router or provider is passed, otherwise `contract` |
-| B: Graph and SharePoint REST contract fixture | `mirage/lib/sharepoint-contract.mjs` | `contract`, mounted only for a connection that declares it |
+| Adapter                                       | Module                                | Level                                                                         |
+| --------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------------------- |
+| A: Dataverse document integration             | `mirage/lib/sharepoint-documents.mjs` | `behaviour` when a storage router or provider is passed, otherwise `contract` |
+| B: Graph and SharePoint REST contract fixture | `mirage/lib/sharepoint-contract.mjs`  | `contract`, mounted only for a connection that declares it                    |
 
 ## Adapter A: Dataverse document integration
 
@@ -13,14 +13,14 @@ Module: `mirage/lib/sharepoint-documents.mjs` (`EXTENSION`, name `sharepoint-doc
 
 **Behaviour.** `install(api, { storage, diagnostic })` exposes `api.sharepoint`. The last argument of each call is the identity: `{ admin: true }`, or `{ user, caller? }` where `user` is a `systemuser` row (the request's `c.user`).
 
-| Call | What it does | Privilege on the regarding record |
-| --- | --- | --- |
-| `locationsFor({ logicalName, id }, identity)` | active `sharepointdocumentlocation` rows regarding the record | read |
-| `ensureLocation(regarding, { parentSite?, relativeUrl? }, identity)` | returns the record's active location, or creates a table library location under the site (relative URL = table logical name, created once) and a record location under it, plus the folder | write |
-| `listDocuments(locationId, identity, { path })` | one folder, subfolders first (`{ name, folder: true }`), then its files: `name`, `size`, `etag`, `contentType`, `lastModified` | read |
-| `createFolder(locationId, { path, name }, identity)`, `deleteFolder(locationId, path, identity)` | create or delete a subfolder of the record folder | write |
-| `upload(locationId, { name, bytes, contentType, ifMatch? }, identity)` | stores the file; answers the provider ETag; `ifMatch` → 412 on mismatch | write |
-| `delete(locationId, name, { ifMatch? }, identity)` | removes the file; 404 when absent, 412 on an ETag mismatch | write |
+| Call                                                                                             | What it does                                                                                                                                                                               | Privilege on the regarding record |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------- |
+| `locationsFor({ logicalName, id }, identity)`                                                    | active `sharepointdocumentlocation` rows regarding the record                                                                                                                              | read                              |
+| `ensureLocation(regarding, { parentSite?, relativeUrl? }, identity)`                             | returns the record's active location, or creates a table library location under the site (relative URL = table logical name, created once) and a record location under it, plus the folder | write                             |
+| `listDocuments(locationId, identity, { path })`                                                  | one folder, subfolders first (`{ name, folder: true }`), then its files: `name`, `size`, `etag`, `contentType`, `lastModified`                                                             | read                              |
+| `createFolder(locationId, { path, name }, identity)`, `deleteFolder(locationId, path, identity)` | create or delete a subfolder of the record folder                                                                                                                                          | write                             |
+| `upload(locationId, { name, bytes, contentType, ifMatch? }, identity)`                           | stores the file; answers the provider ETag; `ifMatch` → 412 on mismatch                                                                                                                    | write                             |
+| `delete(locationId, name, { ifMatch? }, identity)`                                               | removes the file; 404 when absent, 412 on an ETag mismatch                                                                                                                                 | write                             |
 
 `upload`, `download` and `delete` take `path` for a file inside a subfolder.
 | `describe()` | the capability record for this api | — |
@@ -51,12 +51,12 @@ Module: `mirage/lib/sharepoint-contract.mjs`. Capability record `sharePointContr
           { driveId: "drive-a", path: "x_case/Empty", folder: true }] }
 ```
 
-| Operation | Request | Answer |
-| --- | --- | --- |
-| listChildren | `GET /sites/{siteId}/drives/{driveId}/root:/{path}:/children` | 200 `{ value: [driveItem] }` |
-| uploadContent | `PUT …/root:/{path}:/content` | 201 new, 200 replaced; `If-Match` → 412; `?@microsoft.graph.conflictBehavior=fail\|rename` |
-| createFolder | `POST …/root:/{path}:/children` with `{ name, folder: {} }` | 201; conflict `fail` (default) → 409, `rename` → `name 1` |
-| deleteItem | `DELETE /sites/{siteId}/drives/{driveId}/items/{itemId}` | 204; `If-Match` → 412; 404 when absent |
+| Operation     | Request                                                       | Answer                                                                                     |
+| ------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| listChildren  | `GET /sites/{siteId}/drives/{driveId}/root:/{path}:/children` | 200 `{ value: [driveItem] }`                                                               |
+| uploadContent | `PUT …/root:/{path}:/content`                                 | 201 new, 200 replaced; `If-Match` → 412; `?@microsoft.graph.conflictBehavior=fail\|rename` |
+| createFolder  | `POST …/root:/{path}:/children` with `{ name, folder: {} }`   | 201; conflict `fail` (default) → 409, `rename` → `name 1`                                  |
+| deleteItem    | `DELETE /sites/{siteId}/drives/{driveId}/items/{itemId}`      | 204; `If-Match` → 412; 404 when absent                                                     |
 
 An optional `/v1.0` prefix is accepted. A `driveItem` carries `id`, `name`, `eTag`, `cTag`, `size`, `createdDateTime`, `lastModifiedDateTime`, `parentReference` and `folder { childCount }` or `file { mimeType }`. Errors use the Graph body `{ error: { code, message } }` with `itemNotFound` (404), `nameAlreadyExists` (409), `resourceModified` (412) and `invalidRequest` (400). The fixture server listens on loopback port 0 only and caps request bodies at 4 MiB (413).
 
@@ -85,7 +85,7 @@ An optional `/v1.0` prefix is accepted. A `driveItem` carries `id`, `name`, `eTa
        provider: http
        settings:
          rewrites:
-           "https://graph.microsoft.com": "http://127.0.0.1:<fixture port>"
+           'https://graph.microsoft.com': 'http://127.0.0.1:<fixture port>'
    ```
 
    A project starts `createSharePointFixtureServer({ fixtures })`, or registers its routes through the `httpFixtures` pack export.

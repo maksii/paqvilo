@@ -16,21 +16,21 @@ Generation performs no installation, network access or browser launch. It create
 
 ## Options
 
-| Option | Default | Use |
-| --- | --- | --- |
-| `[dir]` | `.` | New or empty target directory |
-| `--name` | Target basename | Lowercase package slug; also the default pack ID |
-| `--site` (repeatable) | `portal` | Site IDs; ports start at 8787 and increment |
-| `--default-env` | `dev` | Placeholder environment per site |
-| `--source-root` | `./sources` | Portal/Solution checkout root |
-| `--pack` (repeatable) | Project name | One pack uses `pack/`; several use `packs/<id>/` |
-| `--no-pack` | Off | Omit pack modules/source-free binding; retain optional site-bound helper and smoke tests |
-| `--browser` | `msedge` | `msedge`, `chrome` or `chromium`; Chrome debugger for the latter two |
-| `--toolkit` | `^<installed-version>` | Dependency spec, including `file:../paqvilo` |
-| `--no-vscode` | Off | Omit tasks, launches, workspace and setup refresh |
-| `--into-existing` | Off | Add missing files only and report every skipped file |
-| `--interactive` | Off | Choose the browser through the terminal picker |
-| `--json` | Off | Machine-readable schemaVersion 1 reports |
+| Option                | Default                | Use                                                                                      |
+| --------------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
+| `[dir]`               | `.`                    | New or empty target directory                                                            |
+| `--name`              | Target basename        | Lowercase package slug; also the default pack ID                                         |
+| `--site` (repeatable) | `portal`               | Site IDs; ports start at 8787 and increment                                              |
+| `--default-env`       | `dev`                  | Placeholder environment per site                                                         |
+| `--source-root`       | `./sources`            | Portal/Solution checkout root                                                            |
+| `--pack` (repeatable) | Project name           | One pack uses `pack/`; several use `packs/<id>/`                                         |
+| `--no-pack`           | Off                    | Omit pack modules/source-free binding; retain optional site-bound helper and smoke tests |
+| `--browser`           | `msedge`               | `msedge`, `chrome` or `chromium`; Chrome debugger for the latter two                     |
+| `--toolkit`           | `^<installed-version>` | Dependency spec, including `file:../paqvilo`                                             |
+| `--no-vscode`         | Off                    | Omit tasks, launches, workspace and setup refresh                                        |
+| `--into-existing`     | Off                    | Add missing files only and report every skipped file                                     |
+| `--interactive`       | Off                    | Choose the browser through the terminal picker                                           |
+| `--json`              | Off                    | Machine-readable schemaVersion 1 reports                                                 |
 
 Names, site IDs, environment IDs and pack IDs use lowercase letters, digits and hyphens, start with a letter or digit, and are at most 64 characters. Reserved object/Windows device names and duplicate IDs are rejected. `--name` is required when the target basename does not follow these rules. This narrower scaffold convention keeps paths, scripts and task labels portable; existing catalogues still support the broader configuration identifier contract. Sites named `pick` or `debug` use `dev:site:<id>:dev` and `mirage:dev:site:<id>:dev` shortcuts, preserving the project-wide picker/debugger commands.
 

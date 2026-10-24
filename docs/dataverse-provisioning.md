@@ -51,9 +51,7 @@ Keep `dataverse/manifest.json` in the owning project. Minimal shape:
     "prefix": "exmp",
     "optionValuePrefix": 12345
   },
-  "solutions": [
-    { "uniqueName": "ExampleSchema", "friendlyName": "Example Schema", "version": "1.0.0.0" }
-  ],
+  "solutions": [{ "uniqueName": "ExampleSchema", "friendlyName": "Example Schema", "version": "1.0.0.0" }],
   "tables": [
     {
       "name": "exmp_item",
@@ -63,9 +61,7 @@ Keep `dataverse/manifest.json` in the owning project. Minimal shape:
       "ownership": "organization",
       "solution": "ExampleSchema",
       "primaryName": { "name": "exmp_name", "label": "Name", "maxLength": 160 },
-      "columns": [
-        { "name": "exmp_code", "label": "Code", "type": "string", "maxLength": 40, "required": "required" }
-      ],
+      "columns": [{ "name": "exmp_code", "label": "Code", "type": "string", "maxLength": 40, "required": "required" }],
       "keys": [{ "name": "exmp_item_code", "columns": ["exmp_code"] }]
     }
   ]

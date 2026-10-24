@@ -9,16 +9,16 @@ Copy the example to a new project-root catalogue such as `configuration.recipe.y
 before using `--config ./configuration.recipe.yml`; its paths assume that root location,
 not the `docs/` folder. Review it before replacing any active shared configuration.
 
-| Value | Resolution base |
-| --- | --- |
-| `sourceRoot` | Catalogue directory |
-| Site `source`, `solutionRoots` | Effective source root |
-| Pack module, `mirage.project` | Catalogue directory |
-| Plain deployment-profile file string | Catalogue directory |
-| Deployment `{ source: path }` | Selected site export |
-| Deployment `{ sourceRoot: path }` | Effective source root |
-| Relative `PAQVILO_REPO` | Catalogue directory |
-| Relative CLI `--repo` | Invoking directory |
+| Value                                | Resolution base       |
+| ------------------------------------ | --------------------- |
+| `sourceRoot`                         | Catalogue directory   |
+| Site `source`, `solutionRoots`       | Effective source root |
+| Pack module, `mirage.project`        | Catalogue directory   |
+| Plain deployment-profile file string | Catalogue directory   |
+| Deployment `{ source: path }`        | Selected site export  |
+| Deployment `{ sourceRoot: path }`    | Effective source root |
+| Relative `PAQVILO_REPO`              | Catalogue directory   |
+| Relative CLI `--repo`                | Invoking directory    |
 
 The recipe shares Solution settings from a separate settings checkout, while only
 the customer site applies its exported Pages patch. A local profile is selected by
@@ -36,14 +36,14 @@ browser:
   channel: chrome
 ```
 
-| Layer | Precedence |
-| --- | --- |
-| Explicit CLI option | Highest, for that invocation |
-| Shell `PAQVILO_*` | Overrides matching file/environment settings |
-| Project `.env` | Supplies personal `PAQVILO_*` defaults |
-| `paqvilo.config.local.yml` | Merged over the shared catalogue |
-| Shared site settings | Override shared `defaults` for that site |
-| Shared defaults | Lowest explicit project layer |
+| Layer                      | Precedence                                   |
+| -------------------------- | -------------------------------------------- |
+| Explicit CLI option        | Highest, for that invocation                 |
+| Shell `PAQVILO_*`          | Overrides matching file/environment settings |
+| Project `.env`             | Supplies personal `PAQVILO_*` defaults       |
+| `paqvilo.config.local.yml` | Merged over the shared catalogue             |
+| Shared site settings       | Override shared `defaults` for that site     |
+| Shared defaults            | Lowest explicit project layer                |
 
 Do not copy another checkout's personal files. Configuration saves affect the next
 preview start: stop only your owned preview, refresh editor files, inspect script
@@ -61,10 +61,10 @@ Generation registers every requested pack on every requested site and new packs
 match nothing. Review the matrix explicitly; registration is availability, matching
 is activation. Shared packs are supported when that is intentional.
 
-| Example pack | customer | partner |
-| --- | --- | --- |
-| sample-data (site-owned) | Register and match customer fixture | Omit |
-| shared-helpers (optional separate pack) | Register if needed | Register if needed |
+| Example pack                            | customer                            | partner            |
+| --------------------------------------- | ----------------------------------- | ------------------ |
+| sample-data (site-owned)                | Register and match customer fixture | Omit               |
+| shared-helpers (optional separate pack) | Register if needed                  | Register if needed |
 
 For each pack test a positive website identity and an unrelated negative identity.
 Also test shared packs against every intended site's fixture. The source-free

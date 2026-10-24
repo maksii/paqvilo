@@ -10,11 +10,11 @@ Options: `--rules FILE` (default `mirage/lib/liquid-conformance-rules.json`), `-
 
 Each differing case falls into one category:
 
-| Category | Meaning |
-| --- | --- |
-| `platform-unsupported` | A tag, filter or syntax that DotLiquid and Power Pages do not provide. |
+| Category               | Meaning                                                                                                                 |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `platform-unsupported` | A tag, filter or syntax that DotLiquid and Power Pages do not provide.                                                  |
 | `dotliquid-divergence` | Mirage renders what DotLiquid (or the filter Power Pages registers over it) renders, which differs from Shopify Liquid. |
-| `engine-gap` | Mirage differs from DotLiquid. A differing case without a rule is reported here too. |
+| `engine-gap`           | Mirage differs from DotLiquid. A differing case without a rule is reported here too.                                    |
 
 Rules for cases that now pass are listed as stale.
 

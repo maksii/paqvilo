@@ -13,12 +13,12 @@ How Mirage treats exported Power Pages configuration records (redirects, page te
 
 These settings go in the site's `observed` block with `observed.evidence` naming where you observed the behaviour. Omitting a setting keeps the default.
 
-| Setting | Default | Observed behaviour |
-| --- | --- | --- |
-| `redirect301: "temporary"` | `"configured"` | Redirect records configured as 301 answer 302. Canonical slash redirects, source values and other status codes are unchanged. |
-| `webTemplateResponseNewline: "crlf"` | `"none"` | No-header web-template responses (including plain text and JSON) end with an appended CRLF; authored endings are not trimmed. |
-| `webFileMimeCharset: "source"` | `"utf8"` | Web files keep the attachment MIME type instead of gaining a UTF-8 charset. |
-| `siteMarkerRedirect: "null-reference"` | `"resolve"` | Marker-only redirect records answer 500 with the captured exception message. A populated URL or page target still wins. The body is a local diagnostic, not the hosted error-page shell. |
+| Setting                                | Default        | Observed behaviour                                                                                                                                                                       |
+| -------------------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `redirect301: "temporary"`             | `"configured"` | Redirect records configured as 301 answer 302. Canonical slash redirects, source values and other status codes are unchanged.                                                            |
+| `webTemplateResponseNewline: "crlf"`   | `"none"`       | No-header web-template responses (including plain text and JSON) end with an appended CRLF; authored endings are not trimmed.                                                            |
+| `webFileMimeCharset: "source"`         | `"utf8"`       | Web files keep the attachment MIME type instead of gaining a UTF-8 charset.                                                                                                              |
+| `siteMarkerRedirect: "null-reference"` | `"resolve"`    | Marker-only redirect records answer 500 with the captured exception message. A populated URL or page target still wins. The body is a local diagnostic, not the hosted error-page shell. |
 
 ## Comparing with a live site
 

@@ -38,13 +38,13 @@ sites:
 
 The pack and preset above are project-owned examples; register only modules you trust.
 
-| Path | Resolved from |
-| --- | --- |
-| `sourceRoot` | Catalogue directory |
-| Site `source` and `mirage.solutionRoots` | Resolved source root |
-| Pack modules, `mirage.project`, local head assets | Catalogue directory |
-| `--repo` | Invoking working directory; overrides `sourceRoot` |
-| Paths inside a standalone Mirage project | That project file's directory |
+| Path                                              | Resolved from                                      |
+| ------------------------------------------------- | -------------------------------------------------- |
+| `sourceRoot`                                      | Catalogue directory                                |
+| Site `source` and `mirage.solutionRoots`          | Resolved source root                               |
+| Pack modules, `mirage.project`, local head assets | Catalogue directory                                |
+| `--repo`                                          | Invoking working directory; overrides `sourceRoot` |
+| Paths inside a standalone Mirage project          | That project file's directory                      |
 
 Use `--source` for a direct export path. Live Lense Inspect can read the selected Solution
 roots without starting Mirage or loading pack code. Missing managed metadata is reported.
@@ -93,19 +93,19 @@ Use `defaults.mirage` for shared defaults and `sites.<id>.mirage` for site overr
 Unknown settings are rejected. The setup workspace's YAML editor supports these settings.
 Restart running previews after configuration changes.
 
-| Setting | Purpose and reference |
-| --- | --- |
-| `dataPacks`, `preset` | Explicit project modules and seed data; [data packs](../mirage/docs/data-packs.md) |
-| `presetConfiguration` | `data-only` (default) leaves configuration overrides intact. `apply` also applies the selected data preset’s linked configuration when it is seeded. |
-| `presetMode` | `bootstrap` keeps an existing state; `always` reapplies the selected preset at startup. Status reports the decision. |
-| `render.timeLimitMs` | Local Liquid budget, default 60,000 ms; [render limits](public-api.md#render-local-pages-within-a-budget) |
-| `deploymentProfiles` | Select exported environment settings; [deployment profiles](../mirage/docs/deployment-profiles.md) |
-| `personaContexts` | Bound isolated scenario copies; [persona setups](../mirage/docs/persona-catalog.md#isolated-contexts-and-scenarios) |
-| `identityProvider` | Local chooser text, layout and project assets; `newUser: auto \| always \| never` controls registration choices. `auto` follows site registration, open-registration/invitation and provider registration settings; [picker configuration](../mirage/docs/persona-catalog.md#identity-provider-and-lense-pickers) |
-| `dataverse` | Simulated Dataverse Web API on its own loopback origin, with OAuth applications and users; [Dataverse API](../mirage/docs/dataverse-api.md) |
-| `platform` | Explicit simulated platform controls; [configuration experiments](../mirage/docs/configuration-experiments.md) |
-| `compat`, `head` | Local adapters and assets, described below |
-| `observed` | Evidenced platform conventions absent from exports, described below |
+| Setting               | Purpose and reference                                                                                                                                                                                                                                                                                             |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dataPacks`, `preset` | Explicit project modules and seed data; [data packs](../mirage/docs/data-packs.md)                                                                                                                                                                                                                                |
+| `presetConfiguration` | `data-only` (default) leaves configuration overrides intact. `apply` also applies the selected data preset’s linked configuration when it is seeded.                                                                                                                                                              |
+| `presetMode`          | `bootstrap` keeps an existing state; `always` reapplies the selected preset at startup. Status reports the decision.                                                                                                                                                                                              |
+| `render.timeLimitMs`  | Local Liquid budget, default 60,000 ms; [render limits](public-api.md#render-local-pages-within-a-budget)                                                                                                                                                                                                         |
+| `deploymentProfiles`  | Select exported environment settings; [deployment profiles](../mirage/docs/deployment-profiles.md)                                                                                                                                                                                                                |
+| `personaContexts`     | Bound isolated scenario copies; [persona setups](../mirage/docs/persona-catalog.md#isolated-contexts-and-scenarios)                                                                                                                                                                                               |
+| `identityProvider`    | Local chooser text, layout and project assets; `newUser: auto \| always \| never` controls registration choices. `auto` follows site registration, open-registration/invitation and provider registration settings; [picker configuration](../mirage/docs/persona-catalog.md#identity-provider-and-lense-pickers) |
+| `dataverse`           | Simulated Dataverse Web API on its own loopback origin, with OAuth applications and users; [Dataverse API](../mirage/docs/dataverse-api.md)                                                                                                                                                                       |
+| `platform`            | Explicit simulated platform controls; [configuration experiments](../mirage/docs/configuration-experiments.md)                                                                                                                                                                                                    |
+| `compat`, `head`      | Local adapters and assets, described below                                                                                                                                                                                                                                                                        |
+| `observed`            | Evidenced platform conventions absent from exports, described below                                                                                                                                                                                                                                               |
 
 ### Settings table
 
@@ -122,40 +122,42 @@ reported as `CONFIG_KEY_PARSER_PENDING`. Version 1 project files report unknown 
 `PROJECT_CONFIG_KEY_UNKNOWN` diagnostics; version 2 files reject them.
 
 <!-- settings-table: generated from MIRAGE_SETTINGS (mirage/lib/config-keys.mjs) -->
-| Setting | Scopes | Purpose |
-| --- | --- | --- |
-| `project` | catalogue | Project file of this site, relative to the catalogue folder. |
-| `solutionRoots` | catalogue | Solution folders, relative to the portal checkout root. |
-| `solutionOrder` | catalogue, project | derived (Solution dependency order, default) or explicit (listed order). |
-| `dataPacks` | catalogue, project | Trusted pack modules ({ id, module } or a path). Project packs reach the runtime through the project summary. |
-| `connectorScripts` | catalogue, project | Trusted custom connector C# scripts ({ connector, sha256 }); any other script.csx is refused. |
-| `port` | catalogue | Local port (0 chooses a free port). |
-| `preset` | catalogue | Startup data preset ID. |
-| `presetMode` | catalogue | bootstrap or always. |
-| `presetConfiguration` | catalogue | data-only or apply. |
-| `confinePortalPages` | catalogue, project, portal | Confine portal pages with a content security policy. |
-| `externalAssets` | catalogue, project, portal | Allow external assets in confined pages. |
-| `externalFrameOrigins` | catalogue, project, portal | Origins confined pages may frame. |
-| `observed` | catalogue, portal | Observed platform behaviour with its evidence (validated by observedConfig). |
-| `dataModel` | catalogue, portal | The Power Pages data model of the website export (standard or enhanced), only when the export does not record it. Unrelated to deployment profiles that share these names. |
-| `compat` | catalogue | Local compatibility adapters. |
-| `head` | catalogue | Local head stylesheets and scripts. |
-| `render` | catalogue | Liquid render limits. |
-| `personaContexts` | catalogue | Persona context runtimes. |
-| `identityProvider` | catalogue | Local external identity provider. |
-| `deploymentProfiles` | catalogue, project, portal | Deployment profile files. |
-| `platform` | catalogue, project, portal | Platform settings with their evidence. |
-| `dataverse` | catalogue, project | Simulated Dataverse API. |
-| `runtime` | catalogue, project | power-pages, model-driven or dataverse-api. |
-| `simulation` | catalogue, project | dry-run, simulation or deep. |
-| `modelDriven` | catalogue, project | Model-driven host settings. |
-| `environmentVariables` | project | Local environment-variable values by schema name. |
-| `connections` | catalogue, project | Local connections by connection id. Contract: see [operations.md](../mirage/docs/operations.md). |
-| `secrets` | catalogue, project | Secrets by `<vault>/<secret>`: an environment variable or a DPAPI-protected value, never a literal. Validated by `secret-resolver.mjs`. Hashed in the runtime identity. |
-| `localServices` | catalogue, project | Declared local services that are probed, never started. Validated by `local-services.mjs`. |
-| `providers` | catalogue, project | Storage routes, messaging providers and the outbox. Contract: see [storage-providers.md](../mirage/docs/storage-providers.md), [messaging-and-outbox.md](../mirage/docs/messaging-and-outbox.md). |
-| `canvas` | project | Canvas surface switch (`enabled`) and project canvas app sources (`sources`). Contract: see [canvas-apps.md](../mirage/docs/canvas-apps.md#project-configuration). |
-| `codeApps` | project | Code apps served under /_apps/code/. Contract: see [code-apps.md](../mirage/docs/code-apps.md). |
+
+| Setting                | Scopes                     | Purpose                                                                                                                                                                                           |
+| ---------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `project`              | catalogue                  | Project file of this site, relative to the catalogue folder.                                                                                                                                      |
+| `solutionRoots`        | catalogue                  | Solution folders, relative to the portal checkout root.                                                                                                                                           |
+| `solutionOrder`        | catalogue, project         | derived (Solution dependency order, default) or explicit (listed order).                                                                                                                          |
+| `dataPacks`            | catalogue, project         | Trusted pack modules ({ id, module } or a path). Project packs reach the runtime through the project summary.                                                                                     |
+| `connectorScripts`     | catalogue, project         | Trusted custom connector C# scripts ({ connector, sha256 }); any other script.csx is refused.                                                                                                     |
+| `port`                 | catalogue                  | Local port (0 chooses a free port).                                                                                                                                                               |
+| `preset`               | catalogue                  | Startup data preset ID.                                                                                                                                                                           |
+| `presetMode`           | catalogue                  | bootstrap or always.                                                                                                                                                                              |
+| `presetConfiguration`  | catalogue                  | data-only or apply.                                                                                                                                                                               |
+| `confinePortalPages`   | catalogue, project, portal | Confine portal pages with a content security policy.                                                                                                                                              |
+| `externalAssets`       | catalogue, project, portal | Allow external assets in confined pages.                                                                                                                                                          |
+| `externalFrameOrigins` | catalogue, project, portal | Origins confined pages may frame.                                                                                                                                                                 |
+| `observed`             | catalogue, portal          | Observed platform behaviour with its evidence (validated by observedConfig).                                                                                                                      |
+| `dataModel`            | catalogue, portal          | The Power Pages data model of the website export (standard or enhanced), only when the export does not record it. Unrelated to deployment profiles that share these names.                        |
+| `compat`               | catalogue                  | Local compatibility adapters.                                                                                                                                                                     |
+| `head`                 | catalogue                  | Local head stylesheets and scripts.                                                                                                                                                               |
+| `render`               | catalogue                  | Liquid render limits.                                                                                                                                                                             |
+| `personaContexts`      | catalogue                  | Persona context runtimes.                                                                                                                                                                         |
+| `identityProvider`     | catalogue                  | Local external identity provider.                                                                                                                                                                 |
+| `deploymentProfiles`   | catalogue, project, portal | Deployment profile files.                                                                                                                                                                         |
+| `platform`             | catalogue, project, portal | Platform settings with their evidence.                                                                                                                                                            |
+| `dataverse`            | catalogue, project         | Simulated Dataverse API.                                                                                                                                                                          |
+| `runtime`              | catalogue, project         | power-pages, model-driven or dataverse-api.                                                                                                                                                       |
+| `simulation`           | catalogue, project         | dry-run, simulation or deep.                                                                                                                                                                      |
+| `modelDriven`          | catalogue, project         | Model-driven host settings.                                                                                                                                                                       |
+| `environmentVariables` | project                    | Local environment-variable values by schema name.                                                                                                                                                 |
+| `connections`          | catalogue, project         | Local connections by connection id. Contract: see [operations.md](../mirage/docs/operations.md).                                                                                                  |
+| `secrets`              | catalogue, project         | Secrets by `<vault>/<secret>`: an environment variable or a DPAPI-protected value, never a literal. Validated by `secret-resolver.mjs`. Hashed in the runtime identity.                           |
+| `localServices`        | catalogue, project         | Declared local services that are probed, never started. Validated by `local-services.mjs`.                                                                                                        |
+| `providers`            | catalogue, project         | Storage routes, messaging providers and the outbox. Contract: see [storage-providers.md](../mirage/docs/storage-providers.md), [messaging-and-outbox.md](../mirage/docs/messaging-and-outbox.md). |
+| `canvas`               | project                    | Canvas surface switch (`enabled`) and project canvas app sources (`sources`). Contract: see [canvas-apps.md](../mirage/docs/canvas-apps.md#project-configuration).                                |
+| `codeApps`             | project                    | Code apps served under /_apps/code/. Contract: see [code-apps.md](../mirage/docs/code-apps.md).                                                                                                   |
+
 <!-- /settings-table -->
 
 ### Local assets and compatibility
@@ -185,17 +187,17 @@ An `observed` mapping records behavior unavailable from exports. Every observati
 an `evidence` reference from the site being modeled. Do not copy another site's observations
 merely because both use Power Pages. Omitted settings retain their defaults.
 
-| Convention | Settings and scope |
-| --- | --- |
-| Sign-in and site visibility | `loginPath` supplies a site-relative fallback when the export omits the login setting. `siteVisibility: private` displays the private-site banner. |
-| Microsoft Entra authority | `azureAdAuthority` names one evidenced tenant authority when the exported AzureAD setting is absent. Shared tenant aliases and placeholders are rejected. |
-| Portal-created row identity | `portalApplicationUser` and `portalApplicationUserId` identify the application's display name and systemuser GUID; exports do not supply them. |
-| List OData feeds | `listODataFeeds: removed` is the default; use `served` only with evidence that the site still serves them. |
-| Web API dates | `webApiDateParsing: month-first` and optional `webApiTwoDigitYearMax`; see [date input contracts](../mirage/docs/dataverse-parity.md#observed-portal-culture-parsed-dates). |
-| Web API errors | `webApiErrorDetails: odata-wrapper` selects supported stable reader messages. `webApiErrorStacks: response-template` additionally needs exact trusted pack templates and visible source inner errors; see [data packs](../mirage/docs/data-packs.md). |
-| Page-query validation | `requestValidation: aspnet-query` rejects supported dangerous decoded GET query values before Liquid. It does not scan API JSON, form bodies or cookies. |
-| Page error presentation | `pageErrorPresentation: generic-error` selects the supported generic GET-query error page. It does not reproduce full hosted HTML or unrelated errors. |
-| Exported SDK facts | `sdkMessages` maps exact exported message GUIDs to `{ name, evidence }`; `pluginSources` maps exact C# type names to `{ path, evidence }`. Paths stay inside the selected source/project root. |
+| Convention                  | Settings and scope                                                                                                                                                                                                                                    |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sign-in and site visibility | `loginPath` supplies a site-relative fallback when the export omits the login setting. `siteVisibility: private` displays the private-site banner.                                                                                                    |
+| Microsoft Entra authority   | `azureAdAuthority` names one evidenced tenant authority when the exported AzureAD setting is absent. Shared tenant aliases and placeholders are rejected.                                                                                             |
+| Portal-created row identity | `portalApplicationUser` and `portalApplicationUserId` identify the application's display name and systemuser GUID; exports do not supply them.                                                                                                        |
+| List OData feeds            | `listODataFeeds: removed` is the default; use `served` only with evidence that the site still serves them.                                                                                                                                            |
+| Web API dates               | `webApiDateParsing: month-first` and optional `webApiTwoDigitYearMax`; see [date input contracts](../mirage/docs/dataverse-parity.md#observed-portal-culture-parsed-dates).                                                                           |
+| Web API errors              | `webApiErrorDetails: odata-wrapper` selects supported stable reader messages. `webApiErrorStacks: response-template` additionally needs exact trusted pack templates and visible source inner errors; see [data packs](../mirage/docs/data-packs.md). |
+| Page-query validation       | `requestValidation: aspnet-query` rejects supported dangerous decoded GET query values before Liquid. It does not scan API JSON, form bodies or cookies.                                                                                              |
+| Page error presentation     | `pageErrorPresentation: generic-error` selects the supported generic GET-query error page. It does not reproduce full hosted HTML or unrelated errors.                                                                                                |
+| Exported SDK facts          | `sdkMessages` maps exact exported message GUIDs to `{ name, evidence }`; `pluginSources` maps exact C# type names to `{ path, evidence }`. Paths stay inside the selected source/project root.                                                        |
 
 The table highlights common options rather than every adapter convention. Detailed form,
 Liquid, query and plugin contracts live in the [Mirage reference](../mirage/docs/README.md).

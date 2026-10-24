@@ -31,12 +31,12 @@ Startup reports configuration, source discovery, process ownership/import, brows
 
 ## What can I preview?
 
-| Change | What to expect |
-| --- | --- |
-| JavaScript, CSS or an image | Browser response overlays from discovered source mappings |
-| Supported literal HTML or inline fields | Baseline patches where the match is unambiguous |
+| Change                                                   | What to expect                                                                          |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| JavaScript, CSS or an image                              | Browser response overlays from discovered source mappings                               |
+| Supported literal HTML or inline fields                  | Baseline patches where the match is unambiguous                                         |
 | Liquid logic, server-side settings or Dataverse behavior | Still evaluated by the online portal; use your separate deployment process where needed |
-| Exported server-side rendering with local data | Use [Mirage](../mirage/README.md) to explore supported local simulation |
+| Exported server-side rendering with local data           | Use [Mirage](../mirage/README.md) to explore supported local simulation                 |
 
 ## Commands at a glance
 
@@ -47,16 +47,16 @@ Without `--mirage` its exit status covers Lense; source diagnostics remain warni
 Deployment profile lines list each file relative to the catalogue and its parse readiness.
 Add `--lint-profiles` to scan every exported `deployment-profiles` directory for JSON/YAML syntax errors, including unbound files. `profileDiagnostics` contains the source-relative file, parser code, line, column and bound flag. These findings are warnings; selected profile validation still controls Mirage readiness.
 
-| Command | Purpose |
-| --- | --- |
-| `list`, `use` | Inspect available targets and remember a personal site/environment |
-| `doctor` | Check configuration, source mapping, Solution inputs and baseline offline |
-| `map`, `resources` | Discover online-to-local mappings and editable source descriptors |
-| `audit --all --strict` | Independently inventory exports and expose blocked or unaccounted code |
-| `dev` | Open a dedicated browser, apply local overlays and watch saves |
-| `status` | Compare local resources with authenticated online responses |
-| `verify` | Edit a disposable copy and check the browser applies supported changes |
-| `agent` | Inspect and control a running owned browser through the bounded authenticated API |
+| Command                | Purpose                                                                           |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `list`, `use`          | Inspect available targets and remember a personal site/environment                |
+| `doctor`               | Check configuration, source mapping, Solution inputs and baseline offline         |
+| `map`, `resources`     | Discover online-to-local mappings and editable source descriptors                 |
+| `audit --all --strict` | Independently inventory exports and expose blocked or unaccounted code            |
+| `dev`                  | Open a dedicated browser, apply local overlays and watch saves                    |
+| `status`               | Compare local resources with authenticated online responses                       |
+| `verify`               | Edit a disposable copy and check the browser applies supported changes            |
+| `agent`                | Inspect and control a running owned browser through the bounded authenticated API |
 
 ## Source mapping and comparison scope
 
@@ -167,7 +167,13 @@ Agent client errors additionally use `session_not_found` (missing discovery file
 Mirage appends file-backed source maps to served JavaScript/CSS assets, including extensionless payloads with those MIME types. Page, template, list and form custom JavaScript carries its export sourceURL and line-offset source map. Individual inline blocks use stable `?inline=N` debugger URLs, while maps still point to the original export file. In VS Code, attach to the free port reported by `paqvilo mirage dev --debug-port 9222`:
 
 ```json
-{"type":"msedge","request":"attach","name":"Paqvilo Mirage","port":9222,"resolveSourceMapLocations":["**", "!**/node_modules/**"]}
+{
+  "type": "msedge",
+  "request": "attach",
+  "name": "Paqvilo Mirage",
+  "port": 9222,
+  "resolveSourceMapLocations": ["**", "!**/node_modules/**"]
+}
 ```
 
 The maps contain absolute file URLs, so exported files served below parent routes need no project-specific pathMapping. Set breakpoints in exported source files. Sidecar files and YAML literal blocks retain their source lines; folded/escaped fields and enhanced XML/JSON receive a sourceURL only because their encodings do not preserve JavaScript lines. Liquid expansions that change line counts can shift subsequent locations; the debugger describes rendered JavaScript, not local Liquid execution.

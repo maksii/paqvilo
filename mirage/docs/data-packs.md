@@ -19,12 +19,15 @@ export default {
   matches: ({ portal }) => portal?.website?.name === 'Customer portal',
   presets: () => ({
     'customer-demo': {
-      name: 'Customer demo', description: 'Small deterministic fixture',
+      name: 'Customer demo',
+      description: 'Small deterministic fixture',
       mappings: { sample_item: { entitySet: 'sample_items', idColumn: 'sample_itemid' } },
       tables: { sample_item: [{ sample_itemid: '11111111-1111-4111-8111-111111111111', sample_name: 'Demo' }] },
     },
   }),
-  generators: {}, personas: [], plugins: [],
+  generators: {},
+  personas: [],
+  plugins: [],
 };
 ```
 
@@ -134,27 +137,27 @@ A pack can name a `shell.headerNotificationQuery` web template for an explicitly
 
 `mirage/lib/pack-exports.mjs` holds `PACK_EXPORTS`, the one registry of pack exports. Each row has a kind (`map` of key to value, or `value`), a key normaliser, a `check` that throws on an invalid value, and a collision rule. `validatePack` runs every check when a pack loads. It returns a frozen snapshot of the pack's own exports (a getter or Proxy-backed recognised export is refused), so every reader sees the values that were validated. Two packs registering the same normalised key fail with `Ambiguous <export> registration for <key> in packs <a> and <b>`. `collectPackExport(packs, name)` returns that Map of key to `{ value, pack }`, and `packProvides(packs)` lists `{ pack, export, key }` for every pack.
 
-| Export | Keys | Collision |
-| --- | --- | --- |
-| `serverLogics`, `cloudFlows` | lower-case name | error |
-| `flowIdentities`, `pluginSteps`, `pluginRuntimes` | canonical GUID | error |
-| `pluginTypes`, `dataverseMessages`, `expressionOperators` | exact name | error |
-| `customApis` | lower-case unique name | error |
-| `workflows` | canonical id or lower-case unique name | error |
-| `shell` | `footerLogoClass:<class>`, `headerNotificationQuery:<template>` | error |
-| `endpoints` | endpoint id | first registration wins |
-| `connectors`, `connectionPrincipals`, `storageProviders`, `messageProviders`, `outboxHandlers` | exact name | error |
-| `httpFixtures` | fixture id | error |
-| `calculatedColumns`, `rollups`, `formulaColumns` | lower-case `<table>.<column>` | error |
-| `businessRules` | canonical workflow GUID | error |
-| `virtualTableProviders` | lower-case data source id or table name | error |
-| `virtualTables` | lower-case table name | error |
-| `flowActions` | action type | error |
-| `flowTriggers` | connector id | error |
-| `hierarchies`, `transitions` | lower-case table name | error |
-| `serviceFixtures` | `<service>.<operation>` | error |
-| `powerFx` | `adapter` (one adapter per runtime) | error |
-| `capabilities` | capability name (array) or map key | error |
+| Export                                                                                         | Keys                                                            | Collision               |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------- | ----------------------- |
+| `serverLogics`, `cloudFlows`                                                                   | lower-case name                                                 | error                   |
+| `flowIdentities`, `pluginSteps`, `pluginRuntimes`                                              | canonical GUID                                                  | error                   |
+| `pluginTypes`, `dataverseMessages`, `expressionOperators`                                      | exact name                                                      | error                   |
+| `customApis`                                                                                   | lower-case unique name                                          | error                   |
+| `workflows`                                                                                    | canonical id or lower-case unique name                          | error                   |
+| `shell`                                                                                        | `footerLogoClass:<class>`, `headerNotificationQuery:<template>` | error                   |
+| `endpoints`                                                                                    | endpoint id                                                     | first registration wins |
+| `connectors`, `connectionPrincipals`, `storageProviders`, `messageProviders`, `outboxHandlers` | exact name                                                      | error                   |
+| `httpFixtures`                                                                                 | fixture id                                                      | error                   |
+| `calculatedColumns`, `rollups`, `formulaColumns`                                               | lower-case `<table>.<column>`                                   | error                   |
+| `businessRules`                                                                                | canonical workflow GUID                                         | error                   |
+| `virtualTableProviders`                                                                        | lower-case data source id or table name                         | error                   |
+| `virtualTables`                                                                                | lower-case table name                                           | error                   |
+| `flowActions`                                                                                  | action type                                                     | error                   |
+| `flowTriggers`                                                                                 | connector id                                                    | error                   |
+| `hierarchies`, `transitions`                                                                   | lower-case table name                                           | error                   |
+| `serviceFixtures`                                                                              | `<service>.<operation>`                                         | error                   |
+| `powerFx`                                                                                      | `adapter` (one adapter per runtime)                             | error                   |
+| `capabilities`                                                                                 | capability name (array) or map key                              | error                   |
 
 Each provider export is checked by its owning module, which calls `registerPackExport(name, { check, key?, entries?, collide? })` when it loads: `connector-runtime.mjs` (`connectors`, `httpFixtures`, `connectionPrincipals`), `storage-provider.mjs` (`storageProviders`: names to factory functions), `message-bus.mjs` (`messageProviders`: names to factory functions), `outbox.mjs` (`outboxHandlers`: names to functions), `service-fixtures.mjs`, `canvas-power-fx.mjs` (`powerFx`), and the Dataverse contract modules for `calculatedColumns`, `businessRules`, `rollups`, `formulaColumns`, `virtualTableProviders`, `hierarchies` and `transitions`. `capabilities` records need at least `name`, `kind` and a `level` of `inventory`, `contract`, `behaviour` or `native-qualified`. `mirage/lib/provider-modules.mjs` loads every owning module and `project-config.mjs` imports it. An export whose module has not loaded is checked only for shape (an object of functions or objects; `httpFixtures` an array of objects) and reported as `PACK_EXPORT_PENDING`. The core keys `id`, `name`, `description`, `matches`, `presets`, `configurationPresets`, `personaCatalog`, `dataFiles`, `webApiErrorTemplates`, `dataset`, `profiles`, `parity`, `generators`, `personas` and `plugins` are not registry exports.
 

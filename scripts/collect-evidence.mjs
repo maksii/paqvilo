@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const OUTPUTS = {
-  'extended-round': /^(?:multipart\.json|(?:classic|enhanced)-workflows\.(?:json|png)|verify-(?:classic|enhanced)-(?:baseline|working-copy)\.json)$/,
+  'extended-round':
+    /^(?:multipart\.json|(?:classic|enhanced)-workflows\.(?:json|png)|verify-(?:classic|enhanced)-(?:baseline|working-copy)\.json)$/,
   'multi-portal-round': /^(?:acceptance|cli-smoke)\.json$/,
 };
 

@@ -38,7 +38,9 @@ await store.applyPreset('customer-demo', { generatedPresets: library });
 const simulator = await createSimulator({
   sourceDir: './sources/portal-export',
   dataPacks: [{ module: './pack/pack.mjs' }],
-  initial: store.snapshot(), port: 0, watch: false,
+  initial: store.snapshot(),
+  port: 0,
+  watch: false,
 });
 // Sign this request/context in explicitly when exercising protected routes.
 const headers = signInHeaders(simulator, 'your-synthetic-contact-id');

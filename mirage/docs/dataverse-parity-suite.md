@@ -20,24 +20,30 @@ import { runSuite, createRunWriter, compareRuns, coverageReport } from 'paqvilo/
 const plan = {
   schemaVersion: 1,
   id: 'example-read',
-  cases: [{
-    id: 'read-items', family: 'query',
-    request: { method: 'GET', path: 'example_items?$select=example_name&$top=2' },
-    acceptStatus: [200],
-    covers: ['entitySet:example_items'],
-  }],
+  cases: [
+    {
+      id: 'read-items',
+      family: 'query',
+      request: { method: 'GET', path: 'example_items?$select=example_name&$top=2' },
+      acceptStatus: [200],
+      covers: ['entitySet:example_items'],
+    },
+  ],
 };
 const writer = await createRunWriter('.paqvilo/new-run');
 try {
   const run = await runSuite(plan, {
     // Own the signed-in browser/session and origin confinement in this adapter.
-    transport: async request => ({
-      status: 200, headers: { 'content-type': 'application/json' },
+    transport: async (request) => ({
+      status: 200,
+      headers: { 'content-type': 'application/json' },
       bodyBase64: Buffer.from('{"value":[]}').toString('base64'),
     }),
     sink: writer.sink,
   });
-} finally { await writer.close(); }
+} finally {
+  await writer.close();
+}
 ```
 
 The illustrated transport is synthetic. A real adapter must return actual status, normalized headers and response entity bytes as `bodyBase64`; it must not follow redirects or send credentials outside its authorized origin. Return `{ transportError: 'timeout' }` for an unknown outcome. No response is invented for network failure.

@@ -45,14 +45,14 @@ Close the development browser before starting another session. Disconnecting the
 9. In **Web API**, try an account name shorter than three characters or a contact last name shorter than two. Check the validation message. Save a valid name and email with surrounding spaces, then reopen the record to inspect normalization. These scenarios use the sample's local models of its eight registered plugin steps.
 10. Press **Alt+Shift+P** and open **Inspect**. Follow the page, template, form, view, field, plugin and permission links into their source files.
 
-| Approach | Source pattern | What to inspect |
-| --- | --- | --- |
-| Out of the box | Native lists/forms, page/template markup and form scripts/styles | Exported views, FormXml, contact modal actions and notes |
-| Web API | Liquid template with JavaScript and CSS web files | `/_api` entity sets, assets, custom dialogs and save results |
-| PCF | Web API workspace with exported typed code components | Component manifests, resources and editor outputs |
-| Extended | Server logic and a local flow simulation | Operation contracts and returned results |
-| Liquid | Parameterized partials, manifest-backed components, custom lists/views and queries | Include chains, view columns, variables, loops, snippets and FetchXML |
-| Plugins | Account/contact validation and normalization on Create and Update | Eight exported steps, C# sources and explicit local models |
+| Approach       | Source pattern                                                                     | What to inspect                                                       |
+| -------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Out of the box | Native lists/forms, page/template markup and form scripts/styles                   | Exported views, FormXml, contact modal actions and notes              |
+| Web API        | Liquid template with JavaScript and CSS web files                                  | `/_api` entity sets, assets, custom dialogs and save results          |
+| PCF            | Web API workspace with exported typed code components                              | Component manifests, resources and editor outputs                     |
+| Extended       | Server logic and a local flow simulation                                           | Operation contracts and returned results                              |
+| Liquid         | Parameterized partials, manifest-backed components, custom lists/views and queries | Include chains, view columns, variables, loops, snippets and FetchXML |
+| Plugins        | Account/contact validation and normalization on Create and Update                  | Eight exported steps, C# sources and explicit local models            |
 
 These are implemented sample scenarios. They do not demonstrate every Power Pages field or platform feature. See [coverage](coverage.md) for the supported boundary.
 

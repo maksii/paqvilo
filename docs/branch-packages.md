@@ -20,11 +20,11 @@ The helper prints the version, source SHA, Git tag, npm tag, dry-run state and e
 
 After publishing completes, send the printed install command to the colleague. It uses `npm install --save-dev --save-exact paqvilo@<exact-version>` so their lockfile records the tested build. Run the consumer project's own tests there. The toolkit workflow runs invented fixtures and loopback tests only.
 
-| Build | Git tag | npm channel |
-| --- | --- | --- |
-| Stable commit on main | `v0.9.6`, matching source metadata | `latest` |
-| Main prerelease | For example `v0.9.6-rc.1`, matching source metadata | `next` |
-| Branch preview | `v0.9.6-preview.<branch-token>.<timestamp>.g<commit-prefix>` | `preview-<branch-token>` |
+| Build                 | Git tag                                                      | npm channel              |
+| --------------------- | ------------------------------------------------------------ | ------------------------ |
+| Stable commit on main | `v0.9.6`, matching source metadata                           | `latest`                 |
+| Main prerelease       | For example `v0.9.6-rc.1`, matching source metadata          | `next`                   |
+| Branch preview        | `v0.9.6-preview.<branch-token>.<timestamp>.g<commit-prefix>` | `preview-<branch-token>` |
 
 The branch token is a readable, bounded branch name plus a hash of the full name. Branches such as `feature/a` and `feature-a` get different channels. The timestamp makes each request a new npm version; the commit prefix binds it to the source. Git tags are created once and never moved by the helper. The branch channel points to the most recently completed publication for that branch; record the exact version for acceptance evidence. Preview builds never update `latest` or `next` and do not create stable GitHub releases.
 

@@ -2,15 +2,15 @@
 
 These package entry points are Paqvilo's supported programmatic API. Exported names, documented options and behavior are covered by semantic versioning: patches fix defects compatibly, minors add exports or optional settings, and removing or incompatibly changing a supported contract requires a major version change, including from 0.x. Tests pin the export contract in `test/fixtures/public-api.json`.
 
-| Import | Supported surface |
-| --- | --- |
-| `paqvilo/mirage` | `createSimulator`, `DataStore`, `DataError`, `readStateFile`, `initialState`, `discoverSolutionRoots`, `resolveSolutionRoots`, `importSolutionData`, `applySolutionData`, `migrateScenarioState`, `discoverPacks`, `loadPack`, `presetLibrary`, `createMirageContext`, `loadSourceGraph`, `preflight` |
-| `paqvilo/mirage/acceptance` | `runAcceptance`, `verifyParity`, `compareReferenceContracts`, browser launch options, source/state fingerprints, request reconciliation and native network/navigation observation classifiers |
-| `paqvilo/mirage/packs` | Pack validation/discovery, lazy descriptors, bootstrap/compaction/list/resolution, read-only parity paths and plan validation, persona catalogue validation/merging, and the pack-export registry (`PACK_EXPORTS`, `validatePackExports`, `collectPackExport`, `packProvides`; see [data packs](../mirage/docs/data-packs.md)) |
-| `paqvilo/mirage/fixtures` | `formatMockRecord`, `mergeDataset`, dangling lookups, schema validation/formatting, offline-state checks, `importPortal`, `createPortalRenderer` |
-| `paqvilo/mirage/testing` | `signInHeaders`, `signInContext`, `connectRuntime`, `createPortalSession`, `createPersonaSession`, `createPersonaBrowserContext`, `runSessionMatrix`, `runStorageContract`, `STORAGE_CONTRACT_CASES`, `fixedClock`, `sequentialIds`, `createScheduler` |
-| `paqvilo/lense` | `loadCatalogue`, `loadConfig`, `loadDevTargets`, `resolveMirageConfig`, `resolveCatalogue` |
-| `paqvilo/dataverse` | Schema planning/provisioning/export, `readCatalogue`, `validateCatalogue`, `planData`, `applyData`, `compareData`, `runDataQueries`, `retrieveFetchXml`, `connectedClient`, connection helpers; see [Dataverse toolkit](dataverse-provisioning.md) |
+| Import                      | Supported surface                                                                                                                                                                                                                                                                                                              |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `paqvilo/mirage`            | `createSimulator`, `DataStore`, `DataError`, `readStateFile`, `initialState`, `discoverSolutionRoots`, `resolveSolutionRoots`, `importSolutionData`, `applySolutionData`, `migrateScenarioState`, `discoverPacks`, `loadPack`, `presetLibrary`, `createMirageContext`, `loadSourceGraph`, `preflight`                          |
+| `paqvilo/mirage/acceptance` | `runAcceptance`, `verifyParity`, `compareReferenceContracts`, browser launch options, source/state fingerprints, request reconciliation and native network/navigation observation classifiers                                                                                                                                  |
+| `paqvilo/mirage/packs`      | Pack validation/discovery, lazy descriptors, bootstrap/compaction/list/resolution, read-only parity paths and plan validation, persona catalogue validation/merging, and the pack-export registry (`PACK_EXPORTS`, `validatePackExports`, `collectPackExport`, `packProvides`; see [data packs](../mirage/docs/data-packs.md)) |
+| `paqvilo/mirage/fixtures`   | `formatMockRecord`, `mergeDataset`, dangling lookups, schema validation/formatting, offline-state checks, `importPortal`, `createPortalRenderer`                                                                                                                                                                               |
+| `paqvilo/mirage/testing`    | `signInHeaders`, `signInContext`, `connectRuntime`, `createPortalSession`, `createPersonaSession`, `createPersonaBrowserContext`, `runSessionMatrix`, `runStorageContract`, `STORAGE_CONTRACT_CASES`, `fixedClock`, `sequentialIds`, `createScheduler`                                                                         |
+| `paqvilo/lense`             | `loadCatalogue`, `loadConfig`, `loadDevTargets`, `resolveMirageConfig`, `resolveCatalogue`                                                                                                                                                                                                                                     |
+| `paqvilo/dataverse`         | Schema planning/provisioning/export, `readCatalogue`, `validateCatalogue`, `planData`, `applyData`, `compareData`, `runDataQueries`, `retrieveFetchXml`, `connectedClient`, connection helpers; see [Dataverse toolkit](dataverse-provisioning.md)                                                                             |
 
 Wildcard paths such as `paqvilo/mirage/lib/data.mjs` resolve through the package's `./mirage/*` and `./lense/*` exports, but they are not supported entry points: modules outside the table are implementation details. Use the entry points in the table.
 
@@ -24,10 +24,13 @@ The organization runtime (`createOrganizationRuntime`) accepts `clock` (epoch mi
 
 ```js
 import { loadSourceGraph } from 'paqvilo/mirage';
-const graph = await loadSourceGraph({ solutionRoots: ['./solutions/Core', './solutions/Extension'], solutionOrder: 'explicit' });
+const graph = await loadSourceGraph({
+  solutionRoots: ['./solutions/Core', './solutions/Extension'],
+  solutionOrder: 'explicit',
+});
 graph.resolve('canvasapp', 'x_inventedapp'); // node from the later selected layer, or null
 graph.requirements(); // [{ id, kind, source, status: 'satisfied'|'missing'|'placeholder'|'unsupported'|'disabled', reason }]
-graph.summary();      // { nodes, levels, kinds: { kind: { level: count } } }
+graph.summary(); // { nodes, levels, kinds: { kind: { level: count } } }
 ```
 
 `loadSourceGraph({ solutionRoots, solutionOrder = 'derived', sourceDir, lcid = 1033, bindings })` reads the selected Solution roots once and returns a read-only graph. With `sourceDir`, it also reads that portal export. `bindings` takes deployment-profile values, `{ connectionReferences: [{ logicalName, connectionId }], environmentVariables: { name: value } }`, which settle requirements. Node ids are `<kind>:<lower-case key>`. `JSON.stringify(graph)` gives `{ fingerprint, summary, nodes }`, without environment variable values or connection ids. Inventory kinds and statuses are described in [Sources and bootstrap](../mirage/docs/bootstrap-and-sources.md#solution-inventory).
@@ -36,8 +39,11 @@ graph.summary();      // { nodes, levels, kinds: { kind: { level: count } } }
 
 ```js
 import { preflight } from 'paqvilo/mirage';
-const report = await preflight({ runtime: { kind: 'dataverse-api' }, solutionRoots: ['./solutions/Core'],
-  scenario: { id: 'approval', requires: ['cloud-flow:*', 'table:x_item'] } });
+const report = await preflight({
+  runtime: { kind: 'dataverse-api' },
+  solutionRoots: ['./solutions/Core'],
+  scenario: { id: 'approval', requires: ['cloud-flow:*', 'table:x_item'] },
+});
 report.summary.blocking; // 0 when nothing in the scenario's scope blocks
 ```
 
@@ -80,7 +86,11 @@ const mirage = await createMirageContext({ config: './paqvilo.config.yml', site:
 const store = new mirage.DataStore();
 await store.applyPreset('my-project-preset');
 const simulator = await mirage.createSimulator({ initial: mirage.initialState(), port: 0, watch: false });
-try { /* exercise your local portal */ } finally { await simulator.close(); }
+try {
+  /* exercise your local portal */
+} finally {
+  await simulator.close();
+}
 ```
 
 The context reads catalogue and selected Mirage-project `dataPacks`, imports selected metadata, filters packs against the portal and binds one preset library. It supplies `DataStore`, `createSimulator`, `initialState`, `applySolutionData`, `migrateScenarioState`, `discoverPacks`, `resolvePreset` and `activatePackDeniedRoutes`. Bound functions retain original argument order; ordinary runtime options can still be overridden. No adjacent project modules are discovered implicitly.
@@ -119,14 +129,22 @@ between completed matrix runs, or use separate runtime origins for simultaneous 
 ```js
 import { connectRuntime, runSessionMatrix } from 'paqvilo/mirage/testing';
 const runtime = await connectRuntime({ origin: 'http://127.0.0.1:8787' });
-const visitors = await Promise.all(contactIds.map(contactId =>
-  runtime.createSession({ id: contactId, contactId })));
+const visitors = await Promise.all(contactIds.map((contactId) => runtime.createSession({ id: contactId, contactId })));
 try {
-  const report = await runSessionMatrix({ sessions: visitors, concurrency: 10,
-    cases: [{ id: 'visible-records', run: async (visitor, { signal }) =>
-      visitor.json('/_api/widgets?$select=widgetid', { signal }) }] });
+  const report = await runSessionMatrix({
+    sessions: visitors,
+    concurrency: 10,
+    cases: [
+      {
+        id: 'visible-records',
+        run: async (visitor, { signal }) => visitor.json('/_api/widgets?$select=widgetid', { signal }),
+      },
+    ],
+  });
   // Check actual statuses and rows in report.results before qualifying access.
-} finally { visitors.forEach(visitor => visitor.close()); }
+} finally {
+  visitors.forEach((visitor) => visitor.close());
+}
 ```
 
 `createPortalSession({ origin, contactId?, roles?, id?, timeoutMs?, signal? })` and

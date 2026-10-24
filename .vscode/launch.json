@@ -8,11 +8,7 @@
       "port": 9222,
       "webRoot": "${workspaceFolder}",
       "timeout": 60000,
-      "skipFiles": [
-        "https://content.powerapps.com/**",
-        "**/xrm-adx/**",
-        "**/*.min.js"
-      ],
+      "skipFiles": ["https://content.powerapps.com/**", "**/xrm-adx/**", "**/*.min.js"],
       "preLaunchTask": "paqvilo: dev + debugger"
     },
     {
@@ -22,11 +18,7 @@
       "port": 9223,
       "webRoot": "${workspaceFolder}",
       "timeout": 60000,
-      "skipFiles": [
-        "https://content.powerapps.com/**",
-        "**/xrm-adx/**",
-        "**/*.min.js"
-      ],
+      "skipFiles": ["https://content.powerapps.com/**", "**/xrm-adx/**", "**/*.min.js"],
       "preLaunchTask": "paqvilo: mirage dev + debugger"
     },
     {
@@ -36,11 +28,7 @@
       "port": 9222,
       "webRoot": "${workspaceFolder}",
       "timeout": 60000,
-      "skipFiles": [
-        "https://content.powerapps.com/**",
-        "**/xrm-adx/**",
-        "**/*.min.js"
-      ]
+      "skipFiles": ["https://content.powerapps.com/**", "**/xrm-adx/**", "**/*.min.js"]
     },
     {
       "name": "paqvilo: debug toolkit",
@@ -48,15 +36,9 @@
       "request": "launch",
       "cwd": "${workspaceFolder}",
       "program": "${workspaceFolder}/bin/paqvilo.mjs",
-      "args": [
-        "lense",
-        "dev"
-      ],
+      "args": ["lense", "dev"],
       "console": "integratedTerminal",
-      "skipFiles": [
-        "<node_internals>/**",
-        "**/node_modules/**"
-      ]
+      "skipFiles": ["<node_internals>/**", "**/node_modules/**"]
     }
   ]
 }

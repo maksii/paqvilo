@@ -10,20 +10,20 @@ Both hosts serve the bridge, before the model-driven handler, for the apps in th
 
 The project `codeApps` setting is an array, validated by `codeAppSettings(value, label)`:
 
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `name` | yes | URL segment, 1 to 64 letters, digits or hyphens. Must be unique, compared without case. |
-| `dir` | yes | The app folder, relative to the project root. |
-| `localAppUrl` | no | The app's dev server, for example `http://localhost:3000`. Must be a loopback http(s) URL. It overrides the value in `power.config.json`. |
-| `config` | no | The configuration file, relative to `dir`. The default is `power.config.json`. |
+| Field         | Required | Meaning                                                                                                                                   |
+| ------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`        | yes      | URL segment, 1 to 64 letters, digits or hyphens. Must be unique, compared without case.                                                   |
+| `dir`         | yes      | The app folder, relative to the project root.                                                                                             |
+| `localAppUrl` | no       | The app's dev server, for example `http://localhost:3000`. Must be a loopback http(s) URL. It overrides the value in `power.config.json`. |
+| `config`      | no       | The configuration file, relative to `dir`. The default is `power.config.json`.                                                            |
 
 `readCodeAppConfig(dir, file, { bindings })` reads `power.config.json` and **never writes it**. It returns `appId`, `environmentId`, `localAppUrl`, `connectionReferences` (normalised to `{ key, apiId, displayName, dataSources }`) and `databaseReferences`. Fields it does not use stay in `raw`. It reports these diagnostics:
 
-| Code | When |
-| --- | --- |
-| `CODEAPP_CONFIG_MISSING` | The file does not exist. |
-| `CODEAPP_CONFIG_INVALID` | The file is not a JSON object, a field has the wrong type, or `localAppUrl` is not a loopback URL. |
-| `CODEAPP_CONNECTION_UNBOUND` | A connection reference has no entry in `bindings`. |
+| Code                         | When                                                                                               |
+| ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| `CODEAPP_CONFIG_MISSING`     | The file does not exist.                                                                           |
+| `CODEAPP_CONFIG_INVALID`     | The file is not a JSON object, a field has the wrong type, or `localAppUrl` is not a loopback URL. |
+| `CODEAPP_CONNECTION_UNBOUND` | A connection reference has no entry in `bindings`.                                                 |
 
 `loadCodeApps(entries, projectRoot, { bindings })` builds the app records that the handler serves. `codeAppInventoryRecord(app)` returns the app's capability record: level `contract`, with its connection-reference dependencies and diagnostic codes.
 
@@ -31,13 +31,13 @@ The project `codeApps` setting is an array, validated by `codeAppSettings(value,
 
 Every path below is relative to `/_apps/code/<name>/`. Every Dataverse and connector request, GET included, requires the `x-sim-csrf` header (some Dataverse functions are GET and write). `GET context` returns that token in its `x-sim-csrf` response header. Every response sends `cache-control: no-store` and `x-content-type-options: nosniff`.
 
-| Endpoint | Level | Behaviour |
-| --- | --- | --- |
-| `GET context` | behaviour (mapping) | Returns `IContext` `{ app: { appId, environmentId, queryParams, dataverseOrgUrl, appUrl }, user: { fullName, objectId, systemUserId, tenantId, userPrincipalName }, host: { sessionId } }`, built from the staff persona selected in `/_sim/`. Answers `401` when no persona is selected (local administrator) or the persona is unavailable. `queryParams` holds the query of the context request. `dataverseOrgUrl` is the local Dataverse origin. `sessionId` is fixed for each Mirage process. |
-| `POST token` `{ resource }` | behaviour | Returns `{ access_token, expires_on }` from the local authority. The resource must be the local Dataverse origin, optionally followed by `/` or `/.default`. Any other resource answers `400 InvalidResource` and reports a `CODEAPP_TOKEN_REFUSED` diagnostic. Token values are never logged. |
-| `ANY dataverse/<path>` | behaviour | Runs `/api/data/v9.2/<path>` in process as the staff principal. Forwards the method, query, JSON body and the `accept`, `content-type`, `prefer`, `if-match`, `if-none-match` and `odata-*` version headers. Never uses the portal `/_api` contract. |
-| `POST connectors/<reference>/<operationId>` | mock | `<reference>` is a connection-reference key or data-source name from `power.config.json`. An unknown reference answers `404`. The injected connector hook answers the call. Without a hook, or when the hook returns `undefined`, it answers `501 ConnectorNotSimulated` with the operation id and reports a `CODEAPP_CONNECTOR_NOT_SIMULATED` diagnostic. |
-| `GET` (root) | mock | A loader page. When `localAppUrl` is set, it frames that URL with `allow="local-network-access"` and forwards the query string, mirroring Local Play. The page uses the model-driven shell CSP plus `frame-src <localAppUrl origin>`. Without `localAppUrl`, the page explains that the setting is missing. |
+| Endpoint                                    | Level               | Behaviour                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET context`                               | behaviour (mapping) | Returns `IContext` `{ app: { appId, environmentId, queryParams, dataverseOrgUrl, appUrl }, user: { fullName, objectId, systemUserId, tenantId, userPrincipalName }, host: { sessionId } }`, built from the staff persona selected in `/_sim/`. Answers `401` when no persona is selected (local administrator) or the persona is unavailable. `queryParams` holds the query of the context request. `dataverseOrgUrl` is the local Dataverse origin. `sessionId` is fixed for each Mirage process. |
+| `POST token` `{ resource }`                 | behaviour           | Returns `{ access_token, expires_on }` from the local authority. The resource must be the local Dataverse origin, optionally followed by `/` or `/.default`. Any other resource answers `400 InvalidResource` and reports a `CODEAPP_TOKEN_REFUSED` diagnostic. Token values are never logged.                                                                                                                                                                                                     |
+| `ANY dataverse/<path>`                      | behaviour           | Runs `/api/data/v9.2/<path>` in process as the staff principal. Forwards the method, query, JSON body and the `accept`, `content-type`, `prefer`, `if-match`, `if-none-match` and `odata-*` version headers. Never uses the portal `/_api` contract.                                                                                                                                                                                                                                               |
+| `POST connectors/<reference>/<operationId>` | mock                | `<reference>` is a connection-reference key or data-source name from `power.config.json`. An unknown reference answers `404`. The injected connector hook answers the call. Without a hook, or when the hook returns `undefined`, it answers `501 ConnectorNotSimulated` with the operation id and reports a `CODEAPP_CONNECTOR_NOT_SIMULATED` diagnostic.                                                                                                                                         |
+| `GET` (root)                                | mock                | A loader page. When `localAppUrl` is set, it frames that URL with `allow="local-network-access"` and forwards the query string, mirroring Local Play. The page uses the model-driven shell CSP plus `frame-src <localAppUrl origin>`. Without `localAppUrl`, the page explains that the setting is missing.                                                                                                                                                                                        |
 
 An unknown app answers `404 CodeAppNotFound`. `/_apps/code/<name>` without a trailing slash redirects (`308`) to `/_apps/code/<name>/`.
 

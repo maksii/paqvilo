@@ -30,20 +30,20 @@ project-specific plugin workflows can add them.
 
 ## Where to change what
 
-| Path | Owns | Committed? |
-| --- | --- | --- |
-| `paqvilo.config.yml` | Shared sites, environments and paths | Yes |
-| `.env.example` | Personal settings template | Yes |
-| `.env`, `paqvilo.config.local.yml` | Worktree overrides | No |
-| External export/Solution checkouts | Source metadata | Project decision |
-| `support/mirage.mjs` when packs exist | Source-free pack unit binding | Yes |
-| `support/site.mjs` | Optional site-bound runner/attachment recipe | Yes |
-| `pack/` or `packs/<id>/` | Records, permissions, generators, rules, personas, matching | Yes |
-| `test-browser/` | Synthetic fixtures and acceptance cases | Yes |
-| `tools/` | Dependency bootstrap and test discovery/coverage reporting | Yes |
-| `.vscode/` when enabled | Tasks and debugger launches | Yes |
-| `*.code-workspace` | Resolved checkout paths | No |
-| `.paqvilo/` | State, logs, browser profiles and private evidence | No |
+| Path                                  | Owns                                                        | Committed?       |
+| ------------------------------------- | ----------------------------------------------------------- | ---------------- |
+| `paqvilo.config.yml`                  | Shared sites, environments and paths                        | Yes              |
+| `.env.example`                        | Personal settings template                                  | Yes              |
+| `.env`, `paqvilo.config.local.yml`    | Worktree overrides                                          | No               |
+| External export/Solution checkouts    | Source metadata                                             | Project decision |
+| `support/mirage.mjs` when packs exist | Source-free pack unit binding                               | Yes              |
+| `support/site.mjs`                    | Optional site-bound runner/attachment recipe                | Yes              |
+| `pack/` or `packs/<id>/`              | Records, permissions, generators, rules, personas, matching | Yes              |
+| `test-browser/`                       | Synthetic fixtures and acceptance cases                     | Yes              |
+| `tools/`                              | Dependency bootstrap and test discovery/coverage reporting  | Yes              |
+| `.vscode/` when enabled               | Tasks and debugger launches                                 | Yes              |
+| `*.code-workspace`                    | Resolved checkout paths                                     | No               |
+| `.paqvilo/`                           | State, logs, browser profiles and private evidence          | No               |
 
 Generation registers each requested pack on each requested site, while new packs
 match nothing. Review the ownership matrix and test intended and unrelated website

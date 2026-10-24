@@ -34,14 +34,14 @@ New states contain exported configuration and empty business tables. Use [data s
 
 ## Pick the session that fits
 
-| Command | Session behavior |
-| --- | --- |
-| `demo` | Copy a populated, editable example and open the development browser |
-| `init` | Write a per-site runtime project from your catalogue |
-| `dev` | Start local runtimes and open the integrated browser; stop newly started runtimes when this dev session ends |
-| `start` | Start owned runtimes in the background |
-| `status`, `stop` | Inspect or stop background sessions in the same project scope |
-| `serve` | Run a foreground runtime without the integrated browser; stop with Ctrl+C |
+| Command          | Session behavior                                                                                             |
+| ---------------- | ------------------------------------------------------------------------------------------------------------ |
+| `demo`           | Copy a populated, editable example and open the development browser                                          |
+| `init`           | Write a per-site runtime project from your catalogue                                                         |
+| `dev`            | Start local runtimes and open the integrated browser; stop newly started runtimes when this dev session ends |
+| `start`          | Start owned runtimes in the background                                                                       |
+| `status`, `stop` | Inspect or stop background sessions in the same project scope                                                |
+| `serve`          | Run a foreground runtime without the integrated browser; stop with Ctrl+C                                    |
 
 ```sh
 npx --no-install paqvilo mirage status --config ./paqvilo.config.yml --json

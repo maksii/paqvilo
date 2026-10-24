@@ -25,19 +25,19 @@ The portal still sees Dataverse tables only through its own `Webapi/<table>/*` s
 
 All modules are flat files in `mirage/lib/` (the release allowlist is `mirage/lib/[a-z0-9-]+.mjs`). The main ones:
 
-| Module | Owns |
-| --- | --- |
-| `dataverse-api.mjs` | `startDataverseApi()`: listeners, routing, bearer verification, impersonation, service protection, request log (500-entry ring buffer; `Authorization` and bodies are never logged). |
-| `dataverse-records.mjs` | Record handlers behind one `handle(ctx)` interface: CRUD, queries, paging, navigation and `$ref`, bulk actions. |
-| `dataverse-auth.mjs` | Signing keys, JWKS, OpenID documents, every OAuth grant, token issue and verification, `AADSTS` errors. |
-| `dataverse-security.mjs` | Security tables and their seed, principal resolution, privileges and depth, sharing, ownership columns. |
-| `dataverse-metadata.mjs` | `EntityDefinitions`, relationships, option sets, the service document, `$metadata` CSDL, `RetrieveMetadataChanges`. |
-| `dataverse-odata.mjs` | Route grammar, `Prefer` parsing, URLs, skip tokens, error envelopes and status/code mapping, response headers. |
-| `dataverse-batch.mjs` | `$batch` multipart parsing, change sets and `$n` references. |
-| `dataverse-soap*.mjs` | The SOAP organization service used by `ServiceClient`. |
-| `dataverse-tds*.mjs` | The read-only SQL (TDS) endpoint. |
-| `dataverse-tls.mjs` | The self-signed loopback certificate (`node:crypto` only). |
-| `dataverse-settings.mjs` | Validation and defaults of the `dataverse` configuration section. |
+| Module                   | Owns                                                                                                                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `dataverse-api.mjs`      | `startDataverseApi()`: listeners, routing, bearer verification, impersonation, service protection, request log (500-entry ring buffer; `Authorization` and bodies are never logged). |
+| `dataverse-records.mjs`  | Record handlers behind one `handle(ctx)` interface: CRUD, queries, paging, navigation and `$ref`, bulk actions.                                                                      |
+| `dataverse-auth.mjs`     | Signing keys, JWKS, OpenID documents, every OAuth grant, token issue and verification, `AADSTS` errors.                                                                              |
+| `dataverse-security.mjs` | Security tables and their seed, principal resolution, privileges and depth, sharing, ownership columns.                                                                              |
+| `dataverse-metadata.mjs` | `EntityDefinitions`, relationships, option sets, the service document, `$metadata` CSDL, `RetrieveMetadataChanges`.                                                                  |
+| `dataverse-odata.mjs`    | Route grammar, `Prefer` parsing, URLs, skip tokens, error envelopes and status/code mapping, response headers.                                                                       |
+| `dataverse-batch.mjs`    | `$batch` multipart parsing, change sets and `$n` references.                                                                                                                         |
+| `dataverse-soap*.mjs`    | The SOAP organization service used by `ServiceClient`.                                                                                                                               |
+| `dataverse-tds*.mjs`     | The read-only SQL (TDS) endpoint.                                                                                                                                                    |
+| `dataverse-tls.mjs`      | The self-signed loopback certificate (`node:crypto` only).                                                                                                                           |
+| `dataverse-settings.mjs` | Validation and defaults of the `dataverse` configuration section.                                                                                                                    |
 
 `mirage/server.mjs` starts and stops the listeners, reports them in status and serves the `/_sim/api/dataverse/*`
 administration endpoints.
