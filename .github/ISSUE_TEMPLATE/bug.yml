@@ -20,7 +20,14 @@ body:
     id: model
     attributes:
       label: Portal source and data model
-      options: [Standard model (PAC paportal export), Enhanced model (PAC export), Code site / SPA (.powerpages-site), Mixed, Unknown or not applicable]
+      options:
+        [
+          Standard model (PAC paportal export),
+          Enhanced model (PAC export),
+          Code site / SPA (.powerpages-site),
+          Mixed,
+          Unknown or not applicable,
+        ]
     validations:
       required: true
   - type: input

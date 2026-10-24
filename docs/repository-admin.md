@@ -25,9 +25,17 @@ security checks required for administrators.
 
 ## Validation and security
 
-CI runs static/release checks, supported Node versions, Windows/CLR regressions, loopback
-browser acceptance and installed-package smoke tests. Documentation-only changes use the
-workflow's narrower checks. The security workflow performs dependency review and CodeQL
+CI runs the pinned Node 24 toolchain on Ubuntu 24.04 and Windows 2025. Mirage and
+example lanes install .NET SDK 10.0.113 from `global.json`; roll-forward is disabled
+so the hosted image cannot silently select a different compiler. Ordinary PRs
+select Lense, Mirage and example suites conservatively using changed paths and literal
+import consumers. Shared assets, dependency/build/workflow changes and unknown paths
+expand the selection. Full Windows runs also require the locked TDS, DynamicsWebApi and certificate/MSAL.NET client gates. Python and ServiceClient retain their explicit opt-in prerequisites.
+Main pushes, manual full runs and releases run all unit/browser
+suites, Windows/CLR regressions and package smoke. Documentation-only PRs retain quality
+and release checks. Local `npm run ci:verify -- --full` prepares the same mandatory
+fixtures and writes an ignored receipt for the verified clean source tree, toolchain
+and platform; pre-push can reuse that exact result. The security workflow performs dependency review and CodeQL
 analysis. After successful analysis/processing, `Security gate` checks the analyzed
 ref for open CodeQL findings and fails when any remain or the alert API cannot be
 read. It uses read-only security permissions and does not check out or execute PR

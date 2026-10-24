@@ -1,12 +1,23 @@
 name: CI
-
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
-    types: [opened, synchronize, reopened, edited, ready_for_review]
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - ready_for_review
   workflow_dispatch:
+    inputs:
+      full:
+        description: Run every suite and package smoke test
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       ref:
@@ -18,34 +29,42 @@ on:
         type: string
         required: false
         default: ''
-
+      full:
+        description: Run every suite (release callers always use the full gate)
+        type: boolean
+        default: true
 permissions:
   contents: read
-
 concurrency:
-  # Description edits must not cancel or replace the required source validation.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'edited' && github.event.changes.body != null && github.event.changes.title == null && github.event.changes.base == null && 'description' || 'sources' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'edited' && github.event.changes.body != null && github.event.changes.title == null && github.event.changes.base == null) }}
-
 env:
   FORCE_COLOR: '1'
   NPM_CONFIG_FUND: 'false'
-
 jobs:
   changes:
     name: Change scope and commit convention
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
       runtime: ${{ steps.scope.outputs.runtime }}
       package: ${{ steps.scope.outputs.package }}
+      dependencies: ${{ steps.scope.outputs.dependencies }}
+      quality: ${{ steps.scope.outputs.quality }}
+      lense: ${{ steps.scope.outputs.lense }}
+      mirage: ${{ steps.scope.outputs.mirage }}
+      examples: ${{ steps.scope.outputs.examples }}
+      smoke: ${{ steps.scope.outputs.smoke }}
+      site: ${{ steps.scope.outputs.site }}
+      full: ${{ steps.scope.outputs.full }}
+      suites: ${{ steps.scope.outputs.suites }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.ref || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
       - name: Validate the squash commit title
@@ -56,21 +75,20 @@ jobs:
       - name: Classify changes
         id: scope
         env:
-          VALIDATE_ALL: ${{ inputs.ref != '' }}
+          VALIDATE_ALL: ${{ inputs.full == true || inputs.ref != '' }}
         run: node .github/scripts/change-scope.mjs
-
   checks:
     needs: changes
-    if: needs.changes.outputs.runtime == 'true' || needs.changes.outputs.package == 'true'
+    if: needs.changes.outputs.quality == 'true' || needs.changes.outputs.package == 'true'
     name: Static checks and release boundary
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
           cache: npm
@@ -83,100 +101,45 @@ jobs:
           PACKAGE_VERSION: ${{ inputs.package_version }}
         run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
-        if: needs.changes.outputs.runtime == 'true'
-        run: |
-          npm ci --ignore-scripts
-          npm ci --prefix mirage --ignore-scripts
+        run: npm run ci:prepare -- --quality
+      - name: Check formatting, lint and workflows
+        if: needs.changes.outputs.quality == 'true'
+        run: npm run quality
       - name: Check module syntax and project boundary
         if: needs.changes.outputs.runtime == 'true'
         run: npm run check
+      - name: Build the documentation site
+        if: needs.changes.outputs.site == 'true'
+        run: npm run site:build
       - name: Validate distributable files, lockfiles and documentation
+        if: needs.changes.outputs.package == 'true'
         run: npm run release:check
-      - name: Audit production dependencies
-        if: needs.changes.outputs.runtime == 'true'
-        run: |
-          npm audit --audit-level=moderate
-          npm audit --prefix mirage --audit-level=moderate
+      - name: Audit every locked package
+        if: needs.changes.outputs.dependencies == 'true'
+        run: npm run audit:dependencies
       - name: Verify registry signatures of installed packages
-        if: needs.changes.outputs.runtime == 'true'
-        run: |
+        if: needs.changes.outputs.dependencies == 'true'
+        run: |-
           npm audit signatures
           npm audit signatures --prefix mirage
-
-  # Unit and browser suites run as parallel jobs; the wall time is the slowest suite, not their sum.
   test:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
-    name: Unit tests (Node ${{ matrix.node }}, ${{ matrix.suite }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        node: [22, 24]
-        suite: [lense, mirage]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-          cache-dependency-path: |
-            npm-shrinkwrap.json
-            mirage/package-lock.json
-            mirage/test-sdk/tds/package-lock.json
-      - name: Stamp preview package metadata
-        if: inputs.package_version != ''
-        env:
-          PACKAGE_VERSION: ${{ inputs.package_version }}
-        run: node scripts/release-version.mjs stamp
-      - name: Install locked dependencies
-        run: |
-          npm ci --ignore-scripts
-          npm ci --prefix mirage --ignore-scripts
-      # Tests create and copy temporary repositories; detached auto-maintenance races with those copies.
-      - name: Disable Git auto-maintenance
-        run: |
-          git config --global maintenance.auto false
-          git config --global gc.auto 0
-      - name: Lense offline unit regressions
-        if: matrix.suite == 'lense'
-        run: npm test
-      - name: Demo and baseline fixture offline regressions
-        if: matrix.suite == 'lense'
-        run: npm run test:example
-      - name: Company Operations offline regressions
-        if: matrix.suite == 'lense'
-        run: npm run test:company
-      # The TDS end-to-end checks drive the endpoint with the real tedious client from the SDK gate's lockfile.
-      - name: Install the locked TDS client
-        if: matrix.suite == 'mirage'
-        run: npm ci --prefix mirage/test-sdk/tds --ignore-scripts
-      - name: Mirage offline unit regressions
-        if: matrix.suite == 'mirage'
-        run: npm --prefix mirage run test
-
-  browser:
-    needs: changes
-    if: needs.changes.outputs.runtime == 'true'
-    name: Browser tests (Node ${{ matrix.node }})
-    runs-on: ubuntu-latest
+    name: Unit tests (Node 24, ${{ matrix.suite }})
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        node: [22, 24]
+        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
-          node-version: ${{ matrix.node }}
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: |
             npm-shrinkwrap.json
@@ -186,74 +149,95 @@ jobs:
         env:
           PACKAGE_VERSION: ${{ inputs.package_version }}
         run: node scripts/release-version.mjs stamp
-      - name: Install locked dependencies
-        run: |
-          npm ci --ignore-scripts
-          npm ci --prefix mirage --ignore-scripts
       - name: Disable Git auto-maintenance
-        run: |
+        run: |-
           git config --global maintenance.auto false
           git config --global gc.auto 0
-      - name: Read the Playwright version
+      - name: Install the pinned .NET SDK
+        if: matrix.suite != 'lense'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - name: Prepare the selected suite
+        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit
+      - name: Verify the selected suite
+        run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared
+  browser:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
+    name: Browser tests (Node 24, ${{ matrix.suite }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            npm-shrinkwrap.json
+            mirage/package-lock.json
+      - name: Stamp preview package metadata
+        if: inputs.package_version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: node scripts/release-version.mjs stamp
+      - name: Disable Git auto-maintenance
+        run: |-
+          git config --global maintenance.auto false
+          git config --global gc.auto 0
+      - name: Read locked browser version
         id: playwright
-        run: echo "version=$(node -p "require('playwright-core/package.json').version")" >> "$GITHUB_OUTPUT"
-      - name: Restore the Chromium download
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        run: echo "version=$(node -p "require('./package.json').dependencies['playwright-core']")" >> "$GITHUB_OUTPUT"
+      - name: Restore matching Chromium
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
-      - name: Install matching Chromium
-        run: node node_modules/playwright-core/cli.js install --with-deps chromium
-      # The example and Company Operations suites need their own packages; the unit job installs them in its scripts.
-      - name: Install example project dependencies
-        run: |
-          npm install --prefix examples/project --offline --ignore-scripts --no-audit --no-fund --package-lock=false
-          npm ci --prefix examples/company-operations --offline --ignore-scripts --no-audit --no-fund
-      - name: Lense loopback browser acceptance
-        run: npm run test:browser
-        env:
-          PAQVILO_BROWSER: chromium
-      - name: Demo loopback browser acceptance
-        run: npm run test:example:browser
-        env:
-          PAQVILO_BROWSER: chromium
-      - name: Mirage loopback browser acceptance
-        run: npm --prefix mirage run test:browser
-        env:
-          PAQVILO_BROWSER: chromium
-      - name: Company Operations loopback browser acceptance
-        run: npm run test:company:browser
-        env:
-          PAQVILO_BROWSER: chromium
+      - name: Install the pinned .NET SDK
+        if: matrix.suite != 'lense'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - name: Prepare the selected suite
+        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --browser
+      - name: Verify the selected suite
+        run: npm run ci:verify -- --suite ${{ matrix.suite }} --browser --prepared
       - name: Collect only synthetic evidence
         if: always()
         run: node scripts/collect-evidence.mjs
       - name: Preserve synthetic browser evidence
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: browser-evidence-node${{ matrix.node }}
+          name: browser-evidence-${{ matrix.suite }}
           path: .paqvilo/ci-evidence-*/
           if-no-files-found: ignore
           include-hidden-files: true
           retention-days: 14
-
   windows:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
     name: Windows unit tests (Node 24, ${{ matrix.suite }})
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        suite: [lense, mirage]
+        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
           cache: npm
@@ -265,79 +249,34 @@ jobs:
         env:
           PACKAGE_VERSION: ${{ inputs.package_version }}
         run: node scripts/release-version.mjs stamp
-      - name: Install locked dependencies
-        run: |
-          npm ci --ignore-scripts
-          npm ci --prefix mirage --ignore-scripts
       - name: Disable Git auto-maintenance
-        run: |
+        run: |-
           git config --global maintenance.auto false
           git config --global gc.auto 0
-      - name: Lense offline unit regressions
-        if: matrix.suite == 'lense'
-        run: npm test
-      - name: Demo and baseline fixture offline regressions
-        if: matrix.suite == 'lense'
-        run: npm run test:example
-      - name: Restore locked SDK projection driver fixture
-        if: matrix.suite == 'lense'
-        shell: pwsh
-        run: |
-          dotnet restore examples/company-operations/plugins/SdkProbes/SdkProbes.csproj --locked-mode --disable-build-servers
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "PAQ_TEST_SDK_PROBES_RESTORED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Company Operations offline regressions
-        if: matrix.suite == 'lense'
-        run: npm run test:company
-      - name: Build and execute Company Operations plugin regressions
-        if: matrix.suite == 'lense'
-        shell: pwsh
-        run: |
-          dotnet restore examples/company-operations/plugins/Tests/Tests.csproj --locked-mode
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet build examples/company-operations/plugins/Tests/Tests.csproj --no-restore -c Release
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & examples/company-operations/plugins/Tests/bin/Release/net462/Tests.exe
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($project in @('QueryObservation', 'PipelineTests')) {
-            dotnet restore "examples/company-operations/plugins/$project/$project.csproj" --locked-mode
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            dotnet build "examples/company-operations/plugins/$project/$project.csproj" --no-restore -c Release
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-      # The original CLR plug-in regressions in the Mirage suite run against this pinned SDK; without it they would skip.
-      - name: Install pinned Microsoft SDK reference for original CLR regressions
-        if: matrix.suite == 'mirage'
-        shell: pwsh
-        run: |
-          $sdkDirectory = Join-Path $env:RUNNER_TEMP 'paqvilo-sdk-reference'
-          New-Item -ItemType Directory -Path $sdkDirectory | Out-Null
-          $sdkArchive = Join-Path $sdkDirectory 'sdk.zip'
-          Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/9.0.2.60/microsoft.crmsdk.coreassemblies.9.0.2.60.nupkg' -OutFile $sdkArchive
-          if ((Get-FileHash $sdkArchive -Algorithm SHA256).Hash -ne '59650574CDC89C1F506FABD7275FE6325A59A8BAE9FA9F92C5B5C2CBE31D5E1F') { throw 'Microsoft SDK archive digest mismatch' }
-          Expand-Archive -LiteralPath $sdkArchive -DestinationPath (Join-Path $sdkDirectory 'reference')
-          $sdk = Join-Path $sdkDirectory 'reference/lib/net462/Microsoft.Xrm.Sdk.dll'
-          if (-not (Test-Path -LiteralPath $sdk)) { throw 'CLR SDK fixture was not installed' }
-          "PAQ_TEST_XRM_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Install the locked TDS client
-        if: matrix.suite == 'mirage'
-        run: npm ci --prefix mirage/test-sdk/tds --ignore-scripts
-      - name: Mirage offline unit regressions
-        if: matrix.suite == 'mirage'
-        run: npm --prefix mirage run test
-
+      - name: Install the pinned .NET SDK
+        if: matrix.suite != 'lense'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - name: Prepare the selected suite
+        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit ${{ matrix.suite == 'mirage' && needs.changes.outputs.full == 'true' && '--sdk' || '' }}
+      - name: Verify the selected suite
+        run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared
+      - name: Verify the full Windows SDK clients
+        if: matrix.suite == 'mirage' && needs.changes.outputs.full == 'true'
+        run: node scripts/ci.mjs sdk
   package:
     needs: changes
-    if: needs.changes.outputs.runtime == 'true'
+    if: needs.changes.outputs.smoke == 'true'
     name: Package smoke test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version-file: .node-version
           cache: npm
@@ -351,7 +290,6 @@ jobs:
         run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
-      # The smoke test installs the packed tarball offline, which needs registry metadata in the npm cache.
       - name: Prime npm cache for the offline install
         run: npm run cache:package
       - name: Install matching Chromium
@@ -362,32 +300,35 @@ jobs:
           PAQVILO_BROWSER: chromium
       - name: Pack distributable
         run: mkdir -p dist && npm pack --ignore-scripts --pack-destination dist
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: package
           path: dist/*.tgz
           if-no-files-found: error
           retention-days: 14
-
-  # Required source validation stays separate from description-only metadata.
   gate:
     name: ${{ github.event.action == 'edited' && github.event.changes.body != null && github.event.changes.title == null && github.event.changes.base == null && 'PR description metadata' || 'CI gate' }}
     if: always()
-    needs: [changes, checks, test, browser, windows, package]
-    runs-on: ubuntu-latest
+    needs:
+      - changes
+      - checks
+      - test
+      - browser
+      - windows
+      - package
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every job to succeed
         env:
-          RESULTS: ${{ toJSON(needs.*.result) }}
           SCOPE_RESULT: ${{ needs.changes.result }}
-          RUNTIME: ${{ needs.changes.outputs.runtime }}
+          QUALITY: ${{ needs.changes.outputs.quality }}
           PACKAGE: ${{ needs.changes.outputs.package }}
+          RUNTIME: ${{ needs.changes.outputs.runtime }}
+          SMOKE_REQUIRED: ${{ needs.changes.outputs.smoke }}
           CHECKS: ${{ needs.checks.result }}
           TESTS: ${{ needs.test.result }}
           BROWSER: ${{ needs.browser.result }}
           WINDOWS: ${{ needs.windows.result }}
           SMOKE: ${{ needs.package.result }}
-        run: |
-          echo "Job results: $RESULTS"
-          node -e "const e=process.env; const want=(required,result)=>result===(required?'success':'skipped'); if(e.SCOPE_RESULT!=='success'||!want(e.RUNTIME==='true'||e.PACKAGE==='true',e.CHECKS)||[e.TESTS,e.BROWSER,e.WINDOWS,e.SMOKE].some(r=>!want(e.RUNTIME==='true',r)))process.exit(1)"
+        run: node -e "const e=process.env; const want=(required,result)=>result===(required?'success':'skipped'); if(e.SCOPE_RESULT!=='success'||!want(e.QUALITY==='true'||e.PACKAGE==='true',e.CHECKS)||[e.TESTS,e.BROWSER,e.WINDOWS].some(r=>!want(e.RUNTIME==='true',r))||!want(e.SMOKE_REQUIRED==='true',e.SMOKE))process.exit(1)"
