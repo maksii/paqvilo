@@ -2,7 +2,7 @@
 
 Install Paqvilo, try the included example, then connect your local exports. The toolkit runs on your computer; you do not need to clone its repository. For model-driven apps or an integration API without Power Pages, start with the [standalone organization guide](../mirage/docs/standalone-organization.md). No portal export or live environment is required for that profile.
 
-For an existing consumer project, install with `npm install --save-dev paqvilo@^0.9.6 --ignore-scripts`, then run `npx paqvilo doctor --setup --json`. A normal npm install supplies both Lense and Mirage dependencies; no install inside `node_modules/paqvilo/mirage` is needed. Commit the lockfile and use `npm ci --ignore-scripts` for repeatable setup.
+For an existing consumer project, install with `npm install --save-dev paqvilo@^0.9.7 --ignore-scripts`, then run `npx paqvilo doctor --setup --json`. A normal npm install supplies both Lense and Mirage dependencies; no install inside `node_modules/paqvilo/mirage` is needed. Commit the lockfile and use `npm ci --ignore-scripts` for repeatable setup.
 
 After configuring your export/catalogue, run `npx paqvilo lense doctor --config ./paqvilo.config.yml --site my-site`, then `npx paqvilo mirage dev --config ./paqvilo.config.yml --site my-site`. Capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`. See [platform resources](../mirage/docs/platform-resources.md), [public APIs](public-api.md) and [release notes](release-notes.md).
 
@@ -79,7 +79,7 @@ For Chrome, add `--browser chrome`. To choose a different copy, add `--dir ./ano
 Create the empty consumer layout before connecting your exports:
 
 ```sh
-npx paqvilo@^0.9.6 init ./my-portal-project --name my-portal-project --site portal
+npx paqvilo@^0.9.7 init ./my-portal-project --name my-portal-project --site portal
 cd my-portal-project
 npm run setup
 npm run configure

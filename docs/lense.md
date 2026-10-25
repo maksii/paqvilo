@@ -40,6 +40,8 @@ Model-driven Lense has its own [startup deadline and paired local panel workflow
 | Liquid logic, server-side settings or Dataverse behavior | Still evaluated by the online portal; use your separate deployment process where needed |
 | Exported server-side rendering with local data           | Use [Mirage](../mirage/README.md) to explore supported local simulation                 |
 
+After a save, check **Issues** for changes that require deployment. A changed source whose inline or markup preview is disabled is reported there, even if the page reloads. Reloading alone does not mean an edit was applied.
+
 ## Commands at a glance
 
 Run `npx --no-install paqvilo lense --help` for the full command/options reference.
@@ -108,6 +110,7 @@ Projects with a [persona catalogue](../mirage/docs/persona-catalog.md) can searc
 named personas and scenarios in the panel. In live Lense, selection uses the portal's own
 sign-in flow; it does not issue native identity tokens for a synthetic contact. In Mirage,
 scenarios can open isolated local setups with their own profile, variables and overrides.
+**Apply scenario** reveals a confirmation in the panel; review it before confirming the change.
 Keep live identity mappings and scenario tests in the project.
 
 Agent discovery files contain bearer tokens and stay under ignored `.paqvilo/agents`. Use `agent sessions` to locate a session; `status`, `pages`, `events`, `state`, `snapshot` and `screenshot` inspect it. Page IDs are different from offline resource IDs. Agent control is origin-confined and has no arbitrary evaluation or proxy endpoint. Consume `nextSequence` and report dropped events.
@@ -172,7 +175,7 @@ Agent client errors additionally use `session_not_found` (missing discovery file
 
 ## Local source debugging
 
-Mirage appends file-backed source maps to served JavaScript/CSS assets, including extensionless payloads with those MIME types. Page, template, list and form custom JavaScript carries its export sourceURL and line-offset source map. Individual inline blocks use stable `?inline=N` debugger URLs, while maps still point to the original export file. In VS Code, attach to the free port reported by `paqvilo mirage dev --debug-port 9222`:
+By default, Mirage appends file-backed source maps to served JavaScript/CSS assets, including extensionless payloads with those MIME types and model-driven Solution client resources. Page, template, list and form custom JavaScript carries its export sourceURL and line-offset source map. Individual inline blocks use stable `?inline=N` debugger URLs, while maps still point to the original export file. In VS Code, attach to the free port reported by `paqvilo mirage dev --debug-port 9222`:
 
 ```json
 {
@@ -185,6 +188,8 @@ Mirage appends file-backed source maps to served JavaScript/CSS assets, includin
 ```
 
 The maps contain absolute file URLs, so exported files served below parent routes need no project-specific pathMapping. Set breakpoints in exported source files. Sidecar files and YAML literal blocks retain their source lines; folded/escaped fields and enhanced XML/JSON receive a sourceURL only because their encodings do not preserve JavaScript lines. Liquid expansions that change line counts can shift subsequent locations; the debugger describes rendered JavaScript, not local Liquid execution.
+
+For byte-for-byte asset comparisons, set `mirage.sourceMaps: false` on the catalogue site, or `sourceMaps: false` in a Mirage project, and restart. This disables Mirage's generated debugger trailers. The catalogue's top-level `sourceMaps` and `PAQVILO_SOURCE_MAPS` control Lense overlays separately. See [model-driven debugging](../mirage/docs/model-driven-customizations.md#pair-the-panel-with-a-standalone-local-app) for a panel attached to a standalone local app.
 
 Target selection commits only with Go or Enter. Nonempty local, remote and caution groups are shown; leaving a local runtime for a live target or opening caution requires an in-panel confirmation. Cancel or a failed switch restores the current target. `portals: all` excludes caution targets unless explicitly selected or `includeCaution: true` is set in the catalogue. UI state is scoped to the browser profile, shared across its target switches; a CDP attachment without a known profile keeps UI state in memory. Automated headless sessions start collapsed.
 

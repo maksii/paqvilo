@@ -2,27 +2,15 @@
 
 ## 0.9.7
 
-This hotfix addresses the verified findings from preparing the toolkit walkthroughs and release videos.
-The [findings review and action list](design/hotfix-0.9.6.1.md) records the evidence and distinguishes current
-defects, existing fixes, intended boundaries and recording-tool issues.
-
 ### Fixed
 
-- Native model-driven Lense finishes startup at document load instead of waiting for background worker requests
-  to settle. Diagnostics distinguish document completion from application readiness; startup cancellation stops
-  the associated resource wait.
-- Model-driven source opening honors the configured editor. Standalone Mirage prints a stop command that
-  preserves the selected runtime and works in both CMD and PowerShell on Windows, including paths with shell
-  metacharacters, and in POSIX shells elsewhere.
-- Mirage model-driven JavaScript and CSS resources carry file-backed debugger maps; Lense local simulation
-  recognizes their declared hashed asset routes. `mirage.sourceMaps: false` serves original asset bytes when
-  debugger trailers are unwanted.
-- Issues reports changed sources whose inline or markup preview is disabled, including Liquid edits that require
-  deployment. Tweaks reveals scenario and preset confirmations and focuses Cancel.
-- Native grids clear the create-form loading notice after completion, cancellation or failure, and repeated column
-  clicks alternate sorting direction.
-- Generated demos include project-specific agent guidance and direct test dependencies. The example list retains
-  its view and search in the URL through reloads and browser history. Preset `personaRoles` behavior is documented.
+- Fix native model-driven startup hangs and cancellation; honor the configured editor for source opening.
+- Preserve runtime selection and literal paths in Mirage stop commands across CMD, PowerShell and POSIX shells.
+- Add model-driven JavaScript/CSS debugger maps. Set `mirage.sourceMaps: false` to serve original asset bytes.
+- Report disabled-preview edits requiring deployment and reveal Tweaks scenario/preset confirmations.
+- Clear grid loading notices after completion, cancellation or failure; restore alternating column sort direction.
+- Retain demo view/search through reload and history, include demo agent guidance and test dependencies,
+  and clarify preset `personaRoles` behavior.
 
 Update with `npm install --save-dev paqvilo@^0.9.7` and commit the lockfile.
 

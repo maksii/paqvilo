@@ -24,7 +24,7 @@
     </header>
     <main id="main" class="wrap guide">
       <div class="guide-head">
-        <p class="eyebrow">THE GUIDE · PAQVILO 0.9.6</p>
+        <p class="eyebrow">THE GUIDE · PAQVILO 0.9.7</p>
         <h1>From one command<br />to <em>your own portal.</em></h1>
         <p class="lead">
           A walkthrough you can follow on your own machine. Start the demo portal, work on it from VS Code, take the
@@ -36,6 +36,10 @@
           what you should see, why it works that way and what to check before you move on. The
           <a href="https://github.com/maksii/paqvilo/blob/main/docs/index.md">documentation</a> is the reference; this
           page is the path through it.
+        </p>
+        <p class="small">
+          Commands and guidance target 0.9.7. Recordings retained from the 0.9.6 guide may show earlier labels,
+          candidate order or source line numbers.
         </p>
       </div>
 
@@ -297,7 +301,7 @@ npm --version</code></pre>
                 <details>
                   <summary>Scaffold your project</summary>
                   <div class="cmd">
-                    <pre><code>npx paqvilo@^0.9.6 init ./my-portal-project --name my-portal-project --site portal
+                    <pre><code>npx paqvilo@^0.9.7 init ./my-portal-project --name my-portal-project --site portal
 cd my-portal-project
 npm run setup</code></pre>
                   </div>
@@ -388,7 +392,7 @@ npm --version</code></pre>
                 <details>
                   <summary>Install in your portal project</summary>
                   <div class="cmd">
-                    <pre><code>npm install --save-dev paqvilo@^0.9.6
+                    <pre><code>npm install --save-dev paqvilo@^0.9.7
 npx paqvilo doctor --setup --json</code></pre>
                   </div>
                   <p class="small">New project? Scaffold one first. <a href="#scaffold">Scaffold ↓</a></p>
@@ -643,6 +647,10 @@ npx --no-install paqvilo --help</code></pre>
 
             <div class="beat" id="edit-record">
               <h3>Change a record and reload</h3>
+              <p>
+                The Web API and PCF lists keep the selected view and search in the URL. A reload after a source edit
+                restores those filters; browser Back restores the previous query.
+              </p>
               <figure class="shot">
                 <video
                   src="media/01b-portal-tour-edit.mp4"
@@ -757,7 +765,9 @@ npx --no-install paqvilo --help</code></pre>
                     loading="lazy"
                     alt="X-ray on the Web API page: outlined elements, the X-ray toolbar, and a card for the selected link listing Approach Web API, Approach PCF and Liquid custom view as source candidates with Open source, Copy path and Select source region."
                 /></a>
-                <figcaption>The X-ray card for the Arcwell Services link: 13 candidates, best first.</figcaption>
+                <figcaption>
+                  The recorded X-ray card for the Arcwell Services link, with several source candidates.
+                </figcaption>
               </figure>
               <div class="walk">
                 <p>
@@ -766,18 +776,19 @@ npx --no-install paqvilo --help</code></pre>
                 </p>
                 <p>
                   <b class="tag">You see</b> Outlines on the page: green for controls, blue for form and view
-                  containers, amber for source markup. The click selects the link instead of following it. The card
-                  reads "Web template · source match", <b>Approach Web API</b>, with 13 element source candidates; the
-                  first is <code>web-templates/approach-web-api/Approach-Web-API.webtemplate.source.html</code> with
-                  "Markup match: div.demo-table-wrap on an enclosing element". Each candidate offers <b>Open source</b>,
+                  containers, amber for source markup. The click selects the link instead of following it. In the
+                  recording, the card names <b>Approach Web API</b> among 13 element source candidates, with
+                  <code>web-templates/approach-web-api/Approach-Web-API.webtemplate.source.html</code> and "Markup
+                  match: div.demo-table-wrap on an enclosing element". Each candidate offers <b>Open source</b>,
                   <b>Copy path</b> and <b>Select source region</b>.
                 </p>
                 <p>
                   <b class="tag">Why</b> X-ray indexes markup hints across the sources the page references and matches
                   elements by static IDs, classes and component attributes, not by positional DOM paths. The account
                   link itself is written by the workspace script at runtime, so X-ray matches the enclosing template
-                  markup. Other templates share that markup, which is why there are several candidates. Treat the first
-                  as the place to start reading, not as proof of the deployed revision.
+                  markup. Other templates share that markup, which is why there are several candidates. Their order can
+                  vary with source and version; select the relevant source by name and evidence. A candidate does not
+                  prove which Liquid branch rendered or which source revision is deployed.
                 </p>
                 <p>
                   <b class="tag">Check</b> <b>Open source</b> opens the template at the matching line. Hold
@@ -833,6 +844,10 @@ npx --no-install paqvilo --help</code></pre>
                   <li>
                     <code>package.json</code> scripts: <code>dev</code>, <code>dev:debug</code>, <code>lense</code>,
                     <code>configure</code> and <code>test</code>.
+                  </li>
+                  <li>
+                    <code>AGENTS.md</code>: the demo's commands, source folders and local/live boundaries for coding
+                    agents. Repeating the scaffold command keeps your edits and restores missing guidance.
                   </li>
                 </ul>
               </div>
@@ -1466,9 +1481,10 @@ export const pluginSteps = { 'b4700000-0000-4000-8000-370000000100': validateAcc
                   <b class="tag">Check</b> Further down, <b>Table permissions</b> switches between <b>Enforce</b> and
                   <b>Permissive</b> ("grant source exported"), <b>Preset</b> applies a data preset and
                   <b>Scenario</b> lists the pack's isolated setups, such as "Entra · reader · reader → / · isolated
-                  setup". Choosing a scenario only selects it; <b>Apply scenario</b> starts a separate runtime from a
-                  snapshot of this one, with its own cookie, state and origin and with live writes disabled. The demo
-                  allows two such copies (<code>personaContexts: { maxInstances: 2 }</code>).
+                  setup". Choosing a scenario only selects it; click <b>Apply scenario</b>, review the confirmation
+                  revealed in the panel, then confirm. An isolated setup starts a separate runtime from a snapshot of
+                  this one, with its own cookie, state and origin and with live writes disabled. The demo allows two
+                  such copies (<code>personaContexts: { maxInstances: 2 }</code>).
                 </p>
               </div>
             </div>
@@ -1942,7 +1958,7 @@ git log --oneline -2</code></pre>
               <div class="walk">
                 <p><b class="tag">Do</b></p>
                 <div class="cmd">
-                  <pre><code>npx paqvilo@^0.9.6 init ./my-portal-project --name my-portal-project --site portal
+                  <pre><code>npx paqvilo@^0.9.7 init ./my-portal-project --name my-portal-project --site portal
 cd my-portal-project
 npm run setup</code></pre>
                 </div>
@@ -2004,7 +2020,7 @@ npm run setup</code></pre>
                 </table>
               </div>
               <p>
-                Already have a project? Run <code>npm install --save-dev paqvilo@^0.9.6</code> and
+                Already have a project? Run <code>npm install --save-dev paqvilo@^0.9.7</code> and
                 <code>npx paqvilo doctor --setup --json</code>; <code>init --into-existing</code> adds missing files
                 only.
               </p>
@@ -2915,6 +2931,11 @@ git commit -m "Baseline portal export"</code></pre>
                   boundaries and replaces the old text with yours. Here the changed line was plain HTML, unique in the
                   baseline and present once in the response, so it counted <code>1 patch</code>.
                 </p>
+                <p>
+                  If you leave markup preview disabled, the page may still reload after a save. <b>Issues</b> reports
+                  the changed source as needing deployment; a reload does not mean the edit was applied. The same
+                  applies to disabled inline source kinds. Liquid logic still runs on the online portal.
+                </p>
               </div>
               <div class="table-wrap">
                 <table class="grid-table">
@@ -3126,7 +3147,8 @@ npx --no-install paqvilo lense verify --config ./paqvilo.config.yml --site porta
               <div class="walk">
                 <p>
                   <b class="tag">Do</b> In the demo workspace, press <kbd>Ctrl+P</kbd>, open
-                  <code>demo-workspace.js</code>, go to line 122 and press <kbd>F9</kbd>. Press <kbd>F5</kbd> (<b
+                  <code>demo-workspace.js</code>, find the first statement in <code>listAccounts(url)</code> and press
+                  <kbd>F9</kbd>. Its line number can differ from the recording. Press <kbd>F5</kbd> (<b
                     >Demo: Mirage and browser debugger</b
                   >). When Home has loaded, click <b>Open the demo</b>. Press <kbd>F5</kbd> again to continue.
                 </p>
@@ -3138,14 +3160,15 @@ npx --no-install paqvilo lense verify --config ./paqvilo.config.yml --site porta
                   call stack reads <code>listAccounts 122:1</code>. Continue, and the list renders.
                 </p>
                 <p>
-                  <b class="tag">Why</b> Line 122 sits inside <code>listAccounts(url)</code>. On the first load
-                  <code>url</code> is undefined, so it reads the <b>View</b> and <b>Search</b> fields and builds the Web
-                  API query: <code>$select</code>, <code>$orderby=name</code> and an optional <code>$filter</code>.
+                  <b class="tag">Why</b> The selected statement sits inside <code>listAccounts(url)</code>. On the first
+                  load <code>url</code> is undefined, so it reads the <b>View</b> and <b>Search</b> fields and builds
+                  the Web API query: <code>$select</code>, <code>$orderby=name</code> and an optional
+                  <code>$filter</code>.
                 </p>
                 <p>
                   <b class="tag">Check</b> The configuration attaches to <b>Edge</b>, not to Mirage: it is an
-                  <code>attach</code> to port 9222, with <code>webRoot</code> set to <code>portal</code>,
-                  <code>/</code> mapped to <code>portal/web-files</code>, a 60-second timeout,
+                  <code>msedge</code> <code>attach</code> to port 9222, with <code>webRoot</code> set to
+                  <code>portal</code>, source-map discovery under the workspace, a 60-second timeout,
                   <code>preLaunchTask</code> set to the debugger task and <code>skipFiles</code> for the platform's
                   <code>xrm-adx</code> scripts and minified files. The siblings attach to Lense's browser for an
                   environment you name when prompted, or to an already running browser.
@@ -3169,6 +3192,17 @@ npx --no-install paqvilo lense verify --config ./paqvilo.config.yml --site porta
                   there are not guaranteed. If Liquid in a template expands to a different number of lines, later
                   locations in a rendered inline script can move.
                 </p>
+                <p>
+                  Mirage also adds file-backed maps to model-driven Solution client resources. For original asset bytes
+                  without generated debugger trailers, set <code>mirage.sourceMaps: false</code> on the catalogue site,
+                  or <code>sourceMaps: false</code> in a Mirage project, and restart. The catalogue's top-level
+                  <code>sourceMaps</code> and <code>PAQVILO_SOURCE_MAPS</code> control Lense overlays separately. See
+                  the
+                  <a
+                    href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/model-driven-customizations.md#pair-the-panel-with-a-standalone-local-app"
+                    >model-driven debugger workflow</a
+                  >.
+                </p>
               </aside>
               <div class="walk">
                 <p>
@@ -3178,7 +3212,7 @@ npx --no-install paqvilo lense verify --config ./paqvilo.config.yml --site porta
                   <b>Demo: Lense and browser debugger</b> attaches the same way to Lense's browser. In your own project,
                   keep <code>launch.json</code> and <code>tasks.json</code> in the portal project and attach to the
                   <code>--debug-port</code> your task starts; the docs' example is an <code>msedge</code> attach to port
-                  9223 with <code>resolveSourceMapLocations</code> excluding <code>node_modules</code>. Disconnecting
+                  9222 with <code>resolveSourceMapLocations</code> excluding <code>node_modules</code>. Disconnecting
                   the debugger leaves the browser running; close it before starting another session.
                 </p>
               </div>

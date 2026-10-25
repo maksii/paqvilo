@@ -63,7 +63,7 @@ npx --no-install paqvilo mirage inspect --source ./portal-export --json
 
 Run lifecycle commands with the same catalogue or `--project` used to start the session. A runtime already running before `dev` keeps running when its browser closes. Multi-portal catalogues support one runtime per site and selector navigation; each site has isolated state and a session cookie.
 
-`start` prints a stop command with the selected project or catalogue and any standalone runtime overrides. Projectless standalone commands retain `--runtime`, Solution roots, state and port selectors so another local runtime stays running. Windows hints work in both Command Prompt and PowerShell, including Command Prompt with delayed expansion enabled. Common paths remain readable; arguments requiring shell-specific escaping use a `node -e` command that decodes literal arguments and invokes this installed toolkit directly. Ordinary POSIX arguments use literal shell quoting; control arguments use the same encoded form so copied hints stay on one line.
+Copy the stop command printed by `start` to stop that runtime. It preserves the selected project or catalogue and any runtime overrides, including port and state selectors for projectless standalone sessions. On Windows, the printed command works in Command Prompt and PowerShell; copy it as printed even when it uses `node -e` to preserve special characters in paths.
 
 ## Build scenarios you can repeat
 

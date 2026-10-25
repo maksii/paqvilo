@@ -161,6 +161,12 @@ reported as `CONFIG_KEY_PARSER_PENDING`. Version 1 project files report unknown 
 
 <!-- /settings-table -->
 
+Mirage's `sourceMaps` setting belongs under `sites.<id>.mirage` or `defaults.mirage`
+in a catalogue, and at project or portal level in a Mirage project. Set it to
+`false` and restart to omit generated debugger trailers for asset comparisons.
+The catalogue's top-level `sourceMaps` and `PAQVILO_SOURCE_MAPS` control Lense
+overlays independently; they do not disable Mirage's debugger metadata.
+
 ### Local assets and compatibility
 
 ```yaml
@@ -215,6 +221,10 @@ Runtime discovery, logs and generated projects live under `.paqvilo/` beside the
 A standalone `--project` uses its own directory. Use the same scope for `mirage status`
 and `mirage stop`, especially when running from another directory. Direct Mirage commands
 also accept `--state-dir` for explicit discovery/state storage.
+
+For a background runtime, copy the stop command printed by `mirage start`. It
+preserves the selected catalogue/project and runtime overrides, including the
+port and state selectors used for projectless standalone sessions.
 
 Multiple visitors can share one runtime with independent cookies; configuration and records
 remain shared. Independent scenarios need separate state files or persona contexts.
