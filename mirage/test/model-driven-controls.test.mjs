@@ -68,7 +68,11 @@ test('compiled forms retain custom bindings and event dependencies for explicitl
   const control = form.tabs[0].sections[0].fields[0];
   assert.equal(control.supported, true);
   assert.equal(Object.hasOwn(control, 'reason'), false);
-  assert.deepEqual(control.pcf, { name: 'Invented.FutureControl', bindings: { prop: { field: 'x_name' } } });
+  assert.deepEqual(control.pcf, {
+    name: 'Invented.FutureControl',
+    formFactor: 0,
+    bindings: { prop: { field: 'x_name' } },
+  });
   assert.match(control.sourceControl.xml, /Unknown future="yes"/);
   assert.equal(control.sourceControl.attributes.classid, 'invented-class');
   assert.equal(control.sourceControl.customBindings[0].attributes.name, 'Invented.FutureControl');
@@ -84,6 +88,7 @@ test('custom field hosts preserve all form factors and select only the desktop b
   const control = compileForm({ id: 'invented', xml }, { x_name: { type: 'text' } }).tabs[0].sections[0].fields[0];
   assert.deepEqual(control.pcf, {
     name: 'Invented.Desktop',
+    formFactor: 0,
     bindings: { value: { field: 'x_name' }, prefix: { value: 'Label' } },
   });
   assert.equal(control.sourceControl.customBindings.length, 2);

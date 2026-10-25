@@ -66,7 +66,7 @@ export function debugScript(body, target, { line = 0, column = 0, source, inline
 }
 
 /** Append debugger metadata only to executable inline script bodies. */
-export function debugMarkup(source, file) {
+export function debugMarkup(source, file, { onEdits } = {}) {
   if (debugging.getStore() === false) return source;
   if (!source || !file || !/<script\b/i.test(String(source))) return source;
   const text = String(source),
@@ -97,5 +97,6 @@ export function debugMarkup(source, file) {
   let result = text;
   for (const patch of patches.sort((a, b) => b.from - a.from))
     result = result.slice(0, patch.from) + patch.body + result.slice(patch.to);
+  onEdits?.(patches);
   return result;
 }

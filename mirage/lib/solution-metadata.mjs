@@ -303,6 +303,14 @@ export async function importSolutionMetadata(
   diagnostics.push(...plugins.diagnostics);
   const metadata = {
     lcid,
+    // Hashes belong to the bytes actually parsed, not a later filesystem read.
+    // Inspection/render provenance can detect edits between import and use.
+    sourceRevisions: Object.fromEntries(
+      [
+        ...scan.layers.flatMap((layer) => layer.documents.map((document) => [document.file, document.hash])),
+        ...candidates.map((file) => [file.path, file.hash ?? entityDocs.get(file.path)]),
+      ].filter(([, revision]) => typeof revision === 'string'),
+    ),
     roots: scan.inputs.filter((input) => !['missing', 'unsupported'].includes(input.type)).map((input) => input.input),
     layers: schema.layers,
     entities: tables,

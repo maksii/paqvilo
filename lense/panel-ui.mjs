@@ -1,3 +1,5 @@
+import { renderInspectionEvidence } from './inspection-evidence-ui.mjs';
+
 // The dev panel as it runs inside the portal page.
 //
 // panelUi is handed to page.evaluate, which sends its source text to the browser: it must not use
@@ -7,7 +9,7 @@
 // to /__paqvilo/api/, which the overlay answers itself: they never reach the portal.
 
 /** @param {object} data what panel.mjs builds for one tab */
-export function panelUi(data) {
+function panelBrowserImpl(data) {
   // A queued draw may execute after the tab has navigated to another configured portal.
   if (location.origin !== data.origin) return;
   const ID = 'paqvilo-panel';
@@ -315,6 +317,11 @@ export function panelUi(data) {
       confirm: null,
       inspectSection: 'all',
       selectedElement: null,
+      selectedIdentity: null,
+      selectionScope: null,
+      selectionGeneration: -1,
+      selectionAnchor: null,
+      selectionReason: '',
       pickingElement: false,
       pendingActions: new Map(),
     };
@@ -440,8 +447,14 @@ export function panelUi(data) {
     const root = host.attachShadow({ mode: 'open' });
     // a constructed stylesheet is not subject to the page's Content-Security-Policy for inline styles
     const sheet = new CSSStyleSheet();
-    sheet.replaceSync(CSS);
+    sheet.replaceSync(
+      CSS +
+        renderInspectionEvidence(null, { part: 'styles' }) +
+        '.selection-summary{position:relative;margin:8px 12px;border:1px solid var(--line);border-radius:5px;padding:7px 10px;flex:none}.selection-summary>summary{cursor:pointer;font-size:12px;padding-right:90px}.selection-summary .selection-evidence-body{max-height:240px;overflow:auto;overscroll-behavior:contain}.selection-summary .selection-clear{position:absolute;right:8px;top:7px}',
+    );
     root.adoptedStyleSheets = [sheet];
+    for (const type of ['click', 'dblclick', 'auxclick', 'pointerdown', 'pointerup', 'mousedown', 'mouseup'])
+      root.addEventListener(type, (event) => event.stopPropagation(), { signal: lifetime.signal });
     root.innerHTML = `
       <div class="wrap">
         <div class="pill" role="button" tabindex="0" title="paqvilo: click to open, drag to move"></div>
@@ -463,6 +476,9 @@ export function panelUi(data) {
         <div class="float" role="status" aria-live="polite"></div>
       </div>`;
     const $ = (sel) => root.querySelector(sel);
+    const selectionHost = document.createElement('div');
+    selectionHost.className = 'selection-host';
+    $('.body').before(selectionHost);
     const wrap = $('.wrap');
 
     // ---- the portal's look
@@ -1092,7 +1108,7 @@ export function panelUi(data) {
         );
       if (report.modelDriven) {
         const c = report.modelDriven;
-        out += `<div class="card"><div class="path">${esc(c.entity ?? 'App context')}</div><div class="sub">${esc([c.appId && 'App: ' + c.appId, c.formId && 'Form: ' + c.formId, c.identity?.available ? 'Signed-in user context available' : 'Signed-in user context unavailable'].filter(Boolean).join(' · '))}</div><div class="sub">Only matching exported form IDs establish ownership; table-only matches remain candidates.</div></div>`;
+        out += `<div class="card"><div class="path">${esc(c.entity ?? 'App context')}</div><div class="sub">${esc([c.appId && 'App: ' + c.appId, c.formId && 'Form: ' + c.formId].filter(Boolean).join(' · '))}</div><div class="sub">Selected element ownership and local source identity are evaluated separately from native form context.</div></div>`;
       }
       const sections = [
         ['all', 'All'],
@@ -1106,11 +1122,6 @@ export function panelUi(data) {
       if (S.pickingElement)
         out +=
           '<div class="card"><div class="path">Select an element on the portal</div><div class="sub">Click a control or content block. Its action is paused for this click. Press Escape to cancel.</div></div>';
-      if (S.selectedElement) {
-        const selected = S.selectedElement;
-        const identity = S.selectedIdentity;
-        out += `<div class="card" data-selected-identity><div class="path">Selected: ${esc(identity?.title ?? selected.tag)}${identity ? '' : selected.id ? `#${esc(selected.id)}` : ''}</div><div class="sub">${esc(identity ? `${identity.kind} · ${identity.sub ?? ''}` : 'Select again with X-ray to resolve this element.')}</div>${(identity?.fields ?? []).map((item) => rrow(item, { code: 'COL', title: `${item.entity}.${item.name}`, sub: item.label ?? '' })).join('')}${[...(identity?.forms ?? []), ...(identity?.views ?? []), ...(identity?.lists ?? [])].map((item) => rrow(item, { code: 'CFG', title: item.name, sub: item.ref ?? '' })).join('')}${(identity?.sources ?? []).map((item) => rrow(item, { code: 'SRC', title: item.name, sub: [item.ref, item.line ? `line ${item.line}` : ''].filter(Boolean).join(' · ') })).join('')}</div>`;
-      }
       const page = report.page;
       if (page) {
         const access = page.access ?? {};
@@ -2105,7 +2116,7 @@ export function panelUi(data) {
           : null;
       node.innerHTML = html;
       if (focused) {
-        const replacement = [...node.querySelectorAll('button,input,select,a,[tabindex]')].find(
+        const replacement = [...node.querySelectorAll('button,input,select,summary,a,[tabindex]')].find(
           (item) =>
             item.tagName === focused.tag &&
             item.id === focused.id &&
@@ -2189,6 +2200,26 @@ export function panelUi(data) {
       if (!ui.open) {
         place();
         return;
+      }
+      const selectionMarkup = S.selectedElement
+        ? `<details class="selection-summary" data-selected-identity data-disclosure="selected-summary" open><summary data-focus-key="selected-summary">Selected: ${esc(S.selectedIdentity?.title ?? S.selectedElement.tag ?? 'element')}<br>${renderInspectionEvidence(S.selectedIdentity?.evidence, { part: 'headline', context: 'panel' })}</summary><button class="selection-clear" data-act="selection-clear" data-focus-key="selection-clear">Clear selection</button><div class="selection-evidence-body">${renderInspectionEvidence(S.selectedIdentity?.evidence, { context: 'panel' })}</div></details>`
+        : S.selectionReason === 'anchor-detached'
+          ? '<div class="selection-summary" role="status">Element removed; select the replacement again.</div>'
+          : '';
+      const disclosures = [...selectionHost.querySelectorAll('details[data-disclosure]')].map((item) => [
+        item.dataset.disclosure,
+        item.open,
+      ]);
+      const selectionScroll = selectionHost.querySelector('.selection-evidence-body')?.scrollTop ?? 0;
+      if (set('selection', selectionHost, selectionMarkup)) {
+        for (const [key, open] of disclosures) {
+          const item = [...selectionHost.querySelectorAll('[data-disclosure]')].find(
+            (node) => node.dataset.disclosure === key,
+          );
+          if (item) item.open = open;
+        }
+        const body = selectionHost.querySelector('.selection-evidence-body');
+        if (body) body.scrollTop = selectionScroll;
       }
       set(
         'head',
@@ -2364,9 +2395,20 @@ export function panelUi(data) {
       else toast(r.error ?? 'failed', true);
     };
     /** The Inspect report is requested once per runtime version, outside of every redraw. */
-    const acceptInspection = (request, version, answer) => {
+    const inspectionScope = () => document.getElementById('paqvilo-xray')?.__px?.getSelectionScope?.() ?? null;
+    const sameInspectionScope = (a, b) =>
+      (!a && !b) ||
+      (a && b && ['documentId', 'frameId', 'uiEpoch', 'sourceRevision'].every((key) => a[key] === b[key]));
+    const acceptInspection = (request, version, answer, scope) => {
       if (lifetime.signal.aborted || S.inspectRequest !== request) return false;
       S.inspectLoading = null;
+      if (
+        !sameInspectionScope(scope, inspectionScope()) ||
+        (answer.scope && !sameInspectionScope(scope, answer.scope))
+      ) {
+        render();
+        return false;
+      }
       if (Number.isSafeInteger(answer.loadingId))
         S.completedInspectionLoadingId = Math.max(S.completedInspectionLoadingId, answer.loadingId);
       const current = S.d?.inspection ?? S.d?.mirage,
@@ -2376,13 +2418,14 @@ export function panelUi(data) {
         return false;
       }
       S.inspect = answer.ok
-        ? { version: resultVersion, report: answer.report, status: answer.status, error: answer.error }
-        : { version, report: null, error: answer.error ?? 'inspection failed' };
+        ? { version: resultVersion, report: answer.report, status: answer.status, error: answer.error, scope }
+        : { version, report: null, error: answer.error ?? 'inspection failed', scope };
       render();
       return true;
     };
     const ensureInspect = () => {
       const c = S.d?.inspection ?? S.d?.mirage;
+      if (S.inspect && !sameInspectionScope(S.inspect.scope ?? null, inspectionScope())) S.inspect = null;
       if (
         !c?.active ||
         c.loading ||
@@ -2393,9 +2436,10 @@ export function panelUi(data) {
         return;
       const version = c.version;
       const request = ++S.inspectRequest;
+      const scope = inspectionScope();
       S.inspectLoading = version;
-      api('inspect').then((r) => {
-        acceptInspection(request, version, r);
+      api('inspect', { scope }).then((r) => {
+        acceptInspection(request, version, r, scope);
       });
     };
     const ensureTweaks = () => {
@@ -2462,6 +2506,12 @@ export function panelUi(data) {
       const url = row?.dataset.url || '';
       const d = S.d;
       switch (name) {
+        case 'selection-clear':
+          document.getElementById('paqvilo-xray')?.__px?.clearSelection?.('user-clear');
+          S.selectedElement = null;
+          S.selectedIdentity = null;
+          render();
+          break;
         case 'xray':
           stopPicking();
           document.getElementById('paqvilo-xray')?.__px?.toggle();
@@ -2515,11 +2565,12 @@ export function panelUi(data) {
           if (S.inspectLoading !== null) break;
           const version = (S.d?.inspection ?? S.d?.mirage)?.version ?? 0,
             request = ++S.inspectRequest;
+          const scope = inspectionScope();
           S.inspect = null;
           S.inspectLoading = version;
           render();
-          const answer = await api('inspect', { refresh: true });
-          if (acceptInspection(request, version, answer)) {
+          const answer = await api('inspect', { refresh: true, scope });
+          if (acceptInspection(request, version, answer, scope)) {
             if (!answer.ok) toast(answer.error ?? 'Inspection failed.', true);
             fresh();
           }
@@ -2727,7 +2778,10 @@ export function panelUi(data) {
           window.open('/_sim/', '_blank', 'noopener');
           break;
         case 'copy':
-          copy(row?.dataset.path || d.sourceDir.replace(/[\\/]$/, '') + '/' + rel.split('#')[0], 'Path');
+          copy(
+            t.dataset.copy ?? (row?.dataset.path || d.sourceDir.replace(/[\\/]$/, '') + '/' + rel.split('#')[0]),
+            t.dataset.copyKind === 'reference' ? 'Source reference' : 'Path',
+          );
           break;
         case 'copyurl':
           copy(location.origin + url, 'Address');
@@ -2743,6 +2797,16 @@ export function panelUi(data) {
             line,
             col: Number(row?.dataset.col) || undefined,
             find: t.dataset.find || row?.dataset.find || undefined,
+            ...(t.dataset.sourceKey
+              ? {
+                  sourceKey: t.dataset.sourceKey,
+                  sourceRevision: t.dataset.sourceRevision,
+                  contentRevision: t.dataset.contentRevision,
+                  scope: t.evidenceScope ?? S.selectionScope,
+                  anchorGeneration: t.anchorGeneration ?? S.selectionGeneration,
+                  ...(t.dataset.sourceRegion ? { region: JSON.parse(t.dataset.sourceRegion) } : {}),
+                }
+              : {}),
           });
           document
             .getElementById('paqvilo-xray')
@@ -2801,6 +2865,7 @@ export function panelUi(data) {
       }
     };
     const act = async (name, target) => {
+      if (target.disabled) return;
       const label = actionLabels[name];
       if (!label) return performAction(name, target);
       if (
@@ -2985,16 +3050,53 @@ export function panelUi(data) {
       (event) => {
         const detail = event.detail ?? {};
         if (detail.action === 'open') {
-          act('open', { dataset: { rel: detail.ref, line: detail.line, find: detail.find }, closest: () => null });
+          act('open', {
+            evidenceScope: detail.scope,
+            anchorGeneration: detail.anchorGeneration,
+            dataset: {
+              rel: detail.ref,
+              line: detail.line,
+              find: detail.find,
+              sourceKey: detail.sourceKey,
+              sourceRevision: detail.sourceRevision,
+              contentRevision: detail.contentRevision,
+              ...(detail.region ? { sourceRegion: JSON.stringify(detail.region) } : {}),
+            },
+            closest: () => null,
+          });
         } else if (detail.action === 'refresh') {
           act('inspect-refresh', { dataset: {}, closest: () => null });
-        } else if (detail.action === 'selected') {
-          S.selectedElement = detail.element;
-          S.selectedIdentity = detail.identity;
-          if (detail.oneShot) {
+        } else if (['selected', 'updated', 'cleared', 'detached', 'stale'].includes(detail.action)) {
+          const context = document.getElementById('paqvilo-xray')?.__px?.selectionState?.();
+          if (!detail.scope || !Number.isSafeInteger(detail.selectionGeneration)) return;
+          if (
+            detail.identity?.evidence?.version === 1 &&
+            !sameInspectionScope(detail.identity.evidence.scope, detail.scope)
+          )
+            return;
+          const sameEpoch = !S.selectionScope || S.selectionScope.uiEpoch === detail.scope.uiEpoch;
+          if (sameEpoch && detail.selectionGeneration < S.selectionGeneration) return;
+          if (!sameEpoch && (detail.action !== 'selected' || detail.scope.uiEpoch < S.selectionScope.uiEpoch)) return;
+          if (detail.identity && context?.scope && !sameInspectionScope(context.scope, detail.scope)) return;
+          if (
+            ['updated', 'stale'].includes(detail.action) &&
+            S.selectionAnchor &&
+            detail.anchorId !== S.selectionAnchor
+          )
+            return;
+          S.selectionGeneration = detail.selectionGeneration;
+          S.selectionScope = detail.scope;
+          S.selectionAnchor = detail.identity ? detail.anchorId : null;
+          S.selectionReason = detail.reason;
+          S.selectedElement = detail.identity ? (detail.element ?? S.selectedElement) : null;
+          S.selectedIdentity = detail.identity ?? null;
+          if (detail.action === 'selected' && detail.oneShot) {
             S.ui.tab = 'runtime';
             setOpen(true);
           }
+          render();
+          if (detail.action === 'selected' && detail.oneShot)
+            selectionHost.querySelector('[data-focus-key="selected-summary"]')?.focus({ preventScroll: true });
         } else if (detail.action === 'toggled') {
           if (detail.enabled) {
             S.ui.hidden = false;
@@ -3064,8 +3166,8 @@ export function panelUi(data) {
         const previousInspection = S.d?.inspection ?? S.d?.mirage,
           nextInspection = d.inspection ?? d.mirage;
         if (catalogChanged || (previousInspection && previousInspection.version !== nextInspection?.version)) {
-          S.selectedElement = null;
-          S.selectedIdentity = null;
+          S.inspectRequest++;
+          S.inspectLoading = null;
         }
         S.d = d;
         if (MIRAGE_TABS.includes(S.ui.tab) && (!d.mirageMode || d.mirage?.active === false)) S.ui.tab = 'overrides';
@@ -3125,6 +3227,12 @@ export function panelUi(data) {
     };
   }
 }
+
+// Fixed owned source keeps page.evaluate and panel.mjs composition self-contained.
+export const panelUi = new Function(
+  'data',
+  `const renderInspectionEvidence=(${renderInspectionEvidence.toString()});return (${panelBrowserImpl.toString()})(data);`,
+);
 
 /** Evaluated in the page during detach; a queued old draw cannot recreate a stopped panel. */
 export function removePanelUi({ token }) {

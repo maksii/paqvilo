@@ -22,6 +22,16 @@ import {
   toInt32,
   htmlEncode,
 } from './liquid-dotnet.mjs';
+import {
+  createRenderBuffer,
+  renderFragment,
+  appendRenderFragment,
+  withRenderSource,
+  withRenderNode,
+  setBindingFragment,
+  getBindingFragment,
+  objectSourceFragment,
+} from './render-provenance.mjs';
 
 export { LiquidError, LiquidSyntaxError };
 
@@ -205,6 +215,8 @@ export async function lookupMember(object, part, context) {
   }
   if (property === undefined) return { found: true, value: undefined };
   const value = object[property];
+  const origin = objectSourceFragment(object, property, value);
+  if (origin && context) context.resolvedFragment = origin;
   return { found: true, value: typeof value === 'function' ? undefined : value };
 }
 /** Symbols marking drop property names (case-insensitive) and host-only keys. */
@@ -262,17 +274,50 @@ function shorthandBody(text, literal) {
   const body = text.slice(start, end).trimEnd();
   return /[\n\r\u2028\u2029]/.test(body) ? null : body;
 }
+const tokenLocations = new WeakMap();
+const listLocations = new WeakMap();
+function parsedNode(list, node, span) {
+  if (!listLocations.has(list)) listLocations.set(list, []);
+  listLocations.get(list)[list.length] = span;
+  list.push(node);
+}
 export function tokenize(source, rawTags = new Set()) {
   if (source == null || source === '') return [];
   // Comment/literal shorthands only apply when they span the whole template.
   let text = String(source);
+  let offsets = Array.from({ length: text.length }, (_, i) => i);
   const literal = shorthandBody(text, true);
-  if (literal !== null) text = `{% literal %}${literal}{% endliteral %}`;
+  if (literal !== null) {
+    text = `{% literal %}${literal}{% endliteral %}`;
+    offsets = null;
+  }
   const comment = shorthandBody(text, false);
-  if (comment !== null) text = `{% comment %}${comment}{% endcomment %}`;
+  if (comment !== null) {
+    text = `{% comment %}${comment}{% endcomment %}`;
+    offsets = null;
+  }
   // Trailing whitespace control: one newline or one run of spaces/tabs, never both.
-  text = text.replace(/-(\}\}|%\})(\n|\r\n|[ \t]+)?/g, '$1');
+  const pieces = [],
+    mapped = [];
+  let previous = 0;
+  for (const match of text.matchAll(/-(\}\}|%\})(\n|\r\n|[ \t]+)?/g)) {
+    pieces.push(text.slice(previous, match.index), match[1]);
+    if (offsets) {
+      for (let i = previous; i < match.index; i++) mapped.push(offsets[i]);
+      mapped.push(offsets[match.index + 1], offsets[match.index + 2]);
+    }
+    previous = match.index + match[0].length;
+  }
+  pieces.push(text.slice(previous));
+  if (offsets) for (let i = previous; i < offsets.length; i++) mapped.push(offsets[i]);
+  text = pieces.join('');
+  offsets = offsets ? mapped : null;
   const tokens = [];
+  const spans = [];
+  const add = (token, from, to) => {
+    tokens.push(token);
+    spans.push(offsets && to > from ? { start: offsets[from], end: offsets[to - 1] + 1 } : null);
+  };
   const start = /(\{\{|\{%)(-)?/g;
   let position = 0;
   let match;
@@ -284,7 +329,7 @@ export function tokenize(source, rawTags = new Set()) {
       let literal = text.slice(position, match.index);
       // Leading whitespace control: spaces and tabs only (DotLiquid20).
       if (match[2]) literal = literal.replace(/[\t ]+$/, '');
-      if (literal !== '') tokens.push(literal);
+      if (literal !== '') add(literal, position, position + literal.length);
     }
     const isTag = match[1] === '{%';
     let token = match[1];
@@ -315,7 +360,7 @@ export function tokenize(source, rawTags = new Set()) {
           ? `Tag '${token}' was not properly terminated with regexp: ${TAG_END_TEXT}`
           : `Variable '${token}' was not properly terminated with regexp: ${VARIABLE_END_TEXT}`,
       );
-    tokens.push(token);
+    add(token, match.index, i);
     position = i;
     if (isTag) {
       const name = re(`^\\{%\\s*([${WC}]+)`).exec(token)?.[1];
@@ -324,12 +369,20 @@ export function tokenize(source, rawTags = new Set()) {
         end.lastIndex = position;
         const found = end.exec(text);
         if (!found) throw new LiquidSyntaxError(`${name} tag was never closed`);
-        if (found.index > position) tokens.push(text.slice(position, found.index));
+        if (found.index > position) add(text.slice(position, found.index), position, found.index);
         position = found.index;
       }
     }
   }
-  if (position < text.length) tokens.push(text.slice(position));
+  if (position < text.length) add(text.slice(position), position, text.length);
+  const metadata = { spans, cursor: 0, current: null };
+  tokenLocations.set(tokens, metadata);
+  Object.defineProperty(tokens, 'shift', {
+    value() {
+      metadata.current = metadata.spans[metadata.cursor++];
+      return Array.prototype.shift.call(tokens);
+    },
+  });
   return tokens;
 }
 
@@ -353,7 +406,11 @@ export class Variable {
   /** Variable.Render(context) -> value after filters (no string conversion). */
   async evaluate(context) {
     if (this.name == null) return null;
+    context.resolvedFragment = null;
     let output = await context.resolve(this.name);
+    const fragment = context.resolvedFragment ?? getBindingFragment(context, this.name);
+    context.variableFragments ??= new WeakMap();
+    context.variableFragments.set(this, fragment);
     if (!this.filters.length) return output;
     // Filters see whether the value comes from a user or request root, the values the platform
     // HTML-encodes on output (the json filter writes such values verbatim).
@@ -387,7 +444,14 @@ export class Variable {
       )
         text = htmlEncode(text);
     }
-    out.push(text);
+    const origin = context.variableFragments?.get(this);
+    const fragment = !this.filters.length && text === value ? origin : null;
+    if (fragment && fragment.text === text) appendRenderFragment(out, fragment);
+    else {
+      if (context.provenance?.node && origin)
+        context.provenance.node.contributors = [...new Set(origin.intervals.map((span) => span.sourceRefId))];
+      out.push(text);
+    }
   }
 }
 
@@ -568,6 +632,7 @@ export class LiquidContext {
   /** assign/capture/fetchxml: Scopes.Last() (outermost scope). */
   assignGlobal(key, value) {
     this.outerScope.set(key, value);
+    setBindingFragment(this.outerScope, key, null);
     encodedAssignments.get(this.outerScope)?.delete(String(key).toLowerCase());
   }
   isEncodedVariable(markup) {
@@ -794,6 +859,7 @@ export class Block extends Tag {
     this.nodeList.length = 0;
     while (tokens.length) {
       const token = tokens.shift();
+      const span = tokenLocations.get(tokens)?.current ?? null;
       if (token.startsWith('{%')) {
         const full = FULL_TOKEN.exec(token);
         if (!full)
@@ -808,7 +874,7 @@ export class Block extends Tag {
         const tag = this.engine.createTag(name);
         if (tag) {
           tag.initialize(this.engine, name, args, tokens);
-          this.nodeList.push(tag);
+          parsedNode(this.nodeList, tag, span);
           tag.assertTagRules(this.nodeList);
         } else this.unknownTag(name, args, tokens);
       } else if (token.startsWith('{{')) {
@@ -817,8 +883,8 @@ export class Block extends Tag {
           throw new LiquidSyntaxError(
             `Variable '${this.engine.runtimeCompatibility === 'observed' && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${VARIABLE_END_TEXT}`,
           );
-        this.nodeList.push(new Variable(content[1]));
-      } else if (token !== '') this.nodeList.push(token);
+        parsedNode(this.nodeList, new Variable(content[1]), span);
+      } else if (token !== '') parsedNode(this.nodeList, token, span);
     }
     this.assertMissingDelimitation();
   }
@@ -854,12 +920,20 @@ export function isInfrastructureError(error) {
 }
 /** Block.RenderAll: each failing node renders "Liquid error: ..." and rendering continues. */
 export async function renderAll(nodes, context, out) {
-  for (const node of nodes) {
+  for (let index = 0; index < nodes.length; index++) {
+    const node = nodes[index];
     context.checkLimits();
     await context.yieldIfNeeded();
     try {
-      if (typeof node === 'string') out.push(node);
-      else await node.render(context, out);
+      await withRenderNode(
+        context,
+        listLocations.get(nodes)?.[index] ?? null,
+        typeof node === 'string' ? 'literal' : 'derived',
+        async () => {
+          if (typeof node === 'string') out.push(node);
+          else await node.render(context, out);
+        },
+      );
       context.checkTimeLimit();
     } catch (error) {
       out.push(context.handleError(error));
@@ -898,17 +972,42 @@ export class RawBlock extends Block {
       const token = tokens.shift();
       const full = FULL_TOKEN.exec(token);
       if (full && full[1] === this.blockDelimiter) return;
-      this.nodeList.push(token);
+      parsedNode(this.nodeList, token, tokenLocations.get(tokens)?.current ?? null);
     }
     this.assertMissingDelimitation();
   }
   get source() {
     return this.nodeList.join('');
   }
+  provenanceSource(context) {
+    const source = context.provenance?.source;
+    if (!source) return null;
+    const offsets = [];
+    let output = 0;
+    for (let index = 0; index < this.nodeList.length; index++) {
+      const token = this.nodeList[index],
+        span = listLocations.get(this.nodeList)?.[index];
+      if (span && span.end - span.start === token.length) {
+        const maps = source.offsetMap ?? [{ start: 0, end: Number.MAX_SAFE_INTEGER, sourceStart: 0 }];
+        for (const map of maps) {
+          const start = Math.max(span.start, map.start),
+            end = Math.min(span.end, map.end);
+          if (end > start)
+            offsets.push({
+              start: output + start - span.start,
+              end: output + end - span.start,
+              sourceStart: map.sourceStart + start - map.start,
+            });
+        }
+      }
+      output += token.length;
+    }
+    return { ...source, offsetMap: offsets, renderedText: this.source };
+  }
 }
 class RawTag extends RawBlock {
   async render(context, out) {
-    out.push(...this.nodeList);
+    await renderAll(this.nodeList, context, out);
   }
 }
 class CommentTag extends RawBlock {
@@ -921,12 +1020,12 @@ class LiteralTag extends Block {
       const token = tokens.shift();
       const full = FULL_TOKEN.exec(token);
       if (full && full[1] === this.blockDelimiter) return;
-      this.nodeList.push(token);
+      parsedNode(this.nodeList, token, tokenLocations.get(tokens)?.current ?? null);
     }
     this.assertMissingDelimitation();
   }
   async render(context, out) {
-    out.push(...this.nodeList);
+    await renderAll(this.nodeList, context, out);
   }
 }
 const ASSIGN_SYNTAX = re(`((?:${VARIABLE_SIGNATURE})+)\\s*=\\s*(.*)\\s*`);
@@ -943,6 +1042,8 @@ class AssignTag extends Tag {
       !this.from.filters.length &&
       context.isEncodedVariable(this.from.name);
     context.assignGlobal(this.to, await this.from.evaluate(context));
+    const fragment = !this.from.filters.length ? context.variableFragments?.get(this.from) : null;
+    if (fragment) setBindingFragment(context.outerScope, this.to, fragment);
     if (encoded) context.markEncodedAssignment(this.to);
   }
 }
@@ -957,9 +1058,10 @@ class CaptureTag extends Block {
     super.parse(tokens);
   }
   async render(context) {
-    const buffer = [];
+    const buffer = createRenderBuffer(context);
     await renderAll(this.nodeList, context, buffer);
     context.assignGlobal(this.to, buffer.join(''));
+    setBindingFragment(context.outerScope, this.to, renderFragment(buffer));
   }
 }
 class IfTag extends Block {
@@ -1203,12 +1305,12 @@ class CycleTag extends Tag {
 class IfChangedTag extends Block {
   async render(context, out) {
     await context.stack(async () => {
-      const buffer = [];
+      const buffer = createRenderBuffer(context);
       await renderAll(this.nodeList, context, buffer);
       const text = buffer.join('');
       if (text !== context.registers.get('ifchanged')) {
         context.registers.set('ifchanged', text);
-        out.push(text);
+        appendRenderFragment(out, renderFragment(buffer));
       }
     });
   }
@@ -1280,9 +1382,11 @@ class TableRowTag extends Block {
           }),
         );
         column++;
-        const buffer = [];
+        const buffer = createRenderBuffer(context);
         await renderAll(this.nodeList, context, buffer);
-        out.push(`<td class="col${column}">${buffer.join('')}</td>`);
+        out.push(`<td class="col${column}">`);
+        appendRenderFragment(out, renderFragment(buffer));
+        out.push('</td>');
         if (column === columns && index !== length - 1) {
           column = 0;
           row++;
@@ -1325,6 +1429,7 @@ class BlockRenderState {
   constructor() {
     this.parents = new Map();
     this.nodeLists = new Map();
+    this.origins = new Map();
   }
   nodeList(block) {
     return this.nodeLists.has(block) ? this.nodeLists.get(block) : block.nodeList;
@@ -1372,15 +1477,21 @@ class BlockTag extends Block {
     const state = BlockRenderState.find(context);
     await context.stack(async () => {
       context.set('block', new BlockDrop(this, out));
-      await renderAll(state ? state.nodeList(this) : this.nodeList, context, out);
+      const list = state ? state.nodeList(this) : this.nodeList;
+      const source = state?.origins.get(list) ?? this.provenanceSource;
+      if (source && source !== context.provenance?.source)
+        await withRenderSource(context, source, () => renderAll(list, context, out));
+      else await renderAll(list, context, out);
     });
   }
-  addParent(parents, nodeList) {
-    if (parents.has(this)) parents.get(this).addParent(parents, nodeList);
+  addParent(parents, nodeList, source) {
+    if (parents.has(this)) parents.get(this).addParent(parents, nodeList, source);
     else {
       const parent = new BlockTag();
       parent.initialize(this.engine, this.tagName, this.blockName, null);
       parent.nodeList = [...nodeList];
+      parent.provenanceSource = source;
+      listLocations.set(parent.nodeList, listLocations.get(nodeList) ?? []);
       parents.set(this, parent);
     }
   }
@@ -1424,10 +1535,16 @@ class ExtendsTag extends Block {
       context.set('blockstate', state);
       context.set('extends', []);
       for (const block of [...this.nodeList.filter((node) => node instanceof BlockTag), ...orphaned]) {
+        if (!state.origins.has(state.nodeList(block)))
+          state.origins.set(state.nodeList(block), context.provenance?.source);
         const parentBlock = parentBlocks.find((candidate) => candidate.blockName === block.blockName);
         if (parentBlock) {
           if (state.parents.has(block)) state.parents.set(parentBlock, state.parents.get(block));
-          parentBlock.addParent(state.parents, state.nodeList(parentBlock));
+          parentBlock.addParent(
+            state.parents,
+            state.nodeList(parentBlock),
+            state.origins.get(state.nodeList(parentBlock)) ?? template.sourceRef,
+          );
           state.nodeLists.set(parentBlock, state.nodeList(block));
         } else if (template.root.nodeList.some((node) => node instanceof ExtendsTag))
           context.scopes[0].get('extends').push(block);
@@ -1446,16 +1563,17 @@ function findBlocks(node, blocks = []) {
 
 // ---- Template and engine
 export class Template {
-  constructor(engine, root, source) {
+  constructor(engine, root, source, sourceRef = null) {
     this.engine = engine;
     this.root = root;
     this.source = source;
+    this.sourceRef = sourceRef;
   }
   async renderInto(context, out) {
-    await this.root.render(context, out);
+    await withRenderSource(context, this.sourceRef, () => this.root.render(context, out));
   }
   async render(context) {
-    const out = [];
+    const out = createRenderBuffer(context);
     await this.renderInto(context, out);
     return out.join('');
   }
@@ -1525,22 +1643,21 @@ export class LiquidEngine {
     return type ? new type() : null;
   }
   /** Template.Parse (throws LiquidSyntaxError). Parsed templates are cached by source. */
-  parse(source) {
+  parse(source, sourceRef = null) {
     const key = String(source ?? '');
     const cached = this.cache.get(key);
-    if (cached) return cached;
+    if (cached) return sourceRef ? new Template(this, cached.root, key, sourceRef) : cached;
     const template = new Template(this, new Document(this, tokenize(key, this.rawTags)), key);
     if (this.cache.size > 4000) this.cache.clear();
     this.cache.set(key, template);
-    return template;
+    return sourceRef ? new Template(this, template.root, key, sourceRef) : template;
   }
   /** Resolve an include/extends name expression and parse the referenced template. */
   async loadTemplate(context, nameMarkup) {
     const name = await context.resolve(nameMarkup);
-    const source = await this.loadTemplateSource(
-      name == null ? null : typeof name === 'string' ? name : formatItem(name),
-      context,
-    );
-    return this.parse(source);
+    const resolvedName = name == null ? null : typeof name === 'string' ? name : formatItem(name);
+    const source = await this.loadTemplateSource(resolvedName, context);
+    const sourceRef = this.templateSourceRef?.(resolvedName, context);
+    return this.prepareTemplate ? this.prepareTemplate(source, sourceRef) : this.parse(source, sourceRef);
   }
 }

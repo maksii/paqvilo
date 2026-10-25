@@ -9,6 +9,15 @@ import { createSourceInspector, inspectRenderedPage } from '../lense/source-insp
 import { xrayUi } from '../lense/xray-ui.mjs';
 import { inspectionFixture } from '../test/source-inspection-fixture.mjs';
 
+const assertStaticCandidate = (evidence, name) => {
+  assert.notEqual(evidence.owner.status, 'exact');
+  assert.notEqual(evidence.source.status, 'exact');
+  assert.ok(
+    evidence.source.refs.some((ref) => ref.name === name && ref.status === 'candidate'),
+    name,
+  );
+};
+
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -123,9 +132,9 @@ test('script-rendered unreferenced snippets remain attributable with bounded pag
     const start = performance.now();
     let result;
     for (let index = 0; index < 100; index++) result = api.identify(node);
-    return { title: result.title, ms: (performance.now() - start) / 100 };
+    return { evidence: result.evidence, ms: (performance.now() - start) / 100 };
   });
-  assert.equal(result.title, 'Dynamic notice');
+  assertStaticCandidate(result.evidence, 'Dynamic notice');
   assert.ok(result.ms < 5, 'synthetic element identification stays below the 5 ms target');
   t.diagnostic(JSON.stringify({ identificationMs: result.ms }));
   await page.locator('.notice-message').evaluate((node) => (node.className = 'replacement-message'));
@@ -144,12 +153,12 @@ test('script-rendered unreferenced snippets remain attributable with bounded pag
   inspector.invalidate();
   const edited = await inspect();
   assert.ok(edited.elementSources.some((row) => row.selector === '#edited-dynamic'));
-  assert.equal(
+  assertStaticCandidate(
     await page.evaluate(
-      () => document.getElementById('paqvilo-xray').__px.identify(document.querySelector('.replacement-message')).title,
+      () =>
+        document.getElementById('paqvilo-xray').__px.identify(document.querySelector('.replacement-message')).evidence,
     ),
     'Dynamic notice',
-    'one source edit preserves the script-rendered enclosing snippet match',
   );
 });
 
@@ -161,10 +170,11 @@ test('script truncation notes and displayed source rows agree on root-relative f
   );
   const report = await inspect();
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('id0')));
-  const text = await page.locator('#paqvilo-xray .content').innerText();
+  const text = await page.locator('#paqvilo-xray .content').textContent();
   const ref = report.elementSources.find((row) => row.kind === 'script' && row.selector === '#id0').ref;
   assert.ok(text.includes(ref));
-  assert.ok(text.includes('Truncated scripts: ' + ref + '.'));
+  assert.ok(text.includes('Script index truncated; not attributed'));
+  assert.ok(text.includes(ref));
   assert.equal(text.includes(fx.portal), false);
   assert.equal(/[A-Za-z]:\\/.test(text), false);
 });
@@ -179,9 +189,9 @@ test('rendered IDs match exported hints across CSS escaping styles', async (t) =
   fs.writeFileSync(path.join(fx.portal, 'content-snippets/Escaped.contentsnippet.value.html'), markup);
   const report = await inspect();
   assert.ok(report.elementSources.some((row) => row.name === 'Escaped notice'));
-  assert.equal(
+  assertStaticCandidate(
     await page.evaluate(
-      () => document.getElementById('paqvilo-xray').__px.identify(document.querySelector('aside')).title,
+      () => document.getElementById('paqvilo-xray').__px.identify(document.querySelector('aside')).evidence,
     ),
     'Escaped notice',
   );
@@ -240,12 +250,12 @@ test('unreferenced snippets inserted in open shadow roots retain source candidat
   );
   const report = await inspect();
   assert.ok(report.elementSources.some((row) => row.name === 'Shadow notice'));
-  assert.equal(
+  assertStaticCandidate(
     await page.evaluate(
       () =>
         document
           .getElementById('paqvilo-xray')
-          .__px.identify(document.getElementById('host').shadowRoot.querySelector('aside')).title,
+          .__px.identify(document.getElementById('host').shadowRoot.querySelector('aside')).evidence,
     ),
     'Shadow notice',
   );
@@ -284,14 +294,16 @@ test('an exact shadow ID remains attributable after an earlier common class reac
   );
   const report = await inspect();
   assert.equal(report.elementSourceLimits.candidateTruncated, true);
-  assert.equal(
-    await page.evaluate(
-      () =>
-        document
-          .getElementById('paqvilo-xray')
-          .__px.identify(document.getElementById('host').shadowRoot.querySelector('aside')).title,
-    ),
-    'Exact shadow identity',
+  const selected = await page.evaluate(
+    () =>
+      document
+        .getElementById('paqvilo-xray')
+        .__px.identify(document.getElementById('host').shadowRoot.querySelector('aside')).evidence,
+  );
+  assertStaticCandidate(selected, 'Exact shadow identity');
+  assert.ok(
+    selected.source.refs.every((ref) => ref.recordId === 'rare-shadow' && ref.fieldPath?.join('.') === 'value'),
+    'shared-container siblings and metadata names are not markup candidates for this node',
   );
 });
 
@@ -311,10 +323,11 @@ test('X-ray warns about oversized unreferenced sources without presenting them a
     false,
   );
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('aside')));
+  await page.locator('#paqvilo-xray [data-evidence-role=limits] > summary').click();
   const text = await page.locator('#paqvilo-xray .content').innerText();
-  assert.ok(text.includes('Export-wide markup index omitted 1 oversized source:'));
+  assert.ok(text.includes('markupSources: 1'));
   assert.ok(text.includes('content-snippets/Oversize.contentsnippet.value.html'));
-  assert.ok(text.includes('Omitted sources are not attributed to this element.'));
+  assert.ok(text.includes('Index omissions; not attributed to the selected element'));
   assert.equal(text.includes('PRIVATE_BODY_SENTINEL'), false);
   assert.equal(text.includes(fx.portal), false);
 });

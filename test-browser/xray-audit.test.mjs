@@ -68,8 +68,11 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       const row = { id, title, fixture: 'synthetic DOM + explicit exported report', status: 'running' };
       results.push(row);
       try {
-        await page.setContent(style + `<div class="case">${html}</div>`);
-        const data = { origin: 'null', token: 'invented-audit-session' };
+        await page.route('http://127.0.0.1:11887/**', (route) =>
+          route.fulfill({ contentType: 'text/html', body: style + `<div class="case">${html}</div>` }),
+        );
+        await page.goto('http://127.0.0.1:11887/');
+        const data = { origin: 'http://127.0.0.1:11887', token: 'invented-audit-session' };
         await page.evaluate(xrayUi, data);
         await page.evaluate(
           ({ data, report }) => {
@@ -85,7 +88,14 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
           assert.ok(rect, `${selector} has a visible box`);
           await page.mouse.click(rect.x + Math.min(20, rect.width / 2), rect.y + rect.height / 2);
         };
-        const field = async (name) => xray.locator('.binding').getByText(name, { exact: true }).waitFor();
+        const field = async (name) => {
+          await page.waitForFunction((name) => {
+            const evidence = document.getElementById('paqvilo-xray').__px.selection()?.evidence;
+            return [evidence?.owner.component, ...(evidence?.candidates ?? []).map((item) => item.component)].some(
+              (item) => item && item.entity + '.' + (item.field ?? item.name) === name,
+            );
+          }, name);
+        };
         await run({ page, xray, pick, field });
         assert.deepEqual(errors, [], 'no browser errors');
         row.status = 'passed';
@@ -110,8 +120,8 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     async ({ xray, pick, field }) => {
       await pick('#audit_first');
       await field('audit_a.audit_first');
-      await xray.getByText('Form A', { exact: true }).waitFor();
-      await xray.getByText('System form A', { exact: true }).waitFor();
+      await xray.getByText('Form A', { exact: true }).first().waitFor({ state: 'attached' });
+      await xray.getByText('System form A', { exact: true }).first().waitFor({ state: 'attached' });
     },
   );
   await scenario(
@@ -148,7 +158,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     async ({ pick, field, xray }) => {
       await pick('#audit_first');
       await field('audit_a.audit_first');
-      await xray.getByText('Form A', { exact: true }).waitFor();
+      await xray.getByText('Form A', { exact: true }).first().waitFor({ state: 'attached' });
     },
   );
   await scenario(
@@ -168,8 +178,8 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     async ({ pick, field, xray }) => {
       await pick('#audit_first');
       await field('audit_a.audit_first');
-      await xray.getByText('View A', { exact: true }).waitFor();
-      await xray.getByText('List A', { exact: true }).waitFor();
+      await xray.getByText('View A', { exact: true }).first().waitFor({ state: 'attached' });
+      await xray.getByText('List A', { exact: true }).first().waitFor({ state: 'attached' });
     },
   );
   await scenario(
@@ -178,7 +188,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     '<dialog open><div id="EntityFormControl_forma_EntityFormView"><input id="audit_first"></div></dialog>',
     async ({ pick, xray }) => {
       await pick('#audit_first');
-      await xray.getByText('Form A', { exact: true }).waitFor();
+      await xray.getByText('Form A', { exact: true }).first().waitFor({ state: 'attached' });
     },
   );
   await scenario(
@@ -192,8 +202,8 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
   );
   await scenario('I10', 'Ambiguous column remains ambiguous', '<input id="audit_shared">', async ({ pick, xray }) => {
     await pick('#audit_shared');
-    await xray.getByText('Ambiguous field identifier', { exact: true }).waitFor();
-    assert.equal(await xray.locator('.binding strong').count(), 1);
+    assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'candidate');
+    assert.equal(await xray.locator('[data-evidence-role=alternatives] .ie-row').count(), 2);
   });
   await scenario(
     'I11',
@@ -210,7 +220,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     '<div data-entityname="audit_a" data-viewid="view-b"><input id="audit_shared"></div>',
     async ({ pick, xray }) => {
       await pick('#audit_shared');
-      await xray.locator('.title').getByText('Conflicting table context', { exact: true }).waitFor();
+      assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'conflicting');
       assert.equal(await xray.locator('.binding strong').filter({ hasText: 'audit_a.audit_shared' }).count(), 0);
     },
   );
@@ -280,7 +290,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     async ({ page, pick, xray }) => {
       await pick('#audit_first');
       await page.locator('#audit_first').evaluate((node) => node.replaceWith(node.cloneNode()));
-      await xray.getByText('Element removed', { exact: true }).waitFor();
+      await page.waitForFunction(() => document.getElementById('paqvilo-xray').__px.selection() === null);
       assert.equal(await xray.locator('.binding').count(), 0);
     },
   );
@@ -407,9 +417,19 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await page.locator('#modal').evaluate((node) => node.showModal());
       await page.waitForFunction(() => document.getElementById('paqvilo-xray')?.parentElement.id === 'modal');
       await pick('#audit_first');
+      await xray.evaluate((node) => (window.auditRetainedHost = node));
       await page.locator('#modal').evaluate((node) => node.remove());
       await xray.getByRole('toolbar').waitFor();
       assert.equal(await xray.evaluate((node) => node.parentElement === document.body), true);
+      assert.equal(await xray.evaluate((node) => node === window.auditRetainedHost), true);
+      assert.equal(await xray.evaluate((node) => node.__px.selection()), null);
+      await xray.evaluate((node) => node.__px.dispose());
+      await page.locator('body').evaluate((node) => node.append(document.createElement('div')));
+      assert.equal(
+        await page.locator('#paqvilo-xray').count(),
+        0,
+        'explicit disposal never resurrects on later mutations',
+      );
     },
   );
   await scenario(
@@ -466,9 +486,9 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     '<aside class="shared"><span id="text">Content</span></aside>',
     async ({ pick, xray }) => {
       await pick('#text');
-      await xray.getByText('Template A', { exact: true }).last().waitFor();
-      await xray.getByText('Template B', { exact: true }).last().waitFor();
-      assert.match(await xray.locator('.content').textContent(), /Multiple templates/);
+      await xray.getByText('Template A', { exact: true }).last().first().waitFor({ state: 'attached' });
+      await xray.getByText('Template B', { exact: true }).last().first().waitFor({ state: 'attached' });
+      assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-source-status'), 'candidate');
     },
     {
       ...base,
@@ -484,7 +504,8 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     '<p id="unknown">Unknown</p>',
     async ({ pick, xray }) => {
       await pick('#unknown');
-      assert.equal(await xray.locator('.title').innerText(), 'No reliable source');
+      assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'unavailable');
+      assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-source-status'), 'unavailable');
       assert.equal(await xray.locator('.source').count(), 0);
     },
   );
@@ -499,7 +520,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
   );
   await scenario(
     'S04',
-    'Source open preserves exact file and line',
+    'Unproven static candidate browsing preserves file without claiming an exact line',
     '<p id="source">Content</p>',
     async ({ page, pick, xray }) => {
       await page.evaluate(() =>
@@ -508,10 +529,11 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
         }),
       );
       await pick('#source');
-      await xray.getByRole('button', { name: 'Open source ↗' }).click();
+      await xray.locator('[data-disclosure=static-candidates] > summary').click();
+      await xray.getByRole('button', { name: 'Browse file ↗' }).click();
       assert.deepEqual(await page.evaluate(() => ({ ref: window.auditOpened.ref, line: window.auditOpened.line })), {
         ref: 'templates/example.html',
-        line: 42,
+        line: undefined,
       });
     },
     {
@@ -527,11 +549,11 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     '<div data-formid="system-a" data-entityname="audit_a"><input id="audit_first"></div>',
     async ({ pick, xray, page }) => {
       await pick('#audit_first');
-      await xray.getByText('Form A', { exact: true }).waitFor();
-      await xray.getByText('Form A alternate', { exact: true }).waitFor();
-      assert.match(await xray.locator('.content').innerText(), /candidate basic form configuration/);
+      await xray.getByText('Form A', { exact: true }).first().waitFor({ state: 'attached' });
+      await xray.getByText('Form A alternate', { exact: true }).first().waitFor({ state: 'attached' });
+      assert.notEqual(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
       await page.waitForTimeout(350);
-      assert.match(await xray.locator('.tip').textContent(), /Form candidates: 2 configurations/);
+      assert.equal(await xray.locator('[data-evidence-role=enclosing] .ie-row').count(), 2);
       assert.equal(await xray.getByText('System form A', { exact: true }).count(), 1);
     },
     {
@@ -548,7 +570,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     '<form data-formid="form-a" data-entityname="audit_b"><input id="audit_shared"></form>',
     async ({ pick, xray }) => {
       await pick('#audit_shared');
-      assert.equal(await xray.locator('.title').innerText(), 'Conflicting table context');
+      assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'conflicting');
       assert.equal(await xray.locator('.binding').count(), 0);
     },
   );
@@ -558,7 +580,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     '<div id="EntityFormControl_forma"><div id="EntityFormControl_forminner"><input id="audit_first"></div></div>',
     async ({ pick, xray }) => {
       await pick('#audit_first');
-      await xray.getByText('Inner form', { exact: true }).waitFor();
+      await xray.getByText('Inner form', { exact: true }).first().waitFor({ state: 'attached' });
       assert.equal(await xray.getByText('Form A', { exact: true }).count(), 0);
     },
     {
@@ -572,7 +594,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     '<div data-listid="list-a"><input id="audit_first"></div>',
     async ({ pick, xray }) => {
       await pick('#audit_first');
-      await xray.getByText('List A', { exact: true }).waitFor();
+      await xray.getByText('List A', { exact: true }).first().waitFor({ state: 'attached' });
       assert.equal(await xray.getByText('Unrelated basic form', { exact: true }).count(), 0);
     },
     {
@@ -596,8 +618,9 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     async ({ pick, xray, field }) => {
       await pick('#audit_first');
       await field('audit_a.audit_first');
-      await xray.getByText('Multistep A', { exact: true }).waitFor();
-      await xray.getByText('System form A', { exact: true }).waitFor();
+      await xray.getByText('Multistep A', { exact: true }).first().waitFor({ state: 'attached' });
+      await xray.getByText('System form A', { exact: true }).first().waitFor({ state: 'attached' });
+      await xray.locator('[data-disclosure=declared-form-definitions] > summary').click();
       assert.match(await xray.locator('.content').innerText(), /Multistep form/);
     },
     {
@@ -613,8 +636,12 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     '<div data-pcf-schema="audit.Control"><button id="control">Control</button></div>',
     async ({ pick, xray }) => {
       await pick('#control');
-      await xray.locator('.title').getByText('audit.Control', { exact: true }).waitFor();
-      await xray.getByText('controls/a.yml', { exact: false }).waitFor();
+      await xray
+        .locator('[data-evidence-role=alternatives]')
+        .getByText('audit.Control', { exact: true })
+        .waitFor({ state: 'attached' });
+      assert.notEqual(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
+      await xray.getByText('controls/a.yml', { exact: false }).first().waitFor({ state: 'attached' });
     },
     {
       ...base,
@@ -771,11 +798,15 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_a.audit_first');
       await xray.evaluate((node) =>
         node.__px.update(
-          { origin: 'null', token: 'invented-audit-session', inspectionError: 'Local export unavailable' },
+          {
+            origin: 'http://127.0.0.1:11887',
+            token: 'invented-audit-session',
+            inspectionError: 'Local export unavailable',
+          },
           null,
         ),
       );
-      await xray.getByText('Local export unavailable', { exact: true }).waitFor();
+      await xray.getByText('Details: Local export unavailable', { exact: true }).first().waitFor({ state: 'attached' });
       assert.equal(await xray.locator('.binding').count(), 0);
       assert.equal(await xray.locator('.source').count(), 0);
     },
@@ -791,7 +822,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
         (node, report) =>
           node.__px.update(
             {
-              origin: 'null',
+              origin: 'http://127.0.0.1:11887',
               token: 'invented-audit-session',
               inspection: { active: false, error: 'Inspection disabled' },
             },
@@ -799,7 +830,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
           ),
         base,
       );
-      await xray.getByText('Inspection disabled', { exact: true }).waitFor();
+      await xray.getByText('Details: Inspection disabled', { exact: true }).first().waitFor({ state: 'attached' });
       assert.equal(await xray.locator('.binding').count(), 0);
     },
   );
@@ -810,11 +841,11 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     async ({ pick, xray }) => {
       await pick('#unknown');
       await xray.locator('.page-context summary').click();
-      await xray.getByText('assets/site.css', { exact: true }).waitFor();
-      await xray.getByText('assets/site.js', { exact: true }).waitFor();
+      await xray.getByText('assets/site.css', { exact: true }).first().waitFor({ state: 'attached' });
+      await xray.getByText('assets/site.js', { exact: true }).first().waitFor({ state: 'attached' });
       assert.match(
         await xray.locator('.content').innerText(),
-        /element ownership and applied CSS rules are not established/,
+        /neither execution nor selected-element ownership is implied/,
       );
     },
     {
@@ -852,8 +883,8 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     '<input id="audit_first">',
     async ({ pick, xray }) => {
       await pick('#audit_first');
-      assert.equal(await xray.locator('.eyebrow').innerText(), 'Dataverse column · candidate');
-      await xray.getByText('Column identifier only; candidate until table context is known', { exact: true }).waitFor();
+      assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'candidate');
+      assert.equal(await xray.locator('[data-evidence-role=alternatives] .ie-row').count(), 1);
     },
   );
 });

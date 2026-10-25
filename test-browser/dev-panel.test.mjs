@@ -332,8 +332,17 @@ test('one-shot element picks consume fast and slow gestures before opening panel
       [],
       String(delay),
     );
-    assert.equal(await page.evaluate(() => window.pickedElement.id), 'pick-target');
-    assert.match(await page.locator('#paqvilo-panel .body').innerText(), /Selected:/);
+    assert.deepEqual(await page.evaluate(() => window.pickedElement), { tag: 'button' });
+    assert.equal(
+      await page.evaluate(
+        () => document.getElementById('paqvilo-xray').__px.selectedNode() === document.getElementById('pick-target'),
+      ),
+      true,
+      'the retained browser-only anchor is the actual picked node without serializing its unknown runtime ID',
+    );
+    const summary = page.locator('#paqvilo-panel [data-selected-identity]');
+    await summary.waitFor();
+    assert.match(await summary.innerText(), /Selected:/);
     await page.locator('#paqvilo-panel [data-act=close]').click();
   }
 });

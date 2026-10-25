@@ -62,7 +62,13 @@ export async function interceptOrigins(
   context,
   origins,
   handler,
-  { bypassCSP = false, ownsPage = () => true, onError = (error) => console.error(error.message), onTargetError } = {},
+  {
+    bypassCSP = false,
+    ownsPage = () => true,
+    onError = (error) => console.error(error.message),
+    onTargetError,
+    onAttach,
+  } = {},
 ) {
   const allowed = new Set(origins.map((origin) => new URL(origin).origin));
   if (!allowed.size) throw new Error('At least one portal origin is required');
@@ -109,6 +115,10 @@ export async function interceptOrigins(
         ),
       );
       record.routes.clear();
+      if (record.attachment)
+        await step('attachment cleanup', () =>
+          typeof record.attachment === 'function' ? record.attachment() : record.attachment.dispose?.(),
+        );
       const restore = [
         ['Fetch.disable', {}],
         ['Network.setCacheDisabled', { cacheDisabled: false }],
@@ -147,7 +157,14 @@ export async function interceptOrigins(
       const isMainDocument =
         event.resourceType === 'Document' && (mainFrameId === null || event.frameId === mainFrameId);
       if (isMainDocument) sawDocument = true;
-      const route = makeRoute({ cdp, context, page, event, isMainDocument });
+      const route = makeRoute({
+        cdp,
+        context,
+        page,
+        event,
+        isMainDocument,
+        onFulfilled: (proof) => record.attachment?.publishProvenance?.(event, proof),
+      });
       activeRoutes.add(route);
       record.routes.add(route);
       // whatever the handler does or fails to do, the request is not left paused
@@ -200,6 +217,32 @@ export async function interceptOrigins(
       // Attached profiles can already have a worker serving cached resources before
       // Fetch sees them. Bypass it only in this admitted target; never unregister it.
       await configure('Network.setBypassServiceWorker', { bypass: true });
+      if (onAttach) {
+        let timer;
+        const opening = Promise.resolve().then(() => onAttach({ page, cdp, configure }));
+        opening
+          .then((attachment) => {
+            if (record.closed)
+              Promise.resolve(typeof attachment === 'function' ? attachment() : attachment?.dispose?.()).catch(
+                () => {},
+              );
+            else record.attachment = attachment;
+          })
+          .catch(() => {});
+        try {
+          await Promise.race([
+            opening,
+            new Promise((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error('Interception attachment did not finish within its setup deadline')),
+                CDP_SETUP_MS,
+              );
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
       await configure('Fetch.enable', { patterns: [...allowed].map((origin) => ({ urlPattern: `${origin}/*` })) });
     } catch (error) {
       const pageClosed = stopped || record.closed || page.isClosed();
@@ -269,17 +312,20 @@ export async function interceptOrigins(
   }
 }
 
-function makeRoute({ cdp, context, page, event, isMainDocument }) {
+function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled }) {
   const { requestId, request } = event;
   let fetched = false,
     headersChanged = false;
   const responses = new Set();
   const headers = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   const send = (method, params) => {
-    if (route.answered) return Promise.resolve();
+    if (route.answered) return Promise.resolve(false);
     route.answered = true;
     // the tab may have moved on or closed; nothing is waiting for the answer then
-    return cdp.send(method, { requestId, ...params }).catch(() => {});
+    return cdp.send(method, { requestId, ...params }).then(
+      () => true,
+      () => false,
+    );
   };
   /** The body the browser sends with the request, or undefined. */
   const postData = async () => {
@@ -362,8 +408,8 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
       });
     },
     /** Answers from `response` (what fetch() returned), optionally with another body, or from status/headers/body. */
-    async fulfill({ response, status, headers: given, body } = {}) {
-      if (route.answered) return;
+    async fulfill({ response, status, headers: given, body, provenance } = {}) {
+      if (route.answered) return false;
       let responseHeaders;
       let payload = body;
       const code = status ?? (response ? response.status() : 200);
@@ -387,11 +433,16 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
       }
       const bytes = noBody ? Buffer.alloc(0) : Buffer.isBuffer(payload) ? payload : Buffer.from(payload ?? '', 'utf8');
       if (!noBody) responseHeaders.push({ name: 'content-length', value: String(bytes.length) });
-      await send('Fetch.fulfillRequest', {
+      const acknowledged = await send('Fetch.fulfillRequest', {
         responseCode: code,
         responseHeaders,
         body: bytes.toString('base64'),
       });
+      if (acknowledged && provenance)
+        await Promise.resolve()
+          .then(() => onFulfilled?.(provenance))
+          .catch(() => {});
+      return acknowledged;
     },
     /** Lets the request go to the online portal untouched. */
     fallback: () =>

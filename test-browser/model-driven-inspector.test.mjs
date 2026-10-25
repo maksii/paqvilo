@@ -12,6 +12,8 @@ import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 import { startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
 import { modelDrivenInspectorUi } from '../lense/model-driven-inspector-ui.mjs';
 import { parseAppActionCommand } from '../mirage/lib/model-driven/solution.mjs';
+import { createHash } from 'node:crypto';
+import { inspectModelDrivenContext } from '../lense/model-driven-inspection.mjs';
 
 const formId = '11111111-1111-4111-8111-111111111111';
 const userId = '22222222-2222-4222-8222-222222222222';
@@ -116,8 +118,16 @@ test(
     ownedFixture(t).remove(async () => {
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
     });
-    const sources = imported(),
-      overlay = createModelDrivenOverlay({ origin, imported: sources });
+    const sources = imported();
+    const document = sources.layers[0].documents[0],
+      xml = document.facts.appComponents.forms[0].xml;
+    const sourcePath = path.join(root, 'solution/Entities/inv_item/FormXml/main.xml');
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+    await fs.writeFile(sourcePath, xml);
+    const formSource = await fs.realpath(sourcePath);
+    document.file = formSource;
+    sources.metadata = { sourceRevisions: { [formSource]: createHash('sha256').update(xml).digest('hex') } };
+    const overlay = createModelDrivenOverlay({ origin, imported: sources });
     inspector = await startModelDrivenInspector({
       context,
       page,
@@ -152,31 +162,60 @@ test(
     await page.keyboard.press('Alt+Shift+P');
     await page.getByRole('tab', { name: 'Inspect', exact: true }).click();
     await page
-      .getByText('Only matching exported form IDs establish ownership; table-only matches remain candidates.')
+      .getByText(
+        'Selected element ownership and local source identity are evaluated separately from native form context.',
+      )
       .waitFor();
     await host.getByRole('button', { name: 'Toggle Lense X-ray', exact: true }).click();
     const fieldBox = await page.locator('input[data-id]').boundingBox();
     await page.mouse.click(fieldBox.x + fieldBox.width / 2, fieldBox.y + fieldBox.height / 2);
     const xray = page.locator('#paqvilo-xray');
     await xray
-      .getByRole('complementary', { name: 'Lense source details' })
-      .locator('strong')
-      .filter({ hasText: /^inv_item\.inv_title$/ })
+      .locator('[data-inspection-evidence][data-owner-status="candidate"][data-source-status="candidate"]')
       .waitFor();
+    const selected = await page.evaluate(
+      () => document.getElementById('paqvilo-xray').__px.selectionState().identity.evidence,
+    );
+    assert.ok(selected.candidates.some((item) => item.component.controlName === 'inv_title'));
+    assert.ok(
+      selected.source.refs.some(
+        (ref) =>
+          ref.ref === formSource &&
+          ref.region?.line &&
+          ref.contentRevision === createHash('sha256').update(xml).digest('hex'),
+      ),
+      'a native DOM candidate retains its current real exported definition without claiming execution',
+    );
+    await xray.getByText('inv.Controls.Input', { exact: true }).first().waitFor({ state: 'attached' });
     const panelText = await xray.evaluate((element) => element.shadowRoot.textContent);
-    for (const expected of [
-      'inv.Controls.Input',
-      'Invented.change',
-      'Invented.load',
-      '/invented/solution/Entities/inv_item/FormXml/main.xml',
-    ])
+    for (const expected of ['inv.Controls.Input', 'Invented.change', 'Invented.load', formSource])
       assert.ok(panelText.includes(expected), expected);
     assert.equal(panelText.includes('FORM_VALUE_MUST_NOT_LEAK'), false);
     if (process.env.PAQVILO_MODEL_INSPECTOR_EVIDENCE)
       await page.screenshot({ path: process.env.PAQVILO_MODEL_INSPECTOR_EVIDENCE });
     const commandBox = await page.locator(`[data-id="${nativeCommandId}"]`).boundingBox();
     await page.mouse.click(commandBox.x + commandBox.width / 2, commandBox.y + commandBox.height / 2);
-    await xray.getByText('Declared ribbon command: Review', { exact: true }).waitFor();
+    await page.waitForFunction(() =>
+      document
+        .getElementById('paqvilo-xray')
+        .__px.selectionState()
+        .identity.evidence.candidates.some(
+          (item) => item.component.kind === 'command' && item.component.label === 'Review',
+        ),
+    );
+    let commandEvidence = await page.evaluate(
+      () => document.getElementById('paqvilo-xray').__px.selectionState().identity.evidence,
+    );
+    assert.equal(
+      commandEvidence.owner.status,
+      'candidate',
+      'an exported DOM identifier does not prove native command execution',
+    );
+    assert.equal(
+      commandEvidence.source.status,
+      'unavailable',
+      'this fixture supplies parsed AppAction declarations without an AppAction source file/hash',
+    );
     assert.equal(await page.evaluate(() => Boolean(window.reviewed)), false);
     assert.deepEqual(
       await page.evaluate(() => [
@@ -186,27 +225,45 @@ test(
       ]),
       [false, false, false],
     );
-    assert.equal(await xray.getByText('Declared ribbon command: Other table command', { exact: true }).count(), 0);
-    assert.equal(await xray.getByText('Declared ribbon command: Grid command', { exact: true }).count(), 0);
+    assert.deepEqual(
+      commandEvidence.candidates
+        .filter((item) => item.component.kind === 'command')
+        .map((item) => item.component.label),
+      ['Review'],
+    );
     inspector.refresh({ ...sources, appActions: [...sources.appActions, { ...modernCommand(), id: 'inv_duplicate' }] });
-    await xray
-      .getByText(
-        'Multiple declared commands match this native identifier. Command ownership is ambiguous; handlers are not attributed.',
-        { exact: true },
-      )
-      .waitFor();
-    assert.equal(await xray.getByText('Declared ribbon command: Review', { exact: true }).count(), 0);
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById('paqvilo-xray')
+          .__px.selectionState()
+          .identity.evidence.candidates.filter((item) => item.component.kind === 'command').length === 2,
+    );
+    commandEvidence = await page.evaluate(
+      () => document.getElementById('paqvilo-xray').__px.selectionState().identity.evidence,
+    );
+    assert.equal(commandEvidence.owner.status, 'candidate');
+    assert.ok(
+      commandEvidence.candidates.every((item) => item.status === 'candidate'),
+      'duplicate identifier declarations remain candidates',
+    );
     inspector.refresh(sources);
-    await xray.getByText('Declared ribbon command: Review', { exact: true }).waitFor();
+    await page.waitForFunction(
+      () =>
+        document
+          .getElementById('paqvilo-xray')
+          .__px.selectionState()
+          .identity.evidence.candidates.filter((item) => item.component.kind === 'command').length === 1,
+    );
     const session = await (await call('/v1/session')).json(),
       pages = await (await call('/v1/pages')).json();
     assert.equal(session.kind, 'model-driven');
     assert.equal(session.debugger.port, 9222);
     assert.equal(pages.pages.length, 1);
     const state = await (await call('/v1/pages/' + pages.pages[0].id + '/state')).json();
-    assert.equal(state.context.identity.userId, userId);
+    assert.equal(state.context.identity, undefined, 'source inspection does not export signed-in user identity');
     assert.equal(state.context.formId, formId);
-    assert.equal(state.context.appId, appId);
+    assert.equal(state.context.appId, undefined, 'navigation query input is not observed app identity');
     assert.ok(state.problems.some((problem) => problem.type === 'http'));
     assert.ok(state.problems.some((problem) => problem.type === 'error'));
     const serialized = JSON.stringify(state);
@@ -217,6 +274,7 @@ test(
       'request-secret',
       'navigation-secret',
       'unrelated-secret',
+      userId,
     ])
       assert.equal(serialized.includes(secret), false, secret);
     const dom = await (
@@ -291,7 +349,7 @@ test(
     await page.goto(origin + '/main.aspx?etn=inv_item');
     const evaluate = page.evaluate.bind(page);
     page.evaluate = async (fn, argument) => {
-      if (fn.name === 'inspectModelDrivenContext') {
+      if (fn === inspectModelDrivenContext) {
         if (block)
           await new Promise((resolve) => {
             release = resolve;
@@ -318,7 +376,9 @@ test(
     await page.keyboard.press('Alt+Shift+P');
     await page.getByRole('tab', { name: 'Inspect', exact: true }).click();
     await page
-      .getByText('Only matching exported form IDs establish ownership; table-only matches remain candidates.')
+      .getByText(
+        'Selected element ownership and local source identity are evaluated separately from native form context.',
+      )
       .waitFor();
     const initialBy = Date.now() + 5000;
     while (inspector.snapshot().pendingInspection && Date.now() < initialBy)

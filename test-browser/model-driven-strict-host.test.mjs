@@ -9,6 +9,7 @@ import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
+import { createHash } from 'node:crypto';
 
 const formId = '11111111-1111-4111-8111-111111111111';
 // A strict client API: like the loopback app's bounded Xrm, an unsupported member throws.
@@ -94,6 +95,10 @@ test(
         },
       ],
     };
+    await fs.writeFile(path.join(root, 'main.xml'), formXml);
+    const formSource = await fs.realpath(path.join(root, 'main.xml'));
+    imported.layers[0].documents[0].file = formSource;
+    imported.metadata = { sourceRevisions: { [formSource]: createHash('sha256').update(formXml).digest('hex') } };
     const overlay = createModelDrivenOverlay({
       origin,
       imported,
@@ -145,7 +150,8 @@ test(
       /does not report its Web API version/,
     );
 
-    // Inspect counts the selected roots; X-ray outlines and binds a field without a native data-id.
+    // Optional native collection getters throw. Source inspection stays usable,
+    // and a name-based field join remains a candidate rather than runtime proof.
     await host.getByRole('tab', { name: 'Inspect', exact: true }).click();
     await host.getByText('invented · loopback · 1 Solution roots').waitFor();
     assert.equal(await host.getByText('no exported page matches this address').count(), 0);
@@ -159,20 +165,36 @@ test(
     const field = await tab.locator('input[name=inv_title]').boundingBox();
     await tab.mouse.click(field.x + field.width / 2, field.y + field.height / 2);
     await xray
-      .getByRole('complementary', { name: 'Lense source details' })
-      .locator('strong')
-      .filter({ hasText: /^inv_item.inv_title$/ })
+      .locator('[data-inspection-evidence][data-owner-status="candidate"][data-source-status="candidate"]')
       .waitFor();
+    const evidence = await tab.evaluate(
+      () => document.getElementById('paqvilo-xray').__px.selectionState().identity.evidence,
+    );
+    assert.ok(evidence.candidates.some((item) => item.component.controlName === 'inv_title'));
+    assert.ok(
+      evidence.source.refs.some((ref) => ref.ref === formSource && ref.region?.line),
+      'current real FormXml remains a candidate definition under a strict host',
+    );
+    assert.equal(inspector.snapshot().inspectionError, '');
+    for (const collection of ['controls', 'tabs', 'quickForms'])
+      assert.equal(inspector.snapshot().nativeStructure[collection].availability, 'throws');
     assert.equal(await xray.getByText('Ambiguous field identifier').count(), 0);
     await tab.keyboard.press('Escape');
     const heading = await tab.getByRole('heading', { name: 'Invented record' }).boundingBox();
     await tab.mouse.click(heading.x + 5, heading.y + heading.height / 2);
     // An empty identifier must not match every exported control without an id.
-    await xray
-      .locator('.card')
-      .filter({ hasNotText: 'inv_item.inv_title' })
-      .filter({ hasText: 'Invented main' })
-      .waitFor();
+    await xray.locator('[data-inspection-evidence][data-owner-status="unavailable"]').waitFor();
+    const headingEvidence = await tab.evaluate(
+      () => document.getElementById('paqvilo-xray').__px.selectionState().identity.evidence,
+    );
+    assert.ok(
+      !headingEvidence.candidates.some((item) => item.component.controlName === 'inv_title'),
+      'an empty heading identifier cannot borrow a field',
+    );
+    assert.ok(
+      headingEvidence.facts.some((item) => item.component?.key === 'form:' + formId),
+      'the current native form remains context for the heading',
+    );
     assert.equal(await xray.locator('.element-label').textContent(), 'h1');
     assert.deepEqual(problems, []);
   },

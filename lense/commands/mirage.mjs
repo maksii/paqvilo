@@ -2207,9 +2207,18 @@ async function sessionStopHint(portals, paths, { cleanupOnError = true } = {}) {
     ({ cfg, session }) =>
       catalogueOwnedState(cfg) && session.launch.project && session.launch.runtime.kind !== 'power-pages',
   );
+  // A plain absolute project reconstructs its ownership directory on replay.
+  // Config/site selectors can dispatch differently, so retain cwd for those.
+  const projectAnchored = portals.every(
+    ({ cfg, session }, index) =>
+      session.launch.project &&
+      samePath(cfg.stateDir, path.join(path.dirname(session.launch.project), '.paqvilo')) &&
+      !commands[index].includes('--config') &&
+      !commands[index].includes('--site'),
+  );
   const cwd = catalogueStandaloneProject
     ? path.dirname(catalogueStandaloneProject.cfg.stateDir)
-    : portals.some(({ cfg }) => !catalogueOwnedState(cfg))
+    : !projectAnchored && portals.some(({ cfg }) => !catalogueOwnedState(cfg))
       ? process.cwd()
       : undefined;
   const options = { cli: TOOLKIT_CLI, ...(cwd ? { cwd } : {}) };

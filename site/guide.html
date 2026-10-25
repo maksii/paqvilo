@@ -709,8 +709,9 @@ npx --no-install paqvilo --help</code></pre>
             <h2 id="inspect-title">From the page<br />back to its sources.</h2>
             <p class="intro">
               Two tools answer "where does this come from?". <b>Inspect</b> lists the sources and exported rules behind
-              the whole page; <b>X-ray</b> names the likely source of one element under your pointer. Both work the same
-              in Mirage and in Lense.
+              the whole page; <b>X-ray</b> separates the observed owner, local source and candidates for one selected
+              element. The same evidence summary is available in Mirage and Lense; available proof depends on the
+              runtime and exported metadata.
             </p>
 
             <div class="beat" id="inspect-panel">
@@ -766,7 +767,8 @@ npx --no-install paqvilo --help</code></pre>
                     alt="X-ray on the Web API page: outlined elements, the X-ray toolbar, and a card for the selected link listing Approach Web API, Approach PCF and Liquid custom view as source candidates with Open source, Copy path and Select source region."
                 /></a>
                 <figcaption>
-                  The recorded X-ray card for the Arcwell Services link, with several source candidates.
+                  An earlier X-ray card for the Arcwell Services link. Current versions show independent owner/source
+                  states and distinguish guarded source actions from static file browsing.
                 </figcaption>
               </figure>
               <div class="walk">
@@ -776,25 +778,49 @@ npx --no-install paqvilo --help</code></pre>
                 </p>
                 <p>
                   <b class="tag">You see</b> Outlines on the page: green for controls, blue for form and view
-                  containers, amber for source markup. The click selects the link instead of following it. In the
-                  recording, the card names <b>Approach Web API</b> among 13 element source candidates, with
-                  <code>web-templates/approach-web-api/Approach-Web-API.webtemplate.source.html</code> and "Markup
-                  match: div.demo-table-wrap on an enclosing element". Each candidate offers <b>Open source</b>,
-                  <b>Copy path</b> and <b>Select source region</b>.
+                  containers, amber for source markup. The click selects the link instead of following it. Colors show
+                  layers rather than certainty. Read <b>Owner</b> and <b>Local source</b> separately: each can be
+                  <b>Exact</b>, <b>Candidate</b>, <b>Conflicting</b>, <b>Unavailable</b> or <b>Stale</b>. An exact owner
+                  can have unavailable source. <b>Enclosing components</b>, <b>Context</b>, <b>Alternatives</b> and
+                  <b>Limits &amp; freshness</b>
+                  explain the remaining evidence. The panel keeps this selected summary when you switch tabs.
                 </p>
                 <p>
-                  <b class="tag">Why</b> X-ray indexes markup hints across the sources the page references and matches
-                  elements by static IDs, classes and component attributes, not by positional DOM paths. The account
-                  link itself is written by the workspace script at runtime, so X-ray matches the enclosing template
-                  markup. Other templates share that markup, which is why there are several candidates. Their order can
-                  vary with source and version; select the relevant source by name and evidence. A candidate does not
-                  prove which Liquid branch rendered or which source revision is deployed.
+                  For a Power Pages field, follow the available hierarchy:
+                  <b>column → Solution form (FormXml) → table → basic form → host webpage</b>.
+                  <b>Enclosing components</b> opens before <b>Local source</b>, so the form and table stay visible
+                  before you choose a file. The field and its rendered form have separate outlines. Read each
+                  component's state; the host webpage is context, not the field's owner. Missing definitions are not
+                  filled from a different table with the same field name.
                 </p>
                 <p>
-                  <b class="tag">Check</b> <b>Open source</b> opens the template at the matching line. Hold
-                  <kbd>Ctrl</kbd> or switch to <b>Interact</b> to use the page normally; <kbd>[</kbd> and
-                  <kbd>]</kbd> cycle overlapping elements; <kbd>Escape</kbd> releases the selection, then exits X-ray.
-                  X-ray does not change portal styles or submit selected controls.
+                  <b class="tag">Why</b> Static IDs, classes, component attributes and declared dependencies are search
+                  context. They cannot establish which source created a runtime node. The older recording lists
+                  <b>Approach Web API</b> among several markup candidates; shared markup alone does not establish its
+                  ownership of the selected link. Current direct proof is kept separate from those candidates. Serving a
+                  script also does not prove it executed or mounted the selected control. Local matching does not
+                  establish a deployed source revision.
+                </p>
+                <p>
+                  An observed script creation, clone or attachment callsite can identify verified local code for the
+                  actual node. Attachment names the code that inserted or moved it, without replacing its original
+                  creation source. Parsing code alone is not execution proof, and a declared PCF constructor is not an
+                  observed mount. Read those relationships alongside the independent owner/source states.
+                </p>
+                <p>
+                  <b class="tag">Check</b> <b>Open source</b> and <b>Open candidate</b> validate the current selection,
+                  semantic source identity and revisions before opening. Stale, conflicting and unavailable source
+                  actions are disabled. <b>Search export markup</b> offers <b>Browse file</b> separately; it does not
+                  claim an exact rendered source or line. <b>Copy reference</b> copies the displayed source reference.
+                  Hold <kbd>Ctrl</kbd> or switch to <b>Interact</b> to use the page normally; <kbd>[</kbd> and
+                  <kbd>]</kbd> cycle overlapping elements. <kbd>Tab</kbd> visits visible inspector controls and
+                  disclosure summaries. <kbd>Escape</kbd> releases the selection, then exits X-ray. The one-shot picker
+                  retains the actual node while hidden; replacing it or navigating its frame clears that selection.
+                  X-ray does not change portal styles or submit selected controls. See the
+                  <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md#selection-evidence"
+                    >selection evidence reference</a
+                  >
+                  for limits and source-opening behavior.
                 </p>
               </div>
             </div>
@@ -1856,6 +1882,13 @@ export const pluginSteps = { 'b4700000-0000-4000-8000-370000000100': validateAcc
                   <code>portal/lists/Active-Service-Requests.list.yml</code>; its <code>CreateAction</code> names the
                   create form's <code>EntityFormId</code>.
                 </p>
+                <p>
+                  To inspect the form in the modal, select a field inside its accessible same-origin iframe. Read the
+                  current document's column, Solution form, table and basic-form context, followed by the host webpage.
+                  Closing and reopening the modal, or navigating its frame, does not transfer the previous selection to
+                  a replacement control. A URL parameter or configured default alone does not prove ownership.
+                  Cross-origin and sandboxed frames remain inspection boundaries.
+                </p>
               </div>
             </div>
 
@@ -2767,12 +2800,15 @@ git commit -m "Baseline portal export"</code></pre>
               <div class="walk">
                 <p>
                   <b class="tag">Do</b> Press <kbd>Alt+Shift+X</kbd> on the deployed page and use X-ray exactly as in
-                  <a href="#xray">chapter 3</a>; <b>Open source</b> opens the candidate in VS Code at its matching line.
+                  <a href="#xray">chapter 3</a>. Read the independent owner and source states; <b>Open source</b> opens
+                  an admitted source, while <b>Open candidate</b> keeps a possible match explicit. Both actions recheck
+                  the selected node and source revisions before opening your configured editor.
                 </p>
                 <p>
                   <b class="tag">Why</b> Inspect and X-ray are available for live and Mirage sessions alike. Overrides
-                  answer "what did Lense replace?"; X-ray answers "which file made this element?". Matching candidates
-                  do not establish which deployed revision rendered the element.
+                  answer "what did Lense replace?"; X-ray shows the evidence connecting the selected element to local
+                  components and sources. Matching candidates do not establish which file created the node or which
+                  deployed revision rendered it.
                 </p>
               </div>
             </div>

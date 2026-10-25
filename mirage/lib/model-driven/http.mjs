@@ -1,10 +1,13 @@
 import fs from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 import { createOfflineSessions } from './offline.mjs';
+import { encodeModelDrivenProvenance } from './provenance-transport.mjs';
 import { withFileSourceMap, identityMapUrl, hasSourceMap, fileSourceMapEstimate } from '../../../lense/source-map.mjs';
 
 const assets = {
   'app.mjs': 'text/javascript; charset=utf-8',
+  'provenance-registry.mjs': 'text/javascript; charset=utf-8',
+  'provenance-transport.mjs': 'text/javascript; charset=utf-8',
   'client-runtime.mjs': 'text/javascript; charset=utf-8',
   'pcf-runtime.mjs': 'text/javascript; charset=utf-8',
   'controls.mjs': 'text/javascript; charset=utf-8',
@@ -329,7 +332,12 @@ export function createModelDrivenHandler({
             const result = await metadataOnly(source, data, actor, res, { index: api[1] === 'index', entity });
             return entity ? result.tables[entity] : result;
           });
-          if (!res.destroyed) json(res, 200, result);
+          if (!res.destroyed)
+            json(
+              res,
+              200,
+              req.headers['x-mirage-provenance-format'] === '1' ? encodeModelDrivenProvenance(result) : result,
+            );
           return true;
         }
         const route = /^tables\/([a-z][\w]*)(?:\/([^/]+))?$/i.exec(api[1]);

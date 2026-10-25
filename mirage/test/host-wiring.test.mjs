@@ -176,6 +176,7 @@ const PORTAL_ONLY = [
   '/portal-roles',
   '/portal-access-rules',
   '/page-resources',
+  '/page-provenance',
   '/scenarios',
   '/presets',
   '/personas',
@@ -295,7 +296,7 @@ test('Power Pages: the portal document control answers 503 while its document st
   assert.match(JSON.parse(answer).error.message, /FX_UNSET_AZURITE is not set/);
 });
 
-// Every prefix in status.routes is a dispatcher entry that answers (not 404) with its accepted method, and
+// Every prefix in status.routes is a dispatcher entry that answers (not 404) with its accepted method and capability, and
 // a prefix the routers do not list answers 404. Prefixes not in PROBES are requested with GET; /shutdown runs last.
 const PROBES = {
   '/records': ['GET', '/records/contact'],
@@ -317,6 +318,34 @@ for (const [name, start] of [
     const { routes } = await body(await simApi(sim, 'GET', '/status'), 200);
     assert.equal((await simApi(sim, 'GET', '/x-unlisted')).status, 404);
     for (const route of [...routes.filter((item) => item !== '/shutdown'), '/shutdown']) {
+      if (route === '/page-provenance') {
+        // An actual document response gives the backend its private descriptor capability.
+        // Ordinary page requests must not distinguish a protected descriptor from an absent endpoint.
+        const document = await fetch(sim.url + '/', { headers: { accept: 'text/html', 'sec-fetch-dest': 'document' } });
+        assert.equal(document.status, 200);
+        const proofId = document.headers.get('x-paqvilo-provenance');
+        const access = document.headers.get('x-paqvilo-provenance-access');
+        assert.ok(typeof proofId === 'string' && proofId.length > 0, 'the rendered document has a proof identifier');
+        assert.ok(/^[a-f0-9]{64}$/.test(access ?? ''), 'the document response grants an opaque backend capability');
+        const suffix = '/page-provenance?proof=' + encodeURIComponent(proofId);
+        const descriptor = (value, endpoint = suffix) =>
+          fetch(sim.url + '/_sim/api' + endpoint, {
+            headers: { 'x-sim-csrf': sim.csrf, 'x-paqvilo-provenance-access': value },
+          });
+        await body(await simApi(sim, 'GET', suffix), 404);
+        await body(await descriptor((access[0] === '0' ? '1' : '0') + access.slice(1)), 404);
+        const proof = await body(await descriptor(access), 200);
+        assert.equal(proof.proofId, proofId);
+        assert.equal(proof.channel, 'mirage-render');
+        assert.ok(
+          proof.bindings.length > 0 && proof.sourceRefs.length > 0,
+          'the mounted router returns the actual rendered descriptor',
+        );
+        assert.equal(JSON.stringify(proof).includes(access), false, 'descriptor JSON never discloses its capability');
+        await body(await descriptor(access, '/page-provenance?proof=not-recorded'), 404);
+        await body(await descriptor(access, '/x-unlisted'), 404);
+        continue;
+      }
       const [method, suffix, payload] = PROBES[route] ?? ['GET', route];
       const response = await simApi(sim, method, suffix, payload);
       assert.ok(

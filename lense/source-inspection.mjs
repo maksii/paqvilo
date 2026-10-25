@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readLocalFile } from './local-file.mjs';
-import { importPortal, portalField, normalizePortalPath } from '../mirage/lib/importer.mjs';
+import { importPortal, portalField, normalizePortalPath, effectiveSnippetRecords } from '../mirage/lib/importer.mjs';
 import { importSolutionMetadata } from '../mirage/lib/solution-metadata.mjs';
 import { loadProjectConfig } from '../mirage/lib/project-config.mjs';
 import { inspectPage } from '../mirage/lib/page-resources.mjs';
@@ -15,6 +15,8 @@ import { elementSourceHints, scriptSourceHints } from './element-provenance.mjs'
 import { assetKind } from '../mirage/lib/asset-type.mjs';
 import { SolutionFileCache, fileStamp, mapLimit } from '../mirage/lib/solution-cache.mjs';
 import { resolvePluginSourcePath } from '../mirage/lib/exported-plugins.mjs';
+import { buildPortalSourceIndex, sourceEditorTarget } from '../mirage/lib/portal-source-index.mjs';
+import { loadDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 
 const norm = (value) =>
   String(value?.id ?? value ?? '')
@@ -39,6 +41,34 @@ const displaySource = (portal, source) => {
   return value;
 };
 const exportIndexes = new WeakMap();
+const provenanceIndexes = new WeakMap();
+const provenanceIndex = (portal, metadata, codeCatalogue) => {
+  let cached = provenanceIndexes.get(portal);
+  codeCatalogue ??= cached?.codeCatalogue;
+  if (!cached || cached.metadata !== metadata || cached.codeCatalogue !== codeCatalogue) {
+    cached = { metadata, codeCatalogue, index: buildPortalSourceIndex({ portal, metadata, codeCatalogue }) };
+    provenanceIndexes.set(portal, cached);
+  }
+  return cached.index;
+};
+const hintIdentity = (index, record, field, selected = null) => {
+  const ref = selected ?? index.source(record, field);
+  return {
+    recordId: ref?.recordId ?? norm(record?.id),
+    fieldPath: ref?.fieldPath ?? [field],
+    languageId: ref?.languageId ?? null,
+    profileId: ref?.profileId ?? null,
+    ...(ref
+      ? {
+          sourceRefId: ref.id,
+          sourceKey: ref.key,
+          sourceRevision: ref.sourceRevision,
+          contentRevision: ref.contentRevision,
+          ...(ref.lcid !== undefined ? { lcid: ref.lcid, jsonPath: ref.jsonPath } : {}),
+        }
+      : {}),
+  };
+};
 const bodyFile = (record, suffix) => {
   const file = record?._file;
   if (!file) return null;
@@ -90,7 +120,10 @@ const markupKey = (source) => JSON.stringify([source.kind, source.sourceFile, so
 function exportIndex(portal, metadata, indexStore = null) {
   let index = exportIndexes.get(portal);
   if (index?.metadata === metadata) return index;
-  const language = norm(portal.language?.id ?? portalField(portal.website, 'defaultlanguage'));
+  const language = norm(
+    portal.selectedLanguageId ?? portal.language?.id ?? portalField(portal.website, 'defaultlanguage'),
+  );
+  const provenance = provenanceIndex(portal, metadata);
   const previous = indexStore?.get(language),
     relatedIndexes = [...(indexStore?.values() ?? [])].filter((value) => value !== previous),
     hintsBySource = new Map();
@@ -100,34 +133,29 @@ function exportIndex(portal, metadata, indexStore = null) {
       if (!sourceFiles.has(key)) sourceFiles.set(key, bodyFile(record, suffix));
       return sourceFiles.get(key);
     };
-  const snippets = new Map();
-  for (const row of (portal.records ?? [])
-    .filter((row) => row.kind === 'contentsnippet' && Number(portalField(row, 'statecode', 0)) !== 1)
-    .sort(
-      (a, b) =>
-        Number(norm(portalField(a, 'contentsnippetlanguageid')) === language) -
-        Number(norm(portalField(b, 'contentsnippetlanguageid')) === language),
-    ))
-    snippets.set(row.name, row);
+  const snippets = effectiveSnippetRecords(portal.records ?? [], language);
   const sources = [
     ...(portal.pages ?? []).map((page) => ({
       body: page.html,
       id: page.id,
-      sourceFile: sourceFile(page.metadata, 'copy.html'),
+      ...hintIdentity(provenance, page.metadata, 'copy'),
+      sourceFile: provenance.source(page.metadata, 'copy')?.file ?? sourceFile(page.metadata, 'copy.html'),
       kind: 'page',
       name: page.name,
     })),
     ...[...new Set(Object.values(portal.templates ?? {}))].map((template) => ({
       body: template.source,
       id: template.id,
-      sourceFile: sourceFile(template.metadata, 'source.html'),
+      ...hintIdentity(provenance, template.metadata, 'source'),
+      sourceFile: provenance.source(template.metadata, 'source')?.file ?? sourceFile(template.metadata, 'source.html'),
       kind: 'template',
       name: template.name,
     })),
-    ...[...snippets.values()].map((row) => ({
+    ...snippets.records().map((row) => ({
       body: portal.snippets?.[row.name],
       id: row.id,
-      sourceFile: sourceFile(row, 'value.html'),
+      ...hintIdentity(provenance, row, 'value'),
+      sourceFile: provenance.source(row, 'value')?.file ?? sourceFile(row, 'value.html'),
       kind: 'snippet',
       name: row.name,
     })),
@@ -180,6 +208,17 @@ function exportIndex(portal, metadata, indexStore = null) {
       name: form.name,
       kind: advanced ? 'advanced-form' : 'basic-form',
       entity: form.entityName ?? schema?.entity,
+      ...(advanced
+        ? {
+            configuredEntities: [
+              ...new Set(
+                [form.entityName, schema?.entity, ...(schema?.steps ?? []).map((step) => step.entity)]
+                  .filter((entity) => typeof entity === 'string' && /^[a-z][a-z0-9_]*$/i.test(entity))
+                  .map((entity) => entity.toLowerCase()),
+              ),
+            ],
+          }
+        : {}),
       sourceFile: form.metadata?._file,
       formXml:
         !advanced && schema?.sourceFile
@@ -277,6 +316,8 @@ export async function inspectionSources(cfg) {
   let lcid = 1033,
     observed = configured.observed,
     dataModel = configured.dataModel;
+  let deploymentProfile = configured.deploymentProfile ?? null,
+    deploymentProfiles = configured.deploymentProfiles;
   const diagnostics = [];
   if (configured.project) {
     try {
@@ -288,11 +329,14 @@ export async function inspectionSources(cfg) {
       lcid = project.lcid;
       observed = portal.observed ?? observed;
       dataModel = portal.dataModel ?? dataModel;
+      deploymentProfile = portal.deploymentProfile ?? deploymentProfile;
+      deploymentProfiles = portal.deploymentProfiles ?? deploymentProfiles;
     } catch (error) {
       diagnostics.push({ code: 'INSPECT_PROJECT_UNAVAILABLE', reason: error.message });
     }
   }
   const selected = [];
+  const activeProfile = deploymentProfiles ? await loadDeploymentProfiles(deploymentProfiles) : null;
   for (const root of roots) {
     try {
       const real = await fs.realpath(root);
@@ -315,6 +359,8 @@ export async function inspectionSources(cfg) {
     lcid,
     observed,
     dataModel,
+    deploymentProfile: activeProfile?.profile ?? deploymentProfile,
+    deploymentProfileFile: activeProfile?.pagesFile ?? null,
     diagnostics,
   };
 }
@@ -439,6 +485,26 @@ export function inspectRenderedPage() {
   const shapeSelector = '[id],[class],' + attributes.map((name) => '[' + name + ']').join(',');
   const elements = [],
     pending = [...document.children].reverse();
+  const visited = new WeakSet();
+  // Resolve the active component before unrelated controls consume the bounded scan.
+  try {
+    const selected = document.getElementById('paqvilo-xray')?.__px?.selectedNode?.();
+    if (selected?.isConnected && selected.ownerDocument.defaultView.location.origin === location.origin) {
+      let boundary = selected;
+      while (boundary?.ownerDocument === selected.ownerDocument) {
+        if (
+          boundary.matches?.(
+            '[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-listid],[id^=EntityFormControl],[id^=WebFormControl]',
+          )
+        )
+          break;
+        boundary = boundary.assignedSlot ?? boundary.parentElement ?? boundary.getRootNode?.()?.host;
+      }
+      pending.push(boundary ?? selected.ownerDocument.documentElement);
+    }
+  } catch {
+    /* An inaccessible or changing selection cannot widen the scan. */
+  }
   let scanned = 0,
     traversalTruncated = false,
     shapeOverflow = false;
@@ -446,6 +512,8 @@ export function inspectRenderedPage() {
   // are already in the light tree. Never enter the inspector's own shadow roots.
   while (pending.length && scanned < 8000) {
     const node = pending.pop();
+    if (visited.has(node)) continue;
+    visited.add(node);
     if (!own(node)) continue;
     scanned++;
     if (node.matches(shapeSelector)) {
@@ -1131,6 +1199,7 @@ export async function enrichInspection(
   };
   const page = portal.pages.find((entry) => norm(entry.id) === norm(report.page?.id));
   const whole = exportIndex(portal, metadata, sourceIndexStore);
+  const provenance = provenanceIndex(portal, metadata);
   report.componentIndex = {
     forms: whole.forms.map((form) => ({ ...form, formXml: form.formXml ? { ...form.formXml } : null })),
     lists: whole.lists.map((list) => ({ ...list })),
@@ -1320,13 +1389,19 @@ export async function enrichInspection(
   const markup = [
     ...report.pageSources
       .filter((row) => row.fieldPath === 'copy')
-      .map((row) => ({ body: page?.html, ...row, recordId: page?.id, kind: 'page' })),
+      .map((row) => ({ body: page?.html, ...row, ...hintIdentity(provenance, page?.metadata, 'copy'), kind: 'page' })),
     ...(report.webTemplates ?? []).map((row) => ({
       ...row,
       body: portal.templates?.[row.name]?.source,
       kind: 'template',
+      ...hintIdentity(provenance, portal.templates?.[row.name]?.metadata, 'source'),
     })),
-    ...(report.snippets ?? []).map((row) => ({ ...row, body: portal.snippets?.[row.name], kind: 'snippet' })),
+    ...(report.snippets ?? []).map((row) => ({
+      ...row,
+      body: portal.snippets?.[row.name],
+      kind: 'snippet',
+      ...hintIdentity(provenance, null, 'value', provenance.snippet(row.name)),
+    })),
   ];
   report.elementSources = markup.flatMap(({ body, ...source }) => indexedMarkupHints(body, source, whole));
   const referenced = new Set(
@@ -1368,7 +1443,11 @@ export async function enrichInspection(
     report.elementSources.push(...hints);
   };
   for (const source of report.pageSources.filter((row) => row.fieldPath === 'customjavascript'))
-    appendScriptHints(page?.js, { ...source, kind: 'script' });
+    appendScriptHints(page?.js, {
+      ...source,
+      kind: 'script',
+      ...hintIdentity(provenance, page?.metadata, 'customjavascript'),
+    });
   const browserBase = report.requestPath ?? report.path ?? page?.url ?? '/';
   const referencedPaths = new Set(sourceBodies.flatMap((text) => assetPaths(text, browserBase)));
   const observedPaths = new Set((rendered.assets ?? []).map((row) => row.path));
@@ -1388,7 +1467,12 @@ export async function enrichInspection(
         if (inside(portal.sourceDir, real) && (await fs.stat(real)).size <= 1024 * 1024) {
           const text = await readLocalFile(real, { root: portal.sourceDir, maxBytes: 1024 * 1024, encoding: 'utf8' });
           if (assetKind(file.mimeType, file.file) === 'script')
-            appendScriptHints(text, { name: file.name ?? file.url, sourceFile: real, kind: 'script' });
+            appendScriptHints(text, {
+              name: file.name ?? file.url,
+              sourceFile: real,
+              kind: 'script',
+              ...hintIdentity(provenance, file.metadata, '$content'),
+            });
           sourceBodies.push(text);
           for (const route of assetPaths(text, file.url)) referencedPaths.add(route);
         }
@@ -1406,6 +1490,7 @@ export async function enrichInspection(
     sourceFile: file.file,
     metadataSource: file.metadata?._file,
     evidence: observedPaths.has(file.url) ? 'rendered-asset' : 'static-reference',
+    ...hintIdentity(provenance, file.metadata, '$content'),
   }));
   // The complete export index can be incomplete even when an omitted source is
   // unreferenced. Report its bounded summary without attributing it to a node.
@@ -1610,6 +1695,7 @@ export function createSourceInspector(cfg) {
       ...(await Promise.all([
         Promise.all([sources.sourceDir, ...sources.roots].map(inspectionDirectoryStamp)),
         mappedPluginStamps(sources),
+        sources.deploymentProfileFile ? fileStamp(sources.deploymentProfileFile) : null,
       ])),
     ]);
   const remember = async (key, compute) => {
@@ -1658,26 +1744,10 @@ export function createSourceInspector(cfg) {
                 lcid,
                 ...(language ? { languageId: language.id } : {}),
                 ...(sources.dataModel ? { dataModel: sources.dataModel } : {}),
+                ...(sources.deploymentProfile ? { deploymentProfile: sources.deploymentProfile } : {}),
+                ...(sources.deploymentProfileFile ? { deploymentProfileFile: sources.deploymentProfileFile } : {}),
               });
-              // The importer chooses the last selected-language snippet. The shared resource
-              // graph chooses the first matching record, so expose that same winner first.
-              const selectedLanguage = norm(language?.id ?? portalField(imported.website, 'defaultlanguage'));
-              const chosenSnippets = new Map();
-              for (const record of imported.records
-                .filter((row) => row.kind === 'contentsnippet' && Number(portalField(row, 'statecode', 0)) !== 1)
-                .sort(
-                  (a, b) =>
-                    Number(norm(portalField(a, 'contentsnippetlanguageid')) === selectedLanguage) -
-                    Number(norm(portalField(b, 'contentsnippetlanguageid')) === selectedLanguage),
-                ))
-                chosenSnippets.set(record.name?.toLowerCase(), record);
-              const portal = {
-                ...imported,
-                records: [
-                  ...chosenSnippets.values(),
-                  ...imported.records.filter((row) => row.kind !== 'contentsnippet'),
-                ],
-              };
+              const portal = imported;
               const metadata = sources.roots.length
                 ? await importSolutionMetadata(sources.roots, {
                     cache: fileCache,
@@ -1757,11 +1827,117 @@ export function createSourceInspector(cfg) {
       const { select } = await load();
       return (await select(route)).metadata.plugins?.sourceRoots ?? [];
     },
+    async sourceIndexFor(route = '/', selection = null) {
+      const { select, sources } = await load();
+      const selected = await select(route);
+      let { portal, metadata } = selected;
+      const { language } = selected;
+      if (
+        selection &&
+        ((selection.deploymentProfile ?? null) !== (portal.deploymentProfile ?? null) ||
+          (selection.deploymentProfileFile &&
+            path.resolve(selection.deploymentProfileFile) !== path.resolve(sources.deploymentProfileFile ?? '')))
+      ) {
+        portal = await importPortal(sources.sourceDir, {
+          cache: fileCache,
+          lcid: language?.lcid ?? sources.lcid,
+          ...(language ? { languageId: language.id } : {}),
+          ...(sources.dataModel ? { dataModel: sources.dataModel } : {}),
+          ...(selection.deploymentProfile ? { deploymentProfile: selection.deploymentProfile } : {}),
+          ...(selection.deploymentProfileFile ? { deploymentProfileFile: selection.deploymentProfileFile } : {}),
+        });
+        metadata = sources.roots.length
+          ? await importSolutionMetadata(sources.roots, {
+              cache: fileCache,
+              portal,
+              lcid: language?.lcid ?? sources.lcid,
+              order: sources.order,
+              observed: sources.observed,
+            })
+          : {};
+      }
+      return provenanceIndex(portal, metadata, selected.codeCatalogue);
+    },
+    async lookupSource({
+      sourceKey,
+      sourceRevision,
+      contentRevision,
+      region,
+      route = '/',
+      selection = null,
+      portalProfile = selection,
+    } = {}) {
+      // Editor links must re-import current identities, never trust a stale file+array ordinal.
+      this.invalidate();
+      const index = await this.sourceIndexFor(route, portalProfile);
+      const matches = [...index.sources.values()].filter(
+        (source) => source.key === sourceKey || source.id === sourceKey,
+      );
+      if (!matches.length && typeof sourceKey === 'string' && sourceKey.startsWith('model-source:')) {
+        const admitted = index.metadataIndex.resolveOpen({ sourceKey, sourceRevision, contentRevision });
+        if (admitted.ok)
+          return {
+            state: 'exact',
+            sourceRef: admitted.sourceRef,
+            editorTarget: {
+              file: admitted.file,
+              line: admitted.line ?? 1,
+              column: admitted.column ?? 1,
+              mapped: admitted.locationAvailable,
+            },
+          };
+        return { state: /stale|changed/.test(admitted.reason) ? 'stale' : 'unavailable', reason: admitted.reason };
+      }
+      if (!matches.length) return { state: 'unavailable', reason: 'source-identity-missing' };
+      if (matches.length !== 1) return { state: 'conflicting', reason: 'source-identity-ambiguous' };
+      const source = matches[0];
+      if (source.ambiguous) return { state: 'conflicting', reason: 'duplicate-source-identity' };
+      const { text: _text, file: _file, sourceDir: _root, ...sourceRef } = source;
+      if (sourceRevision !== index.sourceRevision || contentRevision !== source.contentRevision)
+        return { state: 'stale', reason: 'source-revision-changed', replacement: sourceRef };
+      if (source.id.startsWith('model-source:')) {
+        const admission = index.metadataIndex.resolveOpen({
+          sourceKey: source.id,
+          sourceRevision,
+          contentRevision,
+          componentKey: source.componentKey,
+          placementKey: source.placementKey,
+        });
+        return admission.ok
+          ? {
+              state: 'exact',
+              sourceRef,
+              editorTarget: {
+                file: admission.file,
+                line: admission.line ?? 1,
+                column: admission.column ?? 1,
+                mapped: admission.locationAvailable,
+              },
+            }
+          : { state: 'stale', reason: admission.reason };
+      }
+      if (
+        region &&
+        (!Number.isSafeInteger(region.start) ||
+          !Number.isSafeInteger(region.end) ||
+          region.start < 0 ||
+          region.end < region.start ||
+          region.end > source.text.length)
+      )
+        return { state: 'unavailable', reason: 'source-region-invalid' };
+      const editorTarget = sourceEditorTarget(source, region);
+      return editorTarget
+        ? { state: 'exact', sourceRef, editorTarget }
+        : { state: 'unavailable', reason: 'source-file-not-admitted' };
+    },
     async enrich(report, rendered = {}) {
       if (!report || typeof report !== 'object' || Array.isArray(report))
         throw new TypeError('Source inspection requires a page report object.');
       const { sources, select } = await load();
-      const { portal, metadata, codeCatalogue } = await select(report.requestPath ?? report.path);
+      const route = report.requestPath ?? report.path;
+      const index = await this.sourceIndexFor(route, report.portalProfile);
+      const { portal, metadata } = index;
+      const { codeCatalogue } = await select(route);
       const enriched = await remember('enrich:' + JSON.stringify([report, rendered]), () => {
         counters.enrichments++;
         return enrichInspection(structuredClone(report), portal, {
@@ -1772,6 +1948,10 @@ export function createSourceInspector(cfg) {
           sourceIndexStore,
         });
       });
+      // These are current export refs, independent of the immutable refs observed
+      // when a response was rendered or fulfilled. Preserve the trusted profile.
+      enriched.portalSources = index.snapshot(enriched);
+      enriched.sourceRevision = index.sourceRevision;
       return Object.assign(report, enriched);
     },
     async inspect(route, rendered = {}) {
@@ -1790,6 +1970,9 @@ export function createSourceInspector(cfg) {
           codeCatalogue,
           sourceIndexStore,
         });
+        const index = provenanceIndex(portal, metadata, codeCatalogue);
+        report.portalSources = index.snapshot(report);
+        report.sourceRevision = index.sourceRevision;
         report.unresolved.push(...sources.diagnostics.map((row) => ({ kind: 'configuration', ...row })));
         return {
           report,

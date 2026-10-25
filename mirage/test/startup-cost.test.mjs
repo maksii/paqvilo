@@ -399,10 +399,13 @@ test('the shell index and selected-table transport exclude unrelated forms and r
   });
   t.after(() => sim.close());
   const read = async (route, cookie) => {
-    const response = await fetch(sim.url + '/_apps/api/' + route, { headers: cookie ? { cookie } : {} });
+    const response = await fetch(sim.url + '/_apps/api/' + route, {
+      headers: { 'x-mirage-provenance-format': '1', ...(cookie ? { cookie } : {}) },
+    });
     assert.equal(response.status, 200);
     const text = await response.text();
-    return { value: JSON.parse(text), bytes: Buffer.byteLength(text) };
+    const { decodeModelDrivenProvenance } = await import('../lib/model-driven/provenance-transport.mjs');
+    return { value: decodeModelDrivenProvenance(JSON.parse(text)), bytes: Buffer.byteLength(text) };
   };
   const index = await read('index'),
     table = await read('metadata/x_scale0');
@@ -416,6 +419,13 @@ test('the shell index and selected-table transport exclude unrelated forms and r
   );
   assert.ok(index.bytes < 160000, `Navigation index: ${index.bytes} bytes`);
   assert.ok(table.bytes < 100000, `Selected table: ${table.bytes} bytes`);
+  const canonical = await (await fetch(sim.url + '/_apps/api/metadata/x_scale0')).json();
+  assert.deepEqual(
+    table.value,
+    canonical,
+    'the actual shell wire format retains every source key, file, revision and range',
+  );
+  assert.ok(table.value.provenanceRefs.length > 100);
   const full = await read('');
   assert.ok(full.bytes > index.bytes * 3);
   assert.equal(table.value.capabilities.read, true);

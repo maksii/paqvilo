@@ -119,7 +119,10 @@ export function resolveSnippetComposition(snippets, key, profiles = [], { origin
     throw failure('Observed snippet composition failed its source-shape integrity check.');
   const offset = parentRoot.sourceCodeLocation?.endTag?.startOffset;
   if (offset === undefined) throw failure('Observed composition requires a closing root tag.');
-  return { source: value.slice(0, offset) + child + value.slice(offset) };
+  return {
+    source: value.slice(0, offset) + child + value.slice(offset),
+    composition: { offset, childName: profile.childName },
+  };
 }
 /** Explicit read-only native page observation; page HTML never enters the returned profile. */
 export async function captureObservedSnippetComposition(live, { portal, path, parentName, childName }) {

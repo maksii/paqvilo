@@ -141,12 +141,13 @@ export async function loadDeploymentProfiles(config, pin = null) {
           );
         }
         let parsed;
+        const jsonSource = source.replace(/^\uFEFF/, '');
         try {
-          parsed = /\.json$/i.test(file) ? JSON.parse(source) : YAML.parse(source);
+          parsed = /\.json$/i.test(file) ? JSON.parse(jsonSource) : YAML.parse(source);
         } catch (cause) {
           const relative = path.relative(config.configDirectory ?? process.cwd(), file).replaceAll('\\', '/');
           const location = /\.json$/i.test(file)
-            ? jsonErrorLocation(source)
+            ? jsonErrorLocation(jsonSource)
             : { line: cause.linePos?.[0]?.line ?? 1, column: cause.linePos?.[0]?.col ?? 1 };
           const { line, column } = location;
           const parserCode = cause.code ?? 'JSON_SYNTAX_ERROR';

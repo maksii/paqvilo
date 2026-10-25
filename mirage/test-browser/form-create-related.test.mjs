@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
+import { parse } from 'parse5';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
@@ -88,17 +89,75 @@ test('create related record opens the target form dialog; the record state hides
   const response = await page.goto(`${app.url}/?row=${id}`);
   const html = await response.text();
   // Server markup: both state buttons, no hidden marker; the form dialog with an empty frame.
-  assert.match(
-    html,
-    /<button class="activate-link btn btn-default btn" data-url="[^"]*" href="[^"]*" type="button">Reopen entry<\/button>/,
+  const descendants = (root) => {
+    const nodes = [],
+      pending = [root];
+    while (pending.length) {
+      const node = pending.pop();
+      if (node.tagName) nodes.push(node);
+      pending.push(...(node.childNodes ?? []));
+    }
+    return nodes;
+  };
+  const nodes = descendants(parse(html)),
+    attribute = (node, name) => node.attrs.find((attr) => attr.name === name)?.value;
+  const hasClass = (node, name) => (attribute(node, 'class') ?? '').split(/\s+/).includes(name);
+  const activate = nodes.filter((node) => node.tagName === 'button' && hasClass(node, 'activate-link'));
+  const deactivate = nodes.filter((node) => node.tagName === 'button' && hasClass(node, 'deactivate-link'));
+  assert.equal(activate.length, 1);
+  assert.equal(deactivate.length, 1);
+  assert.equal(attribute(activate[0], 'class'), 'activate-link btn btn-default btn');
+  assert.equal(attribute(activate[0], 'type'), 'button');
+  assert.equal(typeof attribute(activate[0], 'data-url'), 'string');
+  assert.equal(typeof attribute(activate[0], 'href'), 'string');
+  assert.equal(activate[0].childNodes.map((node) => node.value ?? '').join(''), 'Reopen entry');
+  for (const button of [...activate, ...deactivate]) {
+    assert.equal(hasClass(button, 'hidden'), false);
+    assert.equal(attribute(button, 'style'), undefined);
+  }
+  const dialogs = nodes.filter((node) => node.tagName === 'section' && hasClass(node, 'modal-form-createrecord'));
+  assert.equal(dialogs.length, 1);
+  const dialog = dialogs[0];
+  assert.equal(attribute(dialog, 'class'), 'modal fade modal-form modal-form-createrecord');
+  assert.equal(attribute(dialog, 'data-bs-backdrop') ?? attribute(dialog, 'data-backdrop'), 'static');
+  assert.match(attribute(dialog, 'data-filtercriteriaid'), /^[0-9a-f-]{36}$/i);
+  assert.equal(attribute(dialog, 'role'), 'dialog');
+  assert.equal(attribute(dialog, 'tabindex'), '-1');
+  assert.equal(
+    attribute(
+      dialog.childNodes.find((node) => node.tagName),
+      'class',
+    ),
+    'modal-lg modal-dialog',
   );
-  assert.match(
-    html,
-    /class="modal fade modal-form modal-form-createrecord" data-(?:bs-)?backdrop="static" data-filtercriteriaid="[0-9a-f-]{36}" role="dialog" tabindex="-1"><div class="modal-lg modal-dialog">/,
+  const initialFrame = descendants(dialog).find((node) => node.tagName === 'iframe');
+  assert.equal(attribute(initialFrame, 'src'), 'about:blank');
+  const layout = JSON.parse(
+    attribute(
+      nodes.find((node) => attribute(node, 'data-form-layout')),
+      'data-form-layout',
+    ),
   );
-  assert.match(
-    html,
-    /CreateRelatedRecordActionLink&quot;:\{&quot;Modal&quot;:\{\},&quot;EntityForm&quot;:\{&quot;Id&quot;:&quot;note-form&quot;,&quot;LogicalName&quot;:&quot;adx_entityform&quot;,&quot;KeyAttributes&quot;:\[\]\},&quot;Target&quot;:0,&quot;Type&quot;:29,&quot;Label&quot;:&quot;Add note&quot;,&quot;Tooltip&quot;:&quot;Add a related note&quot;,&quot;Enabled&quot;:true/,
+  const action = layout.CreateRelatedRecordActionLink;
+  assert.deepEqual(
+    {
+      Modal: action.Modal,
+      EntityForm: action.EntityForm,
+      Target: action.Target,
+      Type: action.Type,
+      Label: action.Label,
+      Tooltip: action.Tooltip,
+      Enabled: action.Enabled,
+    },
+    {
+      Modal: {},
+      EntityForm: { Id: 'note-form', LogicalName: 'adx_entityform', KeyAttributes: [] },
+      Target: 0,
+      Type: 29,
+      Label: 'Add note',
+      Tooltip: 'Add a related note',
+      Enabled: true,
+    },
   );
   // The app bundle hides the state action the active record rules out.
   assert.equal(await page.locator('button.activate-link.hidden').count(), 1);
@@ -114,4 +173,22 @@ test('create related record opens the target form dialog; the record state hides
     `/_portal/modal-form-template-path/11111111-2222-4333-8444-555555555555?id=${id}&entityformid=note-form&languagecode=1033`,
   );
   assert.equal(await modal.getAttribute('aria-label'), ' Create related record');
+  const child = page.frames().find((frame) => frame.url() === app.url + src);
+  assert.ok(child, 'the target dialog has its own loaded document');
+  await child.locator('#title').waitFor();
+  const target = await child.locator('script[data-paqvilo-mirage-form-config]').evaluate((node) => {
+    const config = JSON.parse(node.textContent);
+    return { kind: config.kind, formId: config.formId, operation: config.operation };
+  });
+  assert.deepEqual(
+    target,
+    { kind: 'entityform', formId: 'note-form', operation: 'create' },
+    'the dialog renders the target insert form instead of inheriting the parent edit form',
+  );
+  assert.equal(
+    await child
+      .locator('[data-form-layout]')
+      .evaluate((node) => JSON.parse(node.getAttribute('data-form-layout')).EntityName),
+    'sample',
+  );
 });

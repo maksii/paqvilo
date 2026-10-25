@@ -4,13 +4,26 @@ import { decodeXml } from './importer.mjs';
  * Small non-resolving XML reader for unpacked Dataverse solution files.
  * Declarations and external entities are rejected; nothing is fetched.
  */
-export function parseSolutionXml(source, { recover = false } = {}) {
+export function parseSolutionXml(source, { recover = false, locations = false } = {}) {
   source = String(source);
   if (/<!DOCTYPE|<!ENTITY/i.test(source)) throw new Error('XML external declarations are not supported');
   const root = { name: '#document', attrs: {}, children: [], text: '' };
   const stack = [root];
   let recovered = 0;
+  let offset = 0,
+    line = 1,
+    column = 1;
   for (const token of xmlTokens(source)) {
+    const region = { start: offset, end: offset + token.length, line, column };
+    offset += token.length;
+    if (locations) {
+      const last = token.lastIndexOf('\n');
+      if (last < 0) column += token.length;
+      else {
+        for (let cursor = token.indexOf('\n'); cursor >= 0; cursor = token.indexOf('\n', cursor + 1)) line++;
+        column = token.length - last;
+      }
+    }
     if (token.startsWith('<!--') || token.startsWith('<?')) continue;
     if (token.startsWith('<![CDATA[')) {
       stack.at(-1).text += token.slice(9, -3);
@@ -19,6 +32,7 @@ export function parseSolutionXml(source, { recover = false } = {}) {
     if (token.startsWith('</')) {
       const name = token.slice(2, -1).trim();
       if (stack.length > 1 && stack.at(-1).name === name) {
+        if (locations) stack.at(-1).region.end = region.end;
         stack.pop();
         continue;
       }
@@ -33,6 +47,7 @@ export function parseSolutionXml(source, { recover = false } = {}) {
     if (token.startsWith('<')) {
       const { name, attrs, selfClosing } = readElement(token);
       const node = { name, attrs, children: [], text: '' };
+      if (locations) node.region = region;
       stack.at(-1).children.push(node);
       if (!selfClosing) stack.push(node);
     } else stack.at(-1).text += decodeXml(token);

@@ -356,8 +356,10 @@ test(
     assert.equal(await page.locator('[name=search]').inputValue(), '');
     await fs.appendFile(path.join(directory, 'portal/web-files/demo.css'), '\nbody{--demo-query-reload:preserved}\n');
     await page.waitForFunction(
-      () => getComputedStyle(document.body).getPropertyValue('--demo-query-reload').trim() === 'preserved',
+      () =>
+        document.body && getComputedStyle(document.body).getPropertyValue('--demo-query-reload').trim() === 'preserved',
     );
+    await page.locator('[data-account-rows] tr').first().waitFor();
     assert.equal(await page.locator('[name=view]').inputValue(), 'inactive');
     assert.equal(await page.locator('[data-account-rows] tr').count(), 2);
     // PCF uses the same workspace script and must restore shared query state too.

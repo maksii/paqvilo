@@ -6,6 +6,8 @@ import { sourceRecordId } from '../source-record-id.mjs';
 import { setImmediate } from 'node:timers/promises';
 import { webResourcePage } from './client-runtime.mjs';
 import path from 'node:path';
+import { createModelDrivenMetadataIndex } from '../../../lense/model-driven-metadata.mjs';
+import { modelDrivenKey, modelDrivenControlKey } from './provenance-registry.mjs';
 
 /** Model-driven features Mirage inventories but does not host, as capability records (name, level, reason, code). */
 export const MODEL_DRIVEN_CAPABILITY_RECORDS = Object.freeze([
@@ -87,11 +89,22 @@ export function solutionApps(scan, { lcid = 1033, projectRoot = null } = {}) {
           idSource: app.id ? 'exported' : 'derived-local',
           source: 'solution',
           sourceFile: shown(document.file),
+          sourceIdentityFile: document.file,
         });
       }
-      maps.push(...(document.facts.appMaps ?? []));
+      maps.push(
+        ...(document.facts.appMaps ?? []).map((map) => ({
+          ...map,
+          sourceFile: shown(document.file),
+          sourceIdentityFile: document.file,
+        })),
+      );
       for (const dashboard of document.facts.dashboards ?? [])
-        dashboards.set(dashboard.id, { ...dashboard, sourceFile: shown(document.file) });
+        dashboards.set(dashboard.id, {
+          ...dashboard,
+          sourceFile: shown(document.file),
+          sourceIdentityFile: document.file,
+        });
     }
   for (const app of apps.values()) {
     const map = maps.findLast(
@@ -103,7 +116,11 @@ export function solutionApps(scan, { lcid = 1033, projectRoot = null } = {}) {
             (component) => component.type === 62 && component.entity === map.uniqueName.toLowerCase(),
           )),
     );
-    if (map) app.navigation = map.navigation;
+    if (map) {
+      app.navigation = map.navigation;
+      app.navigationSourceFile = map.sourceFile;
+      app.navigationIdentityFile = map.sourceIdentityFile;
+    }
   }
   const navigation = (areas) =>
     (areas ?? []).map((area) => ({
@@ -144,6 +161,17 @@ function* catalogueSteps({
   settings = {},
   canvasApps = null,
 } = {}) {
+  const provenanceIndex = createModelDrivenMetadataIndex(
+    {
+      metadata,
+      apps: metadata.modelDrivenApps ?? [],
+      pcf: clientExtensions?.pcf,
+      resources: clientExtensions?.resources,
+      ribbonDocuments: metadata.modelDrivenRibbonDocuments ?? [],
+      appActions: metadata.modelDrivenAppActions ?? [],
+    },
+    { sourceRevision: 'render' },
+  );
   const tables = Object.assign(
     {},
     ...providers.filter(Boolean).map((provider) => structuredClone(provider.tables ?? {})),
@@ -277,6 +305,31 @@ function* catalogueSteps({
           .filter((name) => ![table.nameColumn, table.idColumn].includes(name))
           .slice(0, 5),
       ].map((name) => ({ name, width: 180 }));
+    const sourceKeys = [
+      modelDrivenKey('table', table.entity),
+      ...Object.keys(table.fields).map((name) => modelDrivenKey('column', `${table.entity}:${name}`)),
+      ...[...table.views, ...table.lookupViews].map((view) => modelDrivenKey('view', view.id)),
+      ...table.commands.map((command) => modelDrivenKey('command', `${table.entity}:${command.id}`)),
+    ];
+    for (const form of table.forms) {
+      sourceKeys.push(modelDrivenKey('form', form.id));
+      for (const tab of form.tabs ?? []) {
+        sourceKeys.push(modelDrivenKey('tab', `${form.id}:${tab.id}`));
+        for (const section of tab.sections ?? []) {
+          sourceKeys.push(
+            modelDrivenKey('section', `${form.id}:${section.sourceStructure?.id ?? section.name ?? section.column}`),
+          );
+          for (const cell of section.fields ?? []) {
+            if (cell.spacer) continue;
+            sourceKeys.push(modelDrivenControlKey(form.id, cell.sourceControl ?? cell.name));
+            if (cell.pcf) sourceKeys.push(modelDrivenKey('pcf', cell.pcf.name));
+          }
+        }
+      }
+      for (const control of form.regionControls ?? [])
+        sourceKeys.push(modelDrivenControlKey(form.id, control.sourceControl ?? control.id, control.region));
+    }
+    table.provenanceRefs = provenanceIndex.sourceRefsFor(sourceKeys);
     yield;
   }
   const imported = structuredClone(metadata.modelDrivenApps ?? []);
@@ -425,6 +478,25 @@ function* catalogueSteps({
     defaultApp: defaultApp?.id ?? null,
     apps,
     tables,
+    provenanceRefs: provenanceIndex.sourceRefsFor([
+      ...(clientExtensions?.resources ?? []).map((resource) => modelDrivenKey('resource', resource.name)),
+      ...apps.flatMap((app) =>
+        (app.dashboards ?? []).flatMap((dashboard) => [
+          modelDrivenKey('dashboard', dashboard.id),
+          ...(dashboard.components ?? []).map(
+            (component) => `dashboard-${modelDrivenControlKey(dashboard.id, component.sourceControl ?? component.id)}`,
+          ),
+        ]),
+      ),
+      ...apps.flatMap((app) => [
+        modelDrivenKey('app', app.id),
+        ...(app.navigation ?? []).flatMap((area) =>
+          area.groups.flatMap((group) =>
+            group.items.map((item) => modelDrivenKey('navigation', `${app.id ?? app.uniqueName}:${item.id}`)),
+          ),
+        ),
+      ]),
+    ]),
     ...(clientExtensions ? { clientExtensions } : {}),
     capabilityRecords: MODEL_DRIVEN_CAPABILITY_RECORDS,
     ...(Number.isInteger(settings.timeZoneOffsetMinutes) &&

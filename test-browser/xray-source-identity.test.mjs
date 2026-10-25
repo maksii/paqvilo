@@ -15,6 +15,7 @@ after(() => browser?.close());
 // Each test gets its own context on the shared browser; the root path serves the fixture and any other path a plain frame.
 async function fixture(t, html, report = {}) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  context.setDefaultTimeout(5000);
   t.after(() => context.close());
   const page = await context.newPage();
   await page.route('**/*', (route) =>
@@ -40,17 +41,51 @@ async function fixture(t, html, report = {}) {
       return {
         title: row.title,
         kind: row.kind,
-        sub: row.sub,
+        fieldContext: row.b.fields.map((field) => field.entity + '.' + field.name).join(','),
         fields: row.b.fields,
         forms: row.b.forms,
         native: row.b.native,
         lists: row.b.lists,
         views: row.b.views,
+        grid: row.b.grid,
         matches: row.matches,
+        evidence: row.evidence,
       };
     }, selector);
   return { page, identify, data };
 }
+
+const assertNoExact = (row, message) => {
+  assert.notEqual(row.evidence.owner.status, 'exact', message);
+  assert.notEqual(row.evidence.source.status, 'exact', message);
+};
+const assertSourceCandidate = (row, name, message) => {
+  assertNoExact(row, message);
+  assert.ok(
+    row.matches.some((item) => item.name === name),
+    name + ': retained static match',
+  );
+  assert.ok(
+    row.evidence.source.refs.some((item) => item.name === name && item.status === 'candidate'),
+    name + ': explicit source candidate',
+  );
+};
+const assertComponentContext = (row, name) => {
+  assert.ok(
+    [
+      row.evidence.owner.component,
+      ...row.evidence.enclosing.map((item) => item.component),
+      ...row.evidence.candidates.map((item) => item.component),
+    ].some((item) => item?.name === name),
+    name + ': component context',
+  );
+};
+const assertFieldContext = (row, qualified) =>
+  assert.deepEqual(
+    row.fields.map((field) => field.entity + '.' + field.name),
+    [qualified],
+  );
+
 const hints = (body, name, extra = {}) =>
   elementSourceHints(body, { name, kind: 'template', sourceFile: `/${name}.html`, ref: `${name}.html`, ...extra });
 
@@ -71,11 +106,11 @@ test('framework classes stay possible matches while distinctive classes, tag-qua
     '<input class="form-control"><button class="close special" id="a">x</button><div class="panel-x special-y"></div><section id="s3"><h2 class="t">Three</h2></section>',
     { elementSources },
   );
-  assert.equal((await identify('input')).title, 'No reliable source');
-  assert.equal((await identify('button')).title, 'two');
-  assert.equal((await identify('.panel-x')).title, 'two');
+  assertNoExact(await identify('input'));
+  assertSourceCandidate(await identify('button'), 'two');
+  assertSourceCandidate(await identify('.panel-x'), 'two');
   const repeat = await identify('h2');
-  assert.equal(repeat.title, 'repeated');
+  assertSourceCandidate(repeat, 'repeated');
   assert.equal(repeat.matches.find((row) => row.selector === 'h2.t').line, 3);
 });
 
@@ -132,11 +167,17 @@ test('selected duplicate labels refresh when their locally associated control bi
   await page.evaluate(() =>
     document.getElementById('paqvilo-xray').__px.select(document.querySelector('[data-formid=B] label')),
   );
-  const binding = page.locator('#paqvilo-xray .binding');
-  await binding.getByText('item.name', { exact: true }).waitFor();
+  const binding = page.locator(
+    '#paqvilo-xray [data-evidence-role=owner], #paqvilo-xray [data-evidence-role=alternatives]',
+  );
+  await page.waitForFunction(
+    () => document.getElementById('paqvilo-xray').__px.selection().evidence.owner.component?.field === 'name',
+  );
   await page.locator('[data-formid=B] input').evaluate((node) => node.setAttribute('data-field', 'other'));
-  await binding.getByText('item.other', { exact: true }).waitFor();
-  assert.equal(await binding.getByText('item.name', { exact: true }).count(), 0);
+  await page.waitForFunction(
+    () => document.getElementById('paqvilo-xray').__px.selection().evidence.owner.component?.field === 'other',
+  );
+  assert.equal(await binding.getByText('name', { exact: true }).count(), 0);
 });
 
 test('transitive static includes keep shared selectors uncertain and weak evidence stays possible', async (t) => {
@@ -157,11 +198,11 @@ test('transitive static includes keep shared selectors uncertain and weak eviden
   };
   const { page, identify } = await fixture(t, '<button class="owned">Go</button><input class="form-control">', report);
   const found = await identify('button');
-  assert.equal(found.title, 'No reliable source');
+  assertNoExact(found);
   assert.ok(found.matches.every((item) => !item.strong));
   assert.ok(found.matches.some((item) => item.pageChain));
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('input')));
-  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Possible matches/);
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Search export markup/);
 });
 
 test('snippet dependency chains retain exported usedBy reachability without naming a shared selector owner', async (t) => {
@@ -181,7 +222,7 @@ test('snippet dependency chains retain exported usedBy reachability without nami
   };
   const { identify } = await fixture(t, '<button class="owned">Go</button>', report);
   const found = await identify('button');
-  assert.equal(found.title, 'No reliable source');
+  assertNoExact(found);
   assert.ok(found.matches.every((item) => !item.strong));
   assert.ok(found.matches.some((item) => item.pageChain));
 });
@@ -199,7 +240,7 @@ test('classic lists, fallback basic forms and modal iframe URLs resolve with a v
     `<div id="EntityList${list}"><label>Filter</label></div><div id="EntityFormControl"><p>Access denied</p></div><iframe id="modal" src="/_portal/modal-form-template-path/site?entityformid=${form}"></iframe>`,
     report,
   );
-  assert.equal((await identify('label')).title, 'Classic list');
+  assertComponentContext(await identify('label'), 'Classic list');
   assert.equal((await identify('#EntityFormControl p')).forms[0].id, form);
   assert.equal((await identify('#modal')).forms[0].id, form);
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('modal')));
@@ -318,10 +359,10 @@ test('strong ancestor IDs beat shallow class guesses and duplicate IDs retain ma
     { elementSources },
   );
   const row = await identify('span');
-  assert.equal(row.title, 'owner');
+  assertSourceCandidate(row, 'owner');
   assert.ok(row.matches.some((item) => item.name === 'guess'));
   const repeated = await identify('button');
-  assert.equal(repeated.title, 'branch');
+  assertSourceCandidate(repeated, 'branch');
   assert.equal(repeated.matches[0].line, 2);
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('span')));
   assert.match(await page.locator('#paqvilo-xray .content').innerText(), /owner/);
@@ -331,6 +372,7 @@ test('details retain deeper unique evidence even when the same source has a near
   const source = '<section id="region"><div><div><button class="distinctive">Go</button></div></div></section>';
   const { page } = await fixture(t, source, { elementSources: hints(source, 'Owner') });
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('button')));
+  await page.locator('#paqvilo-xray [data-disclosure=static-candidates] > summary').click();
   const content = await page.locator('#paqvilo-xray .content').innerText();
   assert.match(content, /#region/);
   assert.match(content, /button.distinctive/);
@@ -348,9 +390,9 @@ test('classic compact and idless list wrappers resolve only exported page or rec
     `<div id="EntityListControl_${id.replaceAll('-', '')}"><label>Filter</label></div><div id="EntityListControl"><table><tr><th>Header</th></tr></table></div><div id="EntityListUnrelated"><p>Unknown</p></div>`,
     report,
   );
-  assert.equal((await identify('label')).title, 'Classic list');
-  assert.equal((await identify('th')).title, 'Classic list');
-  assert.equal((await identify('p')).title, 'No reliable source');
+  assertComponentContext(await identify('label'), 'Classic list');
+  assertComponentContext(await identify('th'), 'Classic list');
+  assertNoExact(await identify('p'));
   assert.ok((await page.evaluate(inspectRenderedPage)).controls.some((row) => row.listId === id.replaceAll('-', '')));
 });
 
@@ -367,12 +409,12 @@ test('a thousand indexed sources retain late snippets, expose truncation and ide
       assets: [{ url: '/logo.svg', name: 'Logo', ref: 'logo.svg' }],
     },
   );
-  assert.equal((await identify('#snippet-900')).title, 'snippet-900');
+  assertSourceCandidate(await identify('#snippet-900'), 'snippet-900');
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('asset')));
   const content = await page.locator('#paqvilo-xray .content').innerText();
-  assert.match(content, /Web file/);
+  assert.match(content, /Selected resource reference/);
   assert.match(content, /logo.svg/);
-  assert.match(content, /hint index truncated/);
+  assert.match(content, /Search limited/);
   assert.doesNotMatch(content, /ignored=value/);
 });
 
@@ -439,10 +481,7 @@ test('source candidate display caps expose omitted matches instead of silently l
   ).flat();
   const { page } = await fixture(t, '<button id="same">Go</button>', { elementSources });
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('same')));
-  assert.match(
-    await page.locator('#paqvilo-xray .content').innerText(),
-    /Showing 60 source matches; 15 additional candidates/,
-  );
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /15 omitted/);
 });
 
 test('X-ray details expose PCF bindings and Web API context with consistent toggles and Ctrl interaction', async (t) => {
@@ -453,6 +492,12 @@ test('X-ray details expose PCF bindings and Web API context with consistent togg
         binding: 'declared-schema-name',
         ref: 'Widget.xml',
         resources: [{ name: 'script', ref: 'Widget.js' }],
+        properties: [{ name: 'selection', 'of-type': 'SingleLine.Text', usage: 'input', required: 'true' }],
+        parameters: {
+          value: { kind: 'binding', column: 'title' },
+          rows: { kind: 'dataset', viewId: 'view-current' },
+          literal: { kind: 'literal', value: 'PRIVATE_PARAMETER_SENTINEL' },
+        },
         datasets: [
           {
             name: 'rows',
@@ -466,10 +511,36 @@ test('X-ray details expose PCF bindings and Web API context with consistent togg
       },
     ],
     apiReferences: [{ name: 'fx_items', entity: 'fx_item', ref: 'Entity.xml', evidence: 'observed-api-request' }],
+    forms: [
+      {
+        id: 'F',
+        entity: 'fx_item',
+        name: 'Declared form',
+        events: [
+          {
+            name: 'OnChange',
+            attribute: 'title',
+            active: false,
+            handlers: [{ library: 'handler.js', functionName: 'handleTitle', enabled: false }],
+          },
+        ],
+      },
+    ],
+    nativeComponents: [
+      {
+        id: 'action',
+        name: 'Declared action',
+        kind: 'webresource',
+        formId: 'F',
+        owner: 'Form.One',
+        relationship: 'sample_parent_child',
+        ref: 'Native.xml',
+      },
+    ],
   };
   const { page } = await fixture(
     t,
-    '<div data-pcf-schema="fx.Widget"><button id="action" onclick="window.used=true">Use</button></div>',
+    '<form data-formid="F"><div data-pcf-schema="fx.Widget"><button id="action" onclick="window.used=true" type="button">Use</button></div></form><p id="plain">Unrelated</p>',
     report,
   );
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('action')));
@@ -478,7 +549,7 @@ test('X-ray details expose PCF bindings and Web API context with consistent togg
   assert.equal(await details.getAttribute('aria-pressed'), 'true');
   assert.equal(await xray.locator('.api-context').getAttribute('open'), null);
   await xray.locator('.api-context > summary').click();
-  const text = await xray.locator('.content').innerText();
+  const text = await xray.locator('.content').textContent();
   for (const expected of [
     'fx.Widget',
     'declared-schema-name',
@@ -487,9 +558,21 @@ test('X-ray details expose PCF bindings and Web API context with consistent togg
     '1 columns',
     '/_api/fx_items',
     'Observed request',
-    'no request-to-element binding',
+    'No request-to-element ownership is asserted',
+    'Column: title',
+    'Dataset: view-current',
+    'Exported literal',
+    'SingleLine.Text',
+    'required',
+    'Declared action',
+    'sample_parent_child',
+    'Native.xml',
+    'OnChange · title (disabled)',
+    '[disabled] handler.js: handleTitle',
   ])
     assert.ok(text.includes(expected), expected);
+  assert.doesNotMatch(text, /PRIVATE_PARAMETER_SENTINEL/);
+  assert.notEqual(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
   await xray.getByRole('combobox', { name: 'Highlight layer' }).selectOption('data');
   await xray.locator('.mark[style*="#3975ad"]').first().waitFor();
   await details.click();
@@ -504,6 +587,12 @@ test('X-ray details expose PCF bindings and Web API context with consistent togg
   await page.keyboard.up('Control');
   assert.equal(await page.evaluate(() => window.used), true);
   assert.equal(await xray.getByRole('button', { name: 'Inspect', exact: true }).getAttribute('aria-pressed'), 'true');
+  await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.getElementById('plain')));
+  assert.equal(await xray.locator('.pcf-context').count(), 1);
+  assert.match(
+    await xray.locator('.pcf-context').textContent(),
+    /no component-to-element ownership or active mount is asserted/,
+  );
 });
 
 test('native PCF selection requires a rendered host rather than a configured column alone', async (t) => {
@@ -523,7 +612,9 @@ test('native PCF selection requires a rendered host rather than a configured col
     ],
   };
   const { page, identify } = await fixture(t, '<form data-formid="F"><input id="title"></form>', report);
-  assert.equal((await identify('#title')).kind, 'Basic form');
+  assert.equal((await identify('#title')).evidence.owner.status, 'unavailable');
+  assert.deepEqual((await identify('#title')).matches, []);
+  assert.deepEqual((await identify('#title')).fields, []);
   await page.evaluate(() => {
     const input = document.getElementById('title'),
       host = document.createElement('div');
@@ -531,7 +622,8 @@ test('native PCF selection requires a rendered host rather than a configured col
     input.before(host);
     host.append(input);
   });
-  assert.equal((await identify('#title')).kind, 'Code component');
+  assert.notEqual((await identify('#title')).evidence.owner.status, 'exact');
+  assert.ok((await identify('#title')).evidence.candidates.some((item) => item.component?.name === 'fx.Editor'));
 });
 
 test('shared template coverage stays uncertain and contradictory IDs cannot hide a unique class match', async (t) => {
@@ -547,8 +639,8 @@ test('shared template coverage stays uncertain and contradictory IDs cannot hide
       '<div class="state padded">x</div><button id="b" class="ui-btn custom">Close</button>',
       report,
     );
-  assert.equal((await identify('div')).title, 'No reliable source');
-  assert.equal((await identify('button')).title, 'correct-classes');
+  assertNoExact(await identify('div'));
+  assertSourceCandidate(await identify('button'), 'correct-classes');
   await page.evaluate(
     ({ data, report }) =>
       document.getElementById('paqvilo-xray').__px.update(data, {
@@ -564,8 +656,8 @@ test('shared template coverage stays uncertain and contradictory IDs cannot hide
       }),
     { data, report },
   );
-  assert.equal((await identify('div')).title, 'No reliable source');
-  assert.equal((await identify('button')).title, 'correct-classes');
+  assertNoExact(await identify('div'));
+  assertSourceCandidate(await identify('button'), 'correct-classes');
 });
 
 test('a runtime notification class cannot promote an inactive template over a shared shell', async (t) => {
@@ -593,9 +685,9 @@ test('a runtime notification class cannot promote an inactive template over a sh
   );
   await page.locator('.alert').evaluate((node) => node.classList.add('notification'));
   const found = await identify('.notification');
-  assert.equal(found.title, 'No reliable source');
+  assertNoExact(found);
   assert.ok(found.matches.filter((item) => item.depth === 0).every((item) => !item.strong));
-  assert.equal((await identify('#active-next')).title, 'Active wizard');
+  assertSourceCandidate(await identify('#active-next'), 'Active wizard');
   const rect = await page.locator('.notification').boundingBox();
   await page.evaluate(() =>
     document.getElementById('paqvilo-xray').__px.select(document.querySelector('.notification')),
@@ -644,13 +736,13 @@ for (const kind of ['template', 'snippet'])
         { data, report, label },
       );
       const found = await identify('.alert');
-      assert.equal(found.title, 'No reliable source', label);
+      assertNoExact(found, label);
       assert.equal(found.matches.filter((item) => item.depth === 0).length, 2, label);
       assert.ok(
         found.matches.filter((item) => item.depth === 0).every((item) => !item.strong),
         label,
       );
-      assert.equal((await identify('#active-next')).title, 'Active wizard', label);
+      assertSourceCandidate(await identify('#active-next'), 'Active wizard', label);
       const rect = await page.locator('.alert').boundingBox();
       const highlight = await page.evaluate(() => {
         const host = document.getElementById('paqvilo-xray');
@@ -720,9 +812,9 @@ test('repeated ID branches score the classes and source line of their matching o
   );
   const { identify } = await fixture(t, '<button id="branch" class="ui-btn custom">Two</button>', { elementSources });
   const row = await identify('button');
-  assert.equal(row.title, 'Branches');
+  assertSourceCandidate(row, 'Branches');
   assert.equal(row.matches[0].line, 2);
-  assert.equal(row.matches[0].strong, true);
+  assert.equal(row.matches[0].strong, false, 'ranked static occurrence remains a candidate');
 });
 
 test('shared selectors in separate records of one enhanced source retain both uncertain identities', async (t) => {
@@ -735,14 +827,14 @@ test('shared selectors in separate records of one enhanced source retain both un
   );
   const { page, identify } = await fixture(t, '<div class="shared-notice">Notice</div>', { elementSources: sources });
   const found = await identify('.shared-notice');
-  assert.equal(found.title, 'No reliable source');
+  assertNoExact(found);
   assert.deepEqual(found.matches.map((item) => item.recordId).sort(), ['one', 'two']);
   assert.ok(found.matches.every((item) => !item.strong));
   await page.evaluate(() =>
     document.getElementById('paqvilo-xray').__px.select(document.querySelector('.shared-notice')),
   );
   const text = await page.locator('#paqvilo-xray .content').innerText();
-  assert.match(text, /Possible matches \(2\)/);
+  assert.match(text, /Search export markup · 2 candidates/);
 });
 
 test('framework-only evidence remains uncertain despite unique static include reachability', async (t) => {
@@ -751,13 +843,13 @@ test('framework-only evidence remains uncertain despite unique static include re
   const { page, identify, data } = await fixture(t, '<div class="container"><a class="btn btn-link">Go</a></div>', {
     elementSources: [...header, ...own],
   });
-  assert.equal((await identify('a')).title, 'No reliable source');
+  assertNoExact(await identify('a'));
   assert.ok((await identify('a')).matches.every((item) => !item.strong));
   await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
     data,
     report: { elementSources: [...own, ...hints('<a class="btn btn-link">Go</a>', 'Other', { includedBy: ['page'] })] },
   });
-  assert.equal((await identify('a')).title, 'No reliable source');
+  assertNoExact(await identify('a'));
 });
 
 test('framework-only matches count sibling sources, reject class subsets and do not headline enclosing regions', async (t) => {
@@ -769,7 +861,7 @@ test('framework-only matches count sibling sources, reject class subsets and do 
     '<button class="close">Close</button><button class="btn btn-default">Generated</button><div class="title"><span>Generated</span></div>',
     { elementSources: sources },
   );
-  assert.equal((await identify('button.close')).title, 'No reliable source');
+  assertNoExact(await identify('button.close'));
   const elementSources = [
     ...hints('<button class="btn">A</button><button class="btn">B</button>', 'Subset', { includedBy: ['page'] }),
     ...['Full1', 'Full2'].flatMap((name) =>
@@ -783,8 +875,8 @@ test('framework-only matches count sibling sources, reject class subsets and do 
     data,
     report: { elementSources },
   });
-  assert.equal((await identify('.btn')).title, 'No reliable source');
-  assert.equal((await identify('span')).title, 'No reliable source');
+  assertNoExact(await identify('.btn'));
+  assertNoExact(await identify('span'));
 });
 
 test('snippet modifier classes on the nearest container resolve shared descendants independently of page chains', async (t) => {
@@ -795,17 +887,17 @@ test('snippet modifier classes on the nearest container resolve shared descendan
   );
   const { page, identify, data } = await fixture(t, source('alert-warning'), { elementSources });
   for (const selector of ['.alert', '.message', '.close'])
-    assert.equal((await identify(selector)).title, 'warning', selector);
+    assertSourceCandidate(await identify(selector), 'warning', selector);
   await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
     data,
     report: { elementSources: elementSources.map((item) => ({ ...item, usedBy: ['unrelated'] })) },
   });
   for (const selector of ['.alert', '.message', '.close'])
-    assert.equal((await identify(selector)).title, 'warning', selector);
+    assertSourceCandidate(await identify(selector), 'warning', selector);
   await page.locator('.alert').evaluate((node) => node.classList.remove('alert-warning', 'notice-alert-warning'));
   for (const selector of ['.alert', '.message', '.close']) {
     const row = await identify(selector);
-    assert.equal(row.title, 'No reliable source', selector);
+    assertNoExact(row, selector);
     assert.ok(row.matches.length > 0);
     assert.ok(row.matches.every((item) => !item.strong));
   }
@@ -822,7 +914,7 @@ test('date labels use their data-entity container even without an identified for
       ],
     },
   );
-  for (const selector of ['label', '#c_datepicker_description']) assert.equal((await identify(selector)).sub, 'item.c');
+  for (const selector of ['label', '#c_datepicker_description']) assertFieldContext(await identify(selector), 'item.c');
 });
 
 test('date display controls and labels resolve only with a same-cell base input and form context', async (t) => {
@@ -855,22 +947,25 @@ test('idless list grids retain the sole referenced list and view; shared views s
   );
   for (const selector of ['div', 'label', 'th']) {
     const row = await identify(selector);
-    assert.equal(row.title, 'List');
+    assert.equal(row.lists[0].name, 'List');
+    assert.notEqual(row.evidence.owner.component?.kind, 'list');
     assert.equal(row.views[0].id, 'V');
-    assert.equal(row.kind, 'Power Pages list · candidate');
+    assert.ok(row.evidence.enclosing.some((item) => item.component?.name === 'List' && item.status === 'candidate'));
   }
   await page.evaluate(() => document.getElementById('paqvilo-xray').__px.select(document.querySelector('th')));
-  assert.match(
-    await page.locator('#paqvilo-xray .content').innerText(),
-    /Candidate list from page references and rendered view/,
-  );
+  assert.match(await page.locator('#paqvilo-xray .content').innerText(), /Enclosing components/);
   await page.locator('.entitylist').evaluate((node) => node.setAttribute('data-listid', 'L'));
-  assert.equal((await identify('th')).kind, 'Power Pages list');
+  assert.ok(
+    (await identify('th')).evidence.enclosing.some(
+      (item) => item.component?.kind === 'list' && item.component.id === 'L' && item.status === 'exact',
+    ),
+  );
   await page.waitForFunction(() =>
     document
       .getElementById('paqvilo-xray')
       .shadowRoot.querySelector('.content')
-      .textContent.includes('Rendered list ID matched to the selected export'),
+      .querySelector('[data-evidence-role=enclosing]')
+      ?.textContent.includes('List'),
   );
   await page.locator('.entitylist').evaluate((node) => node.removeAttribute('data-listid'));
   await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
@@ -887,7 +982,7 @@ test('script-set frame form IDs resolve the whole export and selection emits sha
   };
   const { page, identify } = await fixture(t, '<iframe id="frame"></iframe>', report);
   await page.locator('#frame').evaluate((node) => (node.src = '/f/?entityformid=F&token=not-collected'));
-  assert.equal((await identify('#frame')).title, 'Exported form');
+  assertComponentContext(await identify('#frame'), 'Exported form');
   await page.evaluate(() => {
     const api = document.getElementById('paqvilo-xray').__px;
     api.toggle(false);
@@ -902,7 +997,12 @@ test('script-set frame form IDs resolve the whole export and selection emits sha
     once: window.selectedIdentity.oneShot,
     enabled: document.getElementById('paqvilo-xray').__px.enabled,
   }));
-  assert.equal(result.identity.title, 'Exported form');
+  assert.ok(
+    result.identity.evidence.enclosing.some(
+      (item) => item.component?.name === 'Exported form' && item.status === 'candidate',
+    ),
+  );
+  assert.notEqual(result.identity.evidence.owner.status, 'exact');
   assert.equal(result.once, true);
   assert.equal(result.enabled, false);
   assert.doesNotMatch(JSON.stringify(result), /not-collected/);
@@ -918,8 +1018,8 @@ test('explicit advanced-form and list IDs use export inventory without adding pa
     '<div id="WebFormControl_wizard"><h2>Wizard</h2></div><div data-listid="L"><label>List filter</label></div><div class="entitylist"><p>Unrelated grid</p></div>',
     { componentIndex },
   );
-  assert.equal((await identify('h2')).title, 'Wizard');
-  assert.equal((await identify('label')).title, 'Exported list');
+  assertComponentContext(await identify('h2'), 'Wizard');
+  assertComponentContext(await identify('label'), 'Exported list');
   assert.deepEqual((await identify('p')).lists, []);
 });
 
@@ -971,7 +1071,7 @@ test('selected sources precede bounded secondary context and disclosure choices 
   assert.equal(await context.locator('.binding').count(), 8);
   const ordering = await page.evaluate(() => {
     const content = document.getElementById('paqvilo-xray').shadowRoot.querySelector('.content');
-    return content.innerHTML.indexOf('Selected source') < content.innerHTML.indexOf('api-context');
+    return content.innerHTML.indexOf('data-inspection-evidence') < content.innerHTML.indexOf('api-context');
   });
   assert.equal(ordering, true);
   await context.locator('summary').click();
@@ -1019,12 +1119,13 @@ test('declared custom-grid columns keep exact grid contexts without invoking dat
     window.jQuery = { fn: { dataTable: { settings: [config] } } };
   });
   for (const selector of ['#first-cell', '#first-cell b', '#header'])
-    assert.equal((await identify(selector)).sub, 'item.demo_name');
-  assert.equal((await identify('#second-cell')).sub, 'other.demo_name');
-  assert.equal((await identify('#unbound')).title, 'Ambiguous column');
+    assertFieldContext(await identify(selector), 'item.demo_name');
+  assertFieldContext(await identify('#second-cell'), 'other.demo_name');
+  assertNoExact(await identify('#unbound'));
   await page.locator('#second-cell').evaluate((node) => node.setAttribute('data-paqvilo-column', 'unknown_name'));
-  assert.equal((await identify('#second-cell')).title, 'unknown_name');
-  assert.match((await identify('#second-cell')).sub, /definition unavailable/);
+  assert.equal((await identify('#second-cell')).grid.name, 'unknown_name');
+  assert.notEqual((await identify('#second-cell')).evidence.source.status, 'exact');
+  assert.deepEqual((await identify('#second-cell')).fields, []);
 });
 
 test('same-origin frame shortcuts activate while off, survive navigation and stop after disposal', async (t) => {
@@ -1100,18 +1201,18 @@ test('dynamic modal and quick-view frame identities merge complete export source
       const row = api.identify(target.querySelector('input'));
       api.select(target.querySelector('input'));
       return {
-        sub: row.sub,
+        fieldContext: row.b.fields.map((field) => field.entity + '.' + field.name).join(','),
         forms: row.b.forms,
         conflict: row.b.conflict,
         html: document.getElementById('paqvilo-xray').shadowRoot.querySelector('.content').innerHTML,
       };
     }, id);
   const modal = await inspect('modal');
-  assert.equal(modal.sub, 'item.demo_code');
+  assert.equal(modal.fieldContext, 'item.demo_code');
   assert.equal(modal.forms[0].formXml.id, 'XML');
   assert.match(modal.html, /Modal.FormXml.xml/);
   assert.doesNotMatch(modal.html, /private/);
-  assert.equal((await inspect('quick')).sub, 'other.demo_code');
+  assert.equal((await inspect('quick')).fieldContext, 'other.demo_code');
   await page.evaluate(() =>
     document.getElementById('quick').contentDocument.querySelector('input').setAttribute('data-entityname', 'item'),
   );
@@ -1136,8 +1237,8 @@ test('rich-text attribute hosts preserve field and form provenance through repea
       ],
     },
   );
-  assert.equal((await identify('#demo_notes_ControlView')).sub, 'item.demo_notes');
-  assert.equal((await identify('#demo_summary_Container')).sub, 'item.demo_summary');
+  assertFieldContext(await identify('#demo_notes_ControlView'), 'item.demo_notes');
+  assertFieldContext(await identify('#demo_summary_Container'), 'item.demo_summary');
   const result = await page.evaluate(() => {
     const api = document.getElementById('paqvilo-xray').__px;
     return ['designer-one', 'designer-two', 'unbound-editor'].map((id) => {
@@ -1147,11 +1248,15 @@ test('rich-text attribute hosts preserve field and form provenance through repea
       inner.body.id = 'editor';
       inner.body.contentEditable = 'true';
       const row = api.identify(inner.body);
-      return { sub: row.sub, fields: row.b.fields, form: row.b.forms[0]?.id };
+      return {
+        fieldContext: row.b.fields.map((field) => field.entity + '.' + field.name).join(','),
+        fields: row.b.fields,
+        form: row.b.forms[0]?.id,
+      };
     });
   });
-  assert.equal(result[0].sub, 'item.demo_notes');
-  assert.equal(result[1].sub, 'item.demo_summary');
+  assert.equal(result[0].fieldContext, 'item.demo_notes');
+  assert.equal(result[1].fieldContext, 'item.demo_summary');
   assert.equal(result[0].form, 'F');
   assert.deepEqual(result[2].fields, []);
   await page.evaluate(
@@ -1188,17 +1293,17 @@ test('grid clones require explicit binding and redraws, reordering and nested gr
         },
       }),
   );
-  assert.equal((await identify('#cloned')).sub, 'item.demo_name');
-  assert.equal((await identify('#inner')).sub, 'other.demo_name');
+  assertFieldContext(await identify('#cloned'), 'item.demo_name');
+  assertFieldContext(await identify('#inner'), 'other.demo_name');
   await page.locator('#clone').evaluate((node) => node.removeAttribute('data-paqvilo-grid'));
   assert.deepEqual((await identify('#cloned')).fields, []);
   await page
     .locator('#inner')
     .evaluate((node) => (node.outerHTML = '<td id="inner" data-paqvilo-column="demo_name">Redrawn</td>'));
-  assert.equal((await identify('#inner')).sub, 'other.demo_name');
+  assertFieldContext(await identify('#inner'), 'other.demo_name');
 });
 
-test('current frame navigation supersedes stale src declarations and conflicting definition bindings stay explicit', async (t) => {
+test('current frame navigation supersedes stale src declarations while explicit DOM ownership stays independent', async (t) => {
   const { page, identify } = await fixture(t, '<iframe id="frame" src="/form?entityformid=F"></iframe>', {
     componentIndex: {
       forms: [
@@ -1211,15 +1316,22 @@ test('current frame navigation supersedes stale src declarations and conflicting
       { entity: 'other', name: 'demo_code' },
     ],
   });
-  assert.equal((await identify('#frame')).title, 'First');
+  assertComponentContext(await identify('#frame'), 'First');
   await page.evaluate(() => {
     const doc = document.getElementById('frame').contentDocument;
     doc.defaultView.history.replaceState(null, '', '/form?entityformid=S&entityname=OTHER');
     doc.body.innerHTML = '<div id="EntityFormControl"><input id="demo_code"></div>';
   });
-  assert.equal((await identify('#frame')).title, 'Second');
+  assertComponentContext(await identify('#frame'), 'Second');
   await page.locator('#frame').evaluate((node) => node.setAttribute('data-formid', 'F'));
-  assert.equal((await identify('#frame')).title, 'Conflicting table context');
+  const explicitFrame = await identify('#frame');
+  assert.equal(
+    explicitFrame.evidence.owner.status,
+    'exact',
+    'the current explicit DOM identifier is independent of URL navigation hints',
+  );
+  assert.equal(explicitFrame.evidence.owner.component.id, 'F');
+  assert.ok(explicitFrame.evidence.facts.some((fact) => fact.id === 'legacy-context-conflict'));
   await page.locator('#frame').evaluate((node) => {
     node.removeAttribute('data-formid');
     node.contentDocument.defaultView.history.replaceState(null, '', '/form');
@@ -1249,9 +1361,12 @@ test('rich-text editor internal column-like IDs cannot replace host attribution 
     const before = api.identify(doc.querySelector('textarea'));
     doc.querySelector('textarea').setAttribute('data-fieldname', 'editor');
     const conflicting = api.identify(doc.querySelector('textarea'));
-    return { sub: before.sub, conflict: conflicting.b.conflict };
+    return {
+      fieldContext: before.b.fields.map((field) => field.entity + '.' + field.name).join(','),
+      conflict: conflicting.b.conflict,
+    };
   });
-  assert.equal(result.sub, 'item.demo_notes');
+  assert.equal(result.fieldContext, 'item.demo_notes');
   assert.equal(result.conflict, true);
 });
 
@@ -1299,7 +1414,7 @@ test('frame shortcuts discover late open-shadow frames while off and restore rea
   });
 });
 
-test('contradictory repeated and aliased frame definition parameters remain conflicts without collecting other queries', async (t) => {
+test('contradictory frame URL declarations remain context disagreement without ownership or other query collection', async (t) => {
   const { page, identify } = await fixture(
     t,
     '<iframe id="frame" src="/quick?formid=Q&amp;entityname=item&amp;etn=other&amp;recordid=private"></iframe>',
@@ -1325,7 +1440,12 @@ test('contradictory repeated and aliased frame definition parameters remain conf
           .contentDocument.defaultView.history.replaceState(null, '', '/quick?' + query + '&recordid=private'),
       query,
     );
-    assert.equal((await identify('#frame')).title, 'Conflicting table context', query);
+    const identity = await identify('#frame');
+    assert.equal(identity.evidence.owner.status, 'unavailable', query + ': URL parameters do not establish ownership');
+    assert.ok(
+      identity.evidence.facts.some((fact) => fact.id === 'legacy-context-conflict'),
+      query,
+    );
     const rendered = await page.evaluate(inspectRenderedPage);
     assert.equal(rendered.controls.find((row) => row.id === 'frame').definitionConflict, true);
     assert.doesNotMatch(JSON.stringify(rendered), /private/);
@@ -1354,9 +1474,12 @@ test('an independently identified inner form prevents its outer rich-text host f
     const doc = document.getElementById('inner').contentDocument;
     doc.body.innerHTML = '<div id="EntityFormControl"><input id="demo_code"></div>';
     const row = document.getElementById('paqvilo-xray').__px.identify(doc.querySelector('input'));
-    return { sub: row.sub, forms: row.b.forms.map((form) => form.id) };
+    return {
+      fieldContext: row.b.fields.map((field) => field.entity + '.' + field.name).join(','),
+      forms: row.b.forms.map((form) => form.id),
+    };
   });
-  assert.deepEqual(result, { sub: 'other.demo_code', forms: ['Q'] });
+  assert.deepEqual(result, { fieldContext: 'other.demo_code', forms: ['Q'] });
 });
 
 test('duplicate clone binding IDs never silently select one grid configuration', async (t) => {
@@ -1376,7 +1499,7 @@ test('duplicate clone binding IDs never silently select one grid configuration',
   assert.deepEqual((await identify('#header')).fields, []);
 });
 
-test('verified basic-form and FormXml URL aliases retain one identity while repeated parameters still conflict', async (t) => {
+test('basic-form and FormXml URL aliases retain candidate context while repeated parameters retain disagreement', async (t) => {
   const { page, identify } = await fixture(
     t,
     '<iframe id="frame" src="/form?formid=XML&amp;entityformid=F&amp;entityname=ITEM"></iframe>',
@@ -1390,26 +1513,34 @@ test('verified basic-form and FormXml URL aliases retain one identity while repe
       columns: [{ entity: 'item', name: 'demo_code' }],
     },
   );
-  assert.equal((await identify('#frame')).title, 'Basic form');
+  assertComponentContext(await identify('#frame'), 'Basic form');
   const field = await page.evaluate(() => {
     const doc = document.getElementById('frame').contentDocument;
     doc.body.innerHTML = '<div id="EntityFormControl"><input id="demo_code"></div>';
     const row = document.getElementById('paqvilo-xray').__px.identify(doc.querySelector('input'));
-    return { sub: row.sub, forms: row.b.forms.map((form) => form.id), conflict: row.b.conflict };
+    return {
+      fieldContext: row.b.fields.map((field) => field.entity + '.' + field.name).join(','),
+      forms: row.b.forms.map((form) => form.id),
+      conflict: row.b.conflict,
+    };
   });
-  assert.deepEqual(field, { sub: 'item.demo_code', forms: ['F'], conflict: false });
+  assert.deepEqual(field, { fieldContext: 'item.demo_code', forms: ['F'], conflict: false });
   await page.evaluate(() =>
     document
       .getElementById('frame')
       .contentDocument.defaultView.history.replaceState(null, '', '/form?formid=F&formid=XML'),
   );
-  assert.equal((await identify('#frame')).title, 'Conflicting table context');
+  const repeated = await identify('#frame');
+  assert.equal(repeated.evidence.owner.status, 'unavailable');
+  assert.ok(repeated.evidence.facts.some((fact) => fact.id === 'legacy-context-conflict'));
   await page.evaluate(() =>
     document
       .getElementById('frame')
       .contentDocument.defaultView.history.replaceState(null, '', '/form?entityformid=F&formid=Missing'),
   );
-  assert.equal((await identify('#frame')).title, 'Conflicting table context');
+  const unknownAlias = await identify('#frame');
+  assert.equal(unknownAlias.evidence.owner.status, 'unavailable');
+  assert.ok(unknownAlias.evidence.facts.some((fact) => fact.id === 'legacy-context-conflict'));
   await page.evaluate(() =>
     document
       .getElementById('frame')
@@ -1419,5 +1550,32 @@ test('verified basic-form and FormXml URL aliases retain one identity while repe
   assert.deepEqual(
     rendered.controls.find((row) => row.id === 'frame').definitionAliasCandidates.map((id) => id.toLowerCase()),
     ['f', 'missing'],
+  );
+});
+
+test('serialized selected fields follow the independently exact column when legacy frame hints disagree', async (t) => {
+  const { page } = await fixture(t, '<iframe id="frame" src="/quick?entityname=item&amp;etn=other"></iframe>', {
+    forms: [{ id: 'F', name: 'Current form', entity: 'item' }],
+    columns: [
+      { entity: 'item', name: 'demo_code' },
+      { entity: 'other', name: 'demo_code' },
+    ],
+  });
+  const identity = await page.evaluate(() => {
+    const inputDocument = document.getElementById('frame').contentDocument;
+    inputDocument.body.innerHTML = '<form data-formid="F" data-entityname="item"><input id="demo_code"></form>';
+    const tools = document.getElementById('paqvilo-xray').__px;
+    const node = inputDocument.querySelector('input');
+    const observed = tools.identify(node);
+    tools.select(node);
+    return { legacyConflict: observed.b.conflict, legacyFields: observed.b.fields, selected: tools.selection() };
+  });
+  assert.equal(identity.legacyConflict, true);
+  assert.deepEqual(identity.legacyFields, []);
+  assert.equal(identity.selected.evidence.owner.status, 'exact');
+  assert.equal(identity.selected.evidence.owner.component.key, 'column:item:demo_code');
+  assert.deepEqual(
+    identity.selected.fields.map((field) => field.entity + '.' + field.name),
+    ['item.demo_code'],
   );
 });

@@ -133,12 +133,18 @@ async function workspace(t) {
       }),
     );
   };
-  const replay = async (hint, capture = false, from = cwd) => {
-    const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/sh';
-    const args = process.platform === 'win32' ? ['-NoProfile', '-NonInteractive', '-Command', hint] : ['-c', hint];
+  const replay = async (hint, capture = false, from = cwd, selectedShell) => {
+    const shell = selectedShell ?? (process.platform === 'win32' ? 'powershell.exe' : '/bin/sh');
+    const cmd = shell === 'cmd.exe';
+    const args = cmd
+      ? ['/d', '/s', '/v:on', '/c', hint]
+      : shell.endsWith('powershell.exe') || shell.endsWith('pwsh.exe')
+        ? ['-NoProfile', '-NonInteractive', '-Command', hint]
+        : ['-c', hint];
     return execute(shell, args, {
       cwd: from,
       windowsHide: true,
+      windowsVerbatimArguments: cmd,
       timeout: 120000,
       env: {
         ...environment,
@@ -156,6 +162,85 @@ async function workspace(t) {
   };
   return { directory, cwd, alternate, defaults, run, start, writeCatalogue, replay, tracked };
 }
+
+test(
+  'plain project stop hints stay readable and stop only the advertised runtime from other directories and shells',
+  { timeout: 120000 },
+  async (t) => {
+    const work = await workspace(t);
+    const project = path.join(work.directory, 'plain project', 'organization.json');
+    await fs.mkdir(path.dirname(project));
+    await fs.writeFile(
+      project,
+      JSON.stringify({
+        version: 2,
+        runtime: { kind: 'model-driven' },
+        solutions: [],
+        simulation: { level: 'dry-run' },
+      }),
+    );
+    const elsewhere = path.join(work.directory, 'empty replay directory');
+    await fs.mkdir(elsewhere);
+    const literalProject = path.join(
+      work.directory,
+      'literal $([char]65) ` %PAQ_HINT% !PAQ_HINT! & ^',
+      'organization.json',
+    );
+    await fs.mkdir(path.dirname(literalProject));
+    await fs.copyFile(project, literalProject);
+    const sibling = await work.start([
+      '--project',
+      project,
+      '--state',
+      path.join(work.directory, 'sibling.json'),
+      '--port',
+      '0',
+    ]);
+    const nativeShells = process.platform === 'win32' ? ['cmd.exe', 'powershell.exe'] : ['/bin/sh'];
+    if (process.platform === 'win32') {
+      try {
+        await execute('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], {
+          windowsHide: true,
+          timeout: 10000,
+        });
+        nativeShells.push('pwsh.exe');
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+    for (const [index, shell] of nativeShells.entries()) {
+      const session = await work.start([
+        '--project',
+        project,
+        '--state',
+        path.join(work.directory, 'selected-' + index + '.json'),
+        '--port',
+        '0',
+      ]);
+      assert.match(
+        session.stop,
+        /^npx paqvilo mirage stop --project /,
+        'plain absolute project anchors ownership without an encoded cwd wrapper',
+      );
+      assert.ok(session.stop.includes(project), 'the selected project is directly reviewable');
+      await work.replay(session.stop, false, elsewhere, shell);
+      await stopped(session);
+      await alive(sibling);
+      const literal = await work.start([
+        '--project',
+        literalProject,
+        '--state',
+        path.join(work.directory, 'literal-' + index + '.json'),
+        '--port',
+        '0',
+      ]);
+      assert.match(literal.stop, /^node -e /, 'shell-active project paths retain fixed encoded argv');
+      await work.replay(literal.stop, false, elsewhere, shell);
+      await stopped(literal);
+      await alive(sibling);
+    }
+  },
+);
 function fixtureStatusURL(session) {
   let address;
   try {

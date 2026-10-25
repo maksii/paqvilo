@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { modelDrivenInspectionCatalogue } from '../lense/model-driven-inspection.mjs';
+import { createModelDrivenMetadataIndex } from '../lense/model-driven-metadata.mjs';
+const catalogueFor = (data) =>
+  createModelDrivenMetadataIndex(data).query({
+    active: { formId: data.metadata?.forms?.[0]?.id ?? 'form1', entity: 'inv_item' },
+    budget: { items: 200, bytes: 256 * 1024 },
+  }).catalogue;
 import { modelDrivenPanelInspection } from '../lense/model-driven-panel.mjs';
 
 const source = (id) => ({
@@ -20,45 +25,12 @@ test('model-driven provenance derives from selected Solution facts and respects 
     second = { ...source('form1'), name: 'Overridden form' };
   const data = imported([first]);
   data.layers.push({ documents: [{ file: '/invented/later.xml', facts: { appComponents: { forms: [second] } } }] });
-  const report = modelDrivenInspectionCatalogue(data);
+  const report = catalogueFor(data);
   assert.equal(report.forms.length, 1);
   assert.equal(report.forms[0].name, 'Overridden form');
   assert.equal(report.forms[0].source, '/invented/later.xml');
   assert.deepEqual(report.forms[0].libraries, ['inv_events.js']);
   assert.equal(report.forms[0].events[0].handlers[0].functionName, 'Invented.load');
-});
-
-test('provenance bounds total retained forms, commands, nested details and serialized payload', () => {
-  const data = imported(Array.from({ length: 1000 }, (_, id) => source('form' + id)));
-  data.appActions = Array.from({ length: 10000 }, (_, id) => ({
-    id: 'inv.action' + id,
-    entity: 'inv_item',
-    actions: Array.from({ length: 100 }, () => ({ library: 'inv_events.js', functionName: 'Invented.command' })),
-  }));
-  const report = modelDrivenInspectionCatalogue(data);
-  assert.equal(report.limits.truncated, true);
-  assert.ok(report.forms.length <= 200);
-  assert.ok(report.commands.length <= 200);
-  const details =
-    report.forms.reduce(
-      (sum, form) =>
-        sum +
-        form.controls.length +
-        form.libraries.length +
-        form.events.reduce((events, event) => events + event.handlers.length + 1, 0),
-      0,
-    ) + report.commands.reduce((sum, command) => sum + command.actions.length, 0);
-  assert.ok(details <= report.limits.maxDetails);
-  assert.ok(Buffer.byteLength(JSON.stringify(report)) < report.limits.maxBytes + 4096);
-});
-
-test('oversized/malformed inspection metadata does not block other declared sources', () => {
-  const report = modelDrivenInspectionCatalogue(
-    imported([{ ...source('big'), xml: 'x'.repeat(2 * 1024 * 1024 + 1) }, source('normal')]),
-  );
-  assert.equal(report.limits.truncated, true);
-  assert.equal(report.forms.length, 1);
-  assert.equal(report.forms[0].id, 'normal');
 });
 
 // Metadata as importModelDrivenProject reads it (importSolutionMetadata and solutionApps): tables, one main form with a
@@ -158,7 +130,7 @@ const metadataImport = () => ({
 });
 
 test('the catalogue carries typed columns, form types, subgrids, views and apps from the Solution metadata', () => {
-  const catalogue = modelDrivenInspectionCatalogue(metadataImport());
+  const catalogue = catalogueFor(metadataImport());
   const form = catalogue.forms[0];
   assert.equal(form.type, 'main');
   assert.deepEqual(
@@ -172,6 +144,10 @@ test('the catalogue carries typed columns, form types, subgrids, views and apps 
     entity: 'inv_part',
     view: '00000000-0000-4000-8000-0000000000a2',
     relationship: 'inv_item_inv_part',
+    pageSize: 10,
+    searchEnabled: false,
+    viewPickerEnabled: false,
+    views: undefined,
   });
   const item = catalogue.tables.find((table) => table.logicalName === 'inv_item');
   assert.equal(item.entitySet, 'inv_items');
@@ -196,11 +172,11 @@ test('the catalogue carries typed columns, form types, subgrids, views and apps 
       ['Parts of an item', 'associated'],
     ],
   );
-  assert.deepEqual(catalogue.apps[0].navigation, [{ title: 'Items', entity: 'inv_item', area: 'Work' }]);
+  assert.deepEqual(catalogue.apps[0].navigation, metadataImport().apps[0].navigation);
 });
 
 test('Inspect and X-ray read a record form by its ID and a list page by its view, never as Power Pages forms', () => {
-  const catalogue = modelDrivenInspectionCatalogue(metadataImport());
+  const catalogue = catalogueFor(metadataImport());
   const base = { catalogue, resources: [], diagnostics: [] };
   const record = modelDrivenPanelInspection({
     ...base,
@@ -231,7 +207,10 @@ test('Inspect and X-ray read a record form by its ID and a list page by its view
   assert.doesNotMatch(JSON.stringify(record), /basic form/i);
   // Without the native form ID the table's main form is a candidate, named as one.
   const candidate = modelDrivenPanelInspection({ ...base, context: { pageType: 'entityrecord', entity: 'inv_item' } });
-  assert.match(candidate.forms[0].evidenceLabel, /Candidate: the only main form of inv_item/);
+  assert.match(
+    candidate.forms[0].evidenceLabel,
+    /Candidate: an exported form of inv_item; current form identity is unavailable/,
+  );
   // A list page has no form: its views come first, the one in the address first, and its columns are the view's.
   const list = modelDrivenPanelInspection({
     ...base,

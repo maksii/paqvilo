@@ -92,20 +92,32 @@ export function nativeFormSubmissionContext({
  * request's selected website language, else the website's default language, else the first
  * value. `language` is { lcid, defaultLcid }.
  */
-export function formText(value, fallback = '', language = {}) {
-  if (value == null || value === '') return fallback;
+export function formText(value, fallback = '', language = {}, onSelection = null) {
+  if (value == null || value === '') {
+    onSelection?.({ fallback: true });
+    return fallback;
+  }
   let rows = value;
   if (typeof value === 'string') {
-    if (!/^\s*\[\s*\{/.test(value)) return value;
+    if (!/^\s*\[\s*\{/.test(value)) {
+      onSelection?.({ fallback: false });
+      return value;
+    }
     try {
       rows = JSON.parse(value);
     } catch {
+      onSelection?.({ fallback: false });
       return value;
     }
   }
-  if (!Array.isArray(rows)) return String(value);
+  if (!Array.isArray(rows)) {
+    onSelection?.({ fallback: false });
+    return String(value);
+  }
   const byLcid = (lcid) => (lcid ? rows.find((row) => Number(row?.LCID) === Number(lcid)) : undefined);
-  return (byLcid(language?.lcid) ?? byLcid(language?.defaultLcid) ?? rows[0])?.Value || fallback;
+  const selected = byLcid(language?.lcid) ?? byLcid(language?.defaultLcid) ?? rows[0];
+  onSelection?.({ lcid: Number(selected?.LCID), ordinal: rows.indexOf(selected), fallback: !selected?.Value });
+  return selected?.Value || fallback;
 }
 
 // ---- Advanced (multistep) form sessions

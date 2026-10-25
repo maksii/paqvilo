@@ -19,6 +19,79 @@ const tick = () => new Promise((r) => setTimeout(r, 20));
 
 const session = () => new OverlaySession({ origin: ORIGIN, sourceDir: fx.dir, site: SITE, sourceMaps: false });
 
+test('document rewrite waits for its current source index and sends provenance only with that fulfilled response', async (t) => {
+  const original = '<!doctype html><p>Invented online response</p>';
+  const fake = fakeBrowser({ [ORIGIN + '/document']: { headers: { 'content-type': 'text/html' }, body: original } });
+  const tab = fake.openTab(),
+    current = session(),
+    index = { revision: 'invented-source' },
+    published = [];
+  let releaseIndex,
+    rewritten = 0;
+  const indexed = new Promise((resolve) => {
+    releaseIndex = resolve;
+  });
+  current.sourceInspector = {
+    async sourceIndexFor(route) {
+      assert.equal(route, '/document');
+      await indexed;
+      return index;
+    },
+  };
+  const proof = { version: 1, proofId: 'invented-proof' };
+  current.rewriter.rewrite = (_body, route, options) => {
+    rewritten++;
+    assert.equal(route, '/document');
+    assert.deepEqual(options, { html: true, isDocument: true, sourceIndex: index });
+    return { html: '<p>Changed local response</p>', applied: [], notes: [], matched: [], provenance: proof };
+  };
+  const detach = await interceptOrigin(fake.context, ORIGIN, current.route, {
+    onAttach: () => ({ publishProvenance: (_event, value) => published.push(value) }),
+  });
+  t.after(detach);
+  tab.pause('indexed-document', ORIGIN + '/document', { type: 'Document' });
+  await tick();
+  assert.equal(rewritten, 0);
+  assert.deepEqual(fake.answers('indexed-document'), []);
+  releaseIndex();
+  await tick();
+  assert.equal(rewritten, 1);
+  assert.deepEqual(published, [proof]);
+  assert.equal(
+    Buffer.from(fake.answers('indexed-document')[0].body, 'base64').toString(),
+    '<p>Changed local response</p>',
+  );
+});
+
+test('unavailable inspection metadata does not disable ordinary local overlays or invent response proof', async (t) => {
+  const fake = fakeBrowser({
+    [ORIGIN + '/document']: { headers: { 'content-type': 'text/html' }, body: '<p>Online</p>' },
+  });
+  const tab = fake.openTab(),
+    current = session(),
+    published = [],
+    faults = [];
+  current.on('fault', (error) => faults.push(error.message));
+  current.sourceInspector = {
+    async sourceIndexFor() {
+      throw new Error('Invented missing metadata');
+    },
+  };
+  current.rewriter.rewrite = (_body, _route, options) => {
+    assert.equal(options.sourceIndex, undefined);
+    return { html: '<p>Local overlay</p>', applied: [], notes: [], matched: [] };
+  };
+  const detach = await interceptOrigin(fake.context, ORIGIN, current.route, {
+    onAttach: () => ({ publishProvenance: (_event, value) => published.push(value) }),
+  });
+  t.after(detach);
+  tab.pause('unindexed-document', ORIGIN + '/document', { type: 'Document' });
+  await tick();
+  assert.equal(Buffer.from(fake.answers('unindexed-document')[0].body, 'base64').toString(), '<p>Local overlay</p>');
+  assert.deepEqual(published, []);
+  assert.deepEqual(faults, ['Invented missing metadata']);
+});
+
 test('snippet changes patch fetched HTML fragments while preserving JSON payloads', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
@@ -121,14 +194,14 @@ test('Mirage Liquid output is not patched a second time by the remote overlay', 
   });
   ownedFixture(t).add(() => app.close());
   const rendered = await (await fetch(app.url + '/')).text();
-  assert.match(rendered, /id="liquid">New local greeting/);
-  assert.match(rendered, /id="literal">Old local greeting/);
+  assert.match(rendered, /id="liquid"[^>]*>New local greeting/);
+  assert.match(rendered, /id="literal"[^>]*>Old local greeting/);
 
   const ordinary = new OverlaySession({ origin: app.url, sourceDir: local.dir, site: structuredClone(SITE) });
   const incorrectlyOverlaid = ordinary.rewriter.rewrite(rendered, '/').html;
   assert.match(
     incorrectlyOverlaid,
-    /id="literal">New local greeting/,
+    /id="literal"[^>]*>New local greeting/,
     'the remote-site markup overlay would rewrite the already-rendered page copy',
   );
 

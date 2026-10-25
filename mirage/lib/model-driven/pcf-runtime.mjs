@@ -448,6 +448,7 @@ export function renderPcfControl(field, initialValue, options = {}) {
     failed = true;
     cleanup();
     pcfError(element, status, error);
+    options.provenance?.({ element, state: 'failed', componentName: binding?.name, formFactor: binding?.formFactor });
   };
   if (!admission.definition) {
     showError(new Error(admission.reason));
@@ -456,6 +457,7 @@ export function renderPcfControl(field, initialValue, options = {}) {
   const definition = admission.definition,
     properties = definition.properties ?? [],
     bindings = { ...binding.bindings };
+  options.provenance?.({ element, state: 'pending', componentName: binding.name, formFactor: binding.formFactor ?? 0 });
   // Native FormXml serializes bound properties using their scalar type, with the
   // logical column name as text. Resolve that shape only for manifest-bound
   // properties and known exported columns; input literals stay literals.
@@ -628,6 +630,13 @@ export function renderPcfControl(field, initialValue, options = {}) {
       refresh(bound.map((property) => property.name));
       show(instance.updateView(context));
       element.dataset.pcfState = 'ready';
+      options.provenance?.({
+        element,
+        state: 'mounted',
+        componentName: binding.name,
+        formFactor: binding.formFactor ?? 0,
+        constructorName,
+      });
     } catch (error) {
       if (!destroyed) showError(error);
     }
@@ -971,12 +980,19 @@ export function renderPcfDataset(cell, options) {
     failed = true;
     cleanup();
     pcfError(element, status, error);
+    options.provenance?.({ element, state: 'failed', componentName: cell.pcf?.name, formFactor: cell.pcf?.formFactor });
   };
   if (!admission.definition) {
     showError(new Error(admission.reason));
     return { element, supported: false, ready: Promise.resolve(), destroy() {} };
   }
   const definition = admission.definition;
+  options.provenance?.({
+    element,
+    state: 'pending',
+    componentName: cell.pcf.name,
+    formFactor: cell.pcf.formFactor ?? 0,
+  });
   const datasetName =
     definition.datasets?.[0]?.name ??
     Object.keys(cell.pcf.bindings ?? {}).find((name) => cell.pcf.bindings[name]?.dataset);
@@ -1049,7 +1065,17 @@ export function renderPcfDataset(cell, options) {
       if (virtual) view = virtualView(element);
       instance.init(context, () => {}, state, ...(virtual ? [] : [element]));
       await host.load();
-      if (!destroyed && !failed) element.dataset.pcfState = 'ready';
+      if (!destroyed && !failed) {
+        element.dataset.pcfState = 'ready';
+        options.provenance?.({
+          element,
+          state: 'mounted',
+          componentName: cell.pcf.name,
+          formFactor: cell.pcf.formFactor ?? 0,
+          viewId: host.dataset.getViewId(),
+          constructorName,
+        });
+      }
     } catch (error) {
       if (!destroyed) showError(error);
     }

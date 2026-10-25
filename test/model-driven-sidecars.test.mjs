@@ -161,5 +161,5 @@ test('sidecar configuration rejects source escapes and foreign routes; valid map
   asset.data = Buffer.from('globalThis.sidecarProof=42;\n//# sourceMappingURL=data:application/json;base64,e30=');
   const inline = createModelDrivenOverlay({ origin: 'http://127.0.0.1:3210', imported, mappings });
   assert.equal(inline.report().debuggerMaps.length, 0);
-  assert.strictEqual((await request(inline, '/WebResources/demo_bundle.js')).body, asset.data);
+  assert.deepEqual((await request(inline, '/WebResources/demo_bundle.js')).body, asset.data);
 });

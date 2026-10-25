@@ -63,7 +63,7 @@ npx --no-install paqvilo mirage inspect --source ./portal-export --json
 
 Run lifecycle commands with the same catalogue or `--project` used to start the session. A runtime already running before `dev` keeps running when its browser closes. Multi-portal catalogues support one runtime per site and selector navigation; each site has isolated state and a session cookie.
 
-Copy the stop command printed by `start` to stop that runtime. It preserves the selected project or catalogue and any runtime overrides, including port and state selectors for projectless standalone sessions. On Windows, the printed command works in Command Prompt and PowerShell; copy it as printed even when it uses `node -e` to preserve special characters in paths.
+Copy the stop command printed by `start` to stop that runtime. It preserves the selected project or catalogue and any runtime overrides, including port and state selectors for projectless standalone sessions. Ordinary project commands use readable `npx paqvilo mirage stop --project ...` arguments. On Windows, hints work in Command Prompt and PowerShell. Copy them as printed: an encoded `node -e` command preserves unsafe shell characters, a required ownership working directory or a group of separately scoped runtimes.
 
 If an older session has ambiguous catalogue ownership, use `mirage status` with the same project/catalogue selectors to find its state file and listening port. Supply that `--state` file and actual `--port` when stopping it; port `0` cannot distinguish an older session.
 

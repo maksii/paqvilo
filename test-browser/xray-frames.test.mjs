@@ -94,13 +94,24 @@ test('same-origin modal frame controls retain individual geometry, identity and 
   });
   let selected = await pick(page, frame.locator('#title'));
   assert.equal(selected.element.id, 'title');
-  assert.equal(selected.identity.title, 'A title');
+  assert.ok(
+    selected.identity.evidence.candidates.some(
+      (row) => row.component.entity === 'fx_a' && row.component.name === 'title',
+    ),
+  );
+  assert.equal(selected.identity.evidence.owner.status, 'candidate');
   selected = await pick(page, frame.locator('#notes'));
   assert.equal(selected.element.id, 'notes');
-  assert.equal(selected.identity.title, 'A notes');
+  assert.ok(
+    selected.identity.evidence.candidates.some(
+      (row) => row.component.entity === 'fx_a' && row.component.name === 'notes',
+    ),
+  );
   selected = await pick(page, frame.locator('#next'));
-  assert.equal(selected.element.id, 'next');
-  assert.equal(selected.identity.title, 'Form A');
+  assert.equal(selected.element.tag, 'button');
+  assert.equal(selected.element.id, undefined, 'unexported DOM identifiers stay private');
+  assert.ok(selected.identity.evidence.enclosing.some((row) => row.component.id === 'A'));
+  assert.notEqual(selected.identity.evidence.owner.status, 'exact');
   assert.equal(await page.evaluate(() => window.actions), 0);
   // Keyboard events focused inside a frame do not bubble to its parent window.
   await frame.locator('#next').evaluate((node) => node.focus());
@@ -115,8 +126,11 @@ test('nested, dynamic and navigated frames keep their own form context; cross-or
   const { page } = await fixture(t);
   const inner = page.frameLocator('#second').frameLocator('#inner');
   let selected = await pick(page, inner.locator('#title'));
-  assert.equal(selected.identity.title, 'B title');
-  assert.equal(selected.identity.fields[0].entity, 'fx_b');
+  assert.ok(
+    selected.identity.evidence.candidates.some(
+      (row) => row.component.entity === 'fx_b' && row.component.name === 'title',
+    ),
+  );
   await page.evaluate(() => {
     const f = document.createElement('iframe');
     f.id = 'dynamic';
@@ -127,13 +141,21 @@ test('nested, dynamic and navigated frames keep their own form context; cross-or
   const dynamic = page.frameLocator('#dynamic');
   await dynamic.locator('#title').waitFor();
   selected = await pick(page, dynamic.locator('#title'));
-  assert.equal(selected.identity.title, 'B title');
+  assert.ok(
+    selected.identity.evidence.candidates.some(
+      (row) => row.component.entity === 'fx_b' && row.component.name === 'title',
+    ),
+  );
   await page.locator('#dynamic').evaluate((node) => (node.src = '/form?entityformid=A'));
   await dynamic.locator('#title').waitFor();
   selected = await pick(page, dynamic.locator('#title'));
-  assert.equal(selected.identity.title, 'A title');
+  assert.ok(
+    selected.identity.evidence.candidates.some(
+      (row) => row.component.entity === 'fx_a' && row.component.name === 'title',
+    ),
+  );
   selected = await pick(page, page.locator('#cross'));
-  assert.equal(selected.element.id, 'cross');
+  assert.equal(selected.element.tag, 'iframe');
   assert.equal(selected.identity.forms.length, 0);
   assert.match(await page.locator('#paqvilo-xray .content').innerText(), /cross-origin and sandbox restrictions/);
   const popupPromise = page.waitForEvent('popup');
@@ -176,12 +198,13 @@ test('inactive framework templates never acquire Close, Next or shared notificat
   );
   for (const selector of ['.close', '.btn', '.message']) {
     const selected = await pick(page, page.locator('#generic ' + selector));
-    assert.equal(selected.identity.title, 'No reliable source');
+    assert.notEqual(selected.identity.evidence.owner.status, 'exact');
+    assert.notEqual(selected.identity.evidence.source.status, 'exact');
     assert.deepEqual(selected.identity.sources, []);
     const text = await page.locator('#paqvilo-xray .content').innerText();
-    assert.match(text, /Possible matches/);
-    assert.match(text, /Statically referenced by/);
-    assert.doesNotMatch(text, /Element source candidates/);
+    assert.match(text, /Local source/);
+    assert.match(text, /Candidate|Unavailable/);
+    assert.doesNotMatch(text, /OwnerExact/);
   }
 });
 
@@ -202,9 +225,13 @@ test('inherited-origin srcdoc controls work while sandboxed frames remain inacce
   });
   await page.frameLocator('#srcdoc').locator('#title').waitFor();
   const selected = await pick(page, page.frameLocator('#srcdoc').locator('#title'));
-  assert.equal(selected.identity.title, 'A title');
+  assert.ok(
+    selected.identity.evidence.candidates.some(
+      (row) => row.component.entity === 'fx_a' && row.component.name === 'title',
+    ),
+  );
   const boundary = await pick(page, page.locator('#sandbox'));
-  assert.equal(boundary.element.id, 'sandbox');
+  assert.equal(boundary.element.tag, 'iframe');
   assert.equal(boundary.identity.forms.length, 0);
 });
 
@@ -306,7 +333,8 @@ test('source-card refresh restores a nonzero existing content scroll position', 
     { data, report, elementSources },
   );
   await pick(page, page.frameLocator('#first').locator('#title'));
-  assert.match(await page.locator('#paqvilo-xray .card .content').innerText(), /Possible matches \(16\)/);
+  assert.equal(await page.locator('#paqvilo-xray [data-evidence-source]').count(), 16);
+  assert.equal(await page.locator('#paqvilo-xray [data-source-status="candidate"]').count(), 1);
   const scroll = await page.locator('#paqvilo-xray .card .content').evaluate((node) => {
     node.scrollTop = 120;
     return node.scrollTop;
@@ -379,9 +407,9 @@ test('selected frame assets resolve relative URLs against the embedded document 
     { data, report },
   );
   const selected = await pick(page, page.frameLocator('#first').locator('#frame-image'));
-  assert.equal(selected.element.id, 'frame-image');
+  assert.equal(selected.element.tag, 'img');
   const text = await page.locator('#paqvilo-xray .content').innerText();
-  assert.match(text, /Web file/);
+  assert.match(text, /Local source|Context/);
   assert.match(text, /Embedded image/);
   assert.doesNotMatch(text, /Unrelated host image/);
   const evidence = await page.evaluate(inspectRenderedPage);

@@ -34,7 +34,7 @@ Portal files identify the basic form or list. Solution metadata identifies the u
 
 ## Why does Inspect show an unknown or static reference?
 
-Liquid can choose components dynamically, and exports can omit managed metadata or live identity. A static reference may belong to a branch that was not rendered. Inspect does not infer missing bindings or a live user's effective permission. Add the relevant sources, use **Refresh inspection**, and compare the rendered controls with the source evidence.
+Liquid can choose components dynamically, and exports can omit managed metadata or live identity. A static reference may belong to a branch that was not rendered. The selected summary separates **Owner**, **Local source**, enclosing components, context and alternatives. Exact ownership can coexist with unavailable local source; serving a script does not establish execution. Inspect does not infer missing bindings, a deployed revision or a live user's effective permission. Add the relevant sources, use **Refresh inspection**, and compare the rendered controls with the [selection evidence](lense.md#selection-evidence). Replaced elements must be selected again; stale source actions stay disabled.
 
 ## Can I deploy the demo to my own environment?
 

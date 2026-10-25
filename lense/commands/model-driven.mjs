@@ -6,6 +6,7 @@ import { solutionWatchFilter } from '../../mirage/lib/solution-roots.mjs';
 import { standaloneMirageConfiguration } from '../standalone-mirage.mjs';
 import { openBrowser } from '../browser.mjs';
 import { interceptOrigins } from '../intercept.mjs';
+import { createInspectionProvenanceTransport } from '../inspection-provenance-transport.mjs';
 import { refreshUrl } from '../navigation.mjs';
 import { startModelDrivenInspector } from '../model-driven-inspector.mjs';
 import { createModelDrivenOverlay, importModelDrivenProject } from '../model-driven.mjs';
@@ -175,6 +176,12 @@ async function runModelDriven(args, action, progress, deadline) {
     openBrowser(cfg, { debugPort: cfg.browser.debugPort }),
     (opened) => opened.close(),
   );
+  const provenance = createInspectionProvenanceTransport(
+    context,
+    targets.map((target) => ({ origin: target.origin, mirage: Boolean(args['local-simulation']) })),
+  );
+  cfg.provenanceSlot = provenance.slot;
+  cfg.domProvenanceSlot = provenance.domSlot;
   let release,
     watcher,
     timer,
@@ -294,7 +301,12 @@ async function runModelDriven(args, action, progress, deadline) {
             return route.abort();
           }
         },
-        { bypassCSP: cfg.browser.bypassCSP, ownsPage: (candidate) => candidate === page, onError },
+        {
+          bypassCSP: cfg.browser.bypassCSP,
+          ownsPage: (candidate) => candidate === page,
+          onError,
+          onAttach: provenance.onAttach,
+        },
       ),
       (dispose) => dispose(),
     );

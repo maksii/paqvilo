@@ -9,9 +9,11 @@ import { orderedMap } from './async-map.mjs';
 //     for changes in literal text, and tells you when a change needs a real deployment.
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { readLocalFile } from './local-file.mjs';
 import { diffLines } from './line-diff.mjs';
 import { urlKey, sourceText, createSourceReader, isSourceFile } from './portal-model.mjs';
+import { applyRenderEdits, finalizePortalProvenance } from '../mirage/lib/render-provenance.mjs';
 
 /** URL prefix of everything the overlay answers itself; nothing under it exists on the portal. */
 export const LOCAL_PREFIX = '/__paqvilo/';
@@ -300,14 +302,22 @@ function normExpr(expr) {
 }
 
 function toLines(text) {
-  const normalized = normEol(text);
+  const { text: normalized, original } = normalise(text);
   const parts = normalized.split('\n');
   const starts = [];
   let offset = 0;
   const lines = parts.map((t, i) => {
     starts.push(offset);
     offset += t.length + 1;
-    return { text: t, eol: i < parts.length - 1, logic: false, outputs: [], protected: [], whitespaceControl: false };
+    return {
+      text: t,
+      sourceStart: original(starts.at(-1)),
+      eol: i < parts.length - 1,
+      logic: false,
+      outputs: [],
+      protected: [],
+      whitespaceControl: false,
+    };
   });
   if (lines.length && !lines.at(-1).eol && lines.at(-1).text === '') lines.pop();
   const lineAt = (at) => {
@@ -640,7 +650,15 @@ function prepareLiteralSegment(oldLines, newLines, baseText, otherLanguages) {
   if (!pattern.anchored || pattern.weight < 3 || findMatches(pattern, baseText, 2).length !== 1) return null;
   if (otherLanguages.some((text) => findMatches(pattern, text).some((match) => standsAlone(pattern, text, match))))
     return null;
-  return { pattern, added: [{ text: newText, eol: false, outputs: [] }], unique: true, literalSegment: true };
+  const gapStart = after.gaps
+    .slice(0, index)
+    .reduce((sum, gap, i) => sum + gap.length + after.protectedText[i].length, 0);
+  return {
+    pattern,
+    added: [{ text: newText, sourceStart: newLine.sourceStart + gapStart, eol: false, outputs: [] }],
+    unique: true,
+    literalSegment: true,
+  };
 }
 
 /** LF-normalised copy of `html` plus a way back to offsets in the original. */
@@ -997,7 +1015,8 @@ export class HtmlRewriter {
       if (p.error) this.unsupported.push({ rel: src.rel, reason: `${p.where}: ${p.error}` });
       else prepared.push(p);
     }
-    if (prepared.length) this.patches.push({ ...src, hunks: prepared });
+    if (prepared.length)
+      this.patches.push({ ...src, hunks: prepared, contentRevision: createHash('sha256').update(text).digest('hex') });
   }
 
   /** Local snippet value plus whether choosing a value would guess its language. */
@@ -1040,17 +1059,54 @@ export class HtmlRewriter {
    *   web template: only template changes are applied to those
    * @returns {{html: string, applied: Array<{kind:string, rel:string, action:string}>, notes: Array<{rel:string, reason:string}>, matched: Array<object>}}
    */
-  rewrite(body, urlPath, { html = true } = {}) {
+  rewrite(body, urlPath, { html = true, isDocument = false, sourceIndex = null } = {}) {
     const applied = [];
     const notes = [];
     /** every local block source recognised in the page, changed or not: [{kind, rel, score, identical, online}] */
     const matched = [];
-    let out = html ? this.#rewriteBlocks(body, urlPath, applied, matched, notes) : body;
-    out = this.#applyPatches(out, applied, notes, html, urlPath);
-    return { html: out, applied, notes, matched };
+    const provenance = sourceIndex && isDocument && html ? { index: sourceIndex, intervals: [] } : null;
+    let out = html ? this.#rewriteBlocks(body, urlPath, applied, matched, notes, provenance) : body;
+    out = this.#applyPatches(out, applied, notes, html, urlPath, provenance);
+    const finalized = provenance
+      ? finalizePortalProvenance({
+          fragment: { text: out, intervals: provenance.intervals },
+          index: sourceIndex,
+          channel: 'lense-applied-response',
+        })
+      : { html: out };
+    return { ...finalized, applied, notes, matched };
   }
 
-  #rewriteBlocks(html, urlPath, applied, matched, notes) {
+  #provenanceSource(src, index, text) {
+    if (!index) return null;
+    const field =
+      src.field?.replace(/^(?:adx|mspp)_/, '') ??
+      {
+        'web-template': 'source',
+        'content-snippet': 'value',
+        'page-copy': 'copy',
+        'page-summary': 'summary',
+        'page-js': 'customjavascript',
+        'basic-form-js': 'customjavascript',
+        'list-js': 'customjavascript',
+        'advanced-form-step-js': 'customjavascript',
+        'page-css': 'customcss',
+      }[src.kind];
+    const candidates = [...index.sources.values()].filter(
+      (source) =>
+        source.file &&
+        source.file.toLowerCase() === src.file.toLowerCase() &&
+        source.fieldPath?.at(-1) === field &&
+        (src.lcid === undefined || source.lcid === src.lcid) &&
+        (!(src.componentId ?? src.recordId) ||
+          source.recordId === String(src.componentId ?? src.recordId).toLowerCase()),
+    );
+    return candidates.length === 1 && candidates[0].contentRevision === createHash('sha256').update(text).digest('hex')
+      ? candidates[0]
+      : null;
+  }
+
+  #rewriteBlocks(html, urlPath, applied, matched, notes, provenance) {
     if (!this.blocks.length) return html;
     const docKey = pageKey(urlPath, this.model);
     const minSim = this.site.inline?.minSimilarity ?? 0.5;
@@ -1123,6 +1179,7 @@ export class HtmlRewriter {
     // 3. swap the content of the blocks whose source is in scope
     let out = '';
     let at = 0;
+    const blockEdits = [];
     for (const block of found) {
       const { m, src } = block;
       if (!src) continue;
@@ -1153,6 +1210,7 @@ export class HtmlRewriter {
         src.text.trim() !== '';
       if (!replace && !external) continue;
       let replacement;
+      const intervals = [];
       if (external) {
         // async/defer and integrity do not act on inline classic scripts, but become active
         // after adding src. Retaining a stale integrity hash would block the local script.
@@ -1174,12 +1232,34 @@ export class HtmlRewriter {
           continue;
         }
         replacement = `${m.opening}${newContent}${m.closing}`;
+        const source = this.#provenanceSource(src, provenance?.index, src.text);
+        if (source && replace) {
+          const normalized = normalise(src.text),
+            trimmed = src.norm.trim(),
+            leading = src.norm.length - src.norm.trimStart().length;
+          let local = leading,
+            generated = m.opening.length + lead.length;
+          for (const line of trimmed.split('\n')) {
+            if (line)
+              intervals.push({
+                start: generated,
+                end: generated + line.length,
+                sourceRefId: source.id,
+                sourceSpan: { start: normalized.original(local), end: normalized.original(local + line.length) },
+                mapping: 'literal',
+              });
+            local += line.length + 1;
+            generated += line.length + eol.length;
+          }
+        }
       }
       if (replace) applied.push({ kind: src.kind, rel: src.rel, action: 'replaced inline block' });
       out += html.slice(at, m.index) + replacement;
+      blockEdits.push({ start: m.index, end: m.index + m[0].length, text: replacement, intervals });
       at = m.index + m[0].length;
     }
     out += html.slice(at);
+    if (provenance) provenance.intervals = applyRenderEdits({ text: html, intervals: [] }, blockEdits).intervals;
 
     if (this.site.inline?.injectMissingPageBlocks !== false) {
       // custom JS/CSS added to a page that has none online yet
@@ -1215,6 +1295,25 @@ export class HtmlRewriter {
               : `<script type="text/javascript">\n${src.text}\n</script>\n`;
         const anchor = closingElementOffset(out, src.tag === 'style' ? 'head' : 'body');
         if (anchor < 0) continue;
+        if (provenance) {
+          const source = !external ? this.#provenanceSource(src, provenance.index, src.text) : null;
+          const start =
+            src.tag === 'style' ? '<style type="text/css">'.length : '<script type="text/javascript">\n'.length;
+          const intervals = source
+            ? [
+                {
+                  start,
+                  end: start + src.text.length,
+                  sourceRefId: source.id,
+                  sourceSpan: { start: 0, end: src.text.length },
+                  mapping: 'literal',
+                },
+              ]
+            : [];
+          provenance.intervals = applyRenderEdits({ text: out, intervals: provenance.intervals }, [
+            { start: anchor, end: anchor, text: element, intervals },
+          ]).intervals;
+        }
         out = out.slice(0, anchor) + element + out.slice(anchor);
         applied.push({ kind: src.kind, rel: src.rel, action: 'injected (not online yet)' });
       }
@@ -1222,9 +1321,29 @@ export class HtmlRewriter {
     return out;
   }
 
-  #applyPatches(body, applied, notes, isHtml, urlPath) {
+  #applyPatches(body, applied, notes, isHtml, urlPath, provenance) {
     let out = body;
     for (const patch of this.patches) {
+      const field =
+        patch.field?.replace(/^(?:adx|mspp)_/, '') ??
+        { 'web-template': 'source', 'content-snippet': 'value', 'page-copy': 'copy', 'page-summary': 'summary' }[
+          patch.kind
+        ];
+      const sourceCandidates = provenance
+        ? [...provenance.index.sources.values()].filter(
+            (source) =>
+              source.file &&
+              source.file.toLowerCase() === patch.file.toLowerCase() &&
+              source.fieldPath?.at(-1) === field &&
+              (patch.lcid === undefined || source.lcid === patch.lcid) &&
+              (!(patch.componentId ?? patch.recordId) ||
+                source.recordId === String(patch.componentId ?? patch.recordId).toLowerCase()),
+          )
+        : [];
+      const sourceRef =
+        sourceCandidates.length === 1 && sourceCandidates[0].contentRevision === patch.contentRevision
+          ? sourceCandidates[0]
+          : null;
       if (!isHtml && patch.kind !== 'web-template') continue;
       if (patch.pageUrl && urlKey(patch.pageUrl) !== pageKey(urlPath, this.model)) continue;
       // each file is applied to the result of the previous one, so two files changing the same
@@ -1247,12 +1366,25 @@ export class HtmlRewriter {
         for (const match of found) {
           let unresolved = null;
           let unresolvedLanguage = false;
+          const intervals = [];
+          let outputOffset = 0;
           const replacement = hunk.added
             .map((line) => {
               let at = 0;
               let rendered = '';
+              const literal = (text, from) => {
+                if (text && sourceRef)
+                  intervals.push({
+                    start: outputOffset + rendered.length,
+                    end: outputOffset + rendered.length + text.length,
+                    sourceRefId: sourceRef.id,
+                    sourceSpan: { start: line.sourceStart + from, end: line.sourceStart + from + text.length },
+                    mapping: 'literal',
+                  });
+                rendered += text;
+              };
               for (const output of line.outputs) {
-                rendered += line.text.slice(at, output.index);
+                literal(line.text.slice(at, output.index), at);
                 at = output.index + output.text.length;
                 const valueOf = (whole, expr) => {
                   const key = normExpr(expr);
@@ -1267,8 +1399,10 @@ export class HtmlRewriter {
                 };
                 rendered += valueOf(output.text, output.expr);
               }
-              rendered += line.text.slice(at);
-              return rendered + (line.eol ? eol : '');
+              literal(line.text.slice(at), at);
+              const result = rendered + (line.eol ? eol : '');
+              outputOffset += result.length;
+              return result;
             })
             .join('');
           if (unresolved) {
@@ -1280,7 +1414,13 @@ export class HtmlRewriter {
             });
             continue;
           }
-          edits.push({ start: original(match.core), end: original(match.after), text: replacement, where: hunk.where });
+          edits.push({
+            start: original(match.core),
+            end: original(match.after),
+            text: replacement,
+            where: hunk.where,
+            intervals,
+          });
         }
       }
       if (!edits.length) continue;
@@ -1289,6 +1429,7 @@ export class HtmlRewriter {
       let limit = out.length;
       let hits = 0;
       const pieces = [];
+      const acceptedEdits = [];
       for (const e of edits) {
         if (e.end > limit) {
           notes.push({
@@ -1298,10 +1439,16 @@ export class HtmlRewriter {
           continue;
         }
         pieces.push(out.slice(e.end, limit), e.text);
+        acceptedEdits.push(e);
         limit = e.start;
         hits++;
       }
       pieces.push(out.slice(0, limit));
+      if (provenance)
+        provenance.intervals = applyRenderEdits(
+          { text: out, intervals: provenance.intervals },
+          acceptedEdits,
+        ).intervals;
       out = pieces.reverse().join('');
       if (hits)
         applied.push({ kind: patch.kind, rel: patch.rel, action: `patched ${hits} change${hits > 1 ? 's' : ''}` });

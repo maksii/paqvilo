@@ -11,6 +11,8 @@ import { promisify } from 'node:util';
 import { portalLanguage } from './portal-languages.mjs';
 import { detectSourceDialect, unrecognisedSourceMessage } from './source-dialect.mjs';
 import { platformChangeDiagnostics } from './platform-changes.mjs';
+import { createHash } from 'node:crypto';
+const sourceRevisionOf = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
 
 const execFileAsync = promisify(execFile);
 const slugOf = (value) =>
@@ -282,6 +284,7 @@ export async function importPortal(
               }
             : {}),
           _file: file,
+          _sourceRevision: sourceRevisionOf(xml),
           _attachment: attachment
             ? {
                 name: decodeXml(attachment[2]).trim(),
@@ -384,6 +387,7 @@ export async function importPortal(
               ? { powerpagecomponenttype: COMPONENT_TYPE_OF_KIND[kind] }
               : {}),
             _file: file,
+            _sourceRevision: sourceRevisionOf(text),
           };
           records.push(record);
           if (kind === 'website') website = record;
@@ -454,6 +458,7 @@ export async function importPortal(
   }
   if (dropped.size) records.splice(0, records.length, ...records.filter((record) => !dropped.has(record)));
   const profileChanges = [];
+  let selectedProfileFile = null;
   if (deploymentProfile) {
     if (!/^[\w.-]+$/.test(deploymentProfile)) throw new Error('Select a deployment profile by its exported name');
     const profileName = deploymentProfile.replace(/\.deployment\.ya?ml$/i, '');
@@ -468,8 +473,11 @@ export async function importPortal(
             .toLowerCase() === profileName.toLowerCase(),
       );
     if (!profile) throw new Error(`Deployment profile '${deploymentProfile}' is absent in the export`);
+    selectedProfileFile = await fs.realpath(profile);
     const profileSource = await fs.readFile(profile, 'utf8');
-    const values = /\.json$/i.test(profile) ? JSON.parse(profileSource) : YAML.parse(profileSource);
+    const values = /\.json$/i.test(profile)
+      ? JSON.parse(profileSource.replace(/^\uFEFF/, ''))
+      : YAML.parse(profileSource);
     if (!values || typeof values !== 'object' || Array.isArray(values))
       throw new Error('Deployment profile must map tables to record patches');
     for (const [entity, rows] of Object.entries(values ?? {})) {
@@ -510,7 +518,11 @@ export async function importPortal(
         record._deploymentProfile = profileName;
         record._profileSourceFiles = {
           ...record._profileSourceFiles,
-          ...Object.fromEntries(fields.map((k) => [k.replace(/^(?:adx|mspp)_/, ''), profile])),
+          ...Object.fromEntries(fields.map((k) => [k.replace(/^(?:adx|mspp)_/, ''), selectedProfileFile])),
+        };
+        record._profileRevisions = {
+          ...record._profileRevisions,
+          [selectedProfileFile]: sourceRevisionOf(profileSource),
         };
         profileChanges.push({
           recordId: record.id,
@@ -600,12 +612,22 @@ export async function importPortal(
     urls.set(pageId, url);
     return url;
   };
+  // Preserve the exact imported field origin for lazy provenance indexes. Later disk
+  // edits must not relabel already imported/rendered bytes with a newer revision.
+  for (const record of records) record._fieldOrigins = {};
   async function source(record, suffix, fallbackField) {
-    if (Object.hasOwn(record._profileFields ?? {}, fallbackField))
-      return String(localized(record._profileFields[fallbackField], lcid));
-    if (enhanced) return String(localized(field(record, fallbackField, ''), lcid));
+    const origins = (record._fieldOrigins ??= {});
+    const fallback = Object.hasOwn(record._profileFields ?? {}, fallbackField)
+      ? record._profileFields[fallbackField]
+      : field(record, fallbackField, '');
+    const file = record._profileSourceFiles?.[fallbackField] ?? record._file;
+    origins[fallbackField] = { value: fallback, file, sidecar: false };
+    if (Object.hasOwn(record._profileFields ?? {}, fallbackField) || enhanced) return String(localized(fallback, lcid));
     const stem = String(record._file ?? '').replace(/\.ya?ml$/i, '');
-    return (await read(`${stem}.${suffix}`, contents)) || String(localized(field(record, fallbackField, ''), lcid));
+    const sidecar = `${stem}.${suffix}`,
+      value = await read(sidecar, contents);
+    if (value) origins[fallbackField] = { value, file: sidecar, sidecar: true };
+    return value || String(localized(fallback, lcid));
   }
   const pages = [];
   for (const r of roots) {
@@ -1127,6 +1149,8 @@ export async function importPortal(
   return {
     sourceDir,
     source: layout,
+    selectedLanguageId: language,
+    selectedLcid: lcid,
     // The site's data model (the runtime's adx_ or powerpagecomponent tables and relationships).
     format: dataModel,
     dataModel,
@@ -1168,11 +1192,36 @@ export async function importPortal(
     records,
     diagnostics,
     deploymentProfile: deploymentProfile ?? null,
+    deploymentProfileFile: selectedProfileFile,
     profileChanges,
   };
 }
 
 export { field as portalField };
+
+/** Shared effective snippet identity, matching last-wins importer language selection. */
+export function effectiveSnippetRecords(records, languageId) {
+  const selected = id(languageId),
+    winners = new Map(),
+    exact = new Map();
+  const rows = records
+    .filter((record) => record.kind === 'contentsnippet' && Number(field(record, 'statecode', 0)) !== 1)
+    .sort(
+      (a, b) =>
+        Number(id(field(a, 'contentsnippetlanguageid')) === selected) -
+        Number(id(field(b, 'contentsnippetlanguageid')) === selected),
+    );
+  for (const record of rows) {
+    exact.set(String(record.name), record);
+    if (record._originalName) exact.set(record._originalName, record);
+  }
+  for (const [name, record] of exact) if (!winners.has(name.toLowerCase())) winners.set(name.toLowerCase(), record);
+  Object.defineProperty(winners, 'resolve', {
+    value: (name) => exact.get(String(name)) ?? winners.get(String(name).toLowerCase()),
+  });
+  Object.defineProperty(winners, 'records', { value: () => [...new Set(exact.values())] });
+  return winners;
+}
 
 /** Explicit page-template choices select the active source even when both references exist. */
 export function pageTemplateKind(template) {

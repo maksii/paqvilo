@@ -6,8 +6,8 @@ import { PortalModel, mimeFor, inlineKindOf, isSourceFile, isPortalMetadata } fr
 import { Resolver, globToRegExp } from './resolver.mjs';
 import { HtmlRewriter, pageKey, INLINE_PREFIX, LOCAL_PREFIX, API_PREFIX } from './html-rewriter.mjs';
 import { GitBaseline, gitHead } from './git.mjs';
-import { withFileSourceMap } from './source-map.mjs';
 import { FileBodyCache } from './file-cache.mjs';
+import { scriptSourceBody, scriptResourceProof } from './script-source-evidence.mjs';
 
 // Editors and tools leave scratch files next to the sources (safe-write temporaries, swap and
 // backup files). They are never portal sources, so they must not rebuild the index or reload tabs.
@@ -464,10 +464,23 @@ export class OverlaySession extends EventEmitter {
       try {
         body =
           src && isSourceFile(this.cfg.sourceDir, src.file)
-            ? this.fileBodies.read(src.file, 'source-map', (bytes) => withFileSourceMap(bytes, src.file))
+            ? this.fileBodies.read(src.file, 'source-map', (bytes) => scriptSourceBody(bytes, src.file))
             : null;
       } catch {
         /* deleted meanwhile */
+      }
+      let proof = null;
+      try {
+        proof = body
+          ? await scriptResourceProof(
+              this.sourceInspector,
+              src.file,
+              body,
+              new URL(request.frame().page().url()).pathname,
+            ).catch(() => null)
+          : null;
+      } catch {
+        /* Navigation may have ended while this script was read. */
       }
       await route
         .fulfill(
@@ -480,6 +493,7 @@ export class OverlaySession extends EventEmitter {
                   'x-paqvilo': encodeURI(src.rel),
                 },
                 body,
+                ...(proof ? { provenance: proof } : {}),
               }
             : { status: 404, headers: { 'content-type': 'text/plain' }, body: 'paqvilo: nothing at this address' },
         )
@@ -506,6 +520,8 @@ export class OverlaySession extends EventEmitter {
       const found = this.resolver.resolve(url.pathname);
       const hit = found && !this.disabled.has(this.rel(found.file)) ? found : null;
       if (hit) {
+        const contentType = mimeFor(hit.file, mimeFor(url.pathname, this.model.findWebFile(url.pathname)?.mimeType));
+        const isScript = /(?:javascript|ecmascript)/i.test(contentType);
         let body;
         try {
           // HEAD needs existence/type metadata, not the entire asset or generated source map.
@@ -516,9 +532,9 @@ export class OverlaySession extends EventEmitter {
                 : null
               : this.fileBodies.read(
                   hit.file,
-                  this.cfg.sourceMaps && /\.m?js$/i.test(url.pathname) ? 'source-map' : '',
+                  isScript ? (this.cfg.sourceMaps ? 'source-map' : 'script-source') : '',
                   (bytes) =>
-                    this.cfg.sourceMaps && /\.m?js$/i.test(url.pathname) ? withFileSourceMap(bytes, hit.file) : bytes,
+                    isScript ? scriptSourceBody(bytes, hit.file, { sourceMaps: Boolean(this.cfg.sourceMaps) }) : bytes,
                 );
         } catch {
           body = null;
@@ -530,20 +546,31 @@ export class OverlaySession extends EventEmitter {
             url: url.pathname,
             sources: [{ rel, action: hit.via, kind: 'web-file' }],
           });
+          let proof = null;
+          if (method === 'GET' && isScript) {
+            try {
+              proof = await scriptResourceProof(
+                this.sourceInspector,
+                hit.file,
+                body,
+                new URL(request.frame().page().url()).pathname,
+              );
+            } catch {
+              /* No proof for a changing or unindexed source. */
+            }
+          }
           // the tab may be gone by now; that is not an error
           await route
             .fulfill({
               status: 200,
               headers: {
                 // by the name on disk, else by the name in the URL, else what the metadata says
-                'content-type': mimeFor(
-                  hit.file,
-                  mimeFor(url.pathname, this.model.findWebFile(url.pathname)?.mimeType),
-                ),
+                'content-type': contentType,
                 'cache-control': 'no-store',
                 'x-paqvilo': encodeURI(rel),
               },
               body: method === 'HEAD' ? '' : body,
+              ...(proof ? { provenance: proof } : {}),
             })
             .catch(() => {});
           return;
@@ -591,7 +618,15 @@ export class OverlaySession extends EventEmitter {
       let result;
       try {
         original = await response.text();
-        result = this.rewriter.rewrite(original, url.pathname, { html: isHtml });
+        let sourceIndex;
+        if (isDocument && isHtml && this.sourceInspector) {
+          try {
+            sourceIndex = await this.sourceInspector.sourceIndexFor(url.pathname);
+          } catch (error) {
+            this.emit('fault', error, request.url());
+          }
+        }
+        result = this.rewriter.rewrite(original, url.pathname, { html: isHtml, isDocument, sourceIndex });
       } catch (err) {
         this.emit('fault', err, request.url());
         // Preserve the response already received, especially after a successful form save.
@@ -607,8 +642,13 @@ export class OverlaySession extends EventEmitter {
         // every local inline source recognised in the page, overridden or not
         matched: result.matched,
       });
-      if (result.html === original) return route.fulfill({ response }).catch(() => {});
-      return route.fulfill({ response, body: result.html }).catch(() => {});
+      return route
+        .fulfill({
+          response,
+          ...(result.html === original ? {} : { body: result.html }),
+          ...(result.provenance ? { provenance: result.provenance } : {}),
+        })
+        .catch(() => {});
     }
 
     return route.fallback();

@@ -85,6 +85,8 @@ export function modelDrivenPanelData(
     token: state.token,
     transport: 'model-driven',
     modelDriven: true,
+    domProvenanceSlot: cfg.domProvenanceSlot,
+    provenanceSlot: cfg.provenanceSlot,
     site: cfg.siteName ?? cfg.site?.name ?? cfg.site?.id ?? 'Solution sources',
     env: cfg.envName ?? cfg.env?.name ?? 'Model-driven',
     targets: cfg.devTargets ?? [],
@@ -106,6 +108,7 @@ export function modelDrivenPanelData(
     git: git ?? {},
     now: Date.now(),
     catalogVersion: state.revision,
+    sourceRevision: String(state.sourceRevision ?? state.revision),
     page: {
       path: '/main.aspx',
       name: state.context?.entity ?? 'Model-driven app',
@@ -131,6 +134,7 @@ export function modelDrivenPanelData(
       loadingId: state.inspectionVersion,
       phase: state.inspectionError || 'Reading the current app and matching exported Solution sources.',
       mode: 'model-driven',
+      sourceRevision: String(state.sourceRevision ?? state.revision),
       status: { solutionCount: state.catalogue?.solutionCount ?? 0 },
     },
     sourceCatalogue: [
@@ -199,18 +203,23 @@ export function modelDrivenPanelInspection(state) {
   const tables = new Map((catalogue.tables ?? []).map((table) => [table.logicalName, table]));
   const onForm = context.pageType === 'entityrecord' || Boolean(context.formId);
   const exact = onForm ? catalogue.forms.filter((form) => form.id === context.formId) : [];
-  // Without the native form ID the table's main forms are candidates; the first is what the app opens unless another is chosen.
+  // Missing current identity leaves configured forms as candidates. Operation
+  // formType=1 does not distinguish a main create form from quick create.
   const forms = !onForm
     ? []
     : exact.length
       ? exact
       : catalogue.forms.filter(
-          (form) => form.entity === context.entity && (!form.type || form.type.startsWith('main')),
+          (form) => form.entity === context.entity && (!form.type || /^(?:main|quick create|mobile)/.test(form.type)),
         );
-  const evidence = exact.length ? 'native-form-id' : 'candidate-table-form';
+  const evidence = exact.length
+    ? state.localSimulation
+      ? 'mirage-form-id'
+      : 'native-form-id'
+    : 'candidate-table-form';
   const evidenceLabel = exact.length
     ? 'Form ID of this page matched to the selected Solution'
-    : `Candidate: ${forms.length === 1 ? 'the only main form' : 'a main form'} of ${context.entity ?? 'this table'}`;
+    : `Candidate: an exported form of ${context.entity ?? 'this table'}; current form identity is unavailable`;
   const mapped = forms.map((form) => ({
     ...form,
     kind: 'model-driven-form',
@@ -268,7 +277,21 @@ export function modelDrivenPanelInspection(state) {
       source:
         'Tables, forms, views and commands of the selected Solution matched to read-only native context. Native record values and effective access are not inferred.',
     },
-    modelDriven: { ...context, catalogue },
+    modelDriven: {
+      ...context,
+      catalogue,
+      sourceRevision: String(state.sourceRevision ?? state.revision ?? '1'),
+      mode: state.localSimulation ? 'local' : 'live',
+      sourceRefs: state.sourceRefs ?? [],
+      availability: [
+        ...(state.provenanceAvailability ?? []),
+        ...(context.availability
+          ? Object.entries(context.availability).map(([capability, reason]) => ({ capability, reason }))
+          : []),
+      ],
+      limits: state.provenanceLimits ?? catalogue.limits,
+      structure: state.nativeStructure,
+    },
     pageSources: [
       ...mapped.map((form) => ({ name: form.name, kind: `${form.formType ?? 'main'} form`, ref: form.ref })),
       ...(view ? [{ name: view.name, kind: 'View', ref: view.source }] : []),
@@ -332,9 +355,10 @@ export function modelDrivenPanelInspection(state) {
           formId: form.id,
           field: control.name,
           expression: `${form.entity}.${control.name || control.id}`,
-          binding: 'native-formxml',
-          selectedDesktop: true,
+          binding: 'exported-formxml',
+          configuredBindings: control.customBindings ?? [],
           enablement: 'configured',
+          mounted: 'unavailable',
           ref: form.source,
         })),
     ),

@@ -1,5 +1,19 @@
 # Release notes
 
+## Unreleased
+
+- Share selected-element evidence between Inspect and X-ray, with independent owner/source certainty,
+  explicit alternatives, search limits and served/executed distinctions.
+- Retain one-shot selections while hidden; clear detached nodes and navigated frames, reject stale updates,
+  and preserve keyboard focus and disclosures across redraws.
+- Validate evidence source identity and revisions before opening; label candidate actions explicitly and disable stale links.
+- Trace Power Pages rendering to the actual template, snippet, page field and platform component, retaining language,
+  deployment profile and record identity across shared export files.
+- Resolve model-driven forms, views, columns and control placements from Solution metadata and current browser observations;
+  keep generated controls and unavailable definitions explicit.
+- Link script-created DOM to acknowledged local implementation bytes and observed creation, clone or insertion callsites.
+- Keep ordinary Mirage project stop hints readable across Windows shells while preserving directory and special-path handling.
+
 ## 0.9.7
 
 ### Fixed
