@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { inflateRawSync } from 'node:zlib';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const execute = promisify(execFile),
@@ -14,7 +15,9 @@ const stopArguments = (hint) => {
   if (hint.startsWith('node -e ')) {
     const payload = /Buffer\.from\('([A-Za-z0-9+/=]+)','base64'\)/.exec(hint)?.[1];
     assert.ok(payload, 'fallback commands carry a literal argv payload');
-    const args = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+    const commands = JSON.parse(inflateRawSync(Buffer.from(payload, 'base64')).toString('utf8'));
+    assert.equal(commands.length, 1);
+    const args = commands[0];
     assert.equal(args[0], cli, 'fallback invokes the toolkit that emitted the hint');
     return args.slice(1);
   }
@@ -67,7 +70,18 @@ test('public project inspect/start/reuse/stop works without any portal or catalo
   assert.equal(started.started, true);
   assert.equal(started.sourceDir, null);
   assert.ok(started.pid);
-  assert.deepEqual(stopArguments(started.stop), ['mirage', 'stop', '--project', project, '--port', '0']);
+  assert.deepEqual(stopArguments(started.stop), [
+    'mirage',
+    'stop',
+    '--project',
+    project,
+    '--runtime',
+    'model-driven',
+    '--state',
+    started.stateFile,
+    '--port',
+    new URL(started.url).port,
+  ]);
   const state = await (await fetch(started.url + '/_sim/api/status')).json();
   assert.equal(state.runtime.kind, 'model-driven');
   assert.equal(state.simulation.level, 'dry-run');
@@ -127,12 +141,18 @@ test(
       'stop',
       '--config',
       config,
+      '--repo',
+      directory,
       '--site',
       'first',
+      '--portals',
+      'selected',
       '--runtime',
       'model-driven',
+      '--state',
+      first.stateFile,
       '--port',
-      '0',
+      new URL(first.url).port,
     ]);
     assert.equal(second.started, true);
     assert.notEqual(first.pid, second.pid);
@@ -201,7 +221,10 @@ test(
           '--solution-root',
           root,
           '--state',
-          path.join(directory, `${name} state.json`),
+          path.join(
+            directory,
+            name === 'first' ? "first $([char]65) 'quoted' `ticks state.json" : 'sibling state.json',
+          ),
           '--port',
           '0',
         ),
@@ -209,7 +232,7 @@ test(
     }
     const [first, sibling] = sessions;
     if (process.platform === 'win32') assert.match(first.stop, /^node -e /);
-    assert.ok(stopArguments(first.stop).includes(path.join(directory, "first $([char]65) 'quoted' `ticks solution")));
+    assert.ok(stopArguments(first.stop).includes(first.stateFile));
     if (process.platform === 'win32') {
       // Execute the exact published fallback through both shells. It directly
       // invokes the current toolkit, with no npx download or shell argument rewrite.
@@ -286,7 +309,7 @@ test(
       ['--config', catalogue, '--site', 'invented'],
     ]) {
       active = await run(['mirage', 'start', ...selection, '--runtime', 'dataverse-api', '--port', '0']);
-      assert.match(active.stop, /--runtime dataverse-api/);
+      assert.ok(stopArguments(active.stop).includes('dataverse-api'));
       const stopped = await run(stopArguments(active.stop));
       assert.deepEqual(
         stopped.stopped.map((entry) => entry.pid),

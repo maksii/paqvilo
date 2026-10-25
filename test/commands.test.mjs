@@ -250,7 +250,8 @@ test('Mirage start waits for runtime readiness and exposes page dependency conte
   assert.ok(session.stateFile.startsWith(path.join(path.dirname(config), '.paqvilo') + path.sep));
   assert.match(session.stop, /^npx paqvilo mirage stop --config /);
   assert.ok(session.stop.includes(config), 'the hint retains the exact selected catalogue');
-  assert.match(session.stop, / --site test$/);
+  assert.ok(session.stop.includes('--site test'));
+  assert.ok(session.stop.includes('--port ' + new URL(session.url).port));
   assert.equal(
     session.runtime.liveWrites,
     'disabled',
@@ -502,7 +503,9 @@ test('mirage init writes a validated project file from the catalogue site and re
     assert.equal(report.action, 'init');
     assert.equal(report.file, out);
     assert.equal(report.catalogued, false);
-    assert.match(report.next, /paqvilo mirage dev --project/);
+    assert.match(report.next, /paqvilo mirage dev --config/);
+    assert.ok(report.next.includes('--project'));
+    assert.ok(report.next.includes(config) && report.next.includes(fx.dir));
     assert.ok(
       report.notes.some((note) => note.includes('loopback')),
       'non-HTTPS environments are reported, not recorded',

@@ -43,6 +43,7 @@ export function standaloneCatalogueConfiguration(catalogue, name, args = {}) {
     ...cfg,
     configDir: catalogue.configDir,
     configFile: catalogue.configFile,
+    sourceRoot: catalogue.sourceRoot,
     stateDir: path.join(catalogue.configDir, '.paqvilo'),
     siteName: name,
     runtime: runtimeSettings(args.runtime ? { kind: args.runtime } : mirageConfig.runtime),
