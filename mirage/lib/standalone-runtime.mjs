@@ -97,6 +97,8 @@ async function readBody(req) {
 }
 
 export async function createStandaloneRuntime(options = {}) {
+  if (options.sourceMaps !== undefined && typeof options.sourceMaps !== 'boolean')
+    throw fail('sourceMaps must be true or false.');
   const startedAt = performance.now(),
     bootstrapTimings = {};
   const startupPhase = (phase) => {
@@ -618,6 +620,8 @@ export async function createStandaloneRuntime(options = {}) {
       diagnostic,
     });
     const model = createModelDrivenHandler({
+      sourceMaps: options.sourceMaps ?? true,
+      diagnostic,
       catalogue,
       data,
       csrf: () => csrf,

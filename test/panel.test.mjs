@@ -7,8 +7,9 @@ import { OverlaySession } from '../lense/session.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { enablePanel, comparison, openInEditor, panelVisibilityNotice } from '../lense/panel.mjs';
 import { panelUi } from '../lense/panel-ui.mjs';
-import { createFixture, SITE } from './fixture.mjs';
+import { createFixture, SITE, SCRIPTS_ID } from './fixture.mjs';
 import { fakeBrowser } from './fake-browser.mjs';
+import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 
 const ORIGIN = 'https://portal.example.com';
 const fx = createFixture();
@@ -67,9 +68,121 @@ async function setup(online = {}, overrides = {}, panelOptions = {}) {
   return { b, tab, session, panel, call, opened };
 }
 
+test('evidence editor links revalidate identity and revisions and ignore a forged file or line', async (t) => {
+  const { session, call, opened, tab } = await setup();
+  await call('inspect');
+  const index = await session.sourceInspector.sourceIndexFor('/scripts/');
+  const source = [...index.sources.values()].find(
+    (item) => item.file && item.text && item.fieldPath?.includes('customcss'),
+  );
+  assert.ok(source, 'fixture has an exported page field identity');
+  const body = {
+    sourceKey: source.key,
+    sourceRevision: source.sourceRevision,
+    contentRevision: source.contentRevision,
+    rel: '../unrelated.txt',
+    line: 999999,
+    col: 999999,
+  };
+  const result = await call('open', body);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(opened.length, 1);
+  assert.equal(fs.realpathSync.native(opened[0][1]), fs.realpathSync.native(source.file));
+  assert.notEqual(opened[0][2], body.line);
+  assert.notEqual(opened[0][3], body.col);
+  const evaluate = tab.page.evaluate;
+  let selectionChecks = 0;
+  t.mock.method(tab.page, 'evaluate', async (read, argument) =>
+    argument?.scope?.documentId ? ++selectionChecks === 1 : evaluate(read, argument),
+  );
+  const replaced = await call('open', {
+    ...body,
+    scope: { documentId: 'document-a', frameId: 'top', uiEpoch: 1, sourceRevision: source.sourceRevision },
+    anchorGeneration: 1,
+  });
+  assert.equal(replaced.code, 'SOURCE_SELECTION_STALE');
+  assert.equal(selectionChecks, 2, 'selection is checked again after asynchronous metadata verification');
+  assert.equal(opened.length, 1);
+  const bytes = fs.readFileSync(source.file);
+  t.after(() => fs.writeFileSync(source.file, bytes));
+  fs.appendFileSync(source.file, '\n<!-- changed local definition -->\n');
+  const stale = await call('open', body);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'SOURCE_STALE');
+  assert.equal(opened.length, 1, 'a stale definition never invokes the editor');
+});
+
 test('the panel function is self-contained: it is sent to the browser as text', () => {
   // must compile on its own, without this module around it
   assert.doesNotThrow(() => new Function(`return (${panelUi.toString()})`));
+});
+
+test('selected-source editor admission rechecks a source edited during the final browser round trip', async (t) => {
+  const { session, call, opened, tab } = await setup();
+  await call('inspect');
+  const index = await session.sourceInspector.sourceIndexFor('/scripts/');
+  const source = [...index.sources.values()].find(
+    (item) => item.file && item.text && item.fieldPath?.includes('customcss'),
+  );
+  assert.ok(source);
+  const bytes = fs.readFileSync(source.file);
+  t.after(() => fs.writeFileSync(source.file, bytes));
+  const evaluate = tab.page.evaluate;
+  let selectionChecks = 0;
+  t.mock.method(tab.page, 'evaluate', async (read, argument) => {
+    if (!argument?.scope?.documentId) return evaluate(read, argument);
+    if (++selectionChecks === 2) fs.appendFileSync(source.file, '\n/* changed during browser check */\n');
+    return true;
+  });
+  const result = await call('open', {
+    sourceKey: source.key,
+    sourceRevision: source.sourceRevision,
+    contentRevision: source.contentRevision,
+    scope: { documentId: 'document-a', frameId: 'top', uiEpoch: 1, sourceRevision: source.sourceRevision },
+    anchorGeneration: 1,
+  });
+  assert.equal(selectionChecks, 2);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'SOURCE_STALE');
+  assert.equal(opened.length, 0, 'a source changed during the browser check never invokes the editor');
+});
+
+test('guarded editor admission opens only the selected external deployment profile and refuses neighboring files', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-profile-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const selected = path.join(directory, 'selected.yml'),
+    neighbor = path.join(directory, 'neighbor.yml');
+  const profile = `adx_webpage:\n  - adx_webpageid: ${SCRIPTS_ID}\n    adx_customjavascript: 'window.invented=1;'\n`;
+  fs.writeFileSync(selected, profile);
+  fs.writeFileSync(neighbor, profile);
+  const deploymentProfiles = resolveDeploymentProfiles(
+    { default: 'external', profiles: { external: { pages: selected } } },
+    directory,
+  );
+  const { session, call, opened } = await setup({}, { mirageConfig: { deploymentProfiles } });
+  await call('inspect');
+  const index = await session.sourceInspector.sourceIndexFor('/scripts/');
+  const source = [...index.sources.values()].find(
+    (ref) => ref.profileId === 'external' && ref.fieldPath?.includes('customjavascript'),
+  );
+  assert.ok(source, 'actual selected profile yields a semantic exported field');
+  const body = {
+    sourceKey: source.key,
+    sourceRevision: source.sourceRevision,
+    contentRevision: source.contentRevision,
+    rel: neighbor,
+    line: 999,
+    externalProfile: true,
+  };
+  const openedResult = await call('open', body);
+  assert.equal(openedResult.ok, true, JSON.stringify(openedResult));
+  assert.equal(fs.realpathSync.native(opened[0][1]), fs.realpathSync.native(selected));
+  const refused = await call('open', { rel: neighbor, externalProfile: true });
+  assert.equal(refused.ok, false);
+  assert.equal(opened.length, 1);
+  fs.writeFileSync(selected, profile.replace('invented=1', 'invented=2'));
+  assert.equal((await call('open', body)).code, 'SOURCE_STALE');
+  assert.equal(opened.length, 1);
 });
 
 test('JSON request failures retain bounded distinct causes and redact query values without reading large or non-JSON bodies', async () => {

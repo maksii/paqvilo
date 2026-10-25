@@ -328,6 +328,16 @@ export const MIRAGE_SETTINGS = Object.freeze({
     doc: 'Liquid render limits.',
     parse: (value) => renderSettings(value),
   },
+  sourceMaps: {
+    scopes: ['catalogue', 'project', 'portal'],
+    option: 'sourceMaps',
+    identity: true,
+    doc: 'Append local file-backed debugger metadata to scripts and stylesheets (default true). Set false for original asset bytes.',
+    parse: (value, label) => {
+      if (value != null && typeof value !== 'boolean') throw new Error(`${label} must be true or false`);
+      return value;
+    },
+  },
   personaContexts: {
     scopes: ['catalogue'],
     option: 'personaContexts',

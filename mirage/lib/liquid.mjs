@@ -68,6 +68,19 @@ import { serverLogicFallback } from './liquid-service-observations.mjs';
 import { RESX_CULTURES } from './liquid-resx.mjs';
 import { portalLanguage } from './portal-languages.mjs';
 import fs from 'node:fs/promises';
+import { buildPortalSourceIndex } from './portal-source-index.mjs';
+import {
+  createRenderTrace,
+  createRenderBuffer,
+  renderFragment,
+  joinRenderFragments,
+  composeRenderFragments,
+  transformRenderFragment,
+  finalizePortalProvenance,
+  appendRenderFragment,
+  setObjectSource,
+  getObjectSource,
+} from './render-provenance.mjs';
 
 const htmlEscape = (value) =>
   String(value ?? '').replace(
@@ -140,6 +153,34 @@ const nameKey = (value) =>
     .trim()
     .toLowerCase();
 const managedSource = (managed) => MANAGED_SOURCES[managed] ?? builtinSource(managed);
+
+function debugTemplate(source, sourceRef, target) {
+  if (['customjavascript', 'customcss', '$content'].includes(sourceRef?.fieldPath?.at(-1)))
+    return { text: source, sourceRef };
+  let edits = [];
+  const text = debugMarkup(source, target, {
+    onEdits: (patches) => {
+      edits = patches;
+    },
+  });
+  if (!sourceRef || text === source) return { text, sourceRef };
+  const offsets = [];
+  let original = 0,
+    parsed = 0;
+  for (const edit of edits.sort((a, b) => a.from - b.from)) {
+    const length = edit.to - original;
+    offsets.push({ start: parsed, end: parsed + length, sourceStart: original });
+    parsed += length;
+    original = edit.to;
+    const bodyLength = edit.to - edit.from;
+    if (edit.body.slice(0, bodyLength) !== source.slice(edit.from, edit.to)) return { text, sourceRef: null };
+    parsed += edit.body.length - bodyLength;
+  }
+  offsets.push({ start: parsed, end: parsed + source.length - original, sourceStart: original });
+  return { text, sourceRef: { ...sourceRef, offsetMap: offsets, renderedText: text } };
+}
+const debugTarget = (ref, field, value) =>
+  ref?.file ? (/\.(?:ya?ml|xml|json)$/i.test(ref.file) ? { file: ref.file, field, value } : ref.file) : null;
 
 // ---- Data values (Dataverse records become Liquid entity objects)
 /** ISO date/time strings from the local store are Dataverse DateTime values. */
@@ -418,13 +459,14 @@ class SettingsDrop extends LiquidDrop {
 
 /** Snippets render the Liquid they contain in the current context. */
 class SnippetsDrop extends LiquidDrop {
-  constructor({ snippets, engine, profiles, origin, diagnostics }) {
+  constructor({ snippets, engine, profiles, origin, diagnostics, sourceIndex }) {
     super();
     this.snippets = snippets ?? {};
     this.engine = engine;
     this.profiles = profiles ?? [];
     this.origin = origin;
     this.diagnostics = diagnostics;
+    this.sourceIndex = sourceIndex;
     this.rendering = new Set();
   }
   resolveName(key) {
@@ -436,27 +478,75 @@ class SnippetsDrop extends LiquidDrop {
     if (name === undefined) return { name: undefined, source: undefined };
     const resolved = resolveSnippetComposition(this.snippets, name, this.profiles, { origin: this.origin });
     if (resolved.diagnostic) this.diagnostics.push(resolved.diagnostic);
-    return { name, source: resolved.source };
+    const sourceRef = this.sourceIndex?.snippet(name);
+    let fragment = null;
+    if (resolved.composition) {
+      const { offset, childName } = resolved.composition;
+      const childRef = this.sourceIndex?.snippet(childName),
+        child = this.snippets[childName];
+      const literal = (text, ref, start = 0) => ({
+        text,
+        intervals: ref
+          ? [
+              {
+                start: 0,
+                end: text.length,
+                sourceRefId: ref.id,
+                sourceSpan: { start, end: start + text.length },
+                mapping: 'literal',
+              },
+            ]
+          : [],
+      });
+      fragment = joinRenderFragments(
+        literal(this.snippets[name].slice(0, offset), sourceRef),
+        literal(child, childRef),
+        literal(this.snippets[name].slice(offset), sourceRef, offset),
+      );
+    }
+    return {
+      name,
+      source: resolved.source,
+      sourceRef,
+      fragment,
+    };
   }
   async liquidGet(key, context) {
-    const { name, source } = this.rawValue(key);
+    const { name, source, sourceRef, fragment } = this.rawValue(key);
     // Dataverse stores empty text as null: a snippet record without a value is nil.
     if (source == null || source === '') return null;
-    if (!/\{%|\{\{/.test(source)) return source;
+    if (!/\{%|\{\{/.test(source)) {
+      if (fragment) context.resolvedFragment = fragment;
+      else if (sourceRef)
+        context.resolvedFragment = {
+          text: source,
+          intervals: [
+            {
+              start: 0,
+              end: source.length,
+              sourceRefId: sourceRef.id,
+              sourceSpan: { start: 0, end: source.length },
+              mapping: 'literal',
+            },
+          ],
+        };
+      return source;
+    }
     if (this.rendering.has(name)) throw new LiquidError(`Recursive content snippet ${name}`);
     this.rendering.add(name);
     try {
-      return await renderNested(this.engine, source, context);
+      return await renderNested(this.engine, source, context, sourceRef);
     } finally {
       this.rendering.delete(name);
     }
   }
 }
 /** html.Liquid(source, context): parse errors return the bare message; rendering shares the context. */
-async function renderNested(engine, source, context) {
+async function renderNested(engine, source, context, sourceRef = null) {
   let template;
   try {
-    template = engine.parse(source);
+    const debugged = debugTemplate(source, sourceRef, debugTarget(sourceRef, sourceRef?.fieldPath?.at(-1), source));
+    template = engine.parse(debugged.text, debugged.sourceRef);
   } catch (error) {
     if (error instanceof LiquidSyntaxError) {
       context.diagnostic('liquid-syntax-error', error.message);
@@ -464,8 +554,9 @@ async function renderNested(engine, source, context) {
     }
     throw error;
   }
-  const buffer = [];
+  const buffer = createRenderBuffer(context);
   await context.stack(() => template.renderInto(context, buffer));
+  context.resolvedFragment = renderFragment(buffer);
   return buffer.join('');
 }
 
@@ -611,7 +702,8 @@ class SubstitutionTag extends RawBlock {
     const fresh = host.freshContext(context);
     let template;
     try {
-      template = context.engine.parse(this.source);
+      fresh.provenance = context.provenance;
+      template = context.engine.parse(this.source, this.provenanceSource(context));
     } catch (error) {
       if (!(error instanceof LiquidSyntaxError)) throw error;
       context.diagnostic('liquid-syntax-error', error.message);
@@ -644,7 +736,10 @@ class EditableTag extends Tag {
     const target = await context.resolve(this.editable);
     const host = context.engine.portalHost;
     const html = await host.editable(target, typeof key === 'string' ? key : null, options, context);
-    if (html != null) out.push(html);
+    if (html != null) {
+      if (context.resolvedFragment?.text === html) appendRenderFragment(out, context.resolvedFragment);
+      else out.push(html);
+    }
   }
 }
 /** Not documented for current sites; the 2017 runtime redirected to a site-marker page. */
@@ -768,7 +863,16 @@ function componentTag(tag) {
       const scope = new LiquidHash(result.context ?? {});
       if (this.variable && result.context?.[tag] !== undefined) scope.set(this.variable, result.context[tag]);
       await context.stack(async () => {
-        if (result.html) out.push(result.html);
+        if (result.html && result.renderProvenance?.length && context.provenance) {
+          const intervals = result.renderProvenance.map((binding) => ({
+            ...binding,
+            mapping: 'platform',
+            sourceRefIds: binding.sourceRefIds ?? [],
+            invocationId: context.provenance.invocation?.id,
+            contextSourceRefId: context.provenance.source?.id,
+          }));
+          appendRenderFragment(out, { text: result.html, intervals });
+        } else if (result.html) out.push(result.html);
         if (this.nodeList) await renderAll(this.nodeList, context, out);
       }, scope);
     }
@@ -808,7 +912,13 @@ async function communityPlacement(context, portal, kind, key) {
 async function renderCommunityView(context, portal, record, fallback, scope, out) {
   const template = templateById(portal, portalField(record, 'webtemplateid'));
   const source = template ? (template.source ?? '') : fallback;
-  await context.stack(() => context.engine.parse(source).renderInto(context, out), new LiquidHash(scope));
+  await context.stack(
+    () =>
+      context.engine
+        .parse(source, template ? context.engine.templateRecordSourceRef?.(template, context) : null)
+        .renderInto(context, out),
+    new LiquidHash(scope),
+  );
 }
 function communityTag(portal, kind) {
   const variable = kind === 'ads' ? 'ad' : 'poll';
@@ -853,6 +963,32 @@ function communityPlacementTag(portal, kind) {
 // ---- Renderer
 /** Render exported templates with Power Pages tags and request-local data/identity. */
 export function createPortalRenderer(portal, options = {}) {
+  const renderedFragments = new WeakMap();
+  const finishRender = (fragment, index, fields) => {
+    const result = {
+      ...(options.provenance && fields.isDocument
+        ? finalizePortalProvenance({ fragment, index })
+        : { html: fragment.text }),
+      ...fields,
+    };
+    renderedFragments.set(result, { fragment, index });
+    return result;
+  };
+  const sourceIndexes = new Map();
+  const sourceIndex = (languageId = null) => {
+    const key = String(languageId ?? '');
+    if (!sourceIndexes.has(key))
+      sourceIndexes.set(
+        key,
+        buildPortalSourceIndex({
+          portal,
+          languageId,
+          metadata: options.metadata,
+          codeCatalogue: options.codeCatalogue,
+        }),
+      );
+    return sourceIndexes.get(key);
+  };
   const findTemplate = (name) => {
     if (name == null) return undefined;
     const wanted = String(name);
@@ -869,8 +1005,7 @@ export function createPortalRenderer(portal, options = {}) {
   async function loadTemplateSource(name, context) {
     const record = findTemplate(name);
     if (record) {
-      if (typeof record.source === 'string' && record.source.trim())
-        return debugMarkup(record.source, exportFieldFile(record.metadata, 'source.html'));
+      if (typeof record.source === 'string' && record.source.trim()) return record.source;
       const managed =
         MANAGED_DISPLAY_NAMES[nameKey(name)] ?? (builtinSource(String(name)) !== undefined ? String(name) : undefined);
       if (managed && builtinSource(managed) !== undefined) {
@@ -915,8 +1050,9 @@ export function createPortalRenderer(portal, options = {}) {
       if (!record) return null;
       return renderNested(
         engine,
-        debugMarkup(record.source ?? '', exportFieldFile(record.metadata, 'source.html')),
+        record.source ?? '',
         context,
+        sourceIndex(context.environments[0]?.get('__language')?.id).source(record.metadata, 'source'),
       );
     },
     knowledge: knowledgeFunctions,
@@ -938,6 +1074,18 @@ export function createPortalRenderer(portal, options = {}) {
     loadTemplateSource,
     autoEncodeRoots: (context) => context.engine.portalHost.autoEncodeRoots(),
   });
+  engine.templateSourceRef = (name, context) => {
+    const record = findTemplate(name);
+    return record
+      ? sourceIndex(context?.environments?.[0]?.get('__language')?.id).source(record.metadata, 'source')
+      : null;
+  };
+  engine.templateRecordSourceRef = (record, context) =>
+    sourceIndex(context?.environments?.[0]?.get('__language')?.id).source(record.metadata, 'source');
+  engine.prepareTemplate = (source, ref) => {
+    const debugged = debugTemplate(source, ref, debugTarget(ref, 'source', source));
+    return engine.parse(debugged.text, debugged.sourceRef);
+  };
   for (const tag of COMPONENT_TAGS) engine.registerTag(tag, componentTag(tag));
   engine.registerTag('fetchxml', FetchXmlTag);
   engine.registerTag('substitution', SubstitutionTag);
@@ -1040,6 +1188,8 @@ export function createPortalRenderer(portal, options = {}) {
     tag = 'div',
     languageName,
     metadata = '',
+    provenance = null,
+    context = null,
   }) => {
     const classes = ['xrm-editable-' + editType, 'xrm-attribute'];
     if (!hasValue) classes.push('no-value');
@@ -1049,7 +1199,11 @@ export function createPortalRenderer(portal, options = {}) {
     // TagBuilder sorts attributes and AntiXSS attribute encoding renders spaces as &#32;.
     const attr = (text) => text.replace(/[^A-Za-z0-9,.\-_]/g, (c) => `&#${c.codePointAt(0)};`);
     const language = languageName ? ` data-languageContext="${attr(languageName)}"` : '';
-    return `<${tag} class="${attr(classes.join(' '))}"${metadata}${language}><${tag} class="${valueClasses.replace(/ /g, '&#32;')}">${inner}</${tag}></${tag}>`;
+    const prefix = `<${tag} class="${attr(classes.join(' '))}"${metadata}${language}><${tag} class="${valueClasses.replace(/ /g, '&#32;')}">`;
+    const suffix = `</${tag}></${tag}>`;
+    if (context)
+      context.resolvedFragment = joinRenderFragments(prefix, !escape && provenance ? provenance : inner, suffix);
+    return prefix + inner + suffix;
   };
   const portalHost = {
     portal,
@@ -1111,10 +1265,27 @@ export function createPortalRenderer(portal, options = {}) {
       const tag = editOptions.tag == null ? 'div' : formatItem(editOptions.tag);
       const cssClass = editOptions.class == null ? null : formatItem(editOptions.class);
       const defaultValue = editOptions.default == null ? null : formatItem(editOptions.default);
-      const render = async (value) => (liquidEnabled ? renderNested(engine, value, context) : value);
+      const render = async (value, sourceRef = null) => {
+        context.resolvedFragment = null;
+        if (liquidEnabled) return renderNested(engine, value, context, sourceRef);
+        if (sourceRef)
+          context.resolvedFragment = {
+            text: value,
+            intervals: [
+              {
+                start: 0,
+                end: value.length,
+                sourceRefId: sourceRef.id,
+                sourceSpan: { start: 0, end: value.length },
+                mapping: 'literal',
+              },
+            ],
+          };
+        return value;
+      };
       if (target instanceof SnippetsDrop) {
         if (!key) return null;
-        const { name, source } = target.rawValue(key);
+        const { name, source, sourceRef, fragment } = target.rawValue(key);
         if (name === undefined || source == null) {
           // SnippetPlaceHolder: missing snippets keep the editable wrapper.
           return wrapEditable({
@@ -1127,8 +1298,11 @@ export function createPortalRenderer(portal, options = {}) {
           });
         }
         // An existing snippet keeps its language context; without a value it is a no-value wrapper
+        const value = fragment ? ((context.resolvedFragment = fragment), source) : await render(source, sourceRef);
         return wrapEditable({
-          value: await render(source),
+          value,
+          provenance: context.resolvedFragment,
+          context,
           hasValue: source !== '',
           editType,
           cssClass,
@@ -1189,7 +1363,18 @@ export function createPortalRenderer(portal, options = {}) {
             })
           : '';
         return wrapEditable({
-          value: await render(hasValue ? formatItem(value) : (defaultValue ?? '')),
+          value: await render(
+            hasValue ? formatItem(value) : (defaultValue ?? ''),
+            hasValue
+              ? (getObjectSource(target, key) ??
+                  sourceIndex(context.environments[0].get('__language')?.id).source(
+                    target.metadata,
+                    key.replace(/^(?:adx|mspp)_/, ''),
+                  ))
+              : null,
+          ),
+          provenance: context.resolvedFragment,
+          context,
           hasValue: hasValue || defaultValue != null,
           editType,
           cssClass,
@@ -1240,6 +1425,11 @@ export function createPortalRenderer(portal, options = {}) {
         adx_entitylist: p.listId ? entityReference(p.listId, 'adx_entitylist') : null,
         adx_webform: p.advancedFormId ? entityReference(p.advancedFormId, 'adx_webform') : null,
       };
+      const copy = sourceIndex(languageId).source(p.metadata, 'copy');
+      const debuggedCopy = debugTemplate(p.html, copy, exportFieldFile(p.metadata, 'copy.html'));
+      node.adx_copy = debuggedCopy.text;
+      setObjectSource(node, ['html', 'mspp_copy', 'copy'], copy);
+      setObjectSource(node, ['adx_copy'], debuggedCopy.sourceRef);
       Object.defineProperty(node, LIQUID_PROPERTIES, { value: PAGE_PROPERTIES });
       Object.defineProperty(node, LIQUID_HIDDEN, { value: PAGE_HOST_KEYS });
       return node;
@@ -1376,6 +1566,7 @@ export function createPortalRenderer(portal, options = {}) {
       profiles: shellProfile?.snippetCompositions ?? [],
       origin: extra.observationOrigin ?? options.observationOrigin,
       diagnostics: context.__diagnostics,
+      sourceIndex: sourceIndex(languageId),
     });
     const visible = (p) =>
       !portalField(p.metadata ?? {}, 'hiddenfromsitemap', false) && pageAccess(portal, p, identity).allowed;
@@ -1588,19 +1779,29 @@ export function createPortalRenderer(portal, options = {}) {
     environment.params = environment.params ? asHash(environment.params) : (environment.request?.params ?? null);
     return new LiquidContext(engine, { environment, diagnostics });
   }
-  async function renderSource(source, context) {
+  async function renderSourceFragment(source, context, sourceRef = null) {
     const liquidContext = liquidContextFor(context);
+    if (context.__provenance) liquidContext.provenance = context.__provenance;
     let template;
     try {
-      const entry = Object.values(portal.templates ?? {}).find((item) => item.source === source);
-      template = engine.parse(debugMarkup(source ?? '', entry ? exportFieldFile(entry.metadata, 'source.html') : null));
+      const debugged = debugTemplate(
+        source ?? '',
+        sourceRef,
+        debugTarget(sourceRef, sourceRef?.fieldPath?.at(-1), source),
+      );
+      template = engine.parse(debugged.text, debugged.sourceRef);
     } catch (error) {
       if (!(error instanceof LiquidSyntaxError)) throw error;
       // InternalRenderLiquid: a template that fails to parse renders the bare message.
       liquidContext.diagnostic('liquid-syntax-error', error.message);
-      return error.message;
+      return { text: error.message, intervals: [] };
     }
-    return template.render(liquidContext);
+    const buffer = createRenderBuffer(liquidContext);
+    await template.renderInto(liquidContext, buffer);
+    return renderFragment(buffer);
+  }
+  async function renderSource(source, context, sourceRef = null) {
+    return (await renderSourceFragment(source, context, sourceRef)).text;
   }
   async function renderString(source, context = {}) {
     return renderSource(source, context);
@@ -1611,6 +1812,8 @@ export function createPortalRenderer(portal, options = {}) {
     const found = portal.pages.find((p) => normalizePortalPath(p.url) === normalizePortalPath(target.path));
     if (!found) return { html: '<h1>Page not found</h1>', status: 404, page: null, diagnostics: [] };
     const context = contextForPage(found, url, extra);
+    const index = sourceIndex(context.__language?.id);
+    context.__provenance = createRenderTrace({ sourceRevision: index.sourceRevision });
     const page = localizedPage(found, context.__language?.id);
     const diagnostics = context.__diagnostics;
     try {
@@ -1635,28 +1838,52 @@ export function createPortalRenderer(portal, options = {}) {
       // Legacy ASPX page templates render their WebForms layout with the page's attached
       // advanced form, basic form and list (lib/platform-manifest.mjs).
       const rewriteLayout = template ? null : rewritePageLayout(page, pageTemplate);
-      const body = await renderSource(
+      const bodyFragment = await renderSourceFragment(
         template ? template.source : (rewriteLayout?.source ?? "{% include 'Page Copy' %}"),
         context,
+        template ? index.source(template.metadata, 'source') : null,
       );
-      const css = page.css ? `<style>${await renderSource(page.css, context)}</style>` : '';
-      const js = page.js
-        ? `<script>${debugScript(await renderSource(page.js, context), exportFieldFile(page.metadata, 'custom_javascript.js'))}</script>`
-        : '';
+      const body = bodyFragment.text;
+      const css = page.css
+        ? joinRenderFragments(
+            '<style>',
+            await renderSourceFragment(page.css, context, index.source(page.metadata, 'customcss')),
+            '</style>',
+          )
+        : { text: '', intervals: [] };
+      let js = { text: '', intervals: [] };
+      if (page.js) {
+        const script = await renderSourceFragment(page.js, context, index.source(page.metadata, 'customjavascript'));
+        const debugged = debugScript(script.text, exportFieldFile(page.metadata, 'custom_javascript.js'));
+        js = joinRenderFragments(
+          '<script>',
+          debugged.startsWith(script.text) ? joinRenderFragments(script, debugged.slice(script.text.length)) : debugged,
+          '</script>',
+        );
+      }
       if (!rewriteSelected && pageTemplate?.useHeaderFooter === false) {
         const mime = String(portalField(template?.metadata ?? {}, 'mimetype', 'text/html')).replace(/;\s*$/, '');
-        return {
-          html: body + css + js + (portal.observed?.webTemplateResponseNewline === 'crlf' ? '\r\n' : ''),
+        const fragment = joinRenderFragments(
+          bodyFragment,
+          css,
+          js,
+          portal.observed?.webTemplateResponseNewline === 'crlf' ? '\r\n' : '',
+        );
+        const document = mime.includes('text/html') && isHtmlDocument(body);
+        return finishRender(fragment, index, {
           status: 200,
           page,
           diagnostics,
           contentType: `${mime}${mime.includes('charset=') ? '' : '; charset=utf-8'}`,
-          isDocument: isHtmlDocument(body),
-        };
+          isDocument: document,
+        });
       }
       const header = portal.templates[portalField(portal.website, 'headerwebtemplateid')];
       const footer = portal.templates[portalField(portal.website, 'footerwebtemplateid')];
-      let renderedHeader = header ? await renderSource(header.source, context) : '';
+      let headerFragment = header
+        ? await renderSourceFragment(header.source, context, index.source(header.metadata, 'source'))
+        : { text: '', intervals: [] };
+      let renderedHeader = headerFragment.text;
       const shellProfile = extra.shellProfile ?? options.shellProfile;
       const observedNotifications = shellProfile?.headerNotifications;
       if (header && observedNotifications && context.user) {
@@ -1694,10 +1921,14 @@ export function createPortalRenderer(portal, options = {}) {
             notifications,
           });
           renderedHeader = reconciled.html;
+          headerFragment = transformRenderFragment(headerFragment, renderedHeader);
           if (reconciled.diagnostic) diagnostics.push(reconciled.diagnostic);
         }
       }
-      let renderedFooter = footer ? await renderSource(footer.source, context) : '';
+      let footerFragment = footer
+        ? await renderSourceFragment(footer.source, context, index.source(footer.metadata, 'source'))
+        : { text: '', intervals: [] };
+      let renderedFooter = footerFragment.text;
       const observedLogos = shellProfile?.footerLogos;
       if (footer && observedLogos) {
         const styleSources = {};
@@ -1714,6 +1945,7 @@ export function createPortalRenderer(portal, options = {}) {
           origin: extra.observationOrigin ?? options.observationOrigin,
         });
         renderedFooter = reconciled.html;
+        footerFragment = transformRenderFragment(footerFragment, renderedFooter);
         if (reconciled.diagnostic) diagnostics.push(reconciled.diagnostic);
       }
       const cssNames = options.shellStyles ?? ['bootstrap.min.css', 'portalbasictheme.css', 'theme.css'];
@@ -1754,7 +1986,11 @@ export function createPortalRenderer(portal, options = {}) {
       const shellHeadScripts = urls(configuredHeadScripts, 'js');
       const shellBeforeContentScripts = urls(platform.remaining.beforeContentScripts, 'js');
       const shellAfterFooterScripts = urls(platform.remaining.afterFooterScripts, 'js');
-      const head = await renderSource(portal.snippets['Head/Bottom'] ?? '', context);
+      const headFragment = await renderSourceFragment(
+        portal.snippets['Head/Bottom'] ?? '',
+        context,
+        index.snippet('Head/Bottom'),
+      );
       const titleSuffix = await renderSource(portal.snippets['Browser Title Suffix'] ?? '', context);
       // Preserve authored text entities, while encoding literal markup delimiters.
       const encodedSuffix = htmlEscape(titleSuffix).replace(/&amp;(#x[\da-f]+|#\d+|[a-z][\w]+);/gi, '&$1;');
@@ -1778,20 +2014,42 @@ export function createPortalRenderer(portal, options = {}) {
         variant: platform.variant,
         formScripts: calendar?.body ?? '',
       });
+      const contentFragment =
+        template || rewriteLayout?.contentRegion
+          ? bodyFragment
+          : joinRenderFragments('<main id="mainContent">', bodyFragment, '</main>');
+      const nativeContentFragment = {
+        ...contentFragment,
+        text: nativeRegions.content,
+        intervals: contentFragment.intervals
+          .filter((span) => span.end <= nativeRegions.contentRange.length)
+          .map((span) => ({
+            ...span,
+            start: span.start + nativeRegions.contentRange.offset,
+            end: span.end + nativeRegions.contentRange.offset,
+          })),
+      };
       const languageCode = layoutLanguageCode(context);
       const direction = /^(ar|fa|he|ur)(-|$)/i.test(languageCode) ? 'rtl' : 'ltr';
       const bodyAttributes = layoutBodyAttributes(page, context);
       const htmlAttributes = layoutHtmlAttributes(languageCode, context.__language?.lcid);
       // The footer-spacing adapter is a script element; authored footer markup is not modified.
+      const shellFragment = composeRenderFragments`<!DOCTYPE html><html lang="${htmlEscape(languageCode)}" dir="${direction}"${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${htmlEscape(page.title)}${encodedSuffix ? ` ${encodedSuffix}` : ''}</title>${platform.headStart}${siteStyles}${shellHeadScripts}${css}${headFragment}${extra.headHtml ?? ''}${platform.headEnd}${/MultiSelectPicklist\.UpdMSPicklistControl/.test(content) ? platform.controlsStyle : ''}${calendar?.head ?? ''}</head><body${bodyAttributes}>${platform.bodyOpen}${portal.observed?.siteVisibility === 'private' ? PRIVATE_MODE_BANNER : ''}${OFFLINE_NOTIFICATION_BAR}${headerFragment}${antiForgeryHolder()}${platform.bodyStart}${shellBeforeContentScripts}${nativeContentFragment}${nativeRegions.bodyScripts}${platform.afterContent}${footerFragment}${shellAfterFooterScripts}${platform.afterFooter}${js}${extra.bodyHtml ?? ''}</body></html>`;
       const html = injectRuntimeCompatibility(
-        `<!DOCTYPE html><html lang="${htmlEscape(languageCode)}" dir="${direction}"${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${htmlEscape(page.title)}${encodedSuffix ? ` ${encodedSuffix}` : ''}</title>${platform.headStart}${siteStyles}${shellHeadScripts}${css}${head}${extra.headHtml ?? ''}${platform.headEnd}${/MultiSelectPicklist\.UpdMSPicklistControl/.test(content) ? platform.controlsStyle : ''}${calendar?.head ?? ''}</head><body${bodyAttributes}>${platform.bodyOpen}${portal.observed?.siteVisibility === 'private' ? PRIVATE_MODE_BANNER : ''}${OFFLINE_NOTIFICATION_BAR}${renderedHeader}${antiForgeryHolder()}${platform.bodyStart}${shellBeforeContentScripts}${nativeRegions.content}${nativeRegions.bodyScripts}${platform.afterContent}${renderedFooter}${shellAfterFooterScripts}${platform.afterFooter}${js}${extra.bodyHtml ?? ''}</body></html>`,
+        shellFragment.text,
         {
           ...(options.sourceDependencies ?? {}),
           footerSpacing: Boolean(footer) || options.sourceDependencies?.footerSpacing,
         },
         configuredHeadScripts,
       );
-      return { html, status: 200, page, diagnostics, contentType: 'text/html; charset=utf-8', isDocument: true };
+      return finishRender(transformRenderFragment(shellFragment, html), index, {
+        status: 200,
+        page,
+        diagnostics,
+        contentType: 'text/html; charset=utf-8',
+        isDocument: true,
+      });
     } catch (error) {
       let original = error;
       const seen = new Set();
@@ -2035,6 +2293,18 @@ export function createPortalRenderer(portal, options = {}) {
   }
   return {
     engine,
+    provenanceFor(rendered) {
+      if (rendered?.provenance) return { html: rendered.html, provenance: rendered.provenance };
+      const trace = renderedFragments.get(rendered);
+      return trace ? finalizePortalProvenance(trace) : null;
+    },
+    sourceIndex,
+    async renderStringWithProvenance(source, context = {}, sourceRef = null) {
+      const index = sourceIndex(context.__language?.id);
+      const trace = createRenderTrace({ sourceRevision: index.sourceRevision });
+      const fragment = await renderSourceFragment(source, { ...context, __provenance: trace }, sourceRef);
+      return { ...finalizePortalProvenance({ fragment, index }), fragment, invocations: trace.invocations };
+    },
     renderString,
     renderPage,
     contextForPage,

@@ -463,11 +463,13 @@ function primaryNameColumn(store, metadata, entity) {
 
 function listViews(list, metadata) {
   const configured = settingsJson(portalField(list.metadata ?? {}, 'views', ''), 'views');
-  const ids = (configured.Views ?? [])
-    .map((view) => ({
-      id: canonical(view.ViewId),
-      displayName: localizedText(view.DisplayName, ''),
-    }))
+  const selectedViews = Array.isArray(configured) ? configured : (configured?.Views ?? configured?.views ?? []);
+  const ids = (Array.isArray(selectedViews) ? selectedViews : [])
+    .map((view) => {
+      const values = typeof view === 'string' ? [view] : [view?.ViewId, view?.viewId, view?.id, view?.value];
+      const identifiers = [...new Set(values.filter((value) => typeof value === 'string' && value).map(canonical))];
+      return { id: identifiers.length === 1 ? identifiers[0] : '', displayName: localizedText(view?.DisplayName, '') };
+    })
     .filter((view) => view.id);
   const fallback = canonical(portalField(list.metadata ?? {}, 'view', ''));
   if (!ids.length && fallback) ids.push({ id: fallback, displayName: '' });

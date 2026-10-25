@@ -23,6 +23,7 @@ import { createSourceInspector, inspectRenderedPage } from './source-inspection.
 import { observeHttpErrors } from './http-errors.mjs';
 import { consoleLocation } from './console-location.mjs';
 import { annotateRuntimeSources } from './runtime-sources.mjs';
+import { selectionEvidenceCurrent } from './inspection-source-open.mjs';
 
 // Compose the two self-contained browser functions on the Node side. A redraw remains one
 // bounded browser evaluation, including when the tab is paused at a debugger breakpoint.
@@ -311,7 +312,9 @@ export function enablePanel(context, session, opts = {}) {
   const runtimeByPage = new WeakMap();
   const personaNames = new Map();
   const runtimeFilesByPage = new WeakMap();
+  const profileFilesByPage = new WeakMap();
   const sourceInspector = createSourceInspector(cfg);
+  session.sourceInspector = sourceInspector;
   const activity = [];
   /** files changed since the tabs last loaded (only grows while live reload is off) */
   const pending = new WeakMap();
@@ -445,7 +448,8 @@ export function enablePanel(context, session, opts = {}) {
         }
       });
       const mapped = (cfg.site.routes ?? []).some((r) => r.file && path.resolve(cfg.sourceDir, r.file) === file);
-      if (!within && !mapped) return null;
+      const exactProfile = profileFilesByPage.get(page)?.get(rel);
+      if (!within && !mapped && exactProfile !== real) return null;
       return fs.statSync(file).isFile() ? file : null;
     } catch {
       return null;
@@ -663,6 +667,7 @@ export function enablePanel(context, session, opts = {}) {
     );
   const loadRuntime = async (page, requestedPath) => {
     if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin) || adminPage(page.url())) return;
+    profileFilesByPage.delete(page);
     // A navigation is reported before the tab commits it; its own path wins over page.url().
     const pathname =
       typeof requestedPath === 'string' && requestedPath.startsWith('/') ? requestedPath : (pathOf(page.url()) ?? '/');
@@ -799,6 +804,7 @@ export function enablePanel(context, session, opts = {}) {
       ...progress,
       mode: runtime.mode ?? 'local-runtime',
       version: runtime.version,
+      sourceRevision: runtime.report?.sourceRevision ?? runtime.summary?.sourceRevision ?? null,
       error: runtime.error,
       path: runtime.path,
       page: summary?.page
@@ -1066,6 +1072,10 @@ export function enablePanel(context, session, opts = {}) {
       origin: cfg.origin,
       mirage: cfg.mirage ? mirageSummary(page) : null,
       inspection: mirageSummary(page),
+      sourceRevision:
+        runtimeByPage.get(page)?.report?.sourceRevision ?? runtimeByPage.get(page)?.summary?.sourceRevision,
+      provenanceSlot: session.provenanceSlot ?? null,
+      domProvenanceSlot: session.domProvenanceSlot ?? null,
       site: cfg.siteName,
       setupUrl: cfg.setupUrl ?? null,
       env: cfg.envName,
@@ -1439,11 +1449,104 @@ export function enablePanel(context, session, opts = {}) {
       return { ok: true };
     },
     open: async (body, page) => {
-      const file = fileOf(body.rel, page);
+      let file, line, col;
+      if (body.sourceKey !== undefined) {
+        if (
+          typeof body.sourceKey !== 'string' ||
+          body.sourceKey.length > 16384 ||
+          typeof body.sourceRevision !== 'string' ||
+          typeof body.contentRevision !== 'string' ||
+          !(await selectionEvidenceCurrent(page, body))
+        )
+          return {
+            ok: false,
+            error: 'The selected source is no longer current. Refresh inspection.',
+            code: 'SOURCE_SELECTION_STALE',
+          };
+        const runtime = runtimeByPage.get(page);
+        const lookup = () =>
+          sourceInspector.lookupSource({
+            sourceKey: body.sourceKey,
+            sourceRevision: body.sourceRevision,
+            contentRevision: body.contentRevision,
+            region: body.region,
+            route: new URL(page.url()).pathname,
+            portalProfile: runtime?.report?.portalProfile ?? null,
+          });
+        let admission;
+        try {
+          admission = await lookup();
+        } catch {
+          return {
+            ok: false,
+            error: 'The local source identity could not be verified. Refresh inspection.',
+            code: 'SOURCE_UNAVAILABLE',
+          };
+        }
+        if (admission.state !== 'exact' || !admission.editorTarget?.file)
+          return {
+            ok: false,
+            error: 'The local source changed or is unavailable. Refresh inspection.',
+            code: 'SOURCE_' + String(admission.state).toUpperCase(),
+          };
+        const candidate = { file: admission.editorTarget.file };
+        let files;
+        if (admission.editorTarget.externalProfile === true && typeof admission.sourceRef?.ref === 'string') {
+          const exact = fs.realpathSync.native(candidate.file);
+          candidate.ref = admission.sourceRef.ref;
+          const profiles = profileFilesByPage.get(page) ?? new Map();
+          profiles.set(candidate.ref, exact);
+          profileFilesByPage.set(page, profiles);
+          files = new Map([[candidate.ref, exact]]);
+        } else files = annotateRuntime(candidate, runtime?.roots ?? []);
+        if (!candidate.ref || !files.has(candidate.ref))
+          return { ok: false, error: 'This source is outside the selected source roots.', code: 'SOURCE_NOT_ADMITTED' };
+        const known = runtimeFilesByPage.get(page) ?? new Map();
+        known.set(candidate.ref, files.get(candidate.ref));
+        runtimeFilesByPage.set(page, known);
+        file = fileOf(candidate.ref, page);
+        if (!(await selectionEvidenceCurrent(page, body)))
+          return {
+            ok: false,
+            error: 'The selection changed while its source was checked.',
+            code: 'SOURCE_SELECTION_STALE',
+          };
+        // The browser check can wait while a local save changes the physical
+        // source or its field location. Re-admit after that last round trip.
+        try {
+          admission = admission.revalidate();
+          if (
+            admission.state !== 'exact' ||
+            !admission.editorTarget?.file ||
+            fs.realpathSync.native(admission.editorTarget.file) !== fs.realpathSync.native(file)
+          )
+            return {
+              ok: false,
+              error: 'The local source changed while its selection was checked. Refresh inspection.',
+              code: admission.state === 'exact' ? 'SOURCE_STALE' : 'SOURCE_' + String(admission.state).toUpperCase(),
+            };
+        } catch {
+          return {
+            ok: false,
+            error: 'The local source identity could not be verified. Refresh inspection.',
+            code: 'SOURCE_UNAVAILABLE',
+          };
+        }
+        line =
+          Number.isSafeInteger(admission.editorTarget.line) && admission.editorTarget.line > 0
+            ? admission.editorTarget.line
+            : 1;
+        col =
+          Number.isSafeInteger(admission.editorTarget.column) && admission.editorTarget.column > 0
+            ? admission.editorTarget.column
+            : 1;
+      } else {
+        file = fileOf(body.rel, page);
+        line =
+          Number.isInteger(body.line) && body.line > 0 ? body.line : ((file ? lineOf(file, body.find) : null) ?? 1);
+        col = Number.isInteger(body.col) && body.col > 0 ? body.col : 1;
+      }
       if (!file) return { ok: false, error: 'this file is not part of the local sources' };
-      // A reported record (a setting in a shared YAML file, a column in Entity.xml) opens at its line.
-      const line = Number.isInteger(body.line) && body.line > 0 ? body.line : (lineOf(file, body.find) ?? 1);
-      const col = Number.isInteger(body.col) && body.col > 0 ? body.col : 1;
       const error = await open(cfg.editor ?? 'code', file, line, col);
       if (!error) return { ok: true };
       // the editor's command is not on the PATH: its link does the same from the browser
@@ -1849,6 +1952,7 @@ export function enablePanel(context, session, opts = {}) {
     timers.clear();
     for (const remove of listeners) remove();
     if (session.api === api) session.api = null;
+    if (session.sourceInspector === sourceInspector) session.sourceInspector = null;
     let timer;
     // A paused debugger must not hold shutdown open indefinitely. The queued cleanup also
     // retires this token, so a late draw cannot recreate the panel after it resumes.

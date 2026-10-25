@@ -198,3 +198,39 @@ test('real browser detached frame orphan cannot hide current parent fetch', asyn
   );
   assert.equal(parentFinished, true);
 });
+
+test('native app startup completes with worker terminal events missing and an ongoing background request', async (t) => {
+  const owner = ownedFixture(t);
+  const server = http.createServer((req, res) => {
+    if (req.url === '/background') return;
+    if (req.url === '/orphan-worker.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript' }).end('postMessage("worker started");');
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><p>Native app document</p><script>
+      const worker = new Worker('/orphan-worker.js');
+      worker.onmessage = () => window.workerStarted = true;
+      fetch('/background');
+    </script>`);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  owner.add(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const context = await newContext(t),
+    page = await context.newPage(),
+    progress = startupProgress({ write() {} });
+  owner.add(() => progress.close());
+  assert.equal(
+    await waitForStartupPage(hideOrphanTerminalEvents(page), `http://127.0.0.1:${server.address().port}/main.aspx`, {
+      nativeModelDriven: true,
+      timeout: 3000,
+      progress,
+    }),
+    true,
+  );
+  await page.waitForFunction(() => window.workerStarted);
+  assert.match(progress.events.at(-1).detail, /native application readiness remain unverified/);
+  assert.doesNotMatch(progress.events.at(-1).detail, /usable/);
+});

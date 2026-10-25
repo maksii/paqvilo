@@ -5,6 +5,7 @@ export function inspectionSummary(report) {
     path: report.path,
     view: 'summary',
     revision: report.revision,
+    sourceRevision: report.sourceRevision,
     permissionMode: report.permissionMode,
     sourceRoots: report.sourceRoots,
     page: report.page

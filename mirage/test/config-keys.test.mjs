@@ -34,7 +34,16 @@ import { validateCatalogue } from '../../lense/config-schema.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 
 const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
-const NEW_KEYS = ['connectorScripts', 'connections', 'secrets', 'localServices', 'providers', 'canvas', 'codeApps'];
+const NEW_KEYS = [
+  'connectorScripts',
+  'connections',
+  'secrets',
+  'localServices',
+  'providers',
+  'canvas',
+  'codeApps',
+  'sourceMaps',
+];
 const PRE_MIGRATION_CATALOGUE = [
   'project',
   'solutionRoots',

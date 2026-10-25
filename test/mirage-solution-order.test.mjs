@@ -6,32 +6,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { createFixture } from './fixture.mjs';
 import { loadConfig } from '../lense/config.mjs';
 import { mirageSettings } from '../lense/config-schema.mjs';
 import { derivedSolutionOrder, initProject, mirageReadiness } from '../lense/commands/mirage.mjs';
-import { withProcessSlot } from '../mirage/test/process-slots.mjs';
-
-const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
-const env = Object.fromEntries(
-  Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
-);
-function run(...args) {
-  return withProcessSlot(
-    () =>
-      new Promise((resolve) => {
-        execFile(
-          process.execPath,
-          [cli, ...args],
-          { env, encoding: 'utf8', windowsHide: true, timeout: 150_000 },
-          (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
-        );
-      }),
-  );
-}
+import { toolkitCommandHint, runToolkit as run } from './toolkit-cli.mjs';
 const STANDARD = ['createdon', 'createdby', 'modifiedon', 'modifiedby', 'statecode', 'statuscode'];
 const attribute = (name, type) =>
   `<attribute PhysicalName="${name}"><Type>${type}</Type><Name>${name}</Name><LogicalName>${name.toLowerCase()}</LogicalName></attribute>`;
@@ -198,12 +178,23 @@ test('doctor reports the order a runtime uses and warns when an explicit order d
   );
   const old = await mirageReadiness(await loadConfig({ config: projectSite.config }, {}), { dependencies, checkPort });
   assert.equal(old.solutionRoots.order, 'explicit');
+  const recommended = toolkitCommandHint([
+    'mirage',
+    'init',
+    '--config',
+    projectSite.config,
+    '--repo',
+    projectSite.work,
+    '--site',
+    'site',
+    '--force',
+  ]);
   assert.ok(
     old.warnings.some(
       (warning) =>
         warning.includes(
           `Mirage project ${project} layers its Solution roots in the listed order A_Extension → Z_Core`,
-        ) && warning.includes('Set solutionOrder: derived or rerun mirage init --force'),
+        ) && warning.endsWith(`Set solutionOrder: derived or rerun ${recommended}.`),
     ),
     old.warnings.join('\n'),
   );

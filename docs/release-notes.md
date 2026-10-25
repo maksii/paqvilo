@@ -1,5 +1,55 @@
 # Release notes
 
+## 0.9.7
+
+### Improved
+
+- Share selected-element evidence between Inspect and X-ray, with independent owner/source certainty,
+  explicit alternatives, search limits and served/executed distinctions.
+- Retain one-shot selections while hidden; clear detached nodes and navigated frames, reject stale updates,
+  and preserve keyboard focus and disclosures across redraws.
+- Validate evidence source identity and revisions before opening; label candidate actions explicitly and disable stale links.
+  Recheck local content after the final browser selection check so a save during that check cannot open a stale location.
+- Trace Power Pages rendering to the actual template, snippet, page field and platform component, retaining language,
+  deployment profile and record identity across shared export files.
+- Resolve model-driven forms, views, columns and control placements from Solution metadata and current browser observations;
+  keep generated controls and unavailable definitions explicit.
+- Link script-created DOM to acknowledged local implementation bytes and observed creation, clone or insertion callsites.
+- Keep ordinary Mirage project stop hints readable across Windows shells while preserving directory and special-path handling.
+- Add model-driven JavaScript/CSS debugger maps. To serve original asset bytes, set `mirage.sourceMaps: false`
+  on the catalogue site, or `sourceMaps: false` in a Mirage project, and restart. Lense overlay source maps are
+  configured separately; see [configuration](configuration.md).
+
+### Fixed
+
+- Fix native model-driven startup hangs and cancellation; honor the configured editor for source opening.
+- Guard corrective startup navigation when a tab loads before interception attaches. Preserve edited controls and
+  observed rich-text edits, keep newer documents intact, and report when a manual reload is needed. Clean popups
+  still receive a one-time GET repair; form submissions are never replayed.
+- Preserve runtime selection and literal paths in Mirage stop commands across CMD, PowerShell and POSIX shells.
+  Keep recorded ownership when project mappings change or portals are renamed or removed, so copied stop commands
+  cannot select a same-source sibling runtime.
+- Reject pipes and other nonregular external stop-command payloads before reading, preventing copied commands from hanging.
+- Report disabled-preview edits requiring deployment and reveal Tweaks scenario/preset confirmations.
+- Clear grid loading notices after completion, cancellation or failure; restore alternating column sort direction.
+- Retain demo view/search through reload and history, include demo agent guidance and test dependencies,
+  and clarify preset `personaRoles` behavior.
+
+### Contributor validation
+
+- Keep the required `CI gate` name stable and validate the complete PR diff on every edit, including description
+  edits. Check effective PR merge readiness with `npm run check:pr -- --pr <number>`; a blocked PR cannot qualify
+  from historical successful jobs alone.
+- Explicit `npm run validate` and `ci:verify -- --full` always execute fresh. Starting verification revokes the previous
+  receipt; a failed audit, preparation step or suite cannot leave an earlier qualifying pass. Cached pre-push reuse
+  rechecks the source tree, toolchain and fixtures after dependency audits.
+- Keep the original concurrent API regression and add a deterministic paused-commit test for queued writes and reads,
+  preserved sibling values and stale ETag rejection. Requests share the existing bounded test deadline and identify
+  the failing method/path, avoiding independent ten-second fetch timers that expire on busy hosted Windows runners.
+  This improves test reliability without changing production transaction semantics.
+
+Update with `npm install --save-dev paqvilo@^0.9.7` and commit the lockfile.
+
 ## 0.9.6
 
 This release runs much more of the Power Platform locally: a simulated Dataverse organization with its Web API,

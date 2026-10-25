@@ -194,12 +194,20 @@ test('Mirage status is available as a structured toolkit command', async () => {
   assert.deepEqual(report.sessions, [], 'no runtime of this fixture is running');
 });
 
-test('Mirage start waits for runtime readiness and exposes page dependency context', async () => {
+test('Mirage start waits for runtime readiness and exposes page dependency context', async (t) => {
   const config = fx.file('mirage-runtime-catalogue.yml');
   fs.writeFileSync(
     config,
     `defaultSite: test\nsites:\n  test:\n    source: .\n    environments:\n      dev: https://portal.example.com\n    mirage:\n      observed:\n        loginPath: /SignIn\n        evidence: notes/observed-signin.json\n`,
   );
+  let stopped;
+  const stop = () => (stopped ??= run('mirage', 'stop', '--config', config, '--repo', fx.dir, '--json'));
+  // Register before starting: readiness and hint assertions must not leak the
+  // owned runtime or leave the shared fixture locked if they fail.
+  t.after(async () => {
+    const result = await stop();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+  });
   // A busy machine can need more than 30 s to import. The command's own startup timeout ends
   // first, so a failed start stops its runtime instead of being killed and leaving it running.
   const started = await runWithin(
@@ -240,13 +248,15 @@ test('Mirage start waits for runtime readiness and exposes page dependency conte
   assert.equal(session.adminUrl, new URL('/_sim/', session.url).href);
   assert.ok(path.isAbsolute(session.stateFile));
   assert.ok(session.stateFile.startsWith(path.join(path.dirname(config), '.paqvilo') + path.sep));
-  assert.match(session.stop, /npx paqvilo mirage stop --site test/);
+  assert.match(session.stop, /^npx paqvilo mirage stop --config /);
+  assert.ok(session.stop.includes(config), 'the hint retains the exact selected catalogue');
+  assert.ok(session.stop.includes('--site test'));
+  assert.ok(session.stop.includes('--port ' + new URL(session.url).port));
   assert.equal(
     session.runtime.liveWrites,
     'disabled',
     'without --allow-live-writes no live write can leave the runtime',
   );
-  let stopped;
   try {
     const response = await fetch(new URL('/_sim/api/page-resources?path=/', session.url));
     assert.equal(response.status, 200, response.body);
@@ -275,10 +285,10 @@ test('Mirage start waits for runtime readiness and exposes page dependency conte
     assert.equal(listed.runtime.liveWrites, 'disabled');
     assert.match(statusText.stdout, /live writes disabled/);
   } finally {
-    stopped = await run('mirage', 'stop', '--config', config, '--repo', fx.dir, '--json');
-    assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
+    const result = await stop();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
   }
-  const report = JSON.parse(stopped.stdout);
+  const report = JSON.parse((await stopped).stdout);
   assert.deepEqual(
     report.stopped.map((item) => item.pid),
     [session.pid],
@@ -493,7 +503,9 @@ test('mirage init writes a validated project file from the catalogue site and re
     assert.equal(report.action, 'init');
     assert.equal(report.file, out);
     assert.equal(report.catalogued, false);
-    assert.match(report.next, /paqvilo mirage dev --project/);
+    assert.match(report.next, /paqvilo mirage dev --config/);
+    assert.ok(report.next.includes('--project'));
+    assert.ok(report.next.includes(config) && report.next.includes(fx.dir));
     assert.ok(
       report.notes.some((note) => note.includes('loopback')),
       'non-HTTPS environments are reported, not recorded',

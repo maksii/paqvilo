@@ -11,7 +11,9 @@ const all = [...kinds.catalogue, ...kinds.project];
 
 test('every Mirage setting appears with its registered doc, contract and redaction', () => {
   for (const key of Object.keys(MIRAGE_SETTINGS)) {
-    const entries = all.filter((item) => item.key === key);
+    // Catalogue-root options belong to Lense; the same key can independently
+    // configure Mirage below a site or in a project (for example sourceMaps).
+    const entries = all.filter((item) => item.key === key && item.scope !== 'catalogue');
     assert.ok(entries.length, `${key} is missing`);
     for (const entry of entries) {
       assert.equal(entry.doc, MIRAGE_SETTINGS[key].doc);
@@ -32,6 +34,17 @@ test('every Mirage setting appears with its registered doc, contract and redacti
   }
 });
 
+test('Lense and Mirage source-map controls retain distinct scopes and descriptions', () => {
+  const entries = kinds.catalogue.filter((item) => item.key === 'sourceMaps');
+  assert.deepEqual(
+    entries.map((item) => item.scope),
+    ['catalogue', 'site'],
+  );
+  assert.match(entries[0].doc, /overlaid resources/);
+  assert.equal(entries[1].doc, MIRAGE_SETTINGS.sourceMaps.doc);
+  assert.equal(kinds.project.find((item) => item.key === 'sourceMaps').doc, MIRAGE_SETTINGS.sourceMaps.doc);
+});
+
 test('every example parses as YAML, passes its validator and holds no literal secret', async () => {
   for (const entry of all) {
     const value = YAML.parse(entry.example);
@@ -43,7 +56,7 @@ test('every example parses as YAML, passes its validator and holds no literal se
       entry.key,
     );
     const top = entry.key.split('.')[0];
-    if (MIRAGE_SETTINGS[top]) parseSetting(top, value[top], { base: process.cwd() });
+    if (MIRAGE_SETTINGS[top] && entry.scope !== 'catalogue') parseSetting(top, value[top], { base: process.cwd() });
     else if (entry.scope === 'catalogue') catalogueRoot(value);
     else if (entry.scope === 'site')
       catalogueRoot({

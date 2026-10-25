@@ -1,7 +1,11 @@
 import { EventEmitter } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { startAgentServer, redactText, redactUrl } from './agent-server.mjs';
-import { inspectModelDrivenContext, modelDrivenInspectionCatalogue } from './model-driven-inspection.mjs';
+import { inspectModelDrivenContext } from './model-driven-inspection.mjs';
+import { createModelDrivenMetadataIndex, normalizeModelDrivenMetadataRequest } from './model-driven-metadata.mjs';
+import { modelDrivenObservationRuntime } from './model-driven-observation.mjs';
+import { normalizeInspectionScope } from './inspection-evidence.mjs';
+import { selectionEvidenceCurrent } from './inspection-source-open.mjs';
 import { modelDrivenInspectorUi } from './model-driven-inspector-ui.mjs';
 import { MODEL_DRIVEN_ACTIONS, validateModelDrivenAction } from './model-driven-actions.mjs';
 import { modelDrivenActionAvailability, runModelDrivenAction } from './model-driven-action-runner.mjs';
@@ -94,11 +98,11 @@ function installModelDrivenContextWatch({ origin, token }) {
   };
   const key = () =>
     JSON.stringify([
-      location.href,
       Boolean(window.Xrm),
       safe(() => window.Xrm?.Page?.data?.entity?.getEntityName()),
       safe(() => window.Xrm?.Page?.ui?.formSelector?.getCurrentItem()?.getId()),
       safe(() => window.Xrm?.Page?.ui?.getFormType()),
+      safe(() => window.Xrm?.Utility?.getPageContext?.()?.input?.viewId),
     ]);
   let previous = key();
   const timer = setInterval(() => {
@@ -138,7 +142,10 @@ export async function startModelDrivenInspector({
   const session = Object.assign(new EventEmitter(), { cfg, rel: (file) => String(file) });
   const token = randomBytes(12).toString('hex');
   const identity = createModelDrivenIdentity({ origin: cfg.origin, page });
-  let catalogue = modelDrivenInspectionCatalogue(imported),
+  let sourceRevision = 1;
+  let metadataIndex = createModelDrivenMetadataIndex(imported, { sourceRevision }),
+    metadataDetails = metadataIndex.query(),
+    catalogue = metadataDetails.catalogue,
     sources = new Map([...imported.assets.values()].map((asset) => [asset.name, asset.file]));
   let currentImported = imported,
     ui = modelDrivenPanelUi(savedState?.ui ?? {}),
@@ -148,6 +155,7 @@ export async function startModelDrivenInspector({
   if (savedState?.panelSources) await panelSources.update(imported);
   let inspectionVersion = 1;
   let latestContext = null,
+    nativeStructure = null,
     observedAt = null,
     timer,
     busy = false,
@@ -174,10 +182,36 @@ export async function startModelDrivenInspector({
       return false;
     }
   };
+  const installProvider = async (frame = page.mainFrame(), details = metadataDetails, validation = null) => {
+    try {
+      if (new URL(frame.url()).origin !== cfg.origin || closed) return false;
+      const data = {
+        token,
+        origin: cfg.origin,
+        localSimulation: overlay.report().localSimulation === true,
+        sourceRevision: String(sourceRevision),
+        catalogue: details.catalogue,
+        components: details.components,
+        sourceRefs: details.sourceRefs,
+        unavailable: details.unavailable,
+        limits: details.limits,
+        ...(validation
+          ? { validatedScope: validation.scope, validatedAnchorGeneration: validation.anchorGeneration }
+          : {}),
+      };
+      return await frame.evaluate(`(${modelDrivenObservationRuntime.toString()})().install(${JSON.stringify(data)})`);
+    } catch {
+      return false;
+    }
+  };
+  const installProviders = async () => {
+    for (const frame of page.frames()) await installProvider(frame);
+  };
   const installTools = async () => {
     if (cfg.panel === false || !active()) return;
     await page.evaluate(installModelDrivenContextWatch, { origin: cfg.origin, token });
     await page.evaluate(installModelDrivenCommands, { origin: cfg.origin, token });
+    await installProviders();
     const availability = await page.evaluate(modelDrivenActionAvailability, {
       origin: cfg.origin,
       actions: MODEL_DRIVEN_ACTIONS,
@@ -225,6 +259,12 @@ export async function startModelDrivenInspector({
       diagnostics,
       problems: problems.slice(),
       catalogue,
+      sourceRevision: String(sourceRevision),
+      sourceRefs: metadataDetails.sourceRefs,
+      provenanceLimits: metadataDetails.limits,
+      provenanceAvailability: metadataDetails.unavailable,
+      nativeStructure,
+      localSimulation: report.localSimulation === true,
       context: latestContext,
       observedAt,
       pendingInspection: busy || dirty,
@@ -267,9 +307,42 @@ export async function startModelDrivenInspector({
         await drawPanel();
         await installTools().catch(() => {});
       }
-      const observed = await page.evaluate(inspectModelDrivenContext, cfg.origin);
+      let observed = await page.evaluate(inspectModelDrivenContext, cfg.origin);
+      if (overlay.report().localSimulation) {
+        const known = await page.evaluate(() => window.__paqviloMirageProvenance?.context?.());
+        if (known)
+          observed = {
+            ...observed,
+            formId: undefined,
+            viewId: undefined,
+            entity: undefined,
+            pageType: undefined,
+            ...known,
+            provider: 'mirage-private-registry',
+          };
+      }
       if (!active() || revision !== documentRevision) return;
       latestContext = observed;
+      metadataDetails = metadataIndex.query({
+        active: { entity: observed?.entity, formId: observed?.formId, viewId: observed?.viewId },
+      });
+      catalogue = metadataDetails.catalogue;
+      await installProviders();
+      nativeStructure =
+        (await within(
+          page.evaluate(() => {
+            const tools = document.getElementById('paqvilo-xray')?.__px;
+            const scope = tools?.getSelectionScope(document.documentElement);
+            return scope
+              ? window.__paqviloModelDrivenProvider?.observe({
+                  scope,
+                  anchorGeneration: 0,
+                  budget: { items: 128, bytes: 64 * 1024 },
+                })
+              : null;
+          }),
+          2500,
+        )) ?? null;
       observedAt = new Date().toISOString();
       inspectionVersion++;
     } catch {
@@ -288,7 +361,12 @@ export async function startModelDrivenInspector({
     if (closed) return;
     if (next) {
       currentImported = next;
-      catalogue = modelDrivenInspectionCatalogue(next);
+      sourceRevision++;
+      metadataIndex = createModelDrivenMetadataIndex(next, { sourceRevision });
+      metadataDetails = metadataIndex.query({
+        active: { entity: latestContext?.entity, formId: latestContext?.formId },
+      });
+      catalogue = metadataDetails.catalogue;
       sources = new Map([...next.assets.values()].map((asset) => [asset.name, asset.file]));
       void panelSources
         .update(next)
@@ -371,7 +449,10 @@ export async function startModelDrivenInspector({
     }
   });
   on(page, 'framenavigated', (frame) => {
-    if (frame !== page.mainFrame()) return;
+    if (frame !== page.mainFrame()) {
+      void installProvider(frame);
+      return;
+    }
     documentRevision++;
     identityRevision++;
     identityBusy = false;
@@ -407,6 +488,64 @@ export async function startModelDrivenInspector({
           if (body.refresh) refresh();
           return { ok: true, version: inspectionVersion, report: modelDrivenPanelInspection(snapshot()) };
         }
+        if (input.name === 'provenance') {
+          const scope = normalizeInspectionScope(body.scope);
+          if (!scope || !Number.isSafeInteger(body.anchorGeneration))
+            return { ok: false, reason: 'invalid-selection-scope' };
+          const request = normalizeModelDrivenMetadataRequest(body);
+          if (!request) return { ok: false, reason: 'invalid-metadata-request' };
+          if (!(await selectionEvidenceCurrent(page, body)))
+            return { ok: false, reason: 'selection-obsolete', scope, anchorGeneration: body.anchorGeneration };
+          const details = metadataIndex.query({ ...request, budget: { items: 512, bytes: 512 * 1024 } });
+          if (!(await selectionEvidenceCurrent(page, body)))
+            return { ok: false, reason: 'selection-obsolete', scope, anchorGeneration: body.anchorGeneration };
+          for (const frame of page.frames()) await installProvider(frame, details, body);
+          return { ok: true, ...details, scope, anchorGeneration: body.anchorGeneration };
+        }
+        if (input.name === 'native-structure') {
+          if (!normalizeInspectionScope(body.scope) || !(await selectionEvidenceCurrent(page, body)))
+            return { ok: false, reason: 'selection-obsolete' };
+          const observed = await within(
+            page.evaluate(
+              (request) => {
+                const tools = document.getElementById('paqvilo-xray')?.__px;
+                const node = tools?.selectedNode?.();
+                if (!node) return null;
+                const current = tools.getSelectionScope(node);
+                if (
+                  !['documentId', 'frameId', 'uiEpoch', 'sourceRevision'].every(
+                    (key) => current[key] === request.scope[key],
+                  )
+                )
+                  return null;
+                return node.ownerDocument.defaultView.__paqviloModelDrivenProvider?.observe({
+                  scope: request.scope,
+                  anchorGeneration: request.anchorGeneration,
+                  cursor: request.cursor,
+                  budget: { items: 256, bytes: 128 * 1024 },
+                });
+              },
+              { scope: body.scope, anchorGeneration: body.anchorGeneration, cursor: body.cursor },
+            ),
+            2500,
+          );
+          const currentGeneration =
+            observed && !observed.obsolete
+              ? await within(
+                  page.evaluate(() => {
+                    const node = document.getElementById('paqvilo-xray')?.__px?.selectedNode?.();
+                    return node?.ownerDocument.defaultView.__paqviloModelDrivenProvider?.generation();
+                  }),
+                  2500,
+                )
+              : null;
+          return observed &&
+            !observed.obsolete &&
+            currentGeneration === observed.nativeGeneration &&
+            (await selectionEvidenceCurrent(page, body))
+            ? { ok: true, ...observed }
+            : { ok: false, reason: 'native-structure-unavailable-or-obsolete' };
+        }
         if (input.name === 'diff') {
           const allowed = snapshot().resources.find((resource) => resource.name === body.rel);
           if (!allowed || !overlay.isTextResource(allowed.name))
@@ -440,6 +579,42 @@ export async function startModelDrivenInspector({
           }
         }
         if (input.name === 'open') {
+          if (Object.hasOwn(body, 'sourceKey') || Object.hasOwn(body, 'evidenceKey')) {
+            if (!(await selectionEvidenceCurrent(page, body)))
+              return {
+                ok: false,
+                reason: 'selection-obsolete',
+                error: 'The selected element changed. Select it again.',
+              };
+            const observedLocation = body.scope ? { observedRegion: body.region } : undefined;
+            let resolved = metadataIndex.resolveOpen(body, observedLocation);
+            if (!resolved.ok)
+              return {
+                ok: false,
+                reason: resolved.reason,
+                error: 'The selected source is stale or unavailable. Refresh and select it again.',
+              };
+            if (!(await selectionEvidenceCurrent(page, body)))
+              return {
+                ok: false,
+                reason: 'selection-obsolete',
+                error: 'The selected element changed. Select it again.',
+              };
+            resolved = metadataIndex.resolveOpen(body, observedLocation);
+            if (!resolved.ok)
+              return {
+                ok: false,
+                reason: resolved.reason,
+                error: 'The selected source changed. Refresh and select it again.',
+              };
+            const error = await openInEditor(
+              cfg.editor ?? 'code',
+              resolved.file,
+              resolved.line ?? 1,
+              resolved.column ?? 1,
+            );
+            return error ? { ok: false, error } : { ok: true, locationAvailable: resolved.locationAvailable };
+          }
           const file = modelDrivenSourceFiles(snapshot()).get(body.rel);
           if (!file) return { ok: false, error: 'The source is outside the selected Solution catalogue.' };
           const line = Number.isSafeInteger(body.line) && body.line > 0 ? body.line : 1,
@@ -639,6 +814,18 @@ export async function startModelDrivenInspector({
         await drain(() => identity.close());
         for (const remove of removers) await drain(remove);
         await drain(() => pageBindings?.close());
+        for (const frame of page.frames())
+          await drain(() =>
+            within(
+              frame
+                .evaluate((ownedToken) => {
+                  const provider = globalThis.__paqviloModelDrivenProvider;
+                  if (provider?.token === ownedToken) provider.dispose();
+                }, token)
+                .catch(() => {}),
+              250,
+            ),
+          );
         await drain(() => agent?.close());
         session.removeAllListeners();
         problems.length = 0;

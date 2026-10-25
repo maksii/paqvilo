@@ -2,6 +2,7 @@
 // but interception is installed once per tab so CDP handlers cannot race to answer one request.
 import { OverlaySession } from './session.mjs';
 import { interceptOrigins } from './intercept.mjs';
+import { createInspectionProvenanceTransport } from './inspection-provenance-transport.mjs';
 import { enablePanel } from './panel.mjs';
 import { startAgentServer } from './agent-server.mjs';
 import { watchSources, trackOnlineState, logHits, printSummary } from './commands/dev.mjs';
@@ -16,6 +17,7 @@ export async function startDevSessions(
   { args = {}, attached = false, stop = () => {}, debugPort = null, log = console.log } = {},
 ) {
   const { mode, initial, targets } = selection;
+  const provenance = createInspectionProvenanceTransport(context, targets);
   const configs = new Map(targets.map((cfg) => [cfg.origin, cfg]));
   if (!configs.size || configs.size !== targets.length || !configs.has(initial.origin))
     throw new Error('Development targets must have unique origins and include the start portal');
@@ -109,6 +111,8 @@ export async function startDevSessions(
             };
         }
         const session = await OverlaySession.create(cfg);
+        session.provenanceSlot = provenance.slot;
+        session.domProvenanceSlot = provenance.domSlot;
         const record = { session };
         records.add(record);
         try {
@@ -205,6 +209,7 @@ export async function startDevSessions(
       },
       {
         bypassCSP: Boolean(initial.browser.bypassCSP),
+        onAttach: provenance.onAttach,
         onTargetError: async (error, page) => {
           log(
             `ERROR       Isolated tab interception failed (${error.phase}): ${error.message}. Healthy tabs remain active; retry in a new tab.`,
@@ -227,6 +232,10 @@ export async function startDevSessions(
           }
         },
         onError: (error) => {
+          if (error.code === 'reload_required') {
+            log(`WARN        ${error.message}`);
+            return;
+          }
           if (error.scope === 'target') {
             log(
               `ERROR       Target interception cleanup failed (${error.phase}): ${error.message}. Healthy tabs remain active.`,

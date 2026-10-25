@@ -243,17 +243,25 @@ export async function importModelDrivenResources(
       if (!/^(?:webresources\/|(?:other\/)?customizations\.xml$|entities\/.*ribbondiff\.xml$)/i.test(entry.name))
         continue;
       try {
-        const xml = (await readEntry(entry)).toString('utf8'),
+        const bytes = await readEntry(entry),
+          xml = bytes.toString('utf8'),
           tree = parseSolutionXml(xml);
+        const sourceContentRevision = createHash('sha256').update(bytes).digest('hex');
         if (/RibbonDiffXml[\s>]/.test(xml)) {
           const entity = /^entities\/([^/]+)\//i.exec(entry.name)?.[1]?.toLowerCase();
           const source = entry.file ?? `${layer.dir}!/${entry.name}`;
-          if (entity) ribbonDocuments.push({ xml, entity, source });
+          if (entity) ribbonDocuments.push({ xml, entity, source, sourceContentRevision });
           else
             for (const node of descendants(tree, 'Entity')) {
               const name = childText(node, 'Name') ?? child(node, 'Name')?.attrs.OriginalName;
               for (const ribbon of descendants(node, 'RibbonDiffXml'))
-                if (name) ribbonDocuments.push({ xml: serializeXml(ribbon), entity: name.toLowerCase(), source });
+                if (name)
+                  ribbonDocuments.push({
+                    xml: serializeXml(ribbon),
+                    entity: name.toLowerCase(),
+                    source,
+                    sourceContentRevision,
+                  });
             }
         }
         for (const node of tree.name === 'WebResource' ? [tree] : descendants(tree, 'WebResource')) {
@@ -298,6 +306,8 @@ export async function importModelDrivenResources(
           url,
           type: imageMime ? 'image' : definition.type === 3 ? 'script' : definition.type === 1 ? 'page' : 'style',
           source: entry.file ? shown(entry.file) : `${shown(layer.dir)}!/${entry.name}`,
+          sourceFile: entry.file,
+          sourceContentRevision: createHash('sha256').update(data).digest('hex'),
         });
         assets.set(url, {
           data,
@@ -362,6 +372,13 @@ export async function importModelDrivenResources(
         if (resource.lcid === 1033) Object.assign(urls.resx, resource.strings);
       controls.push({
         name: control.schemaName,
+        sourceFile: control.file,
+        sourceContentRevision: control.sourceContentRevision,
+        sourceAssets: [...controlAssets].map(([url, asset]) => ({
+          url,
+          file: asset.file,
+          contentRevision: createHash('sha256').update(asset.data).digest('hex'),
+        })),
         constructor: control.constructor,
         controlType: control.type,
         datasets: control.datasets,
@@ -386,7 +403,14 @@ export async function importModelDrivenResources(
     try {
       const command = parseAppActionCommand(entry.data.toString('utf8'), { webresourcesById });
       if (!command) throw new Error('Expected an AppAction definition.');
-      return [{ ...command, sourceKind: command.source, source: entry.source }];
+      return [
+        {
+          ...command,
+          sourceKind: command.source,
+          source: entry.source,
+          sourceContentRevision: createHash('sha256').update(entry.data).digest('hex'),
+        },
+      ];
     } catch (error) {
       diagnostics.push({ code: 'MODEL_APP_ACTION_INVALID', source: entry.name, message: error.message });
       return [];

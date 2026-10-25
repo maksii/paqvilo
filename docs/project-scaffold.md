@@ -3,7 +3,7 @@
 `paqvilo init` creates an empty project for your own portal exports, catalogue, data packs and tests. `paqvilo mirage init` creates a local runtime project for an existing catalogue. `paqvilo mirage demo` copies the populated example. These are separate workflows.
 
 ```sh
-npx paqvilo@^0.9.6 init ./my-portals --name my-portals --site customer --site partner
+npx paqvilo@^0.9.7 init ./my-portals --name my-portals --site customer --site partner
 cd my-portals
 npm run setup
 npm run configure

@@ -15,6 +15,59 @@ const pause = (tab, extra = {}, request = {}) =>
     request: { url: URL, method: 'POST', headers: {}, ...request },
   });
 
+test('attachment setup runs before Fetch and disposes its own hooks on target release', async () => {
+  const fake = fakeBrowser(),
+    tab = fake.openTab();
+  let cleaned = 0;
+  const detach = await interceptOrigin(fake.context, ORIGIN, (route) => route.fallback(), {
+    onAttach: async ({ cdp, configure, page }) => {
+      assert.equal(page, tab.page);
+      assert.equal(
+        fake.sent.some(({ method }) => method === 'Fetch.enable'),
+        false,
+      );
+      await configure('Page.addScriptToEvaluateOnNewDocument', { source: '/* owned test bootstrap */' });
+      cdp.on('Runtime.executionContextCreated', () => {});
+      return () => {
+        cleaned++;
+        cdp.removeAllListeners('Runtime.executionContextCreated');
+      };
+    },
+  });
+  await detach();
+  await detach();
+  assert.equal(cleaned, 1);
+  assert.equal(tab.cdp.listenerCount('Runtime.executionContextCreated'), 0);
+});
+
+test('only acknowledged fulfillments publish a proof; cancellation and protocol rejection never publish', async () => {
+  for (const outcome of ['acknowledged', 'rejected', 'aborted']) {
+    const fake = fakeBrowser(),
+      tab = fake.openTab(),
+      published = [];
+    const nativeSend = tab.cdp.send;
+    tab.cdp.send = (method, params) =>
+      method === 'Fetch.fulfillRequest' && outcome === 'rejected'
+        ? Promise.reject(new Error('Invented navigation cancellation'))
+        : nativeSend(method, params);
+    const acknowledgments = [];
+    const detach = await interceptOrigin(
+      fake.context,
+      ORIGIN,
+      async (route) => {
+        if (outcome === 'aborted') await route.abort();
+        acknowledgments.push(await route.fulfill({ body: '<p>Invented</p>', provenance: { proofId: 'invented' } }));
+      },
+      { onAttach: () => ({ publishProvenance: (_event, proof) => published.push(proof) }) },
+    );
+    pause(tab);
+    await setImmediate();
+    assert.deepEqual(acknowledgments, [outcome === 'acknowledged']);
+    assert.equal(published.length, outcome === 'acknowledged' ? 1 : 0);
+    await detach();
+  }
+});
+
 test('page ownership is admitted before attaching CDP or changing cache and CSP', async () => {
   const b = fakeBrowser(),
     user = b.openTab(`${ORIGIN}/existing`),

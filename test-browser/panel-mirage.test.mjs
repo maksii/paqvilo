@@ -341,6 +341,17 @@ test(
     await openTab('tweaks');
     await panelLocator('[data-act="ask"][data-kind="scenario"]').click();
     await panelLocator('.banner').getByText('Apply scenario "Anonymous and enforced"', { exact: false }).waitFor();
+    const cancel = panelLocator('[data-act="confirm-no"]');
+    assert.equal(await cancel.evaluate((node) => node.getRootNode().activeElement === node), true);
+    assert.equal(
+      await cancel.evaluate((node) => {
+        const rect = node.getBoundingClientRect();
+        const body = node.getRootNode().querySelector('.body').getBoundingClientRect();
+        return rect.top >= body.top && rect.bottom <= body.bottom;
+      }),
+      true,
+      'the confirmation is revealed inside the scrolled Tweaks panel',
+    );
     await evidence('panel-tweaks-confirmation');
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'load' }),

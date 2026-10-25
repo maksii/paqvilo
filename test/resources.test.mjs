@@ -13,6 +13,7 @@ import { editSource } from '../lense/source-edit.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { buildMapping } from '../lense/commands/map.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
+import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { createFixture, SITE, HOME_ID } from './fixture.mjs';
 
 const cfgFor = (dir, site = SITE) => ({
@@ -337,6 +338,51 @@ test('map and resources share one thousand-record metadata parse, skip excluded 
   auditResources(session.model, session.cfg.site);
   assert.equal(auditParses, 1, 'independent duplicate-aware audit parses each YAML document once');
   t.diagnostic(`1000-field resources and cache checks: ${(performance.now() - started).toFixed(1)} ms`);
+});
+
+test('enabled metadata patches share local and baseline parses without confusing their snapshots or record identities', (t) => {
+  const fx = createFixture();
+  t.after(fx.cleanup);
+  const relative = 'basic-forms/form/Fields.basicformmetadata.yml';
+  const records = Array.from({ length: 80 }, (_, index) => ({
+    adx_entityformmetadataid: 'field-' + index,
+    adx_description: '<p>Old description ' + index + '</p>',
+  }));
+  const before = YAML.stringify(records);
+  fx.write(relative, before);
+  fx.commit();
+  const updated = records.map((record) => ({
+    ...record,
+    adx_description: record.adx_description.replace('Old', 'New'),
+  }));
+  const after = YAML.stringify(updated);
+  fx.write(relative, after);
+  const parse = YAML.parse;
+  let baselineParses = 0,
+    localParses = 0;
+  t.mock.method(YAML, 'parse', (text, ...args) => {
+    if (text === before) baselineParses++;
+    if (text === after) localParses++;
+    return parse(text, ...args);
+  });
+  const model = new PortalModel(fx.dir);
+  const rewriter = new HtmlRewriter({
+    model,
+    site: { ...SITE, markup: { ...SITE.markup, kinds: ['metadata-markup'] } },
+    baseline: new GitBaseline(fx.dir, 'HEAD'),
+  });
+  assert.equal(rewriter.patches.length, records.length);
+  assert.ok(baselineParses <= 3, 'baseline parsing stays bounded per document, not per field');
+  assert.ok(localParses <= 3, 'current parsing stays bounded per document, not per field');
+  const html = '<html><body><p>Old description 17</p></body></html>';
+  const result = rewriter.rewrite(html, '/');
+  assert.match(result.html, /New description 17/);
+  assert.equal(result.applied.length, 1);
+  fx.write(relative, YAML.stringify(updated.toReversed()));
+  rewriter.refresh([fx.file(relative)]);
+  assert.equal(rewriter.patches.length, 0, 'reordered records cannot reuse stale field identities');
+  assert.ok(rewriter.unsupported.some((item) => /record, field or localized identity/.test(item.reason)));
+  assert.equal(rewriter.rewrite(html, '/').html, html);
 });
 
 test('enhanced optional fields expose presence and language-root rendering separately', (t) => {

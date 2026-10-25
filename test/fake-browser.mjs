@@ -29,6 +29,15 @@ export function fakeBrowser(online = {}) {
       send: async (method, params) => {
         sent.push({ method, ...params });
         if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main' } } };
+        if (method === 'Runtime.evaluate' && params.expression === 'document')
+          return { result: { objectId: 'document' } };
+        if (
+          method === 'Runtime.callFunctionOn' &&
+          params.functionDeclaration?.startsWith('function repairLateDocument')
+        ) {
+          page.reloads++;
+          return { result: { value: 'reloading' } };
+        }
         return {};
       },
     });

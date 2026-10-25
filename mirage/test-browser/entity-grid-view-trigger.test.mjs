@@ -90,7 +90,13 @@ test('jQuery-triggered clicks on grid view and sort links reach the grid', async
   );
   await postsReach(2);
   assert.equal(posts.length, 2);
-  assert.match(String(posts[1].sortExpression), /^name (ASC|DESC)$/);
+  assert.equal(posts[1].sortExpression, 'name DESC');
+  await page.evaluate(() => window.jQuery('.view-grid table thead th a').first().trigger('click'));
+  await postsReach(3);
+  assert.equal(posts[2].sortExpression, 'name ASC');
+  await page.evaluate(() => window.jQuery('.view-grid table thead th a').first().trigger('click'));
+  await postsReach(4);
+  assert.equal(posts[3].sortExpression, 'name DESC');
   assert.deepEqual(errors, []);
 });
 
@@ -116,6 +122,132 @@ const BOOTSTRAP3_MODAL = `(function ($) {
   };
   $(document).on("click", "[data-dismiss=modal]", function () { $(this).closest(".modal").modal("hide"); });
 })(jQuery);`;
+
+test('create-form loading announcements end on load, cancellation and failed navigation', async (t) => {
+  const jquery = await fs.readFile(new URL('../node_modules/jquery/dist/jquery.min.js', import.meta.url));
+  const grid = await fs.readFile(new URL('../lib/entity-grid-compat.js', import.meta.url));
+  const layout = {
+    ...layouts[0],
+    Configuration: {
+      ViewDisplayName: 'First',
+      ViewActionLinks: [{ Type: 3, Enabled: true, Label: 'Create item', Target: 0, EntityForm: { Id: 'create' } }],
+    },
+  };
+  const markup = `<!doctype html><html><body>
+<div class="entity-grid" data-defer-loading="true" data-enable-actions="true" data-view-layouts='${JSON.stringify([layout])}'><div class="view-toolbar"></div><div class="view-grid"></div>
+<section class="modal modal-form modal-form-insert" aria-hidden="true" style="display:none"><div class="form-loading">Loading form</div><iframe data-page="/form"></iframe><button data-dismiss="modal">Cancel</button></section></div>
+<script src="/jquery.js"></script><script src="/bootstrap-modal.js"></script><script src="/grid.js"></script></body></html>`;
+  const server = http.createServer((req, res) => {
+    const scripts = { '/jquery.js': jquery, '/bootstrap-modal.js': BOOTSTRAP3_MODAL, '/grid.js': grid };
+    if (scripts[req.url]) {
+      res.setHeader('content-type', 'text/javascript');
+      return res.end(scripts[req.url]);
+    }
+    res.setHeader('content-type', 'text/html');
+    res.end(markup);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  const errors = [],
+    foreignRequests = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    if (new URL(request.url()).origin !== `http://127.0.0.1:${server.address().port}`)
+      foreignRequests.push(request.url());
+  });
+  await page.goto(`http://127.0.0.1:${server.address().port}/page`);
+  const notice = page.locator('.view-toolbar #notificationDiv');
+  const modal = page.locator('.modal-form-insert');
+  for (const outcome of ['load', 'cancel', 'failure']) {
+    let release, requested;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const started = new Promise((resolve) => {
+      requested = resolve;
+    });
+    await page.route('**/form?**', async (route) => {
+      requested();
+      await gate;
+      if (outcome === 'failure')
+        await route.fulfill({ status: 500, contentType: 'text/html', body: '<p>Form unavailable</p>' });
+      else
+        await route.fulfill({
+          contentType: 'text/html',
+          body: '<form id="EntityFormControl"><input aria-label="Name"></form>',
+        });
+    });
+    await page.getByRole('button', { name: 'Create item' }).click();
+    await started;
+    assert.equal(await notice.innerText(), 'Loading');
+    if (outcome === 'cancel') {
+      await modal.getByRole('button', { name: 'Cancel' }).click();
+      assert.equal(await notice.count(), 0);
+    }
+    release();
+    await notice.waitFor({ state: 'detached' });
+    if (outcome !== 'cancel') await modal.getByRole('button', { name: 'Cancel' }).click();
+    await page.unroute('**/form?**');
+  }
+  // Authored scripts may replace the native modal markup. Invalid destinations
+  // must neither navigate away nor leave an announcement for work that never began.
+  await page.route('**/*', (route) =>
+    new URL(route.request().url()).origin === new URL(page.url()).origin ? route.continue() : route.abort(),
+  );
+  for (const source of [
+    'https://other.example.invalid/form',
+    'http://[',
+    'javascript:alert(1)',
+    null,
+    'missing-frame',
+  ]) {
+    await modal.evaluate((element, source) => {
+      element.querySelector('iframe')?.remove();
+      if (source === 'missing-frame') return;
+      const frame = document.createElement('iframe');
+      if (source !== null) frame.setAttribute('data-page', source);
+      element.prepend(frame);
+    }, source);
+    await page.getByRole('button', { name: 'Create item' }).click();
+    assert.equal(await notice.count(), 0, String(source));
+    assert.equal(await modal.getAttribute('aria-hidden'), 'true');
+  }
+  const refused = await page.evaluate(() => {
+    const element = document.querySelector('.entity-grid'),
+      grid = element.__ppEntityGrid;
+    for (const [type, className] of [
+      [1, 'modal-form-details'],
+      [2, 'modal-form-edit'],
+    ]) {
+      const modal = document.createElement('section');
+      modal.className = 'modal ' + className;
+      element.append(modal);
+      grid.runAction({ Type: type, EntityForm: { Id: 'form' } }, { Id: 'record' }, element);
+      modal.remove();
+    }
+    const lookup = document.createElement('div');
+    lookup.className = 'entity-lookup';
+    lookup.setAttribute('data-lookup-datafieldname', 'invented');
+    lookup.innerHTML =
+      '<section class="modal-lookup"><div class="entity-grid" data-defer-loading="true" data-view-layouts="[]"><div class="view-grid"></div></div><div class="modal-footer"><button class="new-value">Create lookup</button></div></section><section class="modal-lookup-create-form" aria-hidden="true"></section>';
+    document.body.append(lookup);
+    window.__portalSimulation.nativeGrid.initialise(lookup.parentElement);
+    lookup.querySelector('.new-value').click();
+    if (lookup.querySelector('.modal-lookup-create-form').getAttribute('aria-hidden') !== 'true')
+      throw new Error('A lookup with no create iframe must stay closed.');
+    lookup.remove();
+    return grid.openFormModal(element.querySelector('.modal-form-insert'), '/form');
+  });
+  assert.equal(refused, false, 'a missing iframe also fails closed at the direct modal boundary');
+  assert.deepEqual(foreignRequests, []);
+  assert.deepEqual(errors, []);
+});
 
 test('a grid confirmation dialog is exposed to assistive technology while shown, as on the platform', async (t) => {
   const jquery = await fs.readFile(new URL('../node_modules/jquery/dist/jquery.min.js', import.meta.url));

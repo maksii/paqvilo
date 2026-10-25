@@ -20,6 +20,16 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   assert.ok(!manifest.devDependencies.paqvilo.startsWith('file:'));
   assert.match(manifest.devDependencies.yaml, /^\d/);
   assert.match(manifest.devDependencies['playwright-core'], /^\d/);
+  const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const example = JSON.parse(await fs.readFile(new URL('../examples/project/package.json', import.meta.url), 'utf8'));
+  for (const dependency of ['yaml', 'playwright-core']) {
+    assert.equal(manifest.devDependencies[dependency], toolkit.dependencies[dependency]);
+    assert.equal(example.devDependencies[dependency], toolkit.dependencies[dependency]);
+  }
+  const guidance = await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8');
+  assert.match(guidance, /npm run dev/);
+  assert.match(guidance, /npm test/);
+  assert.doesNotMatch(guidance, /npm run (?:setup|validate)/);
   assert.equal((await fs.readFile(path.join(directory, 'portal/web-files/theme.css'), 'utf8')).includes('\r'), false);
   assert.match(manifest.scripts['dev:debug'], /--debug-port 9222/);
   const workspace = JSON.parse(await fs.readFile(path.join(directory, 'paqvilo-demo.code-workspace'), 'utf8'));
@@ -42,10 +52,15 @@ test('demo copies an editable project, preserves source edits on repeat and refu
       );
   }
   await fs.writeFile(path.join(directory, '.vscode/tasks.json'), '{"myTask":true}');
+  await fs.writeFile(path.join(directory, 'AGENTS.md'), 'My project guidance');
   await fs.unlink(path.join(directory, '.vscode/launch.json'));
   await fs.unlink(path.join(directory, 'paqvilo-demo.code-workspace'));
   await prepareDemo(directory);
   assert.equal(await fs.readFile(path.join(directory, '.vscode/tasks.json'), 'utf8'), '{"myTask":true}');
+  assert.equal(await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8'), 'My project guidance');
+  await fs.unlink(path.join(directory, 'AGENTS.md'));
+  await prepareDemo(directory);
+  assert.equal(await fs.readFile(path.join(directory, 'AGENTS.md'), 'utf8'), guidance);
   await fs.access(path.join(directory, '.vscode/launch.json'));
   await fs.access(path.join(directory, 'paqvilo-demo.code-workspace'));
   const scaffold = execFileSync(

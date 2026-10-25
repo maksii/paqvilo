@@ -7,30 +7,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { createFixture } from './fixture.mjs';
 import { loadConfig } from '../lense/config.mjs';
-import { withProcessSlot } from '../mirage/test/process-slots.mjs';
-
-const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
-const env = Object.fromEntries(
-  Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
-);
-function run(...args) {
-  return withProcessSlot(
-    () =>
-      new Promise((resolve) => {
-        execFile(
-          process.execPath,
-          [cli, ...args],
-          { env, encoding: 'utf8', windowsHide: true, timeout: 150_000 },
-          (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
-        );
-      }),
-  );
-}
+import { toolkitCommandHint, runToolkit as run } from './toolkit-cli.mjs';
 // Reads of one catalogue state run concurrently: each CLI process costs a quarter of a second to start.
 const runAll = (...commands) => Promise.all(commands.map((args) => run(...args)));
 const json = (result) => {
@@ -178,10 +158,20 @@ test('mirage init records observed behaviour on the project portal, and the proj
   write({ site: { project, observed: changed } });
   const doctor = mirageOf(await run('doctor', '--config', config, '--site', 'site', '--json'), 'site');
   assert.deepEqual([doctor.observed, doctor.observedSource], [OBSERVED, 'project']);
-  assert.match(
-    doctor.warnings.join('\n'),
-    /sites\.site\.mirage\.observed differs from portal site in .*site\.project\.yml, whose observed behaviour applies; run npx paqvilo mirage init --site site --force/,
-  );
+  const warning = doctor.warnings.find((item) => item.includes('sites.site.mirage.observed differs'));
+  assert.match(warning, /observed differs from portal site in .*site\.project\.yml, whose observed behaviour applies/);
+  const recommended = toolkitCommandHint([
+    'mirage',
+    'init',
+    '--config',
+    config,
+    '--repo',
+    work,
+    '--site',
+    'site',
+    '--force',
+  ]);
+  assert.ok(warning.endsWith(`run ${recommended} to rewrite the project file`), warning);
   write({ site: { project, observed: OBSERVED } });
   const same = mirageOf(await run('doctor', '--config', config, '--site', 'site', '--json'), 'site');
   assert.deepEqual([same.observed, same.observedSource], [OBSERVED, 'project']);

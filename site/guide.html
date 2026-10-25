@@ -24,7 +24,7 @@
     </header>
     <main id="main" class="wrap guide">
       <div class="guide-head">
-        <p class="eyebrow">THE GUIDE · PAQVILO 0.9.6</p>
+        <p class="eyebrow">THE GUIDE · PAQVILO 0.9.7</p>
         <h1>From one command<br />to <em>your own portal.</em></h1>
         <p class="lead">
           A walkthrough you can follow on your own machine. Start the demo portal, work on it from VS Code, take the
@@ -36,6 +36,10 @@
           what you should see, why it works that way and what to check before you move on. The
           <a href="https://github.com/maksii/paqvilo/blob/main/docs/index.md">documentation</a> is the reference; this
           page is the path through it.
+        </p>
+        <p class="small">
+          Commands and guidance target 0.9.7. Recordings retained from the 0.9.6 guide may show earlier labels,
+          candidate order or source line numbers.
         </p>
       </div>
 
@@ -297,7 +301,7 @@ npm --version</code></pre>
                 <details>
                   <summary>Scaffold your project</summary>
                   <div class="cmd">
-                    <pre><code>npx paqvilo@^0.9.6 init ./my-portal-project --name my-portal-project --site portal
+                    <pre><code>npx paqvilo@^0.9.7 init ./my-portal-project --name my-portal-project --site portal
 cd my-portal-project
 npm run setup</code></pre>
                   </div>
@@ -388,7 +392,7 @@ npm --version</code></pre>
                 <details>
                   <summary>Install in your portal project</summary>
                   <div class="cmd">
-                    <pre><code>npm install --save-dev paqvilo@^0.9.6
+                    <pre><code>npm install --save-dev paqvilo@^0.9.7
 npx paqvilo doctor --setup --json</code></pre>
                   </div>
                   <p class="small">New project? Scaffold one first. <a href="#scaffold">Scaffold ↓</a></p>
@@ -643,6 +647,10 @@ npx --no-install paqvilo --help</code></pre>
 
             <div class="beat" id="edit-record">
               <h3>Change a record and reload</h3>
+              <p>
+                The Web API and PCF lists keep the selected view and search in the URL. A reload after a source edit
+                restores those filters; browser Back restores the previous query.
+              </p>
               <figure class="shot">
                 <video
                   src="media/01b-portal-tour-edit.mp4"
@@ -701,8 +709,9 @@ npx --no-install paqvilo --help</code></pre>
             <h2 id="inspect-title">From the page<br />back to its sources.</h2>
             <p class="intro">
               Two tools answer "where does this come from?". <b>Inspect</b> lists the sources and exported rules behind
-              the whole page; <b>X-ray</b> names the likely source of one element under your pointer. Both work the same
-              in Mirage and in Lense.
+              the whole page; <b>X-ray</b> separates the observed owner, local source and candidates for one selected
+              element. The same evidence summary is available in Mirage and Lense; available proof depends on the
+              runtime and exported metadata.
             </p>
 
             <div class="beat" id="inspect-panel">
@@ -757,7 +766,10 @@ npx --no-install paqvilo --help</code></pre>
                     loading="lazy"
                     alt="X-ray on the Web API page: outlined elements, the X-ray toolbar, and a card for the selected link listing Approach Web API, Approach PCF and Liquid custom view as source candidates with Open source, Copy path and Select source region."
                 /></a>
-                <figcaption>The X-ray card for the Arcwell Services link: 13 candidates, best first.</figcaption>
+                <figcaption>
+                  An earlier X-ray card for the Arcwell Services link. Current versions show independent owner/source
+                  states and distinguish guarded source actions from static file browsing.
+                </figcaption>
               </figure>
               <div class="walk">
                 <p>
@@ -766,24 +778,49 @@ npx --no-install paqvilo --help</code></pre>
                 </p>
                 <p>
                   <b class="tag">You see</b> Outlines on the page: green for controls, blue for form and view
-                  containers, amber for source markup. The click selects the link instead of following it. The card
-                  reads "Web template · source match", <b>Approach Web API</b>, with 13 element source candidates; the
-                  first is <code>web-templates/approach-web-api/Approach-Web-API.webtemplate.source.html</code> with
-                  "Markup match: div.demo-table-wrap on an enclosing element". Each candidate offers <b>Open source</b>,
-                  <b>Copy path</b> and <b>Select source region</b>.
+                  containers, amber for source markup. The click selects the link instead of following it. Colors show
+                  layers rather than certainty. Read <b>Owner</b> and <b>Local source</b> separately: each can be
+                  <b>Exact</b>, <b>Candidate</b>, <b>Conflicting</b>, <b>Unavailable</b> or <b>Stale</b>. An exact owner
+                  can have unavailable source. <b>Enclosing components</b>, <b>Context</b>, <b>Alternatives</b> and
+                  <b>Limits &amp; freshness</b>
+                  explain the remaining evidence. The panel keeps this selected summary when you switch tabs.
                 </p>
                 <p>
-                  <b class="tag">Why</b> X-ray indexes markup hints across the sources the page references and matches
-                  elements by static IDs, classes and component attributes, not by positional DOM paths. The account
-                  link itself is written by the workspace script at runtime, so X-ray matches the enclosing template
-                  markup. Other templates share that markup, which is why there are several candidates. Treat the first
-                  as the place to start reading, not as proof of the deployed revision.
+                  For a Power Pages field, follow the available hierarchy:
+                  <b>column → Solution form (FormXml) → table → basic form → host webpage</b>.
+                  <b>Enclosing components</b> opens before <b>Local source</b>, so the form and table stay visible
+                  before you choose a file. The field and its rendered form have separate outlines. Read each
+                  component's state; the host webpage is context, not the field's owner. Missing definitions are not
+                  filled from a different table with the same field name.
                 </p>
                 <p>
-                  <b class="tag">Check</b> <b>Open source</b> opens the template at the matching line. Hold
-                  <kbd>Ctrl</kbd> or switch to <b>Interact</b> to use the page normally; <kbd>[</kbd> and
-                  <kbd>]</kbd> cycle overlapping elements; <kbd>Escape</kbd> releases the selection, then exits X-ray.
-                  X-ray does not change portal styles or submit selected controls.
+                  <b class="tag">Why</b> Static IDs, classes, component attributes and declared dependencies are search
+                  context. They cannot establish which source created a runtime node. The older recording lists
+                  <b>Approach Web API</b> among several markup candidates; shared markup alone does not establish its
+                  ownership of the selected link. Current direct proof is kept separate from those candidates. Serving a
+                  script also does not prove it executed or mounted the selected control. Local matching does not
+                  establish a deployed source revision.
+                </p>
+                <p>
+                  An observed script creation, clone or attachment callsite can identify verified local code for the
+                  actual node. Attachment names the code that inserted or moved it, without replacing its original
+                  creation source. Parsing code alone is not execution proof, and a declared PCF constructor is not an
+                  observed mount. Read those relationships alongside the independent owner/source states.
+                </p>
+                <p>
+                  <b class="tag">Check</b> <b>Open source</b> and <b>Open candidate</b> validate the current selection,
+                  semantic source identity and revisions before opening. Stale, conflicting and unavailable source
+                  actions are disabled. <b>Search export markup</b> offers <b>Browse file</b> separately; it does not
+                  claim an exact rendered source or line. <b>Copy reference</b> copies the displayed source reference.
+                  Hold <kbd>Ctrl</kbd> or switch to <b>Interact</b> to use the page normally; <kbd>[</kbd> and
+                  <kbd>]</kbd> cycle overlapping elements. <kbd>Tab</kbd> visits visible inspector controls and
+                  disclosure summaries. <kbd>Escape</kbd> releases the selection, then exits X-ray. The one-shot picker
+                  retains the actual node while hidden; replacing it or navigating its frame clears that selection.
+                  X-ray does not change portal styles or submit selected controls. See the
+                  <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md#selection-evidence"
+                    >selection evidence reference</a
+                  >
+                  for limits and source-opening behavior.
                 </p>
               </div>
             </div>
@@ -833,6 +870,10 @@ npx --no-install paqvilo --help</code></pre>
                   <li>
                     <code>package.json</code> scripts: <code>dev</code>, <code>dev:debug</code>, <code>lense</code>,
                     <code>configure</code> and <code>test</code>.
+                  </li>
+                  <li>
+                    <code>AGENTS.md</code>: the demo's commands, source folders and local/live boundaries for coding
+                    agents. Repeating the scaffold command keeps your edits and restores missing guidance.
                   </li>
                 </ul>
               </div>
@@ -1466,9 +1507,10 @@ export const pluginSteps = { 'b4700000-0000-4000-8000-370000000100': validateAcc
                   <b class="tag">Check</b> Further down, <b>Table permissions</b> switches between <b>Enforce</b> and
                   <b>Permissive</b> ("grant source exported"), <b>Preset</b> applies a data preset and
                   <b>Scenario</b> lists the pack's isolated setups, such as "Entra · reader · reader → / · isolated
-                  setup". Choosing a scenario only selects it; <b>Apply scenario</b> starts a separate runtime from a
-                  snapshot of this one, with its own cookie, state and origin and with live writes disabled. The demo
-                  allows two such copies (<code>personaContexts: { maxInstances: 2 }</code>).
+                  setup". Choosing a scenario only selects it; click <b>Apply scenario</b>, review the confirmation
+                  revealed in the panel, then confirm. An isolated setup starts a separate runtime from a snapshot of
+                  this one, with its own cookie, state and origin and with live writes disabled. The demo allows two
+                  such copies (<code>personaContexts: { maxInstances: 2 }</code>).
                 </p>
               </div>
             </div>
@@ -1840,6 +1882,13 @@ export const pluginSteps = { 'b4700000-0000-4000-8000-370000000100': validateAcc
                   <code>portal/lists/Active-Service-Requests.list.yml</code>; its <code>CreateAction</code> names the
                   create form's <code>EntityFormId</code>.
                 </p>
+                <p>
+                  To inspect the form in the modal, select a field inside its accessible same-origin iframe. Read the
+                  current document's column, Solution form, table and basic-form context, followed by the host webpage.
+                  Closing and reopening the modal, or navigating its frame, does not transfer the previous selection to
+                  a replacement control. A URL parameter or configured default alone does not prove ownership.
+                  Cross-origin and sandboxed frames remain inspection boundaries.
+                </p>
               </div>
             </div>
 
@@ -1942,7 +1991,7 @@ git log --oneline -2</code></pre>
               <div class="walk">
                 <p><b class="tag">Do</b></p>
                 <div class="cmd">
-                  <pre><code>npx paqvilo@^0.9.6 init ./my-portal-project --name my-portal-project --site portal
+                  <pre><code>npx paqvilo@^0.9.7 init ./my-portal-project --name my-portal-project --site portal
 cd my-portal-project
 npm run setup</code></pre>
                 </div>
@@ -2004,7 +2053,7 @@ npm run setup</code></pre>
                 </table>
               </div>
               <p>
-                Already have a project? Run <code>npm install --save-dev paqvilo@^0.9.6</code> and
+                Already have a project? Run <code>npm install --save-dev paqvilo@^0.9.7</code> and
                 <code>npx paqvilo doctor --setup --json</code>; <code>init --into-existing</code> adds missing files
                 only.
               </p>
@@ -2751,12 +2800,15 @@ git commit -m "Baseline portal export"</code></pre>
               <div class="walk">
                 <p>
                   <b class="tag">Do</b> Press <kbd>Alt+Shift+X</kbd> on the deployed page and use X-ray exactly as in
-                  <a href="#xray">chapter 3</a>; <b>Open source</b> opens the candidate in VS Code at its matching line.
+                  <a href="#xray">chapter 3</a>. Read the independent owner and source states; <b>Open source</b> opens
+                  an admitted source, while <b>Open candidate</b> keeps a possible match explicit. Both actions recheck
+                  the selected node and source revisions before opening your configured editor.
                 </p>
                 <p>
                   <b class="tag">Why</b> Inspect and X-ray are available for live and Mirage sessions alike. Overrides
-                  answer "what did Lense replace?"; X-ray answers "which file made this element?". Matching candidates
-                  do not establish which deployed revision rendered the element.
+                  answer "what did Lense replace?"; X-ray shows the evidence connecting the selected element to local
+                  components and sources. Matching candidates do not establish which file created the node or which
+                  deployed revision rendered it.
                 </p>
               </div>
             </div>
@@ -2914,6 +2966,11 @@ git commit -m "Baseline portal export"</code></pre>
                   there. On every reload, Lense searches the deployed HTML for the anchor, keeps only matches on word
                   boundaries and replaces the old text with yours. Here the changed line was plain HTML, unique in the
                   baseline and present once in the response, so it counted <code>1 patch</code>.
+                </p>
+                <p>
+                  If you leave markup preview disabled, the page may still reload after a save. <b>Issues</b> reports
+                  the changed source as needing deployment; a reload does not mean the edit was applied. The same
+                  applies to disabled inline source kinds. Liquid logic still runs on the online portal.
                 </p>
               </div>
               <div class="table-wrap">
@@ -3126,7 +3183,8 @@ npx --no-install paqvilo lense verify --config ./paqvilo.config.yml --site porta
               <div class="walk">
                 <p>
                   <b class="tag">Do</b> In the demo workspace, press <kbd>Ctrl+P</kbd>, open
-                  <code>demo-workspace.js</code>, go to line 122 and press <kbd>F9</kbd>. Press <kbd>F5</kbd> (<b
+                  <code>demo-workspace.js</code>, find the first statement in <code>listAccounts(url)</code> and press
+                  <kbd>F9</kbd>. Its line number can differ from the recording. Press <kbd>F5</kbd> (<b
                     >Demo: Mirage and browser debugger</b
                   >). When Home has loaded, click <b>Open the demo</b>. Press <kbd>F5</kbd> again to continue.
                 </p>
@@ -3138,14 +3196,15 @@ npx --no-install paqvilo lense verify --config ./paqvilo.config.yml --site porta
                   call stack reads <code>listAccounts 122:1</code>. Continue, and the list renders.
                 </p>
                 <p>
-                  <b class="tag">Why</b> Line 122 sits inside <code>listAccounts(url)</code>. On the first load
-                  <code>url</code> is undefined, so it reads the <b>View</b> and <b>Search</b> fields and builds the Web
-                  API query: <code>$select</code>, <code>$orderby=name</code> and an optional <code>$filter</code>.
+                  <b class="tag">Why</b> The selected statement sits inside <code>listAccounts(url)</code>. On the first
+                  load <code>url</code> is undefined, so it reads the <b>View</b> and <b>Search</b> fields and builds
+                  the Web API query: <code>$select</code>, <code>$orderby=name</code> and an optional
+                  <code>$filter</code>.
                 </p>
                 <p>
                   <b class="tag">Check</b> The configuration attaches to <b>Edge</b>, not to Mirage: it is an
-                  <code>attach</code> to port 9222, with <code>webRoot</code> set to <code>portal</code>,
-                  <code>/</code> mapped to <code>portal/web-files</code>, a 60-second timeout,
+                  <code>msedge</code> <code>attach</code> to port 9222, with <code>webRoot</code> set to
+                  <code>portal</code>, source-map discovery under the workspace, a 60-second timeout,
                   <code>preLaunchTask</code> set to the debugger task and <code>skipFiles</code> for the platform's
                   <code>xrm-adx</code> scripts and minified files. The siblings attach to Lense's browser for an
                   environment you name when prompted, or to an already running browser.
@@ -3169,6 +3228,17 @@ npx --no-install paqvilo lense verify --config ./paqvilo.config.yml --site porta
                   there are not guaranteed. If Liquid in a template expands to a different number of lines, later
                   locations in a rendered inline script can move.
                 </p>
+                <p>
+                  Mirage also adds file-backed maps to model-driven Solution client resources. For original asset bytes
+                  without generated debugger trailers, set <code>mirage.sourceMaps: false</code> on the catalogue site,
+                  or <code>sourceMaps: false</code> in a Mirage project, and restart. The catalogue's top-level
+                  <code>sourceMaps</code> and <code>PAQVILO_SOURCE_MAPS</code> control Lense overlays separately. See
+                  the
+                  <a
+                    href="https://github.com/maksii/paqvilo/blob/main/mirage/docs/model-driven-customizations.md#pair-the-panel-with-a-standalone-local-app"
+                    >model-driven debugger workflow</a
+                  >.
+                </p>
               </aside>
               <div class="walk">
                 <p>
@@ -3178,7 +3248,7 @@ npx --no-install paqvilo lense verify --config ./paqvilo.config.yml --site porta
                   <b>Demo: Lense and browser debugger</b> attaches the same way to Lense's browser. In your own project,
                   keep <code>launch.json</code> and <code>tasks.json</code> in the portal project and attach to the
                   <code>--debug-port</code> your task starts; the docs' example is an <code>msedge</code> attach to port
-                  9223 with <code>resolveSourceMapLocations</code> excluding <code>node_modules</code>. Disconnecting
+                  9222 with <code>resolveSourceMapLocations</code> excluding <code>node_modules</code>. Disconnecting
                   the debugger leaves the browser running; close it before starting another session.
                 </p>
               </div>

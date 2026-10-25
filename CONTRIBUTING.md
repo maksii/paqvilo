@@ -14,11 +14,15 @@ npm run setup:repo
 
 Repository setup prepares the offline package-smoke cache and installs local Git hooks. If you use `npm ci --ignore-scripts` instead, also install Mirage dependencies and run `npm run cache:package` followed by `npm run hooks:install`. Hooks are tracked in `.githooks/` and configured only in this checkout. `npm run setup` retains the distribution dependency bootstrap; `setup:repo` adds contributor configuration. No consumer package-install lifecycle changes Git configuration.
 
+CI preparation may read registry metadata for the example's exact direct dependency pins: its manifest has no lockfile, and cached toolkit tarballs alone are insufficient. The example verification install and package smoke remain offline after preparation.
+
 Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), for example `fix(lense): preserve language identity` or `feat(mirage)!: change session contract`. Separate any body/footer from the subject with a blank line; explain breaking changes with `!` or a `BREAKING CHANGE:` footer. PR titles use the same convention because merges are squashed.
 
 Run `npm run format` to apply Prettier and `npm run quality` to check formatting, ESLint and workflow rules. Formatting uses Prettier's normal discovery, ignores and configuration, then replaces each changed file atomically while preserving its permissions. This avoids Windows truncate failures when another process has mapped a source file. Temporary files stay under ignored `.paqvilo/format/`.
 
 Before each commit, the pre-commit hook checks an isolated staged snapshot with `npm run quality`, release checks for packaged changes and site checks when relevant. Unstaged edits cannot make staged code pass. Before pushing, the pre-push hook runs `npm run ci:verify`, selecting suites with the same dependency-aware classifier as GitHub. Shared configuration, dependency, build and unknown paths select all suites; isolated Lense overlay changes select Lense. A clean source tree already verified with the same runtime and platform can reuse its exact-tree receipt. Run `npm run ci:verify -- --full` to prepare fixtures, run every unit/browser suite, audit all lockfiles, smoke-test the package and build the site. `commit-msg` enforces Conventional Commits. Required GitHub checks remain the enforcement boundary. A full run can qualify an entirely staged tree before splitting logical commits: worktree files must match the index, and no nonignored files may be untracked. The final clean HEAD tree must match that receipt before pre-push can reuse it.
+
+Explicit `--full` validation always executes fresh. Starting validation revokes the previous receipt, including when an audit, preparation step or suite subsequently fails. Only a successful run restores qualifying evidence; ordinary scoped pre-push validation may reuse a matching receipt after refreshing dependency audits and signatures. A local pass qualifies that source tree and local platform; report the hosted PR checks separately and confirm they are green on the final pushed commit.
 
 When reporting a bug, include the toolkit version, export format, command, expected behavior and relevant redacted diagnostics. A minimal invented fixture is more useful than a private portal export. For a documentation change, check that linked guides and copyable commands still match the CLI.
 
@@ -42,7 +46,17 @@ Use `npm run release:check` and `npm pack --ignore-scripts` to prepare a distrib
 See [the review lane](docs/code-review.md) for entry maps, synthetic canaries, retained contracts
 and the manual baseline policy.
 
-[CI](.github/workflows/ci.yml) runs on pushes to `main` and PRs to `main`. PRs select Lense, Mirage and example suites from changed paths and literal import consumers; shared browser assets and unknown/build/dependency changes expand the selection. Main pushes, manual full runs and release callers run every suite and package smoke. One pinned Node 24 runtime is used on Ubuntu 24.04 and Windows 2025; Mirage/example lanes also install the exact serviced .NET SDK from `global.json`. All changed-source PRs run the shared quality checks, including documentation-only PRs. The required `CI gate` validates both successes and intentional skips; description-only edits report separate metadata without replacing source validation. Use `npm run ci:verify -- --base origin/main` for matching local selection or `--full` before a release.
+[CI](.github/workflows/ci.yml) runs on pushes to `main` and PRs to `main`. PRs select Lense, Mirage and example suites from changed paths and literal import consumers; shared browser assets and unknown/build/dependency changes expand the selection. Main pushes, manual full runs and release callers run every suite and package smoke. One pinned Node 24 runtime is used on Ubuntu 24.04 and Windows 2025; Mirage/example lanes also install the exact serviced .NET SDK from `global.json`. All changed-source PRs run the shared quality checks, including documentation-only PRs. The required `CI gate` keeps the same name on every run and validates both successes and intentional skips. Use `npm run ci:verify -- --base origin/main` for matching local selection or `--full` before a release.
+
+PR selection compares the complete base-to-head diff, not just the latest commit. A documentation-only PR skips
+runtime matrices but retains quality and applicable release checks. Pushing a documentation commit onto a PR that
+also changes runtime code still selects those runtime and security lanes. A local commit starts no GitHub run.
+Editing the PR title, base or description reruns the applicable source validation; a later run must not omit or
+rename the required gate. Keep required source validation enabled.
+
+With GitHub CLI authenticated, run `npm run check:pr -- --pr <number>` before reporting the PR green. It checks the
+pushed HEAD, completed gates and GitHub's effective merge state. Successful historical job results alone are
+insufficient: `BLOCKED` or `UNKNOWN` is not a ready PR.
 
 [Security](.github/workflows/security.yml) scans JavaScript/TypeScript, GitHub Actions and the sample C# sources with CodeQL for relevant PR/main changes and weekly. Dependency review rejects newly introduced moderate-or-higher vulnerabilities. `Security gate` is required alongside `CI gate`. [Pages](.github/workflows/pages.yml) builds relevant site changes on PRs and deploys only from `main`. See the [repository admin guide](docs/repository-admin.md) for settings and promotion prerequisites.
 

@@ -194,6 +194,7 @@ export function parseDashboards(root, { lcid = 1033 } = {}) {
   const add = (node, form) => {
     const formId = id(childText(node, 'FormId') ?? childText(node, 'formid') ?? descendants(node, 'formid')[0]?.text);
     if (!formId || !form || found.has(formId)) return;
+    const ordinals = new Map(descendants(form, 'control').map((control, index) => [control, index]));
     const components = descendants(form, 'cell').flatMap((cell) => {
       const control = child(cell, 'control');
       if (!control) return [];
@@ -201,6 +202,12 @@ export function parseDashboards(root, { lcid = 1033 } = {}) {
         parameter = (name) => descendants(control, name)[0]?.text.trim();
       const base = {
         id: control.attrs.id ?? cell.attrs.id ?? classid,
+        sourceControl: {
+          id: control.attrs.id,
+          uniqueId: control.attrs.uniqueid,
+          ordinal: ordinals.get(control),
+          classId: control.attrs.classid,
+        },
         name: label(child(cell, 'labels'), lcid) ?? control.attrs.id ?? classid,
       };
       if (classid !== SUBGRID_CLASS)
@@ -330,6 +337,7 @@ export function embeddedAppComponents(root, { entity: enclosingEntity, lcid = 10
 export function compileForm(form, fields, lcid = 1033) {
   if (!form?.xml) return null;
   const root = parseSolutionXml(form.xml);
+  const controlOrdinals = new Map(descendants(root, 'control').map((control, index) => [control, index]));
   const custom = new Set(
     descendants(root, 'controlDescription')
       .filter((description) => descendants(description, 'customControl').length)
@@ -356,6 +364,7 @@ export function compileForm(form, fields, lcid = 1033) {
     // A dataset component binds <data-set name="…"> with its view and table; scalar properties stay field/value bindings.
     return {
       name: candidate.attributes.name,
+      ...(candidate.attributes.formFactor != null ? { formFactor: Number(candidate.attributes.formFactor) } : {}),
       bindings: Object.fromEntries(
         (parameters?.children ?? []).map((parameter) =>
           parameter.name === 'data-set'
@@ -382,10 +391,16 @@ export function compileForm(form, fields, lcid = 1033) {
   const sourceControl = (control) => ({
     id: control.attrs.id ?? null,
     uniqueId: control.attrs.uniqueid ?? null,
+    ordinal: controlOrdinals.get(control),
     classId: control.attrs.classid ?? null,
     attributes: { ...control.attrs },
     xml: serializeXml(control),
     customBindings: bindings.get(id(control.attrs.uniqueid)) ?? bindings.get(id(control.attrs.id)) ?? [],
+  });
+  const sourceStructure = (node) => ({
+    id: node.attrs.id ?? null,
+    name: node.attrs.name ?? null,
+    attributes: { ...node.attrs },
   });
   const sectionColumns = (section) =>
     /^[1-4]$/.test(section.attrs.columns ?? '')
@@ -422,6 +437,7 @@ export function compileForm(form, fields, lcid = 1033) {
   };
   const tabs = descendants(root, 'tab').map((tab) => ({
     id: tab.attrs.name ?? tab.attrs.id,
+    sourceStructure: sourceStructure(tab),
     label: label(child(tab, 'labels'), lcid) ?? tab.attrs.name ?? 'General',
     visible: tab.attrs.visible !== 'false',
     columnWidths: (child(tab, 'columns')?.children ?? [])
@@ -429,6 +445,7 @@ export function compileForm(form, fields, lcid = 1033) {
       .map((column) => Number.parseFloat(column.attrs.width) || 100),
     sections: descendants(tab, 'section').map((section) => ({
       ...(section.attrs.name ? { name: section.attrs.name } : {}),
+      sourceStructure: sourceStructure(section),
       label: label(child(section, 'labels'), lcid) ?? '',
       showLabel: section.attrs.showlabel !== 'false',
       visible: section.attrs.visible !== 'false',
@@ -519,6 +536,8 @@ export function compileForm(form, fields, lcid = 1033) {
           region,
           id: control.attrs.id ?? `${region}_${control.attrs.datafieldname?.toLowerCase()}`,
           name: control.attrs.datafieldname?.toLowerCase(),
+          sourceControl: sourceControl(control),
+          ...(pcfBinding(control) ? { pcf: pcfBinding(control) } : {}),
         })),
     )
     .filter((control) => control.name && fields[control.name]);

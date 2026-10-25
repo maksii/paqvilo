@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { createModelDrivenOverlay, modelDrivenOrigin } from '../lense/model-driven.mjs';
 import {
   modelDrivenReloadQueue,
@@ -40,6 +41,140 @@ const fake = (url, method = 'GET', resourceType = 'script', page) => {
     },
   };
 };
+
+test('local simulation overlays only declared hashed WebResources and PCF routes', async () => {
+  for (const localSimulation of [false, true]) {
+    const overlay = createModelDrivenOverlay({
+      origin: 'http://127.0.0.1:3210',
+      imported: imported('local'),
+      localSimulation,
+    });
+    for (const [routePath, expected] of [
+      ['/_apps/resources/script', 'local'],
+      ['/_apps/controls/c/bundle.js', 'pcf'],
+    ]) {
+      const request = fake('http://127.0.0.1:3210' + routePath);
+      await overlay.handle(request);
+      assert.equal(request.result.fallback, localSimulation ? 0 : 1);
+      if (localSimulation) assert.equal(request.result.response.body.toString(), expected);
+    }
+    for (const routePath of ['/_apps/resources/undeclared', '/_apps/api', '/_apps/controls/undeclared.js']) {
+      const request = fake('http://127.0.0.1:3210' + routePath);
+      await overlay.handle(request);
+      assert.equal(request.result.fallback, 1);
+    }
+    if (localSimulation) assert.equal(overlay.report().resources[0].currentRevisionApplied, 1);
+  }
+});
+
+test('acknowledged model-driven script responses carry proof of the exact raw and fulfilled bytes for every declared alias', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-model-script-proof-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'fixture.js'),
+    raw = Buffer.from('\ufeff// Unicode 🌿\r\ndocument.body.append(document.createElement("section"));\n');
+  await fs.writeFile(file, raw);
+  const data = imported(raw.toString());
+  data.assets.get('/_apps/resources/script').file = file;
+  const overlay = createModelDrivenOverlay({
+    origin: 'http://127.0.0.1:3210',
+    imported: data,
+    localSimulation: true,
+    mappings: [{ resource: 'x_script.js', path: '/assets/fixture.abc123.js' }],
+  });
+  const ids = new Set();
+  for (const alias of ['/WebResources/x_script.js', '/_apps/resources/script', '/assets/fixture.abc123.js']) {
+    const request = fake('http://127.0.0.1:3210' + alias);
+    await overlay.handle(request);
+    const { provenance, body } = request.result.response;
+    assert.equal(provenance.channel, 'lense-script-resource');
+    assert.ok(
+      !ids.has(provenance.proofId),
+      'each acknowledged request has its own proof even when aliases share one response buffer',
+    );
+    ids.add(provenance.proofId);
+    assert.equal(provenance.sourceRefs[0].contentRevision, createHash('sha256').update(raw).digest('hex'));
+    assert.equal(provenance.scriptProofs[0].responseHash, createHash('sha256').update(body).digest('hex'));
+    assert.equal(
+      provenance.scriptProofs[0].generatedHash,
+      createHash('sha256')
+        .update(body.toString().replace(/^\ufeff/, ''))
+        .digest('hex'),
+    );
+    assert.equal(provenance.scriptProofs[0].mappings[0].sourceStart, 1);
+    assert.equal(provenance.sourceRevision, '1');
+    const head = fake('http://127.0.0.1:3210' + alias, 'HEAD');
+    await overlay.handle(head);
+    assert.equal(head.result.response.provenance, undefined);
+  }
+});
+
+test('script proof metadata is lazy, bounded across newline-heavy assets and released by LRU eviction/reload', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-model-proof-budget-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const data = { resources: [], assets: new Map(), diagnostics: [] };
+  const add = async (name, text) => {
+    const file = path.join(directory, name),
+      bytes = Buffer.from(text);
+    await fs.writeFile(file, bytes);
+    data.resources.push({ name, type: 'script', url: '/_apps/resources/' + name });
+    data.assets.set('/_apps/resources/' + name, { name, file, data: bytes, mime: 'text/javascript' });
+  };
+  for (let number = 0; number < 8; number++) await add(`fixture_${number}.js`, `// fixture ${number}\n\n`);
+  await add('too-many-lines.js', '\n'.repeat(30));
+  await add('too-many-bytes.js', '// ' + 'x'.repeat(220));
+  const overlay = createModelDrivenOverlay({
+    origin: 'http://127.0.0.1:3210',
+    imported: data,
+    sourceMapLimits: { assetBytes: 1, totalBytes: 1 },
+    sourceProofLimits: { bodyBytes: 200, lineEntries: 12, entries: 2 },
+  });
+  assert.equal(overlay.report().scriptProvenance.cachedAssets, 0);
+  assert.ok(
+    [...data.assets.values()].every((asset) => !Object.getOwnPropertySymbols(asset.data).length),
+    'import does not annotate or index script bodies',
+  );
+  const get = async (name) => {
+    const route = fake('http://127.0.0.1:3210/WebResources/' + name);
+    await overlay.handle(route);
+    return route.result.response;
+  };
+  const first = await get('fixture_0.js'),
+    hit = await get('fixture_0.js');
+  assert.strictEqual(hit.body, first.body, 'the bounded clone is reused on a cache hit');
+  assert.notEqual(hit.provenance.proofId, first.provenance.proofId);
+  for (let number = 1; number < 8; number++) {
+    const response = await get(`fixture_${number}.js`),
+      state = overlay.report().scriptProvenance;
+    assert.ok(response.provenance);
+    assert.ok(state.cachedAssets <= 2 && state.bodyBytes <= 200 && state.lineEntries <= 12);
+  }
+  assert.notStrictEqual(
+    (await get('fixture_0.js')).body,
+    first.body,
+    'eviction releases the old cached response clone',
+  );
+  for (const [name, reason] of [
+    ['too-many-lines.js', 'script-proof-line-budget'],
+    ['too-many-bytes.js', 'script-proof-body-budget'],
+  ]) {
+    const response = await get(name);
+    assert.equal(response.provenance, undefined);
+    assert.strictEqual(
+      response.body,
+      data.assets.get('/_apps/resources/' + name).data,
+      'an omitted proof preserves the original executable buffer',
+    );
+    assert.equal(overlay.report().resources.find((item) => item.name === name).sourceAttribution.reason, reason);
+  }
+  assert.ok(
+    [...data.assets.values()].every((asset) => !Object.getOwnPropertySymbols(asset.data).length),
+    'accepted and rejected proof Symbols never live on import buffers',
+  );
+  overlay.replace(data);
+  assert.equal(overlay.report().scriptProvenance.cachedAssets, 0);
+  assert.equal(overlay.report().scriptProvenance.lineEntries, 0);
+  assert.equal((await get('fixture_0.js')).provenance.sourceRevision, '2');
+});
 
 test('Solution overlays admit exact declared resources and never intercept API mutations or another origin', async () => {
   const overlay = createModelDrivenOverlay({

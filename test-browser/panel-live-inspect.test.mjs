@@ -64,7 +64,7 @@ test(
       response
         .writeHead(200, { 'content-type': 'text/html' })
         .end(
-          `<!doctype html><html><head><title>Widget fixture</title><link rel="stylesheet" href="/widget.css?private=excluded"></head><body><h1>Widgets</h1><form data-entityname="fx_widget"><span data-form-layout='{"Id":"widget-edit","EntityName":"fx_widget"}'></span><label for="fx_title">Title</label><input id="fx_title" name="fx_title" value="private-value-must-not-be-inspected"><input type="password" id="password" value="private-password"></form><div class="subgrid" id="ChildGrid"><div class="entity-grid" data-selected-view="child-view"></div></div><a href="/other/" id="other">Other page</a><script src="/widget.js"></script></body></html>`,
+          `<!doctype html><html><head><title>Widget fixture</title><link rel="stylesheet" href="/widget.css?private=excluded"></head><body><h1>Widgets</h1><form data-formid="widget-edit" data-entityname="fx_widget"><span data-form-layout='{"Id":"widget-edit","EntityName":"fx_widget"}'></span><label for="fx_title">Title</label><input id="fx_title" name="fx_title" value="private-value-must-not-be-inspected"><input type="password" id="password" value="private-password"></form><div class="subgrid" id="ChildGrid"><div class="entity-grid" data-selected-view="child-view"></div></div><a href="/other/" id="other">Other page</a><script src="/widget.js"></script></body></html>`,
         );
     });
     let browser, panel, detach;
@@ -198,7 +198,14 @@ test(
     await scope.locator('[data-act="inspect-pick"]').click();
     const fieldBox = await page.locator('#fx_title').boundingBox();
     await page.mouse.click(fieldBox.x + 10, fieldBox.y + 10);
-    await scope.locator('[data-selected-identity]').getByText('fx_widget.fx_title', { exact: true }).waitFor();
+    await scope
+      .locator('[data-selected-identity] [data-evidence-role="owner"] strong')
+      .getByText('fx_title', { exact: true })
+      .waitFor();
+    const selected = await page.evaluate(() => document.getElementById('paqvilo-xray').__px.selectionState());
+    assert.equal(selected.identity.evidence.owner.status, 'exact');
+    assert.equal(selected.identity.evidence.owner.component.key, 'column:fx_widget:fx_title');
+    assert.equal(selected.identity.evidence.source.status, 'exact');
     assert.equal(
       await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled),
       false,

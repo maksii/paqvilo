@@ -1,8 +1,63 @@
 import { createLookupDialog } from './lookup-dialog.mjs';
+import { decodeModelDrivenProvenance } from './provenance-transport.mjs';
 import { renderControl, hasControl } from './controls.mjs';
 import { icon, navigationIcon, columnIcon } from './icons.mjs';
 import { createFormClientRuntime, evaluateRibbonRules, pageRequest, webResourcePage } from './client-runtime.mjs';
 import { renderPcfDataset } from './pcf-runtime.mjs';
+import { createModelDrivenProvenanceRegistry, modelDrivenKey, modelDrivenControlKey } from './provenance-registry.mjs';
+
+const provenance = createModelDrivenProvenanceRegistry(document);
+provenance.install();
+const modelBinding = (kind, id, extra = {}) => ({
+  key: modelDrivenKey(kind, id),
+  kind,
+  name: String(id ?? ''),
+  ...extra,
+});
+const provenanceFormId = () => (formId === 'generated' ? `${table.entity}:generated` : formId);
+const viewBinding = (source, id) =>
+  modelBinding(
+    'view',
+    source.views?.find((view) => view.id === id)?.source === 'generated' ? `${source.entity}:${id}` : id,
+    { entity: source.entity },
+  );
+const modelContexts = () => [
+  ...(table?.entity ? [modelBinding('table', table.entity)] : []),
+  ...(formId && !current ? [modelBinding('form', provenanceFormId())] : []),
+  ...(current && query.view ? [viewBinding(table, query.view)] : []),
+];
+function bindModel(
+  node,
+  binding,
+  {
+    context = modelContexts(),
+    facts = [],
+    lifetime = 'ui',
+    coverage = 'subtree',
+    lease,
+    sourceRefs = renderSourceRefs(binding.key),
+    availability = [...(table?.provenanceAvailability ?? []), ...(catalogue?.provenanceAvailability ?? [])],
+  } = {},
+) {
+  provenance.bind(
+    node,
+    { owner: binding, context, facts, lifetime, coverage, sourceKeys: [binding.key], sourceRefs, availability },
+    lease,
+  );
+  return node;
+}
+const renderSourceRefs = (key) =>
+  [...(table?.provenanceRefs ?? []), ...(catalogue?.provenanceRefs ?? [])].filter((ref) => ref.componentKey === key);
+const controlBinding = (cell, region = 'body') => ({
+  key: modelDrivenControlKey(provenanceFormId(), cell.sourceControl ?? cell.id ?? cell.name, region),
+  kind: cell.subgrid ? 'subgrid' : 'control',
+  name: cell.sourceControl?.id ?? cell.id ?? cell.name,
+  formId,
+  controlId: cell.sourceControl?.id ?? cell.id,
+  uniqueId: cell.sourceControl?.uniqueId,
+  region,
+  ...(cell.name ? { attribute: cell.name } : {}),
+});
 
 const $ = (selector) => document.querySelector(selector);
 const esc = (value) =>
@@ -169,6 +224,7 @@ async function api(path = '', options = {}) {
     headers: {
       'content-type': 'application/json',
       'x-sim-csrf': csrf,
+      'x-mirage-provenance-format': '1',
       ...(app?.id ? { 'x-mirage-app': app.id } : {}),
       ...options.headers,
     },
@@ -192,7 +248,7 @@ async function api(path = '', options = {}) {
       ...(Number.isFinite(errorCode) ? { errorCode } : {}),
     });
   }
-  return body;
+  return !path || path === '/index' || path.startsWith('/metadata/') ? decodeModelDrivenProvenance(body) : body;
 }
 async function ensureMetadata(entity, { signal, refresh = false } = {}) {
   const owner = catalogue;
@@ -1005,6 +1061,10 @@ function renderNavigation() {
         },
       );
       entry.setAttribute('aria-label', item.title);
+      bindModel(entry, modelBinding('navigation', `${app.id ?? app.uniqueName}:${item.id}`, { entity: item.entity }), {
+        lifetime: 'document',
+        context: [modelBinding('app', app.id ?? app.uniqueName)],
+      });
       if (item === activeItem) entry.setAttribute('aria-current', 'page');
       nav.append(entry);
     }
@@ -1278,6 +1338,10 @@ function renderCommands(mode) {
     // An exported zero-sequence modern form action precedes standard actions.
     // Other positions retain their fallback until their native slots are known.
     entry.dataset.solutionCommand = command.id;
+    bindModel(
+      entry,
+      modelBinding('command', `${table.entity}:${command.id}`, { entity: table.entity, commandId: command.id }),
+    );
     commands.insertBefore(
       entry,
       (command.sourceKind ?? command.source) === 'appaction' && command.sequence === 0 && firstFormAction
@@ -1290,6 +1354,9 @@ function renderCommands(mode) {
     commandObserver.observe(commands);
     fitFormCommands(commands);
   }
+  for (const [index, entry] of [...commands.querySelectorAll('button')].entries())
+    if (!entry.dataset.solutionCommand)
+      bindModel(entry, modelBinding('platform-command', `${mode}:${index}`, { sourceKind: 'platform' }));
 }
 function fitFormCommands(commands) {
   const children = [...commands.children],
@@ -1351,7 +1418,7 @@ function display(value, field, row, name) {
   }
   return String(value);
 }
-function gridCell(source, row, name) {
+function gridCell(source, row, name, context = modelContexts()) {
   // Grid headers and cells carry their column name (data-id), so tools such as Lense X-ray can name the column.
   const cell = document.createElement('td'),
     field = source.fields[name],
@@ -1359,6 +1426,11 @@ function gridCell(source, row, name) {
     text = display(raw, field, row, name);
   cell.title = text;
   cell.dataset.id = name;
+  const columnBinding = modelBinding('column', `${source.entity}:${name}`, { entity: source.entity, attribute: name });
+  bindModel(cell, columnBinding, {
+    context,
+    sourceRefs: (source.provenanceRefs ?? []).filter((ref) => ref.componentKey === columnBinding.key),
+  });
   if (field?.type === 'number' && !field.options) cell.className = 'numeric-cell';
   if (name === source.nameColumn)
     cell.append(
@@ -1439,9 +1511,22 @@ async function loadGrid() {
   }
 }
 function renderGrid() {
+  provenance.beginUI();
+  provenance.setContext({
+    pageType: 'entitylist',
+    entity: table.entity,
+    viewId: query.view,
+    appId: app.id,
+    state: 'ready',
+  });
+  renderCommands('grid');
   clearTimeout(gridSearchTimer);
   document.title = `${table.label} ${table.views.find((view) => view.id === query.view)?.name ?? ''} - ${app.name} · Mirage`;
   const content = $('#content');
+  bindModel(content, {
+    ...viewBinding(table, query.view),
+    sourceKind: table.views.find((item) => item.id === query.view)?.source ?? 'generated',
+  });
   content.replaceChildren();
   content.className = 'grid-content';
   const header = document.createElement('div');
@@ -1561,6 +1646,7 @@ function renderGrid() {
     th.append(heading);
     if (current.sort === name) th.setAttribute('aria-sort', current.direction === 'desc' ? 'descending' : 'ascending');
     headings.append(th);
+    bindModel(th, modelBinding('column', `${table.entity}:${name}`, { entity: table.entity, attribute: name }));
   }
   head.append(headings);
   grid.append(head, document.createElement('tbody'));
@@ -1574,6 +1660,7 @@ function renderGrid() {
         tr = document.createElement('tr');
       tr.classList.toggle('selected', selected.has(id));
       const selectCell = document.createElement('td');
+      bindModel(selectCell, modelBinding('platform-control', 'grid-row-selection', { sourceKind: 'platform' }));
       selectCell.className = 'selection';
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
@@ -2402,6 +2489,7 @@ async function loadRecord(id) {
   }
 }
 async function renderRecord() {
+  provenance.beginUI();
   if (loadedFormType === 4) {
     let banner = $('#record-status');
     if (!banner) {
@@ -2439,6 +2527,13 @@ async function renderRecord() {
   recordCard.append(header);
   const availableForms = appForms();
   const selectedForm = availableForms.find((form) => form.id === formId) ?? availableForms[0];
+  const actualForm = modelBinding(
+    'form',
+    selectedForm.id === 'generated' ? `${table.entity}:generated` : selectedForm.id,
+    { entity: table.entity, sourceKind: selectedForm.source },
+  );
+  provenance.bind(recordCard, { context: [actualForm, modelBinding('table', table.entity)] });
+  bindModel(header, modelBinding('platform-shell', 'record-header', { sourceKind: 'platform' }));
   const renderingForm = formId,
     renderingLifetime = formLifetime;
   await Promise.all(
@@ -2452,6 +2547,13 @@ async function renderRecord() {
     ].map((entity) => ensureMetadata(entity)),
   );
   if (renderGeneration !== generation || renderingForm !== formId || renderingLifetime.signal.aborted) return;
+  provenance.setContext({
+    pageType: 'entityrecord',
+    entity: table.entity,
+    formId: selectedForm.id,
+    appId: app.id,
+    state: 'ready',
+  });
   if (new URLSearchParams(location.search).has('formid')) {
     const url = new URL(location.href);
     url.searchParams.set('formid', selectedForm.id);
@@ -2511,6 +2613,7 @@ async function renderRecord() {
     const tabButton = button(tab.label, () => chooseTab(tab));
     tabButton.id = `record-tab-${index}`;
     tabButton.dataset.id = `tablist-${tab.id}`;
+    bindModel(tabButton, modelBinding('tab', `${provenanceFormId()}:${tab.id}`));
     tabButton.setAttribute('role', 'tab');
     tabButton.setAttribute('aria-controls', 'record-form');
     tabButton.setAttribute('aria-selected', String(tab.id === activeTab));
@@ -2595,6 +2698,7 @@ async function renderRecord() {
   tabObserver.observe(content);
   const form = document.createElement('form');
   form.id = 'record-form';
+  bindModel(form, actualForm, { coverage: 'self' });
   form.className = 'form-layout';
   form.setAttribute('role', 'tabpanel');
   form.setAttribute('aria-labelledby', `record-tab-${availableTabs.findIndex((tab) => tab.id === activeTab)}`);
@@ -2618,6 +2722,15 @@ async function renderRecord() {
     // Native-style markers (data-id) name each section, field and subgrid as the exported form does, for tools such as Lense X-ray.
     const panel = document.createElement('section');
     panel.className = 'form-section';
+    bindModel(
+      panel,
+      modelBinding(
+        'section',
+        `${provenanceFormId()}:${section.sourceStructure?.id ?? section.name ?? section.column}`,
+        { formId: selectedForm.id },
+      ),
+      { coverage: 'self' },
+    );
     if (section.name) panel.dataset.id = section.name;
     if (section.label && section.showLabel !== false) {
       const title = document.createElement('h2');
@@ -2654,6 +2767,9 @@ async function renderRecord() {
         const unsupported = document.createElement('p');
         unsupported.className = 'unsupported';
         unsupported.textContent = `${cell.label ?? 'Control'}: ${cell.reason ?? 'Unsupported control'}`;
+        bindModel(unsupported, controlBinding(cell), {
+          availability: [{ capability: 'control-rendering', reason: 'unsupported-local-control' }],
+        });
         position(unsupported);
         continue;
       }
@@ -2665,6 +2781,7 @@ async function renderRecord() {
       );
       const wrapper = document.createElement('div');
       wrapper.className = 'field';
+      bindModel(wrapper, controlBinding(cell));
       const label = document.createElement('label');
       label.htmlFor = 'field-' + field.name;
       label.textContent = field.label;
@@ -2740,8 +2857,59 @@ async function renderRecord() {
     for (const [key, value] of states) applyControlState(name, key, value);
   renderCommands('form');
 }
+function bindPcfState(
+  { element, state, componentName, formFactor, constructorName, viewId },
+  placement,
+  lease,
+  { context = modelContexts(), viewTable } = {},
+) {
+  const binding =
+    state === 'mounted'
+      ? modelBinding('pcf', componentName, {
+          formFactor,
+          mountState: state,
+          constructorName,
+          namespace: constructorName?.includes('.')
+            ? constructorName.slice(0, constructorName.lastIndexOf('.'))
+            : undefined,
+        })
+      : modelBinding('platform-control', `pcf-${state}`, { sourceKind: 'platform', mountState: state });
+  provenance.update(
+    element,
+    {
+      owner: binding,
+      context: [
+        placement,
+        ...context,
+        ...(state !== 'mounted' && componentName
+          ? [modelBinding('pcf', componentName, { relationship: 'configured-implementation' })]
+          : []),
+        ...(viewId && viewTable ? [{ ...viewBinding(viewTable, viewId), relationship: 'current-view' }] : []),
+      ],
+      facts:
+        state === 'mounted'
+          ? [
+              {
+                subject: binding.key,
+                predicate: 'mounted-form-factor',
+                dimension: 'context',
+                proof: 'mirage-registry',
+                binding,
+                reason: `pcf-form-factor-${Number.isSafeInteger(formFactor) ? formFactor : 'unknown'}`,
+              },
+            ]
+          : [],
+      sourceKeys: [binding.key],
+      sourceRefs: renderSourceRefs(binding.key),
+      availability: [{ capability: 'component-mount', reason: state }],
+    },
+    lease,
+  );
+}
 function renderFieldControl(cell, field, disabled) {
+  const lease = provenance.currentLease();
   return renderControl(field, record[field.name], {
+    provenance: (event) => bindPcfState(event, controlBinding(cell), lease),
     disabled,
     tables: catalogue.tables,
     lookup,
@@ -3039,6 +3207,16 @@ function createShellClient(selectedForm) {
 /** A form sub-grid, or a dashboard list (`cell.dashboard`: the same grid over the view query without a parent record). */
 function renderSubgrid(cell) {
   const panel = document.createElement('section');
+  const lease = provenance.currentLease();
+  const placement = cell.dashboard
+    ? {
+        key: `dashboard-${modelDrivenControlKey(cell.dashboardId, cell.sourceControl ?? cell.id)}`,
+        kind: 'dashboard-control',
+        dashboardId: cell.dashboardId,
+      }
+    : controlBinding(cell);
+  const enclosing = cell.dashboard ? [modelBinding('dashboard', cell.dashboardId)] : modelContexts();
+  bindModel(panel, placement, { lease, context: enclosing });
   panel.className = 'related-grid';
   if (cell.sourceControl?.id) panel.dataset.id = `dataSetRoot_${cell.sourceControl.id}`;
   const target = catalogue.tables[cell.subgrid.entity],
@@ -3089,8 +3267,28 @@ function renderSubgrid(cell) {
       ? (target.views.find((view) => view.isDefault) ?? target.views[0])
       : undefined);
   if (!view) return unavailable('The exported subgrid view is unavailable.');
+  const bindView = (state = 'ready') =>
+    provenance.update(
+      panel,
+      {
+        owner: placement,
+        context: [
+          ...enclosing,
+          ...(state === 'ready' ? [{ ...viewBinding(target, view.id), relationship: 'current-view' }] : []),
+        ],
+        sourceKeys: [placement.key],
+        sourceRefs: renderSourceRefs(placement.key),
+        availability: state === 'ready' ? [] : [{ capability: 'subgrid-current-view', reason: state }],
+      },
+      lease,
+    );
+  bindView();
   if (cell.pcf) {
     const component = renderPcfDataset(cell, {
+      provenance: (event) => {
+        bindView(event.state === 'mounted' ? 'ready' : event.state);
+        bindPcfState(event, placement, lease, { context: enclosing, viewTable: target });
+      },
       clientExtensions: catalogue.clientExtensions,
       staffContext: staffSession?.current?.context,
       webAPI: () => clientRuntime?.Xrm.WebApi,
@@ -3133,6 +3331,7 @@ function renderSubgrid(cell) {
       className: 'subgrid-view-picker',
       choose: async (id) => {
         view = views.find((candidate) => candidate.id === id);
+        bindView('pending');
         page = 1;
         sort = undefined;
         direction = 'asc';
@@ -3212,6 +3411,7 @@ function renderSubgrid(cell) {
   async function load() {
     const token = ++sequence;
     if (!panel.isConnected || lifetime.signal.aborted) return;
+    bindView('pending');
     results.setAttribute('aria-busy', 'true');
     results.inert = true;
     footer.textContent = 'Loading related records…';
@@ -3235,6 +3435,7 @@ function renderSubgrid(cell) {
       selectedRelated.clear();
       deleteRelated.hidden = true;
       results.replaceChildren();
+      bindView();
       const grid = document.createElement('table');
       grid.setAttribute('aria-label', label);
       const columnGroup = document.createElement('colgroup'),
@@ -3254,6 +3455,14 @@ function renderSubgrid(cell) {
         headings = document.createElement('tr'),
         selectHeading = document.createElement('th');
       selectHeading.className = 'selection';
+      const gridContext = [
+        ...enclosing,
+        modelBinding('table', target.entity),
+        { ...viewBinding(target, view.id), relationship: 'current-view' },
+      ];
+      bindModel(selectHeading, modelBinding('platform-control', 'subgrid-selection', { sourceKind: 'platform' }), {
+        context: gridContext,
+      });
       const all = document.createElement('input');
       all.type = 'checkbox';
       all.setAttribute('aria-label', `Select all ${label}`);
@@ -3263,6 +3472,11 @@ function renderSubgrid(cell) {
         const th = document.createElement('th'),
           arrow = result.sort === name ? (result.direction === 'desc' ? ' ↓' : ' ↑') : '';
         th.dataset.id = name;
+        const binding = modelBinding('column', `${target.entity}:${name}`, { entity: target.entity, attribute: name });
+        bindModel(th, binding, {
+          context: gridContext,
+          sourceRefs: (target.provenanceRefs ?? []).filter((ref) => ref.componentKey === binding.key),
+        });
         th.append(
           button(
             (target.fields[name]?.label ?? name) + arrow,
@@ -3297,6 +3511,9 @@ function renderSubgrid(cell) {
         const id = String(row[target.idColumn]),
           selection = document.createElement('td');
         selection.className = 'selection';
+        bindModel(selection, modelBinding('platform-control', 'subgrid-row-selection', { sourceKind: 'platform' }), {
+          context: gridContext,
+        });
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.setAttribute('aria-label', `Select ${display(row[target.nameColumn]) || id}`);
@@ -3308,7 +3525,7 @@ function renderSubgrid(cell) {
         });
         selection.append(checkbox);
         tr.append(selection);
-        for (const name of result.columns) tr.append(gridCell(target, row, name));
+        for (const name of result.columns) tr.append(gridCell(target, row, name, gridContext));
         body.append(tr);
       }
       all.addEventListener('change', () => {
@@ -3351,6 +3568,7 @@ function renderSubgrid(cell) {
         );
     } catch (error) {
       if (panel.isConnected && token === sequence) {
+        bindView('error');
         footer.textContent = error.message + ' ';
         footer.append(button('Try again', load));
       }
@@ -3585,6 +3803,7 @@ async function openPage(input, options = { target: 1 }, navigationItem) {
     const title = document.createElement('h2');
     title.textContent = options.title ?? '';
     const frame = document.createElement('iframe');
+    if (input.pageType === 'webresource') bindModel(frame, modelBinding('resource', input.webresourceName));
     frame.title = element.getAttribute('aria-label');
     frame.src =
       input.pageType === 'webresource'
@@ -3662,6 +3881,8 @@ async function renderDashboardPage(id) {
   if (routeGeneration !== generation) return;
   formLifetime?.abort();
   formLifetime = new AbortController();
+  provenance.setContext({ pageType: 'dashboard', dashboardId: dashboard.id, appId: app.id, state: 'ready' });
+  bindModel(content, modelBinding('dashboard', dashboard.id), { coverage: 'self', context: [] });
   const heading = document.createElement('h1');
   heading.className = 'dashboard-title';
   heading.textContent = dashboard.name;
@@ -3687,6 +3908,9 @@ async function renderDashboardPage(id) {
     content.append(
       renderSubgrid({
         dashboard: true,
+        dashboardId: dashboard.id,
+        sourceControl: component.sourceControl,
+        id: component.id,
         label: component.name,
         subgrid: {
           entity: component.entity,
@@ -3810,6 +4034,7 @@ async function renderCustomPage(name, parameters) {
   });
 }
 function renderWebResourcePage(name, data) {
+  provenance.beginUI();
   const page = webResourcePage(catalogue.clientExtensions, name);
   activeNavigationItem = app.navigation
     .flatMap((area) => area.groups.flatMap((group) => group.items))
@@ -3830,6 +4055,7 @@ function renderWebResourcePage(name, data) {
     return;
   }
   const frame = document.createElement('iframe');
+  bindModel(frame, modelBinding('resource', name));
   frame.className = 'webresource-page';
   frame.title = activeNavigationItem?.title ?? name;
   frame.src = page.url + (data != null ? '?data=' + encodeURIComponent(data) : '');
@@ -3941,6 +4167,7 @@ const sidePanes = {
   getSelectedPane: () => selectedPane,
 };
 async function loadRoute({ identityChange = false, preserveContent = false } = {}) {
+  provenance.beginUI();
   if (switchingStaff && !identityChange) return;
   const routeGeneration = ++generation,
     routeCatalogue = catalogue;

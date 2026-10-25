@@ -307,6 +307,11 @@ test('public model-driven Lense overlays native scripts and reloads on source sa
   let mutations = 0;
   const server = http.createServer((req, res) => {
     if (!['GET', 'HEAD'].includes(req.method)) mutations++;
+    if (req.url === '/long-poll') return;
+    if (req.url === '/worker.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript' }).end('postMessage("ready");');
+      return;
+    }
     if (req.url.startsWith('/observed?')) {
       seen.push(new URL(req.url, 'http://loopback').searchParams.get('value'));
       res.end('ok');
@@ -318,7 +323,9 @@ test('public model-driven Lense overlays native scripts and reloads on source sa
       return;
     }
     res.setHeader('content-type', 'text/html');
-    res.end(`<!doctype html><h1>Loading</h1><script src="${nativeResourcePath}?token=never-log-this"></script>`);
+    res.end(
+      `<!doctype html><h1>Loading</h1><script src="${nativeResourcePath}?token=never-log-this"></script><script>new Worker('/worker.js');fetch('/long-poll');</script>`,
+    );
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));

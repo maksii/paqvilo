@@ -2405,13 +2405,16 @@ async function renderForm(kind, name, context, options) {
       const ignoreLast = truthy(fieldOf(form, 'progressindicatorignorelaststep'));
       const counted = ignoreLast ? stepList.slice(0, -1) : stepList;
       const prepend = truthy(fieldOf(form, 'progressindicatorprependstepnum'));
-      const title = (step) =>
+      const title = (step, onSelection) =>
         escape(
-          formLabel(
+          formText(
             fieldOf(step.metadata ?? {}, 'title'),
             fieldOf(step.metadata ?? {}, 'name') ?? step.title ?? 'Step',
+            formLanguage,
+            onSelection,
           ),
         );
+      const progressBindings = [];
       let indicator;
       // Bootstrap 5 numeric indicator: the indicator div itself carries the
       // repeated "progress-numeric <position>" class and the total counts every chained step,
@@ -2430,16 +2433,51 @@ async function renderForm(kind, name, context, options) {
           indicator = `${percent ? '' : `<span>${percent}%</span>`}<div aria-valuenow="${percent}" aria-valuemax="100" aria-label="progressbar" class="bar progress-bar${percent ? '' : ' zero'}" aria-valuetext="${percent}%" tabindex="0" style="width: ${percent}%;" aria-valuemin="0" role="progressbar"><span aria-hidden="true">${percent}%</span></div>`;
         else
           indicator = `<div class="progress"><div class="bar progress-bar${percent ? '' : ' zero'}" style="width: ${percent}%;" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">${percent}%</div></div>`;
-      } else
-        indicator = `<ol class="progress list-group ${position}">${counted
-          .map((step, index) =>
-            index < stepIndex
-              ? bs.v5
-                ? `<li class="list-group-item text-muted list-group-item-success">${prepend ? `<span class="number">${index + 1}</span>` : ''}${title(step)}<span class="fa-solid fa-check" role="img" aria-label="Completed"></span></li>`
-                : `<li class="list-group-item text-muted list-group-item-success complete">${prepend ? `<span class="number">${index + 1}</span>` : ''}${title(step)}<span class="glyphicon glyphicon-ok"></span></li>`
-              : `<li class="list-group-item ${index === stepIndex ? 'active' : 'incomplete'}">${prepend ? `<span class="number">${index + 1}</span>` : ''}${title(step)}</li>`,
-          )
-          .join('')}</ol>`;
+      } else {
+        const prefix = `<ol class="progress list-group ${position}">`;
+        let length = prefix.length;
+        const items = counted.map((step, index) => {
+          const completed = index < stepIndex;
+          const opening = completed
+            ? bs.v5
+              ? '<li class="list-group-item text-muted list-group-item-success">'
+              : '<li class="list-group-item text-muted list-group-item-success complete">'
+            : `<li class="list-group-item ${index === stepIndex ? 'active' : 'incomplete'}">`;
+          let selection;
+          const label = title(step, (value) => {
+            selection = value;
+          });
+          const id = canonicalId(step.stepId),
+            record = step.metadata;
+          if (id && canonicalId(record?.id) === id) {
+            const sourceSelectors = [{ recordId: id, field: '$record' }];
+            if (!selection?.fallback)
+              sourceSelectors.push({
+                recordId: id,
+                field: 'title',
+                ...(Number.isSafeInteger(selection?.lcid) ? { lcid: selection.lcid } : {}),
+              });
+            else if (typeof fieldOf(record, 'name') === 'string') sourceSelectors.push({ recordId: id, field: 'name' });
+            progressBindings.push({
+              start: length,
+              end: length + opening.length,
+              tag: 'li',
+              attributes: [],
+              component: { kind: 'advanced-form-step', key: 'advanced-form-step:' + id, id, name: record.name },
+              sourceSelectors,
+            });
+          }
+          const icon = completed
+            ? bs.v5
+              ? '<span class="fa-solid fa-check" role="img" aria-label="Completed"></span>'
+              : '<span class="glyphicon glyphicon-ok"></span>'
+            : '';
+          const item = opening + (prepend ? `<span class="number">${index + 1}</span>` : '') + label + icon + '</li>';
+          length += item.length;
+          return item;
+        });
+        indicator = prefix + items.join('') + '</ol>';
+      }
       // Bootstrap 5 side columns repeat their class list; the top/bottom Bootstrap 5 column markup is not known.
       const v5Side =
         bs.v5 && (position === 'left' || position === 'right')
@@ -2454,9 +2492,15 @@ async function renderForm(kind, name, context, options) {
             : position === 'right'
               ? ' class=" col-sm-3 col-sm-push-9 col-md-2 col-md-push-10"'
               : '';
+      const progressPrefix = `<div id="${pageControl ? 'WebFormControl' : `WebFormControl_${compactId(definition?.id ?? name)}`}_ProgressIndicator"${column}>`;
       progress = {
-        html: `<div id="${pageControl ? 'WebFormControl' : `WebFormControl_${compactId(definition?.id ?? name)}`}_ProgressIndicator"${column}>${indicator}</div>`,
+        html: progressPrefix + indicator + '</div>',
         position,
+        bindings: progressBindings.map((binding) => ({
+          ...binding,
+          start: binding.start + progressPrefix.length,
+          end: binding.end + progressPrefix.length,
+        })),
       };
     }
     advancedSteps = schema.steps;
@@ -4468,7 +4512,20 @@ async function renderForm(kind, name, context, options) {
     kind === 'webform' && truthy(fieldOf(definition?.metadata ?? {}, 'savechangeswarningonclose'))
       ? `<input type="hidden" name="${attr(ids.buttons)}confirmOnExit" id="confirmOnExit" value="true"><input type="hidden" name="${attr(ids.buttons)}confirmOnExitMessage" id="confirmOnExitMessage" value="${attr(formLabel(fieldOf(definition?.metadata ?? {}, 'savechangeswarningmessage'), ''))}">`
       : '';
-  return `${runtime}<!--pp-native-form-->${captchaShown ? CAPTCHA_MARKER : ''}<div id="${attr(ids.wrapper)}"${viewState}>${script ? `<span><script type="text/javascript">${script}</script></span>` : ''}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === 'webform' ? '<div class="row">' : ''}${progressTop}${instructions ? `<div class="instructions">${instructions}</div>` : ''}${confirmOnExit}${formHtml}${truncated ? '' : progressBottom}${kind === 'webform' && !truncated ? '</div>' : ''}${validatorStartupScript(validators, summaryId, summaryHeader, group)}${richTextReady}${managedReady}${truncated ? RENDER_ABORT_MARKER : '</div>'}`;
+  const beforeProgress = `${runtime}<!--pp-native-form-->${captchaShown ? CAPTCHA_MARKER : ''}<div id="${attr(ids.wrapper)}"${viewState}>${script ? `<span><script type="text/javascript">${script}</script></span>` : ''}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === 'webform' ? '<div class="row">' : ''}`;
+  const formContent = `${instructions ? `<div class="instructions">${instructions}</div>` : ''}${confirmOnExit}${formHtml}`;
+  if (progress && (progressTop || (!truncated && progressBottom))) {
+    const offset = beforeProgress.length + (progressTop ? 0 : formContent.length);
+    for (const binding of progress.bindings ?? [])
+      options.onProgressRendered?.({ ...binding, start: offset + binding.start, end: offset + binding.end });
+  }
+  return (
+    beforeProgress +
+    progressTop +
+    formContent +
+    (truncated ? '' : progressBottom) +
+    `${kind === 'webform' && !truncated ? '</div>' : ''}${validatorStartupScript(validators, summaryId, summaryHeader, group)}${richTextReady}${managedReady}${truncated ? RENDER_ABORT_MARKER : '</div>'}`
+  );
 }
 
 function controlForSubmit(field) {

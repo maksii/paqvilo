@@ -77,10 +77,27 @@ test('header and footer columns compile to header_/footer_ controls', () => {
   const xml =
     '<form><header><rows><row><cell><control id="header_x_status" datafieldname="x_status"/></cell></row></rows></header><tabs><tab name="general"><columns><column><sections><section name="main"><rows><row><cell><control id="x_name" datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs><footer><rows><row><cell><control id="footer_x_owner" datafieldname="x_owner"/></cell></row></rows></footer></form>';
   const form = compileForm({ id: 'f', name: 'Information', xml }, fields);
-  assert.deepEqual(form.regionControls, [
-    { region: 'header', id: 'header_x_status', name: 'x_status' },
-    { region: 'footer', id: 'footer_x_owner', name: 'x_owner' },
-  ]);
+  assert.deepEqual(
+    form.regionControls.map(({ region, id, name }) => ({ region, id, name })),
+    [
+      { region: 'header', id: 'header_x_status', name: 'x_status' },
+      { region: 'footer', id: 'footer_x_owner', name: 'x_owner' },
+    ],
+  );
+  assert.deepEqual(
+    form.regionControls.map(({ sourceControl }) => ({
+      id: sourceControl.id,
+      ordinal: sourceControl.ordinal,
+      field: sourceControl.attributes.datafieldname,
+      uniqueId: sourceControl.uniqueId,
+    })),
+    [
+      { id: 'header_x_status', ordinal: 0, field: 'x_status', uniqueId: null },
+      { id: 'footer_x_owner', ordinal: 2, field: 'x_owner', uniqueId: null },
+    ],
+  );
+  for (const { sourceControl } of form.regionControls)
+    assert.match(sourceControl.xml, new RegExp(`id="${sourceControl.id}"`));
 });
 
 test('the en-US staff short date pattern is the .NET M/d/yyyy', () => {

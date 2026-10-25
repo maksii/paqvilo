@@ -1,5 +1,15 @@
+import { inspectionEvidenceRuntime, resolveInspectionEvidence } from './inspection-evidence.mjs';
+import { renderInspectionEvidence } from './inspection-evidence-ui.mjs';
+import { observePortalNode } from './portal-node-observation.mjs';
+
+// All embedded source is owned code; page data is passed as a separate argument.
+export const xrayUi = new Function(
+  'data',
+  `const {resolveInspectionEvidence}=(${inspectionEvidenceRuntime.toString()})(); const renderInspectionEvidence=(${renderInspectionEvidence.toString()}); const observePortalNode=(${observePortalNode.toString()}); return (${xrayBrowserImpl.toString()})(data);`,
+);
+
 // Self-contained browser function, like panelUi. Never reads page text or input values.
-export function xrayUi(data) {
+function xrayBrowserImpl(data) {
   if (location.origin !== data.origin || window.__paqviloRetiredSessions?.includes(data.token) || !document.body)
     return;
   let host = document.getElementById('paqvilo-xray');
@@ -14,6 +24,7 @@ export function xrayUi(data) {
   host.style.cssText =
     'all:initial!important;position:fixed!important;inset:0!important;width:100%!important;height:100%!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;pointer-events:none!important;overflow:visible!important;z-index:2147483647!important;';
   document.body.append(host);
+  const owningBody = document.body;
   const root = host.attachShadow({ mode: 'open' }),
     sheet = new CSSStyleSheet();
   sheet.replaceSync(`
@@ -25,7 +36,9 @@ export function xrayUi(data) {
     .scan-wash{position:fixed;inset:0;pointer-events:none;background:linear-gradient(180deg,transparent,color-mix(in srgb,var(--primary) 7%,transparent),transparent);height:45vh;bottom:auto;animation:xray-scan 2.8s ease-in-out infinite}.scan-state{position:fixed;left:50%;bottom:55px;transform:translateX(-50%);width:max-content;max-width:calc(100vw - 24px);padding:14px 18px;display:flex;align-items:center;gap:12px;background:var(--bg);border:1px solid var(--line);border-radius:8px;box-shadow:var(--shadow);pointer-events:auto}.scan-state strong{display:block;font-weight:600}.scan-state p{margin:2px 0 0;color:var(--muted);font-size:12px}.scan-state button{margin-left:8px;color:var(--link);border:1px solid var(--line)}.scan-orbit{display:inline-block;width:24px;height:24px;flex:none;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:xray-orbit .9s linear infinite}.scan-state.error .scan-orbit{animation:none;border-color:var(--muted);border-radius:4px}.scan-state[hidden],.scan-wash[hidden]{display:none}.ui.loading .tip{display:none}.ui.loading .legend{opacity:.7}@keyframes xray-scan{from{transform:translateY(-100%)}to{transform:translateY(100vh)}}@keyframes xray-orbit{to{transform:rotate(360deg)}}
     @media(max-width:850px){.bar{top:8px;gap:3px;padding:5px}.bar .hint,.brand span{display:none}.brand{padding-right:3px}.bar button{font-size:11.5px;padding:4px}.bar select{max-width:118px;font-size:11px}.card{top:auto;bottom:44px;max-height:46dvh;width:380px;right:8px}.scan-state{bottom:55px}.ui:has(.card:not([hidden])) .scan-state{bottom:auto;top:55px}.legend{bottom:8px;font-size:10px}.legend .hint{display:none}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important}.scan-wash{transform:translateY(25vh)}}
   `);
-  root.adoptedStyleSheets = [sheet];
+  const evidenceSheet = new CSSStyleSheet();
+  evidenceSheet.replaceSync(renderInspectionEvidence(null, { part: 'styles' }));
+  root.adoptedStyleSheets = [sheet, evidenceSheet];
   root.innerHTML = `<div class="ui" hidden><div class="shield"></div><div class="marks"></div><div class="bar" role="toolbar" aria-label="Lense X-ray"><div class="brand"><strong>paqvilo</strong><span>X-ray</span></div><button data-action="mode" aria-pressed="true">Inspect</button><select aria-label="Highlight layer"><option value="all">All sources</option><option value="data">Forms & data</option><option value="content">Templates & content</option><option value="none">Selection only</option></select><button data-action="details" aria-pressed="true" title="Show or hide source details">Details</button><button data-action="refresh" aria-label="Refresh source inspection" title="Refresh sources and component bindings">↻</button><span class="hint"><kbd>Ctrl</kbd> interact</span><button class="exit" data-action="exit" aria-label="Turn off X-ray">×</button></div><aside class="card" aria-label="Lense source details"></aside><div class="tip" hidden></div><div class="legend"><i class="tone-field"></i>Fields<i class="tone-component"></i>Forms & views<i class="tone-content"></i>Source markup <span class="hint"> · click to select · <kbd>Esc</kbd> back · background limits: 800 candidates / 250 outlines</span></div></div>`;
 
   const ui = root.querySelector('.ui'),
@@ -34,8 +47,10 @@ export function xrayUi(data) {
     tip = root.querySelector('.tip');
   const backgroundMarks = document.createElement('div'),
     selectedMark = document.createElement('div'),
+    selectedFormMark = document.createElement('div'),
     hoverMark = document.createElement('div');
   selectedMark.className = 'mark selected';
+  selectedFormMark.className = 'mark enclosing-form';
   hoverMark.className = 'mark hover';
   marks.append(backgroundMarks);
   const wash = document.createElement('div');
@@ -52,6 +67,51 @@ export function xrayUi(data) {
   const lifetime = new AbortController(),
     listen = (target, type, fn, options = {}) =>
       target.addEventListener(type, fn, { ...options, signal: lifetime.signal });
+  for (const type of [
+    'click',
+    'dblclick',
+    'auxclick',
+    'pointerdown',
+    'pointerup',
+    'mousedown',
+    'mouseup',
+    'keydown',
+    'keyup',
+    'keypress',
+  ])
+    listen(root, type, (event) => event.stopPropagation());
+  const documentIds = new WeakMap(),
+    frameIds = new WeakMap(),
+    anchorIds = new WeakMap();
+  const uiEpoch = (Number.isSafeInteger(window.__paqviloInspectionEpoch) ? window.__paqviloInspectionEpoch : 0) + 1;
+  window.__paqviloInspectionEpoch = uiEpoch;
+  const opaqueId = (map, value, prefix) => {
+    if (!map.has(value))
+      map.set(
+        value,
+        prefix +
+          '-' +
+          [...crypto.getRandomValues(new Uint32Array(4))].map((part) => part.toString(16).padStart(8, '0')).join(''),
+      );
+    return map.get(value);
+  };
+  const getSelectionScope = (node) => {
+    const doc = node?.ownerDocument ?? document,
+      embedding = frameOf(doc);
+    return {
+      documentId: opaqueId(documentIds, doc, 'document'),
+      frameId: embedding ? opaqueId(frameIds, embedding, 'frame') : 'top',
+      uiEpoch,
+      sourceRevision: String(
+        d.sourceRevision ??
+          (d.inspection ?? d.mirage)?.sourceRevision ??
+          report?.sourceRevision ??
+          (d.inspection ?? d.mirage)?.version ??
+          d.catalogVersion ??
+          0,
+      ),
+    };
+  };
   const viewListeners = [],
     frameViews = new Map(),
     frameElements = new Map(),
@@ -87,6 +147,7 @@ export function xrayUi(data) {
         frameShadowHooks.delete(doc);
         frameViews.delete(doc);
       }
+    if (selected && !liveNode(selected)) detachSelection('frame-document-replaced');
     for (const [embedding, controller] of frameElements)
       if (!embedding.isConnected) {
         controller.abort();
@@ -190,6 +251,23 @@ export function xrayUi(data) {
     pickGesture = false,
     pendingPick = null,
     warmup = false;
+  let selectionGeneration = 0,
+    retainedOneShot = false,
+    lastIdentity = null,
+    lastScope = null,
+    anchorQueued = false;
+  const retainedObserver = new MutationObserver((records) => {
+    if (!selected || disposed || !records.some((record) => !own(record.target) && record.attributeName !== 'style'))
+      return;
+    if (anchorQueued) return;
+    anchorQueued = true;
+    queueMicrotask(() => {
+      anchorQueued = false;
+      if (!selected || disposed) return;
+      if (!liveNode(selected)) detachSelection('node-replaced');
+      else if (!enabled) notifySelection(true, 'node-identity-changed');
+    });
+  });
   const inspectionError = () => {
     const inspection = d.inspection ?? d.mirage;
     return (
@@ -773,6 +851,8 @@ export function xrayUi(data) {
       formCertain,
       listCertain,
       grid,
+      exportedForms: allForms,
+      exportedLists: allLists,
     };
   };
   const framework =
@@ -988,6 +1068,7 @@ export function xrayUi(data) {
       list: 'List',
       script: 'Script',
       field: 'Column',
+      column: 'Dataverse column',
       view: 'View',
       table: 'Table',
       image: 'Image',
@@ -1000,7 +1081,7 @@ export function xrayUi(data) {
     rows
       .map(
         (item) =>
-          `<div class="source"><div class="name"><b>${esc(item.name ?? item.label ?? 'Source')}</b><span class="badge">${esc(kindName(item.kind))}</span></div><div class="mono">${esc(item.ref ?? item.url ?? 'Source unavailable')}${item.lines?.length ? ':' + item.lines.join(', ') : item.line ? ':' + Number(item.line) : ''}</div>${item.evidenceLabel || evidence ? `<div class="note">${esc(item.evidenceLabel ?? evidence)}</div>` : ''}${item.ref ? `<div class="actions"><button data-action="open" data-ref="${esc(item.ref)}" data-line="${Number(item.line) || ''}" data-find="${esc(item.fieldPath && /powerpagecomponent\.xml$/i.test(item.ref) ? '"' + item.fieldPath + '":' : (item.find ?? ''))}">Open source ↗</button><button data-action="copy" data-copy="${esc(item.path ?? item.sourceFile ?? item.ref)}">Copy path</button>${item.depth ? `<button data-action="source-region" data-selector="${esc(item.selector)}">Select source region</button>` : ''}</div>` : ''}</div>`,
+          `<div class="source"><div class="name"><b>${esc(item.name ?? item.label ?? 'Source')}</b><span class="badge">${esc(kindName(item.kind))}</span></div><div class="mono">${esc(item.ref ?? item.url ?? 'Source unavailable')}</div>${item.evidenceLabel || evidence ? `<div class="note">${esc(item.evidenceLabel ?? evidence)}</div>` : ''}${item.ref ? `<div class="actions"><button data-action="open" data-ref="${esc(item.ref)}">Browse file ↗</button><button data-action="copy" data-copy="${esc(item.path ?? item.sourceFile ?? item.ref)}">Copy path</button>${item.depth ? `<button data-action="source-region" data-selector="${esc(item.selector)}">Select matching ancestor</button>` : ''}</div>` : ''}</div>`,
       )
       .join('');
   const disclosureState = new Map(),
@@ -1016,307 +1097,774 @@ export function xrayUi(data) {
         : '')
     );
   };
-  const identify = (node) => {
-    const b = binding(node),
-      matches = sourceMatches(node).filter((item) => item.kind !== 'script');
+  const emptyEvidenceRefs = [],
+    modelHydrations = new Map();
+  let indexedEvidenceRows = null,
+    evidenceIndex = null,
+    evidenceReport = null;
+  const sourceEvidenceIndex = () => {
+    if (evidenceReport !== report) {
+      evidenceReport = report;
+      modelHydrations.clear();
+    }
+    const rows = Array.isArray(report?.portalSources)
+      ? report.portalSources
+      : Array.isArray(report?.sourceRefs)
+        ? report.sourceRefs
+        : emptyEvidenceRefs;
+    if (rows !== indexedEvidenceRows) {
+      indexedEvidenceRows = rows;
+      evidenceIndex = { rows, byId: new Map(), byRef: new Map(), byComponent: new Map() };
+      for (const ref of rows) {
+        evidenceIndex.byId.set(ref.id, ref);
+        if (!evidenceIndex.byRef.has(ref.ref)) evidenceIndex.byRef.set(ref.ref, []);
+        evidenceIndex.byRef.get(ref.ref).push(ref);
+        if (ref.componentKey) {
+          if (!evidenceIndex.byComponent.has(ref.componentKey)) evidenceIndex.byComponent.set(ref.componentKey, []);
+          evidenceIndex.byComponent.get(ref.componentKey).push(ref);
+        }
+      }
+    }
+    return evidenceIndex;
+  };
+  const portalHydrations = new Set(),
+    selectionAnchors = new WeakMap();
+  const hydrateModelSelection = (node, scope, anchorGeneration, packets) => {
+    if (!d.modelDriven || disposed) return [];
+    const active = {},
+      componentKeys = new Set(),
+      observedRefs = packets.flatMap((packet) => packet.sourceRefs ?? []);
+    for (const packet of packets) {
+      for (const name of ['entity', 'table', 'formId', 'viewId'])
+        if (typeof packet.active?.[name] === 'string' && packet.active[name].length <= 256)
+          active[name] ??= packet.active[name];
+      for (const name of ['controlNames', 'controlKeys', 'componentKeys'])
+        if (Array.isArray(packet.active?.[name]))
+          active[name] = [
+            ...new Set([
+              ...(active[name] ?? []),
+              ...packet.active[name].filter((value) => typeof value === 'string' && value.length <= 8192),
+            ]),
+          ].slice(0, 128);
+      for (const value of packet.sourceKeys ?? [])
+        if (typeof value === 'string' && value.length <= 8192 && componentKeys.size < 128) componentKeys.add(value);
+    }
+    for (const ref of observedRefs)
+      if (typeof ref.componentKey === 'string' && ref.componentKey.length <= 8192 && componentKeys.size < 128)
+        componentKeys.add(ref.componentKey);
+    const sameScope = (value) =>
+      value && ['documentId', 'frameId', 'uiEpoch', 'sourceRevision'].every((name) => value[name] === scope[name]);
+    const key = JSON.stringify([scope, anchorGeneration, active, [...componentKeys].sort()]);
+    const capturedReport = report;
+    let cached = modelHydrations.get(key);
+    if (!cached && observedRefs.length)
+      cached = [...modelHydrations.values()].find(
+        (entry) =>
+          entry.status === 'ready' &&
+          entry.report === report &&
+          entry.anchorGeneration === anchorGeneration &&
+          sameScope(entry.scope) &&
+          observedRefs.every((ref) => entry.refs.some((current) => current.id === ref.id)),
+      );
+    const currentRefs = cached?.status === 'ready' ? cached.refs : [];
+    for (const packet of packets)
+      packet.sourceRefs = (packet.sourceRefs ?? []).map((ref) => {
+        const current = currentRefs.find((item) => item.id === ref.id);
+        return {
+          ...ref,
+          currentState:
+            ref.currentState === 'unavailable' || current?.currentState === 'unavailable'
+              ? 'unavailable'
+              : current
+                ? 'available'
+                : 'pending',
+          ...(current ? { currentContentRevision: current.currentContentRevision ?? current.contentRevision } : {}),
+        };
+      });
+    if (node !== selected || !componentKeys.size || cached) return currentRefs;
+    if (modelHydrations.size >= 32) modelHydrations.delete(modelHydrations.keys().next().value);
+    const entry = { status: 'pending', scope, anchorGeneration, report: capturedReport, refs: [] };
+    modelHydrations.set(key, entry);
+    queueMicrotask(async () => {
+      let timer;
+      try {
+        const current = host.__px?.selectionState?.();
+        if (
+          disposed ||
+          report !== capturedReport ||
+          selected !== node ||
+          current?.anchorGeneration !== anchorGeneration ||
+          !sameScope(getSelectionScope(node))
+        )
+          return;
+        const api = Object.getOwnPropertyDescriptor(window, '__paqviloModelPanelApi')?.value;
+        if (typeof api !== 'function') {
+          entry.status = 'unavailable';
+          return;
+        }
+        const answer = await Promise.race([
+          api({
+            token: d.token,
+            name: 'provenance',
+            body: { version: 1, scope, anchorGeneration, active, componentKeys: [...componentKeys] },
+          }),
+          new Promise((resolve) => {
+            timer = setTimeout(resolve, 10000, null);
+          }),
+        ]);
+        if (
+          disposed ||
+          report !== capturedReport ||
+          selected !== node ||
+          !liveNode(node) ||
+          host.__px?.selectionState?.().anchorGeneration !== anchorGeneration ||
+          !sameScope(getSelectionScope(node)) ||
+          !answer?.ok ||
+          answer.version !== 1 ||
+          !sameScope(answer.scope) ||
+          answer.anchorGeneration !== anchorGeneration
+        ) {
+          entry.status = 'unavailable';
+          return;
+        }
+        let bytes = 0;
+        entry.refs = (Array.isArray(answer.sourceRefs) ? answer.sourceRefs : []).slice(0, 128).filter((ref) => {
+          if (!ref || typeof ref.id !== 'string' || ref.id.length > 8192 || ref.sourceRevision !== scope.sourceRevision)
+            return false;
+          bytes += JSON.stringify(ref).length;
+          return bytes <= 256 * 1024;
+        });
+        entry.status = 'ready';
+        host.__px?.refreshSelection?.('source-details-ready');
+      } catch {
+        entry.status = 'unavailable';
+      } finally {
+        clearTimeout(timer);
+      }
+    });
+    return currentRefs;
+  };
+  const queryElementEvidence = (node, b, matches, scope) => {
+    const anchorGeneration = host.__px?.selectionState?.().anchorGeneration ?? 0;
+    const packets = [],
+      reasons = [];
+    const view = node.ownerDocument.defaultView;
+    const slots = [d.provenanceSlot, d.provenance?.slot].filter(Boolean);
+    const readers = [
+      ...(d.modelDriven ? [view?.__paqviloModelDrivenProvider] : []),
+      ...slots.map((slot) => view?.[slot]),
+      ...(d.domProvenanceSlot ? [view?.[d.domProvenanceSlot]] : []),
+    ];
+    for (const reader of new Set(readers.filter(Boolean))) {
+      try {
+        const query = reader.query;
+        if (typeof query !== 'function') continue;
+        const packet = query(node, { scope, anchorGeneration });
+        const after = getSelectionScope(node);
+        if (
+          !packet ||
+          packet.version !== 1 ||
+          packet.scope?.documentId !== scope.documentId ||
+          packet.scope?.frameId !== scope.frameId ||
+          packet.scope?.uiEpoch !== scope.uiEpoch ||
+          packet.scope?.sourceRevision !== scope.sourceRevision ||
+          packet.anchorGeneration !== anchorGeneration ||
+          JSON.stringify(after) !== JSON.stringify(scope)
+        ) {
+          reasons.push('provider-scope-changed');
+          continue;
+        }
+        packets.push(packet);
+      } catch {
+        reasons.push('provider-read-unavailable');
+      }
+    }
+    const index = sourceEvidenceIndex();
+    if (!report?.modelDriven) {
+      try {
+        packets.push(
+          observePortalNode(node, {
+            scope,
+            bindings: {
+              ...b,
+              forms: b.exportedForms,
+              lists: b.exportedLists,
+              views: report?.views ?? [],
+              columns: report?.columns ?? b.fields,
+            },
+            sourceRefs: index.rows,
+            sourceRefsByComponent: index.byComponent,
+          }),
+        );
+      } catch {
+        reasons.push('portal-structure-unavailable');
+      }
+    }
+    const facts = packets.flatMap((packet) =>
+      [...(packet.facts ?? []), ...(packet.contextFacts ?? []).map((fact) => ({ ...fact, dimension: 'context' }))].map(
+        (fact) => ({
+          ...fact,
+          sourceRefBindings: (packet.sourceRefs ?? [])
+            .filter((ref) => (fact.sourceRefIds ?? []).includes(ref.id))
+            .map((ref) => ({ id: ref.id, sourceRevision: ref.sourceRevision, contentRevision: ref.contentRevision })),
+        }),
+      ),
+    );
+    const hostPage = report?.page;
+    if (!d.modelDriven && (hostPage?.id ?? hostPage?.recordId) && liveNode(node))
+      facts.push({
+        id: 'selected-export-host-page',
+        scope,
+        dimension: 'enclosing',
+        proof: 'export-definition',
+        subject: 'selection',
+        predicate: node.ownerDocument === document ? 'configured-webpage' : 'webpage-hosting-selected-frame',
+        binding: {
+          kind: 'webpage',
+          key: 'webpage:' + (hostPage.id ?? hostPage.recordId),
+          id: hostPage.id ?? hostPage.recordId,
+          name: hostPage.name ?? 'Host webpage',
+        },
+        label:
+          node.ownerDocument === document ? 'Selected export webpage' : 'Selected export webpage hosting this frame',
+      });
+    const hydratedCurrentSourceRefs = hydrateModelSelection(node, scope, anchorGeneration, packets);
+    const sourceRefs = packets.flatMap((packet) => packet.sourceRefs ?? []);
+    const mode = packets.some((packet) => packet.mode === 'local') || d.mirageMode ? 'local' : 'live';
+    const initial = resolveInspectionEvidence({
+      version: 1,
+      scope,
+      mode,
+      node: { connected: liveNode(node) },
+      facts,
+      sourceRefs,
+    });
+    const anchors = packets.flatMap((packet) => packet.componentAnchors ?? []);
+    selectionAnchors.set(node, anchors);
+    if (
+      !d.modelDriven &&
+      node === selected &&
+      node.ownerDocument !== document &&
+      node.matches('input:not([type=hidden]):not([type=password]),select,textarea,output,label') &&
+      (initial.owner.status === 'unavailable' || initial.source.status === 'unavailable') &&
+      initial.enclosing.some((row) => row.component?.kind === 'table')
+    ) {
+      const key = JSON.stringify([scope, anchorGeneration]);
+      if (!portalHydrations.has(key)) {
+        if (portalHydrations.size >= 32) portalHydrations.delete(portalHydrations.values().next().value);
+        portalHydrations.add(key);
+        queueMicrotask(() => {
+          if (
+            !disposed &&
+            selected === node &&
+            liveNode(node) &&
+            JSON.stringify(getSelectionScope(node)) === JSON.stringify(scope)
+          )
+            dispatch('refresh');
+        });
+      }
+    }
+    // Legacy metadata is useful search context. It cannot label itself runtime proof.
+    if (initial.owner.status !== 'exact' && initial.owner.status !== 'conflicting') {
+      for (const item of b.fields ?? [])
+        facts.push({
+          id: 'column-candidate:' + item.entity + ':' + item.name,
+          scope,
+          dimension: 'owner',
+          proof: 'native-dom',
+          subject: 'selection',
+          predicate: 'identity',
+          binding: {
+            kind: 'field',
+            key: 'column:' + item.entity + ':' + item.name,
+            entity: item.entity,
+            name: item.name,
+          },
+        });
+      if (!b.fields?.length && b.grid?.name)
+        facts.push({
+          id: 'unresolved-grid-column',
+          scope,
+          dimension: 'owner',
+          proof: 'native-dom',
+          subject: 'selection',
+          predicate: 'identity',
+          binding: {
+            kind: 'column',
+            key: 'column:' + (b.entity ?? b.grid.table ?? 'unknown') + ':' + b.grid.name,
+            entity: b.entity ?? b.grid.table,
+            name: b.grid.name,
+          },
+          reason: 'column-definition-unavailable',
+        });
+      for (const item of b.code ?? [])
+        facts.push({
+          id: 'pcf-candidate:' + (item.schemaName ?? item.name),
+          scope,
+          dimension: 'owner',
+          proof: 'declared-include',
+          subject: 'selection',
+          predicate: 'identity',
+          binding: { kind: 'pcf', key: 'pcf:' + (item.schemaName ?? item.name), name: item.schemaName ?? item.name },
+        });
+    }
     if (b.conflict)
-      return {
-        title: 'Conflicting table context',
-        kind: 'Unresolved binding',
-        sub: 'The rendered table and exported component disagree.',
-        b,
-        matches,
-      };
-    if (b.fields.length === 1) {
-      const field = b.fields[0];
-      return {
-        title: field.label ?? field.name,
-        kind: 'Dataverse column' + (b.entity ? '' : ' · candidate'),
-        sub: field.entity + '.' + field.name,
-        b,
-        matches,
-      };
+      facts.push({
+        id: 'legacy-context-conflict',
+        scope,
+        dimension: 'context',
+        kind: 'api-page-context',
+        reason: 'legacy-context-disagreement',
+        label: 'Navigation/export hints disagree; direct current bindings are evaluated separately',
+      });
+    for (const item of [...(b.forms ?? []), ...(b.views ?? []), ...(b.lists ?? [])]) {
+      if (
+        facts.some(
+          (fact) =>
+            ['owner', 'enclosing'].includes(fact.dimension) &&
+            fact.proof !== 'declared-include' &&
+            norm(fact.binding?.id ?? fact.binding?.recordId) === norm(item.id ?? item.recordId),
+        )
+      )
+        continue;
+      facts.push({
+        id: 'enclosing-candidate:' + (item.id ?? item.recordId),
+        scope,
+        dimension: 'enclosing',
+        proof: 'declared-include',
+        predicate: 'declares',
+        binding: {
+          kind: item.kind ?? 'form',
+          key: (item.kind ?? 'form') + ':' + (item.id ?? item.recordId),
+          id: item.id ?? item.recordId,
+          name: item.name,
+          entity: item.entity,
+        },
+      });
     }
-    if (b.grid && !b.fields.length)
-      return {
-        title: b.grid.name,
-        kind: 'Declared grid column',
-        sub: b.entity ? `${b.entity}.${b.grid.name} · definition unavailable` : 'Table binding unknown',
-        b,
-        matches,
-      };
-    if (b.code.length === 1) {
-      const item = b.code[0];
-      return { title: item.schemaName ?? item.name, kind: 'Code component', sub: item.entity ?? '', b, matches };
+    for (const [position, item] of matches.entries()) {
+      const field =
+        item.sourceField ??
+        (Array.isArray(item.fieldPath) ? item.fieldPath.at(-1) : item.fieldPath) ??
+        { template: 'source', snippet: 'value', page: 'copy' }[item.kind];
+      const logicalField = (value) =>
+        String(value ?? '')
+          .replace(/^(?:adx_|mspp_)/, '')
+          .toLowerCase();
+      const referenced = item.sourceRefId ? index.byId.get(item.sourceRefId) : null;
+      const semantic = (item.ref ? (index.byRef.get(item.ref) ?? []) : []).filter(
+        (ref) =>
+          (!item.recordId || norm(ref.recordId) === norm(item.recordId)) &&
+          (!field || logicalField(ref.fieldPath?.at(-1)) === logicalField(field)) &&
+          (!item.languageId || norm(ref.languageId) === norm(item.languageId)) &&
+          (item.lcid === undefined || ref.lcid === item.lcid),
+      );
+      // One file can contain thousands of unrelated records/fields/languages.
+      // A filename never selects all of them as this node's candidate identity.
+      const selected = referenced ? [referenced] : item.recordId && semantic.length === 1 ? semantic : [];
+      const refs = selected.length
+        ? selected
+        : [{ id: 'static:' + position, ref: item.ref, kind: item.kind, name: item.name }];
+      sourceRefs.push(...refs);
+      facts.push({
+        id: 'static-match:' + position,
+        scope,
+        dimension: item.kind === 'script' ? 'context' : 'source',
+        kind: item.kind === 'script' ? 'script-reference' : 'static-selector',
+        predicate: item.kind === 'script' ? 'declares' : 'possible-markup',
+        sourceRefIds: refs.map((ref) => ref.id),
+        sourceRefBindings: refs.map((ref) => ({
+          id: ref.id,
+          sourceRevision: ref.sourceRevision,
+          contentRevision: ref.contentRevision,
+        })),
+        label: item.evidenceLabel ?? 'Static export match; rendered ownership unverified',
+      });
     }
-    if (b.forms.length === 1 && b.native.length !== 1)
-      return {
-        title: b.forms[0].name,
-        kind: kindName(b.forms[0].kind ?? 'basic-form') + (b.formCertain ? '' : ' · candidate'),
-        sub: b.forms[0].entity ?? '',
-        b,
-        matches,
-      };
-    if (b.lists.length === 1)
-      return {
-        title: b.lists[0].name,
-        kind: 'Power Pages list' + (b.listCertain ? '' : ' · candidate'),
-        sub: b.lists[0].entity ?? '',
-        b,
-        matches,
-      };
-    if (b.views.length === 1)
-      return { title: b.views[0].name, kind: 'Dataverse view', sub: b.views[0].entity ?? '', b, matches };
-    if (b.native.length === 1) {
-      const item = b.native[0];
-      return {
-        title: item.formName ?? item.name,
-        kind: item.kind === 'quickform' ? 'Quick view' : item.kind === 'subgrid' ? 'Subgrid' : kindName(item.kind),
-        sub: [item.entity, item.owner].filter(Boolean).join(' · '),
-        b,
-        matches,
-      };
+    for (const packet of packets) {
+      for (const availability of packet.availability ?? [])
+        if (typeof availability.reason === 'string') reasons.push(availability.reason);
+      for (const reason of packet.limits?.reasons ?? []) if (typeof reason === 'string') reasons.push(reason);
     }
-    if (b.code.length === 1) {
-      const item = b.code[0];
-      return { title: item.schemaName ?? item.name, kind: 'Code component', sub: item.entity ?? '', b, matches };
-    }
-    const match = matches.find((item) => item.strong);
-    if (match)
-      return { title: match.name, kind: kindName(match.kind) + ' · source match', sub: match.ref ?? '', b, matches };
+    const currentSourceRefs = [
+      ...sourceRefs.map((ref) => index.byId.get(ref.id)).filter(Boolean),
+      ...hydratedCurrentSourceRefs,
+    ];
+    const distinctRefs = [
+      ...new Map(
+        sourceRefs.map((ref) => [JSON.stringify([ref.id, ref.key, ref.contentRevision, ref.region]), ref]),
+      ).values(),
+    ];
+    const sourceLimits = report?.elementSourceLimits ?? {};
+    const omittedSources = (sourceLimits.markupOmittedSources ?? []).map((ref) => ({
+      ref,
+      reason: 'Oversized source omitted; not attributed',
+    }));
+    const truncatedScripts = (sourceLimits.scriptTruncatedSources ?? []).map((ref) => ({
+      ref,
+      reason: 'Script index truncated; not attributed',
+    }));
+    if (sourceLimits.truncated) reasons.push('export-source-hint-index-truncated');
+    if (matches.omitted) reasons.push('additional-source-candidates-omitted');
+    return resolveInspectionEvidence({
+      version: 1,
+      scope,
+      mode,
+      node: { connected: liveNode(node) },
+      facts,
+      sourceRefs: distinctRefs,
+      currentSourceRefs,
+      limits: {
+        truncated:
+          Boolean(sourceLimits.truncated) ||
+          packets.some((packet) => packet.limits?.truncated) ||
+          candidateLimit ||
+          Boolean(matches.omitted),
+        reasons,
+        sources: [...omittedSources, ...truncatedScripts],
+        omitted: { markupSources: sourceLimits.markupOmittedSourceCount ?? 0, candidates: matches.omitted ?? 0 },
+      },
+    });
+  };
+  const identify = (node, scope = getSelectionScope(node)) => {
+    const b = binding(node);
+    const matched = sourceMatches(node);
+    const matches = matched.map((item) => ({
+      ...item,
+      strong: false,
+      evidenceLabel: (item.evidenceLabel ?? 'Static export candidate').replace('Markup match:', 'Static candidate:'),
+    }));
+    matches.omitted = matched.omitted;
+    const evidence = queryElementEvidence(node, b, matches, scope);
+    const owner = evidence.owner.component;
+    const exact = evidence.source.refs.find((ref) => ref.status === 'exact');
+    const candidate = evidence.candidates.find((item) => item.status === 'candidate')?.component;
     return {
-      title: b.fields.length > 1 ? 'Ambiguous column' : 'No reliable source',
-      kind: 'Selected element',
-      sub: b.context || 'Use page context or select an enclosing source region.',
+      title:
+        owner?.label ??
+        owner?.name ??
+        owner?.id ??
+        exact?.name ??
+        (candidate
+          ? 'Possible ' + (candidate.label ?? candidate.name ?? candidate.kind)
+          : 'Selected ' + node.localName),
+      kind: owner
+        ? kindName(owner.kind)
+        : evidence.source.status === 'exact'
+          ? 'Rendered source'
+          : evidence.owner.status === 'conflicting'
+            ? 'Conflicting owner evidence'
+            : 'Owner ' + evidence.owner.status,
+      sub: owner
+        ? [owner.entity, owner.field ?? owner.controlName].filter(Boolean).join('.')
+        : (exact?.ref ?? 'Select a source below or inspect the evidence.'),
       b,
       matches,
+      evidence,
     };
   };
-  const selectionIdentity = (node) => {
+  const selectionIdentity = (node, scope = node ? getSelectionScope(node) : null) => {
     if (!node) return null;
-    const found = identify(node),
-      b = found.b,
-      component = b.fields.length === 1 || b.forms.length || b.lists.length;
+    const found = identify(node, scope),
+      owner = found.evidence.owner;
+    const exact = owner.status === 'exact';
     return {
       title: found.title,
       kind: found.kind,
       sub: found.sub,
-      fields: b.fields.map(({ entity, name, label, ref }) => ({ entity, name, label, ref })),
-      forms: b.forms.map(({ id, name, kind, ref, formXml }) => ({ id, name, kind, ref, formXml })),
-      views: b.views.map(({ id, name, entity, ref }) => ({ id, name, entity, ref })),
-      lists: b.lists.map(({ id, recordId, name, entity, ref }) => ({ id: id ?? recordId, name, entity, ref })),
-      sources: found.matches
-        .filter((item) => item.strong && (!component || item.depth === 0))
-        .slice(0, 12)
-        .map(({ name, kind, ref, line, selector, depth }) => ({ name, kind, ref, line, selector, depth })),
+      evidence: found.evidence,
+      fields:
+        exact && ['field', 'column'].includes(owner.component.kind)
+          ? (report?.columns ?? []).filter(
+              (item) =>
+                norm(item.entity) === norm(owner.component.entity) &&
+                norm(item.name) === norm(owner.component.field ?? owner.component.name),
+            )
+          : [],
+      forms:
+        exact && /form/.test(owner.component.kind)
+          ? found.b.forms.filter((item) => norm(item.id) === norm(owner.component.id))
+          : [],
+      views:
+        exact && owner.component.kind === 'view'
+          ? found.b.views.filter((item) => norm(item.id) === norm(owner.component.id))
+          : [],
+      lists:
+        exact && owner.component.kind === 'list'
+          ? found.b.lists.filter((item) => norm(item.id ?? item.recordId) === norm(owner.component.id))
+          : [],
+      sources: found.evidence.source.refs.filter((ref) => ref.status === 'exact'),
     };
   };
-  const sourcesHtml = (node) => {
-    const b = binding(node),
-      exact = b.fields.length === 1 ? b.fields[0] : null,
-      matches = sourceMatches(node),
-      allMarkup = matches.filter((item) => item.kind !== 'script'),
-      markup =
-        exact || b.forms.length || b.lists.length
-          ? allMarkup.filter((item) => item.depth === 0 && (item.strong || item.ambiguous))
-          : allMarkup,
-      scripts = matches.filter((item) => item.kind === 'script');
-    let out = b.conflict
-      ? '<div class="section"><h3>Conflicting table context</h3><p class="note">The rendered table and exported form/view disagree. No column identity is asserted.</p></div>'
-      : '';
-    if (exact) {
-      const table = (report?.tables ?? []).find((item) => item.logicalName === exact.entity);
-      out += `<div class="section"><h3>Dataverse column${b.entity ? '' : ' · candidate'}</h3><div class="binding"><strong>${esc(exact.entity)}.${esc(exact.name)}</strong>${exact.label ? `<span class="note">${esc(exact.label)}</span>` : ''}</div><dl class="details"><dt>Table</dt><dd>${esc(exact.entity)}</dd><dt>Column</dt><dd>${esc(exact.name)}</dd>${exact.type ? `<dt>Type</dt><dd>${esc(exact.type)}</dd>` : ''}${exact.required !== undefined ? `<dt>Required</dt><dd>${exact.required ? 'Yes' : 'No'}</dd>` : ''}<dt>Matched by</dt><dd>${b.entity ? 'Column identifier + table context' : 'Column identifier only; candidate until table context is known'}</dd></dl>${sourceRows([{ ...exact, name: 'Column definition', kind: 'field', find: exact.name }], exact.resolved === false || !exact.ref ? 'Column definition unavailable in selected Solution' : 'Field definition in selected Solution')}${table?.ref && table.ref !== exact.ref ? sourceRows([{ ...table, name: 'Table definition', kind: 'table', find: exact.entity }]) : ''}</div>`;
-    } else if (b.fields.length > 1)
-      out += `<div class="section"><h3>Dataverse column</h3><div class="binding"><strong>Ambiguous field identifier</strong><div class="note">The identifiers match ${b.fields.length} exported columns. No single column is asserted.</div></div>${sourceRows(
-        b.fields.map((item) => ({ ...item, name: item.entity + '.' + item.name, kind: 'field' })),
-        'Candidate column',
-      )}</div>`;
-    const componentSources = [
-      ...b.forms.flatMap((item) => [
-        {
-          ...item,
-          kind: item.kind ?? 'basic-form',
-          evidenceLabel:
-            item.evidenceLabel ??
-            (item.pageReferenced === false
-              ? 'Exported form; not referenced by this page’s sources'
-              : b.formCertain
-                ? 'Component ID matched to the selected export'
-                : 'System form ID; candidate basic form configuration'),
-        },
-        ...(item.formXml
-          ? [
-              {
-                ...item.formXml,
-                name: item.formXml.name ?? 'Dataverse form',
-                kind: 'FormXml',
-                evidenceLabel:
-                  b.formId && norm(b.formId) === norm(item.formXml.id)
-                    ? 'Dataverse system form ID matched to the selected export'
-                    : 'FormXml referenced by the exported form configuration',
-              },
-            ]
-          : []),
-      ]),
-      ...b.views.map((item) => ({ ...item, kind: 'view' })),
-      ...b.lists.map((item) => ({
-        ...item,
-        evidenceLabel:
-          item.pageReferenced === false
-            ? 'Exported list outside page references'
-            : b.listCertain
-              ? 'Rendered list ID matched to the selected export'
-              : 'Candidate list from page references and rendered view',
-      })),
-    ].filter(
-      (item, index, rows) =>
-        rows.findIndex(
-          (other) =>
-            other.kind === item.kind && other.ref === item.ref && other.id === item.id && other.name === item.name,
-        ) === index,
-    );
-    if (componentSources.length) {
-      out += `<div class="section"><h3>Form / view</h3>${sourceRows(componentSources, b.formId && !b.formCertain && b.forms.length ? 'System form ID; candidate basic form configuration' : 'Component ID matched to the selected export')}</div>`;
-      const ids = new Set(b.forms.map((item) => norm(item.id)));
-      const logic = (report?.components ?? []).filter(
-        (item) =>
-          ids.has(norm(item.recordId ?? item.id)) &&
-          item.ref &&
-          !componentSources.some((source) => source.ref === item.ref),
-      );
-      if (logic.length)
-        out += `<details><summary>Form scripts</summary>${sourceRows(logic, 'Exported form customization')}</details>`;
-    } else if (b.formId || b.viewId || b.listId)
-      out +=
-        '<div class="section"><h3>Form / view</h3><p class="note">This component is not referenced by this page’s sources and was not found in the available export index. Refresh sources after opening dynamic forms.</p></div>';
-    if (report?.modelDriven) {
-      if (b.commandAmbiguous)
+  const declaredContextHtml = (node, b) => {
+    let out = '';
+    if (node.matches('img[src],img[srcset],link[href],script[src]')) {
+      let pathname;
+      try {
+        const value =
+          node.localName === 'img'
+            ? node.currentSrc || node.getAttribute('src')
+            : (node.getAttribute('src') ?? node.getAttribute('href'));
+        const address = new URL(value, node.ownerDocument.baseURI);
+        if (address.origin === location.origin) pathname = address.pathname;
+      } catch {
+        /* A foreign or malformed resource is not a local definition. */
+      }
+      const assets = (report?.assets ?? []).filter((item) => item.url === pathname);
+      if (assets.length)
         out +=
-          '<div class="section"><p class="note">Multiple declared commands match this native identifier. Command ownership is ambiguous; handlers are not attributed.</p></div>';
-      for (const command of b.commands ?? [])
-        out += `<div class="section"><h3>Declared ribbon command: ${esc(command.label || command.id)}</h3>${sourceRows([{ name: command.label, ref: command.source }], 'Exact native command identifier and table/location matched')}<p class="mono">${(command.actions ?? []).map((action) => esc(action.library + ': ' + action.functionName)).join('<br>')}</p></div>`;
-      const names = new Set(b.fields.map((field) => field.name));
-      const events = b.forms.flatMap((form) =>
-        (form.events ?? [])
-          .filter((event) => !event.attribute || names.has(event.attribute))
-          .map((event) => ({ ...event, form })),
-      );
-      if (events.length)
-        out += `<div class="section"><h3>Declared form events</h3>${events.map((event) => `<div class="source"><b>${esc(event.name)}${event.attribute ? ' · ' + esc(event.attribute) : ''}${event.active ? '' : ' (disabled)'}</b><p class="mono">${event.handlers.map((handler) => esc((handler.enabled ? '' : '[disabled] ') + handler.library + ': ' + handler.functionName)).join('<br>')}</p></div>`).join('')}</div>`;
+          '<details open data-disclosure="selected-resource"><summary>Selected resource reference</summary>' +
+          sourceRows(assets, 'Rendered resource URL; markup ownership and loaded bytes are separate evidence') +
+          '</details>';
     }
-    if (b.native.length)
-      out += `<div class="section"><h3>Native component</h3>${b.native.map((item) => `<dl class="details"><dt>Control</dt><dd>${esc(item.name ?? item.id)}</dd><dt>Form</dt><dd>${esc(item.owner ?? 'Unresolved')}</dd>${item.relationship ? `<dt>Relation</dt><dd>${esc(item.relationship)}</dd>` : ''}</dl>${sourceRows([{ ...item, name: kindName(item.kind) + ' definition' }, ...(item.metadataSources ?? [])], 'Rendered control ID matched to exported FormXml')}`).join('')}</div>`;
+    const events = (b.forms ?? []).flatMap((form) => (form.events ?? []).map((event) => ({ ...event, form })));
+    const definitionRows = [
+      ...(b.forms ?? []).flatMap((form) =>
+        [form, form.formXml && { kind: 'FormXml', ...form.formXml }].filter(Boolean),
+      ),
+      ...(b.views ?? []),
+      ...(b.lists ?? []),
+    ];
+    const definitions = [
+      ...new Map(
+        definitionRows.map((item) => [
+          JSON.stringify([item.ref ?? null, item.id ?? item.recordId ?? item.name, item.kind ?? null]),
+          item,
+        ]),
+      ).values(),
+    ];
+    if (definitions.length)
+      out +=
+        '<details data-disclosure="declared-form-definitions"><summary>Exported form / view definitions</summary><p class="note">Configuration relationships and local definitions; selected owner certainty is shown above.</p>' +
+        sourceRows(definitions, 'Exported component definition/context') +
+        '</details>';
+    const commands = b.commands ?? [];
+    if (events.length || commands.length)
+      out +=
+        '<details data-disclosure="declared-handlers"><summary>Declared handlers</summary><p class="note">Exported event and command definitions; execution and selected-element ownership are not inferred.</p>' +
+        events
+          .map(
+            (event) =>
+              '<div class="source"><b>' +
+              esc(event.form.name) +
+              ' · ' +
+              esc(event.name) +
+              (event.attribute ? ' · ' + esc(event.attribute) : '') +
+              (event.active === false ? ' (disabled)' : '') +
+              '</b><p class="mono">' +
+              (event.handlers ?? [])
+                .map((handler) =>
+                  esc((handler.enabled === false ? '[disabled] ' : '') + handler.library + ': ' + handler.functionName),
+                )
+                .join('<br>') +
+              '</p></div>',
+          )
+          .join('') +
+        commands
+          .map(
+            (command) =>
+              sourceRows([{ ...command, name: command.label ?? command.id, ref: command.source }], 'Declared command') +
+              '<p class="mono">' +
+              (command.actions ?? []).map((action) => esc(action.library + ': ' + action.functionName)).join('<br>') +
+              '</p>',
+          )
+          .join('') +
+        '</details>';
+    if (b.native?.length)
+      out +=
+        '<details data-disclosure="declared-native"><summary>Exported native controls</summary><p class="note">Exported control and containing form relationships; selected ownership and active mounting require independent evidence.</p>' +
+        b.native
+          .map(
+            (item) =>
+              '<dl class="details"><dt>Control</dt><dd>' +
+              esc(item.name ?? item.id) +
+              '</dd><dt>Form</dt><dd>' +
+              esc(item.owner ?? item.formName ?? item.formId ?? 'Unresolved') +
+              '</dd>' +
+              (item.relationship ? '<dt>Relation</dt><dd>' + esc(item.relationship) + '</dd>' : '') +
+              '</dl>' +
+              sourceRows(
+                [{ ...item, name: kindName(item.kind) + ' definition' }, ...(item.metadataSources ?? [])],
+                'Exported native control configuration',
+              ),
+          )
+          .join('') +
+        '</details>';
     const codeHtml = (items) =>
       items
-        .map(
-          (item) =>
-            `<dl class="details"><dt>Schema</dt><dd>${esc(item.schemaName ?? item.name)}</dd><dt>Binding</dt><dd>${esc(item.binding)}</dd>${item.entity ? `<dt>Table</dt><dd>${esc(item.entity)}</dd>` : ''}${item.field ? `<dt>Column</dt><dd>${esc(item.field)}</dd>` : ''}${item.enablement ? `<dt>Portal</dt><dd>${esc(item.enablement)}</dd>` : ''}</dl>${sourceRows([{ ...item, name: item.schemaName ?? item.name }, item.formSource, ...(item.metadataSources ?? [])].filter(Boolean), 'Exported component binding')}${(item.properties ?? []).length ? `<details><summary>Manifest properties (${item.properties.length})</summary>${item.properties.map((property) => `<div class="note"><b>${esc(property.name)}</b> · ${esc(property['of-type'] ?? property['of-type-group'] ?? 'type unresolved')} · ${esc(property.usage ?? 'input')}${property.required === 'true' ? ' · required' : ''}</div>`).join('')}</details>` : ''}${
-              Object.keys(item.parameters ?? {}).length
-                ? `<dl class="details">${Object.entries(item.parameters)
-                    .map(
-                      ([name, parameter]) =>
-                        `<dt>${esc(name)}</dt><dd>${esc(parameter.kind === 'binding' ? 'Column: ' + parameter.column : parameter.kind === 'dataset' ? 'Dataset: ' + (parameter.viewId ?? parameter.entity ?? 'unresolved') : parameter.kind === 'unresolved' ? (parameter.reason ?? 'Unresolved binding') : 'Exported ' + parameter.kind)}</dd>`,
-                    )
-                    .join('')}</dl>`
-                : ''
-            }${sourceRows(item.resources ?? [], 'Declared component resource')}${(item.datasets ?? []).map((dataset) => `<div class="binding"><strong>${esc(dataset.name)}</strong><p class="note">${esc(dataset.resolved ? [dataset.entity, dataset.viewName, `${dataset.fields?.length ?? 0} columns`].filter(Boolean).join(' · ') : 'Table/view binding unresolved')}</p></div>${sourceRows([dataset])}`).join('')}`,
-        )
-        .join('');
-    if (b.code.length) out += `<div class="section"><h3>Code component</h3>${codeHtml(b.code)}</div>`;
-    else if (report?.codeComponents?.length)
-      out += `<details class="pcf-context" data-disclosure="pcf-context" ${disclosureState.get('pcf-context') ? 'open' : ''}><summary>Page code components (${report.codeComponents.length})</summary><p class="note">Exported page references; no component-to-element binding is asserted.</p>${pageRows('pcf', report.codeComponents, codeHtml)}</details>`;
-    if (markup.length) {
-      // Retain distinct evidence within a source too: an enclosing unique ID must
-      // remain inspectable beside a nearer class match from the same file.
-      const files = [
-        ...new Map(
-          markup.map((item) => [
-            (item.ref ?? item.sourceFile) +
-              '\u0000' +
-              (item.recordId ?? item.id ?? item.name ?? '') +
-              '\u0000' +
-              item.selector,
-            item,
-          ]),
-        ).values(),
-      ];
-      const strong = files.filter((item) => item.strong),
-        possible = files.filter((item) => !item.strong);
-      if (strong.length)
-        out += `<div class="section"><h3>Element source candidates <small>(${strong.length})</small></h3>${sourceRows(strong)}<p class="note">Static selector candidates; rendered invocation is not verified. Multiple templates or conditional branches can share a match.</p></div>`;
-      if (possible.length)
-        out += `<details open><summary>Possible matches (${possible.length})</summary>${sourceRows(possible)}<p class="note">Shared selectors alone do not identify an owner. Multiple templates or conditional branches can share a match.</p></details>`;
-      const owners = [...new Set(files.flatMap((item) => item.includedBy ?? []))]
-        .map((owner) => {
-          const [kind, id] = owner.split(':');
-          return kind === 'web-template'
-            ? (report?.webTemplates ?? []).find((item) => norm(item.id) === norm(id))?.name
-            : (report?.page?.name ?? report?.page?.pageName);
+        .map((item) => {
+          const parameters = Object.entries(item.parameters ?? {});
+          const properties = item.properties ?? [];
+          return (
+            '<dl class="details"><dt>Schema</dt><dd>' +
+            esc(item.schemaName ?? item.name) +
+            '</dd><dt>Binding</dt><dd>' +
+            esc(item.binding ?? 'Unresolved') +
+            '</dd>' +
+            (item.entity ? '<dt>Table</dt><dd>' + esc(item.entity) + '</dd>' : '') +
+            (item.field ? '<dt>Column</dt><dd>' + esc(item.field) + '</dd>' : '') +
+            (item.enablement ? '<dt>Portal</dt><dd>' + esc(item.enablement) + '</dd>' : '') +
+            '</dl>' +
+            sourceRows(
+              [
+                { ...item, name: item.schemaName ?? item.name },
+                item.formSource,
+                ...(item.metadataSources ?? []),
+              ].filter(Boolean),
+              'Exported component binding',
+            ) +
+            (properties.length
+              ? '<details><summary>Manifest properties (' +
+                properties.length +
+                ')</summary>' +
+                properties
+                  .map(
+                    (property) =>
+                      '<div class="note"><b>' +
+                      esc(property.name) +
+                      '</b> · ' +
+                      esc(property['of-type'] ?? property['of-type-group'] ?? 'type unresolved') +
+                      ' · ' +
+                      esc(property.usage ?? 'input') +
+                      (property.required === 'true' || property.required === true ? ' · required' : '') +
+                      '</div>',
+                  )
+                  .join('') +
+                '</details>'
+              : '') +
+            (parameters.length
+              ? '<dl class="details">' +
+                parameters
+                  .map(
+                    ([name, parameter]) =>
+                      '<dt>' +
+                      esc(name) +
+                      '</dt><dd>' +
+                      esc(
+                        parameter.kind === 'binding'
+                          ? 'Column: ' + parameter.column
+                          : parameter.kind === 'dataset'
+                            ? 'Dataset: ' + (parameter.viewId ?? parameter.entity ?? 'unresolved')
+                            : parameter.kind === 'unresolved'
+                              ? (parameter.reason ?? 'Unresolved binding')
+                              : 'Exported ' + parameter.kind,
+                      ) +
+                      '</dd>',
+                  )
+                  .join('') +
+                '</dl>'
+              : '') +
+            sourceRows(item.resources ?? [], 'Declared component resource; serving and execution are not inferred') +
+            (item.datasets ?? [])
+              .map(
+                (dataset) =>
+                  '<div class="binding"><strong>' +
+                  esc(dataset.name) +
+                  '</strong><p class="note">' +
+                  esc(
+                    dataset.resolved
+                      ? [dataset.entity, dataset.viewName, `${dataset.fields?.length ?? 0} columns`]
+                          .filter(Boolean)
+                          .join(' · ')
+                      : 'Table/view binding unresolved',
+                  ) +
+                  '</p></div>' +
+                  sourceRows([dataset], 'Exported dataset definition'),
+              )
+              .join('')
+          );
         })
-        .filter(Boolean);
-      if (owners.length)
-        out += `<div class="note">Statically referenced by: ${esc([...new Set(owners)].join(', '))}</div>`;
-    } else if (!exact && !componentSources.length && !b.native.length && !b.code.length)
+        .join('');
+    if (b.code?.length)
       out +=
-        '<div class="section"><p class="note">No local markup or component binding identifies this element. Select an enclosing region or check the page sources below.</p></div>';
-    if (node.matches('img[src],link[href],script[src]')) {
-      let path;
-      try {
-        const url = new URL(node.getAttribute('src') ?? node.getAttribute('href'), node.ownerDocument.baseURI);
-        if (url.origin === location.origin) path = url.pathname;
-      } catch {
-        /* Optional inspection or cleanup failure must not interrupt the owning operation. */
-      }
-      const assets = (report?.assets ?? []).filter((item) => item.url === path);
-      if (assets.length)
-        out += `<div class="section"><h3>Web file</h3>${sourceRows(assets, 'Rendered resource URL')}</div>`;
-    }
-    if (report?.elementSourceLimits?.truncated)
-      out += `<p class="note">Source hint index truncated; some matches may be unavailable.${report.elementSourceLimits.markupOmittedSourceCount ? ' Export-wide markup index omitted ' + esc(report.elementSourceLimits.markupOmittedSourceCount) + ' oversized source' + (report.elementSourceLimits.markupOmittedSourceCount === 1 ? '' : 's') + (report.elementSourceLimits.markupOmittedSources?.length ? ': ' + report.elementSourceLimits.markupOmittedSources.map(esc).join(', ') : '') + (report.elementSourceLimits.markupOmittedSourcesTruncated ? ' (names limited)' : '') + '. Omitted sources are not attributed to this element.' : ''}${report.elementSourceLimits.scriptTruncatedSources?.length ? ' Truncated scripts: ' + report.elementSourceLimits.scriptTruncatedSources.map(esc).join(', ') + '.' : ''}</p>`;
-    if (matches.omitted)
-      out += `<p class="note">Showing 60 source matches; ${matches.omitted} additional candidates are omitted from these details.</p>`;
-    if (scripts.length)
-      out += `<details><summary>Related script references (${scripts.length})</summary>${sourceRows(scripts, 'Literal selector reference; event ownership is not inferred')}</details>`;
+        '<details data-disclosure="declared-pcf"><summary>Exported code component bindings</summary><p class="note">Configured properties, parameters, datasets and resources; an active mount requires separate runtime evidence.</p>' +
+        codeHtml(b.code) +
+        '</details>';
+    else if (report?.codeComponents?.length)
+      out +=
+        '<details class="pcf-context" data-disclosure="pcf-context"><summary>Page code components (' +
+        report.codeComponents.length +
+        ')</summary><p class="note">Exported page references; no component-to-element ownership or active mount is asserted.</p>' +
+        pageRows('pcf', report.codeComponents, codeHtml) +
+        '</details>';
     const api = (report?.apiReferences ?? []).filter((item) => !b.entity || norm(item.entity) === norm(b.entity));
     if (api.length)
-      out += `<details class="api-context" data-disclosure="api-context" ${disclosureState.get('api-context') ? 'open' : ''}><summary>Web API ${b.entity ? 'table context' : 'page context'} (${api.length})</summary><p class="note">${b.entity ? 'Exported table context; request ownership is not inferred.' : 'Page references; no request-to-element binding is asserted.'}</p>${pageRows(
-        'api',
-        api,
-        (items) =>
+      out +=
+        '<details class="api-context" data-disclosure="api-context"><summary>Web API context · ' +
+        api.length +
+        '</summary><p class="note">Source references and observed requests are context. No request-to-element ownership is asserted.</p>' +
+        pageRows('api', api, (items) =>
           items
             .map(
               (item) =>
-                `<div class="binding"><strong>/_api/${esc(item.name)}</strong><p class="note">${esc(item.entity ?? 'Table unresolved')} · ${item.evidence === 'observed-api-request' ? 'Observed request' : 'Literal source reference'}</p></div>${pageRows('api-source-' + item.name, [item, ...(item.sources ?? [])], (rows) => sourceRows(rows, 'Web API source'))}${pageRows(
-                  'api-permission-' + item.name,
+                '<div class="binding"><strong>/_api/' +
+                esc(item.name) +
+                '</strong><p class="note">' +
+                esc(item.entity ?? 'Table unresolved') +
+                ' · ' +
+                (item.evidence === 'observed-api-request' ? 'Observed request' : 'Literal source reference') +
+                '</p></div>' +
+                sourceRows([item, ...(item.sources ?? [])], 'Web API reference') +
+                sourceRows(
                   (report?.permissionRules ?? [])
                     .filter((rule) => item.entity && norm(rule.entity) === norm(item.entity))
                     .map((rule) => ({
                       ...rule,
                       kind: 'permission',
-                      evidenceLabel: `${rule.scope} · ${(rule.operations ?? []).join?.(', ') ?? ''} · effective access ${rule.effective ?? 'unknown'}`,
+                      evidenceLabel: rule.scope + ' · effective access ' + (rule.effective ?? 'unknown'),
                     })),
-                  (rows) => sourceRows(rows),
-                )}`,
+                ),
             )
             .join(''),
-      )}</details>`;
+        ) +
+        '</details>';
     const page = report?.page;
-    out += `<details class="page-context" data-disclosure="page-context" ${disclosureState.get('page-context') ? 'open' : ''}><summary>Page context${page ? ' · ' + esc(page.pageName ?? page.name ?? '') : ''}</summary><dl class="details"><dt>Page</dt><dd>${esc(page?.pageName ?? page?.name ?? 'Not in selected export')}</dd><dt>Template</dt><dd>${esc(page?.pageTemplateName ?? report?.pageTemplate?.name ?? 'Unresolved')}</dd></dl>${pageRows('page-sources', report?.pageSources ?? [], sourceRows)}${pageRows(
-      'page-assets',
-      (report?.assets ?? []).map((item) => ({
-        ...item,
-        kind: item.kind ?? (/\.css(?:$|\?)/i.test(item.url ?? item.ref ?? '') ? 'Stylesheet' : 'script'),
-      })),
-      (rows) => sourceRows(rows, 'Page asset; element ownership and applied CSS rules are not established'),
-    )}${pageRows(
-      'page-templates',
-      (report?.webTemplates ?? []).map((item) => ({ ...item, kind: 'template' })),
-      (rows) => sourceRows(rows, 'Page dependency; element ownership not established'),
-    )}</details>`;
-    if (!report)
-      out = `<div class="empty"><b>${esc(d.inspectionError || (d.inspection?.active === false ? d.inspection.error : '') || 'Reading local sources…')}</b><p class="note">Use Refresh to retry source inspection.</p></div>`;
+    if (report)
+      out +=
+        '<details class="page-context" data-disclosure="page-context"><summary>Page dependencies' +
+        (page ? ' · ' + esc(page.pageName ?? page.name ?? '') : '') +
+        '</summary><p class="note">Expected export composition and declared dependencies; neither execution nor selected-element ownership is implied.</p>' +
+        '<dl class="details"><dt>Page</dt><dd>' +
+        esc(page?.pageName ?? page?.name ?? 'Not in selected export') +
+        '</dd><dt>Template</dt><dd>' +
+        esc(page?.pageTemplateName ?? report.pageTemplate?.name ?? 'Unresolved') +
+        '</dd></dl>' +
+        pageRows('page-sources', report.pageSources ?? [], (rows) => sourceRows(rows, 'Page source context')) +
+        pageRows('page-assets', report.assets ?? [], (rows) => sourceRows(rows, 'Declared page resource')) +
+        pageRows('page-templates', report.webTemplates ?? [], (rows) =>
+          sourceRows(
+            rows.map((item) => ({ ...item, kind: 'template' })),
+            'Declared template dependency',
+          ),
+        ) +
+        '</details>';
     return out;
+  };
+  const sourcesHtml = (node) => {
+    const found = identify(node),
+      matches = found.matches;
+    const markup = matches.filter((item) => item.kind !== 'script');
+    const scripts = matches.filter((item) => item.kind === 'script');
+    return (
+      renderInspectionEvidence(found.evidence, { context: 'xray', selectedLabel: 'Selected ' + node.localName }) +
+      (markup.length
+        ? '<details data-disclosure="static-candidates"><summary>Search export markup · ' +
+          markup.length +
+          ' candidates</summary><p class="note">Static selectors are search suggestions. They do not prove which source rendered this node.</p>' +
+          pageRows('markup-candidates', markup, (rows) =>
+            sourceRows(rows, 'Static candidate; rendered ownership unverified'),
+          ) +
+          '</details>'
+        : '') +
+      (scripts.length
+        ? '<details data-disclosure="declared-scripts"><summary>Script references · ' +
+          scripts.length +
+          '</summary><p class="note">A selector reference or served script does not establish execution or ownership of this element.</p>' +
+          pageRows('script-candidates', scripts, (rows) => sourceRows(rows, 'Declared script reference')) +
+          '</details>'
+        : '') +
+      declaredContextHtml(node, found.b)
+    );
   };
   const renderCard = (preserve = false, measuredRect) => {
     if (!enabled) return;
@@ -1328,16 +1876,20 @@ export function xrayUi(data) {
     // the first selection synchronously lays out both the old and new card.
     const selectedRect = selected ? (measuredRect ?? visibleRect(selected) ?? selected.getBoundingClientRect()) : null;
     renderProgress();
+    const focused =
+      preserve && root.activeElement && card.contains(root.activeElement) ? { ...root.activeElement.dataset } : null;
     const scroll = preserve ? (card.querySelector('.content')?.scrollTop ?? 0) : 0,
       open = preserve
-        ? [...card.querySelectorAll('details[open]')].map((item) => item.querySelector('summary')?.textContent)
+        ? [...card.querySelectorAll('details[open]')].map(
+            (item) => item.dataset.disclosure ?? item.querySelector('summary')?.textContent,
+          )
         : [];
     card.hidden = !details || !selected;
     if (!selected) {
       card.innerHTML = `<div class="welcome"><div class="hero">Select a portal element</div><p class="note">Hover or click to identify its template, page source, form, view or Dataverse column.</p><p class="note">Hold <kbd>Ctrl</kbd> to interact with the portal. <kbd>Esc</kbd> clears selection, then exits.</p><p class="note counts">${report ? `${(report.webTemplates ?? []).length} templates · ${(report.forms ?? []).length} forms · ${(report.views ?? []).length} views · ${(report.columns ?? []).length} columns` : esc(d.inspectionError || (d.inspection?.active === false ? d.inspection.error : '') || 'Loading source inspection…')}</p></div>`;
       return;
     }
-    const identity = identify(selected);
+    const identity = identify(selected, getSelectionScope(selected));
     if (selectedRect.left + selectedRect.width > innerWidth - 434 && selectedRect.left < innerWidth - 12) {
       card.style.left = '12px';
       card.style.right = 'auto';
@@ -1345,7 +1897,7 @@ export function xrayUi(data) {
       card.style.left = 'auto';
       card.style.right = '12px';
     }
-    card.innerHTML = `<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="title">${esc(identity.title)}</div></div><button data-action="dock" title="Move details to the other side" aria-label="Move details">⇄</button><button data-action="clear" aria-label="Clear selection">×</button></div><div class="content">${selected.localName === 'iframe' ? '<p class=note>Frame boundary · accessible same-origin controls can be selected directly; cross-origin and sandbox restrictions remain in force. Open an inaccessible inner document in its own tab for control details.</p><button data-action="frame-open">Open frame in new tab</button>' : ''}${sourcesHtml(selected)}<details class="ancestry"><summary>Element & ancestry</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(
+    card.innerHTML = `<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="title">${esc(identity.title)}</div>${renderInspectionEvidence(identity.evidence, { part: 'headline' })}</div><button data-action="dock" title="Move details to the other side" aria-label="Move details">⇄</button><button data-action="clear" aria-label="Clear selection">×</button></div><div class="content">${selected.localName === 'iframe' ? '<p class=note>Frame boundary · accessible same-origin controls can be selected directly; cross-origin and sandbox restrictions remain in force. Open an inaccessible inner document in its own tab for control details.</p><button data-action="frame-open">Open frame in new tab</button>' : ''}${sourcesHtml(selected)}<details class="ancestry"><summary>Element & ancestry</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(
       selected,
     )
       .map(
@@ -1358,9 +1910,14 @@ export function xrayUi(data) {
     // New content already starts at zero. Writing scrollTop=0 would force its first
     // layout during selection even though there is no scroll position to restore.
     for (const item of card.querySelectorAll('details'))
-      if (open.includes(item.querySelector('summary')?.textContent)) item.open = true;
+      if (disclosureState.has(item.dataset.disclosure)) item.open = disclosureState.get(item.dataset.disclosure);
+      else if (open.includes(item.dataset.disclosure ?? item.querySelector('summary')?.textContent)) item.open = true;
     const body = card.querySelector('.content');
     if (body && scroll) body.scrollTop = scroll;
+    if (focused)
+      [...card.querySelectorAll('button,summary,select,input,a[href]')]
+        .find((item) => Object.entries(focused).every(([key, value]) => item.dataset[key] === value))
+        ?.focus({ preventScroll: true });
   };
   // Rectangles live outside portal layout. Clip to each scroll container without changing its CSS.
   function visibleRect(node) {
@@ -1637,14 +2194,12 @@ export function xrayUi(data) {
     geometryCache = new WeakMap();
     styleCache = new WeakMap();
     if (selected && !liveNode(selected)) {
-      const removed = label(selected);
-      selected = null;
-      renderCard();
+      detachSelection('node-replaced');
       card.hidden = false;
       const welcome = card.querySelector('.hero');
       if (welcome) welcome.textContent = 'Element removed';
       const note = card.querySelector('.note');
-      if (note) note.textContent = removed + ' was replaced or removed. Click a rendered element to select it again.';
+      if (note) note.textContent = 'The selected element was replaced or removed. Select a rendered element again.';
     }
     if (hover && !liveNode(hover)) hover = null;
     if (detailsDirty && selected) {
@@ -1666,6 +2221,27 @@ export function xrayUi(data) {
       }
     backgroundMarks.replaceChildren(background);
     updateMark(selectedMark, selected, '#76f1df');
+    let formContext = null;
+    for (const anchor of selectionAnchors.get(selected) ?? []) {
+      if (
+        !/^(?:basic-form|advanced-form):/.test(anchor.componentKey ?? '') ||
+        !Number.isSafeInteger(anchor.ancestorDepth)
+      )
+        continue;
+      let current = selected;
+      for (let depth = 0; current && depth < anchor.ancestorDepth; depth++)
+        current = current.assignedSlot ?? current.parentElement ?? current.getRootNode?.()?.host;
+      if (
+        current?.ownerDocument === selected?.ownerDocument &&
+        current.localName === anchor.localName &&
+        current.id === anchor.id
+      ) {
+        formContext = current;
+        selectedFormMark.dataset.componentKey = anchor.componentKey;
+        break;
+      }
+    }
+    updateMark(selectedFormMark, formContext, '#3975ad');
     updateMark(hoverMark, hover !== selected && !interacting && !ctrl ? hover : null, '#c0b0ff');
     const target = hover ?? selected,
       r = target && visibleRect(target);
@@ -1682,11 +2258,24 @@ export function xrayUi(data) {
     geometryCache = null;
     styleCache = null;
   };
-  const schedule = () => {
-    if (!host.isConnected) {
-      host.__px?.dispose();
-      return;
+  const ensureHost = () => {
+    if (disposed) return false;
+    if (host.isConnected) return true;
+    const existing = document.getElementById('paqvilo-xray');
+    if (
+      host.parentElement?.matches('dialog') &&
+      document.body === owningBody &&
+      owningBody.isConnected &&
+      (!existing || existing === host)
+    ) {
+      topLayer(true);
+      return true;
     }
+    host.__px?.dispose();
+    return false;
+  };
+  const schedule = () => {
+    if (!ensureHost()) return;
     if (enabled && !document.hidden && !frame) frame = requestAnimationFrame(paint);
   };
   const hitStack = (x, y) => {
@@ -1748,18 +2337,105 @@ export function xrayUi(data) {
     button.setAttribute('aria-pressed', String(!interacting && !ctrl));
     button.textContent = interacting || ctrl ? 'Interact' : 'Inspect';
   };
-  const notifySelection = (updated) =>
-    dispatch('selected', {
-      element: {
-        tag: selected.localName,
-        id: selected.id.slice(0, 160),
-        name: (selected.getAttribute('name') ?? '').slice(0, 160),
-        classes: [...selected.classList].slice(0, 5).join('.'),
-      },
-      identity: selectionIdentity(selected),
-      oneShot,
-      updated,
+  let identifierReport,
+    knownIdentifiers = new Set(),
+    knownClasses = new Set();
+  const selectionElement = () => {
+    if (!selected) return null;
+    if (identifierReport !== report) {
+      identifierReport = report;
+      knownIdentifiers = new Set();
+      knownClasses = new Set();
+      for (const row of [
+        ...(report?.columns ?? []),
+        ...(report?.nativeControls ?? []),
+        ...(report?.componentIndex?.forms ?? []),
+        ...(report?.componentIndex?.lists ?? []),
+      ])
+        for (const value of [row.id, row.name, row.field, row.controlId])
+          if (typeof value === 'string') knownIdentifiers.add(value);
+      for (const hint of report?.elementSources ?? []) {
+        for (const match of String(hint.selector ?? '').matchAll(/#([\w-]+)/g)) knownIdentifiers.add(match[1]);
+        for (const match of String(hint.selector ?? '').matchAll(/\.([\w-]+)/g)) knownClasses.add(match[1]);
+      }
+    }
+    const name = selected.getAttribute('name');
+    const classes = [...selected.classList]
+      .filter((value) => knownClasses.has(value))
+      .slice(0, 5)
+      .join('.');
+    return {
+      tag: selected.localName,
+      ...(knownIdentifiers.has(selected.id) ? { id: selected.id.slice(0, 160) } : {}),
+      ...(knownIdentifiers.has(name) ? { name: name.slice(0, 160) } : {}),
+      ...(classes ? { classes } : {}),
+    };
+  };
+  const lifecycle = (
+    action,
+    reason,
+    identity = null,
+    scope = selected ? getSelectionScope(selected) : (lastScope ?? getSelectionScope()),
+  ) => {
+    if (identity?.evidence) identity = { ...identity, evidence: { ...identity.evidence, scope } };
+    lastIdentity = identity;
+    lastScope = scope;
+    dispatch(action, {
+      reason,
+      scope,
+      anchorId: selected ? opaqueId(anchorIds, selected, 'anchor') : null,
+      selectionGeneration,
+      anchorGeneration: selectionGeneration,
+      element: selectionElement(),
+      identity,
+      oneShot: retainedOneShot,
+      updated: action === 'updated',
     });
+  };
+  const notifySelection = (updated, reason = updated ? 'evidence-changed' : 'user-selection') => {
+    if (!selected || !liveNode(selected)) return;
+    lifecycle(updated ? 'updated' : 'selected', reason, selectionIdentity(selected, getSelectionScope(selected)));
+  };
+  const refreshSelection = (reason = 'evidence-ready') => {
+    if (!selected || !liveNode(selected)) return;
+    renderCard(true);
+    notifySelection(true, reason);
+    schedule();
+  };
+  const clearSelection = (reason = 'user-clear') => {
+    if (!selected && !lastIdentity) return;
+    const previous = selected && liveNode(selected) ? getSelectionScope(selected) : lastScope;
+    retainedObserver.disconnect();
+    selectionGeneration++;
+    lifecycle('cleared', reason, null, previous);
+    selected = null;
+    hover = null;
+    retainedOneShot = false;
+    renderCard();
+    schedule();
+  };
+  const detachSelection = (reason) => {
+    if (!selected) return;
+    lifecycle('detached', reason, null, lastScope ?? getSelectionScope(selected));
+    clearSelection('anchor-detached');
+  };
+  const watchSelection = () => {
+    retainedObserver.disconnect();
+    if (!selected) return;
+    const surfaces = new Set([document.documentElement, selected.ownerDocument.documentElement]);
+    for (const item of lineage(selected).slice(0, 40)) {
+      const surface = item.getRootNode();
+      if (surface?.host) surfaces.add(surface);
+    }
+    for (const surface of surfaces)
+      if (surface)
+        retainedObserver.observe(surface, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: identityAttributes,
+        });
+  };
   const select = (node) => {
     if (!node || own(node)) return;
     const rect = visibleRect(node),
@@ -1768,6 +2444,9 @@ export function xrayUi(data) {
     resizeObserver.observe(document.documentElement);
     resizeObserver.observe(node);
     selected = node;
+    selectionGeneration++;
+    retainedOneShot = oneShot;
+    watchSelection();
     details = true;
     hover = node;
     renderCard(false, cardRect);
@@ -1813,12 +2492,13 @@ export function xrayUi(data) {
       observer.disconnect();
       // Keep same-origin frame shortcut discovery alive while inspection is
       // off. Every activation guard checks enabled; dispose owns teardown.
-      selected = null;
+      if (!retainedOneShot) clearSelection('xray-disabled');
       hover = null;
       ctrl = false;
       interacting = false;
       backgroundMarks.replaceChildren();
       selectedMark.remove();
+      selectedFormMark.remove();
       hoverMark.remove();
       tip.hidden = true;
       try {
@@ -1859,18 +2539,11 @@ export function xrayUi(data) {
     'data-listid',
     'data-controlid',
     'data-id',
+    'data-paqvilo-source',
     'slot',
   ];
   const observer = new MutationObserver((records) => {
-    if (!host.isConnected) {
-      const existing = document.getElementById('paqvilo-xray');
-      if (host.parentElement?.matches('dialog') && document.body?.isConnected && (!existing || existing === host)) {
-        topLayer(true);
-      } else {
-        host.__px?.dispose();
-        return;
-      }
-    }
+    if (!ensureHost()) return;
     if (!enabled) return;
     const external = records.filter(
       (record) =>
@@ -2037,12 +2710,22 @@ export function xrayUi(data) {
       if (event.key === 'Tab' && !interacting && !ctrl) {
         event.preventDefault();
         event.stopImmediatePropagation();
-        const controls = [...root.querySelectorAll('button:not(:disabled),select')].filter(
-          (item) => item.getClientRects().length,
-        );
+        const controls = [
+          ...root.querySelectorAll(
+            'button:not(:disabled),select:not(:disabled),input:not(:disabled),textarea:not(:disabled),summary,a[href],[tabindex]:not([tabindex="-1"])',
+          ),
+        ].filter((item) => item.getClientRects().length && getComputedStyle(item).visibility !== 'hidden');
         const index = controls.indexOf(root.activeElement),
           direction = event.shiftKey ? -1 : 1;
-        controls[(index + direction + controls.length) % controls.length]?.focus({ preventScroll: true });
+        (
+          controls[
+            index < 0
+              ? event.shiftKey
+                ? controls.length - 1
+                : 0
+              : (index + direction + controls.length) % controls.length
+          ] ?? ui
+        ).focus();
         return;
       }
       if (own(node) && node?.matches('input,select,textarea')) return;
@@ -2051,9 +2734,7 @@ export function xrayUi(data) {
         event.preventDefault();
         event.stopImmediatePropagation();
         if (selected) {
-          selected = null;
-          renderCard();
-          schedule();
+          clearSelection('escape');
         } else toggle(false);
         return;
       }
@@ -2198,7 +2879,7 @@ export function xrayUi(data) {
   );
   listen(root, 'click', async (event) => {
     const button = event.target.closest('[data-action]');
-    if (!button) return;
+    if (!button || button.disabled) return;
     const action = button.dataset.action;
     if (action === 'context-page' && !button.disabled) {
       contextPages.set(button.dataset.context, Math.max(0, Number(button.dataset.page) || 0));
@@ -2230,9 +2911,7 @@ export function xrayUi(data) {
       else setStatus('This source region is no longer present. Select a rendered element again.');
     }
     if (action === 'clear') {
-      selected = null;
-      renderCard();
-      schedule();
+      clearSelection('user-clear');
     }
     if (action === 'parent') {
       const ancestor = parent(selected);
@@ -2272,6 +2951,16 @@ export function xrayUi(data) {
         ref: button.dataset.ref,
         line: Number(button.dataset.line) || undefined,
         find: button.dataset.find || undefined,
+        ...(button.dataset.sourceKey
+          ? {
+              sourceKey: button.dataset.sourceKey,
+              sourceRevision: button.dataset.sourceRevision,
+              contentRevision: button.dataset.contentRevision,
+              scope: getSelectionScope(selected),
+              anchorGeneration: selectionGeneration,
+              ...(button.dataset.sourceRegion ? { region: JSON.parse(button.dataset.sourceRegion) } : {}),
+            }
+          : {}),
       });
   });
   // Follow active animations; idle documents never poll geometry.
@@ -2290,6 +2979,20 @@ export function xrayUi(data) {
     }
   };
   listenViews('animationstart', animate, { capture: true });
+  listenViews(
+    'paqvilo-provenance-ready',
+    (event) => {
+      if (
+        ![d.provenanceSlot, d.domProvenanceSlot].includes(event.detail?.slot) ||
+        !event.detail?.slot ||
+        !selected ||
+        !liveNode(selected)
+      )
+        return;
+      refreshSelection('response-proof-ready');
+    },
+    { capture: true },
+  );
   listenViews('transitionrun', animate, { capture: true });
   listen(document, 'visibilitychange', () => {
     if (document.hidden) {
@@ -2312,8 +3015,23 @@ export function xrayUi(data) {
       toggle(true);
     },
     selection() {
-      return selectionIdentity(selected);
+      return lastIdentity;
     },
+    getSelectionScope,
+    refreshSelection,
+    selectedNode() {
+      return selected && liveNode(selected) ? selected : null;
+    },
+    selectionState() {
+      return {
+        scope: selected ? getSelectionScope(selected) : (lastScope ?? getSelectionScope()),
+        anchorId: selected ? opaqueId(anchorIds, selected, 'anchor') : null,
+        selectionGeneration,
+        anchorGeneration: selectionGeneration,
+        identity: lastIdentity,
+      };
+    },
+    clearSelection,
     get token() {
       return d.token;
     },
@@ -2322,7 +3040,30 @@ export function xrayUi(data) {
     },
     update(next, nextReport) {
       const previousError = d.inspectionError;
-      d = next;
+      const previousScope = selected ? getSelectionScope(selected) : null;
+      d =
+        nextReport?.sourceRevision !== undefined &&
+        next.sourceRevision === undefined &&
+        (next.inspection ?? next.mirage)?.sourceRevision === undefined
+          ? { ...next, sourceRevision: nextReport.sourceRevision }
+          : next;
+      if (selected && previousScope.sourceRevision !== getSelectionScope(selected).sourceRevision && lastIdentity) {
+        const identity = lastIdentity.evidence
+          ? {
+              ...lastIdentity,
+              evidence: {
+                ...lastIdentity.evidence,
+                source: {
+                  ...lastIdentity.evidence.source,
+                  status: 'stale',
+                  refs: (lastIdentity.evidence.source?.refs ?? []).map((ref) => ({ ...ref, status: 'stale' })),
+                },
+              },
+            }
+          : lastIdentity;
+        lifecycle('stale', 'source-revision-changed', identity);
+        renderCard(true);
+      }
       const theme = document.getElementById('paqvilo-panel')?.shadowRoot?.querySelector('.wrap');
       if (theme) {
         const style = getComputedStyle(theme);
@@ -2344,14 +3085,19 @@ export function xrayUi(data) {
           if (value) ui.style.setProperty(key, value);
         }
       }
+      const mismatchedRevision =
+        nextReport?.sourceRevision !== undefined &&
+        String(nextReport.sourceRevision) !== getSelectionScope(selected).sourceRevision;
       const currentReport =
-        next.inspectionError || (next.inspection ?? next.mirage)?.active === false ? null : nextReport;
+        next.inspectionError || (next.inspection ?? next.mirage)?.active === false || mismatchedRevision
+          ? null
+          : nextReport;
       if (currentReport !== undefined && currentReport !== report) {
         report = currentReport;
         needsScan = true;
         if (!report) candidates = [];
         renderCard(true);
-        if (selected) notifySelection(true);
+        if (selected && report) notifySelection(true, 'fresh-evidence');
         schedule();
       } else if (previousError !== d.inspectionError) renderCard(true);
       if (enabled) renderProgress();
@@ -2360,6 +3106,8 @@ export function xrayUi(data) {
     status: setStatus,
     dispose() {
       disposed = true;
+      clearSelection('disposed');
+      retainedObserver.disconnect();
       releaseShadowHook?.();
       releaseAnimationHook?.();
       resizeObserver.disconnect();

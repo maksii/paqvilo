@@ -528,8 +528,12 @@ export function sourceText(src, raw) {
   return src.parsedYaml && src.fieldPath ? yamlField(src)(text) : src.extract ? src.extract(text) : text;
 }
 
-/** One source snapshot per run, reusing only metadata whose file stamp still agrees. */
-export function createSourceReader(model) {
+/**
+ * One source snapshot per run, reusing only metadata whose file stamp still agrees.
+ * readRaw supplies an independent snapshot (for example Git baseline bytes): it
+ * bypasses current-file reads and never seeds the working-tree metadata cache.
+ */
+export function createSourceReader(model, { readRaw } = {}) {
   const files = new Map();
   return (source) => {
     const yamlFieldSource = source.fieldPath && /\.ya?ml$/i.test(source.file);
@@ -537,12 +541,15 @@ export function createSourceReader(model) {
       const root = source.sourceDir ?? model?.sourceDir;
       const entry = { raw: null, yaml: null };
       try {
-        const stat = root ? sourceFileStat(root, source.file) : fs.statSync(source.file);
-        if (!stat?.isFile()) throw new Error('Source is missing or outside the extract');
-        const cached = model?.yamlCache?.get(source.file);
-        entry.stamp = fileStamp(stat);
-        if (yamlFieldSource && cached?.stamp === entry.stamp) entry.yaml = cached.value;
-        else entry.raw = fs.readFileSync(source.file, 'utf8');
+        if (readRaw) entry.raw = readRaw(source.file) ?? null;
+        else {
+          const stat = root ? sourceFileStat(root, source.file) : fs.statSync(source.file);
+          if (!stat?.isFile()) throw new Error('Source is missing or outside the extract');
+          const cached = model?.yamlCache?.get(source.file);
+          entry.stamp = fileStamp(stat);
+          if (yamlFieldSource && cached?.stamp === entry.stamp) entry.yaml = cached.value;
+          else entry.raw = fs.readFileSync(source.file, 'utf8');
+        }
       } catch {
         /* Missing and unsafe sources retain sourceText's null result. */
       }
@@ -552,7 +559,7 @@ export function createSourceReader(model) {
     if (yamlFieldSource) {
       if (!entry.yaml && entry.raw !== null) {
         entry.yaml = parseYaml(entry.raw, true);
-        model?.yamlCache?.set(source.file, { stamp: entry.stamp, value: entry.yaml });
+        if (!readRaw) model?.yamlCache?.set(source.file, { stamp: entry.stamp, value: entry.yaml });
       }
       if (!entry.yaml) return null;
       return sourceText({ ...source, parsedYaml: () => entry.yaml }, '');

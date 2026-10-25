@@ -774,7 +774,10 @@ const DEDICATED = new Set([
   'codeApps',
   'localServices',
 ]);
-const dedicated = (item) => DEDICATED.has(item.key) && !(item.key === 'portals' && item.scope === 'project');
+const dedicated = (item) =>
+  DEDICATED.has(item.key) &&
+  !(item.key === 'portals' && item.scope === 'project') &&
+  !(item.key === 'sourceMaps' && item.scope !== 'catalogue');
 const SITE_FIELDS = new Set([
   'source',
   'defaultEnv',

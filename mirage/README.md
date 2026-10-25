@@ -21,6 +21,15 @@ npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
 
 Open the panel with **Alt+Shift+P**. **Inspect** connects the current page to its templates, forms, tables, permissions, snippets and settings. **Tweaks** controls your browser's local persona, enforcement and scenarios. Visit `/_sim/` for local administration.
 
+Mirage appends local debugger metadata to exported scripts and stylesheets, including
+inline scripts and model-driven client resources. Set `mirage.sourceMaps: false`
+on a catalogue site, or `sourceMaps: false` in a Mirage project, to serve their
+original asset bytes without generated debugger trailers. This setting takes effect
+on restart. The catalogue's top-level `sourceMaps` controls Lense overlays separately.
+When using Mirage as a local Lense reference, disabling Mirage maps removes the need
+for a trailer-stripping proxy. The runtime still accepts only its listening Host and
+registered identity-provider reply origin; arbitrary proxy origins are unsupported.
+
 Open **Model-driven apps** from `/_sim/` or visit `/main.aspx` for the local Power
 Pages Management app. It supports grids, saved views, search, filters, columns and
 record editing, and loads additional apps/forms/views from solution metadata.
@@ -53,6 +62,16 @@ npx --no-install paqvilo mirage inspect --source ./portal-export --json
 ```
 
 Run lifecycle commands with the same catalogue or `--project` used to start the session. A runtime already running before `dev` keeps running when its browser closes. Multi-portal catalogues support one runtime per site and selector navigation; each site has isolated state and a session cookie.
+
+Copy the stop command printed by `start` to stop that runtime. It preserves the selected project or catalogue and any runtime overrides, including port and state selectors for projectless standalone sessions. Ordinary project commands use readable `npx paqvilo mirage stop --project ...` arguments. On Windows, hints work in Command Prompt and PowerShell. Copy them as printed: an encoded `node -e` command preserves unsafe shell characters, a required ownership working directory or a group of separately scoped runtimes.
+
+Large encoded hints can refer to an immutable payload file in the runtime's ownership state directory, normally
+under ignored `.paqvilo/`. Keep that file while you need
+the printed command. Replay checks the payload size and digest and rejects nonregular files before reading; missing
+or changed payloads fail. If a copied hint is no longer usable, use `status` and `stop` with the same project/catalogue
+selectors to identify and stop the intended runtime.
+
+If an older session has ambiguous catalogue ownership, use `mirage status` with the same project/catalogue selectors to find its state file and listening port. Supply that `--state` file and actual `--port` when stopping it; port `0` cannot distinguish an older session.
 
 ## Build scenarios you can repeat
 

@@ -1,6 +1,7 @@
 // Request interception on the DevTools protocol. Each paused request is answered by this module,
 // including handler failures, without relying on another network event to complete the route.
 import { refreshUrl } from './navigation.mjs';
+import { randomUUID } from 'node:crypto';
 const RESOURCE_TYPES = {
   XHR: 'xhr',
   Fetch: 'fetch',
@@ -29,6 +30,72 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // A DevTools command sent while a tab swaps documents can go unanswered; setup and release must still end.
 const CDP_SETUP_MS = 10_000;
 const CDP_RELEASE_MS = 5_000;
+
+// Composed input events also cover controls inside closed shadow roots. Keep
+// only a document-level boolean; no field contents or node references are stored.
+function installLateDraftTracker(slot, origins) {
+  if (window !== window.top || !origins.includes(location.origin) || window[slot]) return;
+  let changed = false;
+  const input = () => {
+    changed = true;
+  };
+  document.addEventListener('input', input, true);
+  Object.defineProperty(window, slot, {
+    configurable: true,
+    value: Object.freeze({
+      dirty: () => changed,
+      dispose() {
+        document.removeEventListener('input', input, true);
+        delete window[slot];
+      },
+    }),
+  });
+}
+
+// Runs on a retained document object. No field value leaves the browser, and
+// checking drafts and starting the GET happen in the same JavaScript turn.
+function repairLateDocument(expected, destination, slot) {
+  if (this !== document || location.href !== expected) return 'superseded';
+  if (window[slot]?.dirty()) return 'draft';
+  for (const node of document.querySelectorAll('input, textarea, select, [contenteditable]')) {
+    if (
+      node.isContentEditable &&
+      (node.contains(document.activeElement) || node.contains(document.getSelection()?.anchorNode))
+    )
+      return 'draft';
+    if (!(node instanceof HTMLInputElement || node instanceof HTMLTextAreaElement || node instanceof HTMLSelectElement))
+      continue;
+    const prototype =
+      node instanceof HTMLInputElement
+        ? HTMLInputElement.prototype
+        : node instanceof HTMLTextAreaElement
+          ? HTMLTextAreaElement.prototype
+          : HTMLSelectElement.prototype;
+    // Cloning customized built-ins or custom select descendants can execute
+    // application constructors. Preserve those controls without probing them.
+    if (
+      Object.getPrototypeOf(node) !== prototype ||
+      node.hasAttribute('is') ||
+      [...node.querySelectorAll('*')].some((child) => child.localName.includes('-') || child.hasAttribute('is'))
+    )
+      return 'draft';
+    const form = document.createElement('form'),
+      baseline = node.cloneNode(true);
+    baseline.removeAttribute('form');
+    form.appendChild(baseline);
+    HTMLFormElement.prototype.reset.call(form);
+    if (node instanceof HTMLInputElement) {
+      if (node.files?.length || node.value !== baseline.value || node.checked !== baseline.checked) return 'draft';
+    } else if (node instanceof HTMLTextAreaElement) {
+      if (node.value !== baseline.value) return 'draft';
+    } else if (node instanceof HTMLSelectElement) {
+      if ([...node.options].some((option, index) => option.selected !== baseline.options[index].selected))
+        return 'draft';
+    }
+  }
+  location.assign(destination);
+  return 'reloading';
+}
 
 /** Resolves with true when `promise` settles within `ms`, or false when it does not. */
 function settlesWithin(promise, ms) {
@@ -62,7 +129,13 @@ export async function interceptOrigins(
   context,
   origins,
   handler,
-  { bypassCSP = false, ownsPage = () => true, onError = (error) => console.error(error.message), onTargetError } = {},
+  {
+    bypassCSP = false,
+    ownsPage = () => true,
+    onError = (error) => console.error(error.message),
+    onTargetError,
+    onAttach,
+  } = {},
 ) {
   const allowed = new Set(origins.map((origin) => new URL(origin).origin));
   if (!allowed.size) throw new Error('At least one portal origin is required');
@@ -109,6 +182,18 @@ export async function interceptOrigins(
         ),
       );
       record.routes.clear();
+      if (record.draftScript?.identifier) {
+        await step('draft tracker cleanup', () =>
+          record.cdp.send('Runtime.evaluate', { expression: `window[${JSON.stringify(record.draftSlot)}]?.dispose()` }),
+        );
+        await step('draft tracker script', () =>
+          record.cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: record.draftScript.identifier }),
+        );
+      }
+      if (record.attachment)
+        await step('attachment cleanup', () =>
+          typeof record.attachment === 'function' ? record.attachment() : record.attachment.dispose?.(),
+        );
       const restore = [
         ['Fetch.disable', {}],
         ['Network.setCacheDisabled', { cacheDisabled: false }],
@@ -147,7 +232,14 @@ export async function interceptOrigins(
       const isMainDocument =
         event.resourceType === 'Document' && (mainFrameId === null || event.frameId === mainFrameId);
       if (isMainDocument) sawDocument = true;
-      const route = makeRoute({ cdp, context, page, event, isMainDocument });
+      const route = makeRoute({
+        cdp,
+        context,
+        page,
+        event,
+        isMainDocument,
+        onFulfilled: (proof) => record.attachment?.publishProvenance?.(event, proof),
+      });
       activeRoutes.add(route);
       record.routes.add(route);
       // whatever the handler does or fails to do, the request is not left paused
@@ -191,6 +283,11 @@ export async function interceptOrigins(
     };
     try {
       mainFrameId = (await configure('Page.getFrameTree')).frameTree.frame.id;
+      record.draftSlot = '__paqviloLateDraft_' + randomUUID().replaceAll('-', '');
+      const draftSource = `(${installLateDraftTracker.toString()})(${JSON.stringify(record.draftSlot)},${JSON.stringify([...allowed])})`;
+      await configure('Page.enable');
+      record.draftScript = await configure('Page.addScriptToEvaluateOnNewDocument', { source: draftSource });
+      await configure('Runtime.evaluate', { expression: draftSource });
       // CSP remains enforced unless explicitly disabled for this development session.
       if (bypassCSP) await configure('Page.setBypassCSP', { enabled: true });
       // A file the browser has cached from the online site would not be asked for again when its
@@ -200,6 +297,32 @@ export async function interceptOrigins(
       // Attached profiles can already have a worker serving cached resources before
       // Fetch sees them. Bypass it only in this admitted target; never unregister it.
       await configure('Network.setBypassServiceWorker', { bypass: true });
+      if (onAttach) {
+        let timer;
+        const opening = Promise.resolve().then(() => onAttach({ page, cdp, configure }));
+        opening
+          .then((attachment) => {
+            if (record.closed)
+              Promise.resolve(typeof attachment === 'function' ? attachment() : attachment?.dispose?.()).catch(
+                () => {},
+              );
+            else record.attachment = attachment;
+          })
+          .catch(() => {});
+        try {
+          await Promise.race([
+            opening,
+            new Promise((_, reject) => {
+              timer = setTimeout(
+                () => reject(new Error('Interception attachment did not finish within its setup deadline')),
+                CDP_SETUP_MS,
+              );
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
       await configure('Fetch.enable', { patterns: [...allowed].map((origin) => ({ urlPattern: `${origin}/*` })) });
     } catch (error) {
       const pageClosed = stopped || record.closed || page.isClosed();
@@ -216,15 +339,74 @@ export async function interceptOrigins(
     }
     // A tab opened by the portal (target=_blank, window.open) may have asked for its page before
     // interception was on. Load that page once more so it gets the local sources too.
-    const late = () => {
+    const late = async () => {
       if (stopped || sawDocument || page.isClosed() || !matches(page.url())) return;
       sawDocument = true;
-      // A late popup may have been opened by a submitted form. Retry with GET, never replay POST.
-      page.goto(refreshUrl(page.url()), { waitUntil: 'commit', timeout: 60_000 }).catch(() => {});
+      const address = page.url();
+      let objectId, captured;
+      const reloadRequired = () => {
+        try {
+          Promise.resolve(
+            onError(
+              Object.assign(
+                new Error(
+                  'The initial document opened before local interception was ready. Its draft was preserved; reload this tab when ready to apply local sources.',
+                ),
+                { code: 'reload_required', scope: 'target', phase: 'initial document' },
+              ),
+            ),
+          ).catch(() => {});
+        } catch {
+          /* A diagnostic callback cannot replace or close this document. */
+        }
+      };
+      const stillCurrent = async () => {
+        if (stopped || record.closed || page.isClosed() || page.url() !== address) return false;
+        const current = await configure('Page.getFrameTree').then(
+          (value) => value.frameTree.frame,
+          () => null,
+        );
+        return current && captured && current.id === captured.id && current.loaderId === captured.loaderId;
+      };
+      try {
+        const before = (captured = (await configure('Page.getFrameTree')).frameTree.frame);
+        objectId = (await configure('Runtime.evaluate', { expression: 'document', returnByValue: false })).result
+          ?.objectId;
+        const after = (await configure('Page.getFrameTree')).frameTree.frame;
+        if (
+          stopped ||
+          record.closed ||
+          page.isClosed() ||
+          page.url() !== address ||
+          before.id !== after.id ||
+          before.loaderId !== after.loaderId
+        )
+          return;
+        if (!objectId) return reloadRequired();
+        // A late popup can be a POST result. Assign a new GET URL, never replay
+        // that submission. A replaced loader cannot use this document handle.
+        const result = await configure('Runtime.callFunctionOn', {
+          objectId,
+          functionDeclaration: repairLateDocument.toString(),
+          arguments: [{ value: address }, { value: refreshUrl(address) }, { value: record.draftSlot }],
+          returnByValue: true,
+        });
+        if (
+          (result.exceptionDetails || !['reloading', 'superseded'].includes(result.result?.value)) &&
+          (await stillCurrent())
+        )
+          reloadRequired();
+      } catch {
+        if (await stillCurrent()) reloadRequired();
+      } finally {
+        if (objectId) cdp.send('Runtime.releaseObject', { objectId }).catch(() => {});
+      }
     };
-    record.late = late;
-    page.once('domcontentloaded', late);
-    if (matches(page.url())) late();
+    record.late = () => {
+      late().catch(() => {});
+    };
+    page.once('domcontentloaded', record.late);
+    if (matches(page.url())) await late();
   };
   const startAttachment = (page, initial = false) => {
     const pending = attach(page);
@@ -269,17 +451,20 @@ export async function interceptOrigins(
   }
 }
 
-function makeRoute({ cdp, context, page, event, isMainDocument }) {
+function makeRoute({ cdp, context, page, event, isMainDocument, onFulfilled }) {
   const { requestId, request } = event;
   let fetched = false,
     headersChanged = false;
   const responses = new Set();
   const headers = Object.fromEntries(Object.entries(request.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
   const send = (method, params) => {
-    if (route.answered) return Promise.resolve();
+    if (route.answered) return Promise.resolve(false);
     route.answered = true;
     // the tab may have moved on or closed; nothing is waiting for the answer then
-    return cdp.send(method, { requestId, ...params }).catch(() => {});
+    return cdp.send(method, { requestId, ...params }).then(
+      () => true,
+      () => false,
+    );
   };
   /** The body the browser sends with the request, or undefined. */
   const postData = async () => {
@@ -362,8 +547,8 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
       });
     },
     /** Answers from `response` (what fetch() returned), optionally with another body, or from status/headers/body. */
-    async fulfill({ response, status, headers: given, body } = {}) {
-      if (route.answered) return;
+    async fulfill({ response, status, headers: given, body, provenance } = {}) {
+      if (route.answered) return false;
       let responseHeaders;
       let payload = body;
       const code = status ?? (response ? response.status() : 200);
@@ -387,11 +572,16 @@ function makeRoute({ cdp, context, page, event, isMainDocument }) {
       }
       const bytes = noBody ? Buffer.alloc(0) : Buffer.isBuffer(payload) ? payload : Buffer.from(payload ?? '', 'utf8');
       if (!noBody) responseHeaders.push({ name: 'content-length', value: String(bytes.length) });
-      await send('Fetch.fulfillRequest', {
+      const acknowledged = await send('Fetch.fulfillRequest', {
         responseCode: code,
         responseHeaders,
         body: bytes.toString('base64'),
       });
+      if (acknowledged && provenance)
+        await Promise.resolve()
+          .then(() => onFulfilled?.(provenance))
+          .catch(() => {});
+      return acknowledged;
     },
     /** Lets the request go to the online portal untouched. */
     fallback: () =>

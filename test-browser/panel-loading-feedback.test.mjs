@@ -281,7 +281,10 @@ test(
       ui.select(document.getElementById('fx_title'));
     });
     const xray = page.locator('#paqvilo-xray');
-    await xray.locator('.binding').getByText('fx_widget.fx_title', { exact: true }).waitFor();
+    await xray.locator('[data-evidence-role="alternatives"]').evaluate((node) => {
+      node.open = true;
+    });
+    await xray.locator('[data-evidence-role="alternatives"]').getByText('fx_title', { exact: true }).waitFor();
     await page.evaluate(() =>
       document.getElementById('paqvilo-xray').__px.update(
         {
@@ -297,7 +300,7 @@ test(
     assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
     assert.equal(await xray.locator('.scan-wash').isVisible(), false, 'cached report refresh uses compact feedback');
     assert.equal(
-      await xray.locator('.binding').getByText('fx_widget.fx_title', { exact: true }).isVisible(),
+      await xray.locator('[data-evidence-role="alternatives"]').getByText('fx_title', { exact: true }).isVisible(),
       true,
       'existing details remain readable',
     );

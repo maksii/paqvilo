@@ -43,6 +43,27 @@ Applying a portal's business-data preset preserves omitted organization-owned ta
 staff grants, credentials and imported schema. Explicit table or mapping entries
 in the preset still replace those targets. Reset remains a separate operation.
 
+Portal data presets can also declare local web-role assignments by exported name:
+
+```js
+personaRoles: [{
+  contactId: '22222222-2222-4222-8222-222222222222',
+  roles: ['Reviewers'],
+}],
+```
+
+The contact must be present in the resulting local data. Applying such a preset
+resolves exact, case-sensitive names against active web roles in the selected
+portal export; missing or duplicate role names reject the application. It replaces
+the runtime's explicit local contact-role assignments and uses membership-derived
+identity. An empty `personaRoles: []` clears those assignments; omission preserves
+them. These grants still pass through exported table permissions and automatic
+authenticated/anonymous roles. They do not create live memberships or change a
+persona catalogue's descriptive role tags. The lower-level `contactRoles` field
+accepts `{ contactId, roleId }` assignments directly; when both fields are present,
+`personaRoles` takes precedence. This full-preset replacement differs from additive
+generation's explicit materialization option below.
+
 Expression operators extend declarative local backend rules. Pack endpoints are validated under the local `/__sim/` namespace; they cannot replace live provider authorization. Shell conventions specify project banner/notification rules. Parity fixtures specify project-specific comparison scenarios and denied routes. Keep all these definitions and their tests with the project.
 
 For compatibility, direct imports of `registerExpressionOperators` and

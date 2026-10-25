@@ -361,6 +361,7 @@ export function webFormsForm({
   extraScripts = '',
   eventValidation = true,
   formScriptPaths = null,
+  onContent = null,
 } = {}) {
   // A form component that keeps state across postbacks (auto-generated steps) supplies it as
   // data-pp-viewstate on its wrapper; the page's __VIEWSTATE carries it, as ASP.NET would.
@@ -433,11 +434,15 @@ export function webFormsForm({
   const onSubmit = validators
     ? `<script type="text/javascript">\n//<![CDATA[\nfunction WebForm_OnSubmit() {\nif (typeof(ValidatorOnSubmit) == "function" && ValidatorOnSubmit() == false) return false;\nreturn true;\n}\n//]]>\n</script>\n`
     : '';
-  return (
+  const prefix =
     `<form method="post" action="${escapeAttribute(action)}"${validators ? ` onsubmit="javascript:return WebForm_OnSubmit();"` : ''} id="${escapeAttribute(id)}"${MULTIPART_MARKER.test(String(content ?? '')) ? ' enctype="multipart/form-data"' : ''}>\n` +
     `<div class="aspNetHidden">\n${hidden('__EVENTTARGET', '')}\n${hidden('__EVENTARGUMENT', '')}\n${hidden('__VIEWSTATE', viewState)}\n</div>\n\n` +
     `<script type="text/javascript">\n//<![CDATA[\nvar theForm = document.forms['${id}'];\nif (!theForm) {\n    theForm = document.${id};\n}\nfunction __doPostBack(eventTarget, eventArgument) {\n    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {\n        theForm.__EVENTTARGET.value = eventTarget;\n        theForm.__EVENTARGUMENT.value = eventArgument;\n        theForm.submit();\n    }\n}\n//]]>\n</script>\n\n` +
-    `${resources}\n${formScripts}\n${captchaScripts}${extraScripts ? extraScripts + '\n' : ''}${onSubmit}${content}` +
+    `${resources}\n${formScripts}\n${captchaScripts}${extraScripts ? extraScripts + '\n' : ''}${onSubmit}`;
+  onContent?.({ offset: prefix.length, length: content.length });
+  return (
+    prefix +
+    content +
     // ASP.NET renders the generator and event validation fields at the end of the server form.
     `<div class="aspNetHidden">\n\n${hidden('__VIEWSTATEGENERATOR', createHash('sha256').update(`generator\u0000${id}`).digest('hex').slice(0, 8).toUpperCase())}\n${hidden('__VIEWSTATEENCRYPTED', '')}\n${eventValidation ? hidden('__EVENTVALIDATION', `/wE${opaque('validation', action).replace(/=+$/, '')}`) + '\n' : ''}</div>${trailing}</form>`
   );
@@ -471,6 +476,7 @@ export function nativePageRegions({
     kind === 'multistep-form' ||
     kind === 'code-component' ||
     calendar;
+  let contentRange = { offset: 0, length: content.length };
   return {
     kind,
     content: form
@@ -482,8 +488,12 @@ export function nativePageRegions({
           variant,
           extraScripts: formScripts,
           eventValidation: !serverFormId,
+          onContent: (range) => {
+            contentRange = range;
+          },
         })
       : content,
+    contentRange,
     bodyScripts: other.length ? renderScripts(other) : '',
   };
 }

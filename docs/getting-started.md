@@ -2,7 +2,7 @@
 
 Install Paqvilo, try the included example, then connect your local exports. The toolkit runs on your computer; you do not need to clone its repository. For model-driven apps or an integration API without Power Pages, start with the [standalone organization guide](../mirage/docs/standalone-organization.md). No portal export or live environment is required for that profile.
 
-For an existing consumer project, install with `npm install --save-dev paqvilo@^0.9.6 --ignore-scripts`, then run `npx paqvilo doctor --setup --json`. A normal npm install supplies both Lense and Mirage dependencies; no install inside `node_modules/paqvilo/mirage` is needed. Commit the lockfile and use `npm ci --ignore-scripts` for repeatable setup.
+For an existing consumer project, install with `npm install --save-dev paqvilo@^0.9.7 --ignore-scripts`, then run `npx paqvilo doctor --setup --json`. A normal npm install supplies both Lense and Mirage dependencies; no install inside `node_modules/paqvilo/mirage` is needed. Commit the lockfile and use `npm ci --ignore-scripts` for repeatable setup.
 
 After configuring your export/catalogue, run `npx paqvilo lense doctor --config ./paqvilo.config.yml --site my-site`, then `npx paqvilo mirage dev --config ./paqvilo.config.yml --site my-site`. Capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`. See [platform resources](../mirage/docs/platform-resources.md), [public APIs](public-api.md) and [release notes](release-notes.md).
 
@@ -60,7 +60,7 @@ Follow the walkthrough on the page:
 2. **Open a populated account.** Choose **Web API**, then **Arcwell Services**. Its form includes typed fields, lookups, two contacts and two notes.
 3. **Try CRUD.** Edit the service score or review date, save, then add a related contact. View, edit and delete that contact in its dialog. Download the service brief or attach a small file.
 4. **Compare approaches.** Open **Out of the box** for native views, contact modals and notes. Open **PCF** to edit the same account through 14 typed controls. On **Extended**, calculate an estimate, read the local account overview and try the location flow.
-5. **Inspect sources.** Press **Alt+Shift+P**, then select **Inspect**. Check the template, tables and permission rules. **Tweaks** also lets you switch persona.
+5. **Inspect sources.** Press **Alt+Shift+P**, then select **Inspect**. Use **Select an element** to see its owner, local source and alternatives with separate certainty states. [Selection evidence](lense.md#selection-evidence) explains exact, candidate and stale results. **Tweaks** also lets you switch persona.
 6. **Edit locally.** In VS Code, open `paqvilo-example/portal/web-files/demo.css`. Change a style and save. The browser should refresh with your edit.
 7. **Try an empty state.** Open **Manage data and personas**, select **Plugins & presets**, apply **Empty account workspace** and confirm. Refresh the portal. Apply **Populated account workspace** to restore the sample rows.
 
@@ -79,7 +79,7 @@ For Chrome, add `--browser chrome`. To choose a different copy, add `--dir ./ano
 Create the empty consumer layout before connecting your exports:
 
 ```sh
-npx paqvilo@^0.9.6 init ./my-portal-project --name my-portal-project --site portal
+npx paqvilo@^0.9.7 init ./my-portal-project --name my-portal-project --site portal
 cd my-portal-project
 npm run setup
 npm run configure

@@ -220,7 +220,12 @@ export async function importCodeComponents(layers = [], { readFile = readLocalFi
           const url = `/__sim-static/pcf/${token}/${relative.split('/').map(encodeURIComponent).join('/')}`;
           const body = await readFile(file, { root, maxBytes: 8 * 1024 * 1024 });
           digest.update(relative).update(body);
-          declaredAssets.set(url, { file, root, kind: resource.name });
+          declaredAssets.set(url, {
+            file,
+            root,
+            kind: resource.name,
+            contentRevision: createHash('sha256').update(body).digest('hex'),
+          });
           // SDK bundles can export their constructor through a classic script
           // module rather than a namespace or registerControl call. Bind only
           // a declaration from this exact declared resource, never scan globals.
@@ -309,6 +314,12 @@ export async function importCodeComponents(layers = [], { readFile = readLocalFi
           strings: {},
           stringResources,
           file: manifestFile,
+          sourceAssets: [...declaredAssets].map(([url, asset]) => ({
+            url,
+            file: asset.file,
+            contentRevision: asset.contentRevision,
+          })),
+          sourceContentRevision: createHash('sha256').update(manifest).digest('hex'),
           fingerprint: digest.digest('hex'),
         });
         for (const [url, asset] of declaredAssets) assets.set(url, asset);
@@ -343,6 +354,7 @@ export function renderCodeComponent({
   language,
   nativeBinding,
   diagnostic,
+  onRendered,
 }) {
   const schema =
     [...catalog.controls.keys()].find((schema) => canonical(schema) === canonical(name)) ??
@@ -476,6 +488,7 @@ export function renderCodeComponent({
     stringResources: undefined,
     datasets,
     file: undefined,
+    sourceAssets: undefined,
     args,
     nativeBinding,
     language: selectedLanguage
@@ -494,5 +507,18 @@ export function renderCodeComponent({
     ),
     id,
   };
-  return `<script src="/__sim-static/pcf-host.js"></script><div data-mirage-component="codecomponent" data-pcf-schema="${escape(schema)}" aria-busy="true"></div><script>window.__paqviloPcf.mount(${json(value)}, document.currentScript.previousElementSibling);</script>`;
+  const prefix = '<script src="/__sim-static/pcf-host.js"></script>';
+  const opening = `<div data-mirage-component="codecomponent" data-pcf-schema="${escape(schema)}" aria-busy="true">`;
+  onRendered?.({
+    start: prefix.length,
+    end: prefix.length + opening.length,
+    tag: 'div',
+    component: { kind: 'pcf', key: 'pcf:' + schema.toLowerCase(), name: schema },
+    attributes: [{ name: 'data-pcf-schema', value: schema }],
+  });
+  return (
+    prefix +
+    opening +
+    `</div><script>window.__paqviloPcf.mount(${json(value)}, document.currentScript.previousElementSibling);</script>`
+  );
 }

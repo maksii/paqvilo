@@ -181,11 +181,23 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
           ...properties,
           name: attribute,
           label: pickLabel(properties.labels, base.lcid) ?? next.fields[attribute]?.label ?? attribute,
+          ...(!isDeepStrictEqual(field.columnMetadata, base.entities?.[name]?.fields?.[attribute]?.columnMetadata)
+            ? { sourceOriginVerified: false }
+            : {}),
         };
       }
       next.label = pickLabel(mapping.dataverseMetadata?.labels?.DisplayName, base.lcid) ?? next.label;
       next.collectionLabel =
         pickLabel(mapping.dataverseMetadata?.labels?.DisplayCollectionName, base.lcid) ?? next.collectionLabel;
+      const original = base.entities?.[name];
+      if (
+        original &&
+        (next.label !== original.label ||
+          next.collectionLabel !== original.collectionLabel ||
+          !isDeepStrictEqual(Object.keys(next.fields).sort(), Object.keys(original.fields ?? {}).sort()) ||
+          Object.values(next.fields).some((field) => field.sourceOriginVerified === false))
+      )
+        next.sourceOriginVerified = false;
     }
     const components = scan.layers.flatMap((layer) =>
       layer.documents.map((document) => document.facts.appComponents ?? {}),
@@ -222,27 +234,45 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
     // Current metadata rows take precedence over their original import payload.
     for (const row of rows.systemform) {
       const form = formsById.get(id(row.formid));
-      if (form)
+      if (form) {
+        const { formxml, name, type, formactivationstate } = row;
+        if (
+          (formxml != null && formxml !== form.xml) ||
+          (name != null && name !== form.name) ||
+          (type != null && type !== form.systemFormType)
+        )
+          form.sourceOriginVerified = false;
         Object.assign(form, {
-          name: row.name ?? form.name,
-          xml: row.formxml ?? form.xml,
-          active: row.formactivationstate !== 0,
-          systemFormType: row.type ?? form.systemFormType,
+          name: name ?? form.name,
+          xml: formxml ?? form.xml,
+          active: formactivationstate !== 0,
+          systemFormType: type ?? form.systemFormType,
         });
+      }
     }
     for (const row of rows.savedquery) {
       const view = viewsById.get(id(row.savedqueryid));
       if (!view) continue;
+      const { fetchxml, name, querytype, isdefault, layoutxml } = row;
+      if (
+        (fetchxml != null && fetchxml !== view.fetchXml) ||
+        (name != null && name !== view.name) ||
+        (querytype != null && querytype !== view.queryType)
+      )
+        view.sourceOriginVerified = false;
       Object.assign(view, {
-        name: row.name ?? view.name,
-        fetchXml: row.fetchxml ?? view.fetchXml,
-        queryType: row.querytype ?? view.queryType,
-        isDefault: row.isdefault ?? view.isDefault,
+        name: name ?? view.name,
+        fetchXml: fetchxml ?? view.fetchXml,
+        queryType: querytype ?? view.queryType,
+        isDefault: isdefault ?? view.isDefault,
       });
-      if (row.layoutxml)
-        view.fields = descendants(parseSolutionXml(row.layoutxml), 'cell')
+      if (layoutxml) {
+        const fields = descendants(parseSolutionXml(layoutxml), 'cell')
           .filter((cell) => cell.attrs.ishidden !== '1')
           .map((cell) => ({ name: cell.attrs.name, width: Number(cell.attrs.width) || 180 }));
+        if (!isDeepStrictEqual(fields, view.fields)) view.sourceOriginVerified = false;
+        view.fields = fields;
+      }
     }
     const appDocuments = [];
     for (const row of rows.appmodule)
@@ -282,6 +312,14 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
           );
         if (!next.navigation?.length && !explicitNavigation)
           next.navigation = structuredClone(apps[index].navigation ?? []);
+        // Mirrored component rows are reparsed under synthetic identities. A
+        // byte-independent parsed equality proves an unchanged local mapping;
+        // edited navigation keeps its synthetic origin and cannot open a file
+        // merely because the same app ID exists in an export.
+        if (isDeepStrictEqual(next.navigation, apps[index].navigation)) {
+          next.navigationIdentityFile = apps[index].navigationIdentityFile;
+          next.navigationSourceFile = apps[index].navigationSourceFile;
+        }
         if (!next.dashboards?.length) next.dashboards = structuredClone(apps[index].dashboards ?? []);
         // Mobile offline profiles come from Solution component files the overlay does not reparse (model-driven/offline.mjs).
         if (!next.offlineProfiles?.length) next.offlineProfiles = structuredClone(apps[index].offlineProfiles ?? []);

@@ -6,6 +6,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { chromium } from 'playwright-core';
 import { interceptOrigin } from './intercept.mjs';
+import { createInspectionProvenanceTransport } from './inspection-provenance-transport.mjs';
 import { refreshUrl } from './navigation.mjs';
 import { pageKey } from './html-rewriter.mjs';
 import { browserProfileInfo, validateBrowserProfile, validateDebuggerMode } from './browser-profile.mjs';
@@ -347,8 +348,12 @@ export async function keepSessionCookies(context, file, { origins = [] } = {}) {
 
 /** Routes the portal origin of `context` through the overlay session. */
 export async function attachSession(context, session) {
+  const provenance = createInspectionProvenanceTransport(context, [session.cfg]);
+  session.provenanceSlot = provenance.slot;
+  session.domProvenanceSlot = provenance.domSlot;
   return interceptOrigin(context, session.cfg.origin, session.route, {
     bypassCSP: Boolean(session.cfg.browser?.bypassCSP),
+    onAttach: provenance.onAttach,
   });
 }
 

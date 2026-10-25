@@ -85,9 +85,11 @@ async function fixture(t) {
   };
   await waitForRequest(1);
   await answer(0, 1, 'Old source');
-  await page.waitForFunction(
-    () =>
-      document.getElementById('paqvilo-xray').__px.identify(document.getElementById('picked')).title === 'Old source',
+  await page.waitForFunction(() =>
+    document
+      .getElementById('paqvilo-xray')
+      .__px.identify(document.getElementById('picked'))
+      .evidence.source.refs.some((ref) => ref.name === 'Old source'),
   );
   await page.evaluate(() => {
     const api = document.getElementById('paqvilo-xray').__px;
@@ -95,7 +97,12 @@ async function fixture(t) {
     api.select(document.getElementById('picked'));
   });
   const identity = () =>
-    page.evaluate(() => document.getElementById('paqvilo-xray').__px.identify(document.getElementById('picked')).title);
+    page.evaluate(() =>
+      document
+        .getElementById('paqvilo-xray')
+        .__px.identify(document.getElementById('picked'))
+        .evidence.source.refs.map((ref) => ref.name),
+    );
   const update = async (version, path) => {
     state.inspection = { ...state.inspection, version, path };
     await page.evaluate((path) => history.pushState(null, '', path), path);
@@ -108,17 +115,18 @@ test('X-ray clears an older report immediately during a delayed history navigati
   const { page, waitForRequest, answer, identity, update } = await fixture(t);
   await update(2, '/next/');
   await waitForRequest(2);
-  assert.equal(
+  assert.deepEqual(
     await identity(),
-    'No reliable source',
+    [],
     'old source ownership cannot remain visible while a newer page report is pending',
   );
   assert.doesNotMatch(await page.locator('#paqvilo-xray .card').innerText(), /Old source/);
   await answer(1, 2, 'Current source');
-  await page.waitForFunction(
-    () =>
-      document.getElementById('paqvilo-xray').__px.identify(document.getElementById('picked')).title ===
-      'Current source',
+  await page.waitForFunction(() =>
+    document
+      .getElementById('paqvilo-xray')
+      .__px.identify(document.getElementById('picked'))
+      .evidence.source.refs.some((ref) => ref.name === 'Current source'),
   );
 });
 
@@ -127,17 +135,18 @@ test('a delayed manual refresh clears its old report and cannot overwrite a newe
   await page.locator('#paqvilo-xray [data-action=refresh]').click();
   const refresh = await waitForRequest(2);
   assert.equal(refresh.body.refresh, true);
-  assert.equal(await identity(), 'No reliable source', 'manual refresh also invalidates the old identity immediately');
+  assert.deepEqual(await identity(), [], 'manual refresh also invalidates the old identity immediately');
   await update(3, '/latest/');
   await waitForRequest(3);
   await answer(2, 3, 'Latest source');
-  await page.waitForFunction(
-    () =>
-      document.getElementById('paqvilo-xray').__px.identify(document.getElementById('picked')).title ===
-      'Latest source',
+  await page.waitForFunction(() =>
+    document
+      .getElementById('paqvilo-xray')
+      .__px.identify(document.getElementById('picked'))
+      .evidence.source.refs.some((ref) => ref.name === 'Latest source'),
   );
   await answer(1, 2, 'Obsolete refresh');
   await page.waitForTimeout(100);
-  assert.equal(await identity(), 'Latest source');
+  assert.deepEqual(await identity(), ['Latest source']);
   assert.doesNotMatch(await page.locator('#paqvilo-xray .card').innerText(), /Old source|Obsolete refresh/);
 });

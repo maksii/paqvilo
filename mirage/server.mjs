@@ -83,6 +83,8 @@ import { observedPageErrorResponse } from './lib/page-error-presentation.mjs';
 import { initialState } from './lib/bootstrap.mjs';
 import { contentPolicyDefaults as resolvePolicyDefaults } from './lib/content-policy-defaults.mjs';
 import { withFileSourceMap, identityMapUrl } from '../lense/source-map.mjs';
+import { runWithSourceDebugging } from './lib/source-debug.mjs';
+import { refreshScriptProofLocations, scriptLineStarts } from './lib/render-provenance.mjs';
 import { assetKind } from './lib/asset-type.mjs';
 import { listPresets } from './lib/presets.mjs';
 import {
@@ -496,6 +498,7 @@ async function createPowerPagesSimulator({
   host = '127.0.0.1',
   origin,
   watch = true,
+  sourceMaps = true,
   initial,
   liveBridge,
   solutionRoots = [],
@@ -556,6 +559,7 @@ async function createPowerPagesSimulator({
   const providerSettings = identityProviderSettings(identityProviderOption),
     providerAssets = identityProviderAssets(providerSettings, projectRoot);
   port = runtimePort(port, 0);
+  if (typeof sourceMaps !== 'boolean') throw error('sourceMaps must be true or false.');
   const render = renderSettings(renderOption);
   const localOverrides = overridesOption ?? resolveLocalOverrides({ compat, head }, projectRoot);
   if (!['127.0.0.1', 'localhost', '::1'].includes(host)) throw error('The simulator binds only to loopback.');
@@ -1871,6 +1875,9 @@ async function createPowerPagesSimulator({
   };
   const buildRenderer = (source = portal) =>
     createPortalRenderer(source, {
+      provenance: false,
+      metadata: solutionMetadata,
+      codeCatalogue: codeComponents,
       render,
       observed: config().observed ?? source.observed,
       serverLogic: async ({ name, operation, input }) => {
@@ -1921,62 +1928,88 @@ async function createPowerPagesSimulator({
           () => readProvider.get(entity, id, currentIdentity()),
           config().observed ?? source.observed,
         ),
-      renderComponent: async (kind, args, context) =>
-        kind === 'codecomponent'
-          ? renderCodeComponent({
-              name: args?.name ?? args?.id,
-              args,
-              portal,
-              catalog: codeComponents,
-              metadata: solutionMetadata,
-              language: context?.__language ?? portal.language,
-              identity: currentIdentity(),
-              mappings: store.snapshot({ sections: ['mappings'] }).mappings,
-              diagnostic: (entry) => recordDiagnostic({ ...entry, path: context?.request?.path }),
-            })
-          : renderComponent(
-              kind,
-              typeof args === 'string' ? args : (args?.name ?? args?.id ?? args?.key ?? ''),
-              context,
-              {
+      renderComponent: async (kind, args, context) => {
+        if (kind === 'codecomponent') {
+          const bindings = [];
+          const html = renderCodeComponent({
+            name: args?.name ?? args?.id,
+            args,
+            portal,
+            catalog: codeComponents,
+            metadata: solutionMetadata,
+            language: context?.__language ?? portal.language,
+            identity: currentIdentity(),
+            mappings: store.snapshot({ sections: ['mappings'] }).mappings,
+            diagnostic: (entry) => recordDiagnostic({ ...entry, path: context?.request?.path }),
+            onRendered: (binding) => bindings.push(binding),
+          });
+          const index = renderer.sourceIndex(context?.__language?.id);
+          return {
+            html,
+            renderProvenance: bindings.map((binding) => ({
+              ...binding,
+              sourceRefIds: index.metadataIndex.sourceRefsFor([binding.component.key]).map((ref) => ref.id),
+            })),
+          };
+        }
+        const progressBindings = [];
+        const renderedComponent = await renderComponent(
+          kind,
+          typeof args === 'string' ? args : (args?.name ?? args?.id ?? args?.key ?? ''),
+          context,
+          {
+            portal,
+            store,
+            readProvider,
+            args: typeof args === 'string' ? { name: args } : (args ?? {}),
+            serviceFixtures: organizationHost.providers.serviceFixtures,
+            metadata: solutionMetadata,
+            codeComponent: (spec) =>
+              renderCodeComponent({
+                ...spec,
                 portal,
-                store,
-                readProvider,
-                args: typeof args === 'string' ? { name: args } : (args ?? {}),
-                serviceFixtures: organizationHost.providers.serviceFixtures,
+                catalog: codeComponents,
                 metadata: solutionMetadata,
-                codeComponent: (spec) =>
-                  renderCodeComponent({
-                    ...spec,
-                    portal,
-                    catalog: codeComponents,
-                    metadata: solutionMetadata,
-                    language: context?.__language ?? portal.language,
-                    identity: currentIdentity(),
-                    mappings: store.snapshot({ sections: ['mappings'] }).mappings,
-                    diagnostic: (entry) => recordDiagnostic({ ...entry, path: context?.request?.path }),
-                  }),
-                config: config(),
-                observed: config().observed ?? portal.observed,
-                managedControls: config().managedControls ?? config().shellProfile?.managedControls,
-                sourceDependencies,
-                richTextCompatibility: richTextCompatibility(),
-                schemas: {
-                  ...solutionMetadata.componentSchemas,
-                  ...config().componentSchemas,
-                },
-                renderLiquid: (source, ctx) => renderer.renderString(source, ctx),
-                webFormSessions,
-                webFormOwner: () => webFormSessionOwner(currentIdentity(), trace.getStore()?.visitor),
-                onNativePostbackDescriptor:
-                  nativeFormTransport(config().observed ?? portal.observed) === 'postback'
-                    ? (item) => trace.getStore()?.nativePostbacks?.push(item)
-                    : undefined,
-                nativePostbackState: trace.getStore()?.nativePostbackState,
-                // Component diagnostics name the page that rendered the component.
-                diagnostic: (entry) => recordDiagnostic({ ...entry, path: entry.path ?? context?.request?.path }),
-              },
-            ),
+                language: context?.__language ?? portal.language,
+                identity: currentIdentity(),
+                mappings: store.snapshot({ sections: ['mappings'] }).mappings,
+                diagnostic: (entry) => recordDiagnostic({ ...entry, path: context?.request?.path }),
+              }),
+            config: config(),
+            observed: config().observed ?? portal.observed,
+            managedControls: config().managedControls ?? config().shellProfile?.managedControls,
+            sourceDependencies,
+            richTextCompatibility: richTextCompatibility(),
+            schemas: {
+              ...solutionMetadata.componentSchemas,
+              ...config().componentSchemas,
+            },
+            renderLiquid: (source, ctx) => renderer.renderString(source, ctx),
+            webFormSessions,
+            webFormOwner: () => webFormSessionOwner(currentIdentity(), trace.getStore()?.visitor),
+            onNativePostbackDescriptor:
+              nativeFormTransport(config().observed ?? portal.observed) === 'postback'
+                ? (item) => trace.getStore()?.nativePostbacks?.push(item)
+                : undefined,
+            nativePostbackState: trace.getStore()?.nativePostbackState,
+            onProgressRendered: (binding) => progressBindings.push(binding),
+            // Component diagnostics name the page that rendered the component.
+            diagnostic: (entry) => recordDiagnostic({ ...entry, path: entry.path ?? context?.request?.path }),
+          },
+        );
+        if (!progressBindings.length) return renderedComponent;
+        const index = renderer.sourceIndex(context?.__language?.id);
+        const renderProvenance = progressBindings.map((binding) => ({
+          ...binding,
+          sourceRefIds: binding.sourceSelectors.flatMap((selector) => {
+            const source = index.source({ id: selector.recordId }, selector.field, selector);
+            return source && !source.ambiguous ? [source.id] : [];
+          }),
+        }));
+        return typeof renderedComponent === 'string'
+          ? { html: renderedComponent, renderProvenance }
+          : { ...renderedComponent, renderProvenance };
+      },
       user: currentIdentity(),
       shellProfile: config().shellProfile,
     });
@@ -2476,6 +2509,7 @@ async function createPowerPagesSimulator({
             ...settingOptionsRest,
             modelDriven: modelDrivenOption,
             simulation: simulationOption,
+            sourceMaps,
             contentPolicyDefaults: policyDefaults,
           },
           { exclude: ['dataverse', 'runtime'] },
@@ -2649,6 +2683,8 @@ async function createPowerPagesSimulator({
     };
   };
   const inspectionCache = new Map();
+  const renderProofs = new Map();
+  const scriptProofs = new Map();
   // Page inspection answers with the identity that a portal request for the inspected page,
   // carrying the same cookies, would get (requestAuth): the session, otherwise anonymous.
   const inspectionIdentity = (req, route) => {
@@ -2681,6 +2717,12 @@ async function createPowerPagesSimulator({
     });
     const value = {
       ...report,
+      sourceRevision: renderer.sourceIndex().sourceRevision,
+      portalSources: renderer.sourceIndex().snapshot(report),
+      portalProfile: {
+        deploymentProfile: portal.deploymentProfile ?? null,
+        deploymentProfileFile: portal.deploymentProfileFile ?? null,
+      },
       revision,
       identity: identitySummary(identity),
       permissionMode,
@@ -3342,6 +3384,7 @@ async function createPowerPagesSimulator({
     ],
     ...[
       '/page-resources',
+      '/page-provenance',
       '/verification-witness',
       '/operations',
       '/persona-runtimes',
@@ -3382,6 +3425,12 @@ async function createPowerPagesSimulator({
   }
   async function portalAdmin(req, res, url, relative) {
     const method = req.method;
+    if (method === 'GET' && relative === '/page-provenance') {
+      const entry = renderProofs.get(url.searchParams.get('proof')) ?? scriptProofs.get(url.searchParams.get('proof'));
+      if (!entry || req.headers['x-paqvilo-provenance-access'] !== entry.access)
+        throw error('Document provenance is unavailable or retired.', 404);
+      return json(res, 200, entry.proof);
+    }
     if (method === 'GET' && relative === '/page-resources') {
       const route = url.searchParams.get('path') ?? '/';
       if (!route.startsWith('/') || route.startsWith('//') || route.includes('\\'))
@@ -4750,6 +4799,8 @@ async function createPowerPagesSimulator({
     },
   });
   const modelDrivenHandler = createModelDrivenHandler({
+    sourceMaps,
+    diagnostic: recordDiagnostic,
     catalogue: modelDrivenCatalogue,
     data: modelDrivenData,
     clientAssets: () =>
@@ -5930,6 +5981,8 @@ async function createPowerPagesSimulator({
           'x-sim-observed-sha256': observed.baseline.sha256,
         });
       let body = await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER });
+      const originalBody = body;
+      let generatedDebugUrl = null;
       const contentType = asset.mimeType || mime(file),
         kind = assetKind(contentType, file);
       let jsonPayload = false;
@@ -5941,18 +5994,74 @@ async function createPowerPagesSimulator({
           /* Non-JSON content follows the ordinary response or script path below. */
         }
       }
-      if (kind === 'script' && !jsonPayload) {
+      if (sourceMaps && kind === 'script' && !jsonPayload) {
         body = withFileSourceMap(body, file);
-        if (!body.toString('utf8').includes('sourceURL='))
+        if (!body.toString('utf8').includes('sourceURL=')) {
+          generatedDebugUrl = pathToFileURL(file).href;
           body = Buffer.concat([body, Buffer.from('\n//# sourceURL=' + pathToFileURL(file).href + '\n')]);
-      } else if (kind === 'stylesheet' && !body.toString('utf8').includes('sourceMappingURL=')) {
+        }
+      } else if (sourceMaps && kind === 'stylesheet' && !body.toString('utf8').includes('sourceMappingURL=')) {
         const text = body.toString('utf8');
         body = Buffer.concat([
           body,
           Buffer.from(`\n/*# sourceMappingURL=${identityMapUrl(file, text.split(/\r\n?|\n/).length, text)} */\n`),
         ]);
       }
-      return sendFile(body, contentType);
+      const proofHeaders = {};
+      if (req.method === 'GET' && kind === 'script' && !jsonPayload) {
+        const index = renderer.sourceIndex();
+        const source = [...index.sources.values()].find(
+          (source) => source.rawBytes && source.recordId === String(asset.id).replace(/[{}]/g, '').toLowerCase(),
+        );
+        if (source && source.contentRevision === createHash('sha256').update(originalBody).digest('hex')) {
+          const proofId = randomUUID();
+          const { text: _text, file: _file, sourceDir: _root, ...sourceRef } = source;
+          const wireText = body.toString('utf8'),
+            bom = wireText.startsWith('\uFEFF') ? 1 : 0,
+            generated = wireText.slice(bom);
+          const script = {
+            id: proofId + ':script:0',
+            generatedHash: createHash('sha256').update(generated, 'utf8').digest('hex'),
+            responseHash: createHash('sha256').update(body).digest('hex'),
+            hashAlgorithm: 'sha256-utf8',
+            ...scriptLineStarts(generated),
+            url: url.pathname,
+            mappings: [
+              {
+                generatedStart: 0,
+                generatedEnd: source.text.length - bom,
+                sourceRefId: source.id,
+                sourceStart: bom,
+                sourceEnd: source.text.length,
+              },
+            ],
+            ...(generatedDebugUrl
+              ? {
+                  debugUrl: generatedDebugUrl,
+                  debugUrlKey: createHash('sha256').update(generatedDebugUrl).digest('hex'),
+                }
+              : {}),
+          };
+          const access = randomBytes(32).toString('hex');
+          scriptProofs.set(proofId, {
+            access,
+            proof: {
+              version: 1,
+              channel: 'mirage-resource',
+              proofId,
+              sourceRevision: index.sourceRevision,
+              sourceRefs: [sourceRef],
+              scriptProofs: [script],
+              bindings: [],
+              complete: true,
+            },
+          });
+          while (scriptProofs.size > 128) scriptProofs.delete(scriptProofs.keys().next().value);
+          proofHeaders['x-paqvilo-script-proof'] = proofId;
+          proofHeaders['x-paqvilo-provenance-access'] = access;
+        }
+      }
+      return sendFile(body, contentType, proofHeaders);
     }
     // The captcha challenge resources answer locally (the asset cache admits no Telerik resource URL).
     if (
@@ -6107,6 +6216,15 @@ async function createPowerPagesSimulator({
     // the live portal serves their template output verbatim, so prepending scripts
     // would corrupt JSON.parse() and jQuery .load() consumers.
     const isDocument = contentType.includes('text/html') && (rendered.isDocument ?? isHtmlDocument(html));
+    // A bare HTML template may be a native browser navigation or an XHR fragment. Only
+    // the document destination establishes parser-node proof; data callers keep original bytes.
+    if (contentType.includes('text/html') && req.headers['sec-fetch-dest'] === 'document' && !rendered.provenance) {
+      const traced = renderer.provenanceFor(rendered);
+      if (traced) {
+        html = traced.html;
+        rendered.provenance = traced.provenance;
+      }
+    }
     if (isDocument) {
       html = injectRuntimeDependencies(html, sourceDependencies);
       html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
@@ -6135,7 +6253,14 @@ async function createPowerPagesSimulator({
     }
     // Local compatibility adapters in the document are reported here, not as page attributes;
     // their runtime modes are in window.__portalSimulation.compatibility.
-    if (isDocument) {
+    if (isDocument || rendered.provenance) {
+      if (rendered.provenance) {
+        const proof = rendered.provenance;
+        const access = randomBytes(32).toString('hex');
+        renderProofs.set(proof.proofId, { proof, access });
+        headers['x-paqvilo-provenance-access'] = access;
+        while (renderProofs.size > 64) renderProofs.delete(renderProofs.keys().next().value);
+      }
       const adapters = [
         ...new Set(
           [...html.matchAll(/\/__sim-static\/([\w/.-]+)/g)]
@@ -6145,13 +6270,17 @@ async function createPowerPagesSimulator({
         ),
       ];
       if (adapters.length) headers['x-sim-compatibility'] = adapters.join(', ');
+      if (rendered.provenance) headers['x-paqvilo-provenance'] = rendered.provenance.proofId;
+    }
+    const responseBody = isDocument
+      ? injectRuntime(html, csrf, revision, pageIdentity, trace.getStore()?.spanId, siteLanguageCodes())
+      : html;
+    if (rendered.provenance) {
+      const entry = renderProofs.get(rendered.provenance.proofId);
+      if (entry) entry.proof = refreshScriptProofLocations(responseBody, rendered.provenance);
     }
     res.writeHead(route?.status ?? rendered.status ?? 200, headers);
-    res.end(
-      isDocument
-        ? injectRuntime(html, csrf, revision, pageIdentity, trace.getStore()?.spanId, siteLanguageCodes())
-        : html,
-    );
+    res.end(responseBody);
   }
   const server = http.createServer((req, res) => {
     if (closing)
@@ -6278,7 +6407,7 @@ async function createPowerPagesSimulator({
                 // site application user, so a refused administration request leaves no side effect.
                 if (config().mode !== 'live' && !/^\/(?:_sim|__sim)\/api\//.test(req.url ?? ''))
                   await store.portalAuthorization?.prepare(currentIdentity());
-                return handle(req, res);
+                return runWithSourceDebugging(sourceMaps, () => handle(req, res));
               }),
             ),
           { valid: () => !store.inTransaction() || store.isUnmodifiedRead(), revision: () => store.dataRevision() },

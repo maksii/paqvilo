@@ -65,3 +65,25 @@ export function withFileSourceMap(body, file) {
   const comment = `\n//# sourceMappingURL=${identityMapUrl(file, lineCount, text)}\n`;
   return Buffer.concat([Buffer.isBuffer(body) ? body : Buffer.from(body), Buffer.from(comment)]);
 }
+
+// Conservative upper bound for the inline JSON source and line map, including
+// JSON escaping, UTF-8, base64 and the directive. Estimate before allocating a
+// map: a newline-heavy source otherwise grows many times larger than its input.
+export function fileSourceMapEstimate(text, file) {
+  let bytes = 2,
+    lines = 1;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 13 || (code === 10 && text.charCodeAt(i - 1) !== 13) || code === 0x2028 || code === 0x2029) lines++;
+    if (code < 32) bytes += code === 8 || code === 9 || code === 10 || code === 12 || code === 13 ? 2 : 6;
+    else if (code === 34 || code === 92) bytes += 2;
+    else if (code < 128) bytes++;
+    else if (code < 2048) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) {
+      bytes += 4;
+      i++;
+    } else bytes += code >= 0xd800 && code <= 0xdfff ? 6 : 3;
+  }
+  const fileBytes = Buffer.byteLength(JSON.stringify(pathToFileURL(file).href));
+  return 128 + Math.ceil((bytes + lines * 5 + fileBytes + 256) / 3) * 4;
+}

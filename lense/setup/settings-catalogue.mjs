@@ -38,6 +38,7 @@ const MIRAGE = {
   compat: { kind: 'object', stage: 2, example: 'compat:\n  footerSpacing: false\n' },
   head: { kind: 'object', stage: 2, example: 'head:\n  stylesheets:\n    - ./local/invented-theme.css\n' },
   render: { kind: 'object', stage: 2, example: 'render:\n  timeLimitMs: 60000\n' },
+  sourceMaps: { kind: 'boolean', stage: 10, example: 'sourceMaps: true\n' },
   personaContexts: { kind: 'object', stage: 6, example: 'personaContexts:\n  maxInstances: 4\n' },
   identityProvider: {
     kind: 'object',

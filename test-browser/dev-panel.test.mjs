@@ -78,8 +78,27 @@ async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) 
   await page.goto(origin);
   await panel.ready;
   await panel.draw(page);
-  return { page, context, session, panel, origin };
+  return { page, context, session, panel, origin, fx };
 }
+
+test('Issues reports changed Liquid when markup previews are disabled and clears it after reverting', async (t) => {
+  const { page, panel, session, fx } = await fixture(t);
+  const rel = 'web-templates/header/Header.webtemplate.source.html';
+  const before = fx.read(rel);
+  session.cfg.site.markup.enabled = false;
+  fx.write(rel, before.replace('{% if user %}', '{% if user.roles %}'));
+  await session.refresh([fx.file(rel)]);
+  await panel.draw(page);
+  const scope = page.locator('#paqvilo-panel');
+  await scope.locator('.pill').click();
+  await scope.locator('[role=tab][data-v=issues]').click();
+  await scope.getByText(/web-template preview is disabled.*deploy/).waitFor();
+  assert.equal(await scope.getByText('No issues on this page', { exact: true }).count(), 0);
+  fx.write(rel, before);
+  await session.refresh([fx.file(rel)]);
+  await panel.draw(page);
+  await scope.getByText('No issues on this page', { exact: true }).waitFor();
+});
 
 test('recent save notifications do not replay when Online/Local recreates the panel', async (t) => {
   const { page, panel, session } = await fixture(t);
@@ -313,8 +332,17 @@ test('one-shot element picks consume fast and slow gestures before opening panel
       [],
       String(delay),
     );
-    assert.equal(await page.evaluate(() => window.pickedElement.id), 'pick-target');
-    assert.match(await page.locator('#paqvilo-panel .body').innerText(), /Selected:/);
+    assert.deepEqual(await page.evaluate(() => window.pickedElement), { tag: 'button' });
+    assert.equal(
+      await page.evaluate(
+        () => document.getElementById('paqvilo-xray').__px.selectedNode() === document.getElementById('pick-target'),
+      ),
+      true,
+      'the retained browser-only anchor is the actual picked node without serializing its unknown runtime ID',
+    );
+    const summary = page.locator('#paqvilo-panel [data-selected-identity]');
+    await summary.waitFor();
+    assert.match(await summary.innerText(), /Selected:/);
     await page.locator('#paqvilo-panel [data-act=close]').click();
   }
 });

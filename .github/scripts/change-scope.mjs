@@ -24,18 +24,6 @@ const overlayPresentation = new Set([
   'lense/xray-ui.mjs',
 ]);
 
-export function isDescriptionOnlyEdit(event, eventName) {
-  return (
-    eventName === 'pull_request' &&
-    event?.action === 'edited' &&
-    Boolean(event.pull_request) &&
-    event.changes != null &&
-    Object.hasOwn(event.changes, 'body') &&
-    event.changes.body != null &&
-    Object.keys(event.changes).every((key) => key === 'body')
-  );
-}
-
 // Literal imports only expand a suite selection; they never authorize skipping an unknown path.
 // Tests and package self-imports are included so a cross-tool integration test selects its suite too.
 export function dependencyConsumers(root = toolkitRoot) {
@@ -204,7 +192,6 @@ export function githubScope(event, eventName, env = process.env, root = toolkitR
     eventName === 'schedule' ||
     (eventName === 'push' && env.GITHUB_REF === 'refs/heads/main');
   if (full) return classifyChanges([], { root, full: true });
-  if (isDescriptionOnlyEdit(event, eventName)) return emptyScope();
   const base = event.pull_request?.base.sha ?? event.before;
   const head = event.pull_request?.head.sha ?? env.GITHUB_SHA;
   if (!base || /^0+$/.test(base) || !head) return classifyChanges([], { root, full: true });

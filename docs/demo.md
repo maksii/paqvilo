@@ -28,6 +28,8 @@ npx --no-install paqvilo mirage demo --scaffold
 
 Open **File > Open Workspace from File**, then select `paqvilo-example/paqvilo-demo.code-workspace`. In **Run and Debug**, select **Demo: Mirage and browser debugger** and press **F5**. Its task installs the demo's dependencies, starts Mirage and attaches the debugger to that dedicated Edge browser. The scaffold command itself starts no runtime.
 
+The generated `AGENTS.md` describes the demo's commands, source folders and local/live boundaries for coding agents. Repeating the scaffold command preserves your guidance and restores the file if it is missing.
+
 Use **Inspect** to open a source file in VS Code. Edit and save to preview it; set a JavaScript breakpoint in `portal/web-files/demo-workspace.js` to debug the custom workspace. **Terminal > Run Task** also offers **demo: Start Mirage** and **demo: Run acceptance tests**.
 
 Close the development browser before starting another session. Disconnecting the debugger alone keeps that browser running. Debug tasks use port `9222`; change both the task and launch configuration if that port is occupied. To use **Demo: Lense and browser debugger**, first add your deployed portal as an environment in `paqvilo.config.yml`, then enter its environment name when prompted. Sign in through that browser; its form submissions use live data.
@@ -44,6 +46,8 @@ Close the development browser before starting another session. Disconnecting the
 8. Open **Liquid > Partials and parameters**, **Lists and views**, then **Data and conditions**. Compare the two- and four-row previews, choose a view with **Apply view**, and use **Apply filter** to compare statuses. Inspect parameterized includes, the component manifest, custom view cells and filtered FetchXML results.
 9. In **Web API**, try an account name shorter than three characters or a contact last name shorter than two. Check the validation message. Save a valid name and email with surrounding spaces, then reopen the record to inspect normalization. These scenarios use the sample's local models of its eight registered plugin steps.
 10. Press **Alt+Shift+P** and open **Inspect**. Follow the page, template, form, view, field, plugin and permission links into their source files.
+
+The Web API and PCF account lists keep their selected view and search in the URL. Reloading after a source edit restores those filters; browser Back restores the previous query.
 
 | Approach       | Source pattern                                                                     | What to inspect                                                       |
 | -------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------- |

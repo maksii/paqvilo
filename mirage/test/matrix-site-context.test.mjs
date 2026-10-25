@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { resolveTargets } from '../portal-matrix.mjs';
 import { createMirageContext } from '../api.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
@@ -54,6 +55,7 @@ test('matrix runtimes retain site-bound platform, observations, profiles and exp
             source: site,
             environments: { local: 'http://127.0.0.1:8787' },
             mirage: {
+              sourceMaps: Boolean(index),
               solutionRoots: [],
               platform: { QueryLinkEntityLimit: index ? 50 : 1, evidence: 'Invented local test' },
               observed: {
@@ -86,6 +88,26 @@ test('matrix runtimes retain site-bound platform, observations, profiles and exp
       joins: platform.find((item) => item.key === 'QueryLinkEntityLimit').value,
     };
   };
+  const inspectScript = async (runtime, site, sourceMaps) => {
+    const catalogue = await (await fetch(`${runtime.url}/_apps/api`)).json();
+    assert.equal(catalogue.clientExtensions.trusted, true);
+    assert.equal(catalogue.clientExtensions.resources.length, 1);
+    const response = await fetch(runtime.url + catalogue.clientExtensions.resources[0].url);
+    assert.equal(response.status, 200);
+    const original = `window.Invented = '${site}';`,
+      body = await response.text();
+    if (!sourceMaps) assert.equal(body, original);
+    else {
+      assert.ok(body.startsWith(original));
+      const encoded = /sourceMappingURL=data:application\/json;charset=utf-8;base64,([\w+/=]+)/.exec(body)?.[1];
+      assert.ok(encoded, `${site} should retain its debugger policy`);
+      const map = JSON.parse(Buffer.from(encoded, 'base64').toString());
+      assert.deepEqual(map.sources, [
+        pathToFileURL(await fs.realpath(path.join(root, site, 'client/WebResources/events.js'))).href,
+      ]);
+      assert.deepEqual(map.sourcesContent, [original]);
+    }
+  };
   for (const [index, target] of targets.entries()) {
     const site = target.id,
       expected = index ? 50 : 1;
@@ -106,13 +128,8 @@ test('matrix runtimes retain site-bound platform, observations, profiles and exp
     assert.match(matrix.body, new RegExp(`${site} patched`));
     assert.equal(bound.joins, matrix.joins);
     assert.equal(bound.header, matrix.header);
-    const catalogue = await (await fetch(`${runtime.url}/_apps/api`)).json();
-    assert.equal(catalogue.clientExtensions.trusted, true);
-    assert.equal(catalogue.clientExtensions.resources.length, 1);
-    assert.equal(
-      await (await fetch(runtime.url + catalogue.clientExtensions.resources[0].url)).text(),
-      `window.Invented = '${site}';`,
-    );
+    await inspectScript(runtime, site, Boolean(index));
+    await inspectScript(direct, site, Boolean(index));
     assert.equal(await (await fetch(`${runtime.url}/__sim/${site}-probe`)).text(), `${site} pack`);
     assert.equal((await fetch(`${runtime.url}/__sim/${index ? 'first' : 'second'}-probe`)).status, 404);
     assert.notEqual(runtime.store.file, direct.store.file);
@@ -125,6 +142,7 @@ test('matrix runtimes retain site-bound platform, observations, profiles and exp
     });
     opened.push(restarted);
     assert.equal((await inspect(restarted)).joins, expected);
+    await inspectScript(restarted, site, Boolean(index));
   }
 });
 

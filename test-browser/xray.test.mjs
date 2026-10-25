@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
+import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { OverlaySession } from '../lense/session.mjs';
@@ -15,6 +16,20 @@ import { inspectionFixture, addNativeInspectionFixture } from '../test/source-in
 import { xrayUi } from '../lense/xray-ui.mjs';
 import { createSimulator } from '../mirage/server.mjs';
 
+const waitField = async (page, qualified, status = 'exact') => {
+  await page.waitForFunction(
+    ({ qualified, status }) => {
+      const evidence = document.getElementById('paqvilo-xray').__px.selection()?.evidence;
+      const rows =
+        status === 'exact' ? [evidence?.owner.component] : (evidence?.candidates ?? []).map((row) => row.component);
+      return (
+        evidence?.owner.status === status &&
+        rows.some((row) => row && row.entity + '.' + (row.field ?? row.name) === qualified)
+      );
+    },
+    { qualified, status },
+  );
+};
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true, args: ['--disable-background-networking'] }));
@@ -42,6 +57,27 @@ test(
     );
     fs.writeFileSync(path.join(fx.portal, 'web-templates/Partial.webtemplate.source.html'), sidebar);
     fs.writeFileSync(path.join(fx.portal, 'web-files/widget.css'), css);
+    const previousSidebar = sidebar.replace('<h2>', '<h3>').replace('</h2>', '</h3>');
+    const partialFile = path.join(fx.portal, 'web-templates/Partial.webtemplate.source.html');
+    fs.writeFileSync(partialFile, previousSidebar);
+    const hooks = path.join(fx.work, 'empty-hooks');
+    fs.mkdirSync(hooks);
+    const git = (...args) => execFileSync('git', ['-C', fx.portal, ...args], { stdio: 'pipe' });
+    git('init', '--quiet');
+    git('add', '.');
+    git(
+      '-c',
+      'user.name=Invented fixture',
+      '-c',
+      'user.email=fixture@example.invalid',
+      '-c',
+      `core.hooksPath=${hooks}`,
+      'commit',
+      '--quiet',
+      '-m',
+      'Invented baseline',
+    );
+    fs.writeFileSync(partialFile, sidebar);
     const server = http.createServer((req, res) => {
       if (req.url === '/widget.css') return res.writeHead(200, { 'content-type': 'text/css; charset=utf-8' }).end(css);
       if (req.url === '/frame')
@@ -51,7 +87,7 @@ test(
       res
         .writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
         .end(
-          `<!doctype html><html><head><title>Fieldwork · invented X-ray fixture</title><link rel="stylesheet" href="/widget.css"></head><body>${body}<script>window.actions=0;window.frameClicks=0;for(const type of ['pointerdown','mousedown','click','dblclick'])document.getElementById('save').addEventListener(type,()=>window.actions++);document.getElementById('open-dialog').onclick=()=>document.getElementById('dialog').showModal();document.getElementById('dialog-close').onclick=()=>document.getElementById('dialog').close();document.getElementById('nested-open').onclick=()=>document.querySelector('.nested').hidden=false;document.getElementById('shadow-control').attachShadow({mode:'open'}).innerHTML='<button id="shadow-button">Shadow component</button>';</script></body></html>`,
+          `<!doctype html><html><head><title>Fieldwork · invented X-ray fixture</title><link rel="stylesheet" href="/widget.css"></head><body>${body.replace(sidebar, previousSidebar)}<script>window.actions=0;window.frameClicks=0;for(const type of ['pointerdown','mousedown','click','dblclick'])document.getElementById('save').addEventListener(type,()=>window.actions++);document.getElementById('open-dialog').onclick=()=>document.getElementById('dialog').showModal();document.getElementById('dialog-close').onclick=()=>document.getElementById('dialog').close();document.getElementById('nested-open').onclick=()=>document.querySelector('.nested').hidden=false;document.getElementById('shadow-control').attachShadow({mode:'open'}).innerHTML='<button id="shadow-button">Shadow component</button>';</script></body></html>`,
         );
     });
     let context, panel, detach;
@@ -135,14 +171,14 @@ test(
     await scope.getByRole('button', { name: 'Toggle Lense X-ray' }).click();
     await xray.getByRole('toolbar').waitFor();
     await pick('#fx_title');
-    await xray.locator('.binding').getByText('fx_widget.fx_title', { exact: true }).waitFor();
-    await xray.getByText('Element source candidates', { exact: false }).waitFor();
+    await waitField(page, 'fx_widget.fx_title');
+    assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
     assert.equal(await page.evaluate(() => window.actions), 0);
     await evidence('01-field-sources');
     const fieldSource = xray
-      .locator('.source')
-      .filter({ hasText: 'Field definition in selected Solution' })
-      .getByRole('button', { name: 'Open source ↗' });
+      .locator('[data-evidence-source]')
+      .filter({ hasText: 'Entity.xml' })
+      .getByRole('button', { name: 'Open source', exact: true });
     await fieldSource.click();
     assert.match((await nextOpen())?.[1] ?? '', /Entities[\\/]fx_widget[\\/]Entity.xml$/);
     await pick('#save');
@@ -154,9 +190,9 @@ test(
     await xray.locator('.title').getByText('Partial', { exact: true }).waitFor();
     await xray.getByText('web-templates/Partial.webtemplate.source.html', { exact: false }).first().waitFor();
     await xray
-      .locator('.source')
+      .locator('[data-evidence-source]')
       .filter({ hasText: 'Partial.webtemplate.source.html' })
-      .getByRole('button', { name: 'Open source ↗' })
+      .getByRole('button', { name: 'Open source', exact: true })
       .click();
     const template = await nextOpen();
     assert.match(template?.[1] ?? '', /Partial.webtemplate.source.html$/);
@@ -168,7 +204,8 @@ test(
       heading.before(wrapper);
       wrapper.append(heading);
     });
-    await xray.getByRole('button', { name: 'Select source region' }).first().click();
+    await xray.locator('[data-disclosure=static-candidates] > summary').click();
+    await xray.getByRole('button', { name: 'Select matching ancestor' }).first().click();
     assert.match(await xray.locator('.element-label').textContent(), /^aside\.updates/);
     await page.evaluate(() => {
       const node = document.querySelector('.updates');
@@ -184,13 +221,13 @@ test(
     await page.keyboard.up('Control');
     await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement.id === 'dialog');
     await pick('#fx_name');
-    await xray.locator('.binding').getByText('fx_child.fx_name', { exact: true }).waitFor();
-    await xray.getByText('Related children', { exact: true }).waitFor();
+    await waitField(page, 'fx_child.fx_name');
+    await xray.getByText('Related children', { exact: true }).first().waitFor({ state: 'attached' });
     await page.keyboard.down('Control');
     await page.locator('#nested-open').click();
     await page.keyboard.up('Control');
     await pick('#nested-title');
-    await xray.locator('.binding').getByText('fx_widget.fx_title', { exact: true }).waitFor();
+    await waitField(page, 'fx_widget.fx_title');
     await evidence('03-nested-modal');
     await xray.locator('.ancestry summary').click();
     await xray.getByText('Element & ancestry', { exact: true }).waitFor();
@@ -253,11 +290,15 @@ test(
     page.setDefaultTimeout(8000);
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
-    await page.setContent(
-      `<!doctype html><style>body{margin:50px;font:16px sans-serif}.scaled{transform:scale(.7);transform-origin:top left;width:320px;height:110px;overflow:hidden;border:4px solid #777}.scaled button{margin-left:200px;width:300px;height:60px}dialog{padding:40px;width:500px}input{display:block;margin:15px;padding:12px}#later{position:fixed;top:150px;left:180px}#popover{position:fixed;inset:0;width:100vw;height:100vh;background:#fff8}</style><div id="EntityFormControl_outer" data-entityname="fx_outer" data-formid="outer"><div data-viewid="inner-view"><input id="inner" name="fx_shared"></div></div><input id="ambiguous" name="fx_shared"><button id="fx_shared">An ID alone is not a field binding</button><div class="scaled"><button id="scaled">Scaled and clipped</button></div><dialog id="later"><input id="later-field" name="fx_shared"></dialog><dialog id="initial"><input id="initial-field" name="fx_shared"><div id="popover" popover="manual">A later top-layer surface</div></dialog>`,
+    await page.route('http://127.0.0.1:11886/**', (route) =>
+      route.fulfill({
+        contentType: 'text/html',
+        body: `<!doctype html><style>body{margin:50px;font:16px sans-serif}.scaled{transform:scale(.7);transform-origin:top left;width:320px;height:110px;overflow:hidden;border:4px solid #777}.scaled button{margin-left:200px;width:300px;height:60px}dialog{padding:40px;width:500px}input{display:block;margin:15px;padding:12px}#later{position:fixed;top:150px;left:180px}#popover{position:fixed;inset:0;width:100vw;height:100vh;background:#fff8}</style><div id="EntityFormControl_outer" data-entityname="fx_outer" data-formid="outer"><div data-viewid="inner-view"><input id="inner" name="fx_shared"></div></div><input id="ambiguous" name="fx_shared"><button id="fx_shared">An ID alone is not a field binding</button><div class="scaled"><button id="scaled">Scaled and clipped</button></div><dialog id="later"><input id="later-field" name="fx_shared"></dialog><dialog id="initial"><input id="initial-field" name="fx_shared"><div id="popover" popover="manual">A later top-layer surface</div></dialog>`,
+      }),
     );
+    await page.goto('http://127.0.0.1:11886/');
     await page.evaluate(() => document.getElementById('initial').showModal());
-    const data = { origin: 'null', token: 'invented-xray-test' },
+    const data = { origin: 'http://127.0.0.1:11886', token: 'invented-xray-test' },
       report = {
         pageSources: [],
         forms: [{ id: 'outer', entity: 'fx_outer', name: 'Outer form' }],
@@ -297,15 +338,19 @@ test(
       await page.mouse.click(r.x + Math.min(r.width / 2, 30), r.y + r.height / 2);
     };
     await pick('#inner');
-    await xray.locator('.binding').getByText('fx_inner.fx_shared', { exact: true }).waitFor();
+    await waitField(page, 'fx_inner.fx_shared');
     assert.equal(await xray.getByText('Outer form', { exact: true }).count(), 0);
-    await xray.getByText('Inner view', { exact: true }).waitFor();
+    await xray
+      .locator('[data-evidence-role=enclosing]')
+      .getByText('Inner view', { exact: true })
+      .first()
+      .waitFor({ state: 'attached' });
     await pick('#ambiguous');
-    await xray.getByText('Ambiguous field identifier', { exact: true }).waitFor();
+    assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'candidate');
     await page.evaluate(() => document.getElementById('ambiguous').setAttribute('data-entityname', 'fx_outer'));
-    await xray.locator('.binding').getByText('fx_outer.fx_shared', { exact: true }).waitFor();
+    await waitField(page, 'fx_outer.fx_shared', 'candidate');
     await pick('#fx_shared');
-    assert.equal(await xray.locator('.binding').count(), 0);
+    assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'unavailable');
     await pick('#scaled');
     await page.waitForTimeout(350);
     const clipped = await xray.locator('.selected').boundingBox(),
@@ -397,9 +442,9 @@ test(
     const r = await field.boundingBox();
     await page.mouse.click(r.x + Math.min(25, r.width / 2), r.y + r.height / 2);
     const xray = page.locator('#paqvilo-xray');
-    await xray.locator('.binding').getByText('fx_widget.fx_title', { exact: true }).waitFor();
-    await xray.getByText('Edit widget', { exact: true }).waitFor();
-    await xray.getByText('Widget form', { exact: true }).waitFor();
+    await waitField(page, 'fx_widget.fx_title');
+    await xray.getByText('Edit widget', { exact: true }).first().waitFor({ state: 'attached' });
+    await xray.getByText('Widget form', { exact: true }).first().waitFor({ state: 'attached' });
     assert.equal(await xray.getByText('Styles', { exact: true }).count(), 0);
     assert.equal(await xray.locator('.title').innerText(), 'Title');
   },

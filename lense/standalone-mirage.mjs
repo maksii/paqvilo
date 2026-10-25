@@ -1,14 +1,31 @@
 import path from 'node:path';
-import { browserSettings, readEnvSettings, resolveMirageConfig } from './config.mjs';
+import { existsSync } from 'node:fs';
+import { browserSettings, readEnvSettings, resolveMirageConfig, loadCatalogue } from './config.mjs';
 import { openBrowser } from './browser.mjs';
 import { runtimeSettings } from '../mirage/lib/runtime-config.mjs';
 import { startupProgress, waitForStartupPage } from './startup-progress.mjs';
 
 export function standaloneMirageConfiguration(project, args = {}) {
   const configDir = project ? path.dirname(project.configFile) : process.cwd();
+  const catalogueFile = args.config ?? path.join(configDir, 'paqvilo.config.yml');
+  const catalogue = args.config || existsSync(catalogueFile) ? loadCatalogue({ config: catalogueFile }) : null;
+  const settings = catalogue?.settings.values ?? readEnvSettings(configDir).values;
+  const selectedSite =
+    args.site ?? settings.PAQVILO_SITE ?? catalogue?.root.defaultSite ?? Object.keys(catalogue?.sites ?? {})[0];
+  if (
+    ((args.config || args.site) && Object.keys(catalogue?.sites ?? {}).length && !catalogue?.sites[selectedSite]) ||
+    (args.site && !catalogue?.sites[args.site])
+  )
+    throw new Error(`Unknown Mirage configuration '${selectedSite}'.`);
   return {
     configDir,
     configFile: null,
+    // Runtime ownership stays in configDir; an explicitly selected catalogue
+    // identity still scopes records and stop selection independently of it.
+    catalogueScope:
+      (args.config || args.site) && catalogue?.sites[selectedSite]
+        ? { configFile: catalogue.configFile, siteName: selectedSite }
+        : null,
     stateDir: path.join(configDir, '.paqvilo'),
     sourceDir: null,
     siteName: project ? path.basename(project.configFile, path.extname(project.configFile)) : 'organization',
@@ -17,7 +34,13 @@ export function standaloneMirageConfiguration(project, args = {}) {
     origin: null,
     runtime: runtimeSettings(args.runtime ? { kind: args.runtime } : project?.runtime),
     mirageConfig: {},
-    browser: browserSettings({ configDir, options: args, settings: readEnvSettings(configDir).values }),
+    browser: browserSettings({
+      configDir: catalogue?.configDir ?? configDir,
+      browser: catalogue?.root.browser,
+      options: args,
+      settings,
+    }),
+    editor: settings.PAQVILO_EDITOR ?? catalogue?.root.editor ?? 'code',
   };
 }
 
@@ -33,10 +56,12 @@ export function standaloneCatalogueConfiguration(catalogue, name, args = {}) {
     ...cfg,
     configDir: catalogue.configDir,
     configFile: catalogue.configFile,
+    sourceRoot: catalogue.sourceRoot,
     stateDir: path.join(catalogue.configDir, '.paqvilo'),
     siteName: name,
     runtime: runtimeSettings(args.runtime ? { kind: args.runtime } : mirageConfig.runtime),
     mirageConfig,
+    editor: catalogue.settings.values.PAQVILO_EDITOR ?? catalogue.root.editor,
     browser: browserSettings({
       browser: catalogue.root.browser,
       configDir: catalogue.configDir,

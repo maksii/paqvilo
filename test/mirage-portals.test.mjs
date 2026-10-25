@@ -399,7 +399,7 @@ test(
         ['classic', 'enhanced'],
       );
       assert.ok(portals.every((item) => item.started && item.url));
-      assert.match(json(started).stop, /stop --project/);
+      assert.match(json(started).stop, /^node -e /);
       const status = json(run('mirage', 'status', '--config', config, '--json')).sessions;
       assert.deepEqual(
         portals.map((item) => status.find((session) => session.pid === item.pid)?.portal),

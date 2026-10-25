@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { readLocalFile } from './local-file.mjs';
-import { pathToFileURL } from 'node:url';
-import { hasSourceMap, withFileSourceMap } from './source-map.mjs';
+import { hasSourceMap, withFileSourceMap, fileSourceMapEstimate } from './source-map.mjs';
 import { importModelDrivenResources } from '../mirage/lib/model-driven-resources.mjs';
 import { scanSolutionSources } from '../mirage/lib/solution-schema.mjs';
 import { importSolutionMetadata } from '../mirage/lib/solution-metadata.mjs';
 import { solutionApps } from '../mirage/lib/model-driven/catalogue.mjs';
+import { createModelDrivenMetadataIndex } from './model-driven-metadata.mjs';
+import { scriptSourceBody, scriptResourceProofFromSourceRefs } from './script-source-evidence.mjs';
 
 export function modelDrivenOrigin(value) {
   let url;
@@ -227,37 +228,18 @@ export function inventoryCounts(records = []) {
 }
 
 const DEBUG_MAP_LIMITS = { assetBytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 };
-
-// Conservative upper bound for the inline JSON source and line map, including
-// JSON escaping, UTF-8, base64 and the directive. Estimate before allocating a
-// map: a newline-heavy source otherwise grows many times larger than its input.
-function debugMapEstimate(text, file) {
-  let bytes = 2,
-    lines = 1;
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code === 13 || (code === 10 && text.charCodeAt(i - 1) !== 13) || code === 0x2028 || code === 0x2029) lines++;
-    if (code < 32) bytes += code === 8 || code === 9 || code === 10 || code === 12 || code === 13 ? 2 : 6;
-    else if (code === 34 || code === 92) bytes += 2;
-    else if (code < 128) bytes++;
-    else if (code < 2048) bytes += 2;
-    else if (code >= 0xd800 && code <= 0xdbff && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) {
-      bytes += 4;
-      i++;
-    } else bytes += code >= 0xd800 && code <= 0xdfff ? 6 : 3;
-  }
-  const fileBytes = Buffer.byteLength(JSON.stringify(pathToFileURL(file).href));
-  return 128 + Math.ceil((bytes + lines * 5 + fileBytes + 256) / 3) * 4;
-}
+const SCRIPT_PROOF_LIMITS = { bodyBytes: 16 * 1024 * 1024, lineEntries: 65536, entries: 128 };
 
 /** Exact declared assets only. No response fetch, native request replay or API interception. */
 export function createModelDrivenOverlay({
   origin,
   imported,
   mappings = [],
+  localSimulation = false,
   ownsRequest = () => true,
   onApplied = () => {},
   sourceMapLimits = {},
+  sourceProofLimits = {},
 }) {
   origin = modelDrivenOrigin(origin);
   const mapLimits = { ...DEBUG_MAP_LIMITS };
@@ -265,6 +247,17 @@ export function createModelDrivenOverlay({
     if (!Object.hasOwn(mapLimits, key) || !Number.isSafeInteger(value) || value < 1 || value > DEBUG_MAP_LIMITS[key])
       throw new Error(`Invalid model-driven debugger map limit ${key}.`);
     mapLimits[key] = value;
+  }
+  const proofLimits = { ...SCRIPT_PROOF_LIMITS };
+  for (const [key, value] of Object.entries(sourceProofLimits)) {
+    if (
+      !Object.hasOwn(proofLimits, key) ||
+      !Number.isSafeInteger(value) ||
+      value < 1 ||
+      value > SCRIPT_PROOF_LIMITS[key]
+    )
+      throw new Error(`Invalid model-driven script proof limit ${key}.`);
+    proofLimits[key] = value;
   }
   let routes,
     resources,
@@ -281,6 +274,67 @@ export function createModelDrivenOverlay({
   const hits = new Map(),
     currentHits = new Map(),
     unmatched = new Map();
+  let proofIndex,
+    rawSourceAssets,
+    proofCache = new Map(),
+    proofStates = new WeakMap(),
+    proofBytes = 0,
+    proofLines = 0;
+  const scriptProof = (asset) => {
+    const raw = rawSourceAssets.get(asset.name);
+    if (asset.debuggerMap || !/(?:java|ecma)script/i.test(asset.mime)) return { body: asset.data };
+    if (!raw?.file) {
+      proofStates.set(asset, { state: 'unavailable', reason: 'script-proof-file-origin-unavailable' });
+      return { body: asset.data };
+    }
+    const unavailable = (reason) => {
+      proofStates.set(asset, { state: 'unavailable', reason });
+      if (!diagnostics.some((entry) => entry.code === 'MODEL_SCRIPT_PROVENANCE_LIMIT' && entry.reason === reason))
+        diagnostics.push({
+          code: 'MODEL_SCRIPT_PROVENANCE_LIMIT',
+          reason,
+          message:
+            'Local script attribution is unavailable for a resource because its proof metadata exceeds a bounded runtime limit or has no verified file origin. The original resource remains overlaid.',
+        });
+      return { body: asset.data };
+    };
+    let cached = proofCache.get(asset);
+    if (cached) {
+      proofCache.delete(asset);
+      proofCache.set(asset, cached);
+    } else {
+      if (asset.data.length > proofLimits.bodyBytes) return unavailable('script-proof-body-budget');
+      // Symbols and line indexes live only on a bounded cached clone. Import
+      // buffers remain untouched, including when a candidate proof is omitted.
+      const body = scriptSourceBody(raw.data, raw.file, { sourceMaps: false, responseBody: Buffer.from(asset.data) });
+      const refs = proofIndex.sourceRefsFor([`resource:${asset.name.toLowerCase()}`]);
+      const proof = scriptResourceProofFromSourceRefs(refs, body, String(revision));
+      if (!proof) return unavailable('script-proof-source-unavailable');
+      const lines = proof.scriptProofs.reduce((count, item) => count + item.lineStarts.length, 0);
+      if (lines > proofLimits.lineEntries) return unavailable('script-proof-line-budget');
+      while (
+        proofCache.size &&
+        (proofCache.size >= proofLimits.entries ||
+          proofBytes + body.length > proofLimits.bodyBytes ||
+          proofLines + lines > proofLimits.lineEntries)
+      ) {
+        const oldest = proofCache.keys().next().value,
+          released = proofCache.get(oldest);
+        proofCache.delete(oldest);
+        proofBytes -= released.body.length;
+        proofLines -= released.lines;
+      }
+      cached = { body, refs, lines };
+      proofCache.set(asset, cached);
+      proofBytes += body.length;
+      proofLines += lines;
+      proofStates.set(asset, { state: 'available' });
+    }
+    return {
+      body: cached.body,
+      provenance: scriptResourceProofFromSourceRefs(cached.refs, cached.body, String(revision)),
+    };
+  };
   function replace(next, nextMappings = mappings) {
     // Prepare debugger mappings once per revision, rather than copying a bundle
     // and building an inline map on every intercepted request.
@@ -294,7 +348,7 @@ export function createModelDrivenOverlay({
         if (!asset.file || !/(?:java|ecma)script/i.test(asset.mime)) return [asset.name, asset];
         const text = asset.data.toString('utf8');
         if (hasSourceMap(text) || explicitSidecars.has(asset.name)) return [asset.name, asset];
-        const estimate = debugMapEstimate(text, asset.file);
+        const estimate = fileSourceMapEstimate(text, asset.file);
         if (asset.data.length + estimate > mapLimits.assetBytes || estimate > remainingMapBytes) {
           nextDiagnostics.push({
             code: 'MODEL_SOURCE_MAP_LIMIT',
@@ -309,6 +363,7 @@ export function createModelDrivenOverlay({
         return [asset.name, { ...asset, data }];
       }),
     );
+    const rawAssets = new Map([...next.assets.values()].map((asset) => [asset.name, asset]));
     const nextRoutes = new Map(),
       nextPaths = new Map([...assets.keys()].map((name) => [name, new Set()]));
     const add = (key, name) => {
@@ -320,7 +375,12 @@ export function createModelDrivenOverlay({
       nextRoutes.set(key, asset);
       nextPaths.get(name).add(key);
     };
-    for (const resource of next.resources) add(`/WebResources/${resource.name}`, resource.name);
+    for (const resource of next.resources) {
+      add(`/WebResources/${resource.name}`, resource.name);
+      if (localSimulation) add(resource.url, resource.name);
+    }
+    if (localSimulation)
+      for (const [url, asset] of next.assets) if (url.startsWith('/_apps/controls/')) add(url, asset.name);
     for (const mapping of nextMappings) add(mapping.path, mapping.resource);
     const sidecarScripts = new Set();
     for (const mapping of nextMappings) {
@@ -364,12 +424,19 @@ export function createModelDrivenOverlay({
         debuggerMap: true,
       });
     }
+    const sourceIndex = createModelDrivenMetadataIndex(next, { sourceRevision: revision + 1 });
     // Publish only a complete import. An invalid save cannot partially replace routes.
     routes = nextRoutes;
     resources = assets;
     pathsByResource = nextPaths;
     diagnostics = nextDiagnostics;
     mappings = nextMappings;
+    proofIndex = sourceIndex;
+    rawSourceAssets = rawAssets;
+    proofCache = new Map();
+    proofStates = new WeakMap();
+    proofBytes = 0;
+    proofLines = 0;
     for (const name of hits.keys()) if (!resources.has(name)) hits.delete(name);
     for (const name of paused) if (!resources.has(name)) paused.delete(name);
     currentHits.clear();
@@ -463,6 +530,7 @@ export function createModelDrivenOverlay({
         return;
       }
       const appliedRevision = revision;
+      const proved = request.method() === 'HEAD' ? { body: Buffer.alloc(0) } : scriptProof(asset);
       await route.fulfill({
         status: 200,
         headers: {
@@ -471,7 +539,7 @@ export function createModelDrivenOverlay({
           'x-paqvilo-source': 'local-solution',
           'x-content-type-options': 'nosniff',
         },
-        body: request.method() === 'HEAD' ? Buffer.alloc(0) : asset.data,
+        ...proved,
       });
       if (asset.debuggerMap) return;
       applied++;
@@ -505,10 +573,17 @@ export function createModelDrivenOverlay({
       return {
         schemaVersion: 1,
         kind: 'model-driven-overlay',
+        localSimulation,
         origin,
         revision,
         online,
         diagnostics,
+        scriptProvenance: {
+          cachedAssets: proofCache.size,
+          bodyBytes: proofBytes,
+          lineEntries: proofLines,
+          limits: { ...proofLimits },
+        },
         debuggerMaps: [...routes]
           .filter(([, asset]) => asset.debuggerMap)
           .map(([path, asset]) => ({ path, resource: asset.name })),
@@ -519,6 +594,7 @@ export function createModelDrivenOverlay({
           applied: hits.get(name) ?? 0,
           currentRevisionApplied: currentHits.get(name) ?? 0,
           paused: paused.has(name),
+          sourceAttribution: proofStates.get(resources.get(name)) ?? { state: 'not-requested' },
         })),
         applied,
         currentRevisionApplied,

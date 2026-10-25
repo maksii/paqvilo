@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { normalizePortalPath, portalField, pageTemplateKind } from './importer.mjs';
+import { normalizePortalPath, portalField, pageTemplateKind, effectiveSnippetRecords } from './importer.mjs';
 import { stripLiquidLiteralBlocks } from './liquid-source.mjs';
 
 const id = (value) =>
@@ -311,11 +311,13 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
   ];
   const seenSources = new Set();
   const references = { templates: [], snippets: [], settings: [], forms: [], lists: [], views: [], tables: new Map() };
+  const snippetRecords = effectiveSnippetRecords(
+    portal.records ?? [],
+    portal.selectedLanguageId ?? field(portal.website ?? {}, 'defaultlanguage'),
+  );
   const addSnippet = (reference, via = 'Liquid snippet', owner = null) => {
     const key = String(reference ?? '');
-    const record = (portal.records ?? []).find(
-      (item) => item.kind === 'contentsnippet' && item.name?.toLowerCase() === key.toLowerCase(),
-    );
+    const record = snippetRecords.resolve(key);
     if (!record) {
       unresolved.push({
         kind: 'content-snippet',
