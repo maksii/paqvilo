@@ -102,7 +102,9 @@ test('matrix runtimes retain site-bound platform, observations, profiles and exp
       const encoded = /sourceMappingURL=data:application\/json;charset=utf-8;base64,([\w+/=]+)/.exec(body)?.[1];
       assert.ok(encoded, `${site} should retain its debugger policy`);
       const map = JSON.parse(Buffer.from(encoded, 'base64').toString());
-      assert.deepEqual(map.sources, [pathToFileURL(path.join(root, site, 'client/WebResources/events.js')).href]);
+      assert.deepEqual(map.sources, [
+        pathToFileURL(await fs.realpath(path.join(root, site, 'client/WebResources/events.js'))).href,
+      ]);
       assert.deepEqual(map.sourcesContent, [original]);
     }
   };

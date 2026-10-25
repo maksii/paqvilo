@@ -54,7 +54,7 @@ test('portal and model-driven assets expose file-backed maps or original bytes w
           )?.[1];
           assert.ok(encoded, route);
           const map = JSON.parse(Buffer.from(encoded, 'base64').toString());
-          assert.deepEqual(map.sources, [pathToFileURL(path.join(root, source)).href]);
+          assert.deepEqual(map.sources, [pathToFileURL(await fs.realpath(path.join(root, source))).href]);
           assert.deepEqual(map.sourcesContent, [original]);
         }
         assert.equal((await fetch(runtime.url + route, { method: 'HEAD' })).status, 200);

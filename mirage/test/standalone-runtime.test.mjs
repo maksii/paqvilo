@@ -551,7 +551,9 @@ test('independent client directory and ZIP sources reload without changing compl
     const encoded = /sourceMappingURL=data:application\/json;charset=utf-8;base64,([\w+/=]+)/.exec(text)?.[1];
     assert.ok(encoded, 'an external file-backed client retains debugger metadata after reload');
     const map = JSON.parse(Buffer.from(encoded, 'base64').toString());
-    assert.deepEqual(map.sources, [pathToFileURL(path.join(clientRoot, 'WebResources/events.js')).href]);
+    assert.deepEqual(map.sources, [
+      pathToFileURL(await fs.realpath(path.join(clientRoot, 'WebResources/events.js'))).href,
+    ]);
     assert.ok(text.startsWith(map.sourcesContent[0]));
     return map.sourcesContent[0];
   };

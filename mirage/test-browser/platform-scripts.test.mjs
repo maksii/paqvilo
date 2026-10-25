@@ -19,7 +19,7 @@ before(async () => {
 after(() => browser?.close());
 
 async function fixture(t, body, extraFiles = {}, options = {}) {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'mirage-platform-scripts-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), 'mirage-platform-scripts-')));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Invented platform',

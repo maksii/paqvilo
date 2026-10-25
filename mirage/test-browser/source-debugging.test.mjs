@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { sourceDebugFixture } from '../test/fixtures/source-debugging.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
@@ -29,7 +30,9 @@ test(
     const event = await parsed;
     assert.match(event.sourceMapURL, /^data:application\/json;charset=utf-8;base64,/);
     const map = JSON.parse(Buffer.from(event.sourceMapURL.split(',')[1], 'base64').toString());
-    assert.deepEqual(map.sources, [pathToFileURL(path.join(root, 'solution/WebResources/debug.js')).href]);
+    assert.deepEqual(map.sources, [
+      pathToFileURL(await fs.realpath(path.join(root, 'solution/WebResources/debug.js'))).href,
+    ]);
     assert.deepEqual(map.sourcesContent, [script]);
     const breakpoint = await cdp.send('Debugger.setBreakpointByUrl', { url: address, lineNumber: 1 });
     assert.equal(breakpoint.locations.length, 1);
