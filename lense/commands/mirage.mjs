@@ -728,6 +728,8 @@ function liveWritesText(value) {
 
 const catalogueOwnedState = (cfg) =>
   cfg.configFile && samePath(cfg.stateDir, path.join(path.dirname(cfg.configFile), '.paqvilo'));
+const catalogueIdentity = (cfg) =>
+  cfg.configFile ? { configFile: cfg.configFile, siteName: cfg.catalogueSite ?? cfg.siteName } : cfg.catalogueScope;
 
 function sessionSelectors(entry, selection) {
   const roots = selection['solution-root']?.map((root) => path.resolve(root));
@@ -747,27 +749,64 @@ function sessionSelectors(entry, selection) {
 
 /** Intersect ownership scope, source/project identity and explicitly supplied selectors. */
 async function selectedSessionPids(paths, cfg, kind, selectedProject = null, selection = {}, sourceDir = null) {
-  const scoped = catalogueOwnedState(cfg);
-  return (await ownedSessions(paths))
+  const selectedCatalogue = catalogueIdentity(cfg);
+  const scoped = Boolean(selectedCatalogue);
+  const candidates = (await ownedSessions(paths)).filter((entry) => {
+    if (
+      (entry.identity?.runtime?.kind ?? (entry.sourceDir ? 'power-pages' : null)) !== kind ||
+      !sessionSelectors(entry, selection)
+    )
+      return false;
+    if (sourceDir && !samePath(entry.sourceDir, sourceDir)) return false;
+    if (selectedProject) {
+      if (!samePath(entry.project, selectedProject.configFile)) return false;
+      if (selection.portal && entry.portal !== selection.portal) return false;
+    } else if (entry.project && kind !== 'power-pages') return false;
+    return true;
+  });
+  const siteName = selectedCatalogue?.siteName;
+  let catalogue;
+  const exactLegacyTarget =
+    selection.state &&
+    selection.port !== undefined &&
+    String(selection.port) !== '0' &&
+    candidates.filter(
+      (entry) =>
+        listenerPort(entry.url) === String(selection.port) &&
+        (!entry.identity?.scope || samePath(entry.identity.scope.configFile, selectedCatalogue?.configFile)),
+    ).length === 1;
+  return candidates
     .filter((entry) => {
-      if (
-        (entry.identity?.runtime?.kind ?? (entry.sourceDir ? 'power-pages' : null)) !== kind ||
-        !sessionSelectors(entry, selection)
-      )
-        return false;
-      if (sourceDir && !samePath(entry.sourceDir, sourceDir)) return false;
-      if (selectedProject) {
-        if (!samePath(entry.project, selectedProject.configFile)) return false;
-        if (selection.portal && entry.portal !== selection.portal) return false;
-      } else if (entry.project && kind !== 'power-pages') return false;
       if (!scoped) return selectedProject ? true : !entry.identity?.scope;
       // Older verified records may predate scoped identities. Their source and
       // supplied state/port still constrain selection; absent selectors never widen it.
-      if (!entry.identity?.scope) return kind === 'power-pages' && Boolean(sourceDir);
-      return (
-        samePath(entry.identity.scope.configFile, cfg.configFile) &&
-        (entry.identity.scope.siteName === (cfg.catalogueSite ?? cfg.siteName) ||
-          (selectedProject && entry.identity.scope.siteName === entry.portal))
+      const scope = entry.identity?.scope;
+      if (!scope && !selectedProject) return kind === 'power-pages' && Boolean(sourceDir);
+      if (scope && !samePath(scope.configFile, selectedCatalogue.configFile)) return false;
+      // Marked rows always identify a catalogue site, even when its ID is also
+      // a portal ID in a shared project. They never take the legacy fallback.
+      if (scope && (scope.version !== undefined || scope.catalogueSite !== undefined))
+        return scope.version === 1 && scope.catalogueSite === siteName;
+      if (scope && (!selectedProject || scope.siteName !== entry.portal)) return scope.siteName === siteName;
+      // Historical project rows stored the portal ID in siteName. A matching
+      // actual listener/state uniquely selects one record; requested port 0
+      // and a shared project mapping cannot identify a catalogue owner.
+      if (exactLegacyTarget) return true;
+      catalogue ??= loadCatalogue({ config: selectedCatalogue.configFile, repo: cfg.sourceRoot });
+      const mapped = Object.entries(catalogue.sites).filter(
+        ([, site]) =>
+          site.mirage?.project &&
+          samePath(path.resolve(catalogue.configDir, site.mirage.project), selectedProject.configFile),
+      );
+      if (
+        Object.keys(catalogue.sites).length === 1 &&
+        mapped.length === 1 &&
+        mapped[0][0] === siteName &&
+        (!scope || !Object.hasOwn(catalogue.sites, scope.siteName) || scope.siteName === siteName)
+      )
+        return true;
+      throw new Error(
+        'Legacy Mirage project ownership is ambiguous; supply --state and the actual listening --port to stop one recorded runtime.',
       );
     })
     .map((entry) => entry.pid);
@@ -840,6 +879,7 @@ async function launchIdentity(cfg, args, projectInfo = null) {
   });
   options.runtime = runtime;
   if (args.simulation) options.simulation = { level: args.simulation };
+  const scope = catalogueIdentity(cfg);
   return {
     identity: {
       sourceDir: resolved(sourceDir),
@@ -851,8 +891,13 @@ async function launchIdentity(cfg, args, projectInfo = null) {
       dataverse: projectInfo?.dataverse ?? cfg.mirageConfig?.dataverse ?? null,
       // Compared by identityMatches: every identity row of the settings table (secrets hashed).
       settings: runtimeIdentity(options),
-      scope: cfg.configFile
-        ? { configFile: resolved(cfg.configFile), siteName: cfg.catalogueSite ?? cfg.siteName }
+      scope: scope
+        ? {
+            version: 1,
+            configFile: resolved(scope.configFile),
+            siteName: scope.siteName,
+            catalogueSite: scope.siteName,
+          }
         : null,
       stateFile: resolved(stateFile),
       preset: args.preset ?? null,
@@ -2044,14 +2089,20 @@ async function mirageProjectPortals(cfg, args, effective, action, project, paths
   if (action === 'stop') {
     const pids = [];
     const base = args.port === undefined ? undefined : runtimePort(args.port, DEFAULT_PORT);
-    for (const [index, portal] of project.portals.entries()) {
-      const selection = {
-        ...args,
-        portal: portal.id,
-        ...(base === undefined ? {} : { port: String(base === 0 ? 0 : base + index) }),
-      };
-      pids.push(...(await selectedSessionPids(paths, cfg, 'power-pages', project, selection, portal.sourceDir)));
-    }
+    // A broad project stop includes recorded portals that were renamed or
+    // removed since launch. A nonzero explicit base still selects the current
+    // project's consecutive per-portal ports, matching projectStartPlans.
+    if (base === undefined || base === 0)
+      pids.push(...(await selectedSessionPids(paths, cfg, 'power-pages', project, args)));
+    else
+      for (const [index, portal] of project.portals.entries())
+        pids.push(
+          ...(await selectedSessionPids(paths, cfg, 'power-pages', project, {
+            ...args,
+            portal: portal.id,
+            port: String(base + index),
+          })),
+        );
     const report = await stopOwnedSessions({ paths, pids });
     if (report.remaining.length)
       throw new Error(
@@ -2062,7 +2113,7 @@ async function mirageProjectPortals(cfg, args, effective, action, project, paths
         action: 'stop',
         message: stopSummary(
           report,
-          `the ${project.portals.length} portals of ${project.configFile}`,
+          `the recorded portals of ${project.configFile}`,
           `the portals of ${project.configFile}`,
         ),
         ...report,
@@ -2101,7 +2152,10 @@ function hintScope(cfg, args, all = false) {
     if (cfg.sourceRoot) parts.push('--repo', cfg.sourceRoot);
     parts.push('--site', cfg.catalogueSite ?? cfg.siteName, '--portals', all ? 'all' : 'selected');
   } else {
-    if (args.config) parts.push('--config', path.resolve(args.config));
+    if (cfg.catalogueScope)
+      parts.push('--config', cfg.catalogueScope.configFile, '--site', cfg.catalogueScope.siteName);
+    else if (args.config) parts.push('--config', path.resolve(args.config));
+    else if (cfg.configFile) parts.push('--site', cfg.catalogueSite ?? cfg.siteName);
     if (args.repo) parts.push('--repo', path.resolve(args.repo));
   }
   return parts;
@@ -2458,11 +2512,9 @@ export default async function mirage(cfg, args, positionals = []) {
       );
       return 0;
     }
-    if (effective.project) {
-      const project = await loadProject(effective.project);
-      sourceDir = project.portals.find((item) => item.id === (effective.portal ?? project.defaultPortal))?.sourceDir;
-      if (!sourceDir) throw new Error(`Unknown Mirage portal "${effective.portal}" in ${project.configFile}`);
-    }
+    // Stop joins the recorded project/portal identity; current mappings can
+    // legitimately point elsewhere or no longer contain the launched portal.
+    if (selectedProject) sourceDir = null;
     const report = await stopOwnedSessions({
       paths,
       pids: await selectedSessionPids(paths, cfg, 'power-pages', selectedProject, args, sourceDir),

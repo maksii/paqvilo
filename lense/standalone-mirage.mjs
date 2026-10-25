@@ -10,9 +10,22 @@ export function standaloneMirageConfiguration(project, args = {}) {
   const catalogueFile = args.config ?? path.join(configDir, 'paqvilo.config.yml');
   const catalogue = args.config || existsSync(catalogueFile) ? loadCatalogue({ config: catalogueFile }) : null;
   const settings = catalogue?.settings.values ?? readEnvSettings(configDir).values;
+  const selectedSite =
+    args.site ?? settings.PAQVILO_SITE ?? catalogue?.root.defaultSite ?? Object.keys(catalogue?.sites ?? {})[0];
+  if (
+    ((args.config || args.site) && Object.keys(catalogue?.sites ?? {}).length && !catalogue?.sites[selectedSite]) ||
+    (args.site && !catalogue?.sites[args.site])
+  )
+    throw new Error(`Unknown Mirage configuration '${selectedSite}'.`);
   return {
     configDir,
     configFile: null,
+    // Runtime ownership stays in configDir; an explicitly selected catalogue
+    // identity still scopes records and stop selection independently of it.
+    catalogueScope:
+      (args.config || args.site) && catalogue?.sites[selectedSite]
+        ? { configFile: catalogue.configFile, siteName: selectedSite }
+        : null,
     stateDir: path.join(configDir, '.paqvilo'),
     sourceDir: null,
     siteName: project ? path.basename(project.configFile, path.extname(project.configFile)) : 'organization',

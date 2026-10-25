@@ -65,6 +65,8 @@ Run lifecycle commands with the same catalogue or `--project` used to start the 
 
 Copy the stop command printed by `start` to stop that runtime. It preserves the selected project or catalogue and any runtime overrides, including port and state selectors for projectless standalone sessions. On Windows, the printed command works in Command Prompt and PowerShell; copy it as printed even when it uses `node -e` to preserve special characters in paths.
 
+If an older session has ambiguous catalogue ownership, use `mirage status` with the same project/catalogue selectors to find its state file and listening port. Supply that `--state` file and actual `--port` when stopping it; port `0` cannot distinguish an older session.
+
 ## Build scenarios you can repeat
 
 Use `/_sim/#platform` for simulated Dataverse rules and `/_sim/#overrides` for instance-specific site settings/snippets. Save/import configuration presets and use separate state files to test one source checkout concurrently. See [configuration experiments](docs/configuration-experiments.md) for supported settings, support-managed limits, coverage and APIs.
