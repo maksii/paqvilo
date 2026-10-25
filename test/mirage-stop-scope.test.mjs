@@ -234,7 +234,15 @@ test(
         '--port',
         '0',
       ]);
-      assert.match(literal.stop, /^node -e /, 'shell-active project paths retain fixed encoded argv');
+      if (process.platform === 'win32')
+        assert.match(literal.stop, /^node -e /, 'Windows shell-active project paths retain fixed encoded argv');
+      else {
+        assert.match(literal.stop, /^npx paqvilo mirage stop --project '/, 'POSIX literal quoting remains readable');
+        assert.ok(
+          literal.stop.includes("'" + literalProject + "'"),
+          'the complete project path is one literal POSIX argument',
+        );
+      }
       await work.replay(literal.stop, false, elsewhere, shell);
       await stopped(literal);
       await alive(sibling);

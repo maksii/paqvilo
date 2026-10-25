@@ -87,7 +87,7 @@ test('evidence editor links revalidate identity and revisions and ignore a forge
   const result = await call('open', body);
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(opened.length, 1);
-  assert.equal(fs.realpathSync(opened[0][1]), fs.realpathSync(source.file));
+  assert.equal(fs.realpathSync.native(opened[0][1]), fs.realpathSync.native(source.file));
   assert.notEqual(opened[0][2], body.line);
   assert.notEqual(opened[0][3], body.col);
   const evaluate = tab.page.evaluate;
@@ -146,7 +146,7 @@ test('guarded editor admission opens only the selected external deployment profi
   };
   const openedResult = await call('open', body);
   assert.equal(openedResult.ok, true, JSON.stringify(openedResult));
-  assert.equal(fs.realpathSync(opened[0][1]), fs.realpathSync(selected));
+  assert.equal(fs.realpathSync.native(opened[0][1]), fs.realpathSync.native(selected));
   const refused = await call('open', { rel: neighbor, externalProfile: true });
   assert.equal(refused.ok, false);
   assert.equal(opened.length, 1);
