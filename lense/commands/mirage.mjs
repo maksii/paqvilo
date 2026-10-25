@@ -15,9 +15,11 @@ import { loadCatalogue, loadConfig, loadDevTargets, mirageOnlySite } from '../co
 import { runtimePort } from '../../mirage/lib/runtime-port.mjs';
 import { readStartupPhases } from '../startup-progress.mjs';
 import { readLocalFile } from '../local-file.mjs';
+import { mirageStopCommand } from '../stop-command.mjs';
 
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
+const TOOLKIT_CLI = path.join(TOOL_ROOT, 'bin/paqvilo.mjs');
 /** Where Mirage processes announce themselves and where the toolkit records the ones it started. */
 export function miragePaths(cfg = null, args = {}) {
   const directory = args.config
@@ -1977,7 +1979,7 @@ async function miragePortals(cfg, args, action, paths) {
 
 /** A project with several portals and no --portal: one runtime per portal of that project. */
 async function mirageProjectPortals(cfg, args, effective, action, project, paths) {
-  const stop = ['npx', 'paqvilo', 'mirage', 'stop', '--project', project.configFile].map(stopArgument).join(' ');
+  const stop = mirageStopCommand(['--project', project.configFile], { cli: TOOLKIT_CLI });
   if (action === 'stop') {
     const report = await stopOwnedSessions({ paths, sourceDirs: project.portals.map((portal) => portal.sourceDir) });
     if (report.remaining.length)
@@ -2009,16 +2011,8 @@ async function mirageProjectPortals(cfg, args, effective, action, project, paths
   });
 }
 
-// Printed commands target PowerShell on Windows and POSIX shells elsewhere.
-// JSON double quotes permit interpolation and do not preserve literal path bytes.
-function stopArgument(value) {
-  value = String(value);
-  if (/^[a-z0-9_./:-]+$/i.test(value)) return value;
-  return `'${value.replaceAll("'", process.platform === 'win32' ? "''" : "'\"'\"'")}'`;
-}
-
 function stopHint(cfg, args) {
-  const parts = ['npx', 'paqvilo', 'mirage', 'stop'];
+  const parts = [];
   if (cfg.configFile) parts.push('--config', cfg.configFile, '--site', cfg.siteName);
   if (args.source) parts.push('--source', path.resolve(args.source));
   if (args.project && !(cfg.mirageConfig?.project && samePath(args.project, cfg.mirageConfig.project)))
@@ -2031,7 +2025,7 @@ function stopHint(cfg, args) {
     if (!args.project)
       for (const root of args['solution-root'] ?? []) parts.push('--solution-root', path.resolve(root));
   }
-  return parts.map(stopArgument).join(' ');
+  return mirageStopCommand(parts, { cli: TOOLKIT_CLI });
 }
 
 /** A diagnostic inspection can legitimately return a report with exit status 1. */

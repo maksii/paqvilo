@@ -181,6 +181,7 @@ export const REQUIRED_RELEASE_FILES = [
   ...MODEL_DRIVEN_FILES,
   'mirage/docs/model-driven-apps.md',
   'lense/standalone-mirage.mjs',
+  'lense/stop-command.mjs',
   'mirage/lib/standalone-runtime.mjs',
   'mirage/lib/dataverse-organization.mjs',
   'mirage/lib/runtime-config.mjs',

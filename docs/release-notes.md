@@ -11,7 +11,9 @@ defects, existing fixes, intended boundaries and recording-tool issues.
 - Native model-driven Lense finishes startup at document load instead of waiting for background worker requests
   to settle. Diagnostics distinguish document completion from application readiness; startup cancellation stops
   the associated resource wait.
-- Model-driven source opening honors the configured editor, and standalone Mirage prints a working stop command.
+- Model-driven source opening honors the configured editor. Standalone Mirage prints a stop command that
+  preserves the selected runtime and works in both CMD and PowerShell on Windows, including paths with shell
+  metacharacters, and in POSIX shells elsewhere.
 - Mirage model-driven JavaScript and CSS resources carry file-backed debugger maps; Lense local simulation
   recognizes their declared hashed asset routes. `mirage.sourceMaps: false` serves original asset bytes when
   debugger trailers are unwanted.

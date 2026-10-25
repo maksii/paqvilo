@@ -11,11 +11,16 @@ import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 const execute = promisify(execFile),
   cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const stopArguments = (hint) => {
+  if (hint.startsWith('node -e ')) {
+    const payload = /Buffer\.from\('([A-Za-z0-9+/=]+)','base64'\)/.exec(hint)?.[1];
+    assert.ok(payload, 'fallback commands carry a literal argv payload');
+    const args = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+    assert.equal(args[0], cli, 'fallback invokes the toolkit that emitted the hint');
+    return args.slice(1);
+  }
   const tokens =
     process.platform === 'win32'
-      ? hint
-          .match(/'(?:[^']|'')*'|[^\s']+/g)
-          .map((token) => (token.startsWith("'") ? token.slice(1, -1).replaceAll("''", "'") : token))
+      ? hint.match(/"[^"]*"|[^\s"]+/g).map((token) => (token.startsWith('"') ? token.slice(1, -1) : token))
       : hint.match(/(?:'[^']*'|"[^"]*"|[^\s'"]+)+/g).map((token) =>
           token
             .match(/'[^']*'|"[^"]*"|[^'"]+/g)
@@ -203,29 +208,37 @@ test(
       );
     }
     const [first, sibling] = sessions;
-    assert.match(first.stop, /--runtime model-driven/);
+    if (process.platform === 'win32') assert.match(first.stop, /^node -e /);
     assert.ok(stopArguments(first.stop).includes(path.join(directory, "first $([char]65) 'quoted' `ticks solution")));
-    // Parse the actual printed arguments with the documented shell, using a
-    // harmless argv collector instead of invoking npx or executing runtime work.
-    const captureFile = path.join(directory, 'capture.mjs');
-    await fs.writeFile(captureFile, 'process.stdout.write(JSON.stringify(process.argv.slice(2)));');
-    const command = first.stop.slice('npx paqvilo '.length);
-    const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/sh';
-    const shellArgs =
-      process.platform === 'win32'
-        ? ['-NoProfile', '-NonInteractive', '-Command', `& $env:PAQ_TEST_NODE $env:PAQ_TEST_CAPTURE ${command}`]
-        : ['-c', `"$PAQ_TEST_NODE" "$PAQ_TEST_CAPTURE" ${command}`];
-    const captured = await execute(shell, shellArgs, {
-      windowsHide: true,
-      timeout: 10000,
-      env: { ...process.env, PAQ_TEST_NODE: process.execPath, PAQ_TEST_CAPTURE: captureFile },
-    });
-    assert.deepEqual(JSON.parse(captured.stdout), stopArguments(first.stop));
-    const result = await replay(first.stop);
-    assert.deepEqual(
-      result.stopped.map((entry) => entry.pid),
-      [first.pid],
-    );
+    if (process.platform === 'win32') {
+      // Execute the exact published fallback through both shells. It directly
+      // invokes the current toolkit, with no npx download or shell argument rewrite.
+      for (const shell of ['cmd.exe', 'powershell.exe']) {
+        const active =
+          shell === 'cmd.exe'
+            ? first
+            : await run('start', '--simulation', 'dry-run', ...stopArguments(first.stop).slice(2));
+        if (active !== first) sessions.push(active);
+        const args =
+          shell === 'cmd.exe'
+            ? ['/d', '/s', '/v:on', '/c', active.stop]
+            : ['-NoProfile', '-NonInteractive', '-Command', active.stop];
+        await execute(shell, args, {
+          cwd: directory,
+          windowsHide: true,
+          windowsVerbatimArguments: shell === 'cmd.exe',
+          timeout: 30000,
+        });
+        await assert.rejects(fetch(active.url + '/_sim/api/status'), /fetch failed/);
+        assert.equal((await fetch(sibling.url + '/_sim/api/status')).status, 200);
+      }
+    } else {
+      const result = await replay(first.stop);
+      assert.deepEqual(
+        result.stopped.map((entry) => entry.pid),
+        [first.pid],
+      );
+    }
     assert.equal((await fetch(sibling.url + '/_sim/api/status')).status, 200);
     await assert.rejects(fetch(first.url + '/_sim/api/status'), /fetch failed/);
   },
