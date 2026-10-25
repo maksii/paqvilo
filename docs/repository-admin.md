@@ -43,6 +43,10 @@ sources with that token. The first alert is enough to fail; pagination cannot hi
 additional findings. Inspect findings as well as job conclusions; a successful scan
 alone can report alerts.
 
+PR scope uses the complete base-to-head diff. A documentation-only commit added to a runtime PR does not narrow its
+selected suites when pushed. A wholly documentation-only PR retains quality and applicable release checks, while
+runtime matrices are skipped. Local commits trigger no hosted run. Do not use CI skip tokens to bypass required gates.
+
 Report vulnerabilities through [private reporting](../SECURITY.md). Alert triage decisions
 are recorded in [`.github/security/codeql-triage.json`](../.github/security/codeql-triage.json). A triage entry
 must record the actual source-to-sink constraint, a focused regression where applicable,

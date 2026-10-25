@@ -86,6 +86,9 @@ For script-created elements, an observed JavaScript callsite can link the actual
 
 **Open source** uses the admitted semantic source identity and revisions. **Open candidate** explicitly opens a candidate under the same validation. The selected node, source identity and current revisions are checked again before opening. Stale, conflicting and unavailable source actions are disabled. If the source changed, refresh inspection and select again rather than relying on an old line or record. **Copy reference** copies the displayed source reference when an absolute path is unavailable. **Search export markup** offers static suggestions separately; **Browse file** opens their container without asserting an exact rendered source or line.
 
+The final source check runs after the browser confirms the selection. Saving the local file while that browser check
+is pending makes the action stale; refresh inspection and select again before opening it.
+
 The one-shot picker retains the actual selected node while X-ray is hidden. If that node is replaced, its frame navigates or its shadow host disappears, the summary clears. Select the new node explicitly; a replacement with the same ID is a new selection. Source refreshes update the retained node's evidence without reopening the panel or moving keyboard focus. **Clear selection** removes the retained selection explicitly.
 
 The inspector does not read input values or page text to build these identities. Selection notifications use opaque document/frame/anchor identifiers; unknown row/user IDs and CSS tokens are excluded.
