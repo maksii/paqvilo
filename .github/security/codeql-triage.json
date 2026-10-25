@@ -2157,9 +2157,23 @@
           "end_line": 522
         },
         "disposition": "fix",
-        "evidence": "The receipt-revocation regression checks that its owned temporary receipt is absent, then creates malformed evidence to exercise cleanup. Creation now opens an exclusive wx descriptor and writes through that descriptor, so a concurrent file or symlink cannot be followed or overwritten between the assertion and creation. The descriptor closes in finally; the original absence, failed-rerun revocation and malformed-receipt cleanup assertions remain intact.",
-        "verification": "All 29 contribution-gate tests passed, including failed-rerun revocation and malformed-receipt cleanup. Full validation and hosted Security gates must pass on the final fix before release. No alert dismissal or query waiver is used.",
+        "evidence": "Failed-rerun revocation and malformed-receipt cleanup now use independent tests and owned temporary directories. The malformed fixture opens an exclusive wx descriptor and writes through that descriptor, so a concurrent file or symlink cannot be followed or overwritten. The descriptor closes in finally; every original absence, failed-rerun revocation and malformed-receipt cleanup assertion remains intact.",
+        "verification": "All 30 contribution-gate tests passed. The preceding runtime tree passed full validation; the final fixture split and hosted Security gates must also pass before release. No alert dismissal or query waiver is used.",
         "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/323"
+      },
+      {
+        "number": 324,
+        "rule": "js/file-system-race",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "test/contribution-gates.test.mjs",
+          "start_line": 522,
+          "end_line": 522
+        },
+        "disposition": "fix",
+        "evidence": "Reanalysis reported the exclusive open after the preceding scenario's absence assertion because FileSystemRace.ql does not model open flags. Splitting the two independent scenarios gives malformed input its own fresh fixture instead of recreating the previously checked path. Every assertion and the exclusive descriptor remain; the test no longer expresses a check-then-open lifecycle. No query, path exclusion or alert dismissal is introduced.",
+        "verification": "Independent review confirmed complete assertion retention and fixture isolation; all 30 contribution-gate tests passed. Hosted CodeQL must confirm the final source before release.",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/324"
       }
     ]
   },

@@ -519,6 +519,13 @@ test('starting a validation revokes previous evidence even when the rerun fails'
   }, /suite failed/);
   assert.equal(fs.existsSync(file), false);
   assert.equal(matchingVerification(consumeVerificationReceipt(file), identity, scope), false);
+});
+
+test('malformed validation evidence is revoked', async (t) => {
+  const { consumeVerificationReceipt } = await import('../scripts/ci.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-malformed-receipt-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'verification.json');
   const malformed = fs.openSync(file, 'wx');
   try {
     fs.writeFileSync(malformed, '{incomplete receipt');
