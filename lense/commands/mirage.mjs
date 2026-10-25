@@ -637,7 +637,7 @@ export function catalogueArgs(cfg, args = {}, { requireProject = true } = {}) {
     if (isFile(configured.project)) effective.project = configured.project;
     else if (requireProject)
       throw new Error(
-        `Site "${cfg.siteName}" selects the Mirage project ${configured.project}, which does not exist. Create it with: ${mirageCommandHint([['mirage', 'init', ...hintScope(cfg, args)]], { cli: TOOLKIT_CLI })}, or remove mirage.project for this site.`,
+        `Site "${cfg.siteName}" selects the Mirage project ${configured.project}, which does not exist. Create it with: ${mirageCommandHint([['mirage', 'init', ...configurationHintScope(cfg, args)]], { cli: TOOLKIT_CLI })}, or remove mirage.project for this site.`,
       );
   }
   if (!effective.project && !effective['solution-root']?.length && configured.solutionRoots?.length)
@@ -1527,7 +1527,7 @@ export async function mirageReadiness(
       project.ready = false;
       project.error = 'The project file does not exist.';
       errors.push(
-        `Mirage project ${configured.project} does not exist; run ${mirageCommandHint([['mirage', 'init', ...hintScope(cfg, {})]], { cli: TOOLKIT_CLI })}`,
+        `Mirage project ${configured.project} does not exist; run ${mirageCommandHint([['mirage', 'init', ...configurationHintScope(cfg)]], { cli: TOOLKIT_CLI })}`,
       );
     } else {
       try {
@@ -1583,7 +1583,7 @@ export async function mirageReadiness(
       if (order === 'derived') effective = derivedOrder;
       else if (!sameOrder(roots, derivedOrder))
         warnings.push(
-          `${loaded ? `Mirage project ${configured.project}` : `sites.${cfg.siteName}.mirage`} layers its Solution roots in the listed order ${rootNames(roots)} (solutionOrder: explicit), which differs from their dependency order ${rootNames(derivedOrder)}; forms, views and tables can then resolve to other Solution files than discovery, bootstrap and the data scaffold use.${loaded ? ' Set solutionOrder: derived or rerun mirage init --force.' : ''}`,
+          `${loaded ? `Mirage project ${configured.project}` : `sites.${cfg.siteName}.mirage`} layers its Solution roots in the listed order ${rootNames(roots)} (solutionOrder: explicit), which differs from their dependency order ${rootNames(derivedOrder)}; forms, views and tables can then resolve to other Solution files than discovery, bootstrap and the data scaffold use.${loaded ? ` Set solutionOrder: derived or rerun ${mirageCommandHint([['mirage', 'init', ...configurationHintScope(cfg), '--force']], { cli: TOOLKIT_CLI })}.` : ''}`,
         );
       for (const item of diagnostics) warnings.push(`Solution order: ${item.message}`);
     } catch (error) {
@@ -1616,7 +1616,7 @@ export async function mirageReadiness(
       if (!configured.project) [observed, observedSource] = [catalogued, catalogued ? 'catalogue' : null];
       else if (loaded && JSON.stringify(catalogued) !== JSON.stringify(projectPortal?.observed ?? null))
         warnings.push(
-          `sites.${cfg.siteName}.mirage.observed differs from portal ${projectPortal?.id} in ${configured.project}, whose observed behaviour applies; run ${mirageCommandHint([['mirage', 'init', ...hintScope(cfg, {}), '--force']], { cli: TOOLKIT_CLI })} to rewrite the project file`,
+          `sites.${cfg.siteName}.mirage.observed differs from portal ${projectPortal?.id} in ${configured.project}, whose observed behaviour applies; run ${mirageCommandHint([['mirage', 'init', ...configurationHintScope(cfg), '--force']], { cli: TOOLKIT_CLI })} to rewrite the project file`,
         );
     } catch (error) {
       errors.push(`Mirage observed behaviour: ${error.message.split('\n')[0]}`);
@@ -2079,6 +2079,19 @@ async function mirageProjectPortals(cfg, args, effective, action, project, paths
     paths,
     initialSite: project.defaultPortal,
   });
+}
+
+// Init recommendations select configuration and source inputs. Runtime stop
+// ownership can live elsewhere, and must not remove the selected site here.
+function configurationHintScope(cfg, args = {}) {
+  const config = args.config ? path.resolve(args.config) : cfg.configFile;
+  const repo = args.repo ? path.resolve(args.repo) : cfg.sourceRoot;
+  const site = cfg.catalogueSite ?? cfg.siteName ?? args.site;
+  return [
+    ...(config ? ['--config', config] : []),
+    ...(repo ? ['--repo', repo] : []),
+    ...(site ? ['--site', site] : []),
+  ];
 }
 
 function hintScope(cfg, args, all = false) {

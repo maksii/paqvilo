@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { samePath, catalogueArgs } from '../lense/commands/mirage.mjs';
+import { toolkitCommandHint } from './toolkit-cli.mjs';
 
 test('Mirage session paths compare according to Windows path case rules', () => {
   assert.equal(samePath('C:\\Portal\\Source', 'c:\\portal\\source'), process.platform === 'win32');
@@ -46,6 +47,29 @@ test('catalogue Mirage settings fill only the options the command line leaves op
   assert.deepEqual(catalogueArgs(cfg({ project }), { project: 'explicit.yml' }), { project: 'explicit.yml' });
   const missing = path.join(dir, 'missing.project.yml');
   assert.throws(() => catalogueArgs(cfg({ project: missing }), {}), /does not exist.*paqvilo mirage init --site site/);
+  const config = path.join(dir, 'external config.yml');
+  const repo = path.join(dir, 'alternate checkout');
+  const expectScopedRecommendation = (configuration, options = {}) =>
+    assert.throws(
+      () => catalogueArgs(configuration, options),
+      (error) => {
+        assert.match(error.message, /does not exist/);
+        assert.ok(
+          error.message.includes(
+            toolkitCommandHint(['mirage', 'init', '--config', config, '--repo', repo, '--site', 'site']),
+          ),
+        );
+        return true;
+      },
+    );
+  expectScopedRecommendation({ ...cfg({ project: missing }), configFile: config, sourceRoot: repo });
+  expectScopedRecommendation(cfg({ project: missing }), { config, repo });
+  expectScopedRecommendation({
+    ...cfg({ project: missing }),
+    configFile: config,
+    sourceRoot: repo,
+    stateDir: path.join(dir, 'separate project', '.paqvilo'),
+  });
   assert.deepEqual(
     catalogueArgs(cfg({ project: missing }), {}, { requireProject: false }),
     {},
