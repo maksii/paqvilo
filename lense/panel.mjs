@@ -1464,9 +1464,8 @@ export function enablePanel(context, session, opts = {}) {
             code: 'SOURCE_SELECTION_STALE',
           };
         const runtime = runtimeByPage.get(page);
-        let admission;
-        try {
-          admission = await sourceInspector.lookupSource({
+        const lookup = () =>
+          sourceInspector.lookupSource({
             sourceKey: body.sourceKey,
             sourceRevision: body.sourceRevision,
             contentRevision: body.contentRevision,
@@ -1474,6 +1473,9 @@ export function enablePanel(context, session, opts = {}) {
             route: new URL(page.url()).pathname,
             portalProfile: runtime?.report?.portalProfile ?? null,
           });
+        let admission;
+        try {
+          admission = await lookup();
         } catch {
           return {
             ok: false,
@@ -1509,6 +1511,27 @@ export function enablePanel(context, session, opts = {}) {
             error: 'The selection changed while its source was checked.',
             code: 'SOURCE_SELECTION_STALE',
           };
+        // The browser check can wait while a local save changes the physical
+        // source or its field location. Re-admit after that last round trip.
+        try {
+          admission = admission.revalidate();
+          if (
+            admission.state !== 'exact' ||
+            !admission.editorTarget?.file ||
+            fs.realpathSync.native(admission.editorTarget.file) !== fs.realpathSync.native(file)
+          )
+            return {
+              ok: false,
+              error: 'The local source changed while its selection was checked. Refresh inspection.',
+              code: admission.state === 'exact' ? 'SOURCE_STALE' : 'SOURCE_' + String(admission.state).toUpperCase(),
+            };
+        } catch {
+          return {
+            ok: false,
+            error: 'The local source identity could not be verified. Refresh inspection.',
+            code: 'SOURCE_UNAVAILABLE',
+          };
+        }
         line =
           Number.isSafeInteger(admission.editorTarget.line) && admission.editorTarget.line > 0
             ? admission.editorTarget.line

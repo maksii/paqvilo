@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { writeFileSync } from 'node:fs';
@@ -295,5 +296,40 @@ test('oversized incompressible commands use immutable file transport across shel
   assert.throws(
     () => mirageCommandHint([['mirage', 'stop', 'x'.repeat(1024 * 1024)]], { cli, storePayload }),
     /byte limit/,
+  );
+});
+
+test('external command replay refuses a pipe before reading or executing any child', { timeout: 10000 }, async (t) => {
+  const { directory, cli } = await collectorFixture(t);
+  let file;
+  if (process.platform === 'win32') {
+    file = `\\\\.\\pipe\\paqvilo-stop-payload-${process.pid}-${randomBytes(8).toString('hex')}`;
+    const sockets = new Set();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+    });
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(file, resolve);
+    });
+    t.after(async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    });
+  } else {
+    file = path.join(directory, 'replaced-payload.fifo');
+    await execute('mkfifo', [file]);
+  }
+  const commands = Array.from({ length: 6 }, () => ['mirage', 'stop', '--literal', randomBytes(2048).toString('hex')]);
+  const hint = mirageCommandHint(commands, { cli, storePayload: () => file });
+  assert.match(hint, /^node -e "/);
+  await assert.rejects(
+    execute(process.execPath, ['-e', hint.slice('node -e "'.length, -1)], {
+      cwd: directory,
+      timeout: 3000,
+      windowsHide: true,
+    }),
+    (error) => error.code === 1 && /Command payload must be a regular file/.test(error.stderr) && error.stdout === '',
   );
 });

@@ -117,6 +117,36 @@ test('the panel function is self-contained: it is sent to the browser as text', 
   assert.doesNotThrow(() => new Function(`return (${panelUi.toString()})`));
 });
 
+test('selected-source editor admission rechecks a source edited during the final browser round trip', async (t) => {
+  const { session, call, opened, tab } = await setup();
+  await call('inspect');
+  const index = await session.sourceInspector.sourceIndexFor('/scripts/');
+  const source = [...index.sources.values()].find(
+    (item) => item.file && item.text && item.fieldPath?.includes('customcss'),
+  );
+  assert.ok(source);
+  const bytes = fs.readFileSync(source.file);
+  t.after(() => fs.writeFileSync(source.file, bytes));
+  const evaluate = tab.page.evaluate;
+  let selectionChecks = 0;
+  t.mock.method(tab.page, 'evaluate', async (read, argument) => {
+    if (!argument?.scope?.documentId) return evaluate(read, argument);
+    if (++selectionChecks === 2) fs.appendFileSync(source.file, '\n/* changed during browser check */\n');
+    return true;
+  });
+  const result = await call('open', {
+    sourceKey: source.key,
+    sourceRevision: source.sourceRevision,
+    contentRevision: source.contentRevision,
+    scope: { documentId: 'document-a', frameId: 'top', uiEpoch: 1, sourceRevision: source.sourceRevision },
+    anchorGeneration: 1,
+  });
+  assert.equal(selectionChecks, 2);
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'SOURCE_STALE');
+  assert.equal(opened.length, 0, 'a source changed during the browser check never invokes the editor');
+});
+
 test('guarded editor admission opens only the selected external deployment profile and refuses neighboring files', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-profile-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

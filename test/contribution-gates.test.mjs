@@ -432,7 +432,32 @@ test('verification receipts require an identical tree, toolchain, browser, fixtu
     assert.equal(matchingVerification(receipt, { ...identity, [field]: 'changed' }, scope), false, field);
   assert.equal(matchingVerification(receipt, identity, { mirage: true }), false);
   assert.equal(matchingVerification({ ...receipt, full: true }, identity, { mirage: true }), true);
+  assert.equal(
+    matchingVerification({ ...receipt, full: true }, identity, { ...scope, full: true }),
+    false,
+    'an explicit full validation must execute again even for the identical source tree',
+  );
   assert.equal(matchingVerification(receipt, null, scope), false);
+});
+
+test('starting a validation revokes previous evidence even when the rerun fails', async (t) => {
+  const { consumeVerificationReceipt, matchingVerification } = await import('../scripts/ci.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-verification-receipt-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'verification.json');
+  const identity = { tree: 'previously-passing-tree' };
+  const scope = { lense: true };
+  const passed = { identity, scope, full: true };
+  fs.writeFileSync(file, JSON.stringify(passed));
+  assert.throws(() => {
+    assert.deepEqual(consumeVerificationReceipt(file), passed);
+    throw new Error('a suite failed during the rerun');
+  }, /suite failed/);
+  assert.equal(fs.existsSync(file), false);
+  assert.equal(matchingVerification(consumeVerificationReceipt(file), identity, scope), false);
+  fs.writeFileSync(file, '{incomplete receipt');
+  assert.equal(consumeVerificationReceipt(file), undefined);
+  assert.equal(fs.existsSync(file), false, 'malformed evidence is revoked too');
 });
 
 test('CodeQL scans only changed languages on PRs and all supported languages for full runs', () => {

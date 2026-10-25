@@ -34,8 +34,8 @@ expand the selection. Full Windows runs also require the locked TDS, DynamicsWeb
 Main pushes, manual full runs and releases run all unit/browser
 suites, Windows/CLR regressions and package smoke. Documentation-only PRs retain quality
 and release checks. Local `npm run ci:verify -- --full` prepares the same mandatory
-fixtures and writes an ignored receipt for the verified clean source tree, toolchain
-and platform; pre-push can reuse that exact result. The security workflow performs dependency review and CodeQL
+fixtures, always executes fresh and writes an ignored receipt for the verified source tree, toolchain
+and platform; ordinary scoped pre-push can reuse that exact result after refreshing dependency audits and signatures. Starting verification revokes previous evidence, so a failed rerun cannot leave a qualifying pass. Confirm the required hosted gates on the final pushed PR head separately from local results. The security workflow performs dependency review and CodeQL
 analysis. After successful analysis/processing, `Security gate` checks the analyzed
 ref for open CodeQL findings and fails when any remain or the alert API cannot be
 read. It uses read-only security permissions and does not check out or execute PR

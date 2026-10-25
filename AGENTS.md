@@ -37,3 +37,5 @@ Use discovered paths and fields with [lense/source-edit.mjs](lense/source-edit.m
 `verify --signed-in` reuses the dev identity: close dev first, use `--headed` when sign-in may be needed and bound the wait with `--sign-in-timeout`. It edits a temporary copy. Inspect passes, coverage, skips, diagnostics, inlineBaseline and cleanup. Do not claim unobserved behavior or a sign-in page as successful coverage.
 
 Runtime changes need relevant regressions. Run `npm run validate`. Do not run a private project's acceptance runners against live references unless authorized. Finish by stopping only sessions started for the task and checking the toolkit and affected project repositories.
+
+For CI fixes, reproduce the failing operation and add a regression that exercises its failure mode. Explicit full validation must execute fresh; failed validation revokes earlier receipts. Report local results separately from hosted checks, and confirm the required CI and security gates on the final pushed PR head before claiming the PR is green. Preserve every applicable lane and functional assertion.

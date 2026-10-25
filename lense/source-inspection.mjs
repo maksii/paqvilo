@@ -22,6 +22,19 @@ const norm = (value) =>
   String(value?.id ?? value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
+// Keep a synchronous final check for callers that await browser selection
+// validation after the asynchronous import. Do not serialize this capability.
+const editorAdmission = (read) => {
+  const admission = read();
+  if (admission.state === 'exact')
+    Object.defineProperty(admission, 'revalidate', {
+      value: () => {
+        const current = read();
+        return current.state === 'exact' ? current : { ...current, state: 'stale' };
+      },
+    });
+  return admission;
+};
 const unique = (rows, key) => [...new Map(rows.map((row) => [key(row), row])).values()];
 const inside = (root, file) => {
   const rel = path.relative(root, file);
@@ -1874,19 +1887,21 @@ export function createSourceInspector(cfg) {
         (source) => source.key === sourceKey || source.id === sourceKey,
       );
       if (!matches.length && typeof sourceKey === 'string' && sourceKey.startsWith('model-source:')) {
-        const admitted = index.metadataIndex.resolveOpen({ sourceKey, sourceRevision, contentRevision });
-        if (admitted.ok)
-          return {
-            state: 'exact',
-            sourceRef: admitted.sourceRef,
-            editorTarget: {
-              file: admitted.file,
-              line: admitted.line ?? 1,
-              column: admitted.column ?? 1,
-              mapped: admitted.locationAvailable,
-            },
-          };
-        return { state: /stale|changed/.test(admitted.reason) ? 'stale' : 'unavailable', reason: admitted.reason };
+        return editorAdmission(() => {
+          const admitted = index.metadataIndex.resolveOpen({ sourceKey, sourceRevision, contentRevision });
+          if (admitted.ok)
+            return {
+              state: 'exact',
+              sourceRef: admitted.sourceRef,
+              editorTarget: {
+                file: admitted.file,
+                line: admitted.line ?? 1,
+                column: admitted.column ?? 1,
+                mapped: admitted.locationAvailable,
+              },
+            };
+          return { state: /stale|changed/.test(admitted.reason) ? 'stale' : 'unavailable', reason: admitted.reason };
+        });
       }
       if (!matches.length) return { state: 'unavailable', reason: 'source-identity-missing' };
       if (matches.length !== 1) return { state: 'conflicting', reason: 'source-identity-ambiguous' };
@@ -1896,25 +1911,27 @@ export function createSourceInspector(cfg) {
       if (sourceRevision !== index.sourceRevision || contentRevision !== source.contentRevision)
         return { state: 'stale', reason: 'source-revision-changed', replacement: sourceRef };
       if (source.id.startsWith('model-source:')) {
-        const admission = index.metadataIndex.resolveOpen({
-          sourceKey: source.id,
-          sourceRevision,
-          contentRevision,
-          componentKey: source.componentKey,
-          placementKey: source.placementKey,
+        return editorAdmission(() => {
+          const admission = index.metadataIndex.resolveOpen({
+            sourceKey: source.id,
+            sourceRevision,
+            contentRevision,
+            componentKey: source.componentKey,
+            placementKey: source.placementKey,
+          });
+          return admission.ok
+            ? {
+                state: 'exact',
+                sourceRef,
+                editorTarget: {
+                  file: admission.file,
+                  line: admission.line ?? 1,
+                  column: admission.column ?? 1,
+                  mapped: admission.locationAvailable,
+                },
+              }
+            : { state: 'stale', reason: admission.reason };
         });
-        return admission.ok
-          ? {
-              state: 'exact',
-              sourceRef,
-              editorTarget: {
-                file: admission.file,
-                line: admission.line ?? 1,
-                column: admission.column ?? 1,
-                mapped: admission.locationAvailable,
-              },
-            }
-          : { state: 'stale', reason: admission.reason };
       }
       if (
         region &&
@@ -1925,10 +1942,12 @@ export function createSourceInspector(cfg) {
           region.end > source.text.length)
       )
         return { state: 'unavailable', reason: 'source-region-invalid' };
-      const editorTarget = sourceEditorTarget(source, region);
-      return editorTarget
-        ? { state: 'exact', sourceRef, editorTarget }
-        : { state: 'unavailable', reason: 'source-file-not-admitted' };
+      return editorAdmission(() => {
+        const editorTarget = sourceEditorTarget(source, region);
+        return editorTarget
+          ? { state: 'exact', sourceRef, editorTarget }
+          : { state: 'unavailable', reason: 'source-file-not-admitted' };
+      });
     },
     async enrich(report, rendered = {}) {
       if (!report || typeof report !== 'object' || Array.isArray(report))

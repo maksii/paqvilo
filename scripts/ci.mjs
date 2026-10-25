@@ -363,11 +363,29 @@ function verificationIdentity(allowStaged = false) {
 
 export function matchingVerification(receipt, identity, scope) {
   return Boolean(
+    !scope.full &&
     identity &&
     receipt?.identity &&
     Object.entries(identity).every(([name, value]) => receipt.identity[name] === value) &&
     (receipt.full || JSON.stringify(receipt.scope) === JSON.stringify(scope)),
   );
+}
+
+export function consumeVerificationReceipt(file) {
+  let receipt;
+  try {
+    receipt = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    /* Missing or malformed evidence cannot qualify validation. */
+  }
+  // Any failed audit, preparation or suite run must revoke an earlier pass.
+  fs.rmSync(file, { force: true });
+  return receipt;
+}
+
+function saveVerificationReceipt(file, receipt) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(receipt, null, 2) + '\n');
 }
 
 async function main() {
@@ -457,12 +475,7 @@ async function main() {
     );
   const identity = verificationIdentity(Boolean(full));
   const receiptFile = path.join(root, '.paqvilo/ci/verification.json');
-  let receipt;
-  try {
-    receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8'));
-  } catch {
-    /* No cached verification. */
-  }
+  const receipt = consumeVerificationReceipt(receiptFile);
   let securityChecked = false;
   const onlineChecks = () => {
     npmScript('audit:dependencies');
@@ -488,6 +501,9 @@ async function main() {
     fixturesReady &&
     matchingVerification(receipt, identity, scope)
   ) {
+    if (!matchingVerification(receipt, verificationIdentity(Boolean(full)), scope))
+      throw new Error('Source, toolchain or fixtures changed during dependency audits; rerun validation.');
+    saveVerificationReceipt(receiptFile, receipt);
     console.log(
       `Refreshed dependency audits/signatures and reused ${receipt.full ? 'full' : 'scoped'} deterministic validation for the identical source tree ${identity.tree}, toolchain and fixtures.`,
     );
@@ -518,15 +534,12 @@ async function main() {
   if (!suite && JSON.stringify(baselineIdentity) !== JSON.stringify(completedIdentity))
     throw new Error('Source, toolchain or fixtures changed during validation; review the tree and rerun.');
   if (!suite && unit && browser && baselineIdentity && completedIdentity) {
-    fs.mkdirSync(path.dirname(receiptFile), { recursive: true });
-    fs.writeFileSync(
-      receiptFile,
-      JSON.stringify(
-        { identity: completedIdentity, scope, full: Boolean(scope.full), completedAt: new Date().toISOString() },
-        null,
-        2,
-      ) + '\n',
-    );
+    saveVerificationReceipt(receiptFile, {
+      identity: completedIdentity,
+      scope,
+      full: Boolean(scope.full),
+      completedAt: new Date().toISOString(),
+    });
   }
   console.log('Selected CI validation completed without errors.');
 }
