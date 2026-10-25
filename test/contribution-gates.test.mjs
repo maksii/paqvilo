@@ -519,7 +519,12 @@ test('starting a validation revokes previous evidence even when the rerun fails'
   }, /suite failed/);
   assert.equal(fs.existsSync(file), false);
   assert.equal(matchingVerification(consumeVerificationReceipt(file), identity, scope), false);
-  fs.writeFileSync(file, '{incomplete receipt');
+  const malformed = fs.openSync(file, 'wx');
+  try {
+    fs.writeFileSync(malformed, '{incomplete receipt');
+  } finally {
+    fs.closeSync(malformed);
+  }
   assert.equal(consumeVerificationReceipt(file), undefined);
   assert.equal(fs.existsSync(file), false, 'malformed evidence is revoked too');
 });

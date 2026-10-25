@@ -24,8 +24,9 @@
 
 - Fix native model-driven startup hangs and cancellation; honor the configured editor for source opening.
 - Guard corrective startup navigation when a tab loads before interception attaches. Preserve edited controls and
-  observed rich-text edits, keep newer documents intact, and report when a manual reload is needed. Clean popups
-  still receive a one-time GET repair; form submissions are never replayed.
+  observed rich-text edits, cancel an owned corrective load if typing begins before it commits, keep newer
+  documents intact, and report when a manual reload is needed. Clean popups still receive a one-time GET repair;
+  form submissions are never replayed.
 - Preserve runtime selection and literal paths in Mirage stop commands across CMD, PowerShell and POSIX shells.
   Keep recorded ownership when project mappings change or portals are renamed or removed, so copied stop commands
   cannot select a same-source sibling runtime.

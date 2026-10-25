@@ -40,6 +40,43 @@ test('attachment setup runs before Fetch and disposes its own hooks on target re
   assert.equal(tab.cdp.listenerCount('Runtime.executionContextCreated'), 0);
 });
 
+test('draft cancellation bindings are bounded and removed after normal or failed setup', async () => {
+  for (const fail of [false, true]) {
+    const fake = fakeBrowser(),
+      tab = fake.openTab(),
+      errors = [];
+    const send = tab.cdp.send;
+    tab.cdp.send = async (method, params) => {
+      if (fail && method === 'Fetch.enable') throw new Error('fixture setup failure');
+      const result = await send(method, params);
+      return method === 'Page.addScriptToEvaluateOnNewDocument' ? { identifier: 'owned-draft-script' } : result;
+    };
+    const opening = interceptOrigin(fake.context, ORIGIN, (route) => route.fallback(), {
+      onError: (error) => errors.push(error),
+    });
+    if (fail) await assert.rejects(opening, /fixture setup failure/);
+    else {
+      const detach = await opening;
+      const name = fake.sent.find((item) => item.method === 'Runtime.addBinding').name;
+      tab.page.url = () => ORIGIN + '/form';
+      tab.cdp.emit('Runtime.bindingCalled', { name, payload: 'cancelled' });
+      tab.cdp.emit('Runtime.bindingCalled', { name, payload: 'cancelled' });
+      assert.equal(errors.length, 1, 'one owned repair can emit at most one cancellation warning');
+      assert.equal(errors[0].code, 'reload_required');
+      await detach();
+    }
+    const name = fake.sent.find((item) => item.method === 'Runtime.addBinding').name;
+    assert.equal(tab.cdp.listenerCount('Runtime.bindingCalled'), 0);
+    assert.ok(fake.sent.some((item) => item.method === 'Runtime.removeBinding' && item.name === name));
+    assert.ok(
+      fake.sent.some(
+        (item) =>
+          item.method === 'Page.removeScriptToEvaluateOnNewDocument' && item.identifier === 'owned-draft-script',
+      ),
+    );
+  }
+});
+
 test('only acknowledged fulfillments publish a proof; cancellation and protocol rejection never publish', async () => {
   for (const outcome of ['acknowledged', 'rejected', 'aborted']) {
     const fake = fakeBrowser(),
