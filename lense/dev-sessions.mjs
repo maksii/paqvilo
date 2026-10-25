@@ -232,6 +232,10 @@ export async function startDevSessions(
           }
         },
         onError: (error) => {
+          if (error.code === 'reload_required') {
+            log(`WARN        ${error.message}`);
+            return;
+          }
           if (error.scope === 'target') {
             log(
               `ERROR       Target interception cleanup failed (${error.phase}): ${error.message}. Healthy tabs remain active.`,
