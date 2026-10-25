@@ -64,16 +64,20 @@ function checkDirectory(directory) {
     throw failure('Command payload storage changed during the operation.', 'COMMAND_PAYLOAD_DIRECTORY');
 }
 
-function readOwned(file) {
+function readOwned(file, { reportPublication = false } = {}) {
   let handle;
   try {
-    const before = fs.lstatSync(file);
-    if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > MAX_COMMAND_PAYLOAD_BYTES)
-      return null;
-    handle = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    // Open first, then validate and read this descriptor. A pathname check before
+    // open cannot establish which inode the eventual descriptor will reference.
+    // NONBLOCK also prevents an unexpected FIFO from stalling before fstat.
+    handle = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     const opened = fs.fstatSync(handle);
-    if (!sameFileVersion(before, opened)) return null;
-    const buffer = Buffer.alloc(before.size + 1);
+    if (!opened.isFile() || opened.size > MAX_COMMAND_PAYLOAD_BYTES) return null;
+    if (opened.nlink !== 1) return reportPublication && opened.nlink === 2 ? { publishing: true } : null;
+    // On platforms without NOFOLLOW, reject a linked name before reading any
+    // bytes. The descriptor remains the sole target of the bounded reads.
+    if (!sameFileVersion(opened, fs.lstatSync(file))) return null;
+    const buffer = Buffer.alloc(opened.size + 1);
     let length = 0;
     while (length < buffer.length) {
       const count = fs.readSync(handle, buffer, length, buffer.length - length, length);
@@ -81,8 +85,13 @@ function readOwned(file) {
       length += count;
     }
     const bytes = buffer.subarray(0, length);
-    const after = fs.lstatSync(file);
-    if (bytes.length > MAX_COMMAND_PAYLOAD_BYTES || !sameFileVersion(opened, after) || after.size !== bytes.length)
+    const after = fs.fstatSync(handle);
+    if (
+      bytes.length > MAX_COMMAND_PAYLOAD_BYTES ||
+      !sameFileVersion(opened, after) ||
+      after.size !== bytes.length ||
+      !sameFileVersion(after, fs.lstatSync(file))
+    )
       return null;
     return { bytes, info: after };
   } catch {
@@ -107,12 +116,14 @@ export function persistCommandPayload(directory, bytes) {
     const until = Date.now() + 200;
     for (;;) {
       checkDirectory(storage);
-      const saved = readOwned(file);
-      if (saved?.bytes.equals(bytes)) return file;
-      const info = fs.lstatSync(file, { throwIfNoEntry: false });
+      const saved = readOwned(file, { reportPublication: true });
+      if (saved?.bytes?.equals(bytes)) {
+        checkDirectory(storage);
+        return file;
+      }
       // Another publisher can have atomically linked the complete file and be
       // about to remove its temporary link. Never accept a hard-linked file.
-      if (info?.isFile() && info.nlink === 2 && Date.now() < until) {
+      if (saved?.publishing && Date.now() < until) {
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 4);
         continue;
       }
@@ -122,7 +133,12 @@ export function persistCommandPayload(directory, bytes) {
       );
     }
   };
-  if (fs.existsSync(file) || fs.lstatSync(file, { throwIfNoEntry: false })) return existing();
+  // Reuse requires a validated descriptor; absence or an invalid existing name
+  // is handled by exclusive publication, never by a check-then-open decision.
+  if (readOwned(file)?.bytes.equals(bytes)) {
+    checkDirectory(storage);
+    return file;
+  }
   const temporary = path.join(storage.absolute, `.stop-${randomUUID()}.tmp`);
   let handle, temporaryIdentity;
   try {
@@ -146,6 +162,7 @@ export function persistCommandPayload(directory, bytes) {
       if (error.code !== 'EEXIST') throw failure('Cannot publish command payload.', 'COMMAND_PAYLOAD_WRITE');
       return existing();
     }
+    checkDirectory(storage);
     return file;
   } catch (error) {
     if (error.code?.startsWith('COMMAND_PAYLOAD_')) throw error;

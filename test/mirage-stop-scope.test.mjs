@@ -156,13 +156,67 @@ async function workspace(t) {
   };
   return { directory, cwd, alternate, defaults, run, start, writeCatalogue, replay, tracked };
 }
-const alive = async (session) => assert.equal((await fetch(session.url + '/_sim/api/status')).status, 200);
-const stopped = (session) => assert.rejects(fetch(session.url + '/_sim/api/status'), /fetch failed/);
+function fixtureStatusURL(session) {
+  let address;
+  try {
+    address = new URL(session.url);
+  } catch {
+    throw new Error('Expected an owned HTTP loopback runtime address.');
+  }
+  const port = Number(address.port || 80);
+  if (
+    address.protocol !== 'http:' ||
+    address.hostname !== '127.0.0.1' ||
+    address.username ||
+    address.password ||
+    address.pathname !== '/' ||
+    address.search ||
+    address.hash ||
+    !/^http:\/\/127\.0\.0\.1(?::[1-9]\d{0,4})?\/?$/.test(session.url) ||
+    !Number.isSafeInteger(port) ||
+    port < 1 ||
+    port > 65535
+  )
+    throw new Error('Expected an owned HTTP loopback runtime address.');
+  // Only the validated numeric listener port crosses this boundary. Neither
+  // a record's URL nor any file content becomes a request host/path/header.
+  return `http://127.0.0.1:${port}/_sim/api/status`;
+}
+const requestStatus = (session) =>
+  fetch(fixtureStatusURL(session), { redirect: 'error', signal: AbortSignal.timeout(5000) });
+const alive = async (session) => assert.equal((await requestStatus(session)).status, 200);
+const stopped = (session) => assert.rejects(requestStatus(session), /fetch failed/);
 const portalProject = (sourceDir) => ({
   version: 2,
   defaultPortal: 'first',
   portals: ['first', 'second'].map((id) => ({ id, path: sourceDir })),
   solutions: [],
+});
+
+test('owned status probes admit only a numeric port on the fixed HTTP loopback endpoint', () => {
+  assert.equal(fixtureStatusURL({ url: 'http://127.0.0.1:12345' }), 'http://127.0.0.1:12345/_sim/api/status');
+  assert.equal(fixtureStatusURL({ url: 'http://127.0.0.1:80/' }), 'http://127.0.0.1:80/_sim/api/status');
+  for (const url of [
+    'https://127.0.0.1:12345',
+    'http://invented.example.invalid:12345',
+    'http://127.0.0.1.invented.invalid:12345',
+    'http://localhost:12345',
+    'http://[::1]:12345',
+    'http://2130706433:12345',
+    'http://user:secret@127.0.0.1:12345',
+    'http://127.0.0.1:12345/other',
+    'http://127.0.0.1:12345/?value=invented',
+    'http://127.0.0.1:12345/#fragment',
+    'http://127.0.0.1:12345/?',
+    'http://127.0.0.1:12345/#',
+    'http://127.0.0.1:0',
+    'http://127.0.0.1:65536',
+    'http://127.0.0.1:00123',
+    'http://127.0.0.1:12345\\',
+    'http://127.0.0.1:12345\n',
+    'file:///invented',
+  ])
+    assert.throws(() => fixtureStatusURL({ url }), /owned HTTP loopback runtime address/);
 });
 
 test('standalone settings-only catalogues keep editor settings without claiming a site, and invalid selected sites fail', async (t) => {

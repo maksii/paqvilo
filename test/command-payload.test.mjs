@@ -84,6 +84,88 @@ test('failed publication preserves a regular user file that replaced the tempora
   assert.deepEqual(fs.readdirSync(directory), [path.basename(replaced)]);
 });
 
+test('descriptor-first reuse rejects a pathname replaced after acquisition and preserves both files', (t) => {
+  const { directory } = fixture(t);
+  const bytes = payload('descriptor race');
+  const file = persistCommandPayload(directory, bytes);
+  const displaced = path.join(directory, 'displaced-original.json');
+  const open = fs.openSync,
+    stat = fs.lstatSync;
+  let acquired = false,
+    preOpenChecks = 0;
+  t.mock.method(fs, 'lstatSync', (name, ...args) => {
+    if (String(name) === file && !acquired) preOpenChecks++;
+    return stat(name, ...args);
+  });
+  t.mock.method(fs, 'openSync', (name, ...args) => {
+    const handle = open(name, ...args);
+    if (String(name) === file && !acquired) {
+      acquired = true;
+      fs.renameSync(file, displaced);
+      fs.writeFileSync(file, 'unfamiliar replacement');
+    }
+    return handle;
+  });
+  assert.throws(() => persistCommandPayload(directory, bytes), { code: 'COMMAND_PAYLOAD_CONFLICT' });
+  assert.equal(acquired, true);
+  assert.equal(preOpenChecks, 0, 'no pathname admission check precedes descriptor acquisition');
+  assert.deepEqual(fs.readFileSync(displaced), bytes);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'unfamiliar replacement');
+});
+
+test('oversized descriptor targets are refused before any payload bytes are read', (t) => {
+  const { directory } = fixture(t);
+  const bytes = payload('oversized existing');
+  fs.mkdirSync(directory, { recursive: true });
+  const file = filename(directory, bytes);
+  fs.writeFileSync(file, Buffer.alloc(MAX_COMMAND_PAYLOAD_BYTES + 1));
+  let reads = 0;
+  t.mock.method(fs, 'readSync', () => {
+    reads++;
+    throw Error('No oversized descriptor read is permitted');
+  });
+  assert.throws(() => persistCommandPayload(directory, bytes), { code: 'COMMAND_PAYLOAD_CONFLICT' });
+  assert.equal(reads, 0);
+  assert.equal(fs.statSync(file).size, MAX_COMMAND_PAYLOAD_BYTES + 1);
+});
+
+for (const phase of ['fast reuse', 'collision reuse', 'publication']) {
+  test(`directory identity is admitted again after ${phase} even when a junction preserves the same payload inode`, (t) => {
+    const { root, directory } = fixture(t);
+    const bytes = payload('directory replacement ' + phase);
+    const file = filename(directory, bytes);
+    const displaced = path.join(root, 'displaced-commands');
+    if (phase !== 'publication') persistCommandPayload(directory, bytes);
+    const replaceDirectory = () => {
+      fs.renameSync(directory, displaced);
+      fs.symlinkSync(displaced, directory, process.platform === 'win32' ? 'junction' : 'dir');
+      fs.writeFileSync(path.join(displaced, 'user-marker.txt'), 'preserve unfamiliar files');
+    };
+    if (phase === 'publication') {
+      const link = fs.linkSync;
+      t.mock.method(fs, 'linkSync', (from, to) => {
+        link(from, to);
+        replaceDirectory();
+      });
+    } else {
+      const open = fs.openSync;
+      let targetOpens = 0;
+      t.mock.method(fs, 'openSync', (name, ...args) => {
+        if (String(name) !== file) return open(name, ...args);
+        targetOpens++;
+        if (phase === 'collision reuse' && targetOpens === 1)
+          throw Object.assign(new Error('Invented absent initial lookup'), { code: 'ENOENT' });
+        replaceDirectory();
+        return open(name, ...args);
+      });
+    }
+    assert.throws(() => persistCommandPayload(directory, bytes), { code: 'COMMAND_PAYLOAD_DIRECTORY' });
+    assert.ok(fs.lstatSync(directory).isSymbolicLink());
+    assert.deepEqual(fs.readFileSync(path.join(displaced, path.basename(file))), bytes);
+    assert.equal(fs.readFileSync(path.join(displaced, 'user-marker.txt'), 'utf8'), 'preserve unfamiliar files');
+  });
+}
+
 test('trusted parent aliases resolve to one canonical store while linked commands folders are refused', (t) => {
   const { root } = fixture(t);
   const parent = path.join(root, 'actual-state');
