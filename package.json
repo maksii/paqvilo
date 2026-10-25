@@ -98,6 +98,7 @@
     "ci:prepare": "node scripts/ci.mjs prepare",
     "ci:verify": "node scripts/ci.mjs verify",
     "check:workflows": "node scripts/check-workflows.mjs",
+    "check:pr": "node scripts/pr-readiness.mjs",
     "audit:dependencies": "node scripts/audit-dependencies.mjs",
     "hooks:push": "node scripts/git-hooks.mjs pre-push",
     "review:code": "node scripts/generate-compat-watchers.mjs --check && node scripts/code-review.mjs --check"

@@ -10,7 +10,6 @@ import { validateCommitMessage } from '../scripts/conventional-commit.mjs';
 import {
   classifyChanges as completeScope,
   preCommitScripts,
-  isDescriptionOnlyEdit,
   githubScope,
   suitesForScope,
 } from '../.github/scripts/change-scope.mjs';
@@ -68,33 +67,29 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
   assert.equal(classifyChanges(['mirage/package-lock.json']).dependencies, true);
 });
 
-test('description edits preserve source validation while title/base/code edits remain gated', (t) => {
+test('description, title, base and source events validate the same complete PR diff with a stable required gate', (t) => {
+  const { root, env: fixtureEnv, git, write } = fixture(t);
+  write('README.md', '# Invented toolkit\n');
+  git('add', '.');
+  git('commit', '-qm', 'test: initial PR base');
+  const base = git('rev-parse', 'HEAD');
+  write('package.json', JSON.stringify({ name: 'invented-toolkit', type: 'module' }));
+  write('lense/runtime.mjs', 'export const value = 1;\n');
+  git('add', '.');
+  git('commit', '-qm', 'test: shared runtime change');
+  const head = git('rev-parse', 'HEAD');
   const event = {
     action: 'edited',
-    pull_request: { base: { sha: 'a'.repeat(40) }, head: { sha: 'b'.repeat(40) } },
+    pull_request: { base: { sha: base }, head: { sha: head } },
     changes: { body: { from: 'Previous description' } },
   };
-  assert.equal(isDescriptionOnlyEdit(event, 'pull_request'), true);
-  for (const changed of [
-    { ...event, action: 'synchronize' },
-    { ...event, changes: {} },
-    { ...event, changes: { body: null } },
-    { ...event, changes: { title: { from: 'Previous title' } } },
-    { ...event, changes: { ...event.changes, title: { from: 'Previous title' } } },
-    { ...event, changes: { ...event.changes, base: { ref: { from: 'previous' } } } },
-    { ...event, changes: { ...event.changes, unknown: {} } },
-  ])
-    assert.equal(isDescriptionOnlyEdit(changed, 'pull_request'), false);
-  assert.equal(isDescriptionOnlyEdit(event, 'workflow_dispatch'), false);
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-description-event-'));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const eventFile = path.join(directory, 'event.json'),
-    output = path.join(directory, 'output');
+  const eventFile = path.join(root, 'event.json'),
+    output = path.join(root, 'output');
   const run = (payload, forced = false) => {
     fs.writeFileSync(eventFile, JSON.stringify(payload));
     fs.writeFileSync(output, '');
     const env = {
-      ...process.env,
+      ...fixtureEnv,
       GITHUB_EVENT_PATH: eventFile,
       GITHUB_EVENT_NAME: 'pull_request',
       GITHUB_OUTPUT: output,
@@ -105,7 +100,7 @@ test('description edits preserve source validation while title/base/code edits r
       process.execPath,
       [fileURLToPath(new URL('../.github/scripts/change-scope.mjs', import.meta.url))],
       {
-        cwd: directory,
+        cwd: root,
         encoding: 'utf8',
         windowsHide: true,
         env,
@@ -113,23 +108,92 @@ test('description edits preserve source validation while title/base/code edits r
     );
     return { ...result, output: fs.readFileSync(output, 'utf8') };
   };
-  const description = run(event);
-  assert.equal(description.status, 0, description.stderr);
-  assert.equal(JSON.parse(description.stdout).runtime, false);
-  assert.match(description.output, /suites=\["none"\]/);
-  const title = run({ ...event, changes: { title: { from: 'Previous title' } } });
-  assert.notEqual(title.status, 0, 'title changes must still require a real source diff');
-  assert.match(title.stderr, /Cannot determine changed files/);
+  const synchronized = run({ ...event, action: 'synchronize' });
+  assert.equal(synchronized.status, 0, synchronized.stderr);
+  const scope = JSON.parse(synchronized.stdout);
+  assert.equal(scope.runtime, true);
+  assert.equal(scope.quality, true);
+  assert.equal(scope.package, true);
+  assert.equal(scope.smoke, true);
+  assert.deepEqual(suitesForScope(scope), ['lense', 'mirage', 'examples']);
+  for (const edited of [
+    event,
+    { ...event, changes: {} },
+    { ...event, changes: { body: null } },
+    { ...event, changes: { title: { from: 'Previous title' } } },
+    { ...event, changes: { ...event.changes, title: { from: 'Previous title' } } },
+    { ...event, changes: { base: { ref: { from: 'previous' } } } },
+    { ...event, changes: { ...event.changes, unknown: {} } },
+  ]) {
+    const result = run(edited);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), scope);
+    assert.equal(result.output, synchronized.output, 'every PR edit retains the applicable source lanes');
+  }
+  const unavailable = run({ ...event, pull_request: { ...event.pull_request, base: { sha: 'a'.repeat(40) } } });
+  assert.notEqual(unavailable.status, 0, 'description edits fail closed when the source diff is unavailable');
+  assert.match(unavailable.stderr, /Cannot determine changed files/);
   const forced = run(event, true);
   assert.equal(forced.status, 0, forced.stderr);
   assert.equal(JSON.parse(forced.stdout).full, true);
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
-  assert.match(ci.concurrency.group, /'description' \|\| 'sources'/);
-  assert.match(ci.concurrency['cancel-in-progress'], /!\(github\.event\.action == 'edited'/);
-  assert.match(
-    ci.jobs.gate.name,
-    /'PR description metadata' \|\| 'CI gate'/,
-    'metadata never replaces the required source gate',
+  assert.equal(ci.concurrency.group, 'ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}');
+  assert.equal(ci.concurrency['cancel-in-progress'], "${{ github.event_name == 'pull_request' }}");
+  assert.equal(ci.jobs.gate.name, 'CI gate');
+  assert.ok(ci.on.pull_request.types.includes('edited'), 'title and base changes must remain validated');
+  const title = ci.jobs.changes.steps.find((step) => step.run === 'node scripts/conventional-commit.mjs --title');
+  assert.equal(title.if, "github.event_name == 'pull_request'");
+  assert.equal(title.env.PR_TITLE, '${{ github.event.pull_request.title }}');
+});
+
+test('the stable required CI gate rejects failed, cancelled or skipped applicable lanes', () => {
+  const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  assert.equal(ci.jobs.gate.name, 'CI gate');
+  assert.equal(ci.jobs.gate.if, 'always()');
+  assert.deepEqual(ci.jobs.gate.needs, ['changes', 'checks', 'test', 'browser', 'windows', 'package']);
+  const command = ci.jobs.gate.steps.find((step) => step.name === 'Require every job to succeed').run;
+  assert.match(command, /^node -e ".*"$/);
+  const script = command.slice('node -e "'.length, -1);
+  const required = {
+    SCOPE_RESULT: 'success',
+    QUALITY: 'true',
+    PACKAGE: 'true',
+    RUNTIME: 'true',
+    SMOKE_REQUIRED: 'true',
+    CHECKS: 'success',
+    TESTS: 'success',
+    BROWSER: 'success',
+    WINDOWS: 'success',
+    SMOKE: 'success',
+  };
+  const run = (env) => {
+    const result = spawnSync(process.execPath, ['-e', script], {
+      env: { ...process.env, ...env },
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    assert.equal(result.error, undefined);
+    return result.status;
+  };
+  assert.equal(run(required), 0);
+  for (const lane of ['SCOPE_RESULT', 'CHECKS', 'TESTS', 'BROWSER', 'WINDOWS', 'SMOKE'])
+    for (const result of ['failure', 'cancelled', 'skipped'])
+      assert.equal(run({ ...required, [lane]: result }), 1, `${lane} cannot qualify with ${result}`);
+  assert.equal(
+    run({
+      ...required,
+      QUALITY: 'false',
+      PACKAGE: 'false',
+      RUNTIME: 'false',
+      SMOKE_REQUIRED: 'false',
+      CHECKS: 'skipped',
+      TESTS: 'skipped',
+      BROWSER: 'skipped',
+      WINDOWS: 'skipped',
+      SMOKE: 'skipped',
+    }),
+    0,
+    'only inapplicable lanes may be skipped',
   );
 });
 

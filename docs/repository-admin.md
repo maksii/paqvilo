@@ -47,6 +47,11 @@ PR scope uses the complete base-to-head diff. A documentation-only commit added 
 selected suites when pushed. A wholly documentation-only PR retains quality and applicable release checks, while
 runtime matrices are skipped. Local commits trigger no hosted run. Do not use CI skip tokens to bypass required gates.
 
+All PR edits, including description edits, run the applicable source checks and report the same required `CI gate`
+name. A metadata-only run with a different gate name can leave GitHub waiting for the required context despite an
+older successful run. Run `npm run check:pr -- --pr <number>` with authenticated GitHub CLI before declaring success;
+it requires the pushed HEAD to match and the effective merge state to be `CLEAN`, as well as completed gates.
+
 Report vulnerabilities through [private reporting](../SECURITY.md). Alert triage decisions
 are recorded in [`.github/security/codeql-triage.json`](../.github/security/codeql-triage.json). A triage entry
 must record the actual source-to-sink constraint, a focused regression where applicable,

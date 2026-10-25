@@ -36,8 +36,8 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'edited' && github.event.changes.body != null && github.event.changes.title == null && github.event.changes.base == null && 'description' || 'sources' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && !(github.event.action == 'edited' && github.event.changes.body != null && github.event.changes.title == null && github.event.changes.base == null) }}
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 env:
   FORCE_COLOR: '1'
   NPM_CONFIG_FUND: 'false'
@@ -307,7 +307,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   gate:
-    name: ${{ github.event.action == 'edited' && github.event.changes.body != null && github.event.changes.title == null && github.event.changes.base == null && 'PR description metadata' || 'CI gate' }}
+    name: CI gate
     if: always()
     needs:
       - changes

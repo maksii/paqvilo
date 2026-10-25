@@ -37,6 +37,9 @@
 
 ### Contributor validation
 
+- Keep the required `CI gate` name stable and validate the complete PR diff on every edit, including description
+  edits. Check effective PR merge readiness with `npm run check:pr -- --pr <number>`; a blocked PR cannot qualify
+  from historical successful jobs alone.
 - Explicit `npm run validate` and `ci:verify -- --full` always execute fresh. Starting verification revokes the previous
   receipt; a failed audit, preparation step or suite cannot leave an earlier qualifying pass. Cached pre-push reuse
   rechecks the source tree, toolchain and fixtures after dependency audits.

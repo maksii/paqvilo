@@ -46,12 +46,17 @@ Use `npm run release:check` and `npm pack --ignore-scripts` to prepare a distrib
 See [the review lane](docs/code-review.md) for entry maps, synthetic canaries, retained contracts
 and the manual baseline policy.
 
-[CI](.github/workflows/ci.yml) runs on pushes to `main` and PRs to `main`. PRs select Lense, Mirage and example suites from changed paths and literal import consumers; shared browser assets and unknown/build/dependency changes expand the selection. Main pushes, manual full runs and release callers run every suite and package smoke. One pinned Node 24 runtime is used on Ubuntu 24.04 and Windows 2025; Mirage/example lanes also install the exact serviced .NET SDK from `global.json`. All changed-source PRs run the shared quality checks, including documentation-only PRs. The required `CI gate` validates both successes and intentional skips; description-only edits report separate metadata without replacing source validation. Use `npm run ci:verify -- --base origin/main` for matching local selection or `--full` before a release.
+[CI](.github/workflows/ci.yml) runs on pushes to `main` and PRs to `main`. PRs select Lense, Mirage and example suites from changed paths and literal import consumers; shared browser assets and unknown/build/dependency changes expand the selection. Main pushes, manual full runs and release callers run every suite and package smoke. One pinned Node 24 runtime is used on Ubuntu 24.04 and Windows 2025; Mirage/example lanes also install the exact serviced .NET SDK from `global.json`. All changed-source PRs run the shared quality checks, including documentation-only PRs. The required `CI gate` keeps the same name on every run and validates both successes and intentional skips. Use `npm run ci:verify -- --base origin/main` for matching local selection or `--full` before a release.
 
 PR selection compares the complete base-to-head diff, not just the latest commit. A documentation-only PR skips
 runtime matrices but retains quality and applicable release checks. Pushing a documentation commit onto a PR that
-also changes runtime code still selects those runtime and security lanes. A local commit starts no GitHub run;
-editing only the PR description uses the separate metadata path. Keep required source validation enabled.
+also changes runtime code still selects those runtime and security lanes. A local commit starts no GitHub run.
+Editing the PR title, base or description reruns the applicable source validation; a later run must not omit or
+rename the required gate. Keep required source validation enabled.
+
+With GitHub CLI authenticated, run `npm run check:pr -- --pr <number>` before reporting the PR green. It checks the
+pushed HEAD, completed gates and GitHub's effective merge state. Successful historical job results alone are
+insufficient: `BLOCKED` or `UNKNOWN` is not a ready PR.
 
 [Security](.github/workflows/security.yml) scans JavaScript/TypeScript, GitHub Actions and the sample C# sources with CodeQL for relevant PR/main changes and weekly. Dependency review rejects newly introduced moderate-or-higher vulnerabilities. `Security gate` is required alongside `CI gate`. [Pages](.github/workflows/pages.yml) builds relevant site changes on PRs and deploys only from `main`. See the [repository admin guide](docs/repository-admin.md) for settings and promotion prerequisites.
 
