@@ -14,6 +14,8 @@ npm run setup:repo
 
 Repository setup prepares the offline package-smoke cache and installs local Git hooks. If you use `npm ci --ignore-scripts` instead, also install Mirage dependencies and run `npm run cache:package` followed by `npm run hooks:install`. Hooks are tracked in `.githooks/` and configured only in this checkout. `npm run setup` retains the distribution dependency bootstrap; `setup:repo` adds contributor configuration. No consumer package-install lifecycle changes Git configuration.
 
+CI preparation may read registry metadata for the example's exact direct dependency pins: its manifest has no lockfile, and cached toolkit tarballs alone are insufficient. The example verification install and package smoke remain offline after preparation.
+
 Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), for example `fix(lense): preserve language identity` or `feat(mirage)!: change session contract`. Separate any body/footer from the subject with a blank line; explain breaking changes with `!` or a `BREAKING CHANGE:` footer. PR titles use the same convention because merges are squashed.
 
 Run `npm run format` to apply Prettier and `npm run quality` to check formatting, ESLint and workflow rules. Formatting uses Prettier's normal discovery, ignores and configuration, then replaces each changed file atomically while preserving its permissions. This avoids Windows truncate failures when another process has mapped a source file. Temporary files stay under ignored `.paqvilo/format/`.

@@ -146,11 +146,13 @@ export async function prepareLane(suite, { browser = false, quality = false, sdk
   }
   if (suite === 'examples' || suite === 'all' || quality) {
     resetExampleModules();
+    // This example intentionally has no lockfile. Exact direct pins still need
+    // packuments: root npm ci may have cached only their tarballs. Preparation
+    // may fetch that metadata; test:example verifies the prepared cache offline.
     npm([
       'install',
       '--prefix',
       'examples/project',
-      '--offline',
       '--ignore-scripts',
       '--no-audit',
       '--no-fund',
