@@ -94,13 +94,25 @@ test('persona shortcuts reject unsafe redirects and require a CSRF post', async 
 });
 
 test('isolated contexts reuse setup, preserve parent and support stop/restart and resource limits', async (t) => {
-  const { app, call } = await personaFixture(t, { personaContexts: { maxInstances: 2 } });
+  const { app, call, sourceDir } = await personaFixture(t, { personaContexts: { maxInstances: 2 }, sourceMaps: false });
+  await fs.mkdir(path.join(sourceDir, 'web-files'), { recursive: true });
+  await fs.writeFile(
+    path.join(sourceDir, 'web-files/debug.webfile.yml'),
+    'adx_webfileid: debug\nadx_name: debug.js\nadx_partialurl: debug.js\n',
+  );
+  await fs.writeFile(path.join(sourceDir, 'web-files/debug.js'), 'window.inventedDebug = true;');
+  await app.reload();
   const { response, value: one } = await call('/personas/launch', 'POST', { personaKey: 'person-2' });
   assert.equal(response.status, 200, JSON.stringify(one));
   assert.equal(one.isolated, true);
   assert.notEqual(one.origin, app.url);
   assert.equal(one.contactId, contactId(2));
   assert.equal(one.browser.locale, 'fr-FR');
+  assert.equal(
+    await fetch(one.origin + '/debug.js').then((response) => response.text()),
+    'window.inventedDebug = true;',
+    'isolated persona runtimes inherit the original-byte debugger policy',
+  );
   const child = await fetch(one.origin + '/_sim/api/state?summary=1').then((r) => r.json());
   assert.equal(child.config.environmentVariables.sample_Url, 'Context variable');
   assert.equal(child.config.deploymentProfilePin.profile, 'test');

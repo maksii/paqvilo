@@ -271,16 +271,33 @@ and 64 MiB of generated map bytes per overlay revision. A map that exceeds these
 budgets is omitted with `MODEL_SOURCE_MAP_LIMIT`; the original script still runs.
 This avoids expanding newline-heavy bundles into very large debug payloads.
 
+Mirage also adds file-backed maps when serving local Solution scripts, styles and
+PCF bundles at its `/_apps/resources/` and `/_apps/controls/` URLs. Unpacked files map
+to their physical source; ZIP-only resources keep their original bytes because
+there is no editable physical file to name. Existing source maps are preserved.
+Set the Mirage project setting `sourceMaps: false` to disable generated metadata.
+With `--local-simulation`, Lense observes and overlays those exact declared local
+resource URLs as well as `/WebResources/` paths. Native targets retain their explicit
+resource mappings and never infer a resource from an arbitrary hashed URL.
+
 `model-driven dev --startup-timeout 120000` sets a separate 1,000–600,000 ms
 startup budget, starting before project/source loading and ending after the
-initial document and assets settle. It covers browser attachment, interception,
-watcher setup and initial assets; failures name the active phase. Async waits
+native document's load event. Workers and continuing application requests do not
+block startup; sign-in and native application readiness remain unverified.
+With `--local-simulation`, the Mirage application readiness marker also gates
+startup. The budget covers browser attachment, interception,
+watcher setup and navigation; failures name the active phase. Async waits
 are interrupted at the deadline; synchronous filesystem/parsing work observes
 it when control returns to an async boundary. It is not a process watchdog for
 blocked native code. Late browser acquisitions are disposed, only the owned app
 tab is closed in an attached browser, and the attached browser remains running.
 Ctrl+C cancels pending startup. Cleanup drains owned resources separately from
 the startup budget. `--timeout` starts after startup and limits session lifetime.
+
+Source links use `PAQVILO_EDITOR` from the shell or the selected catalogue's
+`.env`, then the catalogue's `editor`, then `code`. By default, the catalogue is
+`paqvilo.config.yml` beside the project; pass `--config <catalogue>` to select
+another. Personal catalogue overrides apply as in Power Pages Lense.
 
 ### Pair the panel with a standalone local app
 

@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readLocalFile } from './local-file.mjs';
 import { diffLines } from './line-diff.mjs';
-import { urlKey, sourceText, isSourceFile } from './portal-model.mjs';
+import { urlKey, sourceText, createSourceReader, isSourceFile } from './portal-model.mjs';
 
 /** URL prefix of everything the overlay answers itself; nothing under it exists on the portal. */
 export const LOCAL_PREFIX = '/__paqvilo/';
@@ -782,6 +782,8 @@ export class HtmlRewriter {
         invalidate(key);
       }
     const { site, model } = this;
+    this.fieldReader = createSourceReader(model);
+    this.baselineReader = createSourceReader(null, { readRaw: (file) => this.baseline.show(file) });
     const changed = this.prepared?.changed ?? this.changedFiles ?? this.baseline.changedFiles();
     this.readValidity = this.prepared?.valid ?? new Map();
     this.prepared = null;
@@ -828,10 +830,7 @@ export class HtmlRewriter {
     };
 
     // the deployed version of a source; several sources can live in one file (enhanced format)
-    const baseOf = (src) => {
-      const raw = this.baseline.show(src.file);
-      return raw == null ? null : sourceText(src, raw);
-    };
+    const baseOf = (src) => this.baselineReader(src);
     const unreadable = new Set();
     const read = (src) => {
       const text = this.#readSource(src);
@@ -850,7 +849,7 @@ export class HtmlRewriter {
       if (src.kind.startsWith('page-') && src.pageUrl == null) {
         // Only a local edit of such a source is a limitation worth reporting; an untouched one is
         // what the portal already serves. The model warns about the broken page hierarchy itself.
-        if (changed.has(src.file) && (inlineKinds.has(src.kind) || markupKinds.has(src.kind))) {
+        if (changed.has(src.file) && !this.disabled.has(src.rel)) {
           this.unsupported.push({
             rel: src.rel,
             reason: 'the page URL cannot be resolved from local metadata, so this local change cannot be previewed',
@@ -859,6 +858,16 @@ export class HtmlRewriter {
         continue;
       }
       const isChanged = changed.has(src.file);
+      const enabledKinds = src.mode === 'block' ? inlineKinds : markupKinds;
+      if (isChanged && !enabledKinds.has(src.kind) && !this.disabled.has(src.rel)) {
+        const text = read(src);
+        const base = baseOf(src);
+        if (text != null && normEol(text) !== normEol(base ?? ''))
+          this.unsupported.push({
+            rel: src.rel,
+            reason: `${src.kind} preview is disabled in this site's ${src.mode === 'block' ? 'inline' : 'markup'} settings; deploy this change to apply it online`,
+          });
+      }
       if (src.mode === 'block') {
         if (!inlineKinds.has(src.kind)) continue;
         const text = read(src);
@@ -932,6 +941,9 @@ export class HtmlRewriter {
       this.sourceStamps.delete(key);
       return null;
     }
+    // Metadata documents can describe thousands of individual fields. Reuse the
+    // model's stamped parse instead of parsing the whole document for each field.
+    if (src.fieldPath && /\.ya?ml$/i.test(src.file)) return this.fieldReader(src);
     if (!this.sourceCache.has(key)) {
       let text = null;
       // A concurrent atomic save may replace the file between its read and stat. Retry once;
@@ -976,7 +988,7 @@ export class HtmlRewriter {
         ? []
         : this.model.inlineSources
             .filter((other) => other !== src && differentLocalizedVariants(src, other))
-            .map((other) => sourceText(other, this.baseline.show(other.file) ?? null))
+            .map((other) => this.baselineReader(other))
             .filter((value) => value != null)
             .map(normEol);
     const prepared = [];

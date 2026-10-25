@@ -1885,7 +1885,7 @@ export function panelUi(data) {
         );
       let out = '';
       if (S.confirm)
-        out += `<div class="banner"><span class="grow">${esc(S.confirm.text)}</span><button class="btn" data-act="confirm-yes">${esc(S.confirm.label)}</button><button class="f" data-act="confirm-no">Cancel</button></div>`;
+        out += `<div class="banner" role="alertdialog" aria-label="Confirm local setup"><span class="grow">${esc(S.confirm.text)}</span><button class="btn" data-act="confirm-yes">${esc(S.confirm.label)}</button><button class="f" data-act="confirm-no">Cancel</button></div>`;
       const option = (value, label, selected) =>
         `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`;
       const session = t.session?.supported ? t.session : null;
@@ -2670,6 +2670,11 @@ export function panelUi(data) {
                     : `Apply scenario "${item.name ?? id}"? Its preset, persona and permission mode change in one step; pages reload.`,
                 };
           render();
+          // The action can be below the fold. Reveal its confirmation and put keyboard focus
+          // on the safe action, without applying anything until the user confirms.
+          const cancel = el.body.querySelector('[data-act="confirm-no"]');
+          cancel?.closest('[role="alertdialog"]')?.scrollIntoView({ block: 'start' });
+          cancel?.focus({ preventScroll: true });
           break;
         }
         case 'confirm-no':

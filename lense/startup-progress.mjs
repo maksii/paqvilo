@@ -122,7 +122,14 @@ export function startupProgress({
 export async function waitForStartupPage(
   page,
   url,
-  { progress, stopped = new Promise(() => {}), modelDriven = false, timeout = 120000 } = {},
+  {
+    progress,
+    stopped = new Promise(() => {}),
+    signal,
+    modelDriven = false,
+    nativeModelDriven = false,
+    timeout = 120000,
+  } = {},
 ) {
   let cancelled = false;
   const deadline = Date.now() + timeout,
@@ -166,11 +173,18 @@ export async function waitForStartupPage(
   page.on('requestfailed', finished);
   page.on('framenavigated', committed);
   page.on('framedetached', detached);
-  const cancelledResult = stopped.then(() => {
+  let onAbort;
+  const aborted = new Promise((resolve) => {
+    onAbort = resolve;
+    if (signal?.aborted) resolve();
+    else signal?.addEventListener('abort', onAbort, { once: true });
+  });
+  const cancelledResult = Promise.race([stopped, aborted]).then(() => {
     cancelled = true;
     return 'cancelled';
   });
   try {
+    if (signal?.aborted) return false;
     progress?.phase('document navigation');
     const navigation = page.goto(url, { waitUntil: 'domcontentloaded', timeout }).then(() => 'document');
     if ((await Promise.race([cancelledResult, navigation])) === 'cancelled') return false;
@@ -192,7 +206,9 @@ export async function waitForStartupPage(
     } else {
       progress?.phase(
         'page resources',
-        'waiting for initial resources and data requests; application readiness is unverified',
+        nativeModelDriven
+          ? 'waiting for document load; background resources and native application readiness remain unverified'
+          : 'waiting for initial resources and data requests; application readiness is unverified',
       );
       if (
         (await Promise.race([
@@ -201,7 +217,11 @@ export async function waitForStartupPage(
         ])) === 'cancelled'
       )
         return false;
-      while (requests.size || Date.now() - idleSince < 100) {
+      // Native model-driven apps continuously fetch data and start workers. Their
+      // resource streams are not a readiness protocol (and CDP can omit worker
+      // terminal events). Only Mirage exposes the explicit app-state contract.
+      // A native target completes document navigation without asserting usability.
+      while (!nativeModelDriven && (requests.size || Date.now() - idleSince < 100)) {
         if (Date.now() >= deadline)
           throw new Error(
             `Initial page requests did not settle within ${timeout}ms; inspect pending requests and sign-in in the browser.`,
@@ -214,7 +234,11 @@ export async function waitForStartupPage(
         )
           return false;
       }
-      progress?.complete('document and initial resources loaded; sign-in and application readiness remain unverified');
+      progress?.complete(
+        nativeModelDriven
+          ? 'document loaded; background resources, sign-in and native application readiness remain unverified'
+          : 'document and initial resources loaded; sign-in and application readiness remain unverified',
+      );
     }
     return !cancelled;
   } catch (error) {
@@ -223,6 +247,7 @@ export async function waitForStartupPage(
     if (cancelled || page.isClosed?.() || page.context?.()?.browser()?.isConnected() === false) return false;
     throw error;
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     page.off('request', started);
     page.off('requestfinished', finished);
     page.off('requestfailed', finished);

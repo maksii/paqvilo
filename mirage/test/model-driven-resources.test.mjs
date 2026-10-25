@@ -532,7 +532,8 @@ test('standalone HTTP denies untrusted code and only serves declared assets afte
       assert.equal(response.status, trusted ? 200 : 404);
       if (trusted) {
         assert.match(response.headers.get('content-type'), /javascript/);
-        assert.equal(await response.text(), 'window.Example = {};');
+        const body = await response.text();
+        assert.match(body, /^window\.Example = \{\};\n\/\/# sourceMappingURL=data:/);
       }
       assert.equal((await fetch(url + '?unlisted=1')).status, 404);
       assert.equal((await fetch(sim.url + '/_apps/resources/undeclared')).status, 404);

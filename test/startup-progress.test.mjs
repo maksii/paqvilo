@@ -293,3 +293,40 @@ test('unknown frame ownership remains pending across committed navigations', asy
   };
   await assert.rejects(waitForStartupPage(f.p, f.p.url(), { timeout: 180 }), /did not settle/);
 });
+
+test('native model-driven navigation completes at load without mistaking a worker or background fetch for readiness', async () => {
+  const f = startupRequestFixture();
+  const progress = startupProgress({ write() {} });
+  f.p.goto = async () => {
+    f.begin(f.request('script'));
+    f.begin(f.request('fetch'));
+  };
+  assert.equal(await waitForStartupPage(f.p, f.p.url(), { nativeModelDriven: true, timeout: 180, progress }), true);
+  assert.match(
+    progress.events.at(-1).detail,
+    /background resources, sign-in and native application readiness remain unverified/,
+  );
+  assert.equal(f.p.listenerCount('request'), 0);
+});
+
+test('outer startup deadline cancels nested resource settling and retires all page listeners', async () => {
+  const { startupDeadline } = await import('../lense/startup-deadline.mjs');
+  const f = startupRequestFixture(),
+    deadline = startupDeadline(1000),
+    progress = startupProgress({ write() {} });
+  f.p.goto = async () => {
+    f.begin(f.request('fetch'));
+  };
+  const inner = waitForStartupPage(f.p, f.p.url(), { signal: deadline.signal, progress });
+  const outer = deadline.wait(inner);
+  deadline.abort();
+  await assert.rejects(outer, (error) => error.code === 'startup_cancelled');
+  assert.equal(await inner, false);
+  assert.deepEqual(f.p.eventNames(), []);
+  assert.equal(
+    progress.events.some((event) => event.status === 'complete'),
+    false,
+  );
+  deadline.close();
+  progress.close();
+});

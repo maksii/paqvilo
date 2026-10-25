@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createSimulator } from '../server.mjs';
 import { loadProjectConfig, projectSummary } from '../lib/project-config.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
@@ -540,12 +540,27 @@ test('independent client directory and ZIP sources reload without changing compl
   const urls = Object.fromEntries(
     catalogue.clientExtensions.resources.map((resource) => [resource.name, sim.url + resource.url]),
   );
-  assert.equal(await (await fetch(urls['x_/external.js'])).text(), 'window.External = 1;');
-  assert.equal(await (await fetch(urls['x_/archive.js'])).text(), 'window.Archive = 1;');
+  const selectedSource = async (url) => {
+    const response = await fetch(url);
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    if (url === urls['x_/archive.js']) {
+      assert.doesNotMatch(text, /sourceMappingURL=/, 'a ZIP resource has no editable physical file');
+      return text;
+    }
+    const encoded = /sourceMappingURL=data:application\/json;charset=utf-8;base64,([\w+/=]+)/.exec(text)?.[1];
+    assert.ok(encoded, 'an external file-backed client retains debugger metadata after reload');
+    const map = JSON.parse(Buffer.from(encoded, 'base64').toString());
+    assert.deepEqual(map.sources, [pathToFileURL(path.join(clientRoot, 'WebResources/events.js')).href]);
+    assert.ok(text.startsWith(map.sourcesContent[0]));
+    return map.sourcesContent[0];
+  };
+  assert.equal(await selectedSource(urls['x_/external.js']), 'window.External = 1;');
+  assert.equal(await selectedSource(urls['x_/archive.js']), 'window.Archive = 1;');
   const changed = async (url, expected) => {
     const deadline = Date.now() + 10000;
     while (Date.now() < deadline) {
-      if ((await (await fetch(url)).text()) === expected) return;
+      if ((await selectedSource(url)) === expected) return;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.fail('Selected client source was not reloaded: ' + expected);

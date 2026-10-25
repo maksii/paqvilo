@@ -28,6 +28,78 @@ before(async () => {
 });
 after(() => browser?.close());
 
+test('All settings saves Mirage sourceMaps at site and project scope independently of Lense source maps', async (t) => {
+  for (const kind of ['catalogue', 'project'])
+    await t.test(kind, async (t) => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-source-maps-'));
+      const file = path.join(directory, kind === 'catalogue' ? 'paqvilo.config.yml' : 'mirage.project.yml');
+      await fs.writeFile(
+        file,
+        YAML.stringify(
+          kind === 'catalogue'
+            ? {
+                sourceMaps: true,
+                sites: { invented: { mirage: { runtime: { kind: 'model-driven' }, sourceMaps: false } } },
+              }
+            : {
+                version: 2,
+                runtime: { kind: 'model-driven' },
+                solutions: [],
+                sourceMaps: false,
+              },
+        ),
+      );
+      const owner = ownedFixture(t);
+      owner.remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+      const server = await startSetupServer({
+        directory,
+        ...(kind === 'project' ? { project: file } : {}),
+        processEnv: {},
+      });
+      owner.add(() => server.close());
+      const context = await browser.newContext();
+      owner.add(() => context.close());
+      const page = await context.newPage();
+      await allSettings(page);
+      await page.goto(server.url + '#settings');
+      const form = page.locator('form[data-form=setting][data-key=sourceMaps]');
+      await form.waitFor({ state: 'attached' });
+      assert.equal(await form.count(), 1, 'the Mirage scope has one generic editor');
+      assert.equal(await form.locator('[name=value]').inputValue(), 'false');
+      assert.equal(await page.locator('#settings-source-maps').count(), kind === 'catalogue' ? 1 : 0);
+      if (kind === 'catalogue') assert.equal(await page.locator('#settings-source-maps').isChecked(), true);
+      await page.locator('#settings summary').filter({ hasText: 'More settings' }).click();
+      await form.locator('[name=value]').selectOption('true');
+      const saved = page.waitForResponse(
+        (response) => response.url().endsWith('/_setup/api/config') && response.request().method() === 'POST',
+      );
+      await form.getByRole('button', { name: 'Save setting sourceMaps', exact: true }).click();
+      const response = await saved;
+      assert.equal(response.ok(), true, await response.text());
+      const request = response.request().postDataJSON();
+      assert.deepEqual(request.operations, [
+        {
+          op: 'set',
+          path: kind === 'catalogue' ? ['sites', 'invented', 'mirage', 'sourceMaps'] : ['sourceMaps'],
+          value: true,
+        },
+      ]);
+      await page
+        .locator('#notice')
+        .filter({ hasText: /^Saved\./ })
+        .waitFor();
+      const document = YAML.parse(await fs.readFile(file, 'utf8'));
+      assert.equal(kind === 'catalogue' ? document.sites.invented.mirage.sourceMaps : document.sourceMaps, true);
+      if (kind === 'catalogue') assert.equal(document.sourceMaps, true, 'the root Lense policy is unchanged');
+      await page.reload();
+      assert.equal(
+        await form.locator('[name=value]').inputValue(),
+        'true',
+        'the saved Mirage setting survives a fresh page load',
+      );
+    });
+});
+
 // One loopback origin serving /_setup/ (mounted as Mirage mounts it) and stub /_sim/ answers, so the page runs in live mode.
 async function journeyServer(directory) {
   const fake = { live: false, requests: 0, preflight: [] };

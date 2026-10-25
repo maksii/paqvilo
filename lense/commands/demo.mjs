@@ -37,7 +37,7 @@ async function prepareEditorFiles(target) {
   const info = await fs.lstat(folder);
   if (!info.isDirectory() || info.isSymbolicLink())
     throw new Error(`Demo editor folder must be a regular directory: ${folder}`);
-  for (const file of ['.vscode/tasks.json', '.vscode/launch.json', 'paqvilo-demo.code-workspace']) {
+  for (const file of ['.vscode/tasks.json', '.vscode/launch.json', 'paqvilo-demo.code-workspace', 'AGENTS.md']) {
     await assertScaffoldPath(path.join(target, file));
     try {
       await fs.copyFile(path.join(STARTER, file), path.join(target, file), constants.COPYFILE_EXCL);
@@ -92,6 +92,7 @@ export async function prepareDemo(directory) {
     'paqvilo-demo.code-workspace',
     'paqvilo.config.yml',
     'README.md',
+    'AGENTS.md',
   ]) {
     await fs.cp(path.join(STARTER, name), path.join(target, name), {
       recursive: true,

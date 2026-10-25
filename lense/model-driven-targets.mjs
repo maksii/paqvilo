@@ -101,6 +101,7 @@ export function modelDrivenTargetSessions({
   ownsRequest,
   onApplied,
   liveReload = true,
+  localSimulation = false,
 }) {
   const sessions = new Map();
   let selected = initial,
@@ -135,6 +136,7 @@ export function modelDrivenTargetSessions({
         origin: target.origin,
         imported,
         mappings: mappings.get(target.id),
+        localSimulation,
         ownsRequest,
         onApplied: (event) => {
           onApplied?.(event);

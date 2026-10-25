@@ -41,6 +41,31 @@ const fake = (url, method = 'GET', resourceType = 'script', page) => {
   };
 };
 
+test('local simulation overlays only declared hashed WebResources and PCF routes', async () => {
+  for (const localSimulation of [false, true]) {
+    const overlay = createModelDrivenOverlay({
+      origin: 'http://127.0.0.1:3210',
+      imported: imported('local'),
+      localSimulation,
+    });
+    for (const [routePath, expected] of [
+      ['/_apps/resources/script', 'local'],
+      ['/_apps/controls/c/bundle.js', 'pcf'],
+    ]) {
+      const request = fake('http://127.0.0.1:3210' + routePath);
+      await overlay.handle(request);
+      assert.equal(request.result.fallback, localSimulation ? 0 : 1);
+      if (localSimulation) assert.equal(request.result.response.body.toString(), expected);
+    }
+    for (const routePath of ['/_apps/resources/undeclared', '/_apps/api', '/_apps/controls/undeclared.js']) {
+      const request = fake('http://127.0.0.1:3210' + routePath);
+      await overlay.handle(request);
+      assert.equal(request.result.fallback, 1);
+    }
+    if (localSimulation) assert.equal(overlay.report().resources[0].currentRevisionApplied, 1);
+  }
+});
+
 test('Solution overlays admit exact declared resources and never intercept API mutations or another origin', async () => {
   const overlay = createModelDrivenOverlay({
     origin: 'https://invented.invalid',

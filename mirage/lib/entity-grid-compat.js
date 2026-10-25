@@ -751,7 +751,13 @@
         onClick(link, (event) => {
           event.preventDefault();
           if (!modal) return;
-          // Opening the create dialog leaves the bundle's loading notification after the link.
+          const source = this.formModalSource(modal, {
+            entityformid: action.EntityForm.Id,
+            languagecode: this.config.LanguageCode || 1033,
+          });
+          if (!source) return;
+          // Keep the native loading markup while the form is being fetched; clear it
+          // on completion, failure or cancellation instead of announcing work forever.
           if (!link.parentElement.querySelector('#notificationDiv')) {
             const notification = document.createElement('div');
             for (const [name, value] of [
@@ -764,14 +770,8 @@
             notification.textContent = resource('Loading_Message', 'Loading');
             link.after(notification);
           }
-          const frame = modal.querySelector('iframe');
-          const page = frame.getAttribute('data-page');
-          this.openFormModal(
-            modal,
-            this.withReference(
-              withQuery(page, { entityformid: action.EntityForm.Id, languagecode: this.config.LanguageCode || 1033 }),
-            ),
-          );
+          if (!this.openFormModal(modal, this.withReference(source)))
+            link.parentElement.querySelector('#notificationDiv')?.remove();
         });
       }
       group.append(link);
@@ -794,6 +794,7 @@
     bindFormModal(modal, focusTarget) {
       const $ = jq();
       const reset = () => {
+        focusTarget?.parentElement?.querySelector('#notificationDiv')?.remove();
         modal.setAttribute('aria-hidden', 'true');
         const frame = modal.querySelector('iframe');
         if (frame) frame.setAttribute('src', '');
@@ -803,19 +804,37 @@
       else modal.addEventListener('hidden.bs.modal', reset);
     }
 
+    formModalSource(modal, params) {
+      const page = modal?.querySelector('iframe')?.getAttribute('data-page');
+      if (!page) return null;
+      try {
+        const source = withQuery(page, params),
+          address = new URL(source, location.href);
+        return address.origin === location.origin && ['http:', 'https:'].includes(address.protocol) ? source : null;
+      } catch {
+        return null;
+      }
+    }
+
     openFormModal(modal, src) {
+      const frame = modal?.querySelector('iframe');
+      if (!frame || typeof src !== 'string' || !src) return false;
       let address;
       try {
         address = new URL(src, location.href);
       } catch {
-        return;
+        return false;
       }
-      if (address.origin !== location.origin || !['http:', 'https:'].includes(address.protocol)) return;
-      const frame = modal.querySelector('iframe');
+      if (address.origin !== location.origin || !['http:', 'https:'].includes(address.protocol)) return false;
       const loading = modal.querySelector('.form-loading');
-      if (loading) loading.style.display = '';
-      frame.onload = () => {
+      const complete = () => {
         if (loading) loading.style.display = 'none';
+        this.element?.querySelector('.view-toolbar #notificationDiv')?.remove();
+      };
+      if (loading) loading.style.display = '';
+      frame.onerror = complete;
+      frame.onload = () => {
+        complete();
         try {
           const form = frame.contentDocument?.getElementById('EntityFormControl');
           if (form) form.style.display = '';
@@ -826,6 +845,7 @@
       frame.setAttribute('src', address.href);
       modal.setAttribute('aria-hidden', 'false');
       showModal(modal);
+      return true;
     }
 
     renderTable() {
@@ -898,7 +918,7 @@
             if (this.state.loading) return;
             const current = String(this.state.sort ?? layout.SortExpression ?? '')
               .split(',')
-              .map((part) => part.trim().split(/s+/))
+              .map((part) => part.trim().split(/\s+/))
               .find((part) => part[0] === column.LogicalName);
             const direction = current && !/desc/i.test(current[1] ?? '') ? 'DESC' : 'ASC';
             this.state.sort = `${column.LogicalName} ${direction}`;
@@ -1317,18 +1337,14 @@
         case ACTION.Edit: {
           const modal = this.child(action.Type === ACTION.Edit ? '.modal-form-edit' : '.modal-form-details');
           if (!modal || !action.EntityForm) return;
+          const source = this.formModalSource(modal, {
+            id: record.Id,
+            entityformid: action.EntityForm.Id,
+            languagecode: config.LanguageCode || 1033,
+          });
+          if (!source) return;
           this.bindFormModal(modal, link);
-          const page = modal.querySelector('iframe').getAttribute('data-page');
-          this.openFormModal(
-            modal,
-            this.withReference(
-              withQuery(page, {
-                id: record.Id,
-                entityformid: action.EntityForm.Id,
-                languagecode: config.LanguageCode || 1033,
-              }),
-            ),
-          );
+          this.openFormModal(modal, this.withReference(source));
           return;
         }
         case ACTION.Delete:
@@ -1730,8 +1746,12 @@
     if (createButton && createModal) {
       createButton.addEventListener('click', (event) => {
         event.preventDefault();
-        const frame = createModal.querySelector('iframe');
-        const page = frame.getAttribute('data-page');
+        const source = grid.formModalSource(createModal, {
+          lookup: 'true',
+          entityformid: container.getAttribute('data-lookup-reference_entityformid'),
+          languagecode: container.getAttribute('data-languagecode') || 1033,
+        });
+        if (!source) return;
         const listener = (message) => {
           if (message.origin !== location.origin) return;
           let data = message.data;
@@ -1747,14 +1767,7 @@
           trigger(gridElement, 'refresh');
         };
         window.addEventListener('message', listener);
-        grid.openFormModal(
-          createModal,
-          withQuery(page, {
-            lookup: 'true',
-            entityformid: container.getAttribute('data-lookup-reference_entityformid'),
-            languagecode: container.getAttribute('data-languagecode') || 1033,
-          }),
-        );
+        if (!grid.openFormModal(createModal, source)) window.removeEventListener('message', listener);
       });
     }
     sync();

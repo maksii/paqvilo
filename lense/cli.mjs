@@ -367,6 +367,7 @@ try {
       'json',
     ],
     'model-driven': [
+      'config',
       ...browserSelection,
       'cdp-url',
       'project',

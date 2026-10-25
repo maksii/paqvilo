@@ -2,7 +2,13 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseFragment } from 'parse5';
 import YAML from 'yaml';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { identityMapUrl } from '../../lense/source-map.mjs';
+
+const debugging = new AsyncLocalStorage();
+// A runtime request owns its debugger policy, including nested templates and controls.
+// Concurrent runtimes must never share a mutable process-wide switch.
+export const runWithSourceDebugging = (enabled, run) => debugging.run(enabled, run);
 
 export function exportFieldFile(record, suffix) {
   const field = { 'source.html': 'source', 'copy.html': 'copy', 'custom_javascript.js': 'customjavascript' }[suffix];
@@ -15,6 +21,7 @@ export function exportFieldFile(record, suffix) {
 }
 
 export function debugScript(body, target, { line = 0, column = 0, source, inline } = {}) {
+  if (debugging.getStore() === false) return body;
   if (!body || !target) return body;
   const file = typeof target === 'string' ? target : target.file;
   const sourceUrl = pathToFileURL(file);
@@ -60,6 +67,7 @@ export function debugScript(body, target, { line = 0, column = 0, source, inline
 
 /** Append debugger metadata only to executable inline script bodies. */
 export function debugMarkup(source, file) {
+  if (debugging.getStore() === false) return source;
   if (!source || !file || !/<script\b/i.test(String(source))) return source;
   const text = String(source),
     tree = parseFragment(text, { sourceCodeLocationInfo: true }),

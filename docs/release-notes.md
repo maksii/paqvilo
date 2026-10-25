@@ -1,5 +1,29 @@
 # Release notes
 
+## 0.9.7
+
+This hotfix addresses the verified findings from preparing the toolkit walkthroughs and release videos.
+The [findings review and action list](design/hotfix-0.9.6.1.md) records the evidence and distinguishes current
+defects, existing fixes, intended boundaries and recording-tool issues.
+
+### Fixed
+
+- Native model-driven Lense finishes startup at document load instead of waiting for background worker requests
+  to settle. Diagnostics distinguish document completion from application readiness; startup cancellation stops
+  the associated resource wait.
+- Model-driven source opening honors the configured editor, and standalone Mirage prints a working stop command.
+- Mirage model-driven JavaScript and CSS resources carry file-backed debugger maps; Lense local simulation
+  recognizes their declared hashed asset routes. `mirage.sourceMaps: false` serves original asset bytes when
+  debugger trailers are unwanted.
+- Issues reports changed sources whose inline or markup preview is disabled, including Liquid edits that require
+  deployment. Tweaks reveals scenario and preset confirmations and focuses Cancel.
+- Native grids clear the create-form loading notice after completion, cancellation or failure, and repeated column
+  clicks alternate sorting direction.
+- Generated demos include project-specific agent guidance and direct test dependencies. The example list retains
+  its view and search in the URL through reloads and browser history. Preset `personaRoles` behavior is documented.
+
+Update with `npm install --save-dev paqvilo@^0.9.7` and commit the lockfile.
+
 ## 0.9.6
 
 This release runs much more of the Power Platform locally: a simulated Dataverse organization with its Web API,

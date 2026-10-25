@@ -49,9 +49,12 @@ test(
     const context = await browser.newContext();
     const page = await context.newPage();
     let tweaks;
-    await context.route('**/__paqvilo/api/**', (route) =>
-      route.fulfill({ json: route.request().url().endsWith('/tweaks') ? tweaks : { ok: true } }),
-    );
+    const applied = [];
+    await context.route('**/__paqvilo/api/**', (route) => {
+      const action = new URL(route.request().url()).pathname.split('/').at(-1);
+      if (['preset', 'scenario'].includes(action)) applied.push(action);
+      return route.fulfill({ json: action === 'tweaks' ? tweaks : { ok: true } });
+    });
     const session = new OverlaySession({
       sourceDir: fx.dir,
       origin,
@@ -150,6 +153,7 @@ test(
       session: { supported: true },
       status: {},
       permissionMode: 'enforce',
+      presets: [{ id: 'invented', name: 'Invented preset' }],
     };
     state.mirageMode = true;
     state.mirage = { active: true, version: 1, status: {} };
@@ -205,6 +209,24 @@ test(
       true,
       'a paging action removed at the last page returns focus inside the panel',
     );
+    await scope.locator('[data-act=ask][data-kind=preset]').click();
+    const cancel = scope.locator('[data-act=confirm-no]');
+    assert.equal(await cancel.evaluate((node) => node.getRootNode().activeElement === node), true);
+    const confirmationBounds = await cancel.evaluate((node) => {
+      const rect = node.getBoundingClientRect();
+      const body = node.getRootNode().querySelector('.body').getBoundingClientRect();
+      const banner = node.closest('[role=alertdialog]').getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, bannerTop: banner.top, bodyTop: body.top, bodyBottom: body.bottom };
+    });
+    assert.ok(
+      confirmationBounds.top >= confirmationBounds.bodyTop - 1 &&
+        confirmationBounds.bottom <= confirmationBounds.bodyBottom + 1,
+      JSON.stringify(confirmationBounds),
+    );
+    assert.ok(confirmationBounds.bannerTop >= confirmationBounds.bodyTop - 1, 'the confirmation text is revealed too');
+    await cancel.press('Enter');
+    assert.equal(await scope.locator('[role=alertdialog]').count(), 0);
+    assert.deepEqual(applied, [], 'asking and cancelling never applies a preset');
     await page.keyboard.press('Escape');
     assert.equal(
       await scope.locator('.pill').isVisible(),

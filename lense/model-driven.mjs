@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { readLocalFile } from './local-file.mjs';
-import { pathToFileURL } from 'node:url';
-import { hasSourceMap, withFileSourceMap } from './source-map.mjs';
+import { hasSourceMap, withFileSourceMap, fileSourceMapEstimate } from './source-map.mjs';
 import { importModelDrivenResources } from '../mirage/lib/model-driven-resources.mjs';
 import { scanSolutionSources } from '../mirage/lib/solution-schema.mjs';
 import { importSolutionMetadata } from '../mirage/lib/solution-metadata.mjs';
@@ -228,33 +227,12 @@ export function inventoryCounts(records = []) {
 
 const DEBUG_MAP_LIMITS = { assetBytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 };
 
-// Conservative upper bound for the inline JSON source and line map, including
-// JSON escaping, UTF-8, base64 and the directive. Estimate before allocating a
-// map: a newline-heavy source otherwise grows many times larger than its input.
-function debugMapEstimate(text, file) {
-  let bytes = 2,
-    lines = 1;
-  for (let i = 0; i < text.length; i++) {
-    const code = text.charCodeAt(i);
-    if (code === 13 || (code === 10 && text.charCodeAt(i - 1) !== 13) || code === 0x2028 || code === 0x2029) lines++;
-    if (code < 32) bytes += code === 8 || code === 9 || code === 10 || code === 12 || code === 13 ? 2 : 6;
-    else if (code === 34 || code === 92) bytes += 2;
-    else if (code < 128) bytes++;
-    else if (code < 2048) bytes += 2;
-    else if (code >= 0xd800 && code <= 0xdbff && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) {
-      bytes += 4;
-      i++;
-    } else bytes += code >= 0xd800 && code <= 0xdfff ? 6 : 3;
-  }
-  const fileBytes = Buffer.byteLength(JSON.stringify(pathToFileURL(file).href));
-  return 128 + Math.ceil((bytes + lines * 5 + fileBytes + 256) / 3) * 4;
-}
-
 /** Exact declared assets only. No response fetch, native request replay or API interception. */
 export function createModelDrivenOverlay({
   origin,
   imported,
   mappings = [],
+  localSimulation = false,
   ownsRequest = () => true,
   onApplied = () => {},
   sourceMapLimits = {},
@@ -294,7 +272,7 @@ export function createModelDrivenOverlay({
         if (!asset.file || !/(?:java|ecma)script/i.test(asset.mime)) return [asset.name, asset];
         const text = asset.data.toString('utf8');
         if (hasSourceMap(text) || explicitSidecars.has(asset.name)) return [asset.name, asset];
-        const estimate = debugMapEstimate(text, asset.file);
+        const estimate = fileSourceMapEstimate(text, asset.file);
         if (asset.data.length + estimate > mapLimits.assetBytes || estimate > remainingMapBytes) {
           nextDiagnostics.push({
             code: 'MODEL_SOURCE_MAP_LIMIT',
@@ -320,7 +298,12 @@ export function createModelDrivenOverlay({
       nextRoutes.set(key, asset);
       nextPaths.get(name).add(key);
     };
-    for (const resource of next.resources) add(`/WebResources/${resource.name}`, resource.name);
+    for (const resource of next.resources) {
+      add(`/WebResources/${resource.name}`, resource.name);
+      if (localSimulation) add(resource.url, resource.name);
+    }
+    if (localSimulation)
+      for (const [url, asset] of next.assets) if (url.startsWith('/_apps/controls/')) add(url, asset.name);
     for (const mapping of nextMappings) add(mapping.path, mapping.resource);
     const sidecarScripts = new Set();
     for (const mapping of nextMappings) {

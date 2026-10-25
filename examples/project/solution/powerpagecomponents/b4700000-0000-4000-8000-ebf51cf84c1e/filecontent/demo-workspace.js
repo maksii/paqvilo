@@ -117,9 +117,22 @@
     }
   }
   let accountRequest=0;
+  function restoreAccountQuery() {
+    if(!find('[data-account-query]'))return;
+    const params=new URLSearchParams(window.location.search),view=find('[name=view]');
+    const selected=params.get('view');
+    view.value=['active','inactive','all'].includes(selected)?selected:'active';
+    find('[name=search]').value=params.get('search')||'';
+  }
+  function rememberAccountQuery(view,search) {
+    const url=new URL(window.location.href);
+    if(view==='active')url.searchParams.delete('view');else url.searchParams.set('view',view);
+    if(search)url.searchParams.set('search',search);else url.searchParams.delete('search');
+    if(url.href!==window.location.href)window.history.pushState(null,'',url);
+  }
   async function listAccounts(url) {
     const request=++accountRequest;message('Loading accounts…');
-    if(!url){const view=find('[name=view]').value;const search=find('[name=search]').value.trim();const filters=[];if(view!=='all')filters.push('statecode eq '+(view==='inactive'?1:0));if(search)filters.push("contains(name,'"+search.replace(/'/g,"''")+"')");url='accounts?$select=accountid,name,accountnumber,emailaddress1,telephone1,address1_city,statecode&$orderby=name'+(filters.length?'&$filter='+encodeURIComponent(filters.join(' and ')):'');pageHistory=[];}
+    if(!url){const view=find('[name=view]').value;const search=find('[name=search]').value.trim();rememberAccountQuery(view,search);const filters=[];if(view!=='all')filters.push('statecode eq '+(view==='inactive'?1:0));if(search)filters.push("contains(name,'"+search.replace(/'/g,"''")+"')");url='accounts?$select=accountid,name,accountnumber,emailaddress1,telephone1,address1_city,statecode&$orderby=name'+(filters.length?'&$filter='+encodeURIComponent(filters.join(' and ')):'');pageHistory=[];}
     const {result}=await api(url,{pageSize:8});if(request!==accountRequest)return;currentPage=url;nextPage=result['@odata.nextLink']||null;
     find('[data-account-rows]').innerHTML=result.value.map(row=>'<tr><td><a href="'+base+'account/?id='+row.accountid+'">'+escape(row.name)+'</a><br><small>'+escape(row.accountnumber||'No account number')+'</small></td><td>'+escape(row.telephone1||'')+'</td><td>'+escape(row.address1_city||'')+'</td><td><span class="demo-state '+(row.statecode?'inactive':'')+'">'+(row.statecode?'Inactive':'Active')+'</span></td><td><a href="'+base+'account/?id='+row.accountid+'&amp;mode=edit">Edit</a> <button type="button" class="demo-link-button danger" data-delete-account="'+row.accountid+'" data-name="'+escape(row.name)+'">Delete</button></td></tr>').join('');
     find('[data-account-empty]').hidden=result.value.length>0;
@@ -164,6 +177,8 @@
     const industry=field('industrycode');if(industry?.tagName==='INPUT'){industry.setAttribute('aria-label','Industry');industry.setAttribute('list','demo-industries');}
   }
   find('[data-account-query]')?.addEventListener('submit',event=>{event.preventDefault();busy(event.submitter,()=>listAccounts());});
+  restoreAccountQuery();
+  window.addEventListener('popstate',()=>{if(find('[data-account-query]')){restoreAccountQuery();busy(null,()=>listAccounts());}});
   find('[data-next]')?.addEventListener('click',event=>{pageHistory.push(currentPage);busy(event.currentTarget,()=>listAccounts(nextPage));});
   find('[data-previous]')?.addEventListener('click',event=>busy(event.currentTarget,()=>listAccounts(pageHistory.pop())));
   function saveAccount(button){return busy(button,async()=>{const body=readValues();const saved=await api('accounts'+(account?'('+account.accountid+')':''),{method:account?'PATCH':'POST',body});const id=account?.accountid||saved.id||saved.result?.accountid;if(!guid(id))throw new Error('The account was saved, but the portal did not return its identifier.');window.location.assign(base+'account/?id='+id);});}

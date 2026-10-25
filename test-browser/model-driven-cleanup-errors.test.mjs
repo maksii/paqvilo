@@ -173,8 +173,24 @@ test(
   { timeout: 20000 },
   async (t) => {
     const setup = await fixture(t);
+    const appId = '77777777-7777-4777-8777-777777777777';
+    const solution = path.join(setup.directory, 'solution');
+    for (const [relative, content] of [
+      [
+        'AppModules/x_workspace/AppModule.xml',
+        `<AppModule><AppModuleId>${appId}</AppModuleId><UniqueName>x_workspace</UniqueName><AppModuleComponents><AppModuleComponent type="1" schemaName="x_item"/></AppModuleComponents></AppModule>`,
+      ],
+      [
+        'Entities/x_item/Entity.xml',
+        '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>',
+      ],
+    ]) {
+      const file = path.join(solution, relative);
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, content);
+    }
     const runtime = await createStandaloneRuntime({
-      runtime: { kind: 'model-driven' },
+      runtime: { kind: 'model-driven', defaultApp: appId },
       simulation: { level: 'dry-run' },
       solutionRoots: [path.join(setup.directory, 'solution')],
       modelDriven: { trustedExtensions: true },
@@ -201,6 +217,7 @@ test(
       'local-simulation': true,
       timeout: '2000',
     });
+    running.catch(() => {});
     const context = await browserOpened;
     const page = context.pages()[0];
     await page.waitForSelector('#paqvilo-panel', { state: 'attached' });

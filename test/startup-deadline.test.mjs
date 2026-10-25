@@ -24,6 +24,8 @@ test('startup deadline names the blocked phase and disposes late browser ownersh
   );
   t.mock.timers.tick(1001);
   await rejected;
+  assert.equal(deadline.signal.aborted, true);
+  assert.equal(deadline.signal.reason.code, 'startup_timeout');
   resolve({ context: 'owned connection' });
   await setImmediate();
   assert.equal(disposed, 1);
@@ -66,6 +68,8 @@ test('startup cancellation releases late work and removes signal listeners', asy
     },
   );
   deadline.abort();
+  assert.equal(deadline.signal.aborted, true);
+  assert.equal(deadline.signal.reason.code, 'startup_cancelled');
   await assert.rejects(wait, (error) => error.code === 'startup_cancelled');
   resolve();
   await setImmediate();

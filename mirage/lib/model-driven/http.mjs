@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 import { createOfflineSessions } from './offline.mjs';
+import { withFileSourceMap, identityMapUrl, hasSourceMap, fileSourceMapEstimate } from '../../../lense/source-map.mjs';
 
 const assets = {
   'app.mjs': 'text/javascript; charset=utf-8',
@@ -71,9 +72,51 @@ export function createModelDrivenHandler({
   read = (fn) => fn(),
   principal = () => ({}),
   clientAssets = () => new Map(),
+  sourceMaps = true,
+  diagnostic = () => {},
+  sourceMapLimits = {},
   webApi = null,
   offlineState = null,
 }) {
+  const mapLimits = { assetBytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 };
+  for (const [key, value] of Object.entries(sourceMapLimits)) {
+    if (!Object.hasOwn(mapLimits, key) || !Number.isSafeInteger(value) || value < 1 || value > mapLimits[key])
+      throw new Error(`Invalid model-driven debugger map limit ${key}.`);
+    mapLimits[key] = value;
+  }
+  let debugAssets = new WeakMap(),
+    debugCatalogue;
+  let remainingMapBytes = mapLimits.totalBytes;
+  const debugBody = (asset) => {
+    if (!sourceMaps || !asset.file || !/(?:java|ecma)script|^text\/css(?:;|$)/i.test(asset.mime)) return asset.data;
+    if (debugAssets.has(asset)) return debugAssets.get(asset);
+    let body = asset.data;
+    const text = body.toString('utf8');
+    if (/(?:java|ecma)script|^text\/css(?:;|$)/i.test(asset.mime) && !hasSourceMap(text)) {
+      const estimate = fileSourceMapEstimate(text, asset.file);
+      if (body.length + estimate > mapLimits.assetBytes || estimate > remainingMapBytes) {
+        diagnostic({
+          code: 'MODEL_SOURCE_MAP_LIMIT',
+          name: asset.name,
+          message:
+            'Generated local debugger map omitted because it exceeds the asset or runtime map budget. The original resource remains available.',
+        });
+        debugAssets.set(asset, body);
+        return body;
+      }
+      remainingMapBytes -= estimate;
+    }
+    if (/(?:java|ecma)script/i.test(asset.mime)) body = withFileSourceMap(body, asset.file);
+    else if (/^text\/css(?:;|$)/i.test(asset.mime)) {
+      if (!hasSourceMap(text))
+        body = Buffer.concat([
+          body,
+          Buffer.from(`\n/*# sourceMappingURL=${identityMapUrl(asset.file, text.split(/\r\n?|\n/).length, text)} */\n`),
+        ]);
+    }
+    debugAssets.set(asset, body);
+    return body;
+  };
   const offline = createOfflineSessions({
     webApi,
     catalogue: () => read(async () => catalogue.async?.() ?? catalogue()),
@@ -107,7 +150,13 @@ export function createModelDrivenHandler({
       try {
         if (url.pathname.startsWith('/_apps/resources/') || url.pathname.startsWith('/_apps/controls/')) {
           if (!['GET', 'HEAD'].includes(req.method)) throw fail('This resource requires GET.', 405);
-          const resource = clientAssets().get(url.pathname);
+          const catalogue = clientAssets();
+          if (catalogue !== debugCatalogue) {
+            debugCatalogue = catalogue;
+            debugAssets = new WeakMap();
+            remainingMapBytes = mapLimits.totalBytes;
+          }
+          const resource = catalogue.get(url.pathname);
           // A web resource page may take the native ?data= parameter; every other asset is served without a query.
           if (!resource || (url.search && !(/^text\/html/.test(resource.mime) && /^\?data=[^&]*$/.test(url.search))))
             throw fail('Trusted client asset not found.', 404);
@@ -119,7 +168,7 @@ export function createModelDrivenHandler({
               : "default-src 'none'; frame-ancestors 'none'",
           );
           res.writeHead(200, { 'content-type': resource.mime });
-          res.end(req.method === 'HEAD' ? undefined : resource.data);
+          res.end(req.method === 'HEAD' ? undefined : debugBody(resource));
           return true;
         }
         if (shell || asset) {

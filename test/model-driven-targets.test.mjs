@@ -165,6 +165,26 @@ test('a failed target retirement prevents another identity/agent from starting',
   await sessions.close();
 });
 
+test('every activated local-simulation target receives its declared Mirage resource paths', async () => {
+  const targets = [8100, 8101].map((port) => ({ id: String(port), origin: `http://127.0.0.1:${port}` }));
+  const sessions = modelDrivenTargetSessions({
+    targets,
+    initial: targets[0],
+    imported: { ...imported, resources: [{ name: 'x.js', url: '/_apps/resources/invented' }] },
+    mappings: new Map(targets.map((target) => [target.id, []])),
+    localSimulation: true,
+    createInspector: async () => ({ refresh() {}, persistentState: () => ({}), close: async () => {} }),
+  });
+  try {
+    for (const target of targets) {
+      const session = await sessions.activate(target.origin);
+      assert.ok(session.overlay.report().resources[0].paths.includes('/_apps/resources/invented'));
+    }
+  } finally {
+    await sessions.close();
+  }
+});
+
 test('real Solution import native Diff uses declared names rather than importer URL keys and releases bytes on retirement', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-import-native-diff-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

@@ -141,7 +141,12 @@ async function runModelDriven(args, action, progress, deadline) {
   const origin = selected.origin;
   let page, targetSessions;
   if (action === 'inspect') {
-    const overlay = createModelDrivenOverlay({ origin, imported, mappings: mappings.get(selected.id) });
+    const overlay = createModelDrivenOverlay({
+      origin,
+      imported,
+      mappings: mappings.get(selected.id),
+      localSimulation: Boolean(args['local-simulation']),
+    });
     const report = {
       ...overlay.report(),
       selectedTarget: selected.id,
@@ -209,6 +214,7 @@ async function runModelDriven(args, action, progress, deadline) {
     page.once('close', stop);
     progress?.phase('interception and inspector setup');
     targetSessions = modelDrivenTargetSessions({
+      localSimulation: Boolean(args['local-simulation']),
       targets,
       initial: selected,
       imported,
@@ -389,7 +395,15 @@ async function runModelDriven(args, action, progress, deadline) {
     );
     let loaded;
     try {
-      loaded = await startupWait(waitForStartupPage(page, url.href, { progress, stopped }));
+      loaded = await startupWait(
+        waitForStartupPage(page, url.href, {
+          progress,
+          stopped,
+          signal: deadline?.signal,
+          modelDriven: Boolean(args['local-simulation']),
+          nativeModelDriven: !args['local-simulation'],
+        }),
+      );
     } catch (error) {
       throw Object.assign(new Error(`Could not open the model-driven app: ${cleanError(error)}`), {
         code: error.code,
@@ -400,7 +414,7 @@ async function runModelDriven(args, action, progress, deadline) {
     if (timeout) timer = setTimeout(stop, timeout);
     if (loaded)
       console.log(
-        'Model-driven overlay installed; document and initial resources loaded. Sign-in and native application readiness remain unverified. Edit a declared Solution webresource or mapped PCF resource to reload.',
+        'Model-driven overlay installed; document loaded. Sign-in and native application readiness remain unverified. Edit a declared Solution webresource or mapped PCF resource to reload.',
       );
     await stopped;
     if (primaryFailure) throw primaryFailure;
@@ -408,6 +422,7 @@ async function runModelDriven(args, action, progress, deadline) {
     primaryFailure = error;
     throw error;
   } finally {
+    stop();
     stopping = true;
     clearTimeout(timer);
     clearTimeout(reloadTimer);
@@ -453,7 +468,12 @@ async function runModelDriven(args, action, progress, deadline) {
     }
     const report =
       targetSessions?.report() ??
-      createModelDrivenOverlay({ origin, imported, mappings: mappings.get(selected.id) }).report();
+      createModelDrivenOverlay({
+        origin,
+        imported,
+        mappings: mappings.get(selected.id),
+        localSimulation: Boolean(args['local-simulation']),
+      }).report();
     report.localSimulation = Boolean(args['local-simulation']);
     try {
       if (args.output) {

@@ -345,6 +345,7 @@ export const REQUIRED_RELEASE_FILES = [
   'docs/faq.md',
   ...DOCUMENTATION_ASSETS,
   'examples/project/pack/pack.mjs',
+  'examples/project/AGENTS.md',
   'examples/project/test/portal.test.mjs',
   'examples/project/gitignore.template',
   'examples/project/gitattributes.template',
@@ -379,6 +380,11 @@ export function validateReleaseFiles(files) {
     'docs/design/power-pages-permission-test-harness.md',
     'docs/design/dataverse-plugin-observation.md',
     'docs/design/dataverse-api.md',
+    'docs/design/hotfix-0.9.6.1-demo-review.md',
+    'docs/design/hotfix-0.9.6.1-integration-review.md',
+    'docs/design/hotfix-0.9.6.1-lifecycle-review.md',
+    'docs/design/hotfix-0.9.6.1-runtime-review.md',
+    'docs/design/hotfix-0.9.6.1.md',
   ]);
   const demoSources =
     /^examples\/project\/(?:portal|solution|code-solution|metadata|components|deployment)\/[a-zA-Z0-9/_.{}, +()-]+\.(?:yml|html|css|js|mjs|ts|xml|json|resx|md|sl|pcfproj|cdsproj)$/;
@@ -388,6 +394,7 @@ export function validateReleaseFiles(files) {
     'examples/project/deployment/demo-data.zip',
   ]);
   const demoEditorFiles = new Set([
+    'examples/project/AGENTS.md',
     'examples/project/paqvilo-demo.code-workspace',
     'examples/project/.vscode/tasks.json',
     'examples/project/.vscode/launch.json',

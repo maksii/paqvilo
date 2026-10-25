@@ -341,6 +341,36 @@ test(
     await page.getByRole('combobox', { name: 'View', exact: true }).selectOption('inactive');
     await page.getByRole('button', { name: 'Search', exact: true }).click();
     await page.waitForFunction(() => document.querySelectorAll('[data-account-rows] tr').length === 2);
+    assert.equal(new URL(page.url()).searchParams.get('view'), 'inactive');
+    const inactiveName = await page.locator('[data-account-rows] tr td a').first().innerText();
+    await page.locator('[name=search]').fill(inactiveName);
+    await page.getByRole('button', { name: 'Search', exact: true }).click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-account-rows] tr').length === 1);
+    await page.reload();
+    await page.locator('[data-account-rows] tr').first().waitFor();
+    assert.equal(await page.locator('[name=view]').inputValue(), 'inactive');
+    assert.equal(await page.locator('[name=search]').inputValue(), inactiveName);
+    assert.equal(await page.locator('[data-account-rows] tr').count(), 1);
+    await page.goBack();
+    await page.waitForFunction(() => document.querySelectorAll('[data-account-rows] tr').length === 2);
+    assert.equal(await page.locator('[name=search]').inputValue(), '');
+    await fs.appendFile(path.join(directory, 'portal/web-files/demo.css'), '\nbody{--demo-query-reload:preserved}\n');
+    await page.waitForFunction(
+      () => getComputedStyle(document.body).getPropertyValue('--demo-query-reload').trim() === 'preserved',
+    );
+    assert.equal(await page.locator('[name=view]').inputValue(), 'inactive');
+    assert.equal(await page.locator('[data-account-rows] tr').count(), 2);
+    // PCF uses the same workspace script and must restore shared query state too.
+    await page.goto(url + '/approach/pcf/?view=inactive&search=' + encodeURIComponent(inactiveName) + '#accounts');
+    await page.locator('[data-account-rows] tr').first().waitFor();
+    assert.equal(await page.locator('[name=view]').inputValue(), 'inactive');
+    assert.equal(await page.locator('[name=search]').inputValue(), inactiveName);
+    assert.equal(await page.locator('[data-account-rows] tr').count(), 1);
+    assert.equal(new URL(page.url()).hash, '#accounts');
+    await page.goto(url + '/approach/web-api/?view=invalid');
+    await page.locator('[data-account-rows] tr').first().waitFor();
+    assert.equal(await page.locator('[name=view]').inputValue(), 'active');
+    assert.equal(new URL(page.url()).searchParams.has('view'), false);
     const admin = await context.newPage();
     await admin.goto(url + '/_sim/#plugins');
     await admin.getByRole('heading', { name: 'Simulation presets', exact: true }).waitFor();

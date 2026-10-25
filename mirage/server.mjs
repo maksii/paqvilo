@@ -83,6 +83,7 @@ import { observedPageErrorResponse } from './lib/page-error-presentation.mjs';
 import { initialState } from './lib/bootstrap.mjs';
 import { contentPolicyDefaults as resolvePolicyDefaults } from './lib/content-policy-defaults.mjs';
 import { withFileSourceMap, identityMapUrl } from '../lense/source-map.mjs';
+import { runWithSourceDebugging } from './lib/source-debug.mjs';
 import { assetKind } from './lib/asset-type.mjs';
 import { listPresets } from './lib/presets.mjs';
 import {
@@ -496,6 +497,7 @@ async function createPowerPagesSimulator({
   host = '127.0.0.1',
   origin,
   watch = true,
+  sourceMaps = true,
   initial,
   liveBridge,
   solutionRoots = [],
@@ -556,6 +558,7 @@ async function createPowerPagesSimulator({
   const providerSettings = identityProviderSettings(identityProviderOption),
     providerAssets = identityProviderAssets(providerSettings, projectRoot);
   port = runtimePort(port, 0);
+  if (typeof sourceMaps !== 'boolean') throw error('sourceMaps must be true or false.');
   const render = renderSettings(renderOption);
   const localOverrides = overridesOption ?? resolveLocalOverrides({ compat, head }, projectRoot);
   if (!['127.0.0.1', 'localhost', '::1'].includes(host)) throw error('The simulator binds only to loopback.');
@@ -2476,6 +2479,7 @@ async function createPowerPagesSimulator({
             ...settingOptionsRest,
             modelDriven: modelDrivenOption,
             simulation: simulationOption,
+            sourceMaps,
             contentPolicyDefaults: policyDefaults,
           },
           { exclude: ['dataverse', 'runtime'] },
@@ -4750,6 +4754,8 @@ async function createPowerPagesSimulator({
     },
   });
   const modelDrivenHandler = createModelDrivenHandler({
+    sourceMaps,
+    diagnostic: recordDiagnostic,
     catalogue: modelDrivenCatalogue,
     data: modelDrivenData,
     clientAssets: () =>
@@ -5941,11 +5947,11 @@ async function createPowerPagesSimulator({
           /* Non-JSON content follows the ordinary response or script path below. */
         }
       }
-      if (kind === 'script' && !jsonPayload) {
+      if (sourceMaps && kind === 'script' && !jsonPayload) {
         body = withFileSourceMap(body, file);
         if (!body.toString('utf8').includes('sourceURL='))
           body = Buffer.concat([body, Buffer.from('\n//# sourceURL=' + pathToFileURL(file).href + '\n')]);
-      } else if (kind === 'stylesheet' && !body.toString('utf8').includes('sourceMappingURL=')) {
+      } else if (sourceMaps && kind === 'stylesheet' && !body.toString('utf8').includes('sourceMappingURL=')) {
         const text = body.toString('utf8');
         body = Buffer.concat([
           body,
@@ -6278,7 +6284,7 @@ async function createPowerPagesSimulator({
                 // site application user, so a refused administration request leaves no side effect.
                 if (config().mode !== 'live' && !/^\/(?:_sim|__sim)\/api\//.test(req.url ?? ''))
                   await store.portalAuthorization?.prepare(currentIdentity());
-                return handle(req, res);
+                return runWithSourceDebugging(sourceMaps, () => handle(req, res));
               }),
             ),
           { valid: () => !store.inTransaction() || store.isUnmodifiedRead(), revision: () => store.dataRevision() },

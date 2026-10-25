@@ -11,5 +11,9 @@
   },
   "dependencies": {
     "paqvilo": "file:../.."
+  },
+  "devDependencies": {
+    "yaml": "2.9.1",
+    "playwright-core": "1.64.1"
   }
 }

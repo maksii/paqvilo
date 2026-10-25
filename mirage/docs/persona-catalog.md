@@ -5,7 +5,8 @@ exported web-role memberships remain the identity source. Metadata never creates
 records or grants permissions. Legacy pack `personas` keeps its existing meaning.
 Additive datasets may separately opt in to materializing explicit `personaRoles`
 descriptors; see [data generation](data-packs.md). Catalogue metadata is never an
-input to that operation.
+input to that operation. Applying a portal data preset can separately replace local
+contact memberships using `personaRoles`; see the [preset contract](data-packs.md).
 
 ## Version 1 contract
 

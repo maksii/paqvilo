@@ -1,5 +1,6 @@
 /** A startup deadline ends at initial document/assets readiness, independently of session lifetime. */
 export function startupDeadline(value = 120000) {
+  const controller = new AbortController();
   const timeout = Number(value);
   if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 600000)
     throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
@@ -26,11 +27,13 @@ export function startupDeadline(value = 120000) {
       code: 'startup_cancelled',
       phase,
     });
+    controller.abort(reason);
     rejectDeadline(reason);
   };
   const timer = setTimeout(() => {
     expired = true;
     reason = failure();
+    controller.abort(reason);
     rejectDeadline(reason);
   }, timeout);
   process.once('SIGINT', abort);
@@ -41,6 +44,7 @@ export function startupDeadline(value = 120000) {
     process.off('SIGTERM', abort);
   };
   return {
+    signal: controller.signal,
     phase(value) {
       phase = value;
     },
@@ -61,11 +65,15 @@ export function startupDeadline(value = 120000) {
         .catch(() => {});
       if (expired || (!finished && Date.now() >= end)) {
         expired = true;
+        reason ??= failure();
+        controller.abort(reason);
         throw reason ?? failure();
       }
       const result = await Promise.race([pending, promise]);
       if (expired || (!finished && Date.now() >= end)) {
         expired = true;
+        reason ??= failure();
+        controller.abort(reason);
         await dispose(result);
         throw reason ?? failure();
       }

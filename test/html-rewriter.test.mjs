@@ -205,6 +205,37 @@ test('web template: a change to Liquid tags is listed as needing a deployment', 
   assert.match(r.unsupported[0].reason, /Liquid tags/);
 });
 
+test('disabled markup and inline kinds still report changed sources as requiring deployment', () => {
+  fx.write(HEADER, fx.read(HEADER).replace('{% if user %}', '{% if user.roles %}'));
+  fx.write(CSS, fx.read(CSS).replace('color: red', 'color: green'));
+  for (const settings of [{ enabled: false }, { kinds: [] }]) {
+    const r = rewriter({ ...SITE, markup: { ...SITE.markup, ...settings }, inline: { ...SITE.inline, ...settings } });
+    assert.equal(r.rewrite(ONLINE_HOME, '/').html, ONLINE_HOME);
+    assert.deepEqual(r.unsupported.map((item) => item.rel).sort(), [CSS, HEADER].sort());
+    assert.ok(r.unsupported.every((item) => /preview is disabled.*deploy/.test(item.reason)));
+  }
+});
+
+test('disabled previews do not report unchanged sources or newline-only differences', () => {
+  fx.write(HEADER, fx.read(HEADER).replace(/\n/g, '\r\n'));
+  const r = rewriter({ ...SITE, markup: { enabled: false }, inline: { enabled: false } });
+  assert.deepEqual(r.unsupported, []);
+});
+
+test('unresolved page routes report edited sources even with previews disabled', () => {
+  fx.write(
+    'web-pages/about/About.webpage.yml',
+    'adx_webpageid: orphan\nadx_partialurl: about-us\nadx_parentpageid: missing\n',
+  );
+  fx.write('web-pages/about/content-pages/About.en-US.webpage.custom_javascript.js', 'console.log("orphan edit");');
+  const r = rewriter({ ...SITE, markup: { enabled: false }, inline: { enabled: false } });
+  assert.ok(
+    r.unsupported.some(
+      (item) => item.rel.endsWith('.custom_javascript.js') && /page URL cannot be resolved/.test(item.reason),
+    ),
+  );
+});
+
 test('web template: literal and Liquid changes in one file are handled independently', () => {
   fx.write(
     HEADER,

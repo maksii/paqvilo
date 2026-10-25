@@ -718,11 +718,17 @@ function liveWritesText(value) {
 }
 
 /** Owned standalone sessions of one runtime kind: of the selected project, else of this catalogue site, else unscoped. */
-async function standaloneSessionPids(paths, cfg, kind, selectedProject = null) {
+async function standaloneSessionPids(paths, cfg, kind, selectedProject = null, selection = {}) {
+  const roots = selection['solution-root']?.map((root) => path.resolve(root));
   return (await ownedSessions(paths))
     .filter(
       (entry) =>
         entry.identity?.runtime?.kind === kind &&
+        (!selection.state || samePath(entry.identity.stateFile, path.resolve(selection.state))) &&
+        (selection.port === undefined || entry.identity.requestedPort === String(selection.port)) &&
+        (!roots ||
+          (entry.identity.solutionRoots?.length === roots.length &&
+            roots.every((root) => entry.identity.solutionRoots.some((candidate) => samePath(root, candidate))))) &&
         (selectedProject
           ? samePath(entry.project, selectedProject.configFile)
           : !entry.project &&
@@ -1971,7 +1977,7 @@ async function miragePortals(cfg, args, action, paths) {
 
 /** A project with several portals and no --portal: one runtime per portal of that project. */
 async function mirageProjectPortals(cfg, args, effective, action, project, paths) {
-  const stop = `npx paqvilo mirage stop --project ${JSON.stringify(project.configFile)}`;
+  const stop = ['npx', 'paqvilo', 'mirage', 'stop', '--project', project.configFile].map(stopArgument).join(' ');
   if (action === 'stop') {
     const report = await stopOwnedSessions({ paths, sourceDirs: project.portals.map((portal) => portal.sourceDir) });
     if (report.remaining.length)
@@ -2003,13 +2009,29 @@ async function mirageProjectPortals(cfg, args, effective, action, project, paths
   });
 }
 
+// Printed commands target PowerShell on Windows and POSIX shells elsewhere.
+// JSON double quotes permit interpolation and do not preserve literal path bytes.
+function stopArgument(value) {
+  value = String(value);
+  if (/^[a-z0-9_./:-]+$/i.test(value)) return value;
+  return `'${value.replaceAll("'", process.platform === 'win32' ? "''" : "'\"'\"'")}'`;
+}
+
 function stopHint(cfg, args) {
-  const parts = ['npx paqvilo mirage stop', `--site ${cfg.siteName}`];
-  if (args.source) parts.push(`--source ${JSON.stringify(path.resolve(args.source))}`);
+  const parts = ['npx', 'paqvilo', 'mirage', 'stop'];
+  if (cfg.configFile) parts.push('--config', cfg.configFile, '--site', cfg.siteName);
+  if (args.source) parts.push('--source', path.resolve(args.source));
   if (args.project && !(cfg.mirageConfig?.project && samePath(args.project, cfg.mirageConfig.project)))
-    parts.push(`--project ${JSON.stringify(path.resolve(args.project))}`);
-  if (args.portal) parts.push(`--portal ${args.portal}`);
-  return parts.join(' ');
+    parts.push('--project', path.resolve(args.project));
+  if (args.portal) parts.push('--portal', args.portal);
+  if (args.runtime) parts.push('--runtime', args.runtime);
+  if ((args.runtime ?? cfg.runtime?.kind ?? 'power-pages') !== 'power-pages') {
+    if (args.state) parts.push('--state', path.resolve(args.state));
+    if (args.port !== undefined) parts.push('--port', args.port);
+    if (!args.project)
+      for (const root of args['solution-root'] ?? []) parts.push('--solution-root', path.resolve(root));
+  }
+  return parts.map(stopArgument).join(' ');
 }
 
 /** A diagnostic inspection can legitimately return a report with exit status 1. */
@@ -2219,14 +2241,12 @@ export default async function mirage(cfg, args, positionals = []) {
   if (action === 'stop') {
     let sourceDir = cfg.sourceDir;
     const selectedProject = effective.project ? await loadProject(effective.project) : null;
-    if (
-      (selectedProject?.runtime ?? cfg.runtime)?.kind &&
-      (selectedProject?.runtime ?? cfg.runtime).kind !== 'power-pages'
-    ) {
-      const kind = (selectedProject?.runtime ?? cfg.runtime).kind;
+    const runtimeKind = effective.runtime ?? selectedProject?.runtime?.kind ?? cfg.runtime?.kind;
+    if (runtimeKind && runtimeKind !== 'power-pages') {
+      const kind = runtimeKind;
       const report = await stopOwnedSessions({
         paths,
-        pids: await standaloneSessionPids(paths, cfg, kind, selectedProject),
+        pids: await standaloneSessionPids(paths, cfg, kind, selectedProject, effective),
       });
       if (report.remaining.length) throw new Error('An owned standalone Mirage session did not stop.');
       print(
