@@ -78,6 +78,8 @@ const editorOpens = () => {
 // Windows runner) and the administration page timed out before it rendered.
 test('the first _sim state read reuses the implementation fingerprint taken when the Mirage loaded', async (t) => {
   const mirageRoot = path.dirname(fileURLToPath(new URL('../mirage/server.mjs', import.meta.url)));
+  // Importing the server starts hashing the loaded implementation in the background; join that walk first.
+  await cachedImplementationSourceFingerprint(mirageRoot);
   const reads = [];
   const readFile = fsp.readFile;
   fsp.readFile = (file, ...rest) => {

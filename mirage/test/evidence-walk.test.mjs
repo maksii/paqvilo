@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { settleFileTimes } from './support/file-times.mjs';
 import {
   sourceFingerprint,
   cachedSourceFingerprint,
@@ -78,4 +79,24 @@ test('entries removed during a walk are left out, and other read failures still 
     path.basename(file) === 'keep.txt' ? Promise.reject(denied) : readFile(file, ...rest),
   );
   await assert.rejects(sourceFingerprint(root), { code: 'EACCES' });
+});
+
+test('a fingerprint requested while the same tree is being walked reuses that walk instead of hashing it again', async (t) => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sim-fingerprint-concurrent-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (let n = 0; n < 40; n++) await fs.writeFile(path.join(root, `file-${n}.mjs`), `export const n = ${n};`);
+  // Files written moments ago are never trusted from the cache, so the walk is judged as a settled tree.
+  settleFileTimes(t);
+  const read = fs.readFile;
+  let reads = 0;
+  t.mock.method(fs, 'readFile', (file, ...rest) => {
+    if (String(file).startsWith(root)) reads++;
+    return read(file, ...rest);
+  });
+  const [first, second] = await Promise.all([
+    cachedImplementationSourceFingerprint(root),
+    cachedImplementationSourceFingerprint(root),
+  ]);
+  assert.equal(first, second);
+  assert.equal(reads, 40, 'every file is hashed once');
 });

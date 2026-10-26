@@ -110,8 +110,22 @@ export async function cachedImplementationSourceFingerprint(sourceDir) {
   return cachedFingerprint(sourceDir, true);
 }
 
-async function cachedFingerprint(sourceDir, implementation) {
+// A caller arriving while the same tree is being fingerprinted (the loaded implementation is hashed in the background
+// from import) waits for that walk, then compares stats against its cached result instead of hashing every file again.
+const pendingFingerprints = new Map();
+function cachedFingerprint(sourceDir, implementation) {
   const root = path.resolve(sourceDir);
+  const cacheKey = `${implementation ? 'implementation' : 'source'}\0${root}`;
+  const pending = pendingFingerprints.get(cacheKey);
+  if (pending) return pending.catch(() => {}).then(() => cachedFingerprint(sourceDir, implementation));
+  const walk = signedFingerprint(root, implementation, cacheKey).finally(() => {
+    if (pendingFingerprints.get(cacheKey) === walk) pendingFingerprints.delete(cacheKey);
+  });
+  pendingFingerprints.set(cacheKey, walk);
+  return walk;
+}
+
+async function signedFingerprint(root, implementation, cacheKey) {
   const walked = BigInt(Date.now()) * 1_000_000n;
   let newest = 0n;
   const files = await fingerprintFiles(root, implementation);
@@ -123,7 +137,6 @@ async function cachedFingerprint(sourceDir, implementation) {
   });
   const lines = stamps.filter((line) => line !== null);
   const key = createHash('sha256').update(lines.join('\n')).digest('hex');
-  const cacheKey = `${implementation ? 'implementation' : 'source'}\0${root}`;
   const cached = fingerprintCache.get(cacheKey);
   if (cached?.signature === key) return cached.digest;
   const digest = await fingerprint(root, implementation);
