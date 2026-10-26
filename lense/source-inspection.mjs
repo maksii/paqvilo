@@ -17,6 +17,12 @@ import { SolutionFileCache, fileStamp, mapLimit } from '../mirage/lib/solution-c
 import { resolvePluginSourcePath } from '../mirage/lib/exported-plugins.mjs';
 import { buildPortalSourceIndex, sourceEditorTarget } from '../mirage/lib/portal-source-index.mjs';
 import { loadDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
+import { definitionQuery } from './definition-query.mjs';
+
+// Keep the browser entry point serializable, with owned dependencies embedded.
+export const inspectRenderedPage = new Function(
+  `return function inspectRenderedPage(){const definitionQuery=(${definitionQuery.toString()}); return (${inspectRenderedPageImpl.toString()})();};`,
+)();
 
 const norm = (value) =>
   String(value?.id ?? value ?? '')
@@ -378,14 +384,15 @@ export async function inspectionSources(cfg) {
   };
 }
 
-/** Fixed, bounded DOM read. Do not collect text, values, credentials or query parameters. */
-export function inspectRenderedPage() {
+/** Fixed, bounded DOM read. Do not collect text, field values or credentials.
+ * Read only form/table definition hints from frame addresses, never row parameters. */
+function inspectRenderedPageImpl() {
   const own = (node) => !node.closest('#paqvilo-panel, #paqvilo-handle, #paqvilo-xray');
   const definitionContext = (address, base) => {
     try {
       const url = new URL(address, base);
       if (url.origin !== location.origin) return {};
-      const params = [...url.searchParams].map(([key, value]) => [key.toLowerCase(), value]);
+      const params = definitionQuery(url);
       const declarations = (keys) =>
         params.filter(([key, value]) => keys.includes(key) && value).map(([, value]) => value);
       const forms = declarations(['entityformid', 'formid']),

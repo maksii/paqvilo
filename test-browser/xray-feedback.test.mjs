@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
+import { inspectRenderedPage } from '../lense/source-inspection.mjs';
 
 let browser;
 before(async () => {
@@ -217,7 +218,7 @@ test('native quick-view placements join their observed parent and exported targe
   const { page, inspect, data, report } = await fixture(
     t,
     '<div id="EntityFormControl_basica"><input id="x_title">' +
-      '<iframe class="quickform" id="one" data-path="/quick-one" data-controlid="one" data-lookup-element="first_lookup" data-formname="First layout" src="/quick-one"></iframe>' +
+      '<iframe class="quickform" id="one" data-path="/quick-one" data-controlid="one" data-lookup-element="first_lookup" data-formname="First layout" src="/quick-one?entityid=PRIVATE_ROW_SENTINEL&amp;access_token=PRIVATE_TOKEN_SENTINEL"></iframe>' +
       '<iframe class="quickform" id="two" data-path="/quick-two" data-controlid="two" data-lookup-element="second_lookup" data-formname="Second layout" src="/quick-two"></iframe></div>',
   );
   const targets = forms.map((form) => ({
@@ -236,6 +237,24 @@ test('native quick-view placements join their observed parent and exported targe
     entity: target.entity,
     formName: target.name,
   }));
+  await page.evaluate(() => {
+    window.forbiddenDefinitionReads = 0;
+    const allowed = ['entityformid', 'formid', 'entityname', 'tablename', 'etn', 'typename', 'formname'];
+    const getAll = URLSearchParams.prototype.getAll;
+    URLSearchParams.prototype.getAll = function (key) {
+      if (!allowed.includes(key.toLowerCase())) {
+        window.forbiddenDefinitionReads++;
+        throw Error('No unrelated query values');
+      }
+      return getAll.call(this, key);
+    };
+    URLSearchParams.prototype[Symbol.iterator] = URLSearchParams.prototype.entries = function () {
+      window.forbiddenDefinitionReads++;
+      throw Error('No enumeration of query values');
+    };
+  });
+  const rendered = await page.evaluate(inspectRenderedPage);
+  assert.doesNotMatch(JSON.stringify(rendered), /PRIVATE_(ROW|TOKEN)_SENTINEL/);
   const fresh = { ...report, componentIndex: { forms: [...forms, ...targets] }, nativeComponents: placements };
   await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
     data,
@@ -330,4 +349,5 @@ test('native quick-view placements join their observed parent and exported targe
     'exact',
     'matching iframe declarations cannot replace parent proof',
   );
+  assert.equal(await page.evaluate(() => window.forbiddenDefinitionReads), 0);
 });

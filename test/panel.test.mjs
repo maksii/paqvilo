@@ -821,44 +821,48 @@ test('inspection summaries expose cold loading and clear progress after a failed
   assert.equal(failed.loadingId, null);
 });
 
-test('detailed inspection publishes progress while matching the DOM and clears it on success or failure', async () => {
-  const { b, tab, session, panel, call } = await setup();
-  session.cfg.mirage = true;
-  fakeMirage(b, { report: { path: '/scripts', page: null } });
-  session.emit('hit', { page: tab.page, navigation: true });
-  await tick(80);
-  const evaluate = tab.page.evaluate;
-  for (const fail of [false, true]) {
-    let release, entered;
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    const matching = new Promise((resolve) => {
-      entered = resolve;
-    });
-    tab.page.evaluate = async (fn, data) => {
-      if (fn?.name === 'inspectRenderedPage') {
-        entered();
-        await gate;
-        if (fail) throw new Error('Page context changed');
-        return { assets: [], controls: [] };
-      }
-      return evaluate(fn, data);
-    };
-    const request = call('inspect');
-    await matching;
-    assert.equal(panel.stateFor(tab.page).inspection.loading, true);
-    assert.match(panel.stateFor(tab.page).inspection.phase, /Matching rendered elements/);
-    const loadingId = panel.stateFor(tab.page).inspection.loadingId;
-    release();
-    const answer = await request;
-    assert.equal(answer.ok, true, 'unavailable DOM evidence can fall back to local source evidence');
-    assert.equal(answer.loadingId, loadingId, 'the completed response identifies its loading operation');
-    assert.equal(panel.stateFor(tab.page).inspection.loading, false);
-    assert.equal(panel.stateFor(tab.page).inspection.phase, null);
-  }
-  tab.page.evaluate = evaluate;
-});
+test(
+  'detailed inspection publishes progress while matching the DOM and clears it on success or failure',
+  { timeout: 5000 },
+  async () => {
+    const { b, tab, session, panel, call } = await setup();
+    session.cfg.mirage = true;
+    fakeMirage(b, { report: { path: '/scripts', page: null } });
+    session.emit('hit', { page: tab.page, navigation: true });
+    await tick(80);
+    const evaluate = tab.page.evaluate;
+    for (const fail of [false, true]) {
+      let release, entered;
+      const gate = new Promise((resolve) => {
+        release = resolve;
+      });
+      const matching = new Promise((resolve) => {
+        entered = resolve;
+      });
+      tab.page.evaluate = async (fn, data) => {
+        if (fn?.name === 'inspectRenderedPage') {
+          entered();
+          await gate;
+          if (fail) throw new Error('Page context changed');
+          return { assets: [], controls: [] };
+        }
+        return evaluate(fn, data);
+      };
+      const request = call('inspect');
+      await matching;
+      assert.equal(panel.stateFor(tab.page).inspection.loading, true);
+      assert.match(panel.stateFor(tab.page).inspection.phase, /Matching rendered elements/);
+      const loadingId = panel.stateFor(tab.page).inspection.loadingId;
+      release();
+      const answer = await request;
+      assert.equal(answer.ok, true, 'unavailable DOM evidence can fall back to local source evidence');
+      assert.equal(answer.loadingId, loadingId, 'the completed response identifies its loading operation');
+      assert.equal(panel.stateFor(tab.page).inspection.loading, false);
+      assert.equal(panel.stateFor(tab.page).inspection.phase, null);
+    }
+    tab.page.evaluate = evaluate;
+  },
+);
 
 test('panels ignore foreign console errors and avoid scheduling foreign tab redraws', async () => {
   const { b, panel } = await setup();

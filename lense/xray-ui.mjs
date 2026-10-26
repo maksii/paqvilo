@@ -1,11 +1,12 @@
 import { inspectionEvidenceRuntime, resolveInspectionEvidence } from './inspection-evidence.mjs';
 import { renderInspectionEvidence } from './inspection-evidence-ui.mjs';
 import { observePortalNode } from './portal-node-observation.mjs';
+import { definitionQuery } from './definition-query.mjs';
 
 // All embedded source is owned code; page data is passed as a separate argument.
 export const xrayUi = new Function(
   'data',
-  `const {resolveInspectionEvidence}=(${inspectionEvidenceRuntime.toString()})(); const renderInspectionEvidence=(${renderInspectionEvidence.toString()}); const observePortalNode=(${observePortalNode.toString()}); return (${xrayBrowserImpl.toString()})(data);`,
+  `const {resolveInspectionEvidence}=(${inspectionEvidenceRuntime.toString()})(); const renderInspectionEvidence=(${renderInspectionEvidence.toString()}); const observePortalNode=(${observePortalNode.toString()}); const definitionQuery=(${definitionQuery.toString()}); return (${xrayBrowserImpl.toString()})(data);`,
 );
 
 // Self-contained browser function, like panelUi. Never reads page text or input values.
@@ -525,7 +526,7 @@ function xrayBrowserImpl(data) {
       try {
         const url = new URL(doc.URL);
         if (url.origin !== location.origin) return {};
-        const params = [...url.searchParams].map(([key, value]) => [key.toLowerCase(), value]);
+        const params = definitionQuery(url);
         const declarations = (keys) =>
           params.filter(([key, value]) => keys.includes(key) && value).map(([, value]) => value);
         const forms = declarations(['entityformid', 'formid']),

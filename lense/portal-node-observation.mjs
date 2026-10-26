@@ -1,5 +1,13 @@
-/** Self-contained structural Power Pages read. No values, row IDs, text or URL parameters. */
-export function observePortalNode(
+import { definitionQuery } from './definition-query.mjs';
+
+// All embedded code is owned; DOM nodes and bindings remain separate arguments.
+export const observePortalNode = new Function(
+  `return function observePortalNode(node,options={}){const definitionQuery=(${definitionQuery.toString()}); return (${observePortalNodeImpl.toString()})(node,options);};`,
+)();
+
+/** Self-contained structural Power Pages read. No field values, row IDs or text.
+ * Definition URL hints may reject a conflicting placement, never prove one. */
+function observePortalNodeImpl(
   node,
   { scope, bindings = {}, sourceRefs = [], sourceRefsByComponent = null, frameDepth = 0 } = {},
 ) {
@@ -280,7 +288,7 @@ export function observePortalNode(
       ancestors.includes(doc.documentElement) &&
       !ancestors.some((item) => item.matches('[data-formid],[data-form-layout]') || genericNativeId(item.id))
     ) {
-      const parent = observePortalNode(frame, {
+      const parent = observePortalNodeImpl(frame, {
         scope,
         bindings,
         sourceRefs,
@@ -312,7 +320,7 @@ export function observePortalNode(
       if (placements.length === 1 && targets.length === 1) {
         // Parameters can contradict a declaration after navigation, but cannot
         // establish ownership in the absence of that rendered placement.
-        const params = [...new URL(doc.URL).searchParams];
+        const params = definitionQuery(new URL(doc.URL), { formName: true });
         const aliases = forms.filter((form) => norm(form.formXml?.id) === norm(targets[0].id)).map((form) => form.id);
         const urlConflict = params.some(
           ([key, value]) =>
@@ -371,7 +379,7 @@ export function observePortalNode(
               return result;
             continue;
           }
-          const packet = observePortalNode(parent, { scope, bindings, sourceRefs, sourceRefsByComponent });
+          const packet = observePortalNodeImpl(parent, { scope, bindings, sourceRefs, sourceRefsByComponent });
           const owner = packet.facts.find((fact) => fact.dimension === 'owner' && fact.binding?.kind === 'column');
           const innerNames = ancestors.flatMap((item) =>
             ['data-attribute', 'data-field', 'data-fieldname', 'data-pcf-native-field']

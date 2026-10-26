@@ -14,6 +14,7 @@
   unknown form declarations and generic wrappers remain unresolved.
 - Join native quick-view iframe declarations to a verified parent form and exported QuickForms target. Check
   the current document path and conflicting navigation hints; retain unknown or conflicting boundaries.
+- Read only approved form/table query hints for definition context, leaving row and unrelated query values unread.
 - Carry verified attribute-host identity through accessible same-origin rich-text editor frames. Independent inner
   forms, conflicting declarations, missing exports and inaccessible frames retain their evidence boundaries.
 - Extend regressions for crowded cards, frame shortcuts, dynamic modal/quick-view identities, nested editors and

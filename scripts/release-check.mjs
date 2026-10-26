@@ -275,6 +275,7 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/lib/project-config.mjs',
   'mirage/admin/index.html',
   'lense/source-inspection.mjs',
+  'lense/definition-query.mjs',
   'lense/inspection-evidence.mjs',
   'lense/inspection-evidence-ui.mjs',
   'lense/inspection-source-open.mjs',

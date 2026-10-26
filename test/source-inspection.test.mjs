@@ -7,6 +7,14 @@ import { createSourceInspector, inspectionSources, inspectRenderedPage } from '.
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
 
+test('the serialized browser collector retains its public function identity', () => {
+  assert.equal(inspectRenderedPage.name, 'inspectRenderedPage');
+  assert.equal(inspectRenderedPage.length, 0);
+  const embedded = vm.runInNewContext('(' + inspectRenderedPage.toString() + ')');
+  assert.equal(embedded.name, 'inspectRenderedPage');
+  assert.equal(embedded.length, 0);
+});
+
 test('list action modal forms and Web API column candidates come from the selected exports', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
