@@ -1,5 +1,6 @@
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -278,11 +279,11 @@ test('Loopback API reads and writes numeric JSON literals without rounding their
 
 test(
   'Original DLL retains Int64/Decimal/Money through service writes and actual SDK query/retrieval casts',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-exact-clr-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'PrecisionOriginal.cs'),
       assembly = path.join(root, 'PrecisionOriginal.dll');
     await fs.writeFile(
