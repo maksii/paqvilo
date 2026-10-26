@@ -4864,6 +4864,7 @@ async function createPowerPagesSimulator({
     csrf: () => csrf,
   });
   const codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: settingOptionsRest.connections ?? {} });
+  for (const app of codeAppRecords) for (const entry of app.diagnostics) recordDiagnostic({ ...entry, app: app.name });
   const codeAppsHandler = createCodeAppsHandler({
     apps: () => codeAppRecords,
     sessions: staffSessions,

@@ -7,7 +7,9 @@
     "dev:debug": "paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0 --debug-port 9222",
     "lense": "paqvilo lense dev --config ./paqvilo.config.yml --site example",
     "mirage": "paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs",
+    "code-app:mirage": "node code-app/mirage.mjs",
+    "code-app:dev": "node code-app/server.mjs"
   },
   "dependencies": {
     "paqvilo": "file:../.."

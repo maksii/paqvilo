@@ -373,6 +373,41 @@ test('unknown apps and resources are 404 and other paths fall through', async (t
   assert.equal(redirect.headers.get('location'), '/_apps/code/invented/?x=1');
 });
 
+test('status reports simulation boundaries and actionable config diagnostics without raw config', async (t) => {
+  const { request } = await fixture(t, {
+    apps: [
+      {
+        name: 'broken',
+        localAppUrl: null,
+        raw: { secret: 'must-not-be-served' },
+        diagnostics: [
+          { code: 'CODEAPP_CONFIG_INVALID', message: 'Invalid <script> reference.', source: 'private-file' },
+        ],
+        connectionReferences: [{ key: 'invented', apiId: 'shared_invented', dataSources: ['Invented'] }],
+      },
+    ],
+  });
+  const response = await request('/_apps/code/broken/status', { staff: null });
+  const status = await json(response, 200);
+  assert.deepEqual(status, {
+    name: 'broken',
+    mode: 'simulation',
+    level: 'contract',
+    nativeSdk: false,
+    localAppUrl: null,
+    diagnostics: [{ code: 'CODEAPP_CONFIG_INVALID', message: 'Invalid <script> reference.' }],
+    connections: [{ key: 'invented', apiId: 'shared_invented', dataSources: ['Invented'] }],
+  });
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal((await request('/_apps/code/broken/status', { method: 'POST' })).status, 405);
+  const loader = await (await request('/_apps/code/broken/', { staff: null })).text();
+  assert.match(loader, /Mirage simulation/);
+  assert.match(loader, /CODEAPP_CONFIG_INVALID/);
+  assert.match(loader, /Invalid &lt;script&gt; reference/);
+  assertNoElements(loader, ['script']);
+  assert.doesNotMatch(loader, /must-not-be-served/);
+});
+
 test('loader frames localAppUrl with locked-down headers and escapes untrusted text', async (t) => {
   const { request } = await fixture(t, {
     apps: [

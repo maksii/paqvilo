@@ -51,23 +51,9 @@ export function codeAppSettings(value, label = 'codeApps') {
   });
 }
 
-// The connectionReferences entry shape is not documented. Sample files key entries by a reference id with
-// `id` ('/providers/Microsoft.PowerApps/apis/<apiId>'), `displayName` and `dataSources`; an array is accepted too.
-const references = (value) => {
-  const entries = Array.isArray(value)
-    ? value.map((item, index) => [item?.name ?? item?.id ?? String(index), item])
-    : Object.entries(value ?? {});
-  return entries.map(([key, item]) => ({
-    key,
-    apiId:
-      String(item?.apiName ?? item?.id ?? '')
-        .split('/')
-        .filter(Boolean)
-        .at(-1) ?? null,
-    displayName: item?.displayName ?? null,
-    dataSources: Array.isArray(item?.dataSources) ? item.dataSources : [],
-  }));
-};
+// CLI examples use maps keyed by reference identity. Preserve unknown fields in raw; validate
+// only fields consumed by Mirage rather than treating this as a complete Microsoft schema.
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /**
  * Read `<dir>/<file>` READ-ONLY. Returns the fields Mirage uses plus `raw` (the parsed document, never written back)
@@ -112,26 +98,80 @@ export function readCodeAppConfig(dir, file = 'power.config.json', { bindings = 
     if (typeof raw[field] === 'string') result[field] = raw[field];
     else diagnostic('CODEAPP_CONFIG_INVALID', `${file} ${field} must be a string.`);
   }
-  if (result.localAppUrl && !isLoopbackUrl(result.localAppUrl)) {
+  if (result.localAppUrl !== null && !isLoopbackUrl(result.localAppUrl)) {
     diagnostic(
       'CODEAPP_CONFIG_INVALID',
       `${file} localAppUrl is not a loopback http(s) URL; Mirage will not frame it.`,
     );
     result.localAppUrl = null;
   }
-  for (const field of ['connectionReferences', 'databaseReferences'])
-    if (raw[field] != null && typeof raw[field] !== 'object')
-      diagnostic('CODEAPP_CONFIG_INVALID', `${file} ${field} must be an object.`);
-  result.connectionReferences =
-    typeof raw.connectionReferences === 'object' ? references(raw.connectionReferences) : [];
-  result.databaseReferences =
-    raw.databaseReferences && typeof raw.databaseReferences === 'object' ? raw.databaseReferences : {};
-  for (const reference of result.connectionReferences)
-    if (!Object.hasOwn(bindings, reference.key))
-      diagnostic(
-        'CODEAPP_CONNECTION_UNBOUND',
-        `Connection reference '${reference.key}'${reference.apiId ? ` (${reference.apiId})` : ''} has no local binding.`,
-      );
+  const invalid = (field, expected) => diagnostic('CODEAPP_CONFIG_INVALID', `${file} ${field} must be ${expected}.`);
+  if (raw.connectionReferences != null) {
+    if (!isObject(raw.connectionReferences)) invalid('connectionReferences', 'an object');
+    else
+      for (const [key, item] of Object.entries(raw.connectionReferences)) {
+        if (!isObject(item)) {
+          invalid(`connectionReferences.${key}`, 'an object');
+          continue;
+        }
+        for (const field of ['id', 'apiName', 'displayName'])
+          if (item[field] != null && typeof item[field] !== 'string')
+            invalid(`connectionReferences.${key}.${field}`, 'a string');
+        if (
+          item.dataSources != null &&
+          (!Array.isArray(item.dataSources) || item.dataSources.some((v) => typeof v !== 'string'))
+        )
+          invalid(`connectionReferences.${key}.dataSources`, 'an array of strings');
+        // Do not fall back to the reference key when an explicitly supplied connector id is malformed.
+        if (
+          (item.id != null && typeof item.id !== 'string') ||
+          (item.apiName != null && typeof item.apiName !== 'string')
+        )
+          continue;
+        const id = typeof item.apiName === 'string' ? item.apiName : typeof item.id === 'string' ? item.id : '';
+        const reference = {
+          key,
+          apiId: id.split('/').filter(Boolean).at(-1) ?? null,
+          displayName: typeof item.displayName === 'string' ? item.displayName : null,
+          dataSources: Array.isArray(item.dataSources) ? item.dataSources.filter((v) => typeof v === 'string') : [],
+        };
+        result.connectionReferences.push(reference);
+        const connectorId = reference.apiId ?? reference.key;
+        const binding = Object.hasOwn(bindings, key) ? bindings[key] : bindings[connectorId];
+        if (!isObject(binding) || (binding.connector && binding.connector !== connectorId))
+          diagnostic(
+            'CODEAPP_CONNECTION_UNBOUND',
+            `Connection reference '${key}'${reference.apiId ? ` (${reference.apiId})` : ''} has no local binding.`,
+          );
+      }
+  }
+  if (raw.databaseReferences != null) {
+    if (!isObject(raw.databaseReferences)) invalid('databaseReferences', 'an object');
+    else {
+      result.databaseReferences = raw.databaseReferences;
+      for (const [key, database] of Object.entries(raw.databaseReferences)) {
+        if (!isObject(database)) {
+          invalid(`databaseReferences.${key}`, 'an object');
+          continue;
+        }
+        if (database.dataSources != null) {
+          if (!isObject(database.dataSources)) invalid(`databaseReferences.${key}.dataSources`, 'an object');
+          else
+            for (const [name, table] of Object.entries(database.dataSources)) {
+              if (!isObject(table)) {
+                invalid(`databaseReferences.${key}.dataSources.${name}`, 'an object');
+                continue;
+              }
+              for (const field of ['entitySetName', 'logicalName'])
+                if (table[field] != null && typeof table[field] !== 'string')
+                  invalid(`databaseReferences.${key}.dataSources.${name}.${field}`, 'a string');
+              if (table.isHidden != null && typeof table.isHidden !== 'boolean')
+                invalid(`databaseReferences.${key}.dataSources.${name}.isHidden`, 'a boolean');
+            }
+        }
+      }
+    }
+  }
   return result;
 }
 
@@ -140,7 +180,14 @@ export function loadCodeApps(entries, projectRoot, { bindings = {} } = {}) {
   return entries.map((entry) => {
     const dir = path.resolve(projectRoot, entry.dir),
       config = readCodeAppConfig(dir, entry.config, { bindings });
-    return { ...config, name: entry.name, dir, localAppUrl: entry.localAppUrl ?? config.localAppUrl };
+    const localAppUrl = entry.localAppUrl ?? config.localAppUrl;
+    if (!localAppUrl)
+      config.diagnostics.push({
+        code: 'CODEAPP_LOCAL_URL_MISSING',
+        message: 'No loopback localAppUrl is configured for this code app.',
+        source: config.source,
+      });
+    return { ...config, name: entry.name, dir, localAppUrl };
   });
 }
 

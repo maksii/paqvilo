@@ -185,6 +185,34 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
   }
 });
 
+test('release includes only the named Code Apps example assets', () => {
+  const paths = [
+    'examples/project/code-app/app.js',
+    'examples/project/code-app/index.html',
+    'examples/project/code-app/mirage.mjs',
+    'examples/project/code-app/power.config.json',
+    'examples/project/code-app/server.mjs',
+    'examples/project/code-app/solution/Other/Solution.xml',
+    'examples/project/code-app/solution/Entities/x_item/Entity.xml',
+  ];
+  const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
+  assert.equal(validateReleaseFiles(required), required.length);
+  for (const path of paths) {
+    assert.ok(REQUIRED_RELEASE_FILES.includes(path), `${path} must be packaged`);
+    assert.throws(() => validateReleaseFiles(required.filter((file) => file.path !== path)), /Required release file/);
+  }
+  for (const path of [
+    'examples/project/code-app/unreviewed.js',
+    'examples/project/code-app/.env',
+    'examples/project/code-app/credentials.json',
+    'examples/project/code-app/.paqvilo/evidence.json',
+    'examples/project/code-app/solution/Entities/private/Entity.xml',
+    'examples/project/code-app/screenshot.png',
+  ]) {
+    assert.throws(() => validateReleaseFiles([...required, { path }]), /Unexpected release file/);
+  }
+});
+
 test('the package names its GitHub repository, which npm provenance requires', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.doesNotThrow(() => checkPackageMetadata(pkg));

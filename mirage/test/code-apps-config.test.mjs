@@ -74,7 +74,9 @@ test('readCodeAppConfig parses power.config.json read-only with diagnostics', as
   const text = '\uFEFF' + JSON.stringify(document, null, 2);
   const file = path.join(root, 'power.config.json');
   await fs.writeFile(file, text);
-  const config = readCodeAppConfig(root, 'power.config.json', { bindings: { 'ref-one': 'local-connection' } });
+  const config = readCodeAppConfig(root, 'power.config.json', {
+    bindings: { 'ref-one': { connector: 'shared_fx_invented' } },
+  });
   assert.equal(config.appId, APP);
   assert.equal(config.environmentId, 'env-invented');
   assert.equal(config.localAppUrl, 'http://localhost:3000/');
@@ -127,4 +129,105 @@ test('loadCodeApps prefers the project localAppUrl and codeAppInventoryRecord is
     { component: 'connectionreference', name: 'ref-one', apiId: 'shared_fx_invented' },
   ]);
   assert.deepEqual(record.diagnostics, ['CODEAPP_CONNECTION_UNBOUND']);
+});
+
+test('validates reference maps and binding values without losing valid siblings', async (t) => {
+  const root = await tempDir(t);
+  const file = path.join(root, 'power.config.json');
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      localAppUrl: '',
+      connectionReferences: {
+        broken: null,
+        invalid: { id: 5, displayName: 7, dataSources: ['Good', 4] },
+        valid: { id: '/providers/Microsoft.PowerApps/apis/shared_invented', dataSources: ['Invented'] },
+      },
+      databaseReferences: {
+        'default.cds': {
+          dataSources: {
+            invented: { entitySetName: 'inventeds', logicalName: 'invented', isHidden: false },
+            bad: { entitySetName: 3, isHidden: 'no' },
+          },
+        },
+        broken: [],
+      },
+    }),
+  );
+  const config = readCodeAppConfig(root, 'power.config.json', {
+    bindings: { invalid: null, valid: { connector: 'shared_invented' } },
+  });
+  assert.equal(config.localAppUrl, null);
+  assert.deepEqual(
+    config.connectionReferences.map((r) => r.key),
+    ['valid'],
+  );
+  assert.deepEqual(
+    config.diagnostics.filter((d) => d.code === 'CODEAPP_CONNECTION_UNBOUND'),
+    [],
+  );
+  assert.equal(config.diagnostics.filter((d) => d.code === 'CODEAPP_CONFIG_INVALID').length, 8);
+  assert.equal(config.databaseReferences['default.cds'].dataSources.invented.entitySetName, 'inventeds');
+  await fs.writeFile(file, JSON.stringify({ connectionReferences: [], databaseReferences: [] }));
+  assert.equal(readCodeAppConfig(root).diagnostics.filter((d) => d.code === 'CODEAPP_CONFIG_INVALID').length, 2);
+});
+
+test('loadCodeApps reports a missing local URL only after applying the project override', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(path.join(root, 'power.config.json'), JSON.stringify({ environmentId: 'invented' }));
+  const [missing] = loadCodeApps(codeAppSettings([{ name: 'a', dir: '.' }]), root);
+  assert.deepEqual(
+    missing.diagnostics.map((d) => d.code),
+    ['CODEAPP_LOCAL_URL_MISSING'],
+  );
+  const [override] = loadCodeApps(
+    codeAppSettings([{ name: 'a', dir: '.', localAppUrl: 'http://localhost:3000/' }]),
+    root,
+  );
+  assert.deepEqual(override.diagnostics, []);
+});
+
+test('binding diagnostics reflect project connection objects and connector identity', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(
+    path.join(root, 'power.config.json'),
+    JSON.stringify({
+      connectionReferences: {
+        missing: { id: '/providers/Microsoft.PowerApps/apis/x_invented' },
+        wrong: { id: '/providers/Microsoft.PowerApps/apis/x_invented' },
+        good: { id: '/providers/Microsoft.PowerApps/apis/x_invented' },
+      },
+    }),
+  );
+  const config = readCodeAppConfig(root, 'power.config.json', {
+    bindings: { missing: 'not-an-object', wrong: { connector: 'x_other' }, good: { connector: 'x_invented' } },
+  });
+  const unbound = config.diagnostics.filter((d) => d.code === 'CODEAPP_CONNECTION_UNBOUND');
+  assert.equal(unbound.length, 2);
+  assert.match(unbound[0].message, /missing/);
+  assert.match(unbound[1].message, /wrong/);
+});
+
+test('binding diagnostics use the reference key when no connector id is declared', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(
+    path.join(root, 'power.config.json'),
+    JSON.stringify({ connectionReferences: { x_invented: {} } }),
+  );
+  const config = readCodeAppConfig(root, 'power.config.json', {
+    bindings: { x_invented: { connector: 'x_invented' } },
+  });
+  assert.deepEqual(config.diagnostics, []);
+});
+
+test('binding diagnostics recognize connector-id fallback when reference key differs', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(
+    path.join(root, 'power.config.json'),
+    JSON.stringify({ connectionReferences: { ref: { id: '/providers/Microsoft.PowerApps/apis/x_invented' } } }),
+  );
+  const config = readCodeAppConfig(root, 'power.config.json', {
+    bindings: { x_invented: { connector: 'x_invented' } },
+  });
+  assert.deepEqual(config.diagnostics, []);
 });

@@ -1,9 +1,8 @@
 // Browser ESM shim for Power Apps code apps running against Mirage (/_apps/code/<name>/, see code-apps-http.mjs).
 //
-// For Mirage runs only, alias the client library in Vite and proxy /_apps/code to Mirage so calls stay same-origin:
-//   resolve: { alias: { '@microsoft/power-apps/app': '<paqvilo>/mirage/lib/code-apps-client.js' } },
-//   server: { proxy: { '/_apps/code': 'http://127.0.0.1:<mirage port>' } }
-// and call configure({ app: '<name>' }) once before the first call.
+// For Mirage runs only, import this adapter in an application-owned service layer and proxy /_apps/code
+// to Mirage (including Host/Origin handling; see mirage/docs/code-apps.md). Call configure({ app: '<name>' })
+// once before the first call. Keep native Microsoft SDK imports and generated services in the native build.
 //
 // Documented surface: getContext() → IContext (https://learn.microsoft.com/power-apps/developer/code-apps/how-to/retrieve-context);
 // generated services create/get/getAll/update/delete resolving to `{ data }`
@@ -15,6 +14,9 @@ let base = null;
 let csrf = null;
 
 export function configure({ app, origin = '' }) {
+  if (typeof app !== 'string' || !app.trim()) throw new Error('A non-empty app name is required.');
+  if (origin && typeof location !== 'undefined' && new URL(origin, location.href).origin !== location.origin)
+    throw new Error('Mirage code app requests must use the current origin.');
   base = `${origin}/_apps/code/${encodeURIComponent(app)}/`;
   csrf = null;
 }
@@ -35,9 +37,14 @@ async function call(path, { method = 'GET', body, headers = {} } = {}) {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await response.text();
-  const data = text ? JSON.parse(text) : undefined;
+  let data;
+  try {
+    data = text ? JSON.parse(text) : undefined;
+  } catch {
+    if (response.ok) throw new Error(`Mirage returned invalid JSON (HTTP ${response.status}).`);
+  }
   if (!response.ok)
-    throw Object.assign(new Error(data?.error?.message ?? response.statusText), {
+    throw Object.assign(new Error(data?.error?.message || response.statusText || `HTTP ${response.status}`), {
       status: response.status,
       code: data?.error?.code,
     });
@@ -55,13 +62,18 @@ export async function getToken(resource) {
 }
 
 const key = (id) => `(${encodeURIComponent(String(id).replace(/[{}]/g, ''))})`;
-// The IGetAllOptions names are a guess; select/filter/orderBy/top/skipToken map to the OData query options.
+// Mirage accepts documented query options plus its own skipToken continuation. Dataverse does not support $skip.
 const query = (options = {}) => {
+  if (options.skip != null) throw new Error('Mirage does not support skip; use skipToken to continue a page.');
+  const supported = new Set(['select', 'filter', 'orderBy', 'top', 'skipToken', 'maxPageSize']);
+  for (const option of Object.keys(options)) {
+    if (!supported.has(option)) throw new Error(`Unsupported Mirage query option: ${option}`);
+  }
   const params = new URLSearchParams();
   if (options.select) params.set('$select', [options.select].flat().join(','));
   if (options.filter) params.set('$filter', options.filter);
   if (options.orderBy) params.set('$orderby', [options.orderBy].flat().join(','));
-  if (options.top) params.set('$top', String(options.top));
+  if (options.top != null) params.set('$top', String(options.top));
   if (options.skipToken) params.set('$skiptoken', options.skipToken);
   const text = params.toString();
   return text ? '?' + text : '';
@@ -77,7 +89,13 @@ export const dataClient = {
     data: (await call(`dataverse/${entitySet}${key(id)}${query(options)}`, { headers: representation })).data,
   }),
   getAll: async (entitySet, options) => {
-    const { data } = await call(`dataverse/${entitySet}${query(options)}`, { headers: representation });
+    const headers = { ...representation };
+    if (options?.maxPageSize != null) {
+      if (!Number.isSafeInteger(options.maxPageSize) || options.maxPageSize < 1)
+        throw new Error('maxPageSize must be a positive integer.');
+      headers.prefer += `,odata.maxpagesize=${options.maxPageSize}`;
+    }
+    const { data } = await call(`dataverse/${entitySet}${query(options)}`, { headers });
     return {
       data: data?.value ?? [],
       ...(data?.['@odata.nextLink']

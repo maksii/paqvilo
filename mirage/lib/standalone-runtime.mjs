@@ -596,6 +596,7 @@ export async function createStandaloneRuntime(options = {}) {
       csrf: () => csrf,
     });
     codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: options.connections ?? {} });
+    for (const app of codeAppRecords) for (const entry of app.diagnostics) diagnostic({ ...entry, app: app.name });
     const code = createCodeAppsHandler({
       apps: () => codeAppRecords,
       sessions,

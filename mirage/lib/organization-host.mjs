@@ -735,6 +735,13 @@ export function codeAppConnectors(connectors, connections = {}) {
   return async ({ reference, operationId, body, principal }) => {
     const connectorId = reference.apiId ?? reference.key;
     const connectionId = Object.hasOwn(connections, reference.key) ? reference.key : null;
+    // An undeclared connector with no default implementation is an unsupported operation, not a failed resolution.
+    if (
+      connectionId === null &&
+      !Object.hasOwn(connections, connectorId) &&
+      !connectors.supports(connectorId, operationId)
+    )
+      return undefined;
     const connection = connectors.resolve({ connectorId, connectionId });
     if (!connectors.supports(connectorId, operationId, connection.provider)) return undefined;
     return connectors.invoke({
