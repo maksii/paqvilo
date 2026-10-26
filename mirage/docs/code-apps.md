@@ -87,6 +87,8 @@ Microsoft documentation: [overview](https://learn.microsoft.com/power-apps/devel
 
 The repository's [example project](../../examples/project/code-app/) contains a small browser app, a local app server and an invented `x_item` Solution. In the toolkit checkout, use the pinned Node/npm versions and install dependencies once, then in `examples/project` run `npm install`. No Power Platform account, Power Apps CLI or Vite is needed for the browser sample. Its SDK development dependency is used only by the separate executor regression. The app uses local simulation and does not deploy or connect to an environment.
 
+With Paqvilo installed, `paqvilo mirage demo --scaffold --dir ./my-code-app-project` creates an editable copy including the Code Apps sources, commands and test dependencies. Run `npm install` inside that project before starting the commands below.
+
 Start these in two terminals from `examples/project`:
 
 ```sh

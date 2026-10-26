@@ -91,6 +91,7 @@ export async function prepareDemo(directory) {
     'portal',
     'solution',
     'code-solution',
+    'code-app',
     'metadata',
     'pack',
     'test',
@@ -122,6 +123,7 @@ export async function prepareDemo(directory) {
   await fs.copyFile(path.join(STARTER, 'editor-workspace.mjs'), path.join(target, 'editor-workspace.mjs'));
   await normalizeText(target);
   const { version, dependencies } = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
+  const example = JSON.parse(await fs.readFile(path.join(STARTER, 'package.json'), 'utf8'));
   await fs.writeFile(
     path.join(target, 'package.json'),
     JSON.stringify(
@@ -134,12 +136,15 @@ export async function prepareDemo(directory) {
           dev: 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0',
           'dev:debug': 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0 --debug-port 9222',
           lense: 'paqvilo lense dev --config ./paqvilo.config.yml --site example',
+          'code-app:mirage': example.scripts['code-app:mirage'],
+          'code-app:dev': example.scripts['code-app:dev'],
           test: 'node --test test/*.test.mjs',
         },
         devDependencies: {
           paqvilo: version,
           yaml: dependencies.yaml,
           'playwright-core': dependencies['playwright-core'],
+          '@microsoft/power-apps': example.devDependencies['@microsoft/power-apps'],
         },
       },
       null,

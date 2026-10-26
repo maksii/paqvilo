@@ -1,9 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
-import { fileURLToPath } from 'node:url';
+import { startCodeApp } from './code-app-process.mjs';
 
 test(
   'code app proxy confines request targets and rebases only trusted browser origins',
@@ -22,18 +20,7 @@ test(
     await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise((resolve) => upstream.close(resolve)));
     const target = `http://127.0.0.1:${upstream.address().port}`;
-    const child = spawn(process.execPath, [fileURLToPath(new URL('../code-app/server.mjs', import.meta.url))], {
-      env: { ...process.env, MIRAGE_URL: target, CODE_APP_PORT: '0' },
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    t.after(async () => {
-      child.kill();
-      await once(child, 'exit');
-    });
-    const [output] = await once(child.stdout, 'data');
-    const port = Number(String(output).match(/127\.0\.0\.1:(\d+)/)?.[1]);
-    assert.ok(port);
+    const { port } = await startCodeApp(t, { MIRAGE_URL: target, CODE_APP_PORT: '0' });
     const origin = `http://127.0.0.1:${port}`;
     const request = (path, headers = {}) =>
       new Promise((resolve, reject) => {

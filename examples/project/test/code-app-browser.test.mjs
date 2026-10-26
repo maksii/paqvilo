@@ -1,26 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { startCodeApp } from './code-app-process.mjs';
 import { chromium } from 'playwright-core';
 import { createSimulator } from 'paqvilo/mirage';
 import { browserLaunchOptions } from 'paqvilo/mirage/lib/browser-launch.mjs';
 test('example uses the standalone organization and selected staff session', { timeout: 30000 }, async (t) => {
   const root = fileURLToPath(new URL('../', import.meta.url));
-  const child = spawn(process.execPath, [fileURLToPath(new URL('../code-app/server.mjs', import.meta.url))], {
-    env: {
-      ...process.env,
+  const { child, port } = await startCodeApp(
+    t,
+    {
       CODE_APP_PORT: '0',
       CODE_APP_CLIENT: import.meta.resolve('paqvilo/mirage/lib/code-apps-client.js'),
     },
-    stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
-    windowsHide: true,
-  });
-  t.after(() => child.kill());
-  const [output] = await once(child.stdout, 'data');
-  const port = Number(String(output).match(/127\.0\.0\.1:(\d+)/)?.[1]);
-  assert.ok(port);
+    { ipc: true },
+  );
   const sim = await createSimulator({
     projectRoot: root,
     solutionRoots: [fileURLToPath(new URL('../code-app/solution/', import.meta.url))],
