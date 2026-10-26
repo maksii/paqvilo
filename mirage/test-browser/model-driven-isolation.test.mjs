@@ -72,7 +72,12 @@ test('portal → model-driven staff selection → portal preserves styles, scrip
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Staff profile', exact: true }).click();
   await page.getByLabel('Organization staff', { exact: true }).selectOption(staff.systemuserid);
+  // The dialog closes before the staff session request is sent; await that request's answer.
+  const switched = page.waitForResponse(
+    (response) => response.url() === origin + '/_sim/api/dataverse/session' && response.request().method() === 'POST',
+  );
   await page.getByRole('button', { name: 'Use identity', exact: true }).click();
+  assert.equal((await switched).status(), 200);
   await page.waitForFunction(() => !document.querySelector('dialog')?.open);
   const selected = await (await context.request.get(origin + '/_sim/api/dataverse/session')).json();
   assert.equal(selected.current.id, staff.systemuserid);

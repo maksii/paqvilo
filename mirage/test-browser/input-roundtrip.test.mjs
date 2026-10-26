@@ -487,16 +487,18 @@ test('native hidden dates require the native round-trip representation while Dat
     await page.locator('#at').evaluate((input, value) => {
       input.value = value;
     }, value);
+    // Each rejection replaces the summary's children; mark the previous link so only a new one is awaited.
+    await page
+      .locator('.validation-summary li a')
+      .evaluateAll((links) => links.forEach((link) => (link.dataset.stale = '')));
     const posted = page.waitForResponse(
       (response) => response.url().includes('/__sim/forms/') && response.request().method() === 'POST',
     );
     await page.getByRole('button', { name: 'Submit', exact: true }).click();
     assert.equal((await posted).status(), 400, value);
-    await page.locator('.validation-summary li a').waitFor({ state: 'visible' });
-    assert.equal(
-      await page.locator('.validation-summary li a').textContent(),
-      'Appointment must have a valid date format. ',
-    );
+    const link = page.locator('.validation-summary li a:not([data-stale])');
+    await link.waitFor({ state: 'visible' });
+    assert.equal(await link.textContent(), 'Appointment must have a valid date format. ');
     assert.equal(app.store.snapshot().tables.sample.length, 0);
   }
   const identity = { id: 'fixture-editor', roles: ['Editor'] };

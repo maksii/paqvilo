@@ -449,6 +449,12 @@ test('form deep links, picker changes, saves and Xrm openForm preserve the selec
 });
 
 test('a persisted inactive two-state record disables its default UI while explicit client unlocks and SDK saves retain native behavior', async (t) => {
+  // A record read is held later; release it before the fixture closes the page (t.after runs first in, first out).
+  let releaseRead;
+  const holdRead = new Promise((resolve) => {
+    releaseRead = resolve;
+  });
+  t.after(() => releaseRead());
   const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: true } });
   await initial.sim.close();
   const entityFile = path.join(initial.solutionDir, 'Entities/x_item/Entity.xml');
@@ -629,12 +635,7 @@ test('a persisted inactive two-state record disables its default UI while explic
     4,
     'the loaded form remains disabled until refreshed',
   );
-  let releaseRead;
-  const holdRead = new Promise((resolve) => {
-      releaseRead = resolve;
-    }),
-    recordRead = sim.url + '/_apps/api/tables/x_item/' + id;
-  t.after(() => releaseRead());
+  const recordRead = sim.url + '/_apps/api/tables/x_item/' + id;
   await page.route(
     recordRead,
     async (route) => {

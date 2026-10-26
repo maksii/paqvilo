@@ -541,8 +541,8 @@ test('advanced lookup preserves all exported columns and their widths instead of
   assert.equal(await page.getByLabel('Parent', { exact: true }).inputValue(), 'Silver');
 });
 
-test('advanced lookup renders the native empty state, then recovers to selectable results without changing the field', async (t) => {
-  const { origin } = await readOnlyApp();
+/** Opens the child record's advanced Parent lookup on the shared app with Silver selected. */
+async function openParentLookup(t, origin) {
   const page = await chrome.page(t);
   page.setDefaultTimeout(5000);
   await page.goto(
@@ -552,6 +552,12 @@ test('advanced lookup renders the native empty state, then recovers to selectabl
   await page.getByRole('button', { name: 'Advanced', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: /^Choose .* for Parent$/ });
   await dialog.getByRole('radio', { name: 'Select Silver', exact: true }).check();
+  return { page, dialog };
+}
+
+test('advanced lookup renders the native empty state, then recovers to selectable results without changing the field', async (t) => {
+  const { origin } = await readOnlyApp();
+  const { page, dialog } = await openParentLookup(t, origin);
   const search = dialog.getByRole('searchbox', { name: 'Search lookup records' });
   await search.fill('No matching invented record');
   await dialog.getByRole('heading', { name: 'We don’t have any data for this view', exact: true }).waitFor();
@@ -576,16 +582,11 @@ test('advanced lookup renders the native empty state, then recovers to selectabl
 
 test('lookup invalidates selection during search, ignores stale responses and settles Escape', async (t) => {
   const { origin } = await readOnlyApp();
-  const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
-  await page.goto(
-    origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-  );
-  await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();
-  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: /^Choose .* for Parent$/ });
-  await dialog.getByRole('radio', { name: 'Select Silver', exact: true }).check();
+  // Registered before the page's context closer: t.after hooks run first in, first out, and a parked route
+  // handler is released before its context closes.
   let release, waiting;
+  t.after(() => release?.());
+  const { page, dialog } = await openParentLookup(t, origin);
   const requestStarted = new Promise((resolve) => {
     waiting = resolve;
   });
@@ -598,7 +599,6 @@ test('lookup invalidates selection during search, ignores stale responses and se
     });
     await route.continue();
   });
-  t.after(() => release?.());
   await dialog.getByRole('searchbox', { name: 'Search lookup records' }).fill('Copper');
   assert.equal(await dialog.getByRole('button', { name: 'Done', exact: true }).isDisabled(), true);
   await requestStarted;
@@ -689,7 +689,12 @@ test('inline lookup rejects stale keyboard choices during debounce and after an 
   await page.getByRole('button', { name: 'Look up Related', exact: true }).click();
   await page.evaluate(() => window.lookup.setDisabled(true));
   assert.equal(await input.getAttribute('aria-expanded'), 'false');
-  await page.evaluate(() => window.requests[3]([{ id: 'd', entity: 'x_item', name: 'Denied late result' }]));
+  // The late answer settles within this task's microtasks; the next task observes whether the disabled lookup used it.
+  await page.evaluate(async () => {
+    window.requests[3]([{ id: 'd', entity: 'x_item', name: 'Denied late result' }]);
+    await new Promise((resolve) => setTimeout(resolve));
+  });
+  assert.equal(await page.locator('[role=option]', { hasText: 'Denied late result' }).count(), 0);
   assert.deepEqual(await page.evaluate(() => window.lookup.read()), {
     id: 'c',
     entity: 'x_item',

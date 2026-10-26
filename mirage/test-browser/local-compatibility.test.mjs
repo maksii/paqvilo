@@ -73,8 +73,6 @@ test('clean source-only forms use local date and rich-text compatibility assets 
   });
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('response', (response) => {
-    if (response.url().includes('/__sim-static/vendor/') && response.status() >= 400)
-      errors.push(`HTTP ${response.status()} ${response.url()}`);
     if (response.status() >= 400) errors.push(`HTTP ${response.status()} ${response.url()}`);
     if (response.url().includes('/__sim-static/vendor/'))
       assets.push({ path: new URL(response.url()).pathname, status: response.status() });
@@ -239,7 +237,8 @@ test('clean source-only forms use local date and rich-text compatibility assets 
   });
   assert.equal(await page.locator('#effective').inputValue(), '2025-02-03T00:00:00.0000000');
   assert.equal(await page.locator('#effective_datepicker_description').inputValue(), '2/3/2025');
-  await page.locator('[data-sim-editor-mode=compatibility]').waitFor();
+  // The editor mode is marked before its frame loads; the instance exists once the container reports it ready.
+  await page.locator('[data-sim-editor-mode=compatibility][data-mounted=ready]').waitFor();
   assert.equal(await page.locator('.sim-compatibility-badge').innerText(), 'Compatibility editor');
   assert.equal(
     await page.evaluate(() =>

@@ -226,5 +226,7 @@ test('opening duration below a sticky form header restores the field and full po
   assert.equal(await page.evaluate(() => window.control.read()), 4320);
   await input.click();
   await page.getByRole('listbox', { name: 'Duration duration options', exact: true }).waitFor();
+  // Scroll events queued by opening are dispatched in the next rendering step, before its animation frame callbacks.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   assert.equal(await input.getAttribute('aria-expanded'), 'true', 'mouse opening survives queued focus scrolling');
 });
