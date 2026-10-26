@@ -28,16 +28,9 @@ process.env[SECRET_VAR] = 'core-test-secret';
 const servers = [];
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function until(predicate) {
-  for (let i = 0; i < 400; i++) {
-    if (predicate()) return;
-    await delay(5);
-  }
-  throw new Error('condition was not reached');
-}
 
-// One router per call. The records stub answers every table call: ?hold=1 parks the request until gate.release(), ?sleep=1
-// waits 25 ms, a POST writes a widget row through the store and answers 204 with its OData-EntityId.
+// One router per call. The records stub answers every table call: ?hold=1 parks the request until gate.release() (gate.held
+// resolves once it is parked), ?sleep=1 waits 25 ms (execution time well over a 1 ms limit), a POST writes a widget row through the store and answers 204 with its OData-EntityId.
 async function start({
   serviceProtection = null,
   extensions = [],
@@ -53,7 +46,7 @@ async function start({
   state.tables = { widget: [{ widgetid: WIDGET_ID, name: 'one' }], ...tables };
   const store = await new DataStore({ state }).init();
   const calls = [];
-  const gate = {};
+  const gate = { held: Promise.withResolvers() };
   let api;
   const capture = {
     name: 'capture',
@@ -64,7 +57,11 @@ async function start({
   const records = {
     handle: async (ctx) => {
       calls.push(ctx);
-      if (ctx.url.searchParams.has('hold')) await new Promise((resolve) => (gate.release = resolve));
+      if (ctx.url.searchParams.has('hold'))
+        await new Promise((resolve) => {
+          gate.release = resolve;
+          gate.held.resolve();
+        });
       if (ctx.url.searchParams.has('sleep')) await delay(25);
       if (ctx.method === 'POST') {
         const widgetid = randomUUID();
@@ -183,7 +180,7 @@ describe('service protection on the Web API', () => {
   it('holds a concurrency slot until its request ends and answers 0x80072326 past concurrentRequests', async () => {
     const s = await start({ serviceProtection: { concurrentRequests: 1 } });
     const held = s.get('widgets?hold=1');
-    await until(() => s.gate.release);
+    await s.gate.held.promise;
     const refused = await s.get('widgets');
     assert.equal(refused.status, 429);
     assert.equal(refused.headers.get('retry-after'), '1');
@@ -313,12 +310,15 @@ describe('changesets and runAtomic', () => {
   it("a changeset's writes stay private until it returns, and a plain transact inside it joins it", async () => {
     const s = await start();
     const before = s.store.tableRows('widget').length;
-    // Created outside the changeset, so its continuation reads the committed state while the changeset is parked.
-    const outside = delay(5).then(() => s.store.tableRows('widget').length);
+    // Registered outside the changeset, so its continuation reads the committed state; it runs once the changeset has
+    // written and while it is still open.
+    const written = Promise.withResolvers();
+    const outside = written.promise.then(() => s.store.tableRows('widget').length);
     let inside;
     await runAtomic(s.api, async () => {
       await s.store.transact(() => s.store.state.tables.widget.push({ widgetid: randomUUID(), name: 'joined' }));
       inside = s.store.tableRows('widget').length;
+      written.resolve();
       assert.equal(await outside, before, 'a concurrent reader sees the committed rows only');
     });
     assert.equal(inside, before + 1);

@@ -217,7 +217,9 @@ describe('dataverse API: wired modules over HTTP', () => {
     });
   const webApi = (suffix) => `/api/data/v9.2/${suffix}`;
   const entityRef = (logical, key, id) => ({ [key]: id, '@odata.type': `${CRM}${logical}` });
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // Background work (respond-async calls, system jobs) runs as tasks of the API scheduler, the store's: drain() returns once
+  // every queued or running task has settled, so the outcome is read without polling.
+  const settled = () => store.scheduler.drain();
 
   it('401s an unauthenticated extension route the way a data request is answered', async () => {
     const response = await call(webApi('EntityDefinitions'), { token: null, method: 'POST', body: {} });
@@ -267,15 +269,11 @@ describe('dataverse API: wired modules over HTTP', () => {
     assert.equal(queued.status, 202, await queued.clone().text());
     const monitor = new URL(queued.headers.get('location')).pathname;
     assert.match(monitor, /^\/api\/backgroundoperation\/[0-9a-f-]{36}$/);
-    let status = null;
-    for (let i = 0; i < 100; i++) {
-      const polled = await call(monitor);
-      assert.equal(polled.status, 200, await polled.clone().text());
-      status = await polled.json();
-      if (status.backgroundOperationStateCode === 3) break; // Completed
-      await sleep(20);
-    }
-    assert.equal(status.backgroundOperationStateCode, 3);
+    await settled();
+    const polled = await call(monitor);
+    assert.equal(polled.status, 200, await polled.clone().text());
+    const status = await polled.json();
+    assert.equal(status.backgroundOperationStateCode, 3); // Completed
     assert.equal(status.backgroundOperationStatusCode, 30); // Succeeded
   });
 
@@ -387,7 +385,8 @@ describe('dataverse API: wired modules over HTTP', () => {
     assert.equal(response.status, 200);
     const { JobId } = await response.json();
     assert.match(JobId, /^[0-9a-f-]{36}$/);
-    for (let i = 0; i < 100 && store.tableRows('widget').some((row) => row.widgetid === DOOMED); i++) await sleep(20);
+    await settled();
+    assert.equal(store.tableRows('asyncoperation').find((row) => row.asyncoperationid === JobId)?.statecode, 3);
     assert.ok(!store.tableRows('widget').some((row) => row.widgetid === DOOMED));
   });
 
