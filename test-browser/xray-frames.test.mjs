@@ -640,6 +640,12 @@ test('focus cannot stay in closed-shadow-root or cross-origin frames while inspe
   // The same-origin frame counts an activation synchronously.
   assert.equal(await actions(page), 0, 'closed root frame');
   await page.frameLocator('#cross').locator('#next').focus();
+  // An out-of-process frame keeps browser focus until the overlay reclaims it one task later; input inside that task
+  // is the documented platform boundary (lense/xray-ui.mjs containFocus), so press only once the frame lost focus.
+  await page
+    .frames()
+    .find((frame) => frame.url().startsWith('http://localhost:11112/'))
+    .waitForFunction(() => !document.hasFocus());
   await page.keyboard.press('Enter');
   // The cross-origin frame reports activation by message. Messages from one frame arrive in order, so once a later
   // message from it has arrived, an activation by that Enter would have been counted.
