@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import verify, { diagnosticSnapshot } from '../lense/commands/verify.mjs';
 import { editSource } from '../lense/source-edit.mjs';
@@ -438,6 +438,54 @@ test(
     assert.equal(reportFor(fx.cfg).report.diagnostics.afterEdits, null);
     assert.equal(fs.existsSync(temporaryWork), false);
     assert.equal(fx.requests.length, 0);
+  },
+);
+
+test(
+  'verify keeps its event loop running while a busy profile file blocks temporary-copy removal',
+  {
+    timeout: 60_000,
+    // Exclusive (non-shared) file handles that block deletion are a Windows capability.
+    skip: process.platform !== 'win32' && 'mandatory file locks exist only on Windows',
+  },
+  async (t) => {
+    const fx = await fixture(t, 'classic');
+    const launch = chromium.launchPersistentContext;
+    let temporaryWork, holder;
+    t.after(() => holder?.kill());
+    chromium.launchPersistentContext = async (profileDir) => {
+      temporaryWork = path.dirname(profileDir);
+      const busy = path.join(profileDir, 'Default', 'chrome_debug.log');
+      fs.mkdirSync(path.dirname(busy), { recursive: true });
+      // Another process holds a profile file without sharing delete access, as an exiting browser
+      // or a scanner can. It lets go only when this process's event loop runs again.
+      holder = spawn(
+        'powershell',
+        [
+          '-NoProfile',
+          '-Command',
+          `$f=[IO.File]::Open('${busy}','OpenOrCreate','ReadWrite','None'); 'held'; [Console]::In.ReadLine() | Out-Null; $f.Close()`,
+        ],
+        { windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] },
+      );
+      await once(holder.stdout, 'data');
+      setImmediate(() => holder.stdin.end());
+      throw new Error('deliberate browser setup failure with a busy profile file');
+    };
+    const log = console.log;
+    console.log = () => {};
+    try {
+      assert.equal(await verify(fx.cfg, { json: true }), 1);
+    } finally {
+      chromium.launchPersistentContext = launch;
+      console.log = log;
+    }
+    const { report } = reportFor(fx.cfg);
+    assert.match(report.error, /deliberate browser setup failure/);
+    assert.doesNotMatch(report.error, /Cleanup incomplete/);
+    assert.deepEqual(report.cleanup.errors, []);
+    assert.equal(report.cleanup.temporarySourceRemoved, true);
+    assert.equal(fs.existsSync(temporaryWork), false);
   },
 );
 
