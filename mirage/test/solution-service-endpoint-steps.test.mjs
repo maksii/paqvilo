@@ -145,7 +145,9 @@ async function world(t, documents) {
     await api.close();
     await emulator.close();
     await broker.close();
-    receiver.close();
+    // Awaited, with the delivery client's idle keep-alive socket closed, so no listener outlives the test.
+    receiver.closeAllConnections();
+    await new Promise((resolve) => receiver.close(resolve));
   });
   const job = (step) => store.tableRows('asyncoperation').find((row) => row.owningextensionid?.id === step);
   return { plugins, store, broker, emulator, runner, posts, job, steps, diagnostics };

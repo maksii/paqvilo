@@ -6,12 +6,15 @@ import { spawnSync } from 'node:child_process';
 import { pluginFixture, pluginId } from './plugin-fixture.mjs';
 import { createSimulator } from '../server.mjs';
 import { clrHostPoolStatus } from '../lib/plugin-clr.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 test(
   'CLR mode changes reuse owned hosts, close disabled hosts and preserve another instance',
   { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
   async (t) => {
-    const fixture = await pluginFixture(t),
+    // The plug-in fixture closes its own runtime and removes its directory (CLR cache included) only after the
+    // runtimes below have closed.
+    const fixture = await pluginFixture({ after: (fn) => ownedFixture(t).remove(fn) }),
       initial = fixture.app.store.snapshot();
     await fixture.app.close();
     const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
@@ -59,9 +62,9 @@ test(
         packs: [pack],
       });
     const first = await make();
-    t.after(() => first.close());
+    ownedFixture(t).add(() => first.close());
     const second = await make();
-    t.after(() => second.close());
+    ownedFixture(t).add(() => second.close());
     const configure = (app, body, method = 'PATCH') =>
       fetch(app.url + '/__sim/api/operations/' + encodeURIComponent(key), {
         method,

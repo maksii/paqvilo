@@ -64,10 +64,11 @@ async function renameBetweenReloads(t, portal) {
 test('a deployment profile change with a renamed Solution root is rejected and keeps the definitions (Power Pages host)', async (t) => {
   const { createSimulator: createPowerPages } = await import('../server.mjs');
   const { profileFixture } = await import('./fixtures/deployment-profiles.mjs');
-  const fixture = await profileFixture({ after: (fn) => t.after(fn) });
+  // The profile fixture removes its directory only after the runtime below has closed.
+  const fixture = await profileFixture({ after: (fn) => ownedFixture(t).remove(fn) });
   const solution = fixture.solutionRoots[0];
   const app = await createPowerPages({ ...fixture, watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const definitions = () => (app.state().data.environmentvariabledefinition ?? []).map((row) => row.schemaname).sort();
   const before = definitions();
   assert.ok(before.length);
