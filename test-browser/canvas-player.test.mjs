@@ -114,64 +114,96 @@ for (const format of ['directory', 'archive']) {
     }
   });
 }
-test('player reports source gaps and serializes actions, including a refused action snapshot', async (t) => {
-  const sim = await canvasPlayerFixture(t, 'directory', { gaps: true });
-  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const context = await browser.newContext();
-  await signInContext(context, sim, 'alex');
-  const page = await context.newPage();
-  await page.goto(`${sim.url}/_apps/canvas/invented`);
-  await page.getByTestId('canvas-start').click();
-  await page.locator('[data-control="Next"]').waitFor();
-  const inventory = await (await context.request.get(sim.url + '/_apps/canvas/api/invented')).json();
-  assert.ok(inventory.diagnostics.some((d) => d.code === 'CANVAS_SOURCE_YAML_INVALID'));
-  assert.match(await page.getByTestId('canvas-inspector').textContent(), /Unsupported|PieChart/i);
-  const report = await sim.preflight();
-  assert.ok(report.requirements.some((row) => row.id === 'canvas:rendering' && row.status === 'unsupported'));
+test(
+  'player reports source gaps and serializes actions, including a refused action snapshot',
+  { timeout: 60_000 },
+  async (t) => {
+    const sim = await canvasPlayerFixture(t, 'directory', { gaps: true });
+    const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+    t.after(() => browser.close());
+    const context = await browser.newContext();
+    await signInContext(context, sim, 'alex');
+    const page = await context.newPage();
+    await page.goto(`${sim.url}/_apps/canvas/invented`);
+    await page.getByTestId('canvas-start').click();
+    await page.locator('[data-control="Next"]').waitFor();
+    const inventory = await (await context.request.get(sim.url + '/_apps/canvas/api/invented')).json();
+    assert.ok(inventory.diagnostics.some((d) => d.code === 'CANVAS_SOURCE_YAML_INVALID'));
+    assert.match(await page.getByTestId('canvas-inspector').textContent(), /Unsupported|PieChart/i);
+    const report = await sim.preflight();
+    assert.ok(report.requirements.some((row) => row.id === 'canvas:rendering' && row.status === 'unsupported'));
 
-  let release;
-  const gate = new Promise((resolve) => {
-    release = resolve;
-  });
-  let firstSeen;
-  const seen = new Promise((resolve) => {
-    firstSeen = resolve;
-  });
-  const received = [];
-  await page.route('**/_apps/api/canvas/invented', async (route) => {
-    const payload = route.request().postDataJSON();
-    received.push(payload);
-    if (received.length === 1) {
-      firstSeen();
-      await gate;
-      const response = await route.fetch();
-      const body = await response.json();
-      body.snapshot.variables.refusedMarker = 'shown after refusal';
-      body.errors = [{ message: 'Invented refusal' }];
-      await route.fulfill({ response, status: 403, json: body });
-    } else await route.continue();
-  });
-  await page.evaluate(() => {
-    const check = document.querySelector('[data-control="Check"]');
-    const toggle = document.querySelector('[data-control="Switch"]');
-    check.checked = true;
-    check.dispatchEvent(new Event('change', { bubbles: true }));
-    toggle.checked = true;
-    toggle.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-  await seen;
-  assert.equal(received.length, 1);
-  const second = page.waitForResponse(
-    (r) => r.url().endsWith('/_apps/api/canvas/invented') && r.request().postDataJSON()?.control === 'Switch',
-  );
-  release();
-  await page.waitForFunction(() =>
-    document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('shown after refusal'),
-  );
-  await second;
-  assert.deepEqual(
-    received.map((a) => a.control),
-    ['Check', 'Switch'],
-  );
-});
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    let firstSeen;
+    const seen = new Promise((resolve) => {
+      firstSeen = resolve;
+    });
+    let releaseSecond, secondSeen;
+    const secondGate = new Promise((resolve) => {
+      releaseSecond = resolve;
+    });
+    const secondArrived = new Promise((resolve) => {
+      secondSeen = resolve;
+    });
+    t.after(() => {
+      release();
+      releaseSecond();
+    });
+    const received = [];
+    await page.route('**/_apps/api/canvas/invented', async (route) => {
+      const payload = route.request().postDataJSON();
+      received.push(payload);
+      if (received.length === 1) {
+        firstSeen();
+        await gate;
+        const response = await route.fetch();
+        const body = await response.json();
+        body.snapshot.variables.refusedMarker = 'shown after refusal';
+        body.errors = [{ message: 'Invented refusal' }];
+        await route.fulfill({ response, status: 403, json: body });
+      } else {
+        secondSeen();
+        await secondGate;
+        await route.continue();
+      }
+    });
+    await page.evaluate(() => {
+      const check = document.querySelector('[data-control="Check"]');
+      const toggle = document.querySelector('[data-control="Switch"]');
+      check.checked = true;
+      check.dispatchEvent(new Event('change', { bubbles: true }));
+      toggle.checked = true;
+      toggle.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await seen;
+    assert.equal(received.length, 1);
+    const second = page.waitForResponse(
+      (r) => r.url().endsWith('/_apps/api/canvas/invented') && r.request().postDataJSON()?.control === 'Switch',
+    );
+    release();
+    try {
+      // The queued second request proves the first response was applied; hold its response
+      // so that its snapshot cannot replace the refused snapshot before inspection.
+      await secondArrived;
+      await page.waitForFunction(() =>
+        document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('shown after refusal'),
+      );
+    } finally {
+      releaseSecond();
+    }
+    await second;
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-control="Check"]')?.checked &&
+        document.querySelector('[data-control="Switch"]')?.checked &&
+        !document.querySelector('[data-testid="canvas-inspector"]')?.textContent.includes('shown after refusal'),
+    );
+    assert.deepEqual(
+      received.map((a) => a.control),
+      ['Check', 'Switch'],
+    );
+  },
+);
