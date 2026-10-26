@@ -208,7 +208,6 @@ test('the /_sim environment table carries no value for secret definitions', asyn
   };
   const app = await createSimulator({
     sourceDir: dir,
-    stateFile: path.join(dir, 'state', 'state.json'),
     port: 0,
     watch: false,
     initial,

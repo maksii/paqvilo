@@ -22,7 +22,8 @@ export const pluginStepsXml = [
   stepXml(10, { enabled: false }),
   stepXml(11, { entity: 'fx_other' }),
 ];
-export async function pluginFixture(t) {
+// `simulator: false` writes the portal and Solution sources only, for tests that read them without a running host.
+export async function pluginFixture(t, { simulator = true } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-plugins-'));
   const portal = path.join(dir, 'portal'),
     solution = path.join(dir, 'solution');
@@ -46,6 +47,10 @@ export async function pluginFixture(t) {
     const file = path.join(dir, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, body);
+  }
+  if (!simulator) {
+    t.after(() => fs.rm(dir, { recursive: true, force: true }));
+    return { dir, portal, solution, app: null };
   }
   const app = await createSimulator({
     sourceDir: portal,

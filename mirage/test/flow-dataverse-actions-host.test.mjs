@@ -87,7 +87,6 @@ async function host(t, profile) {
     sourceDir: path.join(root, 'portal'),
     solutionRoots: [path.join(root, 'solution')],
     projectRoot: root,
-    stateFile: path.join(root, 'state.json'),
     port: 0,
     watch: false,
     packs: [pack],

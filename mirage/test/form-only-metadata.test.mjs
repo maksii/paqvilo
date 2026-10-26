@@ -35,7 +35,6 @@ test('runtime imports portal-referenced standalone FormXml without an Entity.xml
   const sim = await createSimulator({
     sourceDir: path.join(root, 'portal'),
     solutionRoots: [path.join(root, 'solution')],
-    stateFile: path.join(root, 'state.json'),
     initial: {
       mappings: { exa_partial: { entitySet: 'exa_partials', idColumn: 'exa_partialid', nameColumn: 'exa_label' } },
       tables: { exa_partial: [] },
