@@ -194,7 +194,8 @@ test(
       await page.screenshot({ path: path.join(process.env.PAQVILO_EVIDENCE_DIR, `${name}.png`) });
     };
     const openTab = async (tab) => {
-      await panelLocator('.pill').waitFor({ state: 'attached' });
+      // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+      await panelLocator('.pill:visible, .wrap.open').first().waitFor();
       if (await panelLocator('.pill').isVisible()) await panelLocator('.pill').click();
       await panelLocator(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
     };
@@ -515,7 +516,8 @@ test(
       navigations.some((url) => new URL(url).origin === idp.origin && new URL(url).pathname.endsWith(route));
     const panelLocator = (selector) => page.locator(`#paqvilo-panel ${selector}`);
     const openTab = async (tab) => {
-      await panelLocator('.pill').waitFor({ state: 'attached' });
+      // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+      await panelLocator('.pill:visible, .wrap.open').first().waitFor();
       if (await panelLocator('.pill').isVisible()) await panelLocator('.pill').click();
       await panelLocator(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
     };

@@ -111,7 +111,8 @@ test(
     page.on('pageerror', (error) => errors.push(error.message));
     const panelLocator = (selector) => page.locator(`#paqvilo-panel ${selector}`);
     const openTab = async (tab) => {
-      await panelLocator('.pill').waitFor({ state: 'attached' });
+      // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+      await panelLocator('.pill:visible, .wrap.open').first().waitFor();
       if (await panelLocator('.pill').isVisible()) await panelLocator('.pill').click();
       await panelLocator(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
     };

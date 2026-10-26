@@ -186,6 +186,8 @@ test(
       'beta @ uat',
       'old-origin cleanup cannot remove the current panel',
     );
+    // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+    await page.locator('#paqvilo-panel').locator('.pill:visible, .wrap.open').first().waitFor();
     if (await page.locator('#paqvilo-panel .pill').isVisible()) await page.locator('#paqvilo-panel .pill').click();
     assert.equal(await page.getByLabel('Portal / environment', { exact: true }).inputValue(), '1');
     await Promise.all([

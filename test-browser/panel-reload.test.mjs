@@ -125,6 +125,8 @@ test(
       );
       await page.locator('#paqvilo-panel').waitFor();
       await panel.draw(page);
+      // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+      await page.locator('#paqvilo-panel').locator('.pill:visible, .wrap.open').first().waitFor();
       if (await page.locator('#paqvilo-panel .pill').isVisible()) await page.locator('#paqvilo-panel .pill').click();
       if (selector === '[data-act="toggle"]')
         await page.locator('#paqvilo-panel .row[data-rel="web-files/app.js"]').hover();

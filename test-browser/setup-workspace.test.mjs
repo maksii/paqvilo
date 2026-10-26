@@ -6,13 +6,13 @@ import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
-import net from 'node:net';
 import { chromium } from 'playwright-core';
 import YAML from 'yaml';
 import { prepareDemo } from '../lense/commands/demo.mjs';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { startSetupServer } from '../lense/setup/server.mjs';
 import { createSimulator } from '../mirage/server.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 // These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
 const allSettings = (page) =>
@@ -356,11 +356,7 @@ test(
         sites: { portal: { source: '.', environments: { dev: simulator.url }, markup: { enabled: false } } },
       }),
     );
-    const listener = net.createServer();
-    listener.listen(0, '127.0.0.1');
-    await once(listener, 'listening');
-    const port = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
+    const port = await freeDebugPort();
     const child = spawn(
       process.execPath,
       [

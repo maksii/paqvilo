@@ -3,23 +3,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { browserChannel } from '../mirage/lib/browser-launch.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
   execute = promisify(execFile);
 const APP = '77777777-7777-4777-8777-777777777777';
-async function freePort() {
-  const server = net.createServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
 // Resolves with the first match of `pattern` in the child's output, or rejects when the child exits first.
 function announced(child, pattern) {
   return new Promise((resolve, reject) => {
@@ -106,7 +99,7 @@ test(
     });
     const siblingRuntime = await commands(sibling, 'start', '--port', '0');
     const develop = async () => {
-      const debugPort = await freePort();
+      const debugPort = await freeDebugPort();
       const child = spawn(
         process.execPath,
         [
