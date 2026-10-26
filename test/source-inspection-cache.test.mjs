@@ -234,6 +234,8 @@ test('shared header/footer hints reuse parsing across pages and refresh, with wh
 });
 
 test('600 source reports survive A/B/A and unchanged refresh without reparsing markup', async (t) => {
+  // The reuse assertions concern files written moments ago; stamps inside their time tick are never trusted.
+  settleFileTimes(t);
   const fx = inspectionFixture();
   t.after(fx.cleanup);
   for (let i = 0; i < 600; i++) {
