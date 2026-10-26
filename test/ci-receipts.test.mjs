@@ -184,3 +184,55 @@ test(
     assert.equal(fs.existsSync(receipt), false, 'a source change during audit revokes previous qualifying evidence');
   },
 );
+
+test('validation concurrency follows the contributor setting, else the machine, and stays serial on hosted CI', async () => {
+  const { validationJobs } = await import('../scripts/ci.mjs');
+  const GiB = 2 ** 30;
+  assert.equal(validationJobs({}, undefined, { cpus: 20, memory: 96 * GiB }), 5);
+  assert.equal(validationJobs({}, undefined, { cpus: 4, memory: 16 * GiB }), 1);
+  assert.equal(validationJobs({}, undefined, { cpus: 32, memory: 8 * GiB }), 2, 'memory bounds a many-core machine');
+  assert.equal(validationJobs({ GITHUB_ACTIONS: 'true' }, undefined, { cpus: 20, memory: 96 * GiB }), 1);
+  assert.equal(validationJobs({}, '3'), 3);
+  assert.equal(validationJobs({ PAQ_CI_JOBS: '2' }, '3'), 2, 'the environment overrides Git configuration');
+  for (const value of ['0', '-1', 'two', '1.5'])
+    assert.throws(() => validationJobs({ PAQ_CI_JOBS: value }), /positive integer/, value);
+});
+
+test('parallel validation runs every step concurrently and reports each failure with its log', async (t) => {
+  const { runSteps } = await import('../scripts/ci.mjs');
+  const directory = tempDirSync('paq-ci-steps-');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const script = (name, body) => {
+    fs.writeFileSync(path.join(directory, name), body);
+    return [name];
+  };
+  // `waits` finishes only once `starts` has begun, so a serial run of the two would fail instead of passing.
+  const waits = script(
+    'waits.mjs',
+    `import fs from 'node:fs';
+    const until = Date.now() + 30_000;
+    while (!fs.existsSync('started') && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    process.exit(fs.existsSync('started') ? 0 : 3);`,
+  );
+  const starts = script('starts.mjs', `import fs from 'node:fs'; fs.writeFileSync('started', '');`);
+  const fails = script('fails.mjs', `console.error('Invented step failure'); process.exit(7);`);
+  const after = script('after.mjs', `import fs from 'node:fs'; fs.writeFileSync('after', '');`);
+  const unreached = script('unreached.mjs', `import fs from 'node:fs'; fs.writeFileSync('unreached', '');`);
+  const logs = path.join(directory, 'logs');
+  await assert.rejects(
+    runSteps(
+      [
+        { label: 'waits', commands: [waits] },
+        { label: 'starts', commands: [starts] },
+        { label: 'fails', commands: [fails, unreached] },
+        { label: 'after failure', commands: [after] },
+      ],
+      2,
+      { cwd: directory, logs },
+    ),
+    { message: 'Validation failed: fails.' },
+  );
+  assert.ok(fs.existsSync(path.join(directory, 'after')), 'a failed step does not stop the remaining steps');
+  assert.equal(fs.existsSync(path.join(directory, 'unreached')), false, 'a failed command ends its own step');
+  assert.match(fs.readFileSync(path.join(logs, 'fails.log'), 'utf8'), /Invented step failure/);
+});

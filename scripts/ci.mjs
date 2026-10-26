@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { availableParallelism, totalmem } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
@@ -16,16 +16,21 @@ const SDK_SHA256 = '59650574cdc89c1f506fabd7275fe6325a59a8bae9fa9f92c5b5c2cbe31d
 // SHA-256 of lib/net462/Microsoft.Xrm.Sdk.dll inside that verified public archive.
 const SDK_DLL_SHA256 = 'f696eaeb1145bce9f517d0b8fa5e925d0216176919af8d417dcd439acb1797f9';
 const defaults = { cwd: root, stdio: 'inherit', windowsHide: true };
+const seconds = (start) => `${((performance.now() - start) / 1000).toFixed(1)} s`;
 function execute(command, args, options = {}) {
+  const start = performance.now();
   const result = spawnSync(command, args, { ...defaults, ...options });
   if (result.status !== 0)
     throw new Error(`${command} ${args.join(' ')} failed (${result.status ?? result.error?.message}).`, {
       cause: result.error,
     });
+  console.log(`[ci] ${path.basename(command)} ${args.join(' ')} (${seconds(start)})`);
   return result;
 }
+const npmCli = () =>
+  process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
 function npm(args) {
-  const cli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
+  const cli = npmCli();
   if (!fs.existsSync(cli)) throw new Error('Run CI commands through npm run ci:prepare or npm run ci:verify.');
   execute(process.execPath, [cli, ...args]);
 }
@@ -451,6 +456,110 @@ export function verifyLane(suite, { unit = true, browser = true, shard = null } 
   }
 }
 
+/**
+ * The independent steps of a scoped or full run, longest first so a parallel run ends on short steps. Each lane is
+ * its own `ci.mjs verify --suite` process, so it runs exactly as the matching hosted job does.
+ */
+export function validationSteps(scope, suites, { unit = true, browser = true } = {}, platform = process.platform) {
+  const npmRun = (script) => [npmCli(), 'run', script];
+  const lane = (suite, kind) => ({
+    label: kind ? `${suite} ${kind}` : suite,
+    commands: [['scripts/ci.mjs', 'verify', '--suite', suite, ...(kind ? [`--${kind}`] : []), '--prepared']],
+  });
+  const steps = [];
+  for (const suite of ['mirage', 'lense'].filter((suite) => suites.includes(suite))) {
+    if (unit) steps.push(lane(suite, 'unit'));
+    if (browser) steps.push(lane(suite, 'browser'));
+  }
+  // Example unit and browser tests share one installed project, so they stay in one ordered step.
+  if (suites.includes('examples')) steps.push(lane('examples', unit && browser ? null : unit ? 'unit' : 'browser'));
+  if (fullSdkGate(scope, platform)) steps.push({ label: 'sdk gates', commands: [['scripts/ci.mjs', 'sdk']] });
+  if (scope.smoke) steps.push({ label: 'package smoke', commands: [npmRun('cache:package'), npmRun('release:smoke')] });
+  if (scope.quality) {
+    const parts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+      .scripts.quality.split('&&')
+      .map((part) => /^npm run (\S+)$/.exec(part.trim())?.[1]);
+    if (!parts.every(Boolean)) throw new Error('The quality script must be a chain of `npm run <script>` steps.');
+    for (const part of parts) steps.push({ label: part, commands: [npmRun(part)] });
+  }
+  if (scope.runtime) steps.push({ label: 'check', commands: [npmRun('check')] });
+  if (scope.package) steps.push({ label: 'release:check', commands: [npmRun('release:check')] });
+  if (scope.site) steps.push({ label: 'site:build', commands: [npmRun('site:build')] });
+  return steps;
+}
+
+function gitConfig(key) {
+  const result = spawnSync('git', ['--no-optional-locks', 'config', '--get', key], {
+    cwd: root,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  return result.status === 0 ? result.stdout.trim() : undefined;
+}
+
+/**
+ * How many validation steps run at once: PAQ_CI_JOBS, else `git config paqvilo.ci.jobs`, else one per four CPUs and
+ * 4 GiB of memory. Hosted CI runs one lane per job, so it keeps one.
+ */
+export function validationJobs(env = process.env, configured = gitConfig('paqvilo.ci.jobs'), machine = {}) {
+  const value = env.PAQ_CI_JOBS || configured;
+  if (value) {
+    if (!/^[1-9]\d*$/.test(value)) throw new Error(`PAQ_CI_JOBS or paqvilo.ci.jobs must be a positive integer.`);
+    return Number(value);
+  }
+  if (env.GITHUB_ACTIONS === 'true') return 1;
+  const { cpus = availableParallelism(), memory = totalmem() } = machine;
+  return Math.max(1, Math.min(Math.floor(cpus / 4), Math.floor(memory / 2 ** 32)));
+}
+
+/**
+ * Runs every step, at most `jobs` at a time, so one pass reports every failure. With one job the output streams as
+ * before; otherwise each step writes its own log, and a failed step's log tail is printed when it ends.
+ */
+export async function runSteps(steps, jobs, { cwd = root, logs = path.join(root, '.paqvilo/ci/logs') } = {}) {
+  const parallel = jobs > 1 && steps.length > 1;
+  if (parallel) {
+    fs.rmSync(logs, { recursive: true, force: true });
+    fs.mkdirSync(logs, { recursive: true });
+    console.log(`[ci] ${steps.length} steps, ${jobs} at a time; logs in ${logs}`);
+  }
+  const queue = [...steps],
+    failed = [],
+    timings = [];
+  const worker = async () => {
+    for (let step; (step = queue.shift());) {
+      const start = performance.now();
+      const log = path.join(logs, step.label.replace(/[^\w.-]+/g, '-') + '.log');
+      const output = parallel ? fs.openSync(log, 'w') : 'inherit';
+      let code = 0;
+      try {
+        for (const args of step.commands) {
+          const child = spawn(process.execPath, args, { cwd, stdio: ['ignore', output, output], windowsHide: true });
+          code = await new Promise((resolve) => {
+            child.once('error', () => resolve('spawn error'));
+            child.once('close', (status, signal) => resolve(status ?? signal));
+          });
+          if (code !== 0) break;
+        }
+      } finally {
+        if (parallel) fs.closeSync(output);
+      }
+      timings.push([step.label, seconds(start)]);
+      if (code === 0) console.log(`[ci] ✔ ${step.label} (${seconds(start)})`);
+      else {
+        failed.push(step.label);
+        if (parallel) console.log(fs.readFileSync(log, 'utf8').split('\n').slice(-200).join('\n'));
+        console.log(
+          `[ci] ✖ ${step.label} failed (${code}) after ${seconds(start)}${parallel ? `; full log: ${log}` : ''}`,
+        );
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(jobs, steps.length) }, worker));
+  if (parallel) console.log(`[ci] step times: ${timings.map(([label, time]) => `${label} ${time}`).join(', ')}`);
+  if (failed.length) throw new Error(`Validation failed: ${failed.join(', ')}.`);
+}
+
 export function checkedGitStatus(directory = root) {
   const status = spawnSync('git', ['--no-optional-locks', 'status', '--porcelain'], {
     cwd: directory,
@@ -694,19 +803,11 @@ async function main() {
   const baselineIdentity = verificationIdentity(Boolean(full));
   if (!suite && !baselineIdentity)
     throw new Error('Source or toolchain changed during preparation; review the staged tree and rerun validation.');
-  if (!suite) {
+  if (suite) verifyLane(suite, { unit, browser, shard: values.shard });
+  else {
     if (!securityChecked) onlineChecks();
-    if (scope.quality) npmScript('quality');
-    if (scope.runtime) npmScript('check');
-    if (scope.package) npmScript('release:check');
+    await runSteps(validationSteps(scope, suites, { unit, browser }), validationJobs());
   }
-  for (const selected of suites) verifyLane(selected, { unit, browser, shard: values.shard });
-  if (fullSdkGate(scope)) verifySdkGates();
-  if (scope.smoke) {
-    npmScript('cache:package');
-    npmScript('release:smoke');
-  }
-  if (scope.site) npmScript('site:build');
   const completedIdentity = verificationIdentity(Boolean(full));
   if (!suite && JSON.stringify(baselineIdentity) !== JSON.stringify(completedIdentity))
     throw new Error('Source, toolchain or fixtures changed during validation; review the tree and rerun.');

@@ -868,8 +868,13 @@ test('full Windows runs require locked SDK client gates without expanding ordina
       step.run?.includes(`${once} && needs.changes.outputs.full == 'true' && '--sdk'`),
     ),
   );
+  const { validationSteps } = await import('../scripts/ci.mjs');
+  const sdkSteps = (scope, platform) =>
+    validationSteps(scope, [], {}, platform).filter((step) => step.label === 'sdk gates');
+  assert.deepEqual(sdkSteps(completeScope([], { full: true }), 'win32')[0]?.commands, [['scripts/ci.mjs', 'sdk']]);
+  assert.deepEqual(sdkSteps(completeScope([], { full: true }), 'linux'), []);
+  assert.deepEqual(sdkSteps(completeScope(['lense/panel-ui.mjs']), 'win32'), []);
   const source = fs.readFileSync(new URL('../scripts/ci.mjs', import.meta.url), 'utf8');
-  assert.match(source, /if \(fullSdkGate\(scope\)\) verifySdkGates\(\)/);
   assert.match(source, /cert-auth\/Gate\/Gate\.csproj', '--locked-mode'/);
 });
 
