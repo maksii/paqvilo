@@ -284,7 +284,15 @@ export async function prepareLane(
         '--locked-mode',
         '--disable-build-servers',
       ]);
-      environment('PAQ_TEST_SDK_PROBES_RESTORED', '1');
+      // Compile once here: a cold MSBuild run inside the test budget times out on loaded runners.
+      execute('dotnet', [
+        'build',
+        'examples/company-operations/plugins/SdkProbes/SdkProbes.csproj',
+        '--no-restore',
+        '--configuration',
+        'Release',
+        '--disable-build-servers',
+      ]);
     }
   }
   if (browser) installChromium();
@@ -362,9 +370,12 @@ function requireFixtures(suite, { unit = true, browser = true, shard = null } = 
       requireExampleBrowserDependency(project);
     }
     if (unitPlatformNeedsSdk()) {
-      if (!fs.existsSync(path.join(root, 'examples/company-operations/plugins/SdkProbes/obj/project.assets.json')))
-        throw new Error('Incomplete CI validation: SDK projection driver restore missing; run ci:prepare.');
-      environment('PAQ_TEST_SDK_PROBES_RESTORED', '1');
+      if (
+        !fs.existsSync(
+          path.join(root, 'examples/company-operations/plugins/SdkProbes/bin/Release/net462/SdkProbes.exe'),
+        )
+      )
+        throw new Error('Incomplete CI validation: SDK projection driver build missing; run ci:prepare.');
     }
   }
   if (browser) environment('PAQVILO_BROWSER', 'chromium');
