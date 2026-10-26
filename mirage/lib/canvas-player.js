@@ -45,6 +45,7 @@
       if (result.errors?.length)
         status.textContent = result.errors.map((error) => error.message || error.kind).join('; ');
     } catch (error) {
+      if (source && snapshot) render();
       status.textContent = error.message;
     }
   }
@@ -272,6 +273,16 @@
     .then(([inventory, state]) => {
       source = inventory;
       snapshot = state;
+      if (state.viewport) {
+        const { width, height } = state.viewport;
+        const selected = `${width}x${height}`;
+        if (![...resolution.options].some((option) => option.value === selected)) {
+          const option = node('option', `${width} × ${height}`);
+          option.value = selected;
+          resolution.append(option);
+        }
+        resolution.value = selected;
+      }
       start.disabled = false;
       resolution.disabled = false;
       render();

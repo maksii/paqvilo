@@ -25,6 +25,7 @@ The observed PAC language was `en-150`; Mirage's default was `en-US`. Culture-se
 
 - `IfError(1/0,"x")` produces a number-conversion error. `IfError(Text(1/0),"x")` returns text. Mirage now coerces a selected replacement when the failing expression's type can be inferred without evaluating unselected branches. Numeric replacements retain exact decimal precision and Float identity. Dynamic types that cannot be inferred retain their previous behavior and report `POWER_FX_IFERROR_TYPE_UNKNOWN`; a complete native type checker remains outside this implementation.
 - Numeric `Text` formatting preserves large exact decimals instead of first converting them to a JavaScript double. Regression cases also cover the observed Float presentation, rounding, grouping, percentages and literals. This does not claim complete native custom-format support.
+- Numeric placeholders retain intervening literals, distinguish literal percent signs from scaling placeholders, and apply repeated percentages, trailing comma scaling and positional zero padding. These cases were checked against isolated PAC 2.13.1 on October 27, 2026. Custom-format language markers and multiple format sections remain outside this baseline; the PAC console rejects some formats documented for Canvas apps.
 
 The checked-in regressions use sanitized expected values established by PAC. Machine-specific commands and raw research evidence stay under ignored `.paqvilo/`; no auth profiles or business data are fixtures.
 

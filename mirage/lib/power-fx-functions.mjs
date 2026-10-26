@@ -201,36 +201,32 @@ function formatNumber(value, format, language) {
   const group = separators.find((part) => part.type === 'group')?.value ?? ',';
   const decimal = separators.find((part) => part.type === 'decimal')?.value ?? '.';
   const fmt = String(format).replace(/^\[\$-[^\]]*\]/, '');
-  const parts = [...fmt.matchAll(/"([^"]*)"|\\(.)|([0#,.])|(.)/gs)].map((m) =>
+  const parts = [...fmt.matchAll(/"([^"]*)"|\\(.)|([0#,.%])|(.)/gs)].map((m) =>
     m[3] !== undefined ? { p: m[3] } : { t: m[1] ?? m[2] ?? m[4] },
   );
-  const first = parts.findIndex((part) => part.p && part.p !== ',' && part.p !== '.');
-  if (first < 0) return parts.map((part) => part.t ?? part.p).join('');
-  let last = parts.length - 1;
-  while (!parts[last].p || parts[last].p === ',') last--;
-  const pattern = parts
-    .slice(first, last + 1)
-    .map((part) => part.p ?? '')
-    .join('');
-  const prefix = parts
-    .slice(0, first)
-    .map((part) => part.t ?? part.p)
-    .join('');
-  const suffix = parts
-    .slice(last + 1)
-    .map((part) => part.t ?? part.p)
-    .join('');
-  const percent = (prefix + suffix).includes('%');
-  const [intPattern, decPattern = ''] = pattern.split('.');
-  const decimals = (decPattern.match(/[0#]/g) ?? []).length;
-  const minDecimals = (decPattern.match(/0/g) ?? []).length;
-  const minInt = (intPattern.match(/0/g) ?? []).length;
+  const point = parts.findIndex((part) => part.p === '.');
+  const integerSlots = [],
+    fractionSlots = [];
+  for (const [index, part] of parts.entries())
+    if (part.p === '0' || part.p === '#') (point < 0 || index < point ? integerSlots : fractionSlots).push(index);
+  if (!integerSlots.length && !fractionSlots.length) return parts.map((part) => part.t ?? part.p).join('');
+  const firstZero = integerSlots.findIndex((index) => parts[index].p === '0');
+  const minInt = firstZero < 0 ? 0 : integerSlots.length - firstZero;
+  const decimals = fractionSlots.length;
+  const minDecimals = fractionSlots.findLastIndex((index) => parts[index].p === '0') + 1;
+  const lastInteger = integerSlots.at(-1);
+  let scalingCommas = 0;
+  if (lastInteger !== undefined) for (let index = lastInteger + 1; parts[index]?.p === ','; index++) scalingCommas++;
+  const grouped =
+    integerSlots.length > 1 &&
+    parts.some((part, index) => part.p === ',' && index > integerSlots[0] && index < lastInteger);
+  const percentCount = parts.filter((part) => part.p === '%').length;
   // Power Fx formats decimal digits without converting an exact Decimal to a double.
   // Float formatting uses the platform's 15-significant-digit decimal presentation.
   const input = value instanceof FxFloat ? round15(value.value) : value;
   const partsValue = decimalParts(input);
   let coefficient = partsValue.coefficient;
-  let scale = partsValue.scale - (percent ? 2 : 0);
+  let scale = partsValue.scale - 2 * percentCount + 3 * scalingCommas;
   if (scale < 0) {
     coefficient *= 10n ** BigInt(-scale);
     scale = 0;
@@ -244,12 +240,26 @@ function formatNumber(value, format, language) {
   const digits = magnitude.toString().padStart(decimals + 1, '0');
   const whole = decimals ? digits.slice(0, -decimals) : digits;
   const fraction = decimals ? digits.slice(-decimals) : '';
-  let intText = whole === '0' && minInt === 0 ? '' : whole.padStart(minInt, '0');
-  if (intPattern.includes(',')) intText = intText.replace(/\B(?=(\d{3})+(?!\d))/g, () => group);
+  const intText = whole === '0' && minInt === 0 ? '' : whole.padStart(minInt, '0');
   let decText = fraction;
   while (decText.length > minDecimals && decText.endsWith('0')) decText = decText.slice(0, -1);
-  const body = intText + (decText || (pattern.includes('.') && minDecimals) ? `${decimal}${decText}` : '');
-  return `${negative && magnitude !== 0n ? '-' : ''}${prefix}${body}${suffix}`;
+  // Assign digits to their original slots, retaining literals between slots. Overflow belongs to the first slot.
+  const rendered = new Map();
+  const integerDigits = [...intText].map((digit, index) =>
+    grouped && index > 0 && (intText.length - index) % 3 === 0 ? group + digit : digit,
+  );
+  for (const index of integerSlots.toReversed()) rendered.set(index, integerDigits.pop() ?? '');
+  if (integerSlots.length) rendered.set(integerSlots[0], integerDigits.join('') + rendered.get(integerSlots[0]));
+  fractionSlots.forEach((index, digit) => rendered.set(index, decText[digit] ?? ''));
+  const body = parts
+    .map((part, index) => {
+      if (rendered.has(index)) return rendered.get(index);
+      if (part.p === ',') return '';
+      if (index === point) return (integerSlots.length ? '' : intText) + (decText || !decimals ? decimal : '');
+      return part.t ?? part.p;
+    })
+    .join('');
+  return `${negative && magnitude !== 0n ? '-' : ''}${body}`;
 }
 
 // ---- Dates (Learn "DateAdd, DateDiff", "Day, Month, Year, Hour, Minute, Second, and Weekday", "WeekNum and ISOWeekNum") --

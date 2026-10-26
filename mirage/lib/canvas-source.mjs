@@ -110,6 +110,9 @@ export async function readCanvasSource({ msapp, dir, name, version = null } = {}
   }
 
   let unknownVersion = null;
+  const screenNames = new Set();
+  // The runtime resolves control formula owners across the app, including component definitions.
+  const appControlNames = new Set();
   for (const file of sources) {
     const source = file.name,
       content = await file.read(),
@@ -128,14 +131,46 @@ export async function readCanvasSource({ msapp, dir, name, version = null } = {}
     const declared = /\$schema=\S*pa-yaml\/v(\d+(?:\.\d+)*)\//.exec(content)?.[1];
     if (declared && !CANVAS_SCHEMA_VERSIONS.includes(declared)) unknownVersion ??= declared;
     const line = (node) => (node?.range ? counter.linePos(node.range[0]).line : null);
+    const invalid = (node, description) =>
+      diagnostic('CANVAS_SOURCE_STRUCTURE_INVALID', `${source}: ${description} at line ${line(node) ?? '?'}.`, source);
+    const collision = (node) =>
+      diagnostic(
+        'CANVAS_SOURCE_NAME_COLLISION',
+        `${source}: Control name collides in the local runtime at line ${line(node) ?? '?'}.`,
+        source,
+      );
     const properties = (node, owner) => {
+      if (node !== undefined && !isMap(node)) {
+        invalid(node, 'Properties must be a mapping');
+        return;
+      }
       for (const [property, value, key] of entriesOf(node))
         result.formulas.push({ owner, property, text: text(value) ?? '', source, line: line(key) });
     };
-    const controls = (sequence, prefix, parent, out) => {
-      if (!isSeq(sequence)) return;
-      for (const item of sequence.items)
+    const controls = (sequence, prefix, parent, out, names = new Set()) => {
+      if (sequence === undefined) return;
+      if (!isSeq(sequence)) {
+        invalid(sequence, 'Children must be a sequence');
+        return;
+      }
+      for (const item of sequence.items) {
+        if (!isMap(item) || item.items.length !== 1) {
+          invalid(item, 'Each child must name one control');
+          continue;
+        }
         for (const [control, body] of entriesOf(item)) {
+          if (!isMap(body)) {
+            invalid(body, 'Control must be a mapping');
+            continue;
+          }
+          const normalized = control.toLowerCase();
+          if (names.has(normalized)) {
+            invalid(body, 'Duplicate control definition');
+            continue;
+          }
+          names.add(normalized);
+          if (appControlNames.has(normalized) || screenNames.has(normalized)) collision(body);
+          appControlNames.add(normalized);
           out.push({
             name: control,
             control: text(field(body, 'Control')),
@@ -144,9 +179,14 @@ export async function readCanvasSource({ msapp, dir, name, version = null } = {}
             ...(field(body, 'ComponentName') ? { componentName: text(field(body, 'ComponentName')) } : {}),
           });
           properties(field(body, 'Properties'), `${prefix}.${control}`);
-          controls(field(body, 'Children'), prefix, control, out);
+          controls(field(body, 'Children'), prefix, control, out, names);
         }
+      }
     };
+    if (!isMap(document.contents)) {
+      invalid(document.contents, 'Document must be a mapping');
+      continue;
+    }
     for (const [key, value, keyNode] of entriesOf(document.contents)) {
       if (!TOP_LEVEL.has(key)) {
         diagnostic(
@@ -156,9 +196,24 @@ export async function readCanvasSource({ msapp, dir, name, version = null } = {}
         );
         continue;
       }
+      if (!isMap(value)) {
+        invalid(value, `${key} must be a mapping`);
+        continue;
+      }
       if (key === 'App') properties(field(value, 'Properties'), 'App');
       else if (key === 'Screens')
         for (const [screen, body] of entriesOf(value)) {
+          const normalized = screen.toLowerCase();
+          if (screenNames.has(normalized)) {
+            invalid(body, 'Duplicate screen definition');
+            continue;
+          }
+          screenNames.add(normalized);
+          if (appControlNames.has(normalized)) collision(body);
+          if (!isMap(body)) {
+            invalid(body, 'Screen must be a mapping');
+            continue;
+          }
           const entry = { name: screen, controls: [] };
           properties(field(body, 'Properties'), screen);
           controls(field(body, 'Children'), screen, null, entry.controls);
@@ -166,6 +221,10 @@ export async function readCanvasSource({ msapp, dir, name, version = null } = {}
         }
       else if (key === 'ComponentDefinitions')
         for (const [component, body] of entriesOf(value)) {
+          if (!isMap(body)) {
+            invalid(body, 'Component definition must be a mapping');
+            continue;
+          }
           const entry = { name: component, definitionType: text(field(body, 'DefinitionType')), controls: [] };
           properties(field(body, 'Properties'), component);
           controls(field(body, 'Children'), component, null, entry.controls);
@@ -287,9 +346,13 @@ async function readFxYaml(files, result, diagnostic) {
 // trees available for inspection, while exposing gaps to coverage consumers.
 export function canvasSourceCoverageGaps(source) {
   return (source.diagnostics ?? []).filter((item) =>
-    ['CANVAS_SOURCE_YAML_INVALID', 'CANVAS_SOURCE_SCHEMA_UNKNOWN', 'CANVAS_SOURCE_DATASOURCE_INVALID'].includes(
-      item.code,
-    ),
+    [
+      'CANVAS_SOURCE_YAML_INVALID',
+      'CANVAS_SOURCE_SCHEMA_UNKNOWN',
+      'CANVAS_SOURCE_DATASOURCE_INVALID',
+      'CANVAS_SOURCE_STRUCTURE_INVALID',
+      'CANVAS_SOURCE_NAME_COLLISION',
+    ].includes(item.code),
   );
 }
 

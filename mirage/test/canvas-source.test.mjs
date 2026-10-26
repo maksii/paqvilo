@@ -397,3 +397,59 @@ test('Solution canvas inventory retains partial source coverage diagnostics', as
   assert.equal(record.sourceDiagnostics[0].code, 'CANVAS_SOURCE_YAML_INVALID');
   assert.equal(canvasRequirementRows([record]).find((row) => row.id === 'canvas:rendering').status, 'unsupported');
 });
+
+test('malformed canvas structures and duplicate screen definitions cannot claim complete coverage', async () => {
+  const { canvasRequirementRows } = await import('../lib/source-graph.mjs');
+  for (const [extra, code] of [
+    [{ 'Src/Broken.pa.yaml': 'Screens:\n  Other:\n    Children: not-a-sequence\n' }, 'CANVAS_SOURCE_STRUCTURE_INVALID'],
+    [{ 'Src/Other.pa.yaml': 'Screens:\n  HomeScreen:\n    Children: []\n' }, 'CANVAS_SOURCE_STRUCTURE_INVALID'],
+    [{ 'Src/Broken.pa.yaml': 'App:\n  Properties: not-a-map\n' }, 'CANVAS_SOURCE_STRUCTURE_INVALID'],
+    [{ 'Src/Broken.pa.yaml': 'ComponentDefinitions:\n  Widget: invalid\n' }, 'CANVAS_SOURCE_STRUCTURE_INVALID'],
+    [{ 'Src/Broken.pa.yaml': 'Screens:\n  Other:\n    Children: [invalid]\n' }, 'CANVAS_SOURCE_STRUCTURE_INVALID'],
+    [
+      {
+        'Src/Broken.pa.yaml':
+          'Screens:\n  Other:\n    Children:\n      - Same: { Control: Label }\n      - same: { Control: Label }\n',
+      },
+      'CANVAS_SOURCE_STRUCTURE_INVALID',
+    ],
+    [
+      { 'Src/Broken.pa.yaml': 'Screens:\n  Other:\n    Children:\n      - WidgetTitle: { Control: Label }\n' },
+      'CANVAS_SOURCE_NAME_COLLISION',
+    ],
+    [
+      {
+        'Src/Component/Widget.pa.yaml':
+          'ComponentDefinitions:\n  Widget:\n    DefinitionType: CanvasComponent\n    Children:\n      - WidgetTitle: { Control: Label }\n',
+      },
+      'CANVAS_SOURCE_NAME_COLLISION',
+    ],
+    [
+      { 'Src/Broken.pa.yaml': 'Screens:\n  Other:\n    Children:\n      - HomeScreen: { Control: Label }\n' },
+      'CANVAS_SOURCE_NAME_COLLISION',
+    ],
+  ]) {
+    const source = await readCanvasSource({
+      msapp: msappOf({ 'Src/HomeScreen.pa.yaml': HOME, ...extra }),
+      name: 'partial',
+    });
+    const record = canvasInventoryRecord(source);
+    assert.ok(record.sourceDiagnostics?.some((diagnostic) => diagnostic.code === code));
+    const rows = canvasRequirementRows([record]);
+    assert.equal(rows.find((row) => row.id === 'canvas:app/partial').status, 'unsupported');
+    assert.equal(rows.find((row) => row.id === 'canvas:rendering').status, 'unsupported');
+  }
+});
+
+test('normal data source and component mappings remain readable', async () => {
+  const source = await readCanvasSource({ msapp: msappOf(files) });
+  assert.ok(!source.diagnostics.some((item) => item.code === 'CANVAS_SOURCE_STRUCTURE_INVALID'));
+  assert.deepEqual(
+    source.dataSources.map((item) => item.name),
+    ['Widgets', 'InventedService'],
+  );
+  assert.deepEqual(
+    source.components.map((item) => item.name),
+    ['FxHeader'],
+  );
+});

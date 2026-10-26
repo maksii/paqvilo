@@ -19,3 +19,34 @@ test('Text formats exact Decimal and Float values like the PAC numeric probes', 
   ])
     assert.equal(fx.evaluateSync(expression).value, expected, expression);
 });
+
+test('Text preserves literal positions and numeric placeholder scaling from PAC probes', () => {
+  const fx = createPowerFxEvaluator();
+  const cases = [
+    [12.3, '0.00"%"', '12.30%'],
+    [12.3, '0.00\\%', '12.30%'],
+    [0.123, '0.00%', '12.30%'],
+    [123456, '000-000', '123-456'],
+    ['1234567890123456789012345678', '000-000', '1234567890123456789012345-678'],
+    [12.3, '0"x".00', '12x.30'],
+    [12.3, '0.0"x"0', '12.3x0'],
+    [0, '#.##', ''],
+    [12.3, '0.#0#', '12.30'],
+    [12.3, '.00', '12.30'],
+    [12, '0.', '12.'],
+    [0, '.##', ''],
+    [12, '0#0', '012'],
+    [-12, '$0.00', '-$12.00'],
+    [12345678, '#,##0,," M"', '12 M'],
+    [1234, '0,', '1'],
+    [1234, '0,,', '0'],
+    [0.123, '0%%', '1230%%'],
+    [0, '0#0', '000'],
+    [12, '00#', '012'],
+    [0, '.00', '.00'],
+  ];
+  for (const [value, pattern, expected] of cases) {
+    const formula = `Text(${value},"${pattern.replaceAll('"', '""')}","en-US")`;
+    assert.equal(fx.evaluateSync(formula).value, expected, formula);
+  }
+});

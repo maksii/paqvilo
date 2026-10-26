@@ -187,6 +187,8 @@ export function createCanvasApp({
   viewport = { width: 1366, height: 768 },
 }) {
   if (!evaluator) throw new TypeError('createCanvasApp needs the Power Fx evaluator (createPowerFxEvaluator).');
+  if (app.source?.diagnostics?.some((entry) => entry.code === 'CANVAS_SOURCE_NAME_COLLISION'))
+    throw fail('Canvas source has colliding names and cannot be hosted safely.', 'CanvasSourceNameCollision', 501);
   const core = evaluator.describe?.().source === 'core';
   const context = api && caller ? caller(principal) : null;
   if (api && caller && !context?.user)
@@ -463,9 +465,24 @@ export function createCanvasApp({
     }
     return Object.assign(out, scope.extra ?? {});
   };
+  // Track scalar variable and context reads so a Set/UpdateContext invalidates only affected property answers.
+  const trackedState = (target, prefix) =>
+    target &&
+    new Proxy(target, {
+      get(object, key, receiver) {
+        if (typeof key === 'string') track(`${prefix}:${key}`);
+        return Reflect.get(object, key, receiver);
+      },
+      set(object, key, value, receiver) {
+        const before = object[key];
+        const ok = Reflect.set(object, key, value, receiver);
+        if (ok && typeof key === 'string' && !Object.is(before, value)) changed(`${prefix}:${key}`);
+        return ok;
+      },
+    });
   const hostFor = (scope, where) => ({
-    variables,
-    context: contexts.get(screenOf(scope)),
+    variables: trackedState(variables, 'variable'),
+    context: trackedState(contexts.get(screenOf(scope)), `context:${screenOf(scope)}`),
     app: 'canvas',
     dataRowLimit: CANVAS_DATA_ROW_LIMIT,
     dataSource: (name) => {
@@ -1037,7 +1054,7 @@ export function createCanvasApp({
     pending.length = saved.pending;
     forget();
   };
-  // Connector answers of property formulas, kept until 'refresh'; settle() calls what the last computation waited for.
+  // Connector answers persist until a tracked dependency changes or refresh; settle() resumes waiting properties.
   const propertyAnswers = new Map(),
     propertyWaits = new Map();
   async function settle() {
@@ -1121,7 +1138,7 @@ export function createCanvasApp({
     const previous = state.current;
     if (previous) await behaviour(previous, 'OnHidden', { screen: previous });
     if (update) {
-      Object.assign(contexts.get(screen), update);
+      Object.assign(trackedState(contexts.get(screen), `context:${screen}`), update);
       forget();
     }
     state.current = screen;

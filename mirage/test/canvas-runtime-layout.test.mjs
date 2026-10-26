@@ -194,3 +194,94 @@ test('checkbox and toggle transitions run their change and check callbacks once 
     ]),
   );
 });
+
+test('connector property follows a global set without refreshing unrelated properties', async () => {
+  const calls = [];
+  const runtime = createCanvasApp({
+    app: {
+      uniqueName: 'globals',
+      source: {
+        dataSources: [{ name: 'Svc', connectorId: 'invented' }],
+        tree: {
+          screens: [
+            {
+              name: 'Home',
+              controls: [
+                { name: 'Dynamic', control: 'Label@2.5.1' },
+                { name: 'Static', control: 'Label@2.5.1' },
+              ],
+            },
+          ],
+        },
+        formulas: [
+          { owner: 'App', property: 'OnStart', text: '=Set(query, "old")' },
+          { owner: 'Dynamic', property: 'Text', text: '=Svc.Echo({text: query}).text' },
+          { owner: 'Static', property: 'Text', text: '=Svc.Echo({text: "constant"}).text' },
+        ],
+      },
+    },
+    evaluator: createPowerFxEvaluator(),
+    connectors: async ({ body }) => {
+      calls.push(body.text);
+      return { statusCode: 200, body: { text: body.text } };
+    },
+  });
+  await runtime.start();
+  const snapshot = (await runtime.act({ action: 'run', formula: 'Set(query, "new")' })).snapshot;
+  assert.equal(snapshot.screens[0].controls[0].properties.Text, 'new');
+  assert.deepEqual(calls, ['old', 'constant', 'new']);
+});
+
+test('connector property tracks screen context updates without crossing screens', async () => {
+  const calls = [];
+  const runtime = createCanvasApp({
+    app: {
+      uniqueName: 'contexts',
+      source: {
+        dataSources: [{ name: 'Svc', connectorId: 'invented' }],
+        tree: {
+          screens: [
+            { name: 'Home', controls: [{ name: 'First', control: 'Label@2.5.1' }] },
+            { name: 'Other', controls: [{ name: 'Second', control: 'Label@2.5.1' }] },
+          ],
+        },
+        formulas: [
+          { owner: 'Home', property: 'OnVisible', text: '=UpdateContext({query: "home"})' },
+          { owner: 'Other', property: 'OnVisible', text: '=UpdateContext({query: "other"})' },
+          { owner: 'First', property: 'Text', text: '=Svc.Echo({text: query}).text' },
+          { owner: 'Second', property: 'Text', text: '=Svc.Echo({text: query}).text' },
+        ],
+      },
+    },
+    evaluator: createPowerFxEvaluator(),
+    connectors: async ({ body }) => {
+      calls.push(body.text);
+      return { statusCode: 200, body: { text: body.text } };
+    },
+  });
+  await runtime.start();
+  await runtime.act({ action: 'run', formula: 'UpdateContext({query: "new"})' });
+  const snapshot = (await runtime.act({ action: 'navigate', screen: 'Other' })).snapshot;
+  assert.equal(snapshot.screens[0].controls[0].properties.Text, 'new');
+  assert.equal(snapshot.screens[1].controls[0].properties.Text, 'other');
+  assert.deepEqual(calls, ['home', null, 'new', 'other']);
+});
+
+test('colliding source names are refused before the runtime traverses the tree', () => {
+  const app = {
+    uniqueName: 'colliding',
+    source: {
+      diagnostics: [{ code: 'CANVAS_SOURCE_NAME_COLLISION' }],
+      tree: {
+        screens: [
+          { name: 'One', controls: [{ name: 'A' }, { name: 'B', parent: 'A' }] },
+          { name: 'Two', controls: [{ name: 'B' }, { name: 'A', parent: 'B' }] },
+        ],
+      },
+    },
+  };
+  assert.throws(() => createCanvasApp({ app, evaluator: createPowerFxEvaluator() }), {
+    code: 'CanvasSourceNameCollision',
+    status: 501,
+  });
+});
