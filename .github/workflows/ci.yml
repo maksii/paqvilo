@@ -57,7 +57,8 @@ jobs:
       smoke: ${{ steps.scope.outputs.smoke }}
       site: ${{ steps.scope.outputs.site }}
       full: ${{ steps.scope.outputs.full }}
-      suites: ${{ steps.scope.outputs.suites }}
+      units: ${{ steps.scope.outputs.units }}
+      browsers: ${{ steps.scope.outputs.browsers }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -125,13 +126,13 @@ jobs:
   test:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
-    name: Unit tests (Node 24, ${{ matrix.suite }})
+    name: Unit tests (Node 24, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
+        include: ${{ fromJSON(needs.changes.outputs.units) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -159,19 +160,19 @@ jobs:
         with:
           global-json-file: global.json
       - name: Prepare the selected suite
-        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit
+        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
       - name: Verify the selected suite
-        run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared
+        run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
   browser:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
-    name: Browser tests (Node 24, ${{ matrix.suite }})
+    name: Browser tests (Node 24, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
+        include: ${{ fromJSON(needs.changes.outputs.browsers) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -207,9 +208,9 @@ jobs:
         with:
           global-json-file: global.json
       - name: Prepare the selected suite
-        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --browser
+        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --browser ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
       - name: Verify the selected suite
-        run: npm run ci:verify -- --suite ${{ matrix.suite }} --browser --prepared
+        run: npm run ci:verify -- --suite ${{ matrix.suite }} --browser --prepared ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
       - name: Collect only synthetic evidence
         if: always()
         run: node scripts/collect-evidence.mjs
@@ -217,7 +218,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: browser-evidence-${{ matrix.suite }}
+          name: browser-evidence-${{ matrix.suite }}-${{ strategy.job-index }}
           path: .paqvilo/ci-evidence-*/
           if-no-files-found: ignore
           include-hidden-files: true
@@ -225,13 +226,13 @@ jobs:
   windows:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
-    name: Windows unit tests (Node 24, ${{ matrix.suite }})
+    name: Windows unit tests (Node 24, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     runs-on: windows-2025
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        suite: ${{ fromJSON(needs.changes.outputs.suites) }}
+        include: ${{ fromJSON(needs.changes.outputs.units) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -258,12 +259,13 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
+      # The full SDK client gate runs once, beside the first Mirage shard.
       - name: Prepare the selected suite
-        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit ${{ matrix.suite == 'mirage' && needs.changes.outputs.full == 'true' && '--sdk' || '' }}
+        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }} ${{ matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.full == 'true' && '--sdk' || '' }}
       - name: Verify the selected suite
-        run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared
-      - name: Verify the full Windows SDK clients
-        if: matrix.suite == 'mirage' && needs.changes.outputs.full == 'true'
+        run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
+      - name: Verify the full Windows SDK clients and storage volume
+        if: matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.full == 'true'
         run: node scripts/ci.mjs sdk
   package:
     needs: changes
@@ -293,7 +295,7 @@ jobs:
       - name: Prime npm cache for the offline install
         run: npm run cache:package
       - name: Install matching Chromium
-        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+        run: node scripts/ci.mjs browser
       - name: Install the packed distribution into the example project
         run: npm run release:smoke
         env:

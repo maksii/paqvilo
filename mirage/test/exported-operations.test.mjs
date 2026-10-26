@@ -17,6 +17,7 @@ import {
 import { validatePack } from '../lib/preset-registry.mjs';
 import { createSimulator } from '../server.mjs';
 import { isExactNumeric, stringifyExactJson } from '../lib/exact-numeric.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 test('modern flow imports bound the opened file and reject growth during its read', async (t) => {
   const { dir } = await source(t, '');
@@ -116,7 +117,7 @@ test('exported server connector writes exact raw literals and returns raw-number
 const role = 'd0000000-0000-4000-8000-000000000001';
 async function source(t, code) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-operation-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'logic.js');
   await fs.writeFile(file, code);
   return { dir, record: { name: 'sample', file: await fs.realpath(file), roleIds: [role] } };
@@ -160,20 +161,22 @@ test('server-logic exported code uses invocation context, local role-scoped read
   assert.throws(() => assertOperationRole({ roleIds: [] }, { roleIds: [role] }), /web roles/);
 });
 
+// The delayed Worker bootstrap: longer than the 1000 ms execution budget plus its 300 ms watchdog grace.
+const BOOTSTRAP_DELAY_MS = 1500;
 test('cold server-logic worker startup does not consume the exported-code execution budget', async (t) => {
   const { dir, record } = await source(t, 'function get(){return "Invented ready result";}');
   const preload = path.join(dir, 'preload.mjs');
   await fs.writeFile(
     preload,
-    "import {isMainThread} from 'node:worker_threads'; if(!isMainThread) await new Promise(resolve=>setTimeout(resolve,1500));",
+    `import {isMainThread} from 'node:worker_threads'; if(!isMainThread) await new Promise(resolve=>setTimeout(resolve,${BOOTSTRAP_DELAY_MS}));`,
   );
   const program = path.join(dir, 'invoke.mjs');
   await fs.writeFile(
     program,
     `import {runExportedServerLogic} from ${JSON.stringify(new URL('../lib/exported-operations.mjs', import.meta.url).href)};
-const started=Date.now();
+const started=performance.now();
 const value=await runExportedServerLogic({record:${JSON.stringify(record)},portal:{},store:{state:{}},timeout:1000});
-console.log(JSON.stringify({value,elapsed:Date.now()-started}));`,
+console.log(JSON.stringify({value,elapsed:performance.now()-started}));`,
   );
   // The preload is inherited by the real Worker. No retry or fake runtime hook:
   // its bootstrap alone exceeds the old execution watchdog of 1000 + 300 ms.
@@ -185,9 +188,11 @@ console.log(JSON.stringify({value,elapsed:Date.now()-started}));`,
   assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
   const answer = JSON.parse(result.stdout);
   assert.equal(answer.value, 'Invented ready result');
-  assert.ok(answer.elapsed >= 1500, 'the execution completed after the delayed worker bootstrap');
+  assert.ok(answer.elapsed >= BOOTSTRAP_DELAY_MS, 'the execution completed after the delayed worker bootstrap');
 });
 
+// Above the former 2 s default (plus its 300 ms grace) and well inside the documented 5 s local limit.
+const SLOW_CUSTOM_API_MS = 2500;
 test('default server-logic allowance covers a slow local custom API within the documented five-second limit', async (t) => {
   const { record } = await source(
     t,
@@ -199,7 +204,7 @@ test('default server-logic allowance covers a slow local custom API within the d
     store: store(),
     services: {
       async invokeCustomApi() {
-        await new Promise((resolve) => setTimeout(resolve, 2500));
+        await new Promise((resolve) => setTimeout(resolve, SLOW_CUSTOM_API_MS));
         return { status: 200, body: { completed: true } };
       },
     },
@@ -411,7 +416,7 @@ test('registered HTTP operations enforce exported roles and CSRF and server logi
       },
     },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const token = app.csrf;
   const post = (route, headers = {}) =>
     fetch(app.url + route, {
@@ -519,7 +524,7 @@ test('Imported flow HTTP failure retains completed connector commits and Respons
       },
     },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const send = (ok) =>
     fetch(app.url + '/_api/cloudflow/v1.0/trigger/' + flow, {
       method: 'POST',

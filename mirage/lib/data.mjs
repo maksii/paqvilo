@@ -932,6 +932,12 @@ export class DataStore {
       (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
       return snapshot;
     }
+    const snapshot = clone(this.projectionOf(projection));
+    (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
+    return snapshot;
+  }
+  /** The live (uncopied) sections, tables and mappings a snapshot projection names. Callers must not mutate it. */
+  projectionOf(projection) {
     if (!projection || typeof projection !== 'object' || Array.isArray(projection))
       throw new DataError('Snapshot projection must name sections, tables or mappings');
     const selected = {};
@@ -948,9 +954,7 @@ export class DataStore {
         }
       }
     }
-    const snapshot = clone(selected);
-    (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
-    return snapshot;
+    return selected;
   }
   // Provenance is local to this store and never serialized into state files.
   snapshotRevision(snapshot) {
@@ -4213,35 +4217,36 @@ export class DataStore {
   referencesTo(logical, identity = {}, scope) {
     const graph = scope ? this.relationshipGraph(scope) : null;
     if (graph?.references.has(logical)) return graph.references.get(logical);
-    const found = new Map();
-    const add = (reference) => {
-      const key = `${reference.entity}\u0000${reference.column}`;
-      const existing = found.get(key);
-      if (!existing || (!existing.cascade && reference.cascade)) found.set(key, reference);
-    };
+    const references = this.referencesByTable(identity, logical).get(logical) ?? [];
+    graph?.references.set(logical, references);
+    return references;
+  }
+  /** referencesTo of every table (or of `only`) from one pass over the relationships: Map logical -> references. */
+  referencesByTable(identity = {}, only) {
+    const tables = new Map();
     for (const [owner, ownerMapping] of Object.entries(this.state.mappings ?? {}))
       for (const rel of Object.values(this.relationshipsFor(ownerMapping ?? {}, identity))) {
         if (!rel || rel.intersect || !rel.entity || !rel.from || !rel.to) continue;
-        if (rel.many === false && rel.entity === logical)
-          add({
-            entity: owner,
-            column: rel.from,
-            targetColumn: rel.to,
-            cascade: rel.cascade,
-            schemaName: rel.schemaName,
-          });
-        else if (rel.many !== false && owner === logical)
-          add({
-            entity: rel.entity,
-            column: rel.to,
-            targetColumn: rel.from,
-            cascade: rel.cascade,
-            schemaName: rel.schemaName,
-          });
+        // A single-valued lookup references its target; a collection references its owner.
+        const single = rel.many === false,
+          logical = single ? rel.entity : owner;
+        if (only !== undefined && logical !== only) continue;
+        const reference = single
+          ? { entity: owner, column: rel.from, targetColumn: rel.to, cascade: rel.cascade, schemaName: rel.schemaName }
+          : {
+              entity: rel.entity,
+              column: rel.to,
+              targetColumn: rel.from,
+              cascade: rel.cascade,
+              schemaName: rel.schemaName,
+            };
+        let found = tables.get(logical);
+        if (!found) tables.set(logical, (found = new Map()));
+        const key = `${reference.entity}\u0000${reference.column}`;
+        const existing = found.get(key);
+        if (!existing || (!existing.cascade && reference.cascade)) found.set(key, reference);
       }
-    const references = [...found.values()];
-    graph?.references.set(logical, references);
-    return references;
+    return new Map([...tables].map(([logical, found]) => [logical, [...found.values()]]));
   }
   /**
    * The relationship graph one delete operation walks: referencesTo per table and the

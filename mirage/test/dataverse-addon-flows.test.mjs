@@ -58,10 +58,15 @@ const SEED = {
   flowrun: [{ flowrunid: id(70), workflowid: W.runs, name: 'Invented run', status: 'Running' }],
 };
 
+// The handler waits for `gate`, so a test can hold a run in flight.
+let gate = Promise.resolve();
 const handlerPack = {
   id: 'flows-pack',
   dataverseMessages: {
-    RunDesktopFlow: async (ctx) => ({ status: 'Succeeded', outputs: { echo: ctx.args.inputs ?? null } }),
+    RunDesktopFlow: async (ctx) => {
+      await gate;
+      return { status: 'Succeeded', outputs: { echo: ctx.args.inputs ?? null } };
+    },
   },
 };
 
@@ -123,6 +128,7 @@ describe('desktop flow messages over HTTP', () => {
     await api?.close();
   });
 
+  const rowOf = (logical, pk, value) => store.state.tables[logical].find((row) => row[pk] === value);
   // A bound call: POST <entitySet>(<id>)/Microsoft.Dynamics.CRM.<name>. Returns the status and the JSON body.
   async function call(set, key, name, body = {}) {
     const result = await fetch(`${api.origin}/api/data/${VERSION}/${set}(${key})/Microsoft.Dynamics.CRM.${name}`, {
@@ -133,14 +139,6 @@ describe('desktop flow messages over HTTP', () => {
     const text = await result.text();
     return { status: result.status, body: text ? JSON.parse(text) : null };
   }
-  const rowOf = (logical, pk, value) => store.state.tables[logical].find((row) => row[pk] === value);
-  const waitFor = async (predicate) => {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      if (predicate()) return true;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    return false;
-  };
 
   it('every flow message is declared in $metadata', async () => {
     const metadata = await (
@@ -159,7 +157,9 @@ describe('desktop flow messages over HTTP', () => {
     assert.match(metadata, /Name="RunDesktopFlowResponse"/);
   });
 
-  it('run creates a session and the pack handler completes it', async () => {
+  it('run creates a session and the pack handler completes it as a task of the API scheduler', async () => {
+    const held = Promise.withResolvers();
+    gate = held.promise;
     const result = await call('workflows', W.handled, 'RunDesktopFlow', {
       inputs: '{"a":1}',
       connectionType: 1,
@@ -171,7 +171,14 @@ describe('desktop flow messages over HTTP', () => {
     const session = () => rowOf('flowsession', 'flowsessionid', result.body.flowsessionId);
     assert.equal(session().regardingobjectid, W.handled);
     assert.equal(session().triggertype, 3);
-    assert.ok(await waitFor(() => session().statuscode !== 2), 'the session leaves Running');
+    // The handler runs after the answer as a task of the API scheduler (queued or running, never an untracked timer),
+    // so it is cancelled with the API and drain() settles it.
+    assert.equal(session().statuscode, 2);
+    assert.equal(store.scheduler.status().pending, 1);
+    held.resolve();
+    gate = Promise.resolve();
+    await store.scheduler.drain();
+    assert.equal(store.scheduler.status().pending, 0);
     assert.equal(session().statuscode, 4);
     assert.equal(session().outputs, '{"echo":"{\\"a\\":1}"}');
     assert.ok(session().completedon);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { createModelDrivenMetadataIndex } from '../../lense/model-driven-metadata.mjs';
@@ -15,6 +15,11 @@ import { createInspectionProvenanceTransport } from '../../lense/inspection-prov
 import { interceptOrigin } from '../../lense/intercept.mjs';
 
 const chrome = sharedBrowser();
+// Tests that only serve native fixture pages and add files outside the Solution share one simulator; tests that edit
+// the Solution or simulated rows own theirs.
+const files = fileScope();
+let sharedApp;
+const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(files));
 const scope = { documentId: 'fixture-document', frameId: 'fixture-frame', uiEpoch: 1, sourceRevision: '1' };
 async function install(page, data) {
   await page.evaluate(
@@ -44,7 +49,7 @@ test(
   'native model-driven overlaid JavaScript attributes actual created DOM through acknowledged response bytes and opens only current callsites',
   { timeout: 30000 },
   async (t) => {
-    const { origin, root, solutionDir } = await modelDrivenFixture(t);
+    const { origin, root, solutionDir } = await readOnlyApp();
     const file = path.join(root, 'native-dom.js');
     const raw =
       '\ufeff// Invented native model-driven customization 🌿\r\n(() => { const element = document.createElement("section");\n window.fixtureDOMCount=(window.fixtureDOMCount||0)+1; element.id="fixture-script-created-"+window.fixtureDOMCount; element.textContent="Invented script node"; document.body.append(element); })();\n';
@@ -273,7 +278,7 @@ test(
   'native documented getObject associates only the outer iframe; requested IDs, hidden views and unloaded quick forms stay honest',
   { timeout: 30000 },
   async (t) => {
-    const { origin, root } = await modelDrivenFixture(t);
+    const { origin, root } = await readOnlyApp();
     const page = await chrome.page(t);
     await page.goto(origin + '/native-fixture');
     await page.setContent(
@@ -476,7 +481,7 @@ test(
   'actual Xray selection hydrates a cold native control beyond the form and control caps through the controller',
   { timeout: 30000 },
   async (t) => {
-    const { origin, root, solutionDir } = await modelDrivenFixture(t);
+    const { origin, root, solutionDir } = await readOnlyApp();
     const page = await chrome.page(t);
     await page.goto(origin + '/native-fixture');
     await page.setContent(

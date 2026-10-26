@@ -11,6 +11,7 @@ import { TOOL_OPTIONS, parseToolArgs } from '../tool-options.mjs';
 import { MIRAGE_TOOLS } from '../tool-registry.mjs';
 import { assertProjectOutput } from '../lib/project-output.mjs';
 import { withProcessSlot } from './process-slots.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
 // Resolves with the exit status instead of rejecting, so callers can assert failures too.
@@ -28,7 +29,8 @@ const runMirage = (args, timeout) =>
   );
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-'));
+  // The real path: reports name cache and state files as the OS resolves them (8.3 aliases expanded).
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'portal/web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
@@ -48,6 +50,8 @@ async function fixture(t) {
 }
 
 test('catalogue reports reuse their project cache and sweep selects the same project state', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const { root, config } = await fixture(t);
   const input = await resolveReportInputs({ config, site: 'synthetic' });
   assert.equal(input.cacheFile, path.join(root, '.paqvilo/simulator/synthetic/cache/solution-sources.json'));

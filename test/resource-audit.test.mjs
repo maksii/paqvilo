@@ -10,9 +10,10 @@ import { PortalModel } from '../lense/portal-model.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
 import { createFixture, SITE, HOME_ID } from './fixture.mjs';
 
+// No Git baseline: the audit is offline, never reads Git and skips .git.
 function fixture(t) {
   const fx = createFixture();
-  t.after(() => fx.cleanup());
+  t.after(fx.cleanup);
   return fx;
 }
 const audit = (fx, site = SITE) => auditResources(new PortalModel(fx.dir), site);
@@ -207,14 +208,15 @@ test('audit CLI is offline, reports all sites and strict mode fails on blocked c
     report.reports.map((item) => item.site),
     ['first', 'second'],
   );
-  assert.equal(run('--all', '--strict').status, 1);
+  // Exit code 1 is also what a crash returns; the JSON error names the actual refusal.
+  const refusal = (result) => [result.status, JSON.parse(result.stdout).errors.map((error) => error.code)];
+  assert.deepEqual(refusal(run('--all', '--strict')), [1, ['strict_failed']]);
   assert.equal(fs.existsSync(fx.file('.paqvilo')), false);
-  assert.equal(run('--all', '--site', 'first').status, 1);
+  assert.deepEqual(refusal(run('--all', '--site', 'first')), [1, ['invalid_argument']]);
 });
 
 test('duplicate active page URLs warn once and inactive single-extension web files stay inactive in dotted source roots', (t) => {
-  const fx = createFixture();
-  t.after(fx.cleanup);
+  const fx = fixture(t);
   for (const id of ['a', 'b'])
     fx.write(
       `web-pages/${id}/${id}.webpage.yml`,

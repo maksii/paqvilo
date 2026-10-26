@@ -22,6 +22,7 @@ import {
   canvasMsappRecord,
 } from '../lib/solution-inventory.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 const CONNECTOR_ID = '77777777-7777-4777-8777-777777777772';
 const BPF_ID = '77777777-7777-4777-8777-777777777773';
@@ -425,6 +426,8 @@ test('a YAML source-control repository is detected, imports its tables and envir
 });
 
 test('inventory keeps solution cache reuse: an unchanged rescan only hits and an unchanged previous scan is returned', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const root = await tempDir(t);
   await writeTree(root, CLASSIC);
   const cacheFile = path.join(root, '.paqvilo', 'solution-cache.json');

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
@@ -16,10 +17,15 @@ import { createMirageContext } from '../lib/mirage-context.mjs';
 import { SolutionFileCache } from '../lib/solution-cache.mjs';
 import { SCHEMA_PARSER_ID } from '../lib/solution-schema.mjs';
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
+
+// Watchers and runtimes are owned closers so they stop before their directories are removed
+// (t.after hooks run in registration order).
 
 async function workspace(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-cost-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
 
@@ -74,6 +80,8 @@ test('portal restart consumes one integrity-checked restore and rejects a stale 
 });
 
 test('scan reuse validates file inventory, order and content identity before sharing parsed facts', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  const settled = settleFileTimes(t);
   const root = await workspace(t),
     file = path.join(root, 'AppModules', 'x_app', 'AppModule.xml');
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -81,6 +89,8 @@ test('scan reuse validates file inventory, order and content identity before sha
   const scan = await scanSolutionSources([root]);
   assert.equal(await scanSolutionSources([root], { previous: scan }), scan);
   assert.notEqual(await scanSolutionSources([root], { previous: scan, order: 'derived' }), scan);
+  // A same-size edit, possibly in the same file-time tick: the real clock lets the racy window catch it.
+  settled.restore();
   await fs.writeFile(file, '<AppModule><UniqueName>x_two</UniqueName></AppModule>');
   const changed = await scanSolutionSources([root], { previous: scan });
   assert.notEqual(changed, scan);
@@ -95,8 +105,9 @@ test('scan reuse validates file inventory, order and content identity before sha
 });
 
 test('bound contexts share immutable schema parses and invalidate changed Solution and portal sources', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const config = path.join(fixture.root, 'catalogue.json');
   const profile = path.join(fixture.root, 'profile.json');
   const writeProfile = (value) =>
@@ -313,7 +324,7 @@ test('recursive source watching uses bounded Windows handles, observes atomic sa
     ignored: (file) => file.endsWith('.tmp'),
     awaitWriteFinish: { stabilityThreshold: 20 },
   });
-  t.after(() => watcher.close());
+  ownedFixture(t).add(() => watcher.close());
   await once(watcher, 'ready');
   if (process.platform === 'win32') assert.equal(watcher.nativeWatchCount(), root.split(path.sep).length);
   const observed = new Promise((resolve, reject) => {
@@ -344,7 +355,7 @@ test(
     await fs.mkdir(root, { recursive: true });
     await fs.writeFile(file, '<Entity Name="initial"/>');
     const watcher = watchSources([root], { ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: 20 } });
-    t.after(() => watcher.close());
+    ownedFixture(t).add(() => watcher.close());
     await once(watcher, 'ready');
     const waitFor = (wanted) =>
       new Promise((resolve, reject) => {
@@ -378,7 +389,7 @@ test(
 
 test('the shell index and selected-table transport exclude unrelated forms and re-evaluate each caller', async (t) => {
   const fixture = await performanceFixture({ tables: 16, records: 16, formsPerTable: 4 });
-  t.after(fixture.cleanup);
+  ownedFixture(t).remove(fixture.cleanup);
   const sim = await createSimulator({
     runtime: { kind: 'model-driven' },
     solutionRoots: fixture.solutionRoots,
@@ -397,7 +408,7 @@ test('the shell index and selected-table transport exclude unrelated forms and r
       ],
     },
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const read = async (route, cookie) => {
     const response = await fetch(sim.url + '/_apps/api/' + route, {
       headers: { 'x-mirage-provenance-format': '1', ...(cookie ? { cookie } : {}) },
@@ -470,6 +481,39 @@ test('quadrupling unrelated forms does not grow selected-table metadata transfer
   assert.ok(Math.abs(sizes[1] - sizes[0]) < 128, `${sizes[0]} -> ${sizes[1]} bytes`);
 });
 
+test('selected-table provenance opens a source file no more often when more columns and controls name it', async () => {
+  const opensPerFile = [];
+  for (const columns of [2, 16]) {
+    const fixture = await performanceFixture({ tables: 1, columns, records: 1 });
+    let sim;
+    const openSync = fsSync.openSync;
+    try {
+      sim = await createSimulator({
+        runtime: { kind: 'model-driven' },
+        solutionRoots: fixture.solutionRoots,
+        watch: false,
+      });
+      const root = fsSync.realpathSync.native(fixture.root),
+        opens = new Map();
+      fsSync.openSync = (file, ...rest) => {
+        if (typeof file === 'string' && file.startsWith(root)) opens.set(file, (opens.get(file) ?? 0) + 1);
+        return openSync(file, ...rest);
+      };
+      const response = await fetch(sim.url + '/_apps/api/metadata/x_scale0');
+      fsSync.openSync = openSync;
+      assert.equal(response.status, 200);
+      assert.ok((await response.json()).provenanceRefs.length > columns, 'every column and control carries provenance');
+      assert.ok(opens.size > 0, 'the first catalogue request reads its source files');
+      opensPerFile.push(Math.max(...opens.values()));
+    } finally {
+      fsSync.openSync = openSync;
+      await sim?.close();
+      await fixture.cleanup();
+    }
+  }
+  assert.equal(opensPerFile[1], opensPerFile[0], `${opensPerFile[0]} -> ${opensPerFile[1]} opens of one source file`);
+});
+
 test('form/view-only source layers retain mapped OData columns through public list and record routes and reload', async (t) => {
   const initial = {
     version: 1,
@@ -492,8 +536,7 @@ test('form/view-only source layers retain mapped OData columns through public li
     },
     tables: { x_item: [{ x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Mapped row', x_quantity: 2 }] },
   };
-  const fixture = await modelDrivenFixture(t, { stateFile: null, initial });
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   await fs.unlink(path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml'));
   const sim = await fixture.start({
     stateFile: null,
@@ -516,7 +559,7 @@ test('form/view-only source layers retain mapped OData columns through public li
       ],
     },
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const read = async (id, options, status = 200, cookie) => {
     const route =
       '/_apps/api/tables/x_item' +

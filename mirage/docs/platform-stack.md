@@ -173,5 +173,5 @@ Runtime modules are flat files in `mirage/lib/`; `model-driven/` holds the model
 - Unit and integration tests are `mirage/test/<area>.test.mjs` on the Node test runner. They use invented schemas and `x_` prefixes, port 0, temporary directories and loopback fixtures only.
 - Contract modules share `mirage/test/contract-module-fixture.mjs`, which starts a loopback Dataverse API with the module installed.
 - Storage providers run the shared contract suite (`runStorageContract`, `STORAGE_CONTRACT_CASES`); `mirage/test/storage-provider-contract.test.mjs` runs it against the core providers.
-- The write-volume gate `mirage/test-volume/write-volume.test.mjs` is outside the ordinary suite; see [Runtime performance](runtime-performance.md).
+- The write-volume gate `mirage/test-volume/write-volume.test.mjs` runs after the ordinary suite in the Mirage unit lane; see [Runtime performance](runtime-performance.md).
 - `test/public-api.test.mjs` pins the public exports listed in `test/fixtures/public-api.json`.

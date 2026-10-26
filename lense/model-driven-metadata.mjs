@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { racyStat } from './file-cache.mjs';
 import { compileForm, parseRibbonCommands } from '../mirage/lib/model-driven/solution.mjs';
 import { parseSolutionXml } from '../mirage/lib/solution-xml.mjs';
 import { modelDrivenKey, modelDrivenControlKey } from '../mirage/lib/model-driven/provenance-registry.mjs';
@@ -337,7 +338,8 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
         dev: opened.dev,
         ino: opened.ino,
       };
-      files.set(canonical, result);
+      // A same-tick rewrite keeps every stat field: only a settled file's revision is reused.
+      if (!racyStat(opened)) files.set(canonical, result);
       while (files.size > 16 || [...files.values()].reduce((sum, item) => sum + item.size, 0) > 16 * 1024 * 1024)
         files.delete(files.keys().next().value);
       return result;

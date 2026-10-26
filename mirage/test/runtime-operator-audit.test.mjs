@@ -99,9 +99,11 @@ test('operator configuration reads avoid cloning unrelated business tables', asy
 
 test('a bridge cleanup failure still releases the runtime HTTP listener', async (t) => {
   const root = await fs.mkdtemp(join(tmpdir(), 'runtime-close-audit-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fixture(root);
   const app = await createSimulator({ sourceDir: root, initial: initial(), watch: false });
+  // Releases the runtime when an assertion fails before the final close below.
+  ownedFixture(t).add(() => app.close());
   const close = app.live.close.bind(app.live);
   let fail = true;
   app.live.close = async () => {

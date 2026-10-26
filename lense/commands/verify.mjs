@@ -751,12 +751,12 @@ export default async function verify(cfg, args) {
     await cleanup('interception', () => detach?.());
     await cleanup('browser', () => close?.());
     const kept = Boolean(process.env.PAQVILO_KEEP_TEMP);
+    // Windows can keep files of an exited browser busy for seconds (observed ~5 s under load:
+    // chrome_debug.log of the headless shell). Retry without blocking the event loop; the
+    // linear backoff waits up to 11 s before the cleanup is reported incomplete.
     if (!kept)
-      // Windows can retain a retiring process/directory handle until the next
-      // event-loop turn. Keep the existing bounded retry policy asynchronous;
-      // synchronous retries prevent those scheduled releases from running.
       await cleanup('temporary sources', () =>
-        fs.promises.rm(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }),
+        fs.promises.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }),
       );
     if (report) {
       report.cleanup = {

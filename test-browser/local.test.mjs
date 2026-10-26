@@ -8,6 +8,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { attachSession } from '../lense/browser.mjs';
 import { enablePanel } from '../lense/panel.mjs';
@@ -68,7 +69,7 @@ test(
       fx.cleanup();
     });
     ownedFixture(t).remove(async () => {
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
 
     fx.write(PAGE_JS, 'window.inlineValue = "baseline";\n');

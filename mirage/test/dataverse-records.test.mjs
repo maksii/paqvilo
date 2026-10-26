@@ -202,8 +202,9 @@ test('wide read definitions resolve original metadata once per list and retain o
   assert.equal(result.body['statuscode@OData.Community.Display.V1.FormattedValue'], 'Observed active');
   assert.equal(result.body.extra79, 'Value 79');
   assert.ok(definitionsRead > 0);
+  // One source resolution per definition list; resolving per field would read it once for each of the 80+ columns.
   assert.ok(
-    originalRead <= definitionsRead + 10,
+    originalRead <= definitionsRead,
     `${originalRead} source resolutions for ${definitionsRead} definition lists`,
   );
 });

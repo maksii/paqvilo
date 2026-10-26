@@ -102,7 +102,6 @@ async function searchSite(t, { settings = [['Search/EnableAdditionalEntities', '
   const sim = await createSimulator({
     sourceDir: path.join(dir, 'portal'),
     solutionRoots: [path.join(dir, 'solution')],
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     initial,
@@ -260,7 +259,6 @@ test('knowledge article eligibility does not depend on the Portal Search view co
   const sim = await createSimulator({
     sourceDir: path.join(dir, 'portal'),
     solutionRoots: [path.join(dir, 'solution')],
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     initial,

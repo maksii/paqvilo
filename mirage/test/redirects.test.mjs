@@ -81,7 +81,7 @@ const files = {
 
 async function exportDir(t, overrides = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-routing-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries({ ...files, ...overrides })) {
     if (body === null) continue;
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
@@ -92,8 +92,8 @@ async function exportDir(t, overrides = {}) {
 
 async function simulator(t, overrides = {}) {
   const dir = await exportDir(t, overrides);
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), port: 0, watch: false });
-  t.after(() => app.close());
+  const app = await createSimulator({ sourceDir: dir, port: 0, watch: false });
+  ownedFixture(t).add(() => app.close());
   // Portal routes take their identity from the session cookie only (anonymous without it).
   let session = {};
   const get = (target, init = {}) =>
@@ -118,12 +118,11 @@ test('an evidenced 301 redirect observation changes record responses, preserving
   assert.equal(resolveUnmatchedRoute(portal, target).status, 301);
   const app = await createSimulator({
     sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     observed: { redirect301: 'temporary', evidence: 'fixture/first-response.json' },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   for (const headers of [{}, signInHeaders(app, 'owned-contact', { roles: [] })]) {
     const response = await fetch(app.url + '/go', { redirect: 'manual', headers });
     assert.equal(response.status, 302);
@@ -144,12 +143,11 @@ test('observed marker-only redirect failure preserves higher-priority URL and pa
   const dir = await exportDir(t);
   const app = await createSimulator({
     sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     observed: { siteMarkerRedirect: 'null-reference', evidence: 'invented/root-child-marker-errors.json' },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   app.portal.redirects.push({ inboundUrl: 'missing-marker', siteMarkerId: 'absent' });
   for (const route of ['/area', '/missing-marker']) {
     const response = await fetch(app.url + route, { redirect: 'manual' });
@@ -362,12 +360,11 @@ test('an observed sign-in path applies when the export sets no LoginPath; an exp
   const dir = await exportDir(t);
   const app = await createSimulator({
     sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     observed,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const get = (target) => fetch(app.url + target, { redirect: 'manual' });
   const first = await get('/secure/');
   assert.equal(first.status, 302);
@@ -419,7 +416,6 @@ test('an observed sign-in path applies when the export sets no LoginPath; an exp
   await assert.rejects(
     createSimulator({
       sourceDir: dir,
-      stateFile: path.join(dir, 'other-state.json'),
       port: 0,
       watch: false,
       observed: { loginPath: '/SignIn' },
@@ -668,7 +664,6 @@ test('web files are served inline or as attachments from their Content-Dispositi
   }
   const enhanced = await createSimulator({
     sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
   });
@@ -693,12 +688,11 @@ test('headers follow the response kind: pages, web files and the token fragment,
   });
   const app = await createSimulator({
     sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     observed,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const get = (target) => fetch(app.url + target, { redirect: 'manual' });
   const pick = (response, names) => Object.fromEntries(names.map((name) => [name, response.headers.get(name)]));
   const names = [
@@ -832,7 +826,7 @@ test('site header settings: one header per HTTP/* setting, nonce policies and co
 
 test('enhanced-model redirect components (type 30) import and route like adx_redirect records', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-enhanced-redirects-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const xmlText = (value) =>
     value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const component = (id, type, name, content, statecode = 0) => [

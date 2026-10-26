@@ -22,7 +22,7 @@ import { resolveMirageConfig } from '../../lense/config.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
 
 test('explicit C# sources stay confined to trusted roots and survive generated-project root normalization', async (t) => {
-  const { dir, portal, solution } = await pluginFixture(t);
+  const { dir, portal, solution } = await pluginFixture(t, { simulator: false });
   const codeDir = path.join(dir, 'components/PluginRules');
   await fs.mkdir(codeDir, { recursive: true });
   const codeFile = path.join(codeDir, 'Rules.cs');
@@ -119,7 +119,7 @@ test('PAC assembly attributes and GUID-only messages resolve only through export
 });
 
 test('solution plugin facts preserve assembly/type/step registrations and exact source dependencies', async (t) => {
-  const { solution } = await pluginFixture(t);
+  const { solution } = await pluginFixture(t, { simulator: false });
   const scan = await scanSolutionSources([solution]);
   const metadata = await importSolutionMetadata([solution], { scan });
   assert.equal(metadata.plugins.assemblies[0].name, 'Invented.WidgetRules');

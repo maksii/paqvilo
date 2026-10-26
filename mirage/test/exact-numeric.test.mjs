@@ -1,5 +1,6 @@
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -44,6 +45,8 @@ const profile = {
   evidence: 'Invented exact numeric column source',
   grants: [{ entity: 'precisionrow', operations: ['read', 'create', 'update', 'delete'] }],
 };
+// A hang guard for the one-file csc.exe build of the invented plug-in; a normal build finishes in about a second.
+const COMPILE_TIMEOUT_MS = 20_000;
 const text = (value) => (typeof value === 'object' ? value.value : String(value));
 const typed = (type, value) => ({ $type: type, value });
 
@@ -276,11 +279,11 @@ test('Loopback API reads and writes numeric JSON literals without rounding their
 
 test(
   'Original DLL retains Int64/Decimal/Money through service writes and actual SDK query/retrieval casts',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-exact-clr-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'PrecisionOriginal.cs'),
       assembly = path.join(root, 'PrecisionOriginal.dll');
     await fs.writeFile(
@@ -296,7 +299,7 @@ var link=q.AddLink("precisionrow","precisionrowid","precisionrowid");link.Entity
     const build = spawnSync(
       path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
       ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000 },
+      { shell: false, windowsHide: true, encoding: 'utf8', timeout: COMPILE_TIMEOUT_MS },
     );
     assert.equal(build.status, 0, build.stdout + build.stderr);
     const runtime = await prepareClrRuntime({
@@ -356,7 +359,7 @@ var link=q.AddLink("precisionrow","precisionrowid","precisionrowid");link.Entity
     );
     const hosts = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
     assert.equal(hosts.length, 1);
-    assert.ok(hosts.every((note) => note.absenceVerified));
+    assert.equal(hosts[0].absenceVerified, true, 'the owned CLR host is verified gone');
     if (process.env.PAQ_TEST_CLR_EVIDENCE) {
       const hash = async (file) =>
         createHash('sha256')

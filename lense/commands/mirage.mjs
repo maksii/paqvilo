@@ -195,6 +195,43 @@ export function processIdentity(pid) {
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
 
+/**
+ * processIdentity() for several PIDs. On Windows one PowerShell start (about half a second) reads
+ * them all instead of one start per PID; a PID it does not answer falls back to processIdentity().
+ * @returns {Map<number, string|null>}
+ */
+export function processIdentities(pids) {
+  const unique = [...new Set(pids)].filter((pid) => Number.isInteger(pid) && pid > 0);
+  const identities = new Map();
+  if (process.platform === 'win32' && unique.length > 1) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const result = spawnSync(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          // Each PID is read on its own: a missing or inaccessible process yields an empty identity.
+          `$ErrorActionPreference = 'Stop'; foreach ($id in ${unique.join(',')}) { try { "$id=$((Get-Process -Id $id).StartTime.ToUniversalTime().Ticks)" } catch { "$id=" } }`,
+        ],
+        { encoding: 'utf8', windowsHide: true, timeout: 15_000 },
+      );
+      if (result.error || result.signal != null) {
+        // Three timed-out reads leave every identity unread, as processIdentity() does.
+        if (attempt === 2) for (const pid of unique) identities.set(pid, null);
+        continue;
+      }
+      for (const line of result.stdout.split(/\r?\n/)) {
+        const match = /^(\d+)=(\d*)$/.exec(line.trim());
+        if (match && unique.includes(Number(match[1]))) identities.set(Number(match[1]), match[2] || null);
+      }
+      break;
+    }
+  }
+  for (const pid of unique) if (!identities.has(pid)) identities.set(pid, processIdentity(pid));
+  return identities;
+}
+
 // Startup must keep its heartbeat and cancellation responsive while Windows
 // resolves process ownership. The synchronous public helper remains for callers.
 const executeFile = promisify(execFile);
@@ -460,9 +497,13 @@ export async function stopOwnedSessions({
   const stale = [],
     targets = [],
     unverified = [];
+  const known =
+    identityOf === processIdentity
+      ? processIdentities(owned.filter((entry) => isAlive(entry.pid)).map((entry) => entry.pid))
+      : null;
   for (const entry of owned) {
     const alive = isAlive(entry.pid);
-    const current = alive ? identityOf(entry.pid) : null;
+    const current = alive ? (known?.has(entry.pid) ? known.get(entry.pid) : identityOf(entry.pid)) : null;
     // A live process whose start identity was never recorded or cannot be read now is neither
     // proof of a reused process ID nor safe to signal: its record stays for a later stop.
     if (alive && (!entry.processIdentity || current == null)) {
@@ -572,7 +613,21 @@ export async function stopOwnedSessions({
 export async function mirageStatus(paths = DEFAULT_PATHS) {
   const owned = await ownedSessions(paths);
   const found = await discoveries(paths);
-  const identities = new Map();
+  // Read every identity this status can compare in one batch, not one PowerShell start per PID.
+  const identities = processIdentities([
+    ...found
+      .filter(
+        (session) =>
+          session.processAlive &&
+          owned.some(
+            (item) => item.pid === session.pid && item.discovery === session.discovery && item.processIdentity,
+          ),
+      )
+      .map((session) => session.pid),
+    ...owned
+      .filter((entry) => !found.some((session) => session.pid === entry.pid) && isAlive(entry.pid))
+      .map((entry) => entry.pid),
+  ]);
   const identity = (pid) => {
     if (!identities.has(pid)) identities.set(pid, processIdentity(pid));
     return identities.get(pid);

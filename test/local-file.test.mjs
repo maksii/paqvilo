@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { readLocalFile, readLocalFileSync } from '../lense/local-file.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 test(
   'Windows descriptor reads avoid legacy component traversal while retaining every pathname check',
@@ -37,7 +38,7 @@ test(
 );
 
 test('an expected canonical pathname refuses a link inserted after caller validation before opening bytes', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-read-expected-'));
+  const root = tempDirSync('paqvilo-read-expected-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const source = path.join(root, 'source'),
     hidden = path.join(root, '.paqvilo');
@@ -54,7 +55,7 @@ test('an expected canonical pathname refuses a link inserted after caller valida
 });
 
 test('descriptor reads preserve bytes and reject oversize, directories and escaping roots', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-read-'));
+  const root = tempDirSync('paqvilo-read-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const source = path.join(root, 'source');
   fs.mkdirSync(source);
@@ -76,7 +77,7 @@ test('descriptor reads preserve bytes and reject oversize, directories and escap
 });
 
 test('path replacement after opening never returns replacement bytes', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-swap-'));
+  const root = tempDirSync('paqvilo-swap-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, 'file');
   fs.writeFileSync(file, 'original');
@@ -100,7 +101,7 @@ test('path replacement after opening never returns replacement bytes', async (t)
 });
 
 test('a file growing during a descriptor read is bounded and rejected', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-grow-'));
+  const root = tempDirSync('paqvilo-grow-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, 'file');
   fs.writeFileSync(file, 'safe');
@@ -123,7 +124,7 @@ test('a file growing during a descriptor read is bounded and rejected', async (t
 });
 
 test('adjacent 64-bit file identities cannot collapse into one rounded Number', async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-inode-'));
+  const root = tempDirSync('paqvilo-inode-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const file = path.join(root, 'file');
   fs.writeFileSync(file, 'original');

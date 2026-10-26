@@ -325,11 +325,15 @@ function uuidV5(namespace, name) {
  * in lower case (relationship schema names match case-insensitively).
  */
 export function metadataComponentId(organizationId, kind, logical, name = null) {
-  // Every part is lower case: logical names, key names and global choice names match case-insensitively.
+  return uuidV5(organizationId, metadataComponentName(kind, logical, name)).toLowerCase();
+}
+// The name a component id derives from. Every part is lower case: logical names, key names and global choice
+// names match case-insensitively.
+function metadataComponentName(kind, logical, name) {
   const parts = (kind === 'relationship' ? [name ?? logical] : [logical, name])
     .filter((part) => part != null)
     .map((part) => String(part).toLowerCase());
-  return uuidV5(organizationId, `${kind}:${parts.join(':')}`).toLowerCase();
+  return `${kind}:${parts.join(':')}`;
 }
 
 // Localized label block; labels is an lcid-keyed object (Solution exports), fallback a plain text.
@@ -730,6 +734,7 @@ export function createMetadataService({
   organizationId,
   schema,
   mappings,
+  mapping,
   lcid = 1033,
   virtualTables,
   globalOptionSets,
@@ -741,11 +746,25 @@ export function createMetadataService({
   const read = (source) => (typeof source === 'function' ? source() : source) ?? null;
   const schemaRoot = () => read(schema);
   const mappingRoot = () => read(mappings) ?? {};
+  // mapping(logical): mappings()[logical] without building every mapping (source runs per table and column).
+  const mappingOf = (logical) => (mapping ? (mapping(logical) ?? null) : own(mappingRoot(), logical));
   const virtualRoot = () => read(virtualTables) ?? {};
   // relationshipsOf reads only state.mappings; the service has the mappings, not the store.
   const storeOf = () => ({ state: { mappings: mappingRoot() } });
   const baseAt = clock();
-  const metadataIdOf = (kind, logical, name = null) => metadataComponentId(organizationId, kind, logical, name);
+  // A GUID lookup derives the id of every table; each derived name is hashed once per service.
+  const metadataIds = new Map();
+  const metadataIdOf = (kind, logical, name = null) => {
+    const component = metadataComponentName(kind, logical, name);
+    let id = metadataIds.get(component);
+    if (id === undefined) {
+      id = uuidV5(organizationId, component).toLowerCase();
+      // Request-supplied names derive ids too: the bound keeps the memo from growing without limit.
+      if (metadataIds.size >= 65536) metadataIds.clear();
+      metadataIds.set(component, id);
+    }
+    return id;
+  };
 
   function logicalNames() {
     const names = [
@@ -761,7 +780,7 @@ export function createMetadataService({
     const logical = String(name ?? '').toLowerCase();
     const root = schemaRoot();
     const s = own(root?.tables, logical);
-    const mapping = own(mappingRoot(), logical);
+    const mapping = mappingOf(logical);
     const virtual = own(virtualRoot().tables, logical);
     const m = mapping ?? virtual?.mapping ?? null;
     if (!s && !m) return null;
@@ -1121,8 +1140,9 @@ export function createMetadataService({
         });
       }
     }
+    const mappingStore = storeOf();
     for (const logical of logicalNames())
-      for (const [nav, rel] of Object.entries(relationshipsOf(storeOf(), logical, source(logical).m?.relationships)))
+      for (const [nav, rel] of Object.entries(relationshipsOf(mappingStore, logical, source(logical).m?.relationships)))
         add(fromMapping(logical, nav, rel));
     for (const logical of logicalNames())
       for (const rel of implicitRelationships(source(logical), { existing: [...records.keys()] })) add(rel);

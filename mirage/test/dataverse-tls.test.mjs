@@ -11,8 +11,13 @@ import { createSelfSignedCertificate, ensureCertificate } from '../lib/dataverse
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const DAY = 86_400_000;
+const HOUR = 3_600_000;
+// A fixed issue time (whole seconds, as X.509 times are) so validity bounds are exact, not wall-clock dependent.
+const ISSUED = Date.parse('2026-01-01T00:00:00.000Z');
 const execFileAsync = promisify(execFile);
-const python = spawnSync('python', ['--version']).status === 0 ? 'python' : null;
+// The first interpreter that runs: python3 (Linux, macOS), python (Windows) or the Windows py launcher. A Windows
+// app-execution alias that only opens the Store exits non-zero, so it counts as not installed.
+const python = ['python3', 'python', 'py'].find((name) => spawnSync(name, ['--version']).status === 0) ?? null;
 const openssl = spawnSync('openssl', ['version']).status === 0;
 // DER of the nameConstraints OID (2.5.29.30).
 const NAME_CONSTRAINTS_OID = Buffer.from('0603551d1e', 'hex');
@@ -37,7 +42,7 @@ function get(port, options = {}) {
 }
 
 test('generated certificate is a CA-flagged self-signed loopback certificate', () => {
-  const { key, cert, fingerprint256, notAfter } = createSelfSignedCertificate();
+  const { key, cert, fingerprint256, notAfter } = createSelfSignedCertificate({ clock: () => ISSUED });
   const x509 = new crypto.X509Certificate(cert);
 
   assert.match(x509.subject, /CN=Paqvilo Mirage Dataverse simulator/);
@@ -51,8 +56,9 @@ test('generated certificate is a CA-flagged self-signed loopback certificate', (
   assert.match(x509.fingerprint256, /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
   assert.equal(fingerprint256, x509.fingerprint256);
   assert.equal(new Date(notAfter).getTime(), new Date(x509.validTo).getTime());
-  const lifetimeDays = (new Date(x509.validTo).getTime() - Date.now()) / DAY;
-  assert.ok(Math.abs(lifetimeDays - 825) < 0.01, `validTo ${lifetimeDays} days ahead`);
+  // Valid for 825 days from issue, and from one hour before it (tolerates a client clock running behind).
+  assert.equal(new Date(x509.validTo).getTime(), ISSUED + 825 * DAY);
+  assert.equal(new Date(x509.validFrom).getTime(), ISSUED - HOUR);
 
   // Node does not expose keyUsage bits (its keyUsage is EKU), so check the DER: critical, BIT STRING 03 02 02 a4.
   const der = Buffer.from(cert.replace(/-----[^-]+-----|\s/g, ''), 'base64');
@@ -121,14 +127,17 @@ test('ensureCertificate reuses a valid file and regenerates one that expires wit
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'nested', 'mirage.pem');
 
-  const first = await ensureCertificate(file);
+  const first = await ensureCertificate(file, { clock: () => ISSUED });
   assert.equal(first.file, file);
   assert.match(await readFile(file, 'utf8'), /-----BEGIN CERTIFICATE-----[\s\S]+-----BEGIN PRIVATE KEY-----/);
-  const second = await ensureCertificate(file);
+  const second = await ensureCertificate(file, { clock: () => ISSUED });
   assert.equal(second.fingerprint256, first.fingerprint256);
   assert.equal(second.key, first.key);
 
-  const nearExpiry = await ensureCertificate(file, { clock: () => Date.now() + 820 * DAY });
+  // 825 days of validity: one second more than 7 days left is reused, exactly 7 days left is renewed.
+  const renewAt = ISSUED + (825 - 7) * DAY;
+  assert.equal((await ensureCertificate(file, { clock: () => renewAt - 1000 })).fingerprint256, first.fingerprint256);
+  const nearExpiry = await ensureCertificate(file, { clock: () => renewAt });
   assert.notEqual(nearExpiry.fingerprint256, first.fingerprint256);
 });
 
@@ -238,6 +247,29 @@ test('a reused file is regenerated when it does not cover the requested hosts', 
   const widened = await ensureCertificate(file, { hosts: ['127.0.0.1', 'localhost', 'mirage-extra.localhost'] });
   assert.notEqual(widened.fingerprint256, first.fingerprint256);
   assert.equal(new crypto.X509Certificate(widened.cert).checkHost('mirage-extra.localhost'), 'mirage-extra.localhost');
+});
+
+test('a reused file whose key does not match its certificate, or that does not parse, is regenerated', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'paqvilo-tls-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'mirage.pem');
+  const one = createSelfSignedCertificate(),
+    other = createSelfSignedCertificate();
+  await writeFile(file, one.cert + other.key);
+  const mismatched = await ensureCertificate(file);
+  assert.notEqual(mismatched.fingerprint256, one.fingerprint256);
+  assert.equal(
+    new crypto.X509Certificate(mismatched.cert).checkPrivateKey(crypto.createPrivateKey(mismatched.key)),
+    true,
+  );
+  assert.equal((await ensureCertificate(file)).fingerprint256, mismatched.fingerprint256, 'the replacement is reused');
+  await writeFile(
+    file,
+    '-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydGlmaWNhdGU=\n-----END CERTIFICATE-----\n' + other.key,
+  );
+  const unparsable = await ensureCertificate(file);
+  assert.notEqual(unparsable.fingerprint256, mismatched.fingerprint256);
+  assert.equal(await readFile(file, 'utf8'), unparsable.cert + unparsable.key, 'the replacement is written');
 });
 
 test('ensureCertificate(null) returns an in-memory CA with no file', async () => {

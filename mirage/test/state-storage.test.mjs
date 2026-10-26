@@ -131,8 +131,26 @@ test('stale and concurrent runtimes cannot replace committed rows', async (t) =>
 
 test('external equal-size edits conflict and checksum corruption is rejected at restart', async (t) => {
   const { file, store } = await workspace(t);
-  const text = await fs.readFile(file, 'utf8');
-  await fs.writeFile(file, text.replace('original', 'modified'));
+  // One descriptor reads, stamps and rewrites the state file, so the edit lands on the file that was inspected.
+  const handle = await fs.open(file, 'r+');
+  try {
+    const text = await handle.readFile('utf8');
+    // An equal-size edit inside the file-time tick of the last save keeps every stat field, the documented limit of
+    // the external-writer check (Linux stamps ctime from a coarse clock). Edit once that tick has passed.
+    const saved = await handle.stat({ bigint: true }),
+      probe = await fs.open(file + '.tick', 'w');
+    try {
+      do await probe.write('x', 0);
+      while ((await probe.stat({ bigint: true })).ctimeNs <= saved.ctimeNs);
+    } finally {
+      await probe.close();
+      await fs.rm(file + '.tick');
+    }
+    const edited = Buffer.from(text.replace('original', 'modified'));
+    await handle.write(edited, 0, edited.length, 0);
+  } finally {
+    await handle.close();
+  }
   await assert.rejects(store.update('items', 'one', { name: 'overwrite' }), { code: 'StateConflict' });
   assert.equal(store.state.tables.item[0].name, 'original');
   await assert.rejects(readStateFile(file), { code: 'StateIntegrity' });

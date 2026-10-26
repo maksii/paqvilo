@@ -179,10 +179,8 @@ test('an action trigger fires only for an action assigned to its catalog and cat
     store.transact(() =>
       store.recordCommittedEvent('', 'action', {}, [], { message: 'x_Notify', table: null, inputs: {}, outputs: {} }),
     );
-  const settle = async () => {
-    await scheduler.runDue();
-    for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
-  };
+  // The committed action event stages a job; the manual scheduler's runDue() runs it and returns once its run settled.
+  const settle = () => scheduler.runDue();
   const ROOT = '77777777-7777-4777-8777-00000000c001',
     EVENTS = '77777777-7777-4777-8777-00000000c002',
     OTHER = '77777777-7777-4777-8777-00000000c003',
@@ -216,8 +214,7 @@ test('an action trigger fires only for an action assigned to its catalog and cat
     });
   });
   await perform();
-  for (let i = 0; i < 50 && !runs.list({ processId: PERFORMED }).some((r) => r.status === 'Succeeded'); i++)
-    await settle();
+  await settle();
   assert.deepEqual(
     runs.list({ processId: PERFORMED }).map((r) => r.status),
     ['Succeeded'],

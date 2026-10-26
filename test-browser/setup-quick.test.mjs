@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import net from 'node:net';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
@@ -14,6 +15,28 @@ import { startSetupServer } from '../lense/setup/server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+// Setup gives a new project the first free port from 8787 (and 8790 for the Web API) when it writes the file; every
+// concurrent run on this computer picks the same ones, so a later start can lose them. The written project moves to a
+// port the system assigns, and the Web API to a free one at every start (port 0), before it starts.
+async function ownPorts(config) {
+  const document = YAML.parse(await fs.readFile(config, 'utf8'));
+  for (const site of Object.values(document.sites)) {
+    const server = net.createServer();
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address();
+    await new Promise((resolve) => server.close(resolve));
+    site.environments.local = `http://127.0.0.1:${port}`;
+    site.mirage.port = port;
+    if (site.mirage.dataverse?.port) site.mirage.dataverse.port = 0;
+  }
+  await fs.writeFile(config, YAML.stringify(document));
+}
+// Waits for the started preview, or fails at once with the reason the page shows when it could not start.
+async function started(run) {
+  const running = run.getByText(/Your preview is running on this computer/);
+  await running.or(run.getByRole('alert')).first().waitFor({ timeout: 180_000 });
+  assert.equal(await running.count(), 1, await run.innerText());
+}
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -58,12 +81,11 @@ test(
     assert.equal(written.sites[name].source, 'exports/site');
     assert.equal(written.sites[name].mirage.simulation.level, 'dry-run');
     assert.match(await page.locator('#quick-files .quick-summary').innerText(), /Website: exports\/site/);
+    assert.equal(written.sites[name].environments.local, `http://127.0.0.1:${written.sites[name].mirage.port}`);
+    await ownPorts(config);
 
     await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).click();
-    await page
-      .locator('#quick-run')
-      .getByText(/Your preview is running on this computer/)
-      .waitFor({ timeout: 180_000 });
+    await started(page.locator('#quick-run'));
     const website = await page
       .locator('#quick-run')
       .getByRole('link', { name: /Open website/ })
@@ -150,6 +172,7 @@ test(
     assert.equal(saved.mirage.presetMode, 'bootstrap');
     delete saved.mirage.dataPacks;
     await fs.writeFile(config, YAML.stringify({ ...plain, sites: { [name]: saved } }));
+    await ownPorts(config);
     await page.getByRole('button', { name: 'Refresh status' }).click();
 
     await page
@@ -158,7 +181,7 @@ test(
       .click();
     const run = page.locator('#guidance-run');
     await run.getByRole('button', { name: 'Start preview' }).click();
-    await run.getByText(/Your preview is running on this computer/).waitFor({ timeout: 180_000 });
+    await started(run);
     assert.equal((await fetch(await run.getByRole('link', { name: /Open website/ }).getAttribute('href'))).status, 200);
     assert.match(await run.innerText(), /Dataverse Web API for your scripts and tests/);
     await run.getByRole('button', { name: 'Stop' }).click();

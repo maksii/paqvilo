@@ -445,43 +445,47 @@ test(
 );
 
 test(
-  'verify cleanup permits a scheduled Windows handle release without blocking the event loop',
-  { timeout: 30_000, skip: process.platform !== 'win32' && 'Windows current-directory handles prevent deletion' },
+  'verify keeps its event loop running while a busy profile file blocks temporary-copy removal',
+  {
+    timeout: 60_000,
+    // Exclusive (non-shared) file handles that block deletion are a Windows capability.
+    skip: process.platform !== 'win32' && 'mandatory file locks exist only on Windows',
+  },
   async (t) => {
     const fx = await fixture(t, 'classic');
     const launch = chromium.launchPersistentContext;
-    const log = console.log;
-    let child, closed, temporaryWork;
-    t.after(async () => {
-      if (child && child.exitCode === null) child.kill();
-      await closed;
-      if (temporaryWork) fs.rmSync(temporaryWork, { recursive: true, force: true });
-    });
+    let temporaryWork, holder;
+    t.after(() => holder?.kill());
     chromium.launchPersistentContext = async (profileDir) => {
       temporaryWork = path.dirname(profileDir);
-      child = spawn(
-        process.execPath,
-        ['-e', 'process.on("message",()=>process.exit(0));process.send("holding-directory");'],
-        { cwd: temporaryWork, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true },
+      const busy = path.join(profileDir, 'Default', 'chrome_debug.log');
+      fs.mkdirSync(path.dirname(busy), { recursive: true });
+      // Another process holds a profile file without sharing delete access, as an exiting browser
+      // or a scanner can. It lets go only when this process's event loop runs again.
+      holder = spawn(
+        'powershell',
+        [
+          '-NoProfile',
+          '-Command',
+          `$f=[IO.File]::Open('${busy}','OpenOrCreate','ReadWrite','None'); 'held'; [Console]::In.ReadLine() | Out-Null; $f.Close()`,
+        ],
+        { windowsHide: true, stdio: ['pipe', 'pipe', 'inherit'] },
       );
-      closed = once(child, 'close');
-      assert.equal((await once(child, 'message', { signal: t.signal }))[0], 'holding-directory');
-      setImmediate(() => {
-        if (child.connected) child.send('release', () => {});
-      });
-      throw new Error('deliberate setup failure while an owned handle is retiring');
+      await once(holder.stdout, 'data');
+      setImmediate(() => holder.stdin.end());
+      throw new Error('deliberate browser setup failure with a busy profile file');
     };
+    const log = console.log;
     console.log = () => {};
     try {
       assert.equal(await verify(fx.cfg, { json: true }), 1);
     } finally {
       chromium.launchPersistentContext = launch;
       console.log = log;
-      if (child?.connected) child.send('release', () => {});
-      await closed;
     }
     const { report } = reportFor(fx.cfg);
-    assert.match(report.error, /^deliberate setup failure while an owned handle is retiring$/);
+    assert.match(report.error, /deliberate browser setup failure/);
+    assert.doesNotMatch(report.error, /Cleanup incomplete/);
     assert.deepEqual(report.cleanup.errors, []);
     assert.equal(report.cleanup.temporarySourceRemoved, true);
     assert.equal(fs.existsSync(temporaryWork), false);

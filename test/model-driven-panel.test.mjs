@@ -12,6 +12,9 @@ import { createFixture } from './fixture.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 const origin = 'http://127.0.0.1:1';
+// Native response budgets of lense/model-driven-panel.mjs (kept private there): one observed asset and one session.
+const ASSET_BUDGET = 3 * 1024 * 1024;
+const SESSION_BUDGET = 16 * 1024 * 1024;
 const imported = (count = 1) => ({
   assets: new Map(
     Array.from({ length: count }, (_, index) => {
@@ -91,10 +94,10 @@ test('native response comparison is bounded by asset and session budgets, evicts
     undefined,
     'archive-only resources have no invented Git facts',
   );
-  assert.equal(sources.observe('x_0.js', Buffer.alloc(3 * 1024 * 1024 + 1)), false);
-  for (let i = 0; i < 7; i++) sources.observe(`x_${i}.js`, Buffer.alloc(3 * 1024 * 1024, i));
-  assert.ok(sources.observationSize().bytes <= 16 * 1024 * 1024);
-  assert.equal(sources.observationSize().resources, 5);
+  assert.equal(sources.observe('x_0.js', Buffer.alloc(ASSET_BUDGET + 1)), false);
+  for (let i = 0; i < 7; i++) sources.observe(`x_${i}.js`, Buffer.alloc(ASSET_BUDGET, i));
+  assert.ok(sources.observationSize().bytes <= SESSION_BUDGET);
+  assert.equal(sources.observationSize().resources, Math.floor(SESSION_BUDGET / ASSET_BUDGET));
   const next = imported(1);
   await sources.update(next);
   assert.equal(sources.observationSize().resources, 0, 'removed resources release native response memory');
@@ -202,6 +205,8 @@ test(
       fixture.write(latestFile, body);
       updates.push(sources.update(catalogue('x_b.js', latestFile, body)));
     }
+    // No event marks an update that did not start a second read; one macrotask lets any update queued behind the
+    // gated read reach it. The final count below (exactly two reads) proves coalescing independently of this check.
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(reads, 1, 'a pending Git read cannot publish a concurrent obsolete catalogue');
     release();

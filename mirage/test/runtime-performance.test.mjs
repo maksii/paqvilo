@@ -14,6 +14,8 @@ import { performanceFixture, performanceId } from './runtime-performance-fixture
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
 import { appCatalogue, appCatalogueAsync } from '../lib/model-driven/catalogue.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 test('unchanged isolated composition clones each business graph once and owned replacement saves zero bytes', async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-copy-count-'));
@@ -434,7 +436,7 @@ for (const watch of [false, true])
     { timeout: 30000 },
     async (t) => {
       const fixture = await performanceFixture({ tables: 2, records: 8 });
-      t.after(fixture.cleanup);
+      ownedFixture(t).remove(fixture.cleanup);
       for (let i = 0; i < 2; i++) {
         const file = path.join(fixture.solutionRoots[0], `Entities/x_scale${i}/Entity.xml`);
         await fs.writeFile(
@@ -464,7 +466,7 @@ for (const watch of [false, true])
           ],
         },
       });
-      t.after(() => sim.close());
+      ownedFixture(t).add(() => sim.close());
       const session = await (await fetch(sim.url + '/_sim/api/dataverse/session')).json();
       const selected = await fetch(sim.url + '/_sim/api/dataverse/session', {
         method: 'POST',
@@ -592,9 +594,12 @@ test('catalogue yields to status while retaining one security read and releases 
     csrf: () => 'invented',
     json,
   });
+  // The latest catalogue request's handler settles only once it has stopped working, answered or not.
+  let handled;
   const server = http.createServer(async (req, res) => {
     if (req.url === '/status') return json(res, 200, { running: true });
-    await handler(req, res, new URL(req.url, 'http://127.0.0.1'));
+    handled = handler(req, res, new URL(req.url, 'http://127.0.0.1'));
+    await handled;
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(
@@ -630,23 +635,40 @@ test('catalogue yields to status while retaining one security read and releases 
   await admitted;
   abort.abort();
   await cancelled;
-  await new Promise((resolve) => setTimeout(resolve, 25));
+  await handled;
   await store.readOperation(() => assert.equal(store.state.settings.permissionMode, 'permissive'));
-  assert.ok(checks < 64, 'A disconnected consumer does not compute the remainder of its catalogue.');
+  assert.ok(checks < 64, `A disconnected consumer stopped after ${checks} of 64 tables instead of computing them all.`);
 });
+
+// docs/runtime-performance.md: the probe's defaults are its declared budgets (30,000 ms per startup and catalogue
+// response, 1,000 ms per status heartbeat and first grid or record read), while the ordinary suite checks invariants
+// instead of elapsed time. The suite therefore runs the probe with those budgets in recording mode: a miss on a loaded
+// machine is a finding, never a failure, but every finding must be an honest latency record. Only a status request may
+// end in its own timeout; a failed catalogue, first status or data read still fails the test.
+const PROBE = { budgetMs: 30000, heartbeatBudgetMs: 1000, strictBudgets: false };
+function assertLatencyFindingsOnly(report) {
+  assert.deepEqual(
+    [report.budgetMs, report.catalogueBudgetMs, report.heartbeatBudgetMs, report.dataBudgetMs, report.strictBudgets],
+    [PROBE.budgetMs, PROBE.budgetMs, PROBE.heartbeatBudgetMs, PROBE.heartbeatBudgetMs, false],
+    'The report states the documented budgets it measured against.',
+  );
+  for (const finding of report.findings) {
+    const text = JSON.stringify(finding);
+    if (finding.error) assert.deepEqual([finding.stage, finding.error], ['status request', 'TimeoutError'], text);
+    // durationMs is rounded; the probe records a finding only when the raw duration exceeded the budget.
+    else assert.ok(finding.stage && finding.durationMs >= finding.budgetMs, text);
+  }
+}
 
 for (const portal of [false, true])
   test(
     `${portal ? 'portal' : 'standalone'} fresh, unchanged and grown-journal startup retains bootstrap data and reports costs`,
     { timeout: 60000 },
-    async () => {
-      const report = await runtimePerformance({
-        scales: [2],
-        records: 32,
-        portal,
-        budgetMs: 30000,
-        heartbeatBudgetMs: 5000,
-      });
+    async (t) => {
+      // The reuse assertions below concern files written moments ago.
+      settleFileTimes(t);
+      const report = await runtimePerformance({ ...PROBE, scales: [2], records: 32, portal });
+      assertLatencyFindingsOnly(report);
       assert.deepEqual(
         report.results.map((result) => result.generated),
         [1, 0, 0],
@@ -686,15 +708,23 @@ test(
   { timeout: 60000 },
   async () => {
     assert.ok(LARGE_PERFORMANCE_OPTIONS.scales[0] * (1 + LARGE_PERFORMANCE_OPTIONS.formsPerTable) + 2 > 10000);
+    // The fixture inventory and record count are settled by the first start. Restarts are covered by the cases above,
+    // and restarts with several forms per table by test/runtime-performance-options.test.mjs.
     const report = await runtimePerformance({
+      ...PROBE,
       scales: [2],
       formsPerTable: 3,
       columns: 4,
       records: 17,
       portal: false,
-      heartbeatBudgetMs: 5000,
+      phases: ['fresh'],
     });
-    assert.deepEqual(report.findings, []);
+    assertLatencyFindingsOnly(report);
+    assert.deepEqual(
+      report.results.map((result) => result.phase),
+      ['fresh'],
+      'The start completed its catalogue, metadata and data checks.',
+    );
     for (const result of report.results) {
       assert.equal(result.inventory.xmlFiles, 10);
       assert.equal(result.inventory.forms, 6);

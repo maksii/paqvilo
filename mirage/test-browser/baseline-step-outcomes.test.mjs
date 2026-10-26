@@ -8,6 +8,9 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { captureScenario, pageRunner } from '../baseline-capture.mjs';
 
 const origin = 'http://127.0.0.1:15153';
+// The static fixture settles as soon as it is quiet; the bound only ends a wait that never settles, which a loaded
+// runner's first page probe alone could exceed at 500 ms (the capture then reports 'page did not settle').
+const SETTLE = { quietMs: 5, timeout: 10_000 };
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -27,7 +30,7 @@ async function fixture(t) {
 const options = (steps) => ({
   origin,
   scenario: { id: 'invented/steps', steps },
-  settle: { quietMs: 5, timeout: 500 },
+  settle: SETTLE,
 });
 
 test('optional actions record performed, absent and hidden outcomes without field values, preserving the legacy timeline', async (t) => {
@@ -119,7 +122,7 @@ test('persisted capture metadata retains explicit optional outcomes without sele
     origin,
     outDir: directory,
     side: 'loopback',
-    matrix: { settle: { quietMs: 5, timeout: 500 } },
+    matrix: { settle: SETTLE },
   });
   const metadata = JSON.parse(await fs.readFile(path.join(directory, 'meta.json'), 'utf8'));
   assert.equal(metadata.status, 'captured');

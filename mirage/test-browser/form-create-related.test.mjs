@@ -173,8 +173,9 @@ test('create related record opens the target form dialog; the record state hides
     `/_portal/modal-form-template-path/11111111-2222-4333-8444-555555555555?id=${id}&entityformid=note-form&languagecode=1033`,
   );
   assert.equal(await modal.getAttribute('aria-label'), ' Create related record');
-  const child = page.frames().find((frame) => frame.url() === app.url + src);
-  assert.ok(child, 'the target dialog has its own loaded document');
+  // The click sets the frame source and shows the dialog in one step; the frame commits its document later.
+  const child = await (await modal.locator('iframe').elementHandle()).contentFrame();
+  await child.waitForURL(app.url + src);
   await child.locator('#title').waitFor();
   const target = await child.locator('script[data-paqvilo-mirage-form-config]').evaluate((node) => {
     const config = JSON.parse(node.textContent);

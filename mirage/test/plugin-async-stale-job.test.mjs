@@ -94,11 +94,15 @@ test('Async web hook cancel also reaches the live row after an isolated commit',
 test('A System Job row removed before delivery finishes is reported, not thrown', async (t) => {
   const store = data(),
     notes = [];
-  let release;
+  let release, entered;
+  const reached = new Promise((resolve) => {
+    entered = resolve;
+  });
   const webhooks = {
     afterCommit: () =>
       new Promise((resolve) => {
         release = resolve;
+        entered();
       }),
   };
   const runner = createAsyncPluginRunner({
@@ -113,7 +117,7 @@ test('A System Job row removed before delivery finishes is reported, not thrown'
   t.after(() => runner.close());
   await store.create('x_widget', { x_name: 'Caller' }, { admin: true });
   await store.flushCommittedEvents();
-  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  await reached;
   await store.transact(
     () => {
       store.state.tables.asyncoperation.length = 0;

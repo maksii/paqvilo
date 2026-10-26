@@ -24,10 +24,16 @@ async function project(t) {
   await fs.symlink(toolkit, path.join(root, 'node_modules/paqvilo'), process.platform === 'win32' ? 'junction' : 'dir');
   return root;
 }
-async function run(root) {
+// One scaffolded acceptance run starts its own test runner, Mirage and browser. A run that
+// exceeds this guard is killed and reported, so the whole test is bounded by its run count.
+// Runs took 40-60+ s on a heavily loaded Windows host (a 60 s guard killed a healthy run).
+const RUN_TIMEOUT_MS = 120_000;
+const RUNS = 5;
+async function run(root, signal) {
   const child = spawn(process.execPath, ['tools/test-browser.mjs', '--strict'], {
     cwd: root,
     env: environment,
+    signal,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -38,10 +44,10 @@ async function run(root) {
   child.stderr.on('data', (chunk) => {
     output += chunk;
   });
-  const timer = setTimeout(() => child.kill(), 60000);
+  const timer = setTimeout(() => child.kill(), RUN_TIMEOUT_MS);
   try {
     return await new Promise((resolve, reject) => {
-      child.once('error', reject);
+      child.once('error', (error) => (error.name === 'AbortError' ? undefined : reject(error)));
       child.once('close', (code) => resolve({ code, output }));
     });
   } finally {
@@ -51,7 +57,8 @@ async function run(root) {
 
 test(
   'optional synthetic acceptance recipe executes content/auth/denial and catches regressions or external assets',
-  { timeout: 120000 },
+  // Each run is bounded above; project preparation needs a few more seconds.
+  { timeout: RUNS * RUN_TIMEOUT_MS + 30_000 },
   async (t) => {
     const root = await project(t);
     const guide = await fs.readFile(path.join(root, 'docs/acceptance.md'), 'utf8');

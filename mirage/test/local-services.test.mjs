@@ -9,7 +9,10 @@ import { localServiceSettings, preflightLocalServices, describeLocalServices } f
 async function stub(t, handler) {
   const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   return `http://127.0.0.1:${server.address().port}`;
 }
 async function closedPort() {

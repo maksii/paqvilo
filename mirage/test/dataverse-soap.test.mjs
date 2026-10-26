@@ -590,7 +590,11 @@ test('RetrieveCurrentOrganization returns the organization detail', async () => 
     execOne('RetrieveCurrentOrganizationRequest', 'RetrieveCurrentOrganization', [pair('AccessType', int('0'))]),
   );
   assert.equal(res.status, 200, res.body);
-  assert.match(res.body, /i:type="g:RetrieveCurrentOrganizationResponse"|<b:key>Detail<\/b:key>/);
+  assert.match(
+    res.body,
+    /xmlns:r="http:\/\/schemas.microsoft.com\/crm\/2011\/Contracts" i:type="r:RetrieveCurrentOrganizationResponse"/,
+  );
+  assert.match(res.body, /<b:key>Detail<\/b:key>/);
   // OrganizationDetail is xrm/2014 (SDK docs): typed and prefixed x14, members in DataContract (alphabetical) order.
   assert.match(res.body, /<b:value i:type="x14:OrganizationDetail">/);
   assert.match(res.body, /<x14:UniqueName>testorg<\/x14:UniqueName>/);

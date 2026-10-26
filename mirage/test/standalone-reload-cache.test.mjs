@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { SolutionFileCache } from '../lib/solution-cache.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 const entity = (name, label) =>
   `<Entity><Name>${name}</Name><EntityInfo><entity Name="${name}"><LocalizedNames><LocalizedName description="${label}" languagecode="1033"/></LocalizedNames><EntitySetName>${name}s</EntitySetName><PrimaryIdAttribute>${name}id</PrimaryIdAttribute><PrimaryNameAttribute>${name}_name</PrimaryNameAttribute><attributes><attribute PhysicalName="${name}id"><Name>${name}id</Name><Type>primarykey</Type></attribute><attribute PhysicalName="${name}_name"><Name>${name}_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>`;
@@ -14,6 +15,8 @@ test(
   'a source save then reload refreshes the standalone Solution with the cache, parsing only the changed file',
   { timeout: 30000 },
   async (t) => {
+    // The reuse assertions below concern files written moments ago.
+    settleFileTimes(t);
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-standalone-reload-cache-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     const solution = path.join(root, 'solution');

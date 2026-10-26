@@ -9,6 +9,7 @@ import { createSimulator } from '../api.mjs';
 import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { composeHostDescription, activeDeploymentProfile } from '../lib/organization-host.mjs';
 import '../lib/provider-modules.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const CUSTOMIZATIONS =
   '<ImportExportXml><Entities/><connectionreferences><connectionreference connectionreferencelogicalname="x_fxref">' +
@@ -18,7 +19,7 @@ const SCENARIO = { id: 'fx-scenario', requires: ['connector:fixture', 'outbox:lo
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-description-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'solution/Other/Solution.xml':
       '<ImportExportXml><SolutionManifest><UniqueName>InventedDescription</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -85,7 +86,7 @@ test('offline description and the running standalone host report the same module
   assert.deepEqual((await fs.readdir(root, { recursive: true })).sort(), before, 'the description writes no file');
 
   const sim = await createSimulator({ ...options, port: 0, watch: false });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const live = await sim.preflight({ scenario: SCENARIO });
   assert.deepEqual(
     offline.modules.map((record) => record.name).sort(),
@@ -111,11 +112,11 @@ test('offline description and the running standalone host report the same module
 test('the standalone preflight honours deployment-profile connection references', async (t) => {
   const { options } = await fixture(t);
   const sim = await createSimulator({ ...options, port: 0, watch: false });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const live = await sim.preflight();
   assert.deepEqual(rows(live, 'connectionreference'), ['connectionreference:x_fxref:satisfied']);
   const description = await describe(options);
-  t.after(() => description.close());
+  ownedFixture(t).add(() => description.close());
   assert.deepEqual(rows(await description.preflight({ env: {} }), 'connectionreference'), [
     'connectionreference:x_fxref:satisfied',
   ]);
@@ -190,7 +191,7 @@ test('offline preflight and both running hosts report the same module and operat
 
 test('the offline preflight applies the startup preset, so a step whose service endpoint the preset seeds resolves as on the host', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-description-preset-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const ENDPOINT = '77777777-7777-4777-8777-0000000000f1',
     STEP = '77777777-7777-4777-8777-0000000000f2';
   const files = {
@@ -224,7 +225,7 @@ test('the offline preflight applies the startup preset, so a step whose service 
   );
   const offline = await preflight({ ...options, preset: 'seed', env: {} });
   const sim = await createSimulator({ ...options, preset: 'seed', port: 0, watch: false });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   assert.equal(status(offline), status(await sim.preflight()));
   assert.equal(status(offline), 'satisfied');
 });

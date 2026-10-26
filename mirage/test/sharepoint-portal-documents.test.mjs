@@ -52,20 +52,20 @@ const child = (operations) => ({
 });
 
 async function documents(t, { permissions, settings = {}, withStorage = true } = {}) {
-  let storage;
+  const owner = ownedFixture(t);
+  let storage, local;
   if (withStorage) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-documents-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
-    const local = createLocalDiskStorage({ root });
-    ownedFixture(t).add(() => local.close());
+    owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+    local = createLocalDiskStorage({ root });
     storage = createStorageRouter({ config: storageSettings({}), providers: { local } });
   }
-  const { api, store } = await contractModuleFixture(t, {
-    mappings,
-    tables,
-    extension: EXTENSION,
-    options: { storage },
-  });
+  // The organization and its API close before the storage they write to, and that storage before its directory goes.
+  const { api, store } = await contractModuleFixture(
+    { after: (callback) => owner.add(callback) },
+    { mappings, tables, extension: EXTENSION, options: { storage } },
+  );
+  if (local) owner.add(() => local.close());
   store.state.permissions = permissions;
   store.state.settings = { ...store.state.settings, permissionMode: 'enforce' };
   const service = createPortalDocumentService({
@@ -83,7 +83,7 @@ async function documents(t, { permissions, settings = {}, withStorage = true } =
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
+  owner.add(() => new Promise((resolve) => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}${PORTAL_DOCUMENTS_ROUTE}x_case/${CASE}`;
   const call = (method, suffix = '', body, headers = {}) =>
     fetch(base + suffix, {

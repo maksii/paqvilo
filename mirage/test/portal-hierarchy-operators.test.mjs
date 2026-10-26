@@ -83,7 +83,6 @@ async function portalFixture(t) {
   }
   const sim = await createSimulator({
     sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
     port: 0,
     watch: false,
     initial,

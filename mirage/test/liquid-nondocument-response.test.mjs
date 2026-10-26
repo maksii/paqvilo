@@ -14,7 +14,7 @@ const json = `{"rows":[{% for i in (1..2) %}{"n":{{ i }}}{% unless forloop.last 
 const fragment = `<div class="fragment">{{ "a & b" | escape }}</div>`;
 async function portalSource(t, authoredScript) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-nondocument-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Test',
     'web-pages/home/Home.webpage.yml':
@@ -59,7 +59,7 @@ for (const [label, script] of [
       watch: false,
       initial: { settings: { permissionMode: 'permissive' }, simulator: { identity: { id: null, roles: [] } } },
     });
-    t.after(() => app.close());
+    ownedFixture(t).add(() => app.close());
     const rows = await fetch(new URL('/rows/', app.url));
     assert.equal(rows.status, 200);
     assert.match(rows.headers.get('content-type'), /^application\/json/);

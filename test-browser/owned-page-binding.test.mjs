@@ -4,13 +4,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import net from 'node:net';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { createOwnedPageBindings } from '../lense/owned-page-binding.mjs';
 import { comparison } from '../lense/panel.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 const server = http.createServer((request, response) =>
   response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><h1>Invented</h1>'),
@@ -23,16 +23,27 @@ before(async () => {
 });
 after(async () => {
   await browser?.close();
+  // Keep-alive sockets from the separate CDP-attached profile would otherwise hold close() open.
+  server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
 });
 
-// A fresh context per test on the shared browser.
+// lense/owned-page-binding.mjs: concurrent callbacks per bridge and the reply delivery deadline.
+const OWNED_CALL_CAPACITY = 32;
+const REPLY_DEADLINE_MS = 1500;
+
+// A fresh context per test on the shared browser. t.after hooks run in registration order,
+// so bridges registered through own() close (newest first) before this context does.
 async function fixture(t) {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  const owned = [];
+  t.after(async () => {
+    for (const close of owned.reverse()) await close();
+    await context.close();
+  });
   const page = await context.newPage();
   await page.goto(origin);
-  return { context, page, origin };
+  return { context, page, origin, own: (close) => owned.push(close) };
 }
 
 // The rejection message of one owned call, or null when it resolves.
@@ -49,10 +60,7 @@ const rejectionOf = (page, value) =>
 // Only the external-owner test needs a persistent profile with a debugging port.
 async function persistentFixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-binding-test-'));
-  const reservation = net.createServer();
-  await new Promise((resolve) => reservation.listen(0, '127.0.0.1', resolve));
-  const port = reservation.address().port;
-  await new Promise((resolve) => reservation.close(resolve));
+  const port = await freeDebugPort();
   const context = await chromium.launchPersistentContext(
     root,
     browserLaunchOptions({
@@ -64,7 +72,8 @@ async function persistentFixture(t) {
   await page.goto(origin);
   t.after(async () => {
     await context.close();
-    await fs.rm(root, { recursive: true, force: true });
+    // Windows can report the profile busy briefly after its browser process exits.
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   return { context, page, origin, port };
 }
@@ -109,7 +118,7 @@ test(
         },
       },
     });
-    t.after(() => bridge.close());
+    f.own(() => bridge.close());
     assert.equal(await f.page.evaluate(() => window.inventedEcho('valid')), 'valid');
     assert.equal(await rejectionOf(f.page, 'x'.repeat(300)), 'The owned page request is too large.');
     assert.equal(await rejectionOf(f.page, 'large-result'), 'The owned page request failed.');
@@ -132,8 +141,11 @@ test(
       const raw = Object.getOwnPropertyNames(window).find((name) => name.startsWith('__paqviloOwned_'));
       window[raw](JSON.stringify({ id: 1, name: 'inventedEcho', args: ['foreign'] }));
     });
-    await f.page.waitForTimeout(50);
-    assert.equal(calls, 2);
+    // Binding calls arrive in order on one DevTools session and refused calls return before
+    // any callback, so a later accepted call is a barrier for the two refused ones above.
+    await f.page.goto(f.origin);
+    assert.equal(await f.page.evaluate(() => window.inventedEcho('barrier')), 'barrier');
+    assert.equal(calls, 3);
   },
 );
 
@@ -157,7 +169,7 @@ test('late callback replies remain confined to the original document context', {
       },
     },
   });
-  t.after(() => bridge.close());
+  f.own(() => bridge.close());
   const old = f.page.evaluate(() => window.inventedEcho('old')).catch(() => 'document-retired');
   await started;
   await f.page.reload();
@@ -181,7 +193,7 @@ test(
         },
       },
     });
-    t.after(() => bridge.close());
+    f.own(() => bridge.close());
     assert.equal(await rejectionOf(f.page, 'never'), 'The owned page request failed.');
     const debuggerSession = await f.context.newCDPSession(f.page);
     let pauses = 0;
@@ -282,10 +294,10 @@ test('closing the bridge preserves a real user debugger pause and the owned brow
     return 'continued';
   });
   await paused;
-  const started = Date.now();
   try {
+    // The pause is released only after close settles, so a close that waited for the
+    // user's debugger would never settle and the test deadline would fail it.
     await bridge.close();
-    assert.ok(Date.now() - started < 2500);
     assert.equal(resumed, false);
     assert.equal(f.page.isClosed(), false);
   } finally {
@@ -302,14 +314,18 @@ test(
     const f = await fixture(t),
       original = f.context.newCDPSession.bind(f.context);
     let send,
-      blocked = true;
+      blocked = true,
+      allDelayed;
     const delayed = [];
+    const capacityHeld = new Promise((resolve) => {
+      allDelayed = resolve;
+    });
     f.context.newCDPSession = async (page) => {
       const session = await original(page);
       send = session.send.bind(session);
       session.send = (method, params) => {
         if (blocked && method === 'Runtime.callFunctionOn') {
-          delayed.push(params);
+          if (delayed.push(params) === OWNED_CALL_CAPACITY) allDelayed();
           return new Promise(() => {});
         }
         return send(method, params);
@@ -320,7 +336,7 @@ test(
       origin: f.origin,
       bindings: { inventedEcho: (_source, value) => value },
     });
-    t.after(() => bridge.close());
+    f.own(() => bridge.close());
     await f.page.evaluate(() => {
       window.ownedDeliveryProbe = Promise.all(
         Array.from({ length: 32 }, () =>
@@ -331,11 +347,12 @@ test(
         ),
       );
     });
-    const deadline = Date.now() + 2000;
-    while (delayed.length < 32 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(delayed.length, 32);
-    // Past the 1.5 s reply deadline, in Node and in the page's expiresAt stamp.
-    await new Promise((resolve) => setTimeout(resolve, 1600));
+    await capacityHeld;
+    assert.equal(delayed.length, OWNED_CALL_CAPACITY);
+    // Every reply's deadline timer was scheduled before its blocked send was recorded, and
+    // Node fires timers in expiry order, so this later timer runs only after all of them have
+    // released capacity. The page also sees its expiresAt stamp in the past.
+    await new Promise((resolve) => setTimeout(resolve, REPLY_DEADLINE_MS + 100));
     blocked = false;
     assert.equal(await f.page.evaluate(() => window.inventedEcho('fresh-after-deadlines')), 'fresh-after-deadlines');
     for (const params of delayed) await send('Runtime.callFunctionOn', params);
@@ -362,7 +379,7 @@ test(
         inventedEcho: (_source, input) => (input === 'valid' ? valid : 'x'.repeat(16 * 1024 * 1024 + 1)),
       },
     });
-    t.after(() => bridge.close());
+    f.own(() => bridge.close());
     const result = await f.page.evaluate(async () => {
       const value = await window.inventedEcho('valid');
       return {

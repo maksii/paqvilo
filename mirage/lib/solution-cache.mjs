@@ -1,5 +1,6 @@
 import { orderedMap } from '../../lense/async-map.mjs';
 import { directoryFiles } from '../../lense/directory-files.mjs';
+import { recordedStamp } from '../../lense/file-cache.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -23,7 +24,8 @@ const digestCache = new Map();
  * The same SHA-256 as evidence.mjs `sourceFingerprint(dir)` (relative path, NUL, bytes,
  * NUL for every file in sorted depth-first order; symlinks and .git/.portalconfig/
  * node_modules/.paqvilo skipped), with directories and files read concurrently. The
- * digest is recomputed only when a file's size, mtime, ctime or identity changed.
+ * digest is recomputed only when a file's size, mtime, ctime or identity changed, or
+ * when a file changed too recently for its stat to prove it unchanged (recordedStamp).
  */
 export async function sourceDirectoryDigest(dir) {
   const root = path.resolve(dir);
@@ -34,7 +36,10 @@ export async function sourceDirectoryDigest(dir) {
   });
   const stamps = await mapLimit(files, 64, async (file) => {
     const stat = await fs.stat(file, { bigint: true });
-    return `${path.relative(root, file)}\0${stat.size}\0${stat.mtimeNs}\0${stat.ctimeNs}\0${stat.ino}`;
+    return recordedStamp(
+      stat,
+      `${path.relative(root, file)}\0${stat.size}\0${stat.mtimeNs}\0${stat.ctimeNs}\0${stat.ino}`,
+    );
   });
   const signature = createHash('sha256').update(stamps.join('\n')).digest('hex');
   const cached = digestCache.get(root);
@@ -87,11 +92,14 @@ function shareEntry(file, entry, parserId) {
   );
 }
 
-/** File identity used to reuse parsed results: size, modification/change time and inode. */
+/**
+ * File identity used to reuse parsed results: size, modification/change time and inode. A file
+ * changed too recently for its stat to prove it unchanged gets a stamp that matches nothing.
+ */
 export async function fileStamp(file) {
   const stat = await fs.stat(file, { bigint: true });
   return {
-    stamp: `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`,
+    stamp: recordedStamp(stat, `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`),
     size: Number(stat.size),
     isFile: stat.isFile(),
   };

@@ -123,47 +123,69 @@ async function parseLargeJsonStream(chunks) {
   return root;
 }
 
-function* tokens(value, ancestors = new Set(), array = false) {
-  if (typeof value?.toJSON === 'function') value = value.toJSON();
-  if (value instanceof Number || value instanceof String || value instanceof Boolean) value = value.valueOf();
-  if (value === null || typeof value !== 'object') {
-    yield JSON.stringify(value) ?? (array ? 'null' : 'null');
-    return;
-  }
-  if (ancestors.has(value)) throw new TypeError('Cannot persist circular state');
-  ancestors.add(value);
-  const list = Array.isArray(value);
-  yield list ? '[' : '{';
-  let first = true;
-  if (list) {
-    for (const item of value) {
-      if (!first) yield ',';
-      first = false;
-      yield* tokens(item, ancestors, true);
-    }
-  } else {
-    for (const key of Object.keys(value)) {
-      const item = value[key];
-      if (['undefined', 'function', 'symbol'].includes(typeof item)) continue;
-      if (!first) yield ',';
-      first = false;
-      yield JSON.stringify(key);
-      yield ':';
-      yield* tokens(item, ancestors);
-    }
-  }
-  yield list ? ']' : '}';
-  ancestors.delete(value);
-}
-
+// One generator with an explicit container stack: nested `yield*` would pass every token through each enclosing level,
+// which made hashing and writing deep state the dominant cost of a simulation-level save.
 export function* jsonChunks(value) {
+  const ancestors = new Set(),
+    stack = [];
+  // A scalar's JSON text, or the opening bracket of a container pushed onto the stack.
+  const enter = (item) => {
+    if (typeof item?.toJSON === 'function') item = item.toJSON();
+    if (item instanceof Number || item instanceof String || item instanceof Boolean) item = item.valueOf();
+    if (item === null || typeof item !== 'object') return JSON.stringify(item) ?? 'null';
+    if (ancestors.has(item)) throw new TypeError('Cannot persist circular state');
+    ancestors.add(item);
+    const list = Array.isArray(item);
+    stack.push({ item, list, keys: list ? null : Object.keys(item), index: 0 });
+    return list ? '[' : '{';
+  };
+  // Chunks end after the first token that reaches 64 KiB, so every token append is followed by this check.
   let chunk = '';
-  for (const token of tokens(value)) {
+  for (let token = enter(value); ;) {
     chunk += token;
     if (chunk.length >= 65536) {
       yield chunk;
       chunk = '';
     }
+    const frame = stack.at(-1);
+    if (!frame) break;
+    if (frame.list) {
+      if (frame.index < frame.item.length) {
+        if (frame.index) {
+          chunk += ',';
+          if (chunk.length >= 65536) {
+            yield chunk;
+            chunk = '';
+          }
+        }
+        token = enter(frame.item[frame.index++]);
+        continue;
+      }
+    } else {
+      let key, item;
+      while (frame.index < frame.keys.length) {
+        key = frame.keys[frame.index++];
+        item = frame.item[key];
+        const type = typeof item;
+        if (type !== 'undefined' && type !== 'function' && type !== 'symbol') break;
+        key = undefined;
+      }
+      if (key !== undefined) {
+        for (const part of frame.written ? [',', JSON.stringify(key), ':'] : [JSON.stringify(key), ':']) {
+          chunk += part;
+          if (chunk.length >= 65536) {
+            yield chunk;
+            chunk = '';
+          }
+        }
+        frame.written = true;
+        token = enter(item);
+        continue;
+      }
+    }
+    stack.pop();
+    ancestors.delete(frame.item);
+    token = frame.list ? ']' : '}';
   }
   if (chunk) yield chunk;
 }

@@ -26,8 +26,8 @@ security checks required for administrators.
 ## Validation and security
 
 CI runs the pinned Node 24 toolchain on Ubuntu 24.04 and Windows 2025. Mirage and
-example lanes install .NET SDK 10.0.113 from `global.json`; roll-forward is disabled
-so the hosted image cannot silently select a different compiler. Ordinary PRs
+example lanes install .NET SDK 10.0.114 from `global.json`; roll-forward accepts only later servicing patches of that
+feature band (10.0.1xx), so a hosted image or a local SDK update never selects a different compiler band. Ordinary PRs
 select Lense, Mirage and example suites conservatively using changed paths and literal
 import consumers. Shared assets, dependency/build/workflow changes and unknown paths
 expand the selection. Full Windows runs also require the locked TDS, DynamicsWebApi and certificate/MSAL.NET client gates. Python and ServiceClient retain their explicit opt-in prerequisites.

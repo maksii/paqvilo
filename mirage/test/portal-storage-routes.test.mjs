@@ -203,7 +203,7 @@ test('staged portal uploads are provider blocks committed by the last block', as
     assert.equal(block.status, 204, await block.text());
   }
   const local = createLocalDiskStorage({ root: path.join(stateDir, 'blobs') });
-  t.after(() => local.close());
+  ownedFixture(t).add(() => local.close());
   const { body } = await local.get(`staged/${id}`);
   const chunks = [];
   for await (const chunk of body) chunks.push(Buffer.from(chunk));

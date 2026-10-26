@@ -107,7 +107,6 @@ test('reference parity uses explicit local visitors, membership and override rol
   };
   const app = await createSimulator({
     sourceDir: directory,
-    stateFile: path.join(directory, 'state.json'),
     initial,
     port: 0,
     watch: false,

@@ -3,32 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
-import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
+import { once } from 'node:events';
+import { spawn } from 'node:child_process';
+import { runWorkspaceTask, stopOwnedChild } from './helpers/workspace-task.mjs';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { createFixture } from '../test/fixture.mjs';
-
-async function stopOwnedChild(child, closed, { graceful = false } = {}) {
-  if (graceful && child.exitCode === null && child.signalCode === null) {
-    let timer;
-    try {
-      await Promise.race([
-        closed,
-        new Promise((resolve) => {
-          timer = setTimeout(resolve, 5000);
-        }),
-      ]);
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
-  return closed;
-}
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 test('owned task shutdown drains pending stdio after the direct child exit', { timeout: 15000 }, async (t) => {
   const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-init-drain-'));
@@ -93,66 +75,26 @@ test(
     const task = tasks.tasks.find((item) => item.label === launch.preLaunchTask);
     assert.equal(task.type, 'process');
     assert.equal(manifest.scripts['mirage:dev:portal:debug'], 'npm run mirage:dev:portal -- --debug-port 9223');
-    const listener = net.createServer();
-    listener.listen(0, '127.0.0.1');
-    await once(listener, 'listening');
-    const port = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
+    const port = await freeDebugPort();
     const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
     const args = task.args
       .slice(1)
       .filter((arg) => arg !== '--headed')
       .map((arg) => (arg === '9223' ? String(port) : arg.replace('${workspaceFolder}', work)));
-    args.push(
-      '--headless',
-      '--browser',
-      process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
-    );
-    const child = spawn(process.execPath, [cli, ...args], {
+    const run = runWorkspaceTask(t, {
+      cli,
+      args,
       cwd: work,
       env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      task,
+      port,
+      stop: ['--config', path.join(work, 'paqvilo.config.yml'), '--site', 'portal'],
+      work,
+      cleanup: () => fixture.cleanup(),
+      label: 'Generated task readiness',
     });
-    let output = '',
-      browser;
-    child.stdout.on('data', (chunk) => {
-      output += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      output += chunk;
-    });
-    const closed = once(child, 'close');
-    t.after(async () => {
-      let requestedBrowserClose = false;
-      if (browser) {
-        const session = await browser.newBrowserCDPSession().catch(() => null);
-        if (session) {
-          requestedBrowserClose = true;
-          await session.send('Browser.close').catch(() => {});
-        }
-        await browser.close().catch(() => {});
-      }
-      await stopOwnedChild(child, closed, { graceful: requestedBrowserClose });
-      const cleanup = spawn(
-        process.execPath,
-        [cli, 'mirage', 'stop', '--config', path.join(work, 'paqvilo.config.yml'), '--site', 'portal', '--json'],
-        { cwd: work, env, windowsHide: true, stdio: 'ignore' },
-      );
-      assert.deepEqual(await once(cleanup, 'close'), [0, null]);
-      fixture.cleanup();
-      await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    });
-    const ready = new RegExp(task.problemMatcher.background.endsPattern, 'm');
-    const deadline = Date.now() + 60000;
-    while (!ready.test(output) && Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(`Generated task exited before readiness: ${output}`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    assert.match(output, ready);
-    assert.match(output, new RegExp(`debugger\\s+port ${port}\\b`));
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    const browser = await run.attach();
     const page = browser.contexts()[0].pages()[0];
     assert.ok(page, 'debugger reuses the browser opened by development');
     await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+/, { timeout: 30000 });

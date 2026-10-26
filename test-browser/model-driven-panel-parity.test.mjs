@@ -22,6 +22,13 @@ before(async () => {
 });
 after(() => browser?.close());
 
+// The inspector publishes no change event; poll its own snapshot for the expected state.
+async function settled(inspector, ready) {
+  const deadline = Date.now() + 10_000;
+  while (!ready(inspector.snapshot()) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(ready(inspector.snapshot()), 'inspector state settled');
+}
+
 async function modelPanelFixture(t, { nativeBody, withGit = true, archive = false } = {}) {
   const owner = ownedFixture(t),
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-panel-parity-'));
@@ -141,7 +148,9 @@ test(
     await editor.fill('return "draft retained";');
     await editor.evaluate((node) => node.setSelectionRange(3, 7));
     inspector.refresh();
-    await page.waitForTimeout(150);
+    // The refresh is pending until its panel redraw has finished; check the draft after that.
+    assert.equal(inspector.snapshot().pendingInspection, true);
+    await settled(inspector, (state) => !state.pendingInspection);
     assert.equal(await editor.inputValue(), 'return "draft retained";');
     await host.getByRole('tab', { name: /^Overrides/ }).click();
     await host.getByRole('tab', { name: 'Actions', exact: true }).click();
@@ -158,7 +167,6 @@ test(
     await page.keyboard.press('Alt+Shift+P');
     assert.equal(overlay.report().online, true);
     await page.evaluate(() => fetch('/%7b2026%7d/webresources/x_script.js').then((r) => r.text()));
-    await page.waitForTimeout(100);
     const comparison = await page.evaluate(
       async (token) => window.__paqviloModelPanelApi({ token, name: 'diff', body: { rel: 'x_script.js' } }),
       inspector.snapshot().token,

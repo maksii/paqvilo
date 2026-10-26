@@ -174,14 +174,14 @@ async function startServer({ applicationId = APP_ID, extensions = EXTENSIONS, st
   return { server, store, call, text, close: () => server.close() };
 }
 
-// Polls until the Bulk e-mail job that a SendBulkMail started has completed (the job runs on a later tick).
+// The Bulk e-mail job that a SendBulkMail started, once it has run: the job is a task of the API scheduler (it runs on a
+// later tick), and drain() returns when that task has settled.
 async function settleBulkMail(store) {
-  for (let i = 0; i < 100; i += 1) {
-    const job = store.state.tables.asyncoperation.find((row) => row.name === 'Bulk e-mail' && row.statecode === 3);
-    if (job) return job;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error('Bulk e-mail job did not complete');
+  await store.scheduler.drain();
+  const jobs = store.state.tables.asyncoperation.filter((row) => row.name === 'Bulk e-mail');
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].statecode, 3, 'the job is Completed');
+  return jobs[0];
 }
 
 describe('Dynamics 365 application messages over HTTP', () => {

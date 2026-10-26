@@ -18,6 +18,7 @@ import {
   workflowsWithActivation,
 } from '../lib/dataverse-workflows.mjs';
 import { createSimulator } from '../server.mjs';
+import { settleCommittedWork } from '../lib/committed-work.mjs';
 
 const APP_ID = '22222222-2222-2222-2222-222222222222';
 const PUBLIC_APP_ID = '44444444-4444-4444-4444-444444444444';
@@ -236,14 +237,12 @@ describe('dataverse workflows: rows, activation and ExecuteWorkflow over HTTP', 
   const activationOf = (id) => uuidV5(organizationId, `workflow-activation:${id}`);
   const row = async (logical, id) => (await call(webApi(`${logical}(${id})`))).json();
 
-  // The job of an asynchronous run ends in a final state; poll its row until it does.
+  // An ExecuteWorkflow run is a system job on the store's scheduler (dataverse-async.mjs): settle it, then read its row once.
   async function finished(jobId) {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      const job = await row('asyncoperations', jobId);
-      if (job.statecode === 3) return job;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error(`job ${jobId} did not finish`);
+    await settleCommittedWork(store, []);
+    const job = await row('asyncoperations', jobId);
+    assert.equal(job.statecode, 3, `job ${jobId} finished`);
+    return job;
   }
 
   async function errorOf(response) {
@@ -540,16 +539,6 @@ function triggerState() {
   return state;
 }
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// Polls the store until the predicate holds or the time is up; returns whether it held.
-async function until(predicate, ms = 2000) {
-  for (let waited = 0; waited < ms; waited += 10) {
-    if (predicate()) return true;
-    await sleep(10);
-  }
-  return predicate();
-}
-
 describe('dataverse workflows: classic triggers on Dataverse writes', () => {
   let api;
   let store;
@@ -627,6 +616,10 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
           (regarding === undefined || job.regardingobjectid?.id === regarding),
       );
   const finishedJob = (name, regarding) => jobsFor(name, regarding).find((job) => job.statecode === 3);
+  // A background trigger's Ready row commits with the write and the store's committed-job runner runs it later
+  // (dataverse-workflows.mjs stageBackgroundRuns) on the store's scheduler: once settled, every job a write started has
+  // its final state.
+  const settled = () => settleCommittedWork(store, []);
 
   async function create(body) {
     const response = await call(webApi('contoso_widgets'), { method: 'POST', body });
@@ -636,8 +629,9 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
 
   it("a background create trigger starts one job on the new row, and its handler's result is the job's message", async () => {
     const id = await create({ name: 'alpha' });
-    assert.ok(await until(() => finishedJob('Invented 41', id)));
+    await settled();
     const job = finishedJob('Invented 41', id);
+    assert.ok(job, 'the create job finished');
     assert.equal(job.statuscode, 30);
     assert.equal(job.message, 'handled create');
     assert.equal(jobsFor('Invented 41').length, 1);
@@ -647,12 +641,13 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
     const id = await create({ name: 'beta' });
     const statusOnly = await call(webApi(`contoso_widgets(${id})`), { method: 'PATCH', body: { status: 2 } });
     assert.equal(statusOnly.status, 204, await statusOnly.clone().text());
-    await sleep(50);
+    await settled();
     assert.equal(jobsFor('Invented 42', id).length, 0);
     const named = await call(webApi(`contoso_widgets(${id})`), { method: 'PATCH', body: { name: 'beta 2' } });
     assert.equal(named.status, 204, await named.clone().text());
-    assert.ok(await until(() => finishedJob('Invented 42', id)));
+    await settled();
     const job = finishedJob('Invented 42', id);
+    assert.ok(job, 'the update job finished');
     assert.equal(job.statuscode, 32);
     assert.match(job.message, /classic workflow XAML is not executed/);
   });
@@ -661,14 +656,14 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
     const id = await create({ name: 'gamma' });
     const response = await call(webApi(`contoso_widgets(${id})`), { method: 'DELETE' });
     assert.equal(response.status, 204, await response.clone().text());
-    assert.ok(await until(() => finishedJob('Invented 43', id)));
-    assert.equal(finishedJob('Invented 43', id).statuscode, 32);
+    await settled();
+    assert.equal(finishedJob('Invented 43', id)?.statuscode, 32);
   });
 
   it('a real-time create trigger runs inside the request, so the row it writes is there when the create answers', async () => {
     const id = await create({ name: 'delta' });
     assert.equal(widgetRow(id).status, 88);
-    await sleep(20);
+    await settled();
     assert.equal(jobsFor('Invented 44').length, 0, 'a real-time run starts no job');
   });
 
@@ -709,13 +704,14 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
       definition().owninguser = { id: '99999999-9999-4999-8999-999999999999', logical_name: 'systemuser' };
     });
     const other = await create({ name: 'zeta' });
-    await sleep(50);
+    await settled();
     assert.equal(jobsFor('Invented 46', other).length, 0);
     store.transact(() => {
       definition().owninguser = { id: who.UserId, logical_name: 'systemuser' };
     });
     const own = await create({ name: 'eta' });
-    assert.ok(await until(() => finishedJob('Invented 46', own)));
+    await settled();
+    assert.equal(finishedJob('Invented 46', own)?.statuscode, 32, 'the owner-scoped job ran its placeholder');
   });
 });
 
@@ -784,11 +780,9 @@ describe('dataverse workflows: a portal write is unchanged by a background trigg
           body: JSON.stringify({ name: 'renamed' }),
         });
         const bytes = Buffer.from(await response.arrayBuffer());
-        // With no definitions nothing can start a job, so only the trigger run waits for one.
-        const started = await until(
-          () => app.store.tableRows('asyncoperation').some((job) => job.operationtype === 10),
-          workflow.length ? 2000 : 0,
-        );
+        // Every job the write started has finished once the simulator's committed work is settled.
+        await app.settle();
+        const started = app.store.tableRows('asyncoperation').some((job) => job.operationtype === 10);
         // Per-run values only: the Date, the trace id and this run's origin (the port differs between the two runs).
         return {
           status: response.status,

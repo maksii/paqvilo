@@ -1229,8 +1229,10 @@ export async function enrichInspection(
     solutions: (metadata.roots ?? []).length,
   };
   const page = portal.pages.find((entry) => norm(entry.id) === norm(report.page?.id));
+  // Build the shared source index with this catalogue first: the export index
+  // and the caller's final snapshot then reuse it instead of building it twice.
+  const provenance = provenanceIndex(portal, metadata, codeCatalogue);
   const whole = exportIndex(portal, metadata, sourceIndexStore);
-  const provenance = provenanceIndex(portal, metadata);
   report.componentIndex = {
     forms: whole.forms.map((form) => ({ ...form, formXml: form.formXml ? { ...form.formXml } : null })),
     lists: whole.lists.map((list) => ({ ...list })),

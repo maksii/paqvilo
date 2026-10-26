@@ -145,7 +145,8 @@ test(
         server.closeAllConnections();
         await new Promise((resolve) => server.close(resolve));
       }
-      await fs.rm(directory, { recursive: true, force: true });
+      // Exiting Chrome helper processes can hold profile files briefly on Windows (EBUSY).
+      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     });
     const profile = path.join(directory, 'profile');
     context = await chromium.launchPersistentContext(
@@ -179,10 +180,14 @@ test(
         allowLoopbackLive: true,
         ...options,
       });
-    // Tabs closed through another CDP connection disappear from this context asynchronously.
+    // Tabs closed through another CDP connection close in this context asynchronously.
     const ownedTabsClosed = async () => {
-      for (let attempt = 0; attempt < 50 && context.pages().length > 1; attempt++)
-        await new Promise((resolve) => setTimeout(resolve, 100));
+      await Promise.all(
+        context
+          .pages()
+          .filter((page) => page !== userPage && !page.isClosed())
+          .map((page) => page.waitForEvent('close')),
+      );
       return context.pages().length;
     };
     let result = await verify('same');
@@ -226,7 +231,9 @@ test(
     assert.deepEqual(result.live.consoleErrors, []);
     assert.deepEqual(result.local.consoleErrors, []);
     mode = 'persistent-eventstream';
-    result = await verify('persistent-eventstream');
+    // The open event stream keeps network idle from arriving, so that bounded wait lasts its whole timeout; a
+    // shorter one keeps this step fast.
+    result = await verify('persistent-eventstream', { timeout: 3000 });
     assert.equal(result.passed, true, JSON.stringify(result.differences));
     assert.equal(result.local.quiescent, true);
     assert.equal(result.local.persistentConnections.length, 1);
@@ -348,7 +355,8 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
       await context?.close();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
-      await fs.rm(directory, { recursive: true, force: true });
+      // Exiting Chrome helper processes can hold profile files briefly on Windows (EBUSY).
+      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     });
     const profile = path.join(directory, 'profile');
     context = await chromium.launchPersistentContext(
@@ -410,8 +418,13 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
     const source = await live.source('/', { settleMs: 0, quietMs: 200, settleTimeout: 5000 });
     assert.match(source.body, /<div id="paqvilo-panel">/);
     await live.close();
-    for (let attempt = 0; attempt < 50 && context.pages().length > 1; attempt++)
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    // Tabs closed through the driver's CDP connection close in this context asynchronously.
+    await Promise.all(
+      context
+        .pages()
+        .filter((candidate) => candidate !== userPage && !candidate.isClosed())
+        .map((candidate) => candidate.waitForEvent('close')),
+    );
     assert.equal(context.pages().length, 1, "only the driver's own tabs were opened and closed");
     assert.equal(new URL(userPage.url()).pathname, '/user-page');
     // Anonymous captures use an isolated context of the same browser: no cookies from the default

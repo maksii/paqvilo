@@ -4,14 +4,9 @@ import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { observeDocumentCommits } from '../lib/document-commits.mjs';
+import { eventLog } from './shared-browser.mjs';
 
-const until = async (predicate) => {
-  const deadline = Date.now() + 5000;
-  while (!predicate()) {
-    if (Date.now() > deadline) assert.fail('Document observation did not arrive');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-};
+const observations = () => eventLog({ timeout: 5000, message: 'Document observation did not arrive' });
 test(
   'document commits follow cross-origin renderer targets, swaps and observer disposal',
   { timeout: 30000 },
@@ -35,9 +30,9 @@ test(
     const context = await browser.newContext(),
       page = await context.newPage(),
       cdp = await context.newCDPSession(page),
-      documents = [],
-      commits = [],
-      requests = [],
+      documents = observations(),
+      commits = observations(),
+      requests = observations(),
       current = new WeakMap();
     page.on('request', (request) => {
       if (request.resourceType() === 'fetch')
@@ -57,12 +52,12 @@ test(
       cross = `http://localhost:${server.address().port}`;
     await page.goto(origin);
     const child = page.frames().find((frame) => frame.parentFrame());
-    await until(() => documents.some((row) => row.frame === child));
+    await documents.until(() => documents.some((row) => row.frame === child));
     const startRead = async (count) => {
       await child.evaluate(() => {
         void fetch('/never').catch(() => {});
       });
-      await until(() => requests.length === count);
+      await requests.until(() => requests.length === count);
     };
     const first = documents.find((row) => row.frame === child).token;
     await startRead(1);
@@ -70,31 +65,38 @@ test(
       location.hash = 'same-document';
       history.pushState({}, '', '?history=1');
     });
-    await page.waitForTimeout(100);
+    // Same-document changes commit nothing; the exact commit sequence asserted below also catches a late one.
     assert.equal(commits.length, 0);
     assert.equal(requests[0].retired, false);
     await child.goto(cross + '/next');
-    await until(() => commits.some((row) => row.frame === child && row.token === first));
-    await until(() => documents.some((row) => row.frame === child && row.token !== first));
+    await commits.until(() => commits.some((row) => row.frame === child && row.token === first));
+    await documents.until(() => documents.some((row) => row.frame === child && row.token !== first));
     const second = documents.filter((row) => row.frame === child).at(-1).token;
     await startRead(2);
     await child.evaluate((url) => {
       location.href = url;
     }, origin + '/same-process');
-    await until(() => commits.some((row) => row.frame === child && row.token === second));
-    await until(() => documents.some((row) => row.frame === child && row.token !== second));
+    // A script navigation returns before it commits; the next frame navigation waits for it to load.
+    await child.waitForURL(origin + '/same-process');
+    await commits.until(() => commits.some((row) => row.frame === child && row.token === second));
+    await documents.until(() => documents.some((row) => row.frame === child && row.token !== second));
     const third = documents.filter((row) => row.frame === child).at(-1).token;
     await startRead(3);
     await child.evaluate((url) => {
       location.href = url;
     }, cross + '/return-to-isolated');
-    await until(() => commits.some((row) => row.frame === child && row.token === third));
-    await until(() => documents.some((row) => row.frame === child && row.token !== third));
+    await child.waitForURL(cross + '/return-to-isolated');
+    await commits.until(() => commits.some((row) => row.frame === child && row.token === third));
+    await documents.until(() => documents.some((row) => row.frame === child && row.token !== third));
     const fourth = documents.filter((row) => row.frame === child).at(-1).token;
     await startRead(4);
     await child.goto(cross + '/isolated-again');
-    await until(() => commits.some((row) => row.frame === child && row.token === fourth));
-    assert.equal(commits.filter((row) => row.frame === page.mainFrame()).length, 0);
+    await commits.until(() => commits.some((row) => row.frame === child && row.token === fourth));
+    // Exactly one commit per replaced child document, in order, and none for the main frame.
+    assert.deepEqual(
+      commits.map((row) => [row.frame === child, row.token]),
+      [first, second, third, fourth].map((token) => [true, token]),
+    );
     assert.ok(requests.every((row) => row.retired));
     // Bindings are visible to page scripts: malformed payloads must never enter observer state.
     const before = documents.length;
@@ -109,13 +111,13 @@ test(
     const retired = documents.length;
     await page.goto(origin + '/after-dispose');
     assert.equal(documents.length, retired);
-    const again = [];
+    const again = observations();
     const stop = await observeDocumentCommits(page, cdp, {
       document: (frame, token) => again.push({ frame, token }),
       commit: () => {},
     });
     await page.goto(origin + '/second-observer');
-    await until(() => again.length > 0);
+    await again.until(() => again.length > 0);
     assert.equal(documents.length, retired);
     stop();
     assert.equal(cdp.listenerCount('Page.frameNavigated'), 0);

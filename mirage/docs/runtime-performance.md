@@ -110,7 +110,7 @@ each falls back to a scan when it cannot prove its answer.
 
 ### Write-volume gate
 
-`mirage/test-volume/write-volume.test.mjs` is not part of the ordinary suite. Run it explicitly:
+`mirage/test-volume/write-volume.test.mjs` runs after the ordinary suite in every Mirage unit lane. Run it alone:
 
 ```sh
 node --test mirage/test-volume/write-volume.test.mjs

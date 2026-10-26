@@ -224,10 +224,12 @@ test('documented identity scopes preserve cookie precedence and configured fallb
 });
 
 test('runtime experiment controls change local policy and keep concurrent instances independent', async (t) => {
-  const left = await fixture(t),
-    right = await fixture(t),
-    runtime = await connectRuntime({ origin: left.app.url }),
-    other = await connectRuntime({ origin: right.app.url });
+  // The two independent runtimes start concurrently; each owns its directory and closes before it is removed.
+  const [left, right] = await Promise.all([fixture(t), fixture(t)]),
+    [runtime, other] = await Promise.all([
+      connectRuntime({ origin: left.app.url }),
+      connectRuntime({ origin: right.app.url }),
+    ]);
   const visitor = await runtime.createSession({ contactId: left.contacts[0].contactid }),
     otherVisitor = await other.createSession({ contactId: right.contacts[0].contactid });
   t.after(() => {

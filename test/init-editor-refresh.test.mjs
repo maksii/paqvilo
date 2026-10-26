@@ -3,11 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { refreshEditor } from '../lense/project-editor.mjs';
 import { developmentScript, developmentWorkflows, developmentScriptDrift } from '../lense/project-workflows.mjs';
 import { loadCatalogue } from '../lense/config.mjs';
+import { tempDir } from './fixture.mjs';
 
 const scriptsFor = (options) =>
   Object.fromEntries(
@@ -15,7 +17,7 @@ const scriptsFor = (options) =>
   );
 const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-editor-refresh-'));
+  const root = await tempDir('paqvilo-editor-refresh-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const directory = path.join(root, 'project');
   await prepareProject(directory, { name: 'invented', noPack: true, sites: ['alpha'] });
@@ -192,15 +194,18 @@ test('selected catalogue proposals retain portable quoted paths and unsafe shell
 });
 
 test('cross-volume refresh retains working absolute debugger paths and explicitly requests review before commit', async (t) => {
+  // Only Windows paths have volumes that no relative path crosses; POSIX paths share one root. The sources live in
+  // the toolkit checkout's ignored .paqvilo, so this runs where the checkout and the temporary folder are on
+  // different drives (GitHub-hosted Windows runners check out to D: and keep the temporary folder on C:).
+  const evidenceRoot = path.join(fileURLToPath(new URL('../', import.meta.url)), '.paqvilo');
   if (
     process.platform !== 'win32' ||
-    path.parse(os.tmpdir()).root.toLowerCase() === path.parse(process.cwd()).root.toLowerCase()
+    path.parse(os.tmpdir()).root.toLowerCase() === path.parse(evidenceRoot).root.toLowerCase()
   ) {
     t.skip('Requires a toolkit checkout and temporary project on different Windows volumes');
     return;
   }
-  const fx = await fixture(t),
-    evidenceRoot = path.resolve('.paqvilo');
+  const fx = await fixture(t);
   await fs.mkdir(evidenceRoot, { recursive: true });
   const sources = await fs.mkdtemp(path.join(evidenceRoot, 'editor-cross-volume-'));
   t.after(() => fs.rm(sources, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));

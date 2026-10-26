@@ -6,6 +6,7 @@ import path from 'node:path';
 import { scanSolutionSources, buildSolutionSchema, tableFields } from '../lib/solution-schema.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { createSimulator } from '../api.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { parseSolutionFormulaDocument, solutionFormulaResolver } from '../lib/solution-formulas.mjs';
 
 const ID = '11111111-1111-4111-8111-111111111111';
@@ -15,7 +16,7 @@ const entity = (ref) =>
 const formula = 'x_label: =Concatenate(x_name, " / ", x_code)\n';
 async function fixture(t, ref = reference, expression = formula) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-formula-source-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'Other/Solution.xml':
       '<ImportExportXml><SolutionManifest><UniqueName>InventedFormula</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -145,14 +146,14 @@ for (const location of ['entity', 'root'])
         watch: true,
         initial: { tables: { x_item: [{ x_itemid: ID, x_name: 'Invented', x_code: 'A' }] } },
       });
-      t.after(() => sim.close());
+      ownedFixture(t).add(() => sim.close());
       const read = async () => {
         const response = await fetch(sim.url + '/_apps/api/tables/x_item/' + ID);
         assert.equal(response.status, 200);
         return (await response.json()).row.x_label;
       };
       assert.equal(await read(), 'Invented / A');
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      // createSimulator resolves after the source watcher reported ready (standalone-runtime.mjs restartWatcher).
       await fs.writeFile(file, 'x_label: =Concatenate(x_code, " / ", x_name)\n');
       const deadline = Date.now() + 15000;
       while ((await read()) !== 'A / Invented' && Date.now() < deadline)

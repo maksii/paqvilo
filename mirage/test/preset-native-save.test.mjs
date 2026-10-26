@@ -105,7 +105,6 @@ async function fixture(t, create = false) {
   ];
   const sim = await createSimulator({
     sourceDir: source,
-    stateFile: path.join(root, 'state.json'),
     solutionRoots: [solution],
     watch: false,
     port: 0,

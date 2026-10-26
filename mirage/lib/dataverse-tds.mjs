@@ -10,7 +10,7 @@
 import { randomUUID } from 'node:crypto';
 import { createSecureContext } from 'node:tls';
 import { DataError } from './data-error.mjs';
-import { ensureCertificate } from './dataverse-tls.mjs';
+import { createSelfSignedCertificate } from './dataverse-tls.mjs';
 import { createTdsServer } from './dataverse-tds-protocol.mjs';
 import { buildCatalog, projectRow } from './dataverse-tds-catalog.mjs';
 import { executeBatch } from './dataverse-tds-sql-eval.mjs';
@@ -114,10 +114,16 @@ export async function startDataverseTds({
   port,
   enabled = true,
 }) {
-  const certificate = tls ?? (await ensureCertificate(null));
   // Wrapped (TDS 7.x) TLS is capped at 1.2; strict (TDS 8) TLS takes the defaults.
-  const secureContext = createSecureContext({ key: certificate.key, cert: certificate.cert, maxVersion: 'TLSv1.2' });
-  const strictSecureContext = createSecureContext({ key: certificate.key, cert: certificate.cert });
+  const contextsOf = (certificate) => ({
+    wrapped: createSecureContext({ key: certificate.key, cert: certificate.cert, maxVersion: 'TLSv1.2' }),
+    strict: createSecureContext({ key: certificate.key, cert: certificate.cert }),
+  });
+  // A shared certificate is checked at start. The in-memory one is generated at the first handshake: its
+  // 2048-bit key pair would otherwise block every start, and most runtimes never receive a TDS connection.
+  let contexts = tls ? contextsOf(tls) : null;
+  const secureContext = () => (contexts ??= contextsOf(createSelfSignedCertificate())).wrapped;
+  const strictSecureContext = () => (contexts ??= contextsOf(createSelfSignedCertificate())).strict;
   const stsUrl = `${tlsOrigin ?? origin}/${tenantId}`;
   const apiVersion = `v${version.split('.').slice(0, 2).join('.')}`;
 

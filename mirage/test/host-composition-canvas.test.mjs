@@ -1,12 +1,12 @@
 // Project `canvas` configuration (canvas-source.mjs canvasSettings): enabled false unmounts the /_apps/canvas/ surface and
 // reports it disabled; canvas.sources adds project apps to the inventory; a missing path is CANVAS_SOURCE_MISSING.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator, preflight } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 
 const HOME = 'Screens:\n  HomeScreen:\n    Properties:\n      Fill: =RGBA(255, 255, 255, 1)\n';
@@ -59,9 +59,9 @@ test('Solution canvas metadata, payload and metadata-only overlay agree between 
   }
 });
 
-async function start(t, canvas, options = {}) {
+async function start(owner, canvas, options = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-'));
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'solution/Other/Solution.xml':
       '<ImportExportXml><SolutionManifest><UniqueName>InventedCanvas</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
@@ -82,12 +82,12 @@ async function start(t, canvas, options = {}) {
     dataverse: { enabled: true, tls: false, tds: { enabled: false } },
     connections: options.connections,
   });
-  ownedFixture(t).add(() => sim.close());
+  owner.add(() => sim.close());
   return sim;
 }
 
 test('canvas.enabled false unmounts /_apps/canvas/ and reports the surface disabled', async (t) => {
-  const sim = await start(t, { enabled: false });
+  const sim = await start(ownedFixture(t), { enabled: false });
   const response = await fetch(sim.url + '/_apps/canvas/', { headers: { accept: 'application/json' } });
   assert.equal(response.status, 404);
   assert.equal((await response.json()).error.code, 'CanvasAppsDisabled');
@@ -95,29 +95,17 @@ test('canvas.enabled false unmounts /_apps/canvas/ and reports the surface disab
   assert.ok(sim.state().diagnostics.some((entry) => entry.code === 'CANVAS_DISABLED'));
 });
 
-test('canvas.sources adds a project canvas app to the inventory', async (t) => {
-  const sim = await start(t, { sources: ['apps/fx_invented'] });
-  const listing = await (await fetch(sim.url + '/_apps/canvas/', { headers: { accept: 'application/json' } })).json();
-  assert.deepEqual(
-    listing.apps.map((app) => [app.uniqueName, app.screens]),
-    [['fx_invented', 1]],
-  );
-  assert.equal(sim.state().capabilities.canvas, 'behaviour');
-  const report = await sim.preflight();
-  assert.ok(report.modules.some((record) => record.name === 'canvasapp:fx_invented' && record.level === 'behaviour'));
-  // A project canvas app gets the canvas:app row a Solution app gets, and the rendering boundary row.
-  const rows = Object.fromEntries(
-    report.requirements.filter((row) => row.kind === 'canvas').map((row) => [row.id, row.status]),
-  );
-  assert.deepEqual(rows, { 'canvas:app/fx_invented': 'satisfied', 'canvas:rendering': 'placeholder' });
-  // The runtime is wired: the driver API asks for a principal instead of answering CanvasRuntimeUnavailable.
-  const driver = await fetch(sim.url + '/_apps/api/canvas/fx_invented');
-  assert.deepEqual([driver.status, (await driver.json()).error.code], [401, 'CanvasPrincipalRequired']);
+// The two project-app tests only read, so they share one host: a project app with a table and a connector data source.
+const closers = [],
+  removers = [];
+after(async () => {
+  await drainFixture(closers);
+  await drainFixture(removers);
 });
-
-test('the system map connects a canvas app to staff, records, Power Fx, connectors and its connection, and security to the store', async (t) => {
-  const sim = await start(
-    t,
+let projectApp;
+const projectAppHost = () =>
+  (projectApp ??= start(
+    { add: (close) => closers.push(close), remove: (rm) => removers.push(rm) },
     { sources: ['apps/fx_invented'] },
     {
       connections: { Svc: { provider: 'fixture' } },
@@ -137,7 +125,30 @@ test('the system map connects a canvas app to staff, records, Power Fx, connecto
         ].join('\n'),
       },
     },
+  ));
+
+test('canvas.sources adds a project canvas app to the inventory', async () => {
+  const sim = await projectAppHost();
+  const listing = await (await fetch(sim.url + '/_apps/canvas/', { headers: { accept: 'application/json' } })).json();
+  assert.deepEqual(
+    listing.apps.map((app) => [app.uniqueName, app.screens]),
+    [['fx_invented', 1]],
   );
+  assert.equal(sim.state().capabilities.canvas, 'behaviour');
+  const report = await sim.preflight();
+  assert.ok(report.modules.some((record) => record.name === 'canvasapp:fx_invented' && record.level === 'behaviour'));
+  // A project canvas app gets the canvas:app row a Solution app gets, and the rendering boundary row.
+  const rows = Object.fromEntries(
+    report.requirements.filter((row) => row.kind === 'canvas').map((row) => [row.id, row.status]),
+  );
+  assert.deepEqual(rows, { 'canvas:app/fx_invented': 'satisfied', 'canvas:rendering': 'placeholder' });
+  // The runtime is wired: the driver API asks for a principal instead of answering CanvasRuntimeUnavailable.
+  const driver = await fetch(sim.url + '/_apps/api/canvas/fx_invented');
+  assert.deepEqual([driver.status, (await driver.json()).error.code], [401, 'CanvasPrincipalRequired']);
+});
+
+test('the system map connects a canvas app to staff, records, Power Fx, connectors and its connection, and security to the store', async () => {
+  const sim = await projectAppHost();
   const dashboard = await (await fetch(sim.url + '/_sim/api/dashboard')).json();
   const ids = new Set(dashboard.nodes.map((node) => node.id)),
     pairs = dashboard.edges.map((edge) => `${edge.from}>${edge.to}`);
@@ -156,7 +167,7 @@ test('the system map connects a canvas app to staff, records, Power Fx, connecto
 });
 
 test('a missing canvas source reports CANVAS_SOURCE_MISSING and a missing preflight requirement', async (t) => {
-  const sim = await start(t, { sources: ['apps/does-not-exist.msapp'] });
+  const sim = await start(ownedFixture(t), { sources: ['apps/does-not-exist.msapp'] });
   assert.ok(
     sim
       .state()

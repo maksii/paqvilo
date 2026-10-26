@@ -8,9 +8,24 @@ import {
   ofCurrentDocument,
 } from '../lib/navigation-settle.mjs';
 
-test('a navigation hold honors a settle deadline introduced after the hold starts', async () => {
+// The waits poll with setTimeout and measure with Date.now. A mocked clock advances them one poll at a time, so every
+// elapsed time below is exact instead of a wall-clock bound that a busy runner can miss.
+async function onMockedClock(t, wait, poll) {
+  let done = false;
+  wait.then(
+    () => (done = true),
+    () => (done = true),
+  );
+  while (!done) {
+    t.mock.timers.tick(poll);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return wait;
+}
+
+test('a navigation hold honors a settle deadline introduced after the hold starts', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   let deadline = Infinity;
-  const started = Date.now();
   const wait = awaitWritesBeforeDocument(
     'main',
     () => [{ frameId: 'main', method: 'PATCH', type: 'XHR', path: '/slow' }],
@@ -20,9 +35,10 @@ test('a navigation hold honors a settle deadline introduced after the hold start
   setTimeout(() => {
     deadline = Date.now() + 30;
   }, 20);
-  const result = await wait;
+  const result = await onMockedClock(t, wait, 5);
   assert.equal(result.settled, false);
-  assert.ok(Date.now() - started < 500, 'the runner must not spend the full hold timeout after settling expires');
+  // The settle deadline introduced at 20 ms expires at 50 ms, long before the 2000 ms hold timeout.
+  assert.equal(result.waitedMs, 50, 'the runner must not spend the full hold timeout after settling expires');
 });
 
 // Synthetic CDP Network records and Page frame events; no browser is involved.
@@ -81,21 +97,26 @@ test('in-flight writes exclude replaced documents and removed frames', () => {
   );
 });
 
-test("network quiet waits for the current documents' requests, ignores dead and streaming ones, and is bounded", async () => {
+test("network quiet waits for the current documents' requests, ignores dead and streaming ones, and is bounded", async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const state = () => frameState(events);
   const records = [
     { frameId: 'main', loaderId: 'L1', method: 'GET', type: 'Script', path: '/old.js' },
     { frameId: 'main', loaderId: 'L2', method: 'GET', type: 'EventSource', path: '/__sim/events' },
     { frameId: 'main', loaderId: 'L2', method: 'GET', type: 'XHR', path: '/__sim/events' },
   ];
-  const quiet = await awaitNetworkQuiet(() => records, {
-    frames: state,
-    timeout: 2000,
-    quietMs: 100,
-    poll: 10,
-    ignore: (row) => row.path.startsWith('/__sim/events'),
-  });
-  assert.equal(quiet.settled, true);
+  const quiet = await onMockedClock(
+    t,
+    awaitNetworkQuiet(() => records, {
+      frames: state,
+      timeout: 2000,
+      quietMs: 100,
+      poll: 10,
+      ignore: (row) => row.path.startsWith('/__sim/events'),
+    }),
+    10,
+  );
+  assert.deepEqual([quiet.settled, quiet.waitedMs], [true, 100], 'nothing current is open: quiet after quietMs');
   // A load-time chain: a token read, then a write started after it; both must finish.
   const chain = [{ frameId: 'main', loaderId: 'L2', method: 'GET', type: 'XHR', path: '/token' }];
   setTimeout(() => {
@@ -103,19 +124,33 @@ test("network quiet waits for the current documents' requests, ignores dead and 
     chain.push({ frameId: 'main', loaderId: 'L2', method: 'PATCH', type: 'XHR', path: '/_api/contacts(1)' });
   }, 60);
   setTimeout(() => (chain[1].finishedTimestamp = 2), 160);
-  const started = Date.now();
-  const waited = await awaitNetworkQuiet(() => chain, { frames: state, timeout: 3000, quietMs: 100, poll: 10 });
-  assert.equal(waited.settled, true);
-  assert.ok(Date.now() - started >= 250, 'quiet only after the write finished and the page stayed idle');
-  // A pending navigation (document request) counts whatever its loader; the wait is bounded.
-  const bounded = await awaitNetworkQuiet(
-    () => [{ frameId: 'main', loaderId: 'L9', method: 'GET', type: 'Document', path: '/next/' }],
-    { frames: state, timeout: 150, quietMs: 50, poll: 10 },
+  const waited = await onMockedClock(
+    t,
+    awaitNetworkQuiet(() => chain, { frames: state, timeout: 3000, quietMs: 100, poll: 10 }),
+    10,
   );
-  assert.deepEqual({ settled: bounded.settled, pending: bounded.pending }, { settled: false, pending: ['GET /next/'] });
+  assert.equal(waited.settled, true);
+  // The write finishes at 160 ms; quiet needs quietMs (100 ms) after that.
+  assert.ok(waited.waitedMs >= 260, 'quiet only after the write finished and the page stayed idle');
+  // A pending navigation (document request) counts whatever its loader; the wait is bounded.
+  const bounded = await onMockedClock(
+    t,
+    awaitNetworkQuiet(() => [{ frameId: 'main', loaderId: 'L9', method: 'GET', type: 'Document', path: '/next/' }], {
+      frames: state,
+      timeout: 150,
+      quietMs: 50,
+      poll: 10,
+    }),
+    10,
+  );
+  assert.deepEqual(
+    { settled: bounded.settled, pending: bounded.pending, waitedMs: bounded.waitedMs },
+    { settled: false, pending: ['GET /next/'], waitedMs: 150 },
+  );
 });
 
-test('a pending document of a frame whose parent document was replaced no longer holds the page busy', async () => {
+test('a pending document of a frame whose parent document was replaced no longer holds the page busy', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   // Chromium may report neither the child's removal nor an end for its document request.
   const events = [
     { event: 'frameNavigated', frameId: 'main', loaderId: 'L1' },
@@ -133,11 +168,19 @@ test('a pending document of a frame whose parent document was replaced no longer
       path: '/_portal/modal-form-template-path/site',
     },
   ];
-  const quiet = await awaitNetworkQuiet(() => records, { frames: state, timeout: 2000, quietMs: 50, poll: 10 });
-  assert.equal(quiet.settled, true);
+  const quiet = await onMockedClock(
+    t,
+    awaitNetworkQuiet(() => records, { frames: state, timeout: 2000, quietMs: 50, poll: 10 }),
+    10,
+  );
+  assert.deepEqual([quiet.settled, quiet.waitedMs], [true, 50]);
   // A document still loading in a live frame does hold it.
   events.push({ event: 'frameAttached', frameId: 'next', parentFrameId: 'main' });
   records.push({ frameId: 'next', loaderId: 'N1', method: 'GET', type: 'Document', path: '/next/' });
-  const busy = await awaitNetworkQuiet(() => records, { frames: state, timeout: 120, quietMs: 50, poll: 10 });
-  assert.deepEqual(busy.pending, ['GET /next/']);
+  const busy = await onMockedClock(
+    t,
+    awaitNetworkQuiet(() => records, { frames: state, timeout: 120, quietMs: 50, poll: 10 }),
+    10,
+  );
+  assert.deepEqual([busy.settled, busy.pending], [false, ['GET /next/']]);
 });

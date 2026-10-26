@@ -936,6 +936,12 @@ test('Dataverse immutable values are ignored after portal permissions, including
 
 test('HTTP public wildcard API preserves private backend snapshots across denied PATCH/PUT/DELETE and queries', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-private-api-'));
+  // Removed after the runtime closes, and also when startup fails.
+  ownedFixture(t).remove(async () => {
+    const resolved = await fs.realpath(dir);
+    assert.ok(resolved.startsWith((await fs.realpath(os.tmpdir())) + path.sep));
+    await fs.rm(resolved, { recursive: true, force: true });
+  });
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_name: Private API\nadx_websiteid: site');
   await fs.writeFile(
     path.join(dir, 'settings.sitesetting.yml'),
@@ -951,12 +957,7 @@ test('HTTP public wildcard API preserves private backend snapshots across denied
     watch: false,
     observed: { webApiWildcard: 'exempt', evidence: 'synthetic fixture with wildcard field lists' },
   });
-  t.after(async () => {
-    await app.close();
-    const resolved = await fs.realpath(dir);
-    assert.ok(resolved.startsWith((await fs.realpath(os.tmpdir())) + path.sep));
-    await fs.rm(resolved, { recursive: true, force: true });
-  });
+  ownedFixture(t).add(() => app.close());
   const config = await (await fetch(app.url + '/__sim/api/state')).json();
   for (const [suffix, method, body] of [
     ['', 'PATCH', { __simArtifact: { checksums: { pdf: 'forged' } } }],
@@ -987,6 +988,12 @@ test('HTTP public wildcard API preserves private backend snapshots across denied
 
 test('HTTP PATCH/PUT/DELETE cannot change immutable metadata columns while permitted fields still save', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-immutable-api-'));
+  // Removed after the runtime closes, and also when startup fails.
+  ownedFixture(t).remove(async () => {
+    const resolved = await fs.realpath(dir);
+    assert.ok(resolved.startsWith(await fs.realpath(os.tmpdir())));
+    await fs.rm(resolved, { recursive: true, force: true });
+  });
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_name: Immutable API\nadx_websiteid: site');
   await fs.writeFile(
     path.join(dir, 'settings.sitesetting.yml'),
@@ -1004,12 +1011,7 @@ test('HTTP PATCH/PUT/DELETE cannot change immutable metadata columns while permi
     watch: false,
     observed: { webApiWildcard: 'exempt', evidence: 'synthetic fixture with a wildcard field list' },
   });
-  t.after(async () => {
-    await app.close();
-    const resolved = await fs.realpath(dir);
-    assert.ok(resolved.startsWith(await fs.realpath(os.tmpdir())));
-    await fs.rm(resolved, { recursive: true, force: true });
-  });
+  ownedFixture(t).add(() => app.close());
   const config = await (await fetch(app.url + '/__sim/api/state')).json();
   const call = (suffix, method, body) =>
     fetch(app.url + '/_api/contacts(person)' + suffix, {

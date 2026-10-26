@@ -10,7 +10,10 @@ import { requestPreview } from '../scripts/preview-release.mjs';
 
 const sha = 'abcdef0123456789abcdef0123456789abcdef01';
 const version = '0.9.4';
-const plan = () => previewRelease({ branch: 'codex/input-behavior-parity', version, sha, timestamp: 1700000000000 });
+// The plan is deterministic, and each computation runs git check-ref-format: compute it once.
+let planned;
+const plan = () =>
+  (planned ??= previewRelease({ branch: 'codex/input-behavior-parity', version, sha, timestamp: 1700000000000 }));
 
 test('preview versions identify the commit and branch without occupying stable npm tags', () => {
   const preview = plan();
@@ -233,11 +236,12 @@ test('release workflows gate the preview metadata and publish only the tested ar
     if (['test', 'browser', 'windows'].includes(name)) {
       const mode = name === 'browser' ? '--browser' : '--unit';
       assert.ok(steps[prepare].run.startsWith('npm run ci:prepare -- --suite ${{ matrix.suite }} ' + mode));
-      const verify = steps.findIndex(
-        (step) => step.run === 'npm run ci:verify -- --suite ${{ matrix.suite }} ' + mode + ' --prepared',
+      const verify = steps.findIndex((step) =>
+        step.run?.startsWith('npm run ci:verify -- --suite ${{ matrix.suite }} ' + mode + ' --prepared'),
       );
       assert.ok(verify > prepare, name + ' must validate the prepared, stamped suite');
-      assert.equal(ci.jobs[name].strategy.matrix.suite, '${{ fromJSON(needs.changes.outputs.suites) }}');
+      const lanes = name === 'browser' ? 'browsers' : 'units';
+      assert.equal(ci.jobs[name].strategy.matrix.include, `\${{ fromJSON(needs.changes.outputs.${lanes}) }}`);
     }
   }
 });

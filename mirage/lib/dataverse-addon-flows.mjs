@@ -14,6 +14,7 @@ import {
   registerInternalMessage,
   respond,
 } from './dataverse-addon-common.mjs';
+import { defaultSchedule } from './dataverse-async.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 
 const key = (value) => String(value ?? '').toLowerCase();
@@ -512,7 +513,8 @@ function registerRunDesktopFlow(api, spec, { boundRow, tableOf, write, stamp, ru
           outputs: null,
         }),
       );
-      setImmediate(() => runSession(c, packed, workflow, sessionId).catch(() => {}));
+      // On the API scheduler, so the run is tracked (drain), cancelled when the API closes and never starts after it.
+      defaultSchedule(api, () => runSession(c, packed, workflow, sessionId).catch(() => {}));
       return respond(c, name, {
         flowsessionId: sessionId,
         licenseCheck: { code: 'ValidLicenseCoverage', message: 'Valid License Coverage' },

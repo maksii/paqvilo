@@ -51,6 +51,8 @@ test(
     const requests = [],
       opened = [],
       errors = [];
+    // Resolves the wait of openedBy when the panel asks the editor to open a source.
+    let arrived = () => {};
     const server = http.createServer((request, response) => {
       const pathname = new URL(request.url, 'http://fixture.invalid').pathname;
       requests.push(pathname);
@@ -115,6 +117,7 @@ test(
     panel = enablePanel(context, session, {
       open: async (...args) => {
         opened.push(args);
+        arrived();
         return null;
       },
     });
@@ -123,9 +126,9 @@ test(
     // Resolves with the source the panel asked the editor to open after one click.
     const openedBy = async (locator) => {
       const before = opened.length;
+      const next = new Promise((resolve) => (arrived = resolve));
       await locator.click();
-      for (const deadline = Date.now() + 5000; opened.length === before && Date.now() < deadline;)
-        await new Promise((resolve) => setTimeout(resolve, 10));
+      await next;
       assert.equal(opened.length, before + 1, 'the panel opened one source');
       return opened.at(-1)[1];
     };

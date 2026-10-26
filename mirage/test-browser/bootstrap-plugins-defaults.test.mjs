@@ -170,10 +170,11 @@ test('local plugins expose patchable Bootstrap 3 constructors, instances, noConf
     $(element).fixtureButton('toggle');
     facts.push(['toggle', element.classList.contains('active'), element.getAttribute('aria-pressed')]);
     $(element).fixtureButton('loading');
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Like Bootstrap 3, the plugin applies a state in a zero-delay task; a task queued after it runs later.
+    await new Promise((resolve) => setTimeout(resolve));
     facts.push(['loading', element.disabled, element.textContent]);
     $(element).fixtureButton('reset');
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve));
     facts.push(['reset', element.disabled, element.textContent]);
     return facts;
   });

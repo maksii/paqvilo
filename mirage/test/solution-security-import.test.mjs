@@ -306,9 +306,10 @@ test('ImportSolution imports a managed role and profile; a role changed after im
     ]);
   assert.deepEqual(await privilegesOf(), [['prvReadfx_item', 'Global']]);
   // A re-import replaces the managed privilege set.
-  await dst.request('POST', '/ImportSolution', {
+  const reimported = await dst.request('POST', '/ImportSolution', {
     CustomizationFile: withSecurity([['prvReadfx_Item', 'Basic']]).toString('base64'),
   });
+  assert.equal(reimported.status, 204, JSON.stringify(reimported.json));
   assert.deepEqual(await privilegesOf(), [['prvReadfx_item', 'Basic']]);
   // A customization on top (AddPrivilegesRole) survives the next managed import.
   const write = dst.store.state.tables.privilege.find(
@@ -322,9 +323,11 @@ test('ImportSolution imports a managed role and profile; a role changed after im
     ).status,
     204,
   );
-  await dst.request('POST', '/ImportSolution', {
+  // The import itself succeeds; an unchanged result must come from the layering, not from a refused import.
+  const layered = await dst.request('POST', '/ImportSolution', {
     CustomizationFile: withSecurity([['prvReadfx_Item', 'Local']]).toString('base64'),
   });
+  assert.equal(layered.status, 204, JSON.stringify(layered.json));
   assert.deepEqual((await privilegesOf()).sort(), [
     ['prvReadfx_item', 'Basic'],
     ['prvWritefx_item', 'Global'],

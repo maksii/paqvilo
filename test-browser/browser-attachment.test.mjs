@@ -1,26 +1,34 @@
-import test from 'node:test';
+import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import net from 'node:net';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { openBrowser } from '../lense/browser.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
+
+// Late-inspection tests share one browser; each test owns its contexts and loopback server.
+let sharedBrowser;
+before(async () => {
+  sharedBrowser = await chromium.launch(browserLaunchOptions({ headless: true }));
+});
+after(() => sharedBrowser?.close());
 
 async function lateInspectionFixture(t, html, cleanup) {
-  let browser;
   const server = http.createServer((_request, response) =>
     response.writeHead(200, { 'content-type': 'text/html' }).end(html),
   );
+  const contexts = [];
   t.after(async () => {
     try {
       await cleanup();
     } finally {
-      await browser?.close();
+      await Promise.allSettled(contexts.map((context) => context.close()));
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     }
@@ -28,7 +36,14 @@ async function lateInspectionFixture(t, html, cleanup) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const origin = 'http://127.0.0.1:' + server.address().port;
-  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  // Contexts opened through this view close with the test, before its server.
+  const browser = {
+    async newContext(options) {
+      const context = await sharedBrowser.newContext(options);
+      contexts.push(context);
+      return context;
+    },
+  };
   return { browser, origin };
 }
 
@@ -51,15 +66,12 @@ test(
       await Promise.allSettled([attachment?.close(), owner?.close()]);
       fixture.closeAllConnections();
       await new Promise((resolve) => fixture.close(resolve));
-      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      await fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
     fixture.listen(0, '127.0.0.1');
     await once(fixture, 'listening');
     const origin = `http://127.0.0.1:${fixture.address().port}`;
-    const reservation = net.createServer().listen(0, '127.0.0.1');
-    await once(reservation, 'listening');
-    const debugPort = reservation.address().port;
-    await new Promise((resolve) => reservation.close(resolve));
+    const debugPort = await freeDebugPort();
     const launch = chromium.launchPersistentContext;
     t.mock.method(chromium, 'launchPersistentContext', function (profile, options) {
       return launch.call(this, profile, {

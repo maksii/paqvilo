@@ -24,7 +24,19 @@ test('successful historical jobs cannot qualify a blocked PR', () => {
 
 test('readiness requires the pushed head, effective merge state and completed gates', () => {
   assert.equal(qualifyPullRequest(ready, head).ok, true);
+  assert.equal(
+    qualifyPullRequest(
+      { ...ready, statusCheckRollup: [...ready.statusCheckRollup, { __typename: 'StatusContext', state: 'SUCCESS' }] },
+      head,
+    ).ok,
+    true,
+    'a completed commit status has no check-run status field',
+  );
   for (const state of [
+    {
+      ...ready,
+      statusCheckRollup: [ready.statusCheckRollup[0], { ...ready.statusCheckRollup[1], conclusion: 'FAILURE' }],
+    },
     { ...ready, headRefOid: 'b'.repeat(40) },
     { ...ready, mergeStateStatus: 'UNKNOWN' },
     { ...ready, mergeable: 'CONFLICTING' },

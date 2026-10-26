@@ -132,10 +132,12 @@ test('a modern list continues the secured list query on scroll and publishes row
   await modern.locator('tbody tr').first().waitFor();
   // The first page holds the list's page size; later pages follow while the end of the list is in view.
   assert.equal((await page.evaluate(() => window.loadedPages))[0], 3);
-  // Scrolling to the end loads the next pages until the query has no more records.
-  for (let attempt = 0; attempt < 10 && (await modern.locator('tbody tr').count()) < 7; attempt++) {
+  // Scrolling to the end loads the next pages until the query has no more records: every scroll to the sentinel
+  // publishes one more loaded page, and a sentinel still in view continues by itself.
+  for (let attempt = 0; attempt < 2 && (await modern.locator('tbody tr').count()) < 7; attempt++) {
+    const loaded = await page.evaluate(() => window.loadedPages.length);
     await modern.locator('[data-pp-modern-list-more]').scrollIntoViewIfNeeded();
-    await page.waitForTimeout(150);
+    await page.waitForFunction((loaded) => window.loadedPages.length > loaded, loaded);
   }
   assert.deepEqual(
     await modern.locator('tbody tr td:first-child').allInnerTexts(),
@@ -181,12 +183,17 @@ test('a modern list without read permission shows the access-denied message', as
 test('a modern list searches, sorts, switches views and runs the delete action through the classic grid engine', async (t) => {
   const { page, errors, bodies, app } = await launch(t, { operations: ['read', 'delete'], features: true });
   const modern = page.locator('#modern [data-pp-modern-list]');
-  const names = () => modern.locator('tbody tr td:first-child').allInnerTexts();
-  const until = async (expected) => {
-    for (let attempt = 0; attempt < 40 && JSON.stringify(await names()) !== JSON.stringify(expected); attempt++)
-      await page.waitForTimeout(100);
-    assert.deepEqual(await names(), expected);
-  };
+  // Every expected row list is only produced by the restarted query, so it marks that query as applied.
+  const until = (expected) =>
+    page.waitForFunction(
+      (expected) =>
+        JSON.stringify(
+          [...document.querySelectorAll('#modern [data-pp-modern-list] tbody tr td:first-child')].map(
+            (cell) => cell.innerText,
+          ),
+        ) === JSON.stringify(expected),
+      expected,
+    );
   await until(['Item 1', 'Item 2', 'Item 3']);
   // The toolbar comes from the list definition: a view selector over both views, the search box and the download action.
   assert.deepEqual(await modern.locator('[data-pp-modern-list-view] option').allInnerTexts(), [

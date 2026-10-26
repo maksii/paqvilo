@@ -46,14 +46,7 @@ test(
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const origin = `http://127.0.0.1:${server.address().port}`,
       root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-tools-'));
-    const browser = await chromium.launch({
-        channel: process.platform === 'win32' ? 'msedge' : undefined,
-        headless: true,
-      }),
-      context = await browser.newContext(),
-      page = await context.newPage(),
-      other = await context.newPage();
-    let inspector, release;
+    let browser, inspector, release;
     ownedFixture(t).add(async () => {
       await inspector?.close();
     });
@@ -61,7 +54,7 @@ test(
       await release?.();
     });
     ownedFixture(t).add(async () => {
-      await browser.close();
+      await browser?.close();
     });
     ownedFixture(t).add(async () => {
       server.closeAllConnections();
@@ -78,6 +71,12 @@ test(
     ownedFixture(t).remove(async () => {
       await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
     });
+    // The lane's selected browser, as in every other browser test (not always Edge on Windows).
+    const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+    browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true });
+    const context = await browser.newContext(),
+      page = await context.newPage(),
+      other = await context.newPage();
     const imported = { assets: new Map(), resources: [], diagnostics: [], layers: [] },
       overlay = createModelDrivenOverlay({ origin, imported });
     release = await interceptOrigin(

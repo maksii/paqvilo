@@ -53,7 +53,8 @@ function runningRuntime(options, env = process.env) {
   if (!options.runtime) return null;
   let launched;
   try {
-    launched = JSON.parse(env.MIRAGE_SETUP_RUNTIME ?? '{}') ?? {};
+    // Set for a Mirage child only: a Lense that inherits it keeps its own site and command.
+    launched = options.runtime.product === 'Lense' ? {} : (JSON.parse(env.MIRAGE_SETUP_RUNTIME ?? '{}') ?? {});
   } catch {
     launched = {};
   }

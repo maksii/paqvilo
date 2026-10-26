@@ -121,9 +121,13 @@ for (const mirage of [false, true])
       // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
       const page = await context.newPage();
       detach = await attachSession(context, session);
+      // Editor opens in order; each click below waits for the next one.
+      let arrived = () => {};
       const opened = [];
       panel = enablePanel(context, session, {
         open: async (...args) => {
+          // The waiting click resumes only after this callback has recorded the request.
+          arrived();
           opened.push(args);
           return null;
         },
@@ -146,9 +150,9 @@ for (const mirage of [false, true])
         ['Rules.cs', code],
       ]) {
         const before = opened.length;
+        const next = new Promise((resolve) => (arrived = resolve));
         await logic.locator(`[data-rel$="${suffix}"] [data-act="open"]`).first().click();
-        for (const deadline = Date.now() + 5000; opened.length === before && Date.now() < deadline;)
-          await new Promise((resolve) => setTimeout(resolve, 10));
+        await next;
         assert.equal(opened.length, before + 1, suffix);
         assert.equal(opened.at(-1)[1], exact);
       }

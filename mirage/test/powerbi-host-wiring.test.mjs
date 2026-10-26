@@ -20,7 +20,6 @@ async function host(t, embed) {
   for (const [name, text] of Object.entries(files)) await fs.writeFile(path.join(root, name), text);
   const sim = await createSimulator({
     sourceDir: root,
-    stateFile: path.join(root, 'state.json'),
     watch: false,
     port: 0,
     observed: { powerBiOutput: 'empty', evidence: 'Invented empty-output capture' },

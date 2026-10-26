@@ -30,6 +30,7 @@ test(
       panel,
       detach,
       releaseOpen,
+      openArrived = () => {},
       openCalls = 0;
     const server = http.createServer((req, res) =>
       res
@@ -87,6 +88,7 @@ test(
     panel = enablePanel(context, session, {
       open: async () => {
         openCalls++;
+        openArrived();
         await new Promise((resolve) => {
           releaseOpen = resolve;
         });
@@ -94,15 +96,21 @@ test(
       },
     });
     await context.addInitScript(() => {
+      // While a deadline is held, the panel's 120 s request timeout fires only when the test expires it.
       const schedule = window.setTimeout.bind(window);
-      window.setTimeout = (fn, delay, ...args) =>
-        schedule(fn, window.__fastDeadline && delay === 120000 ? 50 : delay, ...args);
+      window.setTimeout = (fn, delay, ...args) => {
+        if (!window.__holdDeadline || delay !== 120000) return schedule(fn, delay, ...args);
+        window.__expireDeadline = () => fn(...args);
+        return schedule(() => {}, 0);
+      };
       const original = window.fetch.bind(window);
       window.__inspectionMode = 'delay';
       window.__inspectionRequests = 0;
       window.__catalogMode = 'failure';
       window.__catalogRequests = 0;
+      window.__openRequests = 0;
       window.fetch = async (...args) => {
+        if (String(args[0]).includes('/__paqvilo/api/open')) window.__openRequests++;
         if (String(args[0]).includes('/__paqvilo/api/inspect')) {
           window.__inspectionRequests++;
           const mode = window.__inspectionMode;
@@ -147,10 +155,13 @@ test(
     await xray.locator('.scan-orbit').waitFor();
     assert.match(await xray.locator('.scan-state').textContent(), /origins|Reading local/);
     assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
-    const before = await xray.locator('.scan-orbit').evaluate((node) => getComputedStyle(node).transform);
-    await page.waitForTimeout(90);
-    const after = await xray.locator('.scan-orbit').evaluate((node) => getComputedStyle(node).transform);
-    assert.notEqual(before, after, 'scan animates while the actual API is held');
+    assert.equal(
+      await xray
+        .locator('.scan-orbit')
+        .evaluate((node) => node.getAnimations().some((animation) => animation.playState === 'running')),
+      true,
+      'scan animates while the actual API is held',
+    );
     await evidence('portal-xray-reading-sources');
     await page.emulateMedia({ reducedMotion: 'reduce' });
     assert.equal(await xray.locator('.scan-orbit').evaluate((node) => getComputedStyle(node).animationName), 'none');
@@ -187,7 +198,7 @@ test(
         .getElementById('paqvilo-xray')
         .dispatchEvent(new CustomEvent('paqvilo-xray', { bubbles: true, detail: { action: 'refresh' } })),
     );
-    await page.waitForTimeout(50);
+    // A refresh requests inspection synchronously from the event, so a second request would already be counted.
     assert.equal(
       await page.evaluate(() => window.__inspectionRequests),
       count,
@@ -223,8 +234,8 @@ test(
       const node = document.getElementById('paqvilo-panel').shadowRoot.querySelector('[data-act="open"]');
       node.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
-    await page.waitForTimeout(30);
-    assert.equal(openCalls, 1, 'duplicate source opening is coalesced');
+    // Opening requests the dev loop synchronously from the click, so a duplicate would already be counted.
+    assert.equal(await page.evaluate(() => window.__openRequests), 1, 'duplicate source opening is coalesced');
     await scope.getByRole('tab', { name: 'Activity' }).click();
     await scope.locator('.working').waitFor();
     releaseOpen();
@@ -233,9 +244,14 @@ test(
       .locator('.toast')
       .getByText(/Opened .+ in the editor/)
       .waitFor();
+    assert.equal(openCalls, 1, 'the coalesced opening reached the dev loop once');
     await scope.getByRole('tab', { name: 'Explore' }).click();
-    await page.evaluate(() => (window.__fastDeadline = true));
+    await page.evaluate(() => (window.__holdDeadline = true));
+    const arrived = new Promise((resolve) => (openArrived = resolve));
     await scope.locator('[data-act="open"]').first().click();
+    // The request reaches the dev loop before its deadline expires.
+    await arrived;
+    await page.evaluate(() => window.__expireDeadline());
     await scope
       .locator('.toast')
       .getByText('The request timed out. Check the dev loop and retry.', { exact: true })
@@ -248,7 +264,7 @@ test(
     );
     assert.equal(openCalls, 2, 'timeouts never automatically retry the operation');
     releaseOpen();
-    await page.evaluate(() => (window.__fastDeadline = false));
+    await page.evaluate(() => (window.__holdDeadline = false));
     assert.deepEqual(errors, []);
   },
 );

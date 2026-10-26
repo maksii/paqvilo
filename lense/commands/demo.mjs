@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
-import { constants } from 'node:fs';
+import { constants, cpSync } from 'node:fs';
 import { assertScaffoldPath, prepareScaffoldDirectory } from '../scaffold.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -13,21 +13,30 @@ const MARKER = '.paqvilo/demo.json';
 
 // A fresh Git checkout must serve the same bytes as the copied scaffold.
 // Normalize text at the boundary instead of inheriting the toolkit checkout's autocrlf.
+// Files are normalized 32 at a time: one at a time took about 16 s for the demo on a loaded Windows machine.
 async function normalizeText(directory) {
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    const file = path.join(directory, entry.name);
-    if (entry.isDirectory()) await normalizeText(file);
-    else if (
-      entry.isFile() &&
-      /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv|svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i.test(
-        entry.name,
+  const files = [];
+  const walk = async (folder) => {
+    for (const entry of await fs.readdir(folder, { withFileTypes: true })) {
+      const file = path.join(folder, entry.name);
+      if (entry.isDirectory()) await walk(file);
+      else if (
+        entry.isFile() &&
+        /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv|svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i.test(
+          entry.name,
+        )
       )
-    ) {
-      const bytes = await fs.readFile(file);
-      if (!bytes.includes(0) && bytes.includes(13))
-        await fs.writeFile(file, bytes.toString('utf8').replace(/\r\n?/g, '\n'));
+        files.push(file);
     }
-  }
+  };
+  await walk(directory);
+  const normalize = async (file) => {
+    const bytes = await fs.readFile(file);
+    if (!bytes.includes(0) && bytes.includes(13))
+      await fs.writeFile(file, bytes.toString('utf8').replace(/\r\n?/g, '\n'));
+  };
+  for (let index = 0; index < files.length; index += 32)
+    await Promise.all(files.slice(index, index + 32).map(normalize));
 }
 
 async function prepareEditorFiles(target) {
@@ -94,7 +103,8 @@ export async function prepareDemo(directory) {
     'README.md',
     'AGENTS.md',
   ]) {
-    await fs.cp(path.join(STARTER, name), path.join(target, name), {
+    // Synchronous on purpose: on Windows async fs.cp took 20-30 s for the ~2,000-file sample, cpSync under 2 s.
+    cpSync(path.join(STARTER, name), path.join(target, name), {
       recursive: true,
       errorOnExist: true,
       force: false,

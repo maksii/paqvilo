@@ -39,14 +39,7 @@ test('a reload while a job that calls change() is pending completes', async (t) 
     0,
     { name: 'invented-job' },
   );
-  let timer;
-  const outcome = await Promise.race([
-    reloading.then(() => 'reloaded'),
-    new Promise((resolve) => {
-      timer = setTimeout(() => resolve('deadlocked'), 10000);
-    }),
-  ]);
-  clearTimeout(timer);
-  assert.equal(outcome, 'reloaded');
+  // A deadlock never settles and fails at the test timeout; a wall-clock race would also fail a slow, correct reload.
+  await reloading;
   assert.equal(ran, true);
 });

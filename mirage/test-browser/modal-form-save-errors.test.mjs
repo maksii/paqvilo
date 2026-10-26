@@ -11,6 +11,7 @@ import { createSimulator } from '../server.mjs';
 import { createFrameReadiness } from '../lib/frame-readiness.mjs';
 import { DataError } from '../lib/data.mjs';
 import { signInContext } from '../testing/session.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -35,13 +36,14 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
     res.end(readiness.decorate(body, { path: url.pathname }));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const context = await browser.newContext();
+  let context;
   t.after(async () => {
-    await context.close();
+    await context?.close();
     readiness.close();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   });
+  context = await browser.newContext();
   const page = await context.newPage();
   const failedRequests = [];
   page.on('requestfailed', (request) =>
@@ -54,11 +56,9 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
       const frame = document.createElement('iframe');
       frame.onload = () => {
         const win = frame.contentWindow;
-        win.loadAt = win.performance.now();
         win.injected = true;
         window.loaded = {
           readyAt: win.readyAt ?? null,
-          loadAt: win.loadAt,
           sawGlobal: win.readySawGlobal ?? null,
           ordering: win.__portalSimulation?.frameLoadOrdering,
         };
@@ -69,7 +69,8 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
     await page.waitForFunction(() => window.loaded);
     const value = await page.evaluate(() => window.loaded);
     if (query !== '?none') {
-      assert.ok(value.readyAt < value.loadAt, JSON.stringify(value));
+      // Recorded at the frame's load: a number means the ready handler had already run (no timer-resolution tie).
+      assert.equal(typeof value.readyAt, 'number', JSON.stringify(value));
       assert.equal(value.sawGlobal, false);
       assert.equal(value.ordering, 'jquery-ready');
     } else {
@@ -84,6 +85,7 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
 
 async function fixture(t, transport, errorMarkup = 'inline') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'frame-save-feedback-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: invented-site\nadx_name: Invented frame',
     'Home.webpage.yml':
@@ -163,10 +165,7 @@ async function fixture(t, transport, errorMarkup = 'inline') {
       },
     },
   });
-  t.after(async () => {
-    await app.close();
-    await fs.rm(root, { recursive: true, force: true });
-  });
+  ownedFixture(t).add(() => app.close());
   return app;
 }
 
@@ -175,7 +174,7 @@ for (const transport of ['json', 'postback'])
     test(`${transport} ${markup} modal save failures re-render posted values and support a successful retry`, async (t) => {
       const app = await fixture(t, transport, markup);
       const context = await browser.newContext();
-      t.after(() => context.close());
+      ownedFixture(t).add(() => context.close());
       await signInContext(context, app, 'editor', { roles: ['Editor'] });
       assert.equal(
         app.store.allowed(
@@ -205,7 +204,6 @@ for (const transport of ['json', 'postback'])
             window.loads++;
             window.states.push({
               ready: win.readyAt,
-              loaded: win.performance.now(),
               sawGlobal: win.readySawGlobal,
               message: win.document.querySelector('#MessagePanel')?.textContent,
             });
@@ -258,7 +256,7 @@ for (const transport of ['json', 'postback'])
       assert.match(await frame.locator('#MessagePanel').innerText(), /successfully/);
       const states = await page.evaluate(() => window.states);
       assert.ok(
-        states.every((item) => item.ready < item.loaded && item.sawGlobal === false),
+        states.every((item) => typeof item.ready === 'number' && item.sawGlobal === false),
         JSON.stringify(states),
       );
 

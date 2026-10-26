@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { recordedStamp } from '../../lense/file-cache.mjs';
 import { readLocalFileSync } from '../../lense/local-file.mjs';
 import { readSolutionAssetEntries, SOLUTION_ASSET_LIMITS } from './dataverse-solution-assets.mjs';
 
@@ -14,7 +15,7 @@ const byName = (left, right) => (left.name < right.name ? -1 : left.name > right
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const stampOf = (file) => {
   const stat = fs.statSync(file, { bigint: true });
-  return `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`;
+  return recordedStamp(stat, `${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.ino}`);
 };
 
 function directoryFiles(dir, folders) {

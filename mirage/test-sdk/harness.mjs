@@ -1,6 +1,6 @@
 // Shared harness for SDK verification gates: starts the simulated Dataverse API over an
 // in-memory DataStore with invented tables and one confidential application registration.
-// Gates are opt-in (`npm run test:sdk`); they never run inside `npm run validate`.
+// `npm run test:sdk` runs every gate; scripts/ci.mjs runs those whose clients CI installs from locked manifests.
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';

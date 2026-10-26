@@ -16,6 +16,8 @@ import { createSolutionMetadataOverlay } from '../mirage/lib/dataverse-solution-
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const guid = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+// 205 items and 1105 details exceed the former global inspection caps (200 items per kind, 1000 details), which
+// once dropped the active form, view or command when it came late in the catalogue.
 test('cold native command selectors prioritize full scoped exported declarations beyond catalogue caps', () => {
   const identifier = 'fixture_item|NoRelationship|Form|fixture.review';
   const commands = Array.from({ length: 1105 }, (_, index) => ({

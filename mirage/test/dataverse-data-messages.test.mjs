@@ -34,8 +34,13 @@ function fixtureState() {
   return state;
 }
 
+// The applications read their secret from this variable; it is set for the file and removed after it.
+process.env[SECRET_VAR] = 'data-messages-secret';
+after(() => {
+  delete process.env[SECRET_VAR];
+});
+
 async function startServer({ extendState = () => {}, extraExtensions = [], roles = ['System Administrator'] } = {}) {
-  process.env[SECRET_VAR] = 'data-messages-secret';
   const initial = fixtureState();
   extendState(initial);
   const store = await new DataStore({ state: initial }).init();
@@ -80,6 +85,13 @@ async function startServer({ extendState = () => {}, extraExtensions = [], roles
     close: () => server.close(),
   };
 }
+
+// The default organization for the cases that replace only their own tables (importfile, annotation, the retained
+// store) and leave contoso_widget at its single fixture row: each server is a whole Dataverse API, so they share one.
+// A case that adds rows or mappings, or needs other settings, starts its own. node:test runs these cases one at a time.
+let shared = null;
+const sharedServer = () => (shared ??= startServer());
+after(async () => (await shared)?.close());
 
 const target = (logical, key, id) => ({ '@odata.type': `${CRM}${logical}`, [key]: id });
 const b64 = (text) => Buffer.from(text).toString('base64');
@@ -287,9 +299,8 @@ test('mapped lookup imports enforce AppendTo access instead of assigning inacces
   );
 });
 
-test('parsed-file functions return headings, distinct pages and row collections, then refuse disposed parse data', async (t) => {
-  const h = await startServer();
-  t.after(() => h.close());
+test('parsed-file functions return headings, distinct pages and row collections, then refuse disposed parse data', async () => {
+  const h = await sharedServer();
   h.store.state.tables.importfile = [
     {
       importfileid: IMPORT_FILE,
@@ -348,9 +359,8 @@ test('AutoMapEntity replaces stale mappings with matching names and types, and r
   assert.equal((await customizer.send('POST', '/AutoMapEntity', { EntityMapId: IMPORT })).status, 204);
 });
 
-test('signed note download works without an API bearer but minting and nonempty FileAttributeName are checked', async (t) => {
-  const h = await startServer();
-  t.after(() => h.close());
+test('signed note download works without an API bearer but minting and nonempty FileAttributeName are checked', async () => {
+  const h = await sharedServer();
   h.store.state.tables.annotation = [
     {
       annotationid: IMPORT_FILE,
@@ -459,8 +469,7 @@ test('a cascade creates one bin snapshot, restores through the root Target, and 
 });
 
 test('retained export reads the separate datasource and internal retention events require an explicit pack', async (t) => {
-  const h = await startServer();
-  t.after(() => h.close());
+  const h = await sharedServer();
   h.store.state.dataverse.retained = { contoso_widget: [{ contoso_widgetid: GONE, name: 'Archived' }] };
   const response = await h.send('POST', '/ExportRetainedData', {
     FetchXml: '<fetch><entity name="contoso_widget"><attribute name="name"/></entity></fetch>',
@@ -558,9 +567,8 @@ test("retained FetchXML applies the caller's record ownership filter", async (t)
   );
 });
 
-test('retained FetchXML refuses joins and aggregates while the ordinary portal query remains valid', async (t) => {
-  const h = await startServer();
-  t.after(() => h.close());
+test('retained FetchXML refuses joins and aggregates while the ordinary portal query remains valid', async () => {
+  const h = await sharedServer();
   h.store.state.dataverse.retained = { contoso_widget: [{ contoso_widgetid: WIDGET, name: 'Archived' }] };
   const joined =
     '<fetch datasource="retained"><entity name="contoso_widget"><attribute name="name"/><link-entity name="contoso_widget" from="contoso_widgetid" to="contoso_widgetid" alias="peer"><attribute name="name"/></link-entity></entity></fetch>';
@@ -581,13 +589,11 @@ test('retained FetchXML refuses joins and aggregates while the ordinary portal q
   );
 });
 
-// Polls until an asynchronous import file reaches the expected processing status.
+// The import messages answer with an asyncoperation and run their work as a system job on the organization's scheduler
+// (dataverse-async.mjs, the store's scheduler): drain() returns once that job settled, so the file's status is final.
 async function waitForStatus(store, status) {
-  for (let i = 0; i < 200; i++) {
-    if ((store.state.tables.importfile ?? [])[0]?.processingstatus === status) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail(`import file did not reach processingstatus ${status}`);
+  await store.scheduler.drain();
+  assert.equal(store.state.tables.importfile?.[0]?.processingstatus, status);
 }
 
 test('recycle eligibility excludes exact elastic and virtual table types', async (t) => {
@@ -730,7 +736,12 @@ describe('import: ParseImport, TransformImport and ImportRecordsImport', () => {
   it('parse, transform and import create the rows and finish the file as Import Complete', async () => {
     const parsed = await h.send('POST', `/imports(${IMPORT})/Microsoft.Dynamics.CRM.ParseImport`, {});
     assert.equal(parsed.status, 200);
-    assert.ok((await parsed.json()).asyncoperationid);
+    const job = (await parsed.json()).asyncoperationid;
+    assert.equal(
+      h.store.state.tables.asyncoperation.some((row) => row.asyncoperationid === job),
+      true,
+      'ParseImport answers the system job it queued',
+    );
     await waitForStatus(h.store, 3);
     assert.equal(h.store.state.tables.importfile[0].totalcount, 2);
     assert.equal(h.store.state.tables.importfile[0].headerrow, 'name,status');

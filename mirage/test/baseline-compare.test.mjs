@@ -381,6 +381,7 @@ test('compareScenario verdicts, allowlist classification, second-live variance a
   });
   assert.equal(notWitnessed.verdict, 'FAIL');
   assert.deepEqual(notWitnessed.variance.entries, []);
+  assert.ok(notWitnessed.deltas.length > 0, 'the unwitnessed token deltas are reported');
   assert.ok(notWitnessed.deltas.every((d) => d.unprovenVariance));
   const tokenReport = { generatedAt: '2026-01-01', scenarios: [witnessed, notWitnessed] };
   assert.deepEqual(summarize(tokenReport).variance, {
@@ -629,14 +630,8 @@ test('captureMatrix switches personas only on change, honours reset:false and re
       { id: 'skip', steps: [{}] },
     ],
   };
-  const log = console.log;
-  console.log = () => {};
-  let results;
-  try {
-    results = await captureMatrix({ matrix, side, outDir, label: 'mirage', only: ['one', 'two', 'bad'] });
-  } finally {
-    console.log = log;
-  }
+  t.mock.method(console, 'log', () => {});
+  const results = await captureMatrix({ matrix, side, outDir, label: 'mirage', only: ['one', 'two', 'bad'] });
   assert.deepEqual(calls, [
     'persona:anonymous',
     'reset',

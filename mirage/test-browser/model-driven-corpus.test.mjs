@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { sharedBrowser } from './shared-browser.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { importModelDrivenProject, createModelDrivenOverlay } from '../../lense/model-driven.mjs';
 import { createModelDrivenMetadataIndex } from '../../lense/model-driven-metadata.mjs';
 import { startModelDrivenInspector } from '../../lense/model-driven-inspector.mjs';
@@ -165,7 +166,7 @@ test(
       },
       stop() {},
     });
-    t.after(() => controller.close());
+    ownedFixture(t).add(() => controller.close());
     await page.waitForFunction(() => document.getElementById('paqvilo-xray')?.__px);
     const nativePage = await chrome.page(t);
     await nativePage.goto(origin + '/native-corpus');
@@ -190,7 +191,7 @@ test(
       },
       stop() {},
     });
-    t.after(() => nativeController.close());
+    ownedFixture(t).add(() => nativeController.close());
     await nativePage.waitForFunction(() => document.getElementById('paqvilo-xray')?.__px);
     const results = [];
     for (const scenario of scenarios)
@@ -444,14 +445,18 @@ test(
             );
             scope = child.scope;
             if (scenario.id !== 'same-origin-child-frame-direct-binding')
-              scope = await page.evaluate(async () => {
+              scope = await page.evaluate(async (navigate) => {
                 const frame = document.querySelector('#fixture-surface iframe');
-                frame.srcdoc = '<input id="replacement-child">';
-                await new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+                const loaded = new Promise((resolve) => frame.addEventListener('load', resolve, { once: true }));
+                // The in-flight navigation leaves through the frame's own location; the replacement swaps its srcdoc.
+                if (navigate) frame.contentWindow.location.href = 'about:blank';
+                else frame.srcdoc = '<input id="replacement-child">';
+                await loaded;
+                if (navigate) frame.contentDocument.body.innerHTML = '<input id="replacement-child">';
                 return document
                   .getElementById('paqvilo-xray')
                   .__px.getSelectionScope(frame.contentDocument.getElementById('replacement-child'));
-              });
+              }, scenario.id === 'navigation-while-source-response-in-flight');
           }
           if (scenario.id === 'same-document-rerender-invalidates-old-node-binding') {
             packet = await page.evaluate(() => {
@@ -505,14 +510,12 @@ test(
             const child = await frame.asElement().contentFrame();
             await child.waitForLoadState();
             const token = await page.evaluate(() => document.getElementById('paqvilo-xray').__px.token);
-            const refused = await child.evaluate(
-              async (token) =>
-                typeof window.__paqviloModelPanelApi === 'function'
-                  ? window.__paqviloModelPanelApi({ token, name: 'provenance', body: { version: 1, active: {} } })
-                  : { ok: false },
-              token,
+            // The owned panel binding installs only in the top-level document (lense/owned-page-binding.mjs), so a
+            // child frame holding the token has no API to dispatch through.
+            assert.equal(
+              await child.evaluate((token) => typeof token === 'string' && typeof window.__paqviloModelPanelApi, token),
+              'undefined',
             );
-            assert.equal(refused.ok, false);
             await frame.evaluate((node) => node.remove());
             packet.facts = [];
             packet.sourceRefs = [];

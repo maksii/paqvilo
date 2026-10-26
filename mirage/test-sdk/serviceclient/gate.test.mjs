@@ -2,7 +2,8 @@
 // Dataverse API. ServiceClient drops the port from the URL, so the simulator listens on loopback :80.
 // Two passes over one simulator: "soap" (UseWebApi=false, CRUD and messages on /XRMServices/2011/Organization.svc/web)
 // and "webapi" (UseWebApi=true, CRUD on the Web API, RetrieveEntityRequest still on SOAP).
-// Opt-in (`node --test --test-timeout=600000 mirage/test-sdk/serviceclient/gate.test.mjs`); never part of `npm run validate`.
+// Runs in the full Windows verification gate (`node scripts/ci.mjs sdk`), or alone with
+// `node --test --test-timeout=600000 mirage/test-sdk/serviceclient/gate.test.mjs`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
@@ -45,15 +46,9 @@ const SOAP_STEPS = [
 ];
 const WEBAPI_STEPS = ['construct', 'org', 'webapi_crud', 'soap_retrieve_entity', 'soap_retrieve_entity_attributes'];
 
-// Pending steps: each regex must match the step's failure detail, so a different failure still fails the gate.
 const PASSES = [
-  { name: 'soap', useWebApi: 'false', steps: SOAP_STEPS, pending: {} },
-  {
-    name: 'webapi',
-    useWebApi: 'true',
-    steps: WEBAPI_STEPS,
-    pending: {},
-  },
+  { name: 'soap', useWebApi: 'false', steps: SOAP_STEPS },
+  { name: 'webapi', useWebApi: 'true', steps: WEBAPI_STEPS },
 ];
 
 const dotnet = spawnSync('dotnet', ['--version'], { encoding: 'utf8' });
@@ -95,6 +90,9 @@ test(
   async (t) => {
     const port = await probePort80();
     if (!port.free) {
+      // The CI SDK gate (scripts/ci.mjs sdk) requires this client, so an occupied port fails there instead of skipping.
+      if (process.env.PAQ_TEST_REQUIRE_SDK_GATES === '1')
+        throw new Error(`port 80 is unavailable (${port.reason}); the required ServiceClient gate cannot run`);
       t.skip(`port 80 is unavailable (${port.reason}): ServiceClient drops the port, so the simulator must bind :80`);
       return;
     }
@@ -158,15 +156,7 @@ test(
           `${pass.name}: step "${name}" missing; exit ${run.status}\n${run.stderr.slice(-2000)}`,
         );
 
-      // A pending step passes only when it fails with the signature its `pending` regex names; anything else is a real failure.
-      for (const step of steps.filter((s) => !s.ok)) {
-        const expected = pass.pending[step.step];
-        if (expected && expected.test(step.detail))
-          t.diagnostic(`${pass.name}: ${step.step} pending (TODO above): ${step.detail}`);
-        else failures.push({ pass: pass.name, ...step });
-      }
-      for (const step of steps.filter((s) => s.ok && pass.pending[s.step]))
-        t.diagnostic(`${pass.name}: ${step.step} now passes; drop its TODO`);
+      for (const step of steps.filter((s) => !s.ok)) failures.push({ pass: pass.name, ...step });
 
       const paths = passRequests.map((line) => line.split(' ')[1]);
       assert.ok(
@@ -179,7 +169,7 @@ test(
           `webapi pass: CRUD should reach the Web API for widgets; saw ${JSON.stringify(passRequests)}`,
         );
       }
-      // The executable exits 1 when any step reports a failure, pending ones included.
+      // The executable exits 1 when any step reports a failure.
       assert.equal(
         run.status,
         steps.some((s) => !s.ok) ? 1 : 0,
@@ -187,7 +177,7 @@ test(
       );
     }
 
-    assert.deepEqual(failures, [], 'every ServiceClient step outside the pending list must succeed');
+    assert.deepEqual(failures, [], 'every ServiceClient step must succeed');
     const paths = gate.requests().map((entry) => entry.path);
     assert.ok(
       paths.some((p) => ORG_CURRENT.includes(p)),

@@ -3,14 +3,17 @@ import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { OverlaySession } from '../lense/session.mjs';
 import { attachSession } from '../lense/browser.mjs';
 import { enablePanel } from '../lense/panel.mjs';
 import { SITE } from '../test/fixture.mjs';
 import { createSimulator } from '../mirage/server.mjs';
+import { cachedImplementationSourceFingerprint } from '../mirage/lib/evidence.mjs';
 
 const PORTAL = {
   'website.yml': 'adx_websiteid: site\nadx_name: Panel fixture\nadx_headerwebtemplateid: header',
@@ -49,15 +52,46 @@ const write = (root, files) => {
     fs.writeFileSync(path.join(root, name), body);
   }
 };
-// Resolves once the panel has asked the editor to open one more source.
-const nextOpen = async (opened, click) => {
-  const before = opened.length;
-  await click();
-  for (const deadline = Date.now() + 5000; opened.length === before && Date.now() < deadline;)
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.equal(opened.length, before + 1, 'the panel opened one source');
-  return opened.at(-1);
+// The editor-open requests of a panel; next(click) resolves once the click has asked for one more source.
+const editorOpens = () => {
+  const opened = [];
+  let arrived = () => {};
+  return {
+    open: async (...args) => {
+      opened.push(args);
+      arrived();
+      return null;
+    },
+    async next(click) {
+      const before = opened.length;
+      const next = new Promise((resolve) => (arrived = resolve));
+      await click();
+      await next;
+      assert.equal(opened.length, before + 1, 'the panel opened one source');
+      return opened.at(-1);
+    },
+  };
 };
+
+// Regression: server.mjs hashed its implementation at import without seeding the comparison
+// cache, so the first _sim state read hashed the whole tree again (about 10 s on a loaded
+// Windows runner) and the administration page timed out before it rendered.
+test('the first _sim state read reuses the implementation fingerprint taken when the Mirage loaded', async (t) => {
+  const mirageRoot = path.dirname(fileURLToPath(new URL('../mirage/server.mjs', import.meta.url)));
+  // Importing the server starts hashing the loaded implementation in the background; join that walk first.
+  await cachedImplementationSourceFingerprint(mirageRoot);
+  const reads = [];
+  const readFile = fsp.readFile;
+  fsp.readFile = (file, ...rest) => {
+    if (path.resolve(String(file)).startsWith(mirageRoot + path.sep)) reads.push(file);
+    return readFile(file, ...rest);
+  };
+  t.after(() => {
+    fsp.readFile = readFile;
+  });
+  await cachedImplementationSourceFingerprint(mirageRoot);
+  assert.deepEqual(reads, [], 'an unchanged implementation tree is not read again');
+});
 
 test(
   'Mirage panel inspects permissions, templates, forms and Solution sources, signs this browser in and out, and switches permissions and scenario',
@@ -148,13 +182,8 @@ test(
     // The tab exists before interception attaches, so its first document is never reloaded as a late tab.
     const page = await context.newPage();
     detach = await attachSession(context, session);
-    const opened = [];
-    panel = enablePanel(context, session, {
-      open: async (...args) => {
-        opened.push(args);
-        return null;
-      },
-    });
+    const editor = editorOpens();
+    panel = enablePanel(context, session, { open: editor.open });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     const panelLocator = (selector) => page.locator(`#paqvilo-panel ${selector}`);
@@ -165,7 +194,8 @@ test(
       await page.screenshot({ path: path.join(process.env.PAQVILO_EVIDENCE_DIR, `${name}.png`) });
     };
     const openTab = async (tab) => {
-      await panelLocator('.pill').waitFor({ state: 'attached' });
+      // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+      await panelLocator('.pill:visible, .wrap.open').first().waitFor();
       if (await panelLocator('.pill').isVisible()) await panelLocator('.pill').click();
       await panelLocator(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
     };
@@ -228,7 +258,7 @@ test(
     await evidence('panel-inspect-public-page');
     assert.equal(
       (
-        await nextOpen(opened, () =>
+        await editor.next(() =>
           panelLocator('[data-group="runtime-forms"] .row')
             .filter({ hasText: 'Solution FormXml' })
             .locator('button.main')
@@ -240,7 +270,7 @@ test(
     );
     assert.deepEqual(
       (
-        await nextOpen(opened, () =>
+        await editor.next(() =>
           panelLocator('[data-group="runtime-columns"] .row')
             .filter({ hasText: 'contact.fullname' })
             .locator('button.main')
@@ -252,7 +282,7 @@ test(
     );
     assert.deepEqual(
       (
-        await nextOpen(opened, () =>
+        await editor.next(() =>
           panelLocator('[data-group="runtime-settings"] .row')
             .filter({ hasText: 'Feature/Banner' })
             .locator('button.main')
@@ -326,7 +356,8 @@ test(
     await admin.getByRole('heading', { name: 'Request audit', exact: true }).waitFor();
     assert.equal(await admin.getByLabel('Filter audit by path', { exact: true }).inputValue(), '/secure/');
     await admin.waitForFunction(() => document.querySelector('tbody')?.textContent.includes('/secure/'));
-    // The panel would be injected on load; a short quiet period proves it stays absent.
+    // No event marks a draw that never happens. Panel draws run 250 ms after a page event (schedule
+    // in lense/panel.mjs); a quiet period beyond that debounce proves the panel stays absent.
     await new Promise((resolve) => setTimeout(resolve, 400));
     assert.equal(await admin.locator('#paqvilo-panel').count(), 0);
     await admin.close();
@@ -485,7 +516,8 @@ test(
       navigations.some((url) => new URL(url).origin === idp.origin && new URL(url).pathname.endsWith(route));
     const panelLocator = (selector) => page.locator(`#paqvilo-panel ${selector}`);
     const openTab = async (tab) => {
-      await panelLocator('.pill').waitFor({ state: 'attached' });
+      // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+      await panelLocator('.pill:visible, .wrap.open').first().waitFor();
       if (await panelLocator('.pill').isVisible()) await panelLocator('.pill').click();
       await panelLocator(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
     };

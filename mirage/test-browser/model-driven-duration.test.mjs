@@ -101,8 +101,7 @@ test('duration choices and typed units preserve numeric minutes, keyboard focus 
 });
 
 test('exported duration formats create the duration control and save whole minutes through the staff API', async (t) => {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const file = path.join(source.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(
     file,
@@ -112,7 +111,6 @@ test('exported duration formats create the duration control and save whole minut
     ),
   );
   const sim = await source.start();
-  t.after(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(
@@ -225,5 +223,7 @@ test('opening duration below a sticky form header restores the field and full po
   assert.equal(await page.evaluate(() => window.control.read()), 4320);
   await input.click();
   await page.getByRole('listbox', { name: 'Duration duration options', exact: true }).waitFor();
+  // Scroll events queued by opening are dispatched in the next rendering step, before its animation frame callbacks.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   assert.equal(await input.getAttribute('aria-expanded'), 'true', 'mouse opening survives queued focus scrolling');
 });

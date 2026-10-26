@@ -273,22 +273,19 @@ test(
   },
 );
 
-test(
-  'transaction publication refuses an ancestor junction instead of treating it as a Windows path alias',
-  { skip: process.platform !== 'win32' },
-  async (t) => {
-    const f = await fixture(t),
-      alias = path.join(f.directory, 'junction');
-    await fs.symlink(f.directory, alias, 'junction');
-    const files = f.files.map((file) => path.join(alias, path.basename(file)));
-    await assert.rejects(
-      publishTransactionalFiles({
-        entries: f.entries.map((entry, index) => ({ ...entry, file: files[index] })),
-        allowedFiles: files,
-        journalFile: path.join(alias, 'transaction.json'),
-      }),
-      { code: 'PersistenceRecoveryRequired' },
-    );
-    assert.deepEqual(await Promise.all(f.files.map((file) => fs.readFile(file, 'utf8'))), f.before);
-  },
-);
+// Windows junctions need no symlink privilege; POSIX exercises the same ancestor-link refusal with a directory symlink.
+test('transaction publication refuses an ancestor junction or directory link instead of treating it as a path alias', async (t) => {
+  const f = await fixture(t),
+    alias = path.join(f.directory, 'junction');
+  await fs.symlink(f.directory, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const files = f.files.map((file) => path.join(alias, path.basename(file)));
+  await assert.rejects(
+    publishTransactionalFiles({
+      entries: f.entries.map((entry, index) => ({ ...entry, file: files[index] })),
+      allowedFiles: files,
+      journalFile: path.join(alias, 'transaction.json'),
+    }),
+    { code: 'PersistenceRecoveryRequired' },
+  );
+  assert.deepEqual(await Promise.all(f.files.map((file) => fs.readFile(file, 'utf8'))), f.before);
+});

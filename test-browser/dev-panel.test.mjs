@@ -10,11 +10,23 @@ import { OverlaySession } from '../lense/session.mjs';
 import { enablePanel } from '../lense/panel.mjs';
 import { devDialogs } from '../lense/dev-dialogs.mjs';
 
+// Every browser action and awaited panel signal in this file shares Playwright's per-context bound.
+const ACTION_TIMEOUT_MS = 10_000;
+const UNANSWERED_DIALOG_MS = 75;
+
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
 });
 after(() => browser?.close());
+
+// Panel problems are recorded from Playwright and DevTools listeners without a public
+// signal, so poll the recorded list for the expected rows within the shared action bound.
+async function problems(panel, page, ready) {
+  const deadline = Date.now() + ACTION_TIMEOUT_MS;
+  while (!ready(panel.stateFor(page).problems) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+  return panel.stateFor(page).problems;
+}
 
 async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) {
   const fx = createFixture();
@@ -61,7 +73,7 @@ async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) 
   await once(server, 'listening');
   const origin = 'http://127.0.0.1:' + server.address().port;
   context = await browser.newContext({ viewport: { width: 1000, height: 700 }, ...contextOptions });
-  context.setDefaultTimeout(10000);
+  context.setDefaultTimeout(ACTION_TIMEOUT_MS);
   const session = new OverlaySession({
     sourceDir: fx.dir,
     origin,
@@ -129,9 +141,7 @@ test('chunked and sized JSON failures retain escaped details; oversized bodies k
       );
     else await original;
   }
-  const deadline = Date.now() + 5000;
-  while (panel.stateFor(page).problems.length < 3 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
-  const rows = panel.stateFor(page).problems;
+  const rows = await problems(panel, page, (list) => list.length >= 3);
   assert.equal(rows.length, 3);
   assert.equal(rows.find((row) => row.text.endsWith('/error-large')).where, '');
   for (const route of ['/error-small', '/error-sized'])
@@ -143,10 +153,8 @@ test('chunked and sized JSON failures retain escaped details; oversized bodies k
       .then(() => (window.hangingDone = true))
       .catch(() => {});
   });
-  const bodyDeadline = Date.now() + 5000;
-  while (!panel.stateFor(page).problems.some((row) => row.text.endsWith('/error-hanging')) && Date.now() < bodyDeadline)
-    await page.waitForTimeout(20);
-  assert.equal(panel.stateFor(page).problems.find((row) => row.text.endsWith('/error-hanging'))?.status, 400);
+  const hanging = await problems(panel, page, (list) => list.some((row) => row.text.endsWith('/error-hanging')));
+  assert.equal(hanging.find((row) => row.text.endsWith('/error-hanging'))?.status, 400);
   assert.equal(
     await page.evaluate(() => window.hangingDone),
     false,
@@ -173,16 +181,22 @@ test('interactive dialogs await an answer and headless dismissals produce one pa
       return value;
     });
   const dialog = await dialogEvent;
-  await new Promise((r) => setTimeout(r, 75));
+  // No event marks "nobody answered"; an automated answer would settle within this short window.
+  await new Promise((r) => setTimeout(r, UNANSWERED_DIALOG_MS));
   assert.equal(settled, false);
   await dialog.accept();
   assert.equal(await result, true);
   config.browser.headless = true;
   const events = [];
   session.on('dialog', (event) => events.push(event));
+  // The page resumes when the browser receives the dismissal; the activity event is emitted
+  // once Node has the acknowledgement, so wait for that event instead of a fixed delay.
+  const recorded = async (count) => {
+    const signal = AbortSignal.timeout(ACTION_TIMEOUT_MS);
+    while (events.length < count) await once(session, 'dialog', { signal });
+  };
   assert.equal(await page.evaluate(() => confirm('Automated invented item?')), false);
-  const deadline = Date.now() + 1000;
-  while (events.length < 1 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+  await recorded(1);
   assert.equal(events.length, 1);
   assert.equal(events[0].type, 'confirm');
   assert.equal(events[0].message, 'Automated invented item?');
@@ -193,7 +207,7 @@ test('interactive dialogs await an answer and headless dismissals produce one pa
   assert.match(await page.locator('#paqvilo-panel .body').innerText(), /DIALOG/);
   assert.equal(await page.evaluate(() => prompt('Invented prompt')), null);
   await page.evaluate(() => alert('Invented alert'));
-  await new Promise((r) => setTimeout(r, 30));
+  await recorded(3);
   assert.deepEqual(
     events.map((row) => row.type),
     ['confirm', 'prompt', 'alert'],
@@ -233,15 +247,11 @@ test('collapsed pill relocates after scroll/resize and selects the least obstruc
     '<style>body{height:2200px;margin:0}a{position:absolute;left:12px;top:1000px;width:280px;height:40px;background:red}</style><a id="moving" href="#clicked">Moving link</a>',
   );
   const clear = () =>
-    page.waitForFunction(
-      () => {
-        const a = document.querySelector('#moving').getBoundingClientRect(),
-          b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
-        return !(a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top);
-      },
-      null,
-      { timeout: 3000 },
-    );
+    page.waitForFunction(() => {
+      const a = document.querySelector('#moving').getBoundingClientRect(),
+        b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
+      return !(a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top);
+    });
   await page.evaluate(() => scrollTo(0, 350));
   await clear();
   await page.setViewportSize({ width: 1000, height: 500 });
@@ -267,14 +277,10 @@ test('collapsed pill relocates after scroll/resize and selects the least obstruc
     dispatchEvent(new Event('resize'));
   });
   // The bottom-right corner holds one control and wins over corners with two or three.
-  await page.waitForFunction(
-    () => {
-      const b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
-      return b.x > 500 && b.y > 250;
-    },
-    null,
-    { timeout: 3000 },
-  );
+  await page.waitForFunction(() => {
+    const b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
+    return b.x > 500 && b.y > 250;
+  });
   await page.keyboard.press('Alt+Shift+L');
   const notice = page.locator('#paqvilo-panel .float');
   assert.equal(await notice.getAttribute('role'), 'status');
@@ -363,13 +369,7 @@ test('browser CORS console errors keep the page path without a synthetic line; s
     `<style>@font-face{font-family:Invented;src:url('${external}/font.woff2')}h1{font-family:Invented}</style><h1>Font</h1><script>console.error('First line script');fetch('${external}/data').catch(()=>{});</script>`,
   );
   await page.waitForFunction(() => document.fonts.status === 'loaded');
-  const deadline = Date.now() + 5000;
-  while (
-    panel.stateFor(page).problems.filter((item) => /CORS policy/.test(item.text)).length < 2 &&
-    Date.now() < deadline
-  )
-    await page.waitForTimeout(20);
-  const rows = panel.stateFor(page).problems,
+  const rows = await problems(panel, page, (list) => list.filter((item) => /CORS policy/.test(item.text)).length >= 2),
     cors = rows.filter((item) => /CORS policy/.test(item.text));
   assert.equal(cors.length, 2, JSON.stringify(rows));
   assert.ok(

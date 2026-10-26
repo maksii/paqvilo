@@ -286,6 +286,7 @@ test('descent remembers the selected child, native controls are picked without f
     { timeout: 5000 },
   );
   await page.evaluate(() => (window.geometryReads = 0));
+  // No event marks a poll that never runs: any recurring geometry poll of up to one second reads within this window.
   await page.waitForTimeout(1100);
   assert.equal(await page.evaluate(() => window.geometryReads), 0);
 });

@@ -347,8 +347,12 @@ const DATAVERSE_BLOCKED_ATTACHMENTS =
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const toolkitPackage = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ?? toolkitPackage.repository);
-// Bind evidence to the mirage loaded by this process as well as portal sources.
-const implementationFingerprint = await cachedImplementationSourceFingerprint(ROOT);
+// Bind evidence to the mirage loaded by this process as well as portal sources. The cached form is the same digest and
+// seeds the cache, so the first state read compares file stats instead of hashing the toolkit a second time. The walk
+// starts at import, as before, but only a starting runtime waits for it: importing this module does not.
+const loadedImplementationFingerprint = cachedImplementationSourceFingerprint(ROOT);
+// A failure surfaces in the runtime that awaits it, not as an unhandled rejection of an import that starts none.
+loadedImplementationFingerprint.catch(() => {});
 const auditResponse = Symbol('auditResponse');
 const mime = (file) =>
   ({
@@ -746,6 +750,7 @@ async function createPowerPagesSimulator({
   const bootstrapState = initialState(portal, bootstrapOptions());
   let generatedPresets = bootstrapState.presets;
   bootstrapTimings.presetLibraryMs = Math.round(performance.now() - presetLibraryStarted);
+  const implementationFingerprint = await loadedImplementationFingerprint;
   const runtimeFingerprint = implementationFingerprint;
   const calculateFingerprint = async (digest) =>
     createHash('sha256')
@@ -1423,14 +1428,17 @@ async function createPowerPagesSimulator({
     return { session, identity: ANONYMOUS_VISITOR };
   };
   const currentIdentity = () => {
-    const state = store.snapshot({
+    // Read without copying the contact table on every call: identity resolution copies what it returns (the
+    // configured identity in live mode and the matched contact are copied here).
+    const state = store.projectionOf({
       sections: ['simulator'],
       tables: ['contact'],
       mappings: ['contact'],
     });
     const fromSession = state.simulator?.mode === 'live' ? undefined : trace.getStore()?.auth?.identity;
     const configured = fromSession ?? state.simulator?.identity ?? { id: null, roles: [] };
-    const resolved = state.simulator?.mode === 'live' ? configured : resolvePortalIdentity(portal, state, configured);
+    const resolved =
+      state.simulator?.mode === 'live' ? structuredClone(configured) : resolvePortalIdentity(portal, state, configured);
     const { admin: ignoredAdmin, ...selected } = resolved;
     const contactId = selected.contactId ?? selected.id;
     if (!contactId || state.simulator?.mode === 'live') return selected;
@@ -1439,7 +1447,8 @@ async function createPowerPagesSimulator({
       String(value ?? '')
         .replace(/[{}]/g, '')
         .toLowerCase();
-    const contact = state.tables.contact?.find((row) => normalize(row[idColumn]) === normalize(contactId));
+    const found = state.tables.contact?.find((row) => normalize(row[idColumn]) === normalize(contactId));
+    const contact = found && structuredClone(found);
     // A membership session whose contact is gone or inactive is an anonymous visitor.
     const inactive = (row) =>
       Number((row?.statecode && typeof row.statecode === 'object' ? row.statecode.value : row?.statecode) ?? 0) !== 0;
@@ -1768,6 +1777,10 @@ async function createPowerPagesSimulator({
         throw error('Configured local operation failure.', item.configuration.status, 'LocalOperationMockFailure');
       return JSON.stringify(Object.hasOwn(item.configuration, 'body') ? item.configuration.body : {});
     }
+    // The site's application user exists with the site on the platform. Provision the local one here, before the
+    // bounded run: its one-time creation is a persisted transaction (host work), never exported-code time, so a first
+    // Dataverse.InvokeCustomApi must not spend the run's local time limit on it. Idempotent once it exists.
+    await portalApplicationUser();
     const context = {
       record,
       portal,

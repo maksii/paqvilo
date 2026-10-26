@@ -117,6 +117,23 @@ function fixtureState() {
 
 // A custom API row is registered from the table, as the server does for a Solution's customapis folder.
 const customApis = { name: 'customapi', install: (api) => installCustomApis(api) };
+// Two extension routes: one declared anonymous, one behind the bearer check like every other route.
+const ANON = '/api/custom/anon';
+const BEARER = '/api/custom/bearer';
+const routes = {
+  name: 'anonymous-routes',
+  install: (api) => {
+    api.addRoute(
+      (pathname) => pathname === ANON,
+      () => ({ status: 200, body: { anonymous: true } }),
+      { anonymous: true },
+    );
+    api.addRoute(
+      (pathname) => pathname === BEARER,
+      () => ({ status: 200, body: { anonymous: false } }),
+    );
+  },
+};
 
 describe('dataverse API: wired modules over HTTP', () => {
   let api;
@@ -153,7 +170,7 @@ describe('dataverse API: wired modules over HTTP', () => {
         { domainname: 'basic@example.test', fullname: 'Basic', objectId: BASIC_OID, roles: ['Basic User'] },
       ],
     });
-    api = await startDataverseApi({ store, settings, log: () => {}, extensions: [...EXTENSIONS, customApis] });
+    api = await startDataverseApi({ store, settings, log: () => {}, extensions: [...EXTENSIONS, customApis, routes] });
     origin = api.origin;
     tenantId = api.tenantId;
     organizationId = api.organizationId;
@@ -217,7 +234,9 @@ describe('dataverse API: wired modules over HTTP', () => {
     });
   const webApi = (suffix) => `/api/data/v9.2/${suffix}`;
   const entityRef = (logical, key, id) => ({ [key]: id, '@odata.type': `${CRM}${logical}` });
-  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  // Background work (respond-async calls, system jobs) runs as tasks of the API scheduler, the store's: drain() returns once
+  // every queued or running task has settled, so the outcome is read without polling.
+  const settled = () => store.scheduler.drain();
 
   it('401s an unauthenticated extension route the way a data request is answered', async () => {
     const response = await call(webApi('EntityDefinitions'), { token: null, method: 'POST', body: {} });
@@ -267,15 +286,11 @@ describe('dataverse API: wired modules over HTTP', () => {
     assert.equal(queued.status, 202, await queued.clone().text());
     const monitor = new URL(queued.headers.get('location')).pathname;
     assert.match(monitor, /^\/api\/backgroundoperation\/[0-9a-f-]{36}$/);
-    let status = null;
-    for (let i = 0; i < 100; i++) {
-      const polled = await call(monitor);
-      assert.equal(polled.status, 200, await polled.clone().text());
-      status = await polled.json();
-      if (status.backgroundOperationStateCode === 3) break; // Completed
-      await sleep(20);
-    }
-    assert.equal(status.backgroundOperationStateCode, 3);
+    await settled();
+    const polled = await call(monitor);
+    assert.equal(polled.status, 200, await polled.clone().text());
+    const status = await polled.json();
+    assert.equal(status.backgroundOperationStateCode, 3); // Completed
     assert.equal(status.backgroundOperationStatusCode, 30); // Succeeded
   });
 
@@ -387,7 +402,8 @@ describe('dataverse API: wired modules over HTTP', () => {
     assert.equal(response.status, 200);
     const { JobId } = await response.json();
     assert.match(JobId, /^[0-9a-f-]{36}$/);
-    for (let i = 0; i < 100 && store.tableRows('widget').some((row) => row.widgetid === DOOMED); i++) await sleep(20);
+    await settled();
+    assert.equal(store.tableRows('asyncoperation').find((row) => row.asyncoperationid === JobId)?.statecode, 3);
     assert.ok(!store.tableRows('widget').some((row) => row.widgetid === DOOMED));
   });
 
@@ -492,54 +508,14 @@ describe('dataverse API: wired modules over HTTP', () => {
     assert.equal(response.status, 200);
     assert.ok((await response.text()).includes('Name="PublishDuplicateRule"'));
   });
-});
-
-describe('anonymous extension routes', () => {
-  const ANON = '/api/custom/anon';
-  const BEARER = '/api/custom/bearer';
-  let server;
-
-  before(async () => {
-    process.env[SECRET_VAR] = 'anonymous-route-secret';
-    const store = await new DataStore({ state: fixtureState() }).init();
-    const settings = dataverseSettings({
-      enabled: true,
-      applications: [
-        {
-          appId: APP_ID,
-          displayName: 'Anonymous route app',
-          secretEnvironmentVariable: SECRET_VAR,
-          roles: ['System Administrator'],
-        },
-      ],
-    });
-    const routes = {
-      name: 'anonymous-routes',
-      install: (api) => {
-        api.addRoute(
-          (pathname) => pathname === ANON,
-          () => ({ status: 200, body: { anonymous: true } }),
-          { anonymous: true },
-        );
-        api.addRoute(
-          (pathname) => pathname === BEARER,
-          () => ({ status: 200, body: { anonymous: false } }),
-        );
-      },
-    };
-    server = await startDataverseApi({ store, settings, log: () => {}, extensions: [routes] });
-  });
-
-  after(async () => {
-    delete process.env[SECRET_VAR];
-    await server?.close();
-  });
 
   it('an anonymous extension route answers without a bearer; a normal one still returns 401', async () => {
-    const open = await fetch(`${server.origin}${ANON}`);
+    const open = await call(ANON, { token: null });
     assert.equal(open.status, 200);
     assert.deepEqual(await open.json(), { anonymous: true });
-    const closed = await fetch(`${server.origin}${BEARER}`);
-    assert.equal(closed.status, 401);
+    assert.equal((await call(BEARER, { token: null })).status, 401);
+    const signed = await call(BEARER);
+    assert.equal(signed.status, 200);
+    assert.deepEqual(await signed.json(), { anonymous: false });
   });
 });

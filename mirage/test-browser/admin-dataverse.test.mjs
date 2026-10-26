@@ -10,6 +10,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { createSimulator } from '../server.mjs';
+import { adminPage } from './shared-browser.mjs';
 
 let browser;
 before(async () => {
@@ -21,16 +22,7 @@ async function fixture(t, options = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-dataverse-'));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Dataverse admin\n');
   const app = await createSimulator({ sourceDir: directory, watch: false, ...options });
-  const context = await browser.newContext({ serviceWorkers: 'block' });
-  t.after(async () => {
-    await context.close();
-    await app.close();
-    await fs.rm(directory, { recursive: true, force: true });
-  });
-  const page = await context.newPage();
-  page.setDefaultTimeout(10_000);
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
+  const { page, errors } = await adminPage(t, browser, app, directory);
   // Secondary panels are collapsed; open one without closing it when it is already open.
   const open = async (key) => {
     const section = page.locator(`[data-disclosure="${key}"]`);

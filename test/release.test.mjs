@@ -203,6 +203,8 @@ test('CI collects only synthetic outputs and ignores profile/token/live files an
   write('extended-round/multipart.json', '{"synthetic":true}');
   write('extended-round/private.session.json', 'PRIVATE');
   write('agents/session.json', 'PRIVATE');
+  // An allowlisted name behind the linked folder below: only the link check keeps it out.
+  write('agents/acceptance.json', 'PRIVATE');
   write('profiles/Default/Cookies', 'PRIVATE');
   write('audit/live.png', 'PRIVATE');
   write('extended-round/applications-layout-fixture.png', 'PROJECT-OWNED');

@@ -11,8 +11,15 @@ import { createSign, generateKeyPairSync, randomUUID } from 'node:crypto';
  * with ErrorId, ErrorMessage, Timestamp and CorrelationId. The local key pair is generated
  * per server process (the platform signs with its site or custom certificate).
  */
-const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-const PUBLIC_KEY = publicKey.export({ type: 'spki', format: 'pem' });
+// Generated on first use: a 2048-bit key pair blocks the event loop, and most processes never sign.
+let siteKey;
+const siteKeys = () => {
+  if (!siteKey) {
+    const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    siteKey = { privateKey, publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }) };
+  }
+  return siteKey;
+};
 
 const base64Url = (value) => Buffer.from(value).toString('base64url');
 const setting = (portal, name) =>
@@ -30,7 +37,7 @@ function tokenLifetime(portal) {
 function signIdToken(claims) {
   const header = base64Url(JSON.stringify({ typ: 'JWT', alg: 'RS256' }));
   const payload = base64Url(JSON.stringify(claims));
-  const signature = createSign('RSA-SHA256').update(`${header}.${payload}`).sign(privateKey, 'base64url');
+  const signature = createSign('RSA-SHA256').update(`${header}.${payload}`).sign(siteKeys().privateKey, 'base64url');
   return `${header}.${payload}.${signature}`;
 }
 
@@ -73,7 +80,7 @@ export async function handleImplicitGrant(
   if (route === 'publickey') {
     if (!['GET', 'HEAD'].includes(req.method)) return false;
     res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
-    res.end(req.method === 'HEAD' ? undefined : PUBLIC_KEY);
+    res.end(req.method === 'HEAD' ? undefined : siteKeys().publicKeyPem);
     return true;
   }
   if (req.method !== 'POST') return false;

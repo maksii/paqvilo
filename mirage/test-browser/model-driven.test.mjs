@@ -7,6 +7,26 @@ import path from 'node:path';
 
 const chrome = sharedBrowser();
 
+/** A route gate: `held` settles once a request waits in `hold()`, which returns after `release()`. */
+function routeGate(t) {
+  let release, intercepted;
+  const opened = new Promise((resolve) => {
+    release = resolve;
+  });
+  const held = new Promise((resolve) => {
+    intercepted = resolve;
+  });
+  t.after(() => release());
+  return {
+    held,
+    release: () => release(),
+    hold: () => {
+      intercepted();
+      return opened;
+    },
+  };
+}
+
 test('grid Refresh reloads selected-table form metadata before opening New', async (t) => {
   const { origin, sim, solutionDir } = await modelDrivenFixture(t);
   const page = await chrome.page(t),
@@ -116,17 +136,14 @@ test(
     assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
     await page.getByRole('button', { name: 'Try again', exact: true }).click();
     await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
-    let release,
-      rejectRead = false;
+    const read = routeGate(t);
+    let rejectRead = false;
     await page.route('**/_apps/api/tables/x_item?*', async (route) => {
       if (rejectRead)
         return route.fulfill({ status: 503, json: { error: { message: 'Invented temporary read failure' } } });
-      await new Promise((resolve) => {
-        release = resolve;
-      });
+      await read.hold();
       await route.continue();
     });
-    t.after(() => release?.());
     await page.getByRole('button', { name: 'Refresh', exact: true }).click();
     await page.locator('#app-loading').filter({ hasText: 'Loading records' }).waitFor();
     assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'true');
@@ -136,8 +153,8 @@ test(
       1,
       'previous data remains visible during refresh',
     );
-    while (!release) await new Promise((resolve) => setTimeout(resolve, 10));
-    release();
+    await read.held;
+    read.release();
     await page.locator('#app-loading').waitFor({ state: 'detached' });
     rejectRead = true;
     await page.getByRole('button', { name: 'Refresh', exact: true }).click();
@@ -155,13 +172,11 @@ test(
     await page.getByRole('button', { name: 'Try again', exact: true }).click();
     await page.getByLabel('Name', { exact: true }).fill('Delayed save');
     let writes = 0;
-    release = undefined;
+    const save = routeGate(t);
     await page.route('**/_apps/api/tables/x_item/*', async (route) => {
       if (route.request().method() !== 'PATCH') return route.continue();
       writes++;
-      await new Promise((resolve) => {
-        release = resolve;
-      });
+      await save.hold();
       await route.continue();
     });
     await page.getByRole('button', { name: 'Save', exact: true }).click();
@@ -171,10 +186,11 @@ test(
     await page.evaluate(() =>
       document.querySelector('#record-form').dispatchEvent(new Event('submit', { cancelable: true })),
     );
-    while (!release) await new Promise((resolve) => setTimeout(resolve, 10));
+    await save.held;
     assert.equal(writes, 1);
-    release();
+    save.release();
     await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+    assert.equal(writes, 1, 'the duplicate submit must not send a second write after the first completes');
     assert.equal(await page.locator('#record-form').evaluate((node) => node.inert), false);
     assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Delayed save');
     assert.deepEqual(errors, []);
@@ -232,33 +248,28 @@ test('completion of a save cannot clear pending feedback on a newer form route',
     origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   );
   await page.getByLabel('Name', { exact: true }).fill('Save before navigation');
-  let releaseSave, releaseForm;
-  t.after(() => {
-    releaseSave?.();
-    releaseForm?.();
-  });
+  const save = routeGate(t),
+    form = routeGate(t);
   await page.route('**/_apps/api/tables/x_item/*', async (route) => {
     if (route.request().method() !== 'PATCH') return route.continue();
-    await new Promise((resolve) => {
-      releaseSave = resolve;
-    });
+    await save.hold();
     await route.continue();
   });
   await page.route('**/_apps/api/tables/x_child/*', async (route) => {
-    await new Promise((resolve) => {
-      releaseForm = resolve;
-    });
+    await form.hold();
     await route.continue();
   });
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  while (!releaseSave) await new Promise((resolve) => setTimeout(resolve, 10));
+  const saveButton = await page.getByRole('button', { name: 'Save', exact: true }).elementHandle();
+  await saveButton.click();
+  await save.held;
   await page.evaluate(() => {
     void window.Xrm.Navigation.openForm({ entityName: 'x_child', entityId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' });
   });
   await page.getByRole('button', { name: 'Discard changes', exact: true }).click();
-  while (!releaseForm) await new Promise((resolve) => setTimeout(resolve, 10));
-  releaseSave();
-  await page.waitForFunction(() => !document.querySelector('#commands button[aria-busy=true]'));
+  await form.held;
+  save.release();
+  // The retired Save button leaves its busy state only after the stale save completion has run.
+  await page.waitForFunction((button) => !button.isConnected && !button.hasAttribute('aria-busy'), saveButton);
   assert.equal(
     await page.locator('#commands').getAttribute('aria-busy'),
     'true',
@@ -266,7 +277,7 @@ test('completion of a save cannot clear pending feedback on a newer form route',
   );
   assert.equal(await page.locator('#content').evaluate((node) => node.inert), true);
   await page.locator('#app-loading').filter({ hasText: 'Loading record' }).waitFor();
-  releaseForm();
+  form.release();
   await page.getByRole('heading', { name: 'Copper child', exact: true }).waitFor();
   assert.equal(await page.locator('#commands').getAttribute('aria-busy'), 'false');
 });

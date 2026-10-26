@@ -3,36 +3,41 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { browserChannel } from '../mirage/lib/browser-launch.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url)),
   execute = promisify(execFile);
 const APP = '77777777-7777-4777-8777-777777777777';
-async function freePort() {
-  const server = net.createServer();
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const port = server.address().port;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
-async function eventually(fn, message) {
-  const deadline = Date.now() + 20000;
-  let last;
-  while (Date.now() < deadline) {
-    try {
-      const value = await fn();
-      if (value) return value;
-    } catch (error) {
-      last = error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`${message}${last ? `: ${last.message}` : ''}`);
+// Resolves with the first match of `pattern` in the child's output, or rejects when the child exits first.
+function announced(child, pattern) {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    const read = (value) => {
+      output += value;
+      const match = pattern.exec(output);
+      if (match) {
+        stop();
+        resolve(match);
+      }
+    };
+    const exit = () => {
+      stop();
+      reject(new Error(`dev exited before it announced ${pattern}: ${output}`));
+    };
+    const stop = () => {
+      child.stdout.off('data', read);
+      child.stderr.off('data', read);
+      child.off('exit', exit);
+    };
+    child.stdout.on('data', read);
+    child.stderr.on('data', read);
+    child.once('exit', exit);
+  });
 }
 
 test(
@@ -89,11 +94,12 @@ test(
         }
       await commands(project, 'stop').catch(() => {});
       await commands(sibling, 'stop').catch(() => {});
-      await fs.rm(directory, { recursive: true, force: true });
+      // Windows can keep files of an exited browser profile busy for a few seconds.
+      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
     });
     const siblingRuntime = await commands(sibling, 'start', '--port', '0');
     const develop = async () => {
-      const debugPort = await freePort();
+      const debugPort = await freeDebugPort();
       const child = spawn(
         process.execPath,
         [
@@ -110,36 +116,23 @@ test(
           'dedicated-fixture',
           '--debug-port',
           String(debugPort),
-          process.platform === 'win32' ? '--headed' : '--headless',
+          // Ownership and closing do not depend on a visible window; headed adds only a slower shutdown.
+          '--headless',
         ],
         { cwd: directory, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
       );
-      let output = '';
-      child.stdout.on('data', (value) => {
-        output += value;
-      });
-      child.stderr.on('data', (value) => {
-        output += value;
-      });
       const exited = new Promise((resolve, reject) => {
         child.once('exit', (code, signal) => resolve({ code, signal }));
         child.once('error', reject);
       });
       children.push({ child, exited });
-      const url = await eventually(() => {
-        if (child.exitCode !== null) throw new Error(`dev exited early: ${output}`);
-        return /Opening (http:\/\/127\.0\.0\.1:\d+)\//.exec(output)?.[1];
-      }, 'dev did not open its local browser');
+      // The line is printed after the debugging port is confirmed and just before the first navigation.
+      const [, url] = await announced(child, /Opening (http:\/\/127\.0\.0\.1:\d+)\//);
       const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
       browsers.push(browser);
-      const page = await eventually(
-        () =>
-          browser
-            .contexts()[0]
-            .pages()
-            .find((page) => page.url().startsWith(url + '/main.aspx')),
-        'dedicated browser did not navigate to the local model app',
-      );
+      const [context] = browser.contexts();
+      const page = context.pages()[0] ?? (await context.waitForEvent('page'));
+      await page.waitForURL((address) => address.href.startsWith(url + '/main.aspx'));
       await page.getByLabel('Application', { exact: true }).waitFor();
       await page.waitForFunction(() =>
         document.querySelector('#apps')?.textContent.includes('Dedicated local workspace'),

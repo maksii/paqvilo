@@ -4,8 +4,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
-import { pluginFixture, pluginId, stepXml } from './plugin-fixture.mjs';
+import { disableSteps, pluginFixture, pluginId, stepXml } from './plugin-fixture.mjs';
 import { validateOperationOverrides } from '../lib/operation-catalogue.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const recordId = '20000000-0000-0000-0000-000000000001';
 const sdkEntity = (title, id = recordId) => ({
@@ -18,13 +19,7 @@ async function fixture(t, { unsupported = false, enhanced = false } = {}) {
   const first = await pluginFixture(t),
     initial = first.app.store.snapshot();
   await first.app.close();
-  for (let number = 3; number <= 11; number++) {
-    const file = path.join(first.solution, 'SdkMessageProcessingSteps', pluginId(number) + '.xml');
-    await fs.writeFile(
-      file,
-      (await fs.readFile(file, 'utf8')).replace('<StateCode>0</StateCode>', '<StateCode>1</StateCode>'),
-    );
-  }
+  await disableSteps(first.solution, 3, 11);
   for (const [number, options] of [
     [20, { message: 'RetrieveMultiple', stage: 40 }],
     [21, { message: 'RetrieveMultiple', stage: 20 }],
@@ -57,7 +52,7 @@ async function fixture(t, { unsupported = false, enhanced = false } = {}) {
     initial,
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const admin = (number, body) =>
     fetch(app.url + '/__sim/api/operations/' + encodeURIComponent('plugin-step:' + pluginId(number)), {
       method: 'PATCH',

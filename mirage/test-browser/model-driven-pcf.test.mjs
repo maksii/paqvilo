@@ -554,8 +554,7 @@ test('disposal stops later PCF resource loads and retained contexts cannot resta
 });
 
 test('an exported Solution PCF edits and saves through the actual model-driven shell', async (t) => {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const controlDir = path.join(source.solutionDir, 'Controls', 'publisher.InventedInput');
   await fs.mkdir(controlDir, { recursive: true });
   await fs.writeFile(

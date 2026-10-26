@@ -51,7 +51,12 @@ async function receiver(t) {
   const child = childProcess.spawn(process.execPath, [path.join(dir, 'receiver.mjs')], {
     stdio: ['ignore', 'pipe', 'inherit'],
   });
-  ownedFixture(t).add(() => child.kill());
+  // Wait for the exit, so the directory removal that follows never races a still-running receiver.
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  ownedFixture(t).add(async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await exited;
+  });
   const port = await new Promise((resolve, reject) => {
     let output = '';
     child.stdout.on('data', (chunk) => {

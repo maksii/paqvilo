@@ -8,18 +8,18 @@ import verify, { diagnosticSnapshot, compareDiagnostics, assessVerification } fr
 import { createFixture, SITE } from './fixture.mjs';
 
 test('signed-in verification launches the selected external child profile without a credential export', async (t) => {
+  // The browser identity is under test, not the inline baseline: a plain export needs no Git repository.
   const fixture = createFixture();
+  t.after(fixture.cleanup);
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-external-profile-'));
-  t.after(() => {
-    fixture.cleanup();
-    fs.rmSync(stateDir, { recursive: true, force: true });
-  });
+  t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
+  const sourceDir = fixture.dir;
   const userDataDir = path.join(stateDir, 'browser');
   fs.mkdirSync(path.join(userDataDir, 'Profile 2'), { recursive: true });
   const cfg = {
     configDir: stateDir,
     stateDir,
-    sourceDir: fixture.dir,
+    sourceDir,
     siteName: 'fixture',
     envName: 'local',
     origin: 'http://127.0.0.1:1',
@@ -95,7 +95,7 @@ test('JSON verification emits one final failure report when temporary cleanup al
     if (path.basename(file).startsWith('paqvilo-verify-')) {
       temporary = file;
       cleanupAttempts++;
-      assert.deepEqual(options, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+      assert.deepEqual(options, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       throw new Error('fixture cleanup failure');
     }
     return removeAsync(file, options);

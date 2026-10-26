@@ -433,7 +433,9 @@ test(
         return panel.contains(document.activeElement) && box.top >= 0 && box.top < innerHeight;
       }),
     );
-    // A deep link to a collapsed module panel opens and lands on it, and the outline goes away again.
+    // A deep link to a collapsed module panel opens and lands on it, and the outline goes away again after the
+    // product's 2.5 s timer (admin/app.mjs land), which a fake clock advances instead of the test waiting it out.
+    await page.clock.install();
     await page.evaluate(() => {
       location.hash = 'services?panel=outbox';
     });
@@ -441,7 +443,9 @@ test(
       const panel = document.querySelector('[data-ui-section="services:outbox"]');
       return panel?.open && panel.classList.contains('is-landed') && panel.contains(document.activeElement);
     });
-    await page.waitForFunction(() => !document.querySelector('.is-landed'), null, { timeout: 5000 });
+    assert.equal(await page.locator('.is-landed').count(), 1, 'the outline stays until its timer runs');
+    await page.clock.runFor(2500);
+    await page.waitForFunction(() => !document.querySelector('.is-landed'));
     assert.deepEqual(errors, []);
   },
 );

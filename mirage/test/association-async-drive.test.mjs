@@ -64,13 +64,16 @@ const mappings = {
 };
 test.after(() => closeSyncIoBridge());
 
+// The ticker of the step under way (see ticking()); the receiver answers only once it has fired twice.
+let ticker = null;
 async function receiver(t) {
   const received = [];
   const server = http.createServer((req, res) => {
     req.resume();
-    req.on('end', () => {
+    req.on('end', async () => {
       received.push(req.url);
-      setTimeout(() => res.writeHead(200).end(), 200);
+      await ticker?.reached(2);
+      res.writeHead(200).end();
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -117,11 +120,24 @@ function wire(store, message, diagnostics = []) {
     (context) => pluginPhaseRequiresCheckpoint(items, context),
   );
 }
+// A timer in this process. The hook's answer waits for two of its ticks, so a step that blocked the event loop while it
+// waited would never complete (the test times out), and a step that did not wait for the answer returns with fewer ticks.
 const ticking = () => {
   let ticks = 0;
-  const timer = setInterval(() => ticks++, 25);
+  const waiting = [];
+  const timer = setInterval(() => {
+    ticks++;
+    for (const entry of waiting.filter((item) => ticks >= item.count)) {
+      waiting.splice(waiting.indexOf(entry), 1);
+      entry.resolve();
+    }
+  }, 1);
+  ticker = {
+    reached: (count) => new Promise((resolve) => (ticks >= count ? resolve() : waiting.push({ count, resolve }))),
+  };
   return () => {
     clearInterval(timer);
+    ticker = null;
     return ticks;
   };
 };

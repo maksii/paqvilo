@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { execFileSync, spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import {
   bootstrapProject,
   loadProjectConfig,
@@ -13,6 +14,8 @@ import {
   projectStateFile,
   projectSummary,
 } from '../lib/project-config.mjs';
+
+const execFileAsync = promisify(execFile);
 
 test('inactive-parent permission replay is an explicit site observation requiring evidence', () => {
   assert.throws(() => observedConfig({ tablePermissionOrphans: 'unrestricted' }), /evidence must name/);
@@ -42,35 +45,27 @@ async function workspace(t) {
   return root;
 }
 
-// Startup diagnostics belong to stderr. Keep stdout as one JSON document and
-// bound both readiness and cleanup so a broken CLI cannot hold the suite open.
-function jsonServer(cli, args, { startupTimeout = 20000, stopTimeout = 5000 } = {}) {
+// Startup diagnostics belong to stderr. Keep stdout as one JSON document. Readiness is the printed JSON, bounded by
+// the test's own deadline (t.signal, the suite --test-timeout): CLI startup time depends on machine load, so a short
+// fixed wall clock would fail a healthy CLI. Cleanup is bounded so a broken CLI cannot hold the suite open.
+function jsonServer(cli, args, { signal, stopTimeout = 5000 } = {}) {
   const child = spawn(process.execPath, [cli, ...args], {
     cwd: path.dirname(cli),
     stdio: ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
+    signal,
   });
   let stdout = '',
-    stderr = '',
-    startupTimer;
+    stderr = '';
   const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
   child.stdin.on('error', () => {}); // a child may exit just before teardown writes
   const started = new Promise((resolve, reject) => {
-    startupTimer = setTimeout(
-      () =>
-        reject(
-          new Error(`serve did not produce JSON within ${startupTimeout}ms. stderr: ${stderr}; stdout: ${stdout}`),
-        ),
-      startupTimeout,
-    );
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
       try {
-        const result = JSON.parse(stdout);
-        clearTimeout(startupTimer);
-        resolve(result);
+        resolve(JSON.parse(stdout));
       } catch {
         /* await complete JSON */
       }
@@ -78,12 +73,11 @@ function jsonServer(cli, args, { startupTimeout = 20000, stopTimeout = 5000 } = 
     child.stderr.on('data', (chunk) => {
       stderr += chunk;
     });
-    child.once('error', (error) => {
-      clearTimeout(startupTimer);
-      reject(error);
-    });
+    // An aborted test deadline kills the child and reports here.
+    child.once('error', (error) =>
+      reject(new Error(`serve failed: ${error.message}. stderr: ${stderr}; stdout: ${stdout}`)),
+    );
     child.once('exit', (code, signal) => {
-      clearTimeout(startupTimer);
       reject(new Error(`serve exited ${code ?? signal}: ${stderr}; stdout: ${stdout}`));
     });
   });
@@ -110,7 +104,6 @@ function jsonServer(cli, args, { startupTimeout = 20000, stopTimeout = 5000 } = 
       return stderr;
     },
     async stop() {
-      clearTimeout(startupTimer);
       if (!child.pid) return;
       if (child.exitCode !== null || child.signalCode !== null) return;
       if (!child.stdin.destroyed) child.stdin.end('stop\n');
@@ -212,10 +205,13 @@ test('project inspect CLI reports every configured portal', async (t) => {
     ),
   );
   const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
-  const output = execFileSync(process.execPath, [cli, 'inspect', '--project', configPath, '--json'], {
+  // Asynchronous, so the test's own deadline (t.signal) can stop a hung CLI; a synchronous call would block it.
+  const { stdout } = await execFileAsync(process.execPath, [cli, 'inspect', '--project', configPath, '--json'], {
     encoding: 'utf8',
+    signal: t.signal,
+    windowsHide: true,
   });
-  const result = JSON.parse(output);
+  const result = JSON.parse(stdout);
   assert.deepEqual(
     result.portals.map((portal) => portal.id),
     ['portal-1', 'portal-2'],
@@ -240,16 +236,11 @@ test('project serve CLI starts isolated loopback servers for every portal', asyn
     ),
   );
   const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
-  const server = jsonServer(cli, [
-    'serve',
-    '--project',
-    configPath,
-    '--state',
-    path.join(root, 'state.json'),
-    '--port',
-    '0',
-    '--no-watch',
-  ]);
+  const server = jsonServer(
+    cli,
+    ['serve', '--project', configPath, '--state', path.join(root, 'state.json'), '--port', '0', '--no-watch'],
+    { signal: t.signal },
+  );
   try {
     const result = await server.started;
     assertStartupStreams(server);
@@ -262,7 +253,7 @@ test('project serve CLI starts isolated loopback servers for every portal', asyn
     );
     assert.equal(new Set(result.portals.map((portal) => path.dirname(portal.stateFile))).size, 2);
     for (const portal of result.portals) {
-      const response = await fetch(portal.adminUrl, { signal: AbortSignal.timeout(5000) });
+      const response = await fetch(portal.adminUrl, { signal: t.signal });
       assert.equal(response.status, 200);
       assert.equal(await fs.stat(portal.stateFile).then((stat) => stat.isFile()), true);
     }
@@ -423,23 +414,16 @@ test('project serve exposes the resolved project and falls back to the default r
     ].join('\n'),
   );
   const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
-  const server = jsonServer(cli, [
-    'serve',
-    '--project',
-    configPath,
-    '--portal',
-    'catalog',
-    '--port',
-    '0',
-    '--no-watch',
-  ]);
+  const server = jsonServer(
+    cli,
+    ['serve', '--project', configPath, '--portal', 'catalog', '--port', '0', '--no-watch'],
+    { signal: t.signal },
+  );
   try {
     const result = await server.started;
     assertStartupStreams(server);
     assert.equal(result.stateFile, path.join(root, '.state', 'catalog', 'state.json'));
-    const state = await (
-      await fetch(new URL('/__sim/api/state?summary=1', result.url), { signal: AbortSignal.timeout(5000) })
-    ).json();
+    const state = await (await fetch(new URL('/__sim/api/state?summary=1', result.url), { signal: t.signal })).json();
     assert.equal(state.status.project.configFile, configPath);
     assert.equal(state.status.project.portal, 'catalog');
     assert.deepEqual(

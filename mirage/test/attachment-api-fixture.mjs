@@ -4,15 +4,20 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
+import { randomUUID } from 'node:crypto';
 
 export const APP_ID = '77777777-7777-4777-8777-777777777771';
 export const WIDGET = '77777777-7777-4777-8777-777777777772';
-const SECRET_VAR = 'PAQVILO_ATTACHMENT_FIXTURE_SECRET';
 export const b64 = (text) => Buffer.from(text).toString('base64');
 export const widget = { '@odata.type': 'Microsoft.Dynamics.CRM.fx_widget', fx_widgetid: WIDGET };
 
 export async function attachmentApi(t, { before = () => {} } = {}) {
+  // A variable per call, removed after the test, so later tests in this process never inherit the secret.
+  const SECRET_VAR = `PAQVILO_ATTACHMENT_FIXTURE_SECRET_${randomUUID().replaceAll('-', '').toUpperCase()}`;
   process.env[SECRET_VAR] = 'attachment-fixture-secret';
+  t.after(() => {
+    delete process.env[SECRET_VAR];
+  });
   const state = emptyState();
   state.mappings.fx_widget = {
     logicalName: 'fx_widget',

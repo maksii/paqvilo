@@ -70,7 +70,8 @@ async function setup(t, options = {}, providers = null) {
 }
 
 test('the default evaluator (the core Power Fx engine) computes formula columns', async (t) => {
-  const { request, json, diagnostics } = await setup(t);
+  const { request, json, diagnostics, installed } = await setup(t);
+  assert.equal(installed.formulaColumns.describe().level, 'behaviour', 'the core engine answers synchronously');
   const row = await json(await request('GET', `/x_items(${ITEM})`), 200);
   assert.equal(row.x_total, 8);
   assert.equal(row.x_label, 'Invented item / invented');
@@ -78,7 +79,10 @@ test('the default evaluator (the core Power Fx engine) computes formula columns'
 });
 
 test('formula columns read null with one FORMULA_NOT_EVALUATED per column under the disabled engine', async (t) => {
-  const { request, json, diagnostics } = await setup(t, { evaluator: createPowerFxEvaluator({ engine: false }) });
+  const { request, json, diagnostics, installed } = await setup(t, {
+    evaluator: createPowerFxEvaluator({ engine: false }),
+  });
+  assert.equal(installed.formulaColumns.describe().level, 'contract');
   await json(await request('GET', `/x_items(${ITEM})`), 200);
   const row = await json(await request('GET', `/x_items(${ITEM})`), 200);
   assert.equal(row.x_total, null);
@@ -91,7 +95,8 @@ test('formula columns read null with one FORMULA_NOT_EVALUATED per column under 
 
 test('a synchronous evaluator supplies the value and receives the formula, symbols and the stored row', async (t) => {
   const calls = [];
-  const { request, json, diagnostics } = await setup(t, { evaluator: stub(calls) });
+  const { request, json, diagnostics, installed } = await setup(t, { evaluator: stub(calls) });
+  assert.equal(installed.formulaColumns.describe().level, 'behaviour');
   const row = await json(await request('GET', `/x_items(${ITEM})`), 200);
   assert.equal(row.x_total, 8);
   assert.equal(row.x_label, 'Invented item / invented');
@@ -158,14 +163,8 @@ test('writes to a formula column are refused and store nothing', async (t) => {
 test('describe is contract without an evaluator that answers, behaviour when it answers synchronously or overrides cover every column', async (t) => {
   assert.equal(EXTENSION.describe().level, 'contract');
   assert.deepEqual(EXTENSION.describe().requires, ['provider:power-fx']);
+  // The installed levels of the core, disabled and synchronous engines are asserted by the cases that install them above.
   const disabled = createPowerFxEvaluator({ engine: false });
-  assert.equal(
-    (await setup(t)).installed.formulaColumns.describe().level,
-    'behaviour',
-    'the core engine answers synchronously',
-  );
-  assert.equal((await setup(t, { evaluator: disabled })).installed.formulaColumns.describe().level, 'contract');
-  assert.equal((await setup(t, { evaluator: stub() })).installed.formulaColumns.describe().level, 'behaviour');
   assert.equal(
     (
       await setup(t, { evaluator: disabled, formulaColumns: { 'x_item.x_total': () => 1 } })

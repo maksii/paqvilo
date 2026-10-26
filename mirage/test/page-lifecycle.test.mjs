@@ -54,7 +54,9 @@ test('a failed future page attachment stays visible after its asynchronous setup
   assert.equal(listeners(page).length, 0);
 });
 
-test('context settling bounds pending attachment by the same deadline as page work', { timeout: 2000 }, async () => {
+test('context settling bounds pending attachment by the same deadline as page work', { timeout: 2000 }, async (t) => {
+  // A mocked clock makes the deadline exact: a wall-clock bound fails whenever a busy runner stalls the event loop.
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
   const context = new EventEmitter();
   context.pages = () => [];
   const observer = await observeContextLifecycle(context, options);
@@ -68,11 +70,13 @@ test('context settling bounds pending attachment by the same deadline as page wo
   });
   context.emit('page', page);
   try {
-    const report = await observer.settle({ timeout: 30 });
+    const settling = observer.settle({ timeout: 30 });
+    t.mock.timers.tick(30);
+    const report = await settling;
     assert.equal(report.settled, false);
     assert.equal(report.passed, false);
     assert.equal(report.pendingAttachments, 1);
-    assert.ok(report.waitedMs < 500, 'attachment does not escape the caller deadline');
+    assert.equal(report.waitedMs, 30, 'attachment does not escape the caller deadline');
   } finally {
     rejectAttachment(new Error('invented slow attachment failure'));
     await new Promise((resolve) => setImmediate(resolve));

@@ -7,10 +7,11 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { createMirageContext } from '../api.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 async function portal(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-content-policy-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'web-pages'));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: site\nadx_name: Invented policy');
   await fs.writeFile(path.join(root, 'Home.webpage.yml'), 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /');
@@ -21,7 +22,7 @@ test('persisted project policy retains its value but reports current default dri
   const root = await portal(t),
     stateFile = path.join(root, 'local-state.json');
   let app;
-  t.after(() => app?.close());
+  ownedFixture(t).add(() => app?.close());
   app = await createSimulator({
     sourceDir: root,
     stateFile,
@@ -90,21 +91,21 @@ test('project confinement seeds new states and a saved runtime setting wins on r
       contentPolicyDefaults: { confinePortalPages: true },
     };
   const app = await createSimulator(settings);
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   assert.equal(app.state().config.confinePortalPages, true);
   assert.match((await fetch(app.url + '/')).headers.get('content-security-policy'), /connect-src 'self'/);
   app.store.state.simulator.confinePortalPages = false;
   await app.store.compact();
   await app.close();
   const restarted = await createSimulator(settings);
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   assert.equal(restarted.state().config.confinePortalPages, false);
   const other = await createSimulator({
     ...settings,
     stateFile: path.join(root, 'default-state.json'),
     contentPolicyDefaults: {},
   });
-  t.after(() => other.close());
+  ownedFixture(t).add(() => other.close());
   assert.equal(other.state().config.confinePortalPages, false);
 });
 
@@ -118,7 +119,7 @@ test('project confinement does not mutate shared initial state or leak defaults 
     watch: false,
     contentPolicyDefaults: { confinePortalPages: true },
   });
-  t.after(() => first.close());
+  ownedFixture(t).add(() => first.close());
   assert.equal(first.state().config.confinePortalPages, true);
   assert.equal(first.state().config.contentPolicySource, 'project defaults');
   assert.deepEqual(initial, before, 'starting a runtime must not change caller-owned seed data');
@@ -128,7 +129,7 @@ test('project confinement does not mutate shared initial state or leak defaults 
     watch: false,
     contentPolicyDefaults: { confinePortalPages: false },
   });
-  t.after(() => second.close());
+  ownedFixture(t).add(() => second.close());
   assert.equal(second.state().config.confinePortalPages, false);
   assert.equal(second.state().config.contentPolicySource, 'project defaults');
   assert.deepEqual(initial, before);
@@ -169,7 +170,7 @@ test('project file policy defaults inherit per site and reach a catalogue-bound 
   );
   const context = await createMirageContext({ config: catalogue, site: 'invented' }),
     app = await context.createSimulator({ watch: false });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   assert.equal(app.state().config.confinePortalPages, true);
   assert.equal(app.state().config.contentPolicySource, 'project defaults');
   const response = await fetch(app.url);

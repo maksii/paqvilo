@@ -16,71 +16,83 @@ import {
   clrHostPoolStatus,
   validateClrDescriptor,
 } from '../lib/plugin-clr.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
   rowId = '20000000-0000-0000-0000-000000000001';
-const available = process.platform === 'win32' && process.env.PAQ_TEST_XRM_SDK;
+// plugin-clr.mjs gives the first parent identity probe a 30-second cold-start limit (docs/dataverse-plugins.md); helper
+// processes that run that probe get the same limit instead of a shorter test-only deadline.
+const PARENT_PROBE_LIMIT_MS = 30_000;
+// A killed host exits at once, and an orphan host's watcher checks its exact parent every 100 ms (plugin-clr-host.cs).
+// Windows gives no exit handle for a process another one started, so absence is polled; the limit bounds only a failing
+// run, as a passing run stops polling when the host is gone.
+const HOST_EXIT_LIMIT_MS = 2_000;
+async function processAbsent(pid, limitMs) {
+  for (const deadline = Date.now() + limitMs; Date.now() < deadline; await delay(20))
+    try {
+      process.kill(pid, 0);
+    } catch (cause) {
+      if (cause.code === 'ESRCH') return true;
+      throw cause;
+    }
+  return false;
+}
 
-test(
-  'cold CLR parent identification has a separate bounded startup allowance',
-  { skip: process.platform !== 'win32' },
-  async (t) => {
-    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-parent-start-')));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const source = path.join(root, 'Protocol.cs'),
-      executable = path.join(root, 'Protocol.exe');
-    await fs.writeFile(
-      source,
-      `using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){
-if(args.Length==2&&args[0]=="--process-start"){var mode=Environment.GetEnvironmentVariable("INVENTED_PARENT_MODE");if(mode=="exit")Environment.Exit(73);if(mode=="invalid"){Console.Write("invalid");return;}System.Threading.Thread.Sleep(3500);Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}
+test('cold CLR parent identification has a separate bounded startup allowance', { skip: CLR_SKIP }, async (t) => {
+  // A wall-clock delay is the behaviour under test: a cold probe slower than the 3-second limit it had before
+  // b0420389 must still bind the parent.
+  const SLOW_PROBE_MS = 3_500;
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-parent-start-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+  // Execution snapshots are created beside the runtime directory, so root shows any snapshot left behind.
+  const directory = path.join(root, 'runtime');
+  await fs.mkdir(directory);
+  const source = path.join(directory, 'Protocol.cs'),
+    executable = path.join(directory, 'Protocol.exe');
+  await fs.writeFile(
+    source,
+    `using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){
+if(args.Length==2&&args[0]=="--process-start"){var mode=Environment.GetEnvironmentVariable("INVENTED_PARENT_MODE");if(mode=="exit")Environment.Exit(73);if(mode=="invalid"){Console.Write("invalid");return;}System.Threading.Thread.Sleep(${SLOW_PROBE_MS});Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}
 Console.ReadLine();Console.WriteLine("{\\"kind\\":\\"result\\"}");}}`,
-    );
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      ['/nologo', '/target:exe', '/out:' + executable, source],
-      { windowsHide: true, encoding: 'utf8', timeout: 20000 },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
-    const assembly = path.join(root, 'Original.dll');
-    await fs.writeFile(assembly, 'invented assembly');
-    const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
-    const runtime = {
-      directory: root,
-      assembly,
-      executable,
-      allowedFiles: ['Protocol.cs', 'Protocol.exe', 'Original.dll', 'runtime.json', 'invoke.mjs'],
-      files: await Promise.all(
-        [assembly, executable].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
-      ),
-      descriptor: { typeName: 'Invented.Original', timeoutMs: 5000 },
-      provenance: { hostSourceSha256: hash(await fs.readFile(new URL('../lib/plugin-clr-host.cs', import.meta.url))) },
-    };
-    await fs.writeFile(path.join(root, 'runtime.json'), JSON.stringify(runtime));
-    await fs.writeFile(
-      path.join(root, 'invoke.mjs'),
-      `import fs from'node:fs';import{executeClrPlugin}from${JSON.stringify(new URL('../lib/plugin-clr.mjs', import.meta.url).href)};
+  );
+  compileClr(source, executable, { target: 'exe' });
+  const assembly = path.join(directory, 'Original.dll');
+  await fs.writeFile(assembly, 'invented assembly');
+  const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  const runtime = {
+    directory,
+    assembly,
+    executable,
+    allowedFiles: ['Protocol.cs', 'Protocol.exe', 'Original.dll', 'runtime.json', 'invoke.mjs'],
+    files: await Promise.all(
+      [assembly, executable].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
+    ),
+    descriptor: { typeName: 'Invented.Original', timeoutMs: 5000 },
+    provenance: { hostSourceSha256: hash(await fs.readFile(new URL('../lib/plugin-clr-host.cs', import.meta.url))) },
+  };
+  await fs.writeFile(path.join(directory, 'runtime.json'), JSON.stringify(runtime));
+  await fs.writeFile(
+    path.join(directory, 'invoke.mjs'),
+    `import fs from'node:fs';import{executeClrPlugin}from${JSON.stringify(new URL('../lib/plugin-clr.mjs', import.meta.url).href)};
 const runtime=JSON.parse(fs.readFileSync(new URL('./runtime.json',import.meta.url)));
 const mode=process.env.INVENTED_PARENT_MODE;
 try{const result=executeClrPlugin(runtime,{}, {store:{}});if(mode!=='valid')throw Error('Invalid parent probe was admitted');console.log(result.executionMode);}
 catch(error){if(mode==='valid'||error.code!=='LocalPluginParentUnavailable')throw error;console.log(error.code);}`,
-    );
-    for (const mode of ['valid', 'invalid', 'exit']) {
-      const result = spawnSync(process.execPath, [path.join(root, 'invoke.mjs')], {
-        env: { ...process.env, INVENTED_PARENT_MODE: mode },
-        windowsHide: true,
-        encoding: 'utf8',
-        timeout: 45000,
-      });
-      assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
-      assert.equal(result.stdout.trim(), mode === 'valid' ? 'fresh-host' : 'LocalPluginParentUnavailable');
-      assert.deepEqual(
-        (await fs.readdir(root)).sort(),
-        [...runtime.allowedFiles].sort(),
-        'every execution snapshot is removed after success or probe rejection',
-      );
-    }
-  },
-);
+  );
+  for (const mode of ['valid', 'invalid', 'exit']) {
+    const result = spawnSync(process.execPath, [path.join(directory, 'invoke.mjs')], {
+      env: { ...process.env, INVENTED_PARENT_MODE: mode },
+      windowsHide: true,
+      encoding: 'utf8',
+      // The probe limit, then the 5-second plugin budget and its 1-second worker margin, plus Node startup.
+      timeout: PARENT_PROBE_LIMIT_MS + 15_000,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
+    assert.equal(result.stdout.trim(), mode === 'valid' ? 'fresh-host' : 'LocalPluginParentUnavailable');
+    assert.deepEqual(await fs.readdir(root), ['runtime'], 'every execution snapshot is removed');
+    assert.deepEqual((await fs.readdir(directory)).sort(), [...runtime.allowedFiles].sort());
+  }
+});
 
 test('persistent CLR hosts require explicit Boolean opt-in', () => {
   const descriptor = {
@@ -111,45 +123,41 @@ test('persistent CLR hosts require explicit Boolean opt-in', () => {
   assert.deepEqual(clrHostPoolStatus(), []);
 });
 
-test(
-  'failed CLR preparation removes only its owned cache directory',
-  { skip: process.platform !== 'win32' },
-  async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-build-failure-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    await fs.writeFile(path.join(root, 'Original.dll'), 'invented assembly');
-    await fs.writeFile(path.join(root, 'Sdk.dll'), 'invented SDK');
-    const cacheRoot = path.join(root, 'cache');
-    await fs.mkdir(cacheRoot);
-    await fs.writeFile(path.join(cacheRoot, 'keep'), 'unrelated');
-    await assert.rejects(
-      prepareClrRuntime(
-        {
-          trust: 'execute-local-assembly',
-          root,
-          sdkRoot: root,
-          cacheRoot,
-          assembly: 'Original.dll',
-          sdkAssembly: 'Sdk.dll',
-          typeName: 'Invented.Original',
-          serviceProfile: {
-            userId: user,
-            evidence: 'Invented backend',
-            grants: [{ entity: 'widget', operations: ['read'] }],
-          },
-          context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
+test('failed CLR preparation removes only its owned cache directory', { skip: CLR_SKIP }, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-build-failure-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+  await fs.writeFile(path.join(root, 'Original.dll'), 'invented assembly');
+  await fs.writeFile(path.join(root, 'Sdk.dll'), 'invented SDK');
+  const cacheRoot = path.join(root, 'cache');
+  await fs.mkdir(cacheRoot);
+  await fs.writeFile(path.join(cacheRoot, 'keep'), 'unrelated');
+  await assert.rejects(
+    prepareClrRuntime(
+      {
+        trust: 'execute-local-assembly',
+        root,
+        sdkRoot: root,
+        cacheRoot,
+        assembly: 'Original.dll',
+        sdkAssembly: 'Sdk.dll',
+        typeName: 'Invented.Original',
+        serviceProfile: {
+          userId: user,
+          evidence: 'Invented backend',
+          grants: [{ entity: 'widget', operations: ['read'] }],
         },
-        { compiler: path.join(root, 'missing-compiler.exe') },
-      ),
-      (error) => error.code === 'LocalPluginClrBuild',
-    );
-    assert.deepEqual(await fs.readdir(cacheRoot), ['keep']);
-  },
-);
+        context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
+      },
+      { compiler: path.join(root, 'missing-compiler.exe') },
+    ),
+    (error) => error.code === 'LocalPluginClrBuild',
+  );
+  assert.deepEqual(await fs.readdir(cacheRoot), ['keep']);
+});
 
 test(
   'CLR workers reject non-object output and completion with pending SDK calls and kill owned children',
-  { skip: process.platform !== 'win32' },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-protocol-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
@@ -161,14 +169,7 @@ test(
 if(line.Contains("pending")){Console.WriteLine("{\\"kind\\":\\"rpc\\"}");Console.WriteLine("{\\"kind\\":\\"result\\"}");}
 else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("null");System.Threading.Thread.Sleep(30000);}}`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
-    const build = spawnSync(compiler, ['/nologo', '/target:exe', '/out:' + executable, source], {
-      shell: false,
-      windowsHide: true,
-      encoding: 'utf8',
-      timeout: 20000,
-    });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, executable, { target: 'exe' });
     for (const pooled of [false, true])
       for (const mode of ['null', 'array', 'pending'])
         await t.test(`${pooled ? 'pooled' : 'fresh'} ${mode}`, async (sub) => {
@@ -190,43 +191,28 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
             port1.close();
             await worker.terminate();
           });
+          // The worker always answers: a protocol failure, or its own 5-second timeout failure if the host never writes.
           const failure = await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('No protocol failure received')), 10000);
-            worker.once('error', (error) => {
-              clearTimeout(timer);
-              reject(error);
-            });
+            worker.once('error', reject);
             port1.on('message', (message) => {
               if (message.kind === 'owned-child') pid = message.pid;
-              if (message.kind === 'failure') {
-                clearTimeout(timer);
-                resolve(message);
-              }
+              if (message.kind === 'failure') resolve(message);
             });
             if (pooled)
               port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 5000 });
           });
-          assert.equal(failure.code, 'LocalPluginProtocol');
+          assert.equal(failure.code, 'LocalPluginProtocol', failure.message);
           if (pooled) assert.equal(failure.invocationId, 'invented-invocation');
           assert.ok(pid > 0);
-          let alive = true;
-          for (let attempt = 0; attempt < 100 && alive; attempt++) {
-            try {
-              process.kill(pid, 0);
-            } catch (error) {
-              if (error.code === 'ESRCH') alive = false;
-              else throw error;
-            }
-            if (alive) await new Promise((resolve) => setTimeout(resolve, 10));
-          }
-          assert.equal(alive, false, 'worker must stop its malformed host');
+          // The host sleeps 30 seconds after its malformed line, so only the worker's kill makes it absent.
+          assert.equal(await processAbsent(pid, HOST_EXIT_LIMIT_MS), true, 'worker must stop its malformed host');
         });
   },
 );
 
 test(
   'pooled process reuse, runtime isolation, snapshot tampering and throwing cleanup diagnostics',
-  { skip: process.platform !== 'win32' },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-isolation-')));
     t.after(() => closeClrHostPool());
@@ -237,14 +223,7 @@ test(
       source,
       'using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){if(args.Length==2&&args[0]=="--process-start"){Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}while(Console.ReadLine()!=null)Console.WriteLine("{\\"kind\\":\\"result\\"}");}}',
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
-    const build = spawnSync(compiler, ['/nologo', '/target:exe', '/out:' + executable, source], {
-      shell: false,
-      windowsHide: true,
-      encoding: 'utf8',
-      timeout: 20000,
-    });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, executable, { target: 'exe' });
     const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
     const hostSourceSha256 = hash(await fs.readFile(new URL('../lib/plugin-clr-host.cs', import.meta.url)));
     const makeRuntime = async (name) => {
@@ -307,10 +286,10 @@ test(
 
 test(
   'exact parent incarnation closes fresh and pooled CPU-hung CLR hosts after abrupt Node death',
-  { skip: !available },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-parent-death-'))),
-      sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+      sdk = clrSdk(),
       source = path.join(root, 'Hang.cs'),
       assembly = path.join(root, 'Hang.dll');
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
@@ -318,13 +297,7 @@ test(
       source,
       'using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Hang:IPlugin{public void Execute(IServiceProvider p){((ITracingService)p.GetService(typeof(ITracingService))).Trace("entered-cpu-loop");while(true){}}}}',
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      build = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-        windowsHide: true,
-        encoding: 'utf8',
-        timeout: 20000,
-      });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,
@@ -337,17 +310,18 @@ test(
       context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
       timeoutMs: 10000,
     });
+    // These cold host starts get the product's probe limit; a 3-second limit was the b0420389 Windows CI failure.
     const born = spawnSync(runtime.executable, ['--process-start', String(process.pid)], {
       windowsHide: true,
       encoding: 'utf8',
-      timeout: 3000,
+      timeout: PARENT_PROBE_LIMIT_MS,
     });
-    assert.equal(born.status, 0);
+    assert.equal(born.status, 0, born.error?.message);
     assert.match(born.stdout, /^\d+$/);
     const reused = spawnSync(
       runtime.executable,
       ['--parent', String(process.pid), '--parent-start', String(BigInt(born.stdout) + 1n)],
-      { windowsHide: true, encoding: 'utf8', timeout: 3000 },
+      { windowsHide: true, encoding: 'utf8', timeout: PARENT_PROBE_LIMIT_MS },
     );
     assert.equal(reused.status, 74, 'An existing PID with a different birth time cannot authorize this host.');
     for (const persistentHost of [false, true])
@@ -376,15 +350,9 @@ test(
           error += chunk;
         });
         try {
+          // No wall-clock limit: the child reaches the loop, or exits once its probe (30 s) or plugin (10 s) limit fails.
           await new Promise((resolve, reject) => {
-            const timeout = setTimeout(
-              () => reject(new Error('Invented child did not enter its CLR loop: ' + error)),
-              7000,
-            );
-            child.once('exit', (code) => {
-              clearTimeout(timeout);
-              reject(new Error('Invented child exited early: ' + code + ' ' + error));
-            });
+            child.once('exit', (code) => reject(new Error('Invented child exited early: ' + code + ' ' + error)));
             child.stdout.on('data', (chunk) => {
               buffer += chunk;
               for (;;) {
@@ -394,10 +362,7 @@ test(
                 buffer = buffer.slice(end + 1);
                 if (row.port) port = row.port;
                 if (row.code === 'PLUGIN_CLR_HOST_STARTED') hostPid = row.pid;
-                if (row.code === 'PLUGIN_CLR_TRACE' && row.message === 'entered-cpu-loop') {
-                  clearTimeout(timeout);
-                  resolve();
-                }
+                if (row.code === 'PLUGIN_CLR_TRACE' && row.message === 'entered-cpu-loop') resolve();
               }
             });
           });
@@ -405,21 +370,8 @@ test(
           const exited = new Promise((resolve) => child.once('exit', resolve));
           child.kill('SIGKILL');
           await exited;
-          let absent = false;
-          for (let attempt = 0; attempt < 50; attempt++) {
-            try {
-              process.kill(hostPid, 0);
-            } catch (cause) {
-              if (cause.code === 'ESRCH') {
-                absent = true;
-                break;
-              }
-              throw cause;
-            }
-            await delay(40);
-          }
           assert.equal(
-            absent,
+            await processAbsent(hostPid, HOST_EXIT_LIMIT_MS),
             true,
             'Only the recorded orphan host must terminate, even while plugin code never returns.',
           );
@@ -439,10 +391,10 @@ test(
 
 test(
   'pooled original DLL gets fresh instance, configuration, context, frame and SDK callbacks; failures close owned hosts',
-  { skip: !available },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-pool-')),
-      sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+      sdk = clrSdk(),
       notes = [];
     t.after(() => {
       closeClrHostPool({ diagnostic: (note) => notes.push(note) });
@@ -461,14 +413,7 @@ var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizati
 target["observed"]=service.Retrieve("secondary",new Guid("${rowId}"),new ColumnSet("title")).GetAttributeValue<string>("title");
 target["instanceCalls"]=++calls;target["configuration"]=config;target["request"]=c.RequestId.ToString();}}}`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
-    const build = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-      shell: false,
-      windowsHide: true,
-      encoding: 'utf8',
-      timeout: 20000,
-    });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,

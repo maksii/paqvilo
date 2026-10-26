@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { scanSolutionSources } from '../lib/solution-schema.mjs';
 import { solutionApps, appCatalogue } from '../lib/model-driven/catalogue.mjs';
@@ -20,6 +21,15 @@ before(async () => {
 after(async () => {
   for (const fn of cleanup) await fn();
 });
+// Tests that only import edited Solution sources change a private copy of the shared fixture's Solution, without
+// starting a runtime for it.
+async function solutionCopy(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-solution-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const solutionDir = path.join(root, 'solution');
+  await fs.cp(shared.solutionDir, solutionDir, { recursive: true });
+  return { solutionDir };
+}
 
 test('source navigation admits bounded imported table-view pages and leaves remote or unknown destinations unavailable', () => {
   const areas = parseSiteMap(
@@ -154,7 +164,7 @@ test('application cards retain exported localized descriptions and icon identiti
 });
 
 test('exported collection-name tags localize table labels even when a provider already defines the table', async (t) => {
-  const { solutionDir } = await modelDrivenFixture(t);
+  const { solutionDir } = await solutionCopy(t);
   const entityFile = path.join(solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(
     entityFile,
@@ -472,7 +482,7 @@ test('management edits recompile the local portal, persist across restarts, and 
   );
   await fixture.sim.close();
   const restarted = await fixture.start();
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   assert.match(await (await fetch((restarted.origin ?? restarted.url) + '/')).text(), /Changed locally/);
 });
 
@@ -551,7 +561,7 @@ test('sparse customization overlays retain later source changes to untouched sib
     'adx_sitesettingid: 66666666-6666-4666-8666-666666666666\nadx_name: Example/NewSourceName\nadx_value: New source value',
   );
   const restarted = await fixture.start();
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   const read = await (await fetch(restarted.url + endpoint)).json();
   assert.equal(read.row.adx_name, 'Example/NewSourceName');
   assert.equal(read.row.adx_value, 'Local value');
@@ -580,7 +590,7 @@ test('monolithic solution metadata imports app forms, views and navigation with 
 });
 
 test('table default desktop grid pagination flows from source facts into the app catalogue without form PCF leakage', async (t) => {
-  const { solutionDir } = await modelDrivenFixture(t);
+  const { solutionDir } = await solutionCopy(t);
   const entityFile = path.join(solutionDir, 'Entities/x_item/Entity.xml'),
     original = await fs.readFile(entityFile, 'utf8');
   const config = (name, factor, value) =>

@@ -372,7 +372,13 @@ const decodePrivileges = (mask) =>
  * installs isolated fixture recipes, deploys its templates and records results.
  * Every definition is reusable by native enhanced-data-model components and the
  * local source importer; no live endpoint or contact is embedded here. */
-export function materializeScopeHierarchyVariant(variant, { schema, catalogue }) {
+/** Hashes of the shared inputs; a caller materializing many variants computes them once and passes them back. */
+export const variantInputHashes = ({ schema, catalogue }) => ({ schema: digest(schema), catalogue: digest(catalogue) });
+
+export function materializeScopeHierarchyVariant(
+  variant,
+  { schema, catalogue, inputHashes = variantInputHashes({ schema, catalogue }) },
+) {
   const grammar = scopeHierarchyVariantDomain(),
     family = grammar.families.find((family) => family.id === variant.family);
   const parameters = variant.parameters;
@@ -826,8 +832,8 @@ export function materializeScopeHierarchyVariant(variant, { schema, catalogue })
     nativeCellsPerRepeat: 2 ** roleCount * (2 + 5 * 3),
     minimumRepeatedReadCells: 2 ** roleCount * 2 * 2,
     sourceHashes: {
-      schema: digest(schema),
-      catalogue: digest(catalogue),
+      schema: inputHashes.schema,
+      catalogue: inputHashes.catalogue,
       components: digest(components),
       query: digest(query),
     },

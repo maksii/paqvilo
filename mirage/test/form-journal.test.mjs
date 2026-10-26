@@ -83,7 +83,8 @@ test('native edit, JSON insert and multistep writes use the journal and survive 
   );
   await app.close();
   const restarted = await createSimulator(settings);
-  t.after(() => restarted.close());
+  // Owned like the fixture's own app: closed before its state directory is removed.
+  ownedFixture(t).add(() => restarted.close());
   assert.deepEqual(
     restarted.store.state.tables.item.map((row) => row.title),
     ['Edited', 'Inserted'],
@@ -174,7 +175,7 @@ test('attachment rejection after the primary form row rolls back the entire unit
     if (trusted) assert.equal(handlerCalls, 2, 'the rejecting attachment follows the primary row and trusted handler');
     await app.close();
     const restarted = await createSimulator(settings);
-    t.after(() => restarted.close());
+    ownedFixture(t).add(() => restarted.close());
     // A restart moves the inline note body to the annotations storage route (dataverse-storage-routing.mjs migration);
     // the rows are otherwise unchanged.
     const rows = (tables) => ({

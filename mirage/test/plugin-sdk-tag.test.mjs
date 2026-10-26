@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { prepareClrRuntime, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
   record = '20000000-0000-0000-0000-000000000001';
@@ -79,11 +79,11 @@ test('Named SDK tag validation rejects unsupported values before backend changes
 
 test(
   'Original DLL named DeleteRequest tag reaches all stages, PreValidation parent and nested shortcut calls',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-tag-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'Tag.cs'),
       assembly = path.join(root, 'Tag.dll');
     await fs.writeFile(
@@ -94,19 +94,7 @@ test(
  public sealed class Leaf:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext2)p.GetService(typeof(IPluginExecutionContext));if((string)c.SharedVariables["tag"]!="caller-tag"||c.Depth!=3||c.IsPortalsClientCall)throw new Exception("Nested shortcut tag lost");((Entity)c.InputParameters["Target"])["title"]="inherited";}}
  }`,
     );
-    const built = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      [
-        '/nologo',
-        '/target:library',
-        '/out:' + assembly,
-        '/reference:' + sdk,
-        '/reference:System.Runtime.Serialization.dll',
-        source,
-      ],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    assert.equal(built.status, 0, built.stdout + built.stderr);
+    compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });
     const profile = {
         userId: user,
         evidence: 'Invented named SDK tag flow',

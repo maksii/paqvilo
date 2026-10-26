@@ -125,6 +125,16 @@ test('offline campaign resumes immutable completed receipts and rejects input/jo
     assert.equal(first.physicalReads, 4);
     await runMirageReplayCampaign(job, { replay });
     assert.deepEqual(calls, ['mask-0', 'mask-1']);
+    // A resume verifies the archived runtime sources it finds in place instead of rewriting them.
+    const sources = path.join(job.outputRoot, 'runtime-sources'),
+      archived = path.join(
+        sources,
+        (await fs.readdir(sources)).find((name) => name.endsWith('.bin')),
+      ),
+      original = await fs.readFile(archived);
+    await fs.appendFile(archived, 'tamper');
+    await assert.rejects(runMirageReplayCampaign(job, { replay }), /immutable replay input archive changed/);
+    await fs.writeFile(archived, original);
     await assert.rejects(
       runMirageReplayCampaign({ ...job, cells: [...job.cells, { id: 'mask-2', inputs: {} }] }, { replay }),
       /job or local runtime changed/,

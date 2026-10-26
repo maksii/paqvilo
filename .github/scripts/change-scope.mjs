@@ -24,10 +24,14 @@ const overlayPresentation = new Set([
   'lense/xray-ui.mjs',
 ]);
 
-// Literal imports only expand a suite selection; they never authorize skipping an unknown path.
+// Literal references only expand a suite selection; they never authorize skipping an unknown path.
 // Tests and package self-imports are included so a cross-tool integration test selects its suite too.
+// Besides imports, any quoted relative path counts: tests read documents and fixtures and spawn
+// CLIs through `new URL('../x', import.meta.url)`, and a directory reference covers its contents.
+// A template such as `../mirage/${tool}.mjs` references every matching file in that directory.
 export function dependencyConsumers(root = toolkitRoot) {
   const reverse = new Map();
+  const templates = [];
   const pkg = fs.existsSync(path.join(root, 'package.json'))
     ? JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
     : {};
@@ -60,20 +64,35 @@ export function dependencyConsumers(root = toolkitRoot) {
       if (entry.isDirectory()) visit(file);
       else if (/\.[cm]?js$/.test(entry.name)) {
         const consumer = path.relative(root, file).replaceAll('\\', '/');
-        for (const match of fs
-          .readFileSync(file, 'utf8')
-          .matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g)) {
-          const specifier = match[1];
-          const resolved = specifier.startsWith('.')
-            ? path.resolve(path.dirname(file), specifier)
-            : resolveSelf(specifier);
+        const source = fs.readFileSync(file, 'utf8');
+        for (const match of source.matchAll(
+          /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g,
+        )) {
+          const resolved = resolveSelf(match[1]);
           if (resolved) add(resolved, consumer);
+        }
+        // A bare './' or '../' is usually a URL, not a reference to every sibling file.
+        for (const match of source.matchAll(/(['"`])(\.\.?\/(?:\.\.\/)*[^'"`$\n./][^'"`$\n]*)\1/g))
+          add(path.resolve(path.dirname(file), match[2]), consumer);
+        for (const match of source.matchAll(/`(\.\.?\/[^`$\n]*\/)\$\{[^}`]*\}([^`$/\n]*)`/g)) {
+          const directory = path.relative(root, path.resolve(path.dirname(file), match[1])).replaceAll('\\', '/');
+          if (!directory.startsWith('../')) templates.push({ directory, suffix: match[2], consumer });
         }
       }
     }
   };
   for (const directory of sourceRoots) visit(path.join(root, directory));
-  return reverse;
+  return {
+    // A changed file is consumed through its own path, any referenced ancestor directory or a template.
+    get(file) {
+      const consumers = new Set(reverse.get(file));
+      for (let parent = path.posix.dirname(file); parent !== '.'; parent = path.posix.dirname(parent))
+        for (const consumer of reverse.get(parent) ?? []) consumers.add(consumer);
+      for (const { directory, suffix, consumer } of templates)
+        if (path.posix.dirname(file) === directory && file.endsWith(suffix)) consumers.add(consumer);
+      return consumers;
+    },
+  };
 }
 
 function initialScope() {
@@ -126,7 +145,14 @@ export function classifyChanges(files, { root = toolkitRoot, full = false } = {}
     }
   };
   for (const file of files) {
-    if (secondary.test(file)) continue;
+    if (secondary.test(file)) {
+      // A document that a test reads, such as a settings table, still selects that suite.
+      reverse ??= dependencyConsumers(root);
+      if (!reverse.get(file).size) continue;
+      scope.runtime = true;
+      expand(file);
+      continue;
+    }
     scope.runtime = true;
     if (overlayPresentation.has(file)) {
       scope.lense = true;
@@ -162,6 +188,18 @@ export function classifyChanges(files, { root = toolkitRoot, full = false } = {}
 
 export function suitesForScope(scope) {
   return ['lense', 'mirage', 'examples'].filter((suite) => scope[suite]);
+}
+
+// CI splits the longest suites into node:test file shards (ci.mjs --shard); together the shards
+// run every file once, and the CI gate requires every leg. Local validation runs whole suites.
+// Lense stays whole: one long file (mirage-stop-scope) bounds its wall time either way.
+const SHARDS = { unit: { mirage: 3 }, browser: { mirage: 2 } };
+export function ciLanes(kind, suites) {
+  return suites.flatMap((suite) => {
+    const total = SHARDS[kind][suite] ?? 1;
+    if (total === 1) return [{ suite }];
+    return Array.from({ length: total }, (_, index) => ({ suite, shard: `${index + 1}/${total}` }));
+  });
 }
 
 export function preCommitScripts(files) {
@@ -202,7 +240,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const event = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
   const scope = githubScope(event, process.env.GITHUB_EVENT_NAME, process.env, process.cwd());
   const suites = suitesForScope(scope);
-  const outputs = { ...scope, suites: JSON.stringify(suites.length ? suites : ['none']) };
+  const outputs = {
+    ...scope,
+    suites: JSON.stringify(suites.length ? suites : ['none']),
+    units: JSON.stringify(suites.length ? ciLanes('unit', suites) : [{ suite: 'none' }]),
+    browsers: JSON.stringify(suites.length ? ciLanes('browser', suites) : [{ suite: 'none' }]),
+  };
   fs.appendFileSync(
     process.env.GITHUB_OUTPUT,
     Object.entries(outputs)

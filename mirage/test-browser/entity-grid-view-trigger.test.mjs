@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { eventLog } from './shared-browser.mjs';
 
 let browser;
 before(async () => {
@@ -65,12 +66,19 @@ test('jQuery-triggered clicks on grid view and sort links reach the grid', async
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  // Wait for the expected grid requests (a slow runner can take longer than a fixed pause), then
-  // give a duplicate request a moment to show up before the exact count is asserted.
+  // Await the response to the expected grid request. Browser events arrive in order, so a duplicate
+  // request sent by the same click has been observed before that response, and the count is exact.
+  const sent = [],
+    answered = eventLog({ message: 'The grid request was not answered' });
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname === '/grid-data') sent.push(request);
+  });
+  page.on('response', (response) => {
+    if (new URL(response.url()).pathname === '/grid-data') answered.push(response);
+  });
   const postsReach = async (count) => {
-    for (const deadline = Date.now() + 10_000; posts.length < count && Date.now() < deadline;)
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await answered.until(() => answered.length >= count);
+    assert.equal(sent.length, count, 'one grid request per action');
   };
   await page.goto(`http://127.0.0.1:${server.address().port}/page`);
   await page.locator(".view-select [aria-label='Second']").waitFor({ state: 'attached' });
@@ -84,10 +92,7 @@ test('jQuery-triggered clicks on grid view and sort links reach the grid', async
   assert.equal(posts.length, 1);
   assert.equal(posts[0].base64SecureConfiguration, 'secure-2');
   await page.evaluate(() => window.jQuery('.view-grid table thead th a').first().trigger('click'));
-  await page.waitForFunction(
-    (_count) => window.__gridPosts === undefined && document.querySelectorAll('.view-grid table').length > 0,
-    posts.length,
-  );
+  await page.locator('.view-grid table').first().waitFor({ state: 'attached' });
   await postsReach(2);
   assert.equal(posts.length, 2);
   assert.equal(posts[1].sortExpression, 'name DESC');

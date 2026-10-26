@@ -369,6 +369,8 @@ export async function importPortal(
           rows = YAML.parse(text, { uniqueKeys: false });
         }
         if (!Array.isArray(rows)) rows = [rows];
+        // Every row of a multi-record file shares the file's revision.
+        const sourceRevision = sourceRevisionOf(text);
         for (const row of rows) {
           if (!row || typeof row !== 'object') continue;
           const record = {
@@ -387,7 +389,7 @@ export async function importPortal(
               ? { powerpagecomponenttype: COMPONENT_TYPE_OF_KIND[kind] }
               : {}),
             _file: file,
-            _sourceRevision: sourceRevisionOf(text),
+            _sourceRevision: sourceRevision,
           };
           records.push(record);
           if (kind === 'website') website = record;
@@ -615,6 +617,8 @@ export async function importPortal(
   // Preserve the exact imported field origin for lazy provenance indexes. Later disk
   // edits must not relabel already imported/rendered bytes with a newer revision.
   for (const record of records) record._fieldOrigins = {};
+  // Rows of one multi-record file share their sidecar names; read each name once.
+  const sidecars = new Map();
   async function source(record, suffix, fallbackField) {
     const origins = (record._fieldOrigins ??= {});
     const fallback = Object.hasOwn(record._profileFields ?? {}, fallbackField)
@@ -624,8 +628,9 @@ export async function importPortal(
     origins[fallbackField] = { value: fallback, file, sidecar: false };
     if (Object.hasOwn(record._profileFields ?? {}, fallbackField) || enhanced) return String(localized(fallback, lcid));
     const stem = String(record._file ?? '').replace(/\.ya?ml$/i, '');
-    const sidecar = `${stem}.${suffix}`,
-      value = await read(sidecar, contents);
+    const sidecar = `${stem}.${suffix}`;
+    if (!sidecars.has(sidecar)) sidecars.set(sidecar, read(sidecar, contents));
+    const value = await sidecars.get(sidecar);
     if (value) origins[fallbackField] = { value, file: sidecar, sidecar: true };
     return value || String(localized(fallback, lcid));
   }

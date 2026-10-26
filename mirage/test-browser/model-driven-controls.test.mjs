@@ -351,8 +351,7 @@ test('standard memo controls use the compact native height while declared rows a
 });
 
 test('saved state and status remain editable with legacy text class IDs while new-record state honors source create restrictions', async (t) => {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const entityFile = path.join(source.solutionDir, 'Entities/x_item/Entity.xml');
   const fields =
     '<attribute PhysicalName="statecode"><Name>statecode</Name><Type>state</Type><ValidForCreateApi>0</ValidForCreateApi><ValidForUpdateApi>1</ValidForUpdateApi><displaynames><displayname description="Record state" languagecode="1033"/></displaynames><optionset><states><state value="0" defaultstatus="1" invariantname="Active"><labels><label description="Open" languagecode="1033"/></labels></state><state value="1" defaultstatus="2" invariantname="Inactive"><labels><label description="Closed" languagecode="1033"/></labels></state></states></optionset></attribute><attribute PhysicalName="statuscode"><Name>statuscode</Name><Type>status</Type><displaynames><displayname description="Record reason" languagecode="1033"/></displaynames><optionset><statuses><status value="1" state="0"><labels><label description="Pending" languagecode="1033"/></labels></status><status value="2" state="1"><labels><label description="Finished" languagecode="1033"/></labels></status></statuses></optionset></attribute>';
@@ -365,7 +364,6 @@ test('saved state and status remain editable with legacy text class IDs while ne
     '<row><cell><control datafieldname="statecode" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row><row><cell><control datafieldname="statuscode" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row>';
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('</rows>', cells + '</rows>'));
   const sim = await source.start();
-  t.after(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item');
@@ -440,8 +438,7 @@ test('advanced lookup uses staged Done, preserves a cancelled value, queries exp
 });
 
 test('inline lookup applies its exported lookup view and keeps lookup-only views outside the application view picker', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const file = path.join(fixture.solutionDir, 'Entities/x_item/SavedQueries/items.xml');
   const lookupView = (await fs.readFile(file, 'utf8'))
     .replace('{items-view}', '{qualified-lookup}')
@@ -450,7 +447,6 @@ test('inline lookup applies its exported lookup view and keeps lookup-only views
     .replace('value="1"', 'value="8"');
   await fs.writeFile(path.join(path.dirname(file), 'lookup.xml'), lookupView);
   const sim = await fixture.start();
-  t.after(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const catalogue = await (await fetch(origin + '/_apps/api')).json();
   assert.equal(catalogue.tables.x_item.lookupViews[0].id, 'qualified-lookup');
@@ -483,8 +479,7 @@ test('inline lookup applies its exported lookup view and keeps lookup-only views
 });
 
 test('advanced lookup preserves all exported columns and their widths instead of truncating after five', async (t) => {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const names = Array.from({ length: 6 }, (_, index) => `x_detail${index + 1}`);
   const entityFile = path.join(source.solutionDir, 'Entities/x_item/Entity.xml');
   const attributes = names
@@ -507,7 +502,6 @@ test('advanced lookup preserves all exported columns and their widths instead of
     );
   await fs.writeFile(path.join(path.dirname(queryFile), 'wide.xml'), lookup);
   const sim = await source.start();
-  t.after(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(
@@ -540,8 +534,8 @@ test('advanced lookup preserves all exported columns and their widths instead of
   assert.equal(await page.getByLabel('Parent', { exact: true }).inputValue(), 'Silver');
 });
 
-test('advanced lookup renders the native empty state, then recovers to selectable results without changing the field', async (t) => {
-  const { origin } = await readOnlyApp();
+/** Opens the child record's advanced Parent lookup on the shared app with Silver selected. */
+async function openParentLookup(t, origin) {
   const page = await chrome.page(t);
   page.setDefaultTimeout(5000);
   await page.goto(
@@ -551,6 +545,12 @@ test('advanced lookup renders the native empty state, then recovers to selectabl
   await page.getByRole('button', { name: 'Advanced', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: /^Choose .* for Parent$/ });
   await dialog.getByRole('radio', { name: 'Select Silver', exact: true }).check();
+  return { page, dialog };
+}
+
+test('advanced lookup renders the native empty state, then recovers to selectable results without changing the field', async (t) => {
+  const { origin } = await readOnlyApp();
+  const { page, dialog } = await openParentLookup(t, origin);
   const search = dialog.getByRole('searchbox', { name: 'Search lookup records' });
   await search.fill('No matching invented record');
   await dialog.getByRole('heading', { name: 'We don’t have any data for this view', exact: true }).waitFor();
@@ -575,16 +575,11 @@ test('advanced lookup renders the native empty state, then recovers to selectabl
 
 test('lookup invalidates selection during search, ignores stale responses and settles Escape', async (t) => {
   const { origin } = await readOnlyApp();
-  const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
-  await page.goto(
-    origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-  );
-  await page.getByRole('button', { name: 'Look up Parent', exact: true }).click();
-  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: /^Choose .* for Parent$/ });
-  await dialog.getByRole('radio', { name: 'Select Silver', exact: true }).check();
+  // Registered before the page's context closer: t.after hooks run first in, first out, and a parked route
+  // handler is released before its context closes.
   let release, waiting;
+  t.after(() => release?.());
+  const { page, dialog } = await openParentLookup(t, origin);
   const requestStarted = new Promise((resolve) => {
     waiting = resolve;
   });
@@ -597,7 +592,6 @@ test('lookup invalidates selection during search, ignores stale responses and se
     });
     await route.continue();
   });
-  t.after(() => release?.());
   await dialog.getByRole('searchbox', { name: 'Search lookup records' }).fill('Copper');
   assert.equal(await dialog.getByRole('button', { name: 'Done', exact: true }).isDisabled(), true);
   await requestStarted;
@@ -688,7 +682,12 @@ test('inline lookup rejects stale keyboard choices during debounce and after an 
   await page.getByRole('button', { name: 'Look up Related', exact: true }).click();
   await page.evaluate(() => window.lookup.setDisabled(true));
   assert.equal(await input.getAttribute('aria-expanded'), 'false');
-  await page.evaluate(() => window.requests[3]([{ id: 'd', entity: 'x_item', name: 'Denied late result' }]));
+  // The late answer settles within this task's microtasks; the next task observes whether the disabled lookup used it.
+  await page.evaluate(async () => {
+    window.requests[3]([{ id: 'd', entity: 'x_item', name: 'Denied late result' }]);
+    await new Promise((resolve) => setTimeout(resolve));
+  });
+  assert.equal(await page.locator('[role=option]', { hasText: 'Denied late result' }).count(), 0);
   assert.deepEqual(await page.evaluate(() => window.lookup.read()), {
     id: 'c',
     entity: 'x_item',

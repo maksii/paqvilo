@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
-import { spawn, execFile } from 'node:child_process';
-import { once } from 'node:events';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
+import { runWorkspaceTask } from './helpers/workspace-task.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 test(
   'scaffolded VS Code task signals readiness and attaches to its own development browser',
@@ -27,59 +26,22 @@ test(
     const launch = JSON.parse(await fs.readFile(path.join(directory, '.vscode/launch.json'), 'utf8'));
     const configuration = launch.configurations.find((item) => item.name === 'Demo: Mirage and browser debugger');
     const task = tasks.tasks.find((item) => item.label === configuration.preLaunchTask);
-    const listener = net.createServer();
-    listener.listen(0, '127.0.0.1');
-    await once(listener, 'listening');
-    const port = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
+    const port = await freeDebugPort();
     // The dependency installation is covered by the independent package smoke.
     // Use its installed CLI when supplied; isolate the browser port for this test.
     const args = task.args.slice(1).map((argument) => (argument === '9222' ? String(port) : argument));
-    args.push(
-      '--headless',
-      '--browser',
-      process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
-    );
-    const child = spawn(process.execPath, [cli, ...args], {
+    const run = runWorkspaceTask(t, {
+      cli,
+      args,
       cwd: directory,
       env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      task,
+      port,
+      stop: ['--config', path.join(directory, 'paqvilo.config.yml'), '--site', 'example'],
+      work,
+      label: 'Workspace task readiness',
     });
-    let output = '',
-      browser;
-    child.stdout.on('data', (chunk) => {
-      output += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      output += chunk;
-    });
-    const exited = once(child, 'exit');
-    t.after(async () => {
-      if (browser) {
-        const session = await browser.newBrowserCDPSession().catch(() => null);
-        await session?.send('Browser.close').catch(() => {});
-        await browser.close().catch(() => {});
-      }
-      if (child.exitCode === null) child.kill('SIGTERM');
-      await exited;
-      const cleanup = spawn(
-        process.execPath,
-        [cli, 'mirage', 'stop', '--config', path.join(directory, 'paqvilo.config.yml'), '--site', 'example', '--json'],
-        { cwd: work, env, windowsHide: true, stdio: 'ignore' },
-      );
-      await once(cleanup, 'exit');
-      await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    });
-    const ready = new RegExp(task.problemMatcher.background.endsPattern, 'm');
-    const deadline = Date.now() + 60000;
-    while (!ready.test(output) && Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(`Workspace task exited before readiness: ${output}`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    assert.match(output, ready, 'F5 must wait for the task readiness signal');
-    assert.match(output, new RegExp(`debugger\\s+port ${port}\\b`));
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    const browser = await run.attach('F5 must wait for the task readiness signal');
     const page = browser
       .contexts()[0]
       .pages()

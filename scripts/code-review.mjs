@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { readLocalFileSync } from '../lense/local-file.mjs';
@@ -130,19 +130,35 @@ export function publicApiOrigins(directory) {
   return origins;
 }
 
+const toolOptions = (cwd, env) => ({
+  cwd,
+  env: { ...process.env, ...env },
+  encoding: 'utf8',
+  windowsHide: true,
+  maxBuffer: 32 * 1024 * 1024,
+  timeout: 180_000,
+});
+
 function invoke(name, args, cwd, env = {}) {
-  const result = spawnSync(process.execPath, [tools[name], ...args], {
-    cwd,
-    env: { ...process.env, ...env },
-    encoding: 'utf8',
-    windowsHide: true,
-    maxBuffer: 32 * 1024 * 1024,
-    timeout: 180_000,
-  });
+  const result = spawnSync(process.execPath, [tools[name], ...args], toolOptions(cwd, env));
   if (result.error || result.status !== 0)
     throw new Error(`${name} analysis failed: ${result.error?.message ?? result.stderr ?? result.status}`);
   return result.stdout;
 }
+
+const invokeAsync = (name, args, cwd, env = {}) =>
+  new Promise((resolve, reject) =>
+    execFile(process.execPath, [tools[name], ...args], toolOptions(cwd, env), (error, stdout, stderr) => {
+      // A non-zero exit reports the tool's own diagnostics, as invoke() does.
+      if (error)
+        reject(
+          new Error(
+            `${name} analysis failed: ${typeof error.code === 'number' && !error.killed ? stderr : error.message}`,
+          ),
+        );
+      else resolve(stdout);
+    }),
+  );
 
 function reviewFiles(directory) {
   directory = nativePath(directory);
@@ -207,33 +223,44 @@ function analysisSnapshot(directory, { files, dependencies = true } = {}) {
   }
 }
 
+const deadCodeRun = (snapshot, config, scope) => [
+  'knip',
+  [
+    '--directory',
+    snapshot,
+    '--config',
+    config,
+    '--reporter',
+    'json',
+    '--include',
+    'files,exports,nsExports,unresolved',
+    '--no-progress',
+    '--no-config-hints',
+    '--no-exit-code',
+    '--no-gitignore',
+    ...(scope === 'runtime' ? ['--production'] : []),
+  ],
+  snapshot,
+  { PAQVILO_REVIEW_SCOPE: scope },
+];
+
 export function inspectDeadCode(directory, config, scope = 'full') {
   // Knip promotes package wildcard targets to entries. Only the analysis manifest
   // omits unsupported wildcard roots; real source and dependencies stay untouched.
   const snapshot = analysisSnapshot(directory);
-  let report;
+  let stdout;
   try {
-    const args = [
-      '--directory',
-      snapshot,
-      '--config',
-      config,
-      '--reporter',
-      'json',
-      '--include',
-      'files,exports,nsExports,unresolved',
-      '--no-progress',
-      '--no-config-hints',
-      '--no-exit-code',
-      '--no-gitignore',
-    ];
-    if (scope === 'runtime') args.push('--production');
-    report = JSON.parse(invoke('knip', args, snapshot, { PAQVILO_REVIEW_SCOPE: scope }));
+    stdout = invoke(...deadCodeRun(snapshot, config, scope));
   } finally {
     fs.rmSync(snapshot, { recursive: true, force: true });
   }
+  return deadCodeFindings(stdout, scope, () => publicApiOrigins(directory));
+}
+
+function deadCodeFindings(stdout, scope, publicOrigins) {
+  const report = JSON.parse(stdout);
   if (!Array.isArray(report.issues)) throw new Error('Knip returned no issue inventory.');
-  const publicNames = publicApiOrigins(directory);
+  const publicNames = publicOrigins();
   const findings = [];
   for (const issue of report.issues) {
     for (const type of ['files', 'exports', 'nsExports', 'unresolved']) {
@@ -253,44 +280,53 @@ export function inspectDeadCode(directory, config, scope = 'full') {
   return findings;
 }
 
-export function inspectClones(directory, files, output) {
-  directory = nativePath(directory);
+// jscpd reads only the listed files, so one snapshot holding them (and more) serves every scope.
+function cloneRun(snapshot, files, output) {
   fs.mkdirSync(output, { recursive: true });
   const config = path.join(output, 'config.json');
+  fs.writeFileSync(
+    config,
+    JSON.stringify({
+      path: files.map((file) => path.resolve(snapshot, file)),
+      format: ['javascript', 'typescript', 'css', 'csharp', 'python'],
+      minTokens: 100,
+      minLines: 10,
+      mode: 'mild',
+      maxSize: '5mb',
+      reporters: ['json'],
+      output,
+      absolute: true,
+    }),
+  );
+  return ['jscpd', ['--config', config, '--fail-on-empty', '--no-tips'], snapshot];
+}
+
+function cloneFindings(directory, snapshot, output) {
+  const report = JSON.parse(fs.readFileSync(path.join(output, 'jscpd-report.json'), 'utf8'));
+  if (!Array.isArray(report.duplicates)) throw new Error('jscpd returned no clone inventory.');
+  const findings = report.duplicates.map((clone) => {
+    const pair = [clone.firstFile, clone.secondFile].map((file) => normalize(file.name, snapshot)).sort();
+    const hash = createHash('sha256').update(clone.fragment.replaceAll('\r\n', '\n')).digest('hex');
+    return { key: `${pair.join('|')}:${hash}`, files: pair, lines: clone.lines };
+  });
+  for (const clone of report.duplicates) {
+    for (const file of [clone.firstFile, clone.secondFile]) {
+      const relative = normalize(file.name, snapshot);
+      if (relative === '..' || relative.startsWith('../') || path.isAbsolute(relative))
+        throw new Error('Clone report source escaped its analysis snapshot.');
+      file.name = path.resolve(directory, relative);
+    }
+  }
+  fs.writeFileSync(path.join(output, 'jscpd-report.json'), JSON.stringify(report, null, 2) + '\n');
+  return findings;
+}
+
+export function inspectClones(directory, files, output) {
+  directory = nativePath(directory);
   const snapshot = analysisSnapshot(directory, { files, dependencies: false });
   try {
-    fs.writeFileSync(
-      config,
-      JSON.stringify({
-        path: files.map((file) => path.resolve(snapshot, file)),
-        format: ['javascript', 'typescript', 'css', 'csharp', 'python'],
-        minTokens: 100,
-        minLines: 10,
-        mode: 'mild',
-        maxSize: '5mb',
-        reporters: ['json'],
-        output,
-        absolute: true,
-      }),
-    );
-    invoke('jscpd', ['--config', config, '--fail-on-empty', '--no-tips'], snapshot);
-    const report = JSON.parse(fs.readFileSync(path.join(output, 'jscpd-report.json'), 'utf8'));
-    if (!Array.isArray(report.duplicates)) throw new Error('jscpd returned no clone inventory.');
-    const findings = report.duplicates.map((clone) => {
-      const pair = [clone.firstFile, clone.secondFile].map((file) => normalize(file.name, snapshot)).sort();
-      const hash = createHash('sha256').update(clone.fragment.replaceAll('\r\n', '\n')).digest('hex');
-      return { key: `${pair.join('|')}:${hash}`, files: pair, lines: clone.lines };
-    });
-    for (const clone of report.duplicates) {
-      for (const file of [clone.firstFile, clone.secondFile]) {
-        const relative = normalize(file.name, snapshot);
-        if (relative === '..' || relative.startsWith('../') || path.isAbsolute(relative))
-          throw new Error('Clone report source escaped its analysis snapshot.');
-        file.name = path.resolve(directory, relative);
-      }
-    }
-    fs.writeFileSync(path.join(output, 'jscpd-report.json'), JSON.stringify(report, null, 2) + '\n');
-    return findings;
+    invoke(...cloneRun(snapshot, files, output));
+    return cloneFindings(directory, snapshot, output);
   } finally {
     fs.rmSync(snapshot, { recursive: true, force: true });
   }
@@ -394,15 +430,39 @@ async function main() {
   const output = path.join(root, '.paqvilo/code-review');
   fs.mkdirSync(output, { recursive: true });
   const findings = [];
-  for (const scope of ['runtime', 'full']) {
-    const dead = inspectDeadCode(root, path.join(root, 'scripts/code-review.config.mjs'), scope);
+  // The five analyses read one shared snapshot concurrently instead of copying the checkout five times.
+  const config = path.join(root, 'scripts/code-review.config.mjs');
+  const inventory = Object.entries(reviewInventory());
+  const snapshot = analysisSnapshot(root);
+  let results;
+  try {
+    let origins;
+    const publicOrigins = () => (origins ??= publicApiOrigins(root));
+    results = await Promise.allSettled([
+      ...['runtime', 'full'].map(async (scope) =>
+        deadCodeFindings(await invokeAsync(...deadCodeRun(snapshot, config, scope)), scope, publicOrigins),
+      ),
+      ...inventory.map(async ([scope, files]) => {
+        await invokeAsync(...cloneRun(snapshot, files, path.join(output, scope)));
+        return cloneFindings(root, snapshot, path.join(output, scope));
+      }),
+    ]);
+  } finally {
+    fs.rmSync(snapshot, { recursive: true, force: true });
+  }
+  const failed = results.find((result) => result.status === 'rejected');
+  if (failed) throw failed.reason;
+  const [runtime, full, ...clones] = results.map((result) => result.value);
+  for (const [scope, dead] of [
+    ['runtime', runtime],
+    ['full', full],
+  ]) {
     findings.push(...dead);
     console.log(`Dead-code ${scope}: ${dead.length} findings reviewed against baseline.`);
   }
-  for (const [scope, files] of Object.entries(reviewInventory())) {
-    const clones = inspectClones(root, files, path.join(output, scope));
-    findings.push(...clones.map((clone) => ({ ...clone, key: `${scope}:clone:${clone.key}`, type: 'clone' })));
-    console.log(`Clone ${scope}: ${files.length} files, ${clones.length} blocks reviewed against baseline.`);
+  for (const [index, [scope, files]] of inventory.entries()) {
+    findings.push(...clones[index].map((clone) => ({ ...clone, key: `${scope}:clone:${clone.key}`, type: 'clone' })));
+    console.log(`Clone ${scope}: ${files.length} files, ${clones[index].length} blocks reviewed against baseline.`);
   }
   findings.sort((a, b) => a.key.localeCompare(b.key));
   fs.writeFileSync(path.join(output, 'findings.json'), JSON.stringify(findings, null, 2) + '\n');

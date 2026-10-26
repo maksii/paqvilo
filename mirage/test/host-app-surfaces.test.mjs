@@ -1,13 +1,13 @@
 // App surfaces in both hosts (lib/organization-host.mjs): /_apps/canvas/ lists the Solution inventory's canvas apps and
 // /_apps/code/<app>/ serves the configured code app, both before the model-driven handler; /main.aspx keeps its answer.
 // runtime state reports inventory counts, provider descriptors and service fixtures.
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { drainFixture } from '../testing/owned-fixture.mjs';
 
 const solutionFiles = {
   'solution/Other/Solution.xml':
@@ -39,9 +39,18 @@ async function write(root, files) {
   }
 }
 
-async function hosts(t) {
+// Both tests only read, so they share one pair of hosts, closed before their directory is removed after the file.
+const closers = [],
+  removers = [];
+after(async () => {
+  await drainFixture(closers);
+  await drainFixture(removers);
+});
+let shared;
+const hosts = () => (shared ??= startHosts({ add: (close) => closers.push(close), remove: (rm) => removers.push(rm) }));
+async function startHosts(owner) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-app-surfaces-'));
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(root, { ...solutionFiles, ...portalFiles });
   const common = {
     solutionRoots: [path.join(root, 'solution')],
@@ -56,7 +65,7 @@ async function hosts(t) {
     simulation: { level: 'dry-run' },
     dataverse: { enabled: true, tls: false, tds: { enabled: false } },
   });
-  ownedFixture(t).add(() => standalone.close());
+  owner.add(() => standalone.close());
   const portal = await createSimulator({
     ...common,
     sourceDir: path.join(root, 'portal'),
@@ -75,12 +84,12 @@ async function hosts(t) {
       },
     },
   });
-  ownedFixture(t).add(() => portal.close());
+  owner.add(() => portal.close());
   return { standalone, portal };
 }
 
-test('both hosts serve /_apps/canvas/ and /_apps/code/<app>/ before the model-driven handler', async (t) => {
-  const { standalone, portal } = await hosts(t);
+test('both hosts serve /_apps/canvas/ and /_apps/code/<app>/ before the model-driven handler', async () => {
+  const { standalone, portal } = await hosts();
   for (const [name, sim] of [
     ['standalone', standalone],
     ['portal', portal],
@@ -109,8 +118,8 @@ test('both hosts serve /_apps/canvas/ and /_apps/code/<app>/ before the model-dr
   assert.match(await shell.text(), /<title>Mirage Apps<\/title>/);
 });
 
-test('runtime state reports inventory counts, provider descriptors and service fixtures in both hosts', async (t) => {
-  const { standalone, portal } = await hosts(t);
+test('runtime state reports inventory counts, provider descriptors and service fixtures in both hosts', async () => {
+  const { standalone, portal } = await hosts();
   for (const [name, state] of [
     ['standalone', standalone.status()],
     ['portal', portal.state()],

@@ -13,6 +13,7 @@ import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { committedJobs, encodeEvent } from '../lib/committed-work.mjs';
 import { defaultSchedule } from '../lib/dataverse-async.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const stepId = '77777777-7777-4777-8777-000000000001',
   flowId = '77777777-7777-4777-8777-000000000002',
@@ -134,13 +135,13 @@ async function runtime(t, { file, scheduler = null, log = [], fresh = false, han
     await backend.close();
     await core.close();
   };
-  t.after(close);
+  ownedFixture(t).add(close);
   return { store, core, backend, notes, log, close };
 }
 
 async function stateFile(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'durable-async-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return path.join(root, 'state.json');
 }
 
@@ -230,9 +231,15 @@ test('settle waits for durable jobs on the real scheduler', async (t) => {
   assert.equal(backend.asyncPluginRunner.status().pending, 0);
 });
 
-test('one commit of 150 rows still yields 150 durable runs, each on its own chain', async (t) => {
+// The default per-chain run limit and backlog report size of the async plug-in and flow trigger runners (maxChainRuns and
+// maxPending, plugin-async.mjs and flow-triggers.mjs). One row more than it would exceed a shared chain's budget and is the
+// first to cross the backlog report; more rows only add runs (each transaction clones the state, so the cost grows fast).
+const DEFAULT_CHAIN_RUNS = 100;
+const BULK_ROWS = DEFAULT_CHAIN_RUNS + 1;
+
+test('one commit of more rows than a chain may run still yields one durable run per row, each on its own chain', async (t) => {
   const { store, backend, log, notes } = await runtime(t, { file: null, fresh: true });
-  const events = Array.from({ length: 150 }, (_, n) => ({
+  const events = Array.from({ length: BULK_ROWS }, (_, n) => ({
     entity: 'x_widget',
     operation: 'create',
     row: { x_widgetid: `30000000-0000-4000-8000-${String(n).padStart(12, '0')}`, x_name: 'Row ' + n },
@@ -244,15 +251,15 @@ test('one commit of 150 rows still yields 150 durable runs, each on its own chai
       store.recordCommittedEvent(e.entity, e.operation, e.row, e.submittedAttributes, { target: e.target });
   });
   await backend.settle();
-  assert.equal(log.length, 150);
-  assert.equal(store.tableRows('x_audit').length, 150);
+  assert.equal(log.length, BULK_ROWS);
+  assert.equal(store.tableRows('x_audit').length, BULK_ROWS);
   assert.deepEqual(
     log.slice(0, 2).map((entry) => entry[1]),
     ['Row 0', 'Row 1'],
   );
   const completed = jobs(store);
-  assert.equal(completed.length, 150);
-  assert.equal(new Set(completed.map((row) => row.correlationid)).size, 150);
+  assert.equal(completed.length, BULK_ROWS);
+  assert.equal(new Set(completed.map((row) => row.correlationid)).size, BULK_ROWS);
   assert.ok(!notes.some((note) => /_LIMIT$/.test(note.code)));
   assert.equal(notes.filter((note) => note.code === 'PLUGIN_ASYNC_BACKLOG').length, 1);
   assert.equal(notes.filter((note) => note.code === 'FLOW_TRIGGER_BACKLOG').length, 1);
@@ -400,7 +407,7 @@ test('closing one organization leaves a second organization over the same store 
   const create = () => createOrganizationRuntime({ store, settings: dataverseSettings({ enabled: false }) });
   const first = await create(),
     second = await create();
-  t.after(() => second.close());
+  ownedFixture(t).add(() => second.close());
   assert.equal(first.api.scheduler, second.api.scheduler);
   let firstRan = false;
   defaultSchedule(
@@ -439,7 +446,7 @@ test('a backend over a store whose previous backend closed opens a live schedule
   assert.equal(store.scheduler.status().closed, true);
   assert.equal(store.committedJobs.closed, true);
   const second = await createOrganizationBackend(options);
-  t.after(() => second.close());
+  ownedFixture(t).add(() => second.close());
   assert.equal(store.scheduler.status().closed, false);
   await store.create('x_widget', { x_name: 'After reopen' }, { admin: true });
   await second.settle();
@@ -461,7 +468,7 @@ test('an organization closes the scheduler it opened and leaves a backend-owned 
 
   const shared = new DataStore({ state: initialState() });
   const backend = await createOrganizationBackend({ store: shared });
-  t.after(() => backend.close());
+  ownedFixture(t).add(() => backend.close());
   const core = await createOrganizationRuntime({ store: shared, settings, extensions });
   await core.close();
   assert.equal(shared.scheduler.status().closed, false, 'the backend still owns its scheduler');

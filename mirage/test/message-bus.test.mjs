@@ -143,8 +143,10 @@ test('messages survive a restart through the store state, and a rolled-back tran
 
 test('receive waits for a message sent during waitMs', async () => {
   const { bus } = busFixture();
-  setTimeout(() => bus.send('fx-orders', { n: 7 }), 30);
-  const [message] = await bus.receive('fx-orders', { mode: 'receiveAndDelete', waitMs: 2000 });
+  // Store transactions run in call order, so the receive's first poll finds the queue empty before the send lands.
+  const waiting = bus.receive('fx-orders', { mode: 'receiveAndDelete', waitMs: 30_000 });
+  await bus.send('fx-orders', { n: 7 });
+  const [message] = await waiting;
   assert.equal(message.body.n, 7);
 });
 
@@ -217,7 +219,10 @@ test('emulator preflight probes the loopback health endpoint', async (t) => {
     response.end('ok');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   const connectionString =
     'Endpoint=sb://127.0.0.1;SharedAccessKeyName=x;SharedAccessKey=invented-key-value;UseDevelopmentEmulator=true;';
   const healthy = await serviceBusEmulatorPreflight({ connectionString, healthPort: server.address().port });

@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { importPortal } from '../lib/importer.mjs';
 import { assertPortalSource, detectSourceDialect, portalSourceDir, PortalSourceError } from '../lib/source-dialect.mjs';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { bootstrapReport, resolveReportInputs } from '../bootstrap-report.mjs';
 import { bootstrapProject } from '../lib/project-config.mjs';
 
@@ -21,7 +22,7 @@ const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli.m
 
 async function tree(t, files) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-source-dialect-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files)) {
     const file = path.join(root, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -213,6 +214,6 @@ test('an adx_ export without web pages and an unknown folder fail with their own
     watch: false,
     requirePortalSource: true,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   assert.equal((await fetch(app.url + '/')).status, 200);
 });

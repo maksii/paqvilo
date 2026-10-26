@@ -14,14 +14,21 @@ export function validateDerivedColumns(map, exportName) {
   return result;
 }
 
+const enumerableOwn = (value, key) =>
+  value !== null && typeof value === 'object' && Object.prototype.propertyIsEnumerable.call(value, key);
+// A property of { ...definition, ...columnMetadata } without building the merged copy of every column.
+const merged = (definition, metadata, key) =>
+  enumerableOwn(metadata, key) ? metadata[key] : enumerableOwn(definition, key) ? definition[key] : undefined;
+
 /** Formula text of the columns whose effective metadata has the requested source type. */
 export function derivedColumnsOf(api, logical, sourceType) {
   const result = {};
   for (const [name, definition] of Object.entries(api.store.fieldDefinitions(logical, api.metadataFields) ?? {})) {
-    const column = { ...definition, ...(definition?.columnMetadata ?? {}) };
-    const type = column.sourceType ?? column.SourceType;
+    const metadata = definition?.columnMetadata;
+    const type = merged(definition, metadata, 'sourceType') ?? merged(definition, metadata, 'SourceType');
     if (Number(type !== null && typeof type === 'object' ? type.Value : type) === sourceType)
-      result[name.toLowerCase()] = column.formulaDefinition ?? column.FormulaDefinition ?? '';
+      result[name.toLowerCase()] =
+        merged(definition, metadata, 'formulaDefinition') ?? merged(definition, metadata, 'FormulaDefinition') ?? '';
   }
   return result;
 }

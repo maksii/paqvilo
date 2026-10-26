@@ -140,14 +140,17 @@ test(
     await context.route('**/*', (route) =>
       allowed.has(new URL(route.request().url()).origin) ? route.fallback() : route.abort(),
     );
-    runtime = await startDevSessions(context, selection, { log: () => {}, debugPort: null });
+    // Open the tab before startup so its interception is installed before the first navigation.
     const page = await context.newPage();
+    runtime = await startDevSessions(context, selection, { log: () => {}, debugPort: null });
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     const panel = (selector) => page.locator(`#paqvilo-panel ${selector}`);
     const label = () => page.locator('#paqvilo-panel').getAttribute('data-label');
     const openTab = async (tab) => {
-      await panel('.pill').waitFor({ state: 'attached' });
+      // Wait for a drawn state (collapsed pill or open panel) before deciding whether to expand;
+      // an attached pill can still be mid-draw and invisible.
+      await panel('.pill:visible, .wrap.open').first().waitFor();
       if (await panel('.pill').isVisible()) await panel('.pill').click();
       await panel(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
     };

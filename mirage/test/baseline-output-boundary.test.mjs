@@ -9,6 +9,9 @@ import { writeCapture } from '../baseline-capture.mjs';
 import { ensureCaptureDestination, validateCaptureLabel, validateScenarioId } from '../baseline-paths.mjs';
 import { captureMatrix } from '../baseline-suite.mjs';
 
+// The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
+const CLI_HANG_MS = 60_000;
+
 const result = () => ({
   summary: { id: 'invented/case', status: 'captured', problems: [] },
   raw: { requests: [], console: [], pageErrors: [], dom: '<main>invented</main>', elements: [] },
@@ -175,8 +178,9 @@ test('CLI preflights linked selected output before runtime construction or evide
         '--label',
         'native',
       ],
-      { encoding: 'utf8', timeout: 5000 },
+      { encoding: 'utf8', timeout: CLI_HANG_MS, windowsHide: true },
     );
+    assert.equal(processResult.signal, null, 'the CLI exits on its own rather than being stopped by the hang bound');
     assert.notEqual(processResult.status, 0);
     assert.match(processResult.stderr, /linked/);
     assert.doesNotMatch(processResult.stderr, /configuration|config file|catalogue|browser/i);

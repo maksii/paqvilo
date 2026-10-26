@@ -40,7 +40,14 @@ test('IsInTransaction and Mode follow the pipeline stage, its transaction and th
     });
   });
   await new Promise((resolve) => receiver.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => receiver.close(resolve)));
+  // after hooks run in registration order, so this one runs while the API may still hold keep-alive sockets to it.
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        receiver.close(resolve);
+        receiver.closeAllConnections();
+      }),
+  );
 
   const state = emptyState();
   state.mappings.x_widget = {

@@ -32,7 +32,7 @@ const run = async (t, code, options = {}) =>
       identity,
       method: 'POST',
       operation: 'post',
-      timeout: 4000,
+      // No explicit timeout: the documented local allowance (5 s, mirage/docs/operations.md) applies.
       ...options,
     }),
   );

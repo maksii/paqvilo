@@ -226,24 +226,60 @@ test('context variables override all casing variants and a child refuses a diffe
 test('isolated setups follow the parent source-watch setting without losing local overrides', async (t) => {
   const { app, call, sourceDir } = await personaFixture(t, { watch: true });
   const { value: opened } = await call('/personas/launch', 'POST', { personaKey: 'person-2' });
-  await fs.writeFile(
-    path.join(sourceDir, 'web-templates/Main.webtemplate.source.html'),
-    '<html><body><h1>Updated {{ snippets.Greeting }}</h1></body></html>',
-  );
-  const deadline = Date.now() + 8000;
-  let parent = '',
-    child = '';
-  while (Date.now() < deadline) {
-    [parent, child] = await Promise.all([
-      fetch(app.url).then((r) => r.text()),
-      fetch(opened.origin).then((r) => r.text()),
-    ]);
-    if (parent.includes('Updated Development') && child.includes('Updated Context greeting')) break;
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  // Each runtime announces `reload` on its event stream after it swaps in the rebuilt renderer. A save can reach the
+  // watcher as several changes, so a runtime is checked after each of its reloads until it shows the edit.
+  const controller = new AbortController();
+  try {
+    const runtimes = await Promise.all(
+      [
+        [app.url, /Updated Development/],
+        [opened.origin, /Updated Context greeting/],
+      ].map(async ([origin, expected]) => ({
+        origin,
+        expected,
+        events: await reloadEvents(origin, controller.signal),
+      })),
+    );
+    await fs.writeFile(
+      path.join(sourceDir, 'web-templates/Main.webtemplate.source.html'),
+      '<html><body><h1>Updated {{ snippets.Greeting }}</h1></body></html>',
+    );
+    await Promise.all(
+      runtimes.map(async ({ origin, expected, events }) => {
+        let heading;
+        do {
+          await events.next('reload');
+          heading = (await fetch(origin).then((r) => r.text())).match(/<h1>(.*?)<\/h1>/)?.[1];
+        } while (!expected.test(heading ?? ''));
+      }),
+    );
+  } finally {
+    controller.abort();
   }
-  assert.match(parent.match(/<h1>(.*?)<\/h1>/)?.[1] ?? '', /Updated Development/);
-  assert.match(child.match(/<h1>(.*?)<\/h1>/)?.[1] ?? '', /Updated Context greeting/);
 });
+
+// Reads a runtime's /__sim/events stream; `next(kind)` resolves with the revision of the next event of that kind.
+async function reloadEvents(origin, signal) {
+  const reader = (await fetch(origin + '/__sim/events', { signal })).body
+    .pipeThrough(new TextDecoderStream())
+    .getReader();
+  let buffer = '';
+  const next = async (kind) => {
+    for (;;) {
+      const event = /event: (\w+)\ndata: (.*)\n\n/.exec(buffer);
+      if (event) {
+        buffer = buffer.slice(event.index + event[0].length);
+        if (event[1] === kind) return Number(event[2]);
+        continue;
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error(`${origin} closed its event stream before ${kind}`);
+      buffer += value;
+    }
+  };
+  await next('ready');
+  return { next };
+}
 
 test('native catalogue sign-in honors startPath unless a return URL was explicitly requested', async (t) => {
   const { app } = await personaFixture(t);

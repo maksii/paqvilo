@@ -7,6 +7,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { warmState } from './shared-browser.mjs';
 
 test(
   'admin: record and configuration CRUD, routing, identity, presets, errors, safe diagnostics, responsive layout',
@@ -663,6 +664,7 @@ test(
     );
     const context = await browser.newContext({ serviceWorkers: 'block' });
     const page = await context.newPage();
+    await warmState(simulator);
     page.setDefaultTimeout(10_000);
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));

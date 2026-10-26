@@ -11,8 +11,15 @@ import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const cli = path.join(root, 'bin/paqvilo.mjs');
 
-test('public command namespaces select Lense and Mirage independently', async () => {
+test('public command namespaces select Lense and Mirage independently', async (t) => {
   const portal = path.join(root, 'examples/project/portal');
+  // mirage status reads .paqvilo and paqvilo.config.yml from its working directory and PAQVILO_* settings: run from
+  // an empty directory without the developer's or runner's settings, never against this checkout's sessions.
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-boundary-cli-'));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
+  );
   // Independent processes: run them together.
   const runAsync = (...args) =>
     withProcessSlot(
@@ -21,7 +28,7 @@ test('public command namespaces select Lense and Mirage independently', async ()
           execFile(
             process.execPath,
             [cli, ...args],
-            { encoding: 'utf8', windowsHide: true, timeout: 30_000 },
+            { cwd, env, encoding: 'utf8', windowsHide: true, timeout: 30_000 },
             (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
           ),
         ),
@@ -47,7 +54,8 @@ test('public command namespaces select Lense and Mirage independently', async ()
   assert.deepEqual([report.portal, report.format], [portal, 'standard']);
   assert.ok(report.sources.total > 0 && report.tags.length > 0, 'the Mirage inventory read the example portal');
   assert.equal(status.status, 0, status.stderr);
-  assert.equal(JSON.parse(status.stdout).action, 'status');
+  const statusReport = JSON.parse(status.stdout);
+  assert.deepEqual([statusReport.action, statusReport.sessions], ['status', []]);
 });
 
 test('core project contains no private business dependency and the guard detects reintroduction', (t) => {

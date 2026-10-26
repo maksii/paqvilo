@@ -46,7 +46,6 @@ async function fixture(t, { mode = 'local', liveBridge, allowLiveWrites = false 
   };
   const app = await createSimulator({
     sourceDir: directory,
-    stateFile: path.join(directory, 'state.json'),
     initial,
     liveBridge,
     // Live saves need the runtime permission (cli --allow-live-writes).

@@ -46,32 +46,30 @@ test('pure SDK controls independently cover column constructors, authored Fetch 
   );
 });
 
+// The driver targets .NET Framework 4.6.2 and the probe is compiled with the Framework csc.exe, so it runs only on the
+// Windows lane. ci:prepare compiles it once there; the test uses that build and refuses one older than its sources.
+const sdkProbesBuild = fileURLToPath(new URL('../SdkProbes/bin/Release/net462/', import.meta.url));
+const driverSources = ['../SdkProjectionDriver.cs', '../Shared/Lab.cs', '../SdkProbes/SdkProbes.csproj'];
+// Hang guards only: the Framework compiler and the probe each finish in about a second.
+const compileBound = 60000,
+  probeBound = 30000;
+
 test(
   'actual compiled SDK driver selects TLS 1.2 before reading invalid local input',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: process.platform !== 'win32' && 'needs the .NET Framework 4.6.2 runtime and csc.exe (Windows lane)' },
   async () => {
+    const driver = path.join(sdkProbesBuild, 'SdkProbes.exe');
+    const built = await fs.stat(driver).catch(() => null);
+    assert.ok(built, 'SdkProbes.exe is not built; run npm run ci:prepare -- --suite examples --unit');
+    for (const source of driverSources) {
+      const changed = (await fs.stat(fileURLToPath(new URL(source, import.meta.url)))).mtimeMs;
+      assert.ok(changed <= built.mtimeMs, source + ' changed after the SdkProbes build; rerun ci:prepare');
+    }
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-transport-'));
     try {
-      const project = fileURLToPath(new URL('../SdkProbes/SdkProbes.csproj', import.meta.url));
-      const restored = process.env.PAQ_TEST_SDK_PROBES_RESTORED === '1';
-      const build = spawnSync(
-        'dotnet',
-        [
-          'build',
-          project,
-          '--disable-build-servers',
-          ...(restored ? ['--no-restore'] : []),
-          '--configuration',
-          'Release',
-          '--output',
-          directory,
-          '--property:RestoreLockedMode=true',
-        ],
-        { windowsHide: true, encoding: 'utf8', timeout: 120000 },
-      );
-      assert.equal(build.status, 0, [build.error?.message, build.stdout, build.stderr].filter(Boolean).join('\n'));
-      const driver = path.join(directory, 'SdkProbes.exe'),
-        source = path.join(directory, 'TransportTest.cs'),
+      // The probe loads the driver and its SDK assemblies from its own application directory.
+      await fs.cp(sdkProbesBuild, directory, { recursive: true });
+      const source = path.join(directory, 'TransportTest.cs'),
         testExe = path.join(directory, 'TransportTest.exe');
       await fs.writeFile(
         source,
@@ -79,12 +77,13 @@ test(
       );
       const compile = spawnSync(
         path.join(process.env.WINDIR, 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-        ['/nologo', '/target:exe', '/out:' + testExe, '/reference:' + driver, source],
-        { windowsHide: true, encoding: 'utf8', timeout: 20000 },
+        ['/nologo', '/target:exe', '/out:' + testExe, '/reference:' + path.join(directory, 'SdkProbes.exe'), source],
+        { windowsHide: true, encoding: 'utf8', timeout: compileBound },
       );
-      assert.equal(compile.status, 0, compile.stdout + compile.stderr);
-      const result = spawnSync(testExe, [], { windowsHide: true, encoding: 'utf8', timeout: 10000 });
-      assert.equal(result.status, 0, result.stdout + result.stderr);
+      const report = (run) => [run.error?.message, run.stdout, run.stderr].filter(Boolean).join('\n');
+      assert.equal(compile.status, 0, report(compile));
+      const result = spawnSync(testExe, [], { windowsHide: true, encoding: 'utf8', timeout: probeBound });
+      assert.equal(result.status, 0, report(result));
     } finally {
       await fs.rm(directory, { recursive: true, force: true });
     }

@@ -1,10 +1,10 @@
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
@@ -28,30 +28,18 @@ const storeFixture = () =>
 
 test(
   'Mock and handler read results reach direct and named original SDK callers without a CLR read observer',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-read-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(dir, 'ReadCaller.cs'),
       assembly = path.join(dir, 'ReadCaller.dll');
     await fs.writeFile(
       source,
       'using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;using Microsoft.Xrm.Sdk.Messages;namespace Invented {public sealed class ReadCaller:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var target=(Entity)c.InputParameters["Target"];var mode=(string)target["title"];var columns=new ColumnSet("title");if(mode.StartsWith("single")){var entity=mode.EndsWith("named")?((RetrieveResponse)service.Execute(new RetrieveRequest {Target=new EntityReference("widget",new Guid("20000000-0000-0000-0000-000000000001")),ColumnSet=columns})).Entity:service.Retrieve("widget",new Guid("20000000-0000-0000-0000-000000000001"),columns);if(entity.GetAttributeValue<string>("title")!="Configured single"||entity.FormattedValues["title"]!="Exact formatting")throw new InvalidPluginExecutionException("Single result handoff lost");}else{var query=new QueryExpression("widget"){ColumnSet=columns};var result=mode.EndsWith("named")?((RetrieveMultipleResponse)service.Execute(new RetrieveMultipleRequest {Query=query})).EntityCollection:service.RetrieveMultiple(query);if(result.EntityName!="widget"||result.MinActiveRowVersion!="12345678901234567890"||!result.TotalRecordCountLimitExceeded||result.Entities.Count!=1||result.Entities[0].GetAttributeValue<string>("title")!="Configured collection")throw new InvalidPluginExecutionException("Collection result metadata lost");}target["note"]="Exact original SDK result received";}}}',
     );
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      [
-        '/nologo',
-        '/target:library',
-        '/out:' + assembly,
-        '/reference:' + sdk,
-        '/reference:System.Runtime.Serialization.dll',
-        source,
-      ],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root: dir,

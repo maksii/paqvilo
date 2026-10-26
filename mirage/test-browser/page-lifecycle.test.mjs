@@ -6,10 +6,17 @@ import { browserLaunchOptions, observePageLifecycle, observeContextLifecycle } f
 
 // The stateless fixture server and the browser are shared; every test observes its own context.
 let server, browser, origin;
+// Reads of /held-read stay open until releaseHeldReads().
+const heldReads = new Set();
+const releaseHeldReads = () => {
+  for (const res of heldReads) res.end('done');
+  heldReads.clear();
+};
 before(async () => {
   server = http.createServer((req, res) => {
     req.resume();
     if (req.url.startsWith('/pending') || req.url === '/__sim/events') return;
+    if (req.url === '/held-read') return heldReads.add(res);
     if (req.url === '/reset') return req.socket.destroy();
     if (req.url === '/stream-error') {
       res.writeHead(500, { 'content-type': 'text/plain' });
@@ -24,11 +31,6 @@ before(async () => {
       );
     if (req.url === '/replacement-with-read')
       return res.end(`<script>fetch('/pending-replacement').catch(()=>{})</script>`);
-    if (req.url === '/delayed-read') {
-      const timer = setTimeout(() => res.end('done'), 350);
-      res.once('close', () => clearTimeout(timer));
-      return;
-    }
     res.end('<p>invented lifecycle fixture</p>');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -53,13 +55,15 @@ test('a detached iframe read needs lifecycle evidence at failure time', { timeou
   const observer = await observePageLifecycle(page, { origin });
   t.after(() => observer.dispose());
   await page.goto(origin);
+  const childRead = page.waitForRequest((request) => request.url().endsWith('/pending-child'));
   await page.evaluate(() => {
     const frame = document.createElement('iframe');
     frame.src = '/child';
     document.body.append(frame);
   });
   await page.waitForFunction(() => document.querySelector('iframe')?.contentDocument?.readyState === 'complete');
-  await page.waitForTimeout(100);
+  // The observer records the child read on the same request event, before this waiter resolves.
+  await childRead;
   await page.evaluate(() => document.querySelector('iframe').remove());
   const result = await observer.settle();
   assert.equal(result.settled, true, JSON.stringify(result));
@@ -81,10 +85,11 @@ test(
     const observer = await observePageLifecycle(page, { origin });
     t.after(() => observer.dispose());
     await page.goto(origin);
+    const read = page.waitForRequest((request) => request.url().endsWith('/pending-read'));
     await page.evaluate(() => {
       fetch('/pending-read').catch(() => {});
     });
-    await page.waitForTimeout(50);
+    await read;
     await page.evaluate(() => {
       const form = document.createElement('form');
       form.method = 'POST';
@@ -123,14 +128,18 @@ test('failed live reads and authored aborts stay failed after unrelated navigati
   const observer = await observePageLifecycle(page, { origin });
   t.after(() => observer.dispose());
   await page.goto(origin);
+  const failed = ['/reset', '/pending-abort'].map((path) =>
+    page.waitForEvent('requestfailed', (request) => request.url().endsWith(path)),
+  );
   await page.evaluate(async () => {
     await fetch('/reset').catch(() => {});
     const controller = new AbortController();
     const pending = fetch('/pending-abort', { signal: controller.signal }).catch(() => {});
+    // The server never answers this read; the authored abort ends it.
     setTimeout(() => controller.abort(), 30);
     await pending;
   });
-  await page.waitForTimeout(50);
+  await Promise.all(failed);
   await page.goto(origin + '/other');
   const result = await observer.settle();
   assert.equal(result.settled, true);
@@ -148,12 +157,17 @@ test(
     const observer = await observePageLifecycle(page, { origin });
     t.after(() => observer.dispose());
     await page.goto(origin);
+    const observed = [
+      page.waitForEvent('requestfailed', (request) => request.url().endsWith('/reset')),
+      page.waitForRequest((request) => request.url().endsWith('/pending-write')),
+      page.waitForRequest((request) => request.url().endsWith('/__sim/events')),
+    ];
     await page.evaluate(async () => {
       await fetch('/reset', { method: 'POST' }).catch(() => {});
       fetch('/pending-write', { method: 'PATCH' }).catch(() => {});
       fetch('/__sim/events', { method: 'POST' }).catch(() => {});
     });
-    await page.waitForTimeout(50);
+    await Promise.all(observed);
     await page.goto(origin + '/other');
     const result = await observer.settle();
     assert.equal(result.passed, false);
@@ -298,14 +312,22 @@ test(
     const other = await context.newPage();
     await observer.ready();
     await Promise.all([page.goto(origin), other.goto(origin)]);
+    t.after(releaseHeldReads);
+    const held = other.waitForRequest((request) => request.url().endsWith('/held-read'));
     await other.evaluate(() => {
-      fetch('/delayed-read').catch(() => {});
+      fetch('/held-read').catch(() => {});
     });
+    await held;
+    // The other page keeps the context busy until its held read is released.
     const resultPromise = observer.settle({ timeout: 700, quietMs: 75 });
+    // No event reports that this page's own settle finished; 125ms is beyond its 75ms quiet window.
     await page.waitForTimeout(125);
+    const late = page.waitForRequest((request) => request.url().endsWith('/pending-after-quiet'));
     await page.evaluate(() => {
       fetch('/pending-after-quiet').catch(() => {});
     });
+    await late;
+    releaseHeldReads();
     const result = await resultPromise;
     assert.equal(result.settled, false);
     assert.equal(result.passed, false);

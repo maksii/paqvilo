@@ -22,7 +22,7 @@ async function write(root, files) {
 }
 async function temp(t, prefix) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   return fs.realpath(dir);
 }
 const portalFiles = {
@@ -427,6 +427,25 @@ test('a running runtime reloads solution changes, recompiles metadata and report
   assert.equal(mapping(before).schemaComplete, true);
   assert.equal(mapping(before).fieldMetadata.sample_name.maxLength, 100);
   await fs.access(path.join(stateDir, 'cache', 'solution-sources.json'));
+  // The runtime announces each completed reload on its event stream (after SOURCES_RELOADED is recorded). The watcher is
+  // ready once createSimulator resolves; the abort bound only turns a reload that never comes into a failure.
+  const stream = await fetch(app.url + '/__sim/events', { signal: AbortSignal.timeout(60_000) });
+  const reader = stream.body.pipeThrough(new TextDecoderStream()).getReader();
+  ownedFixture(t).add(() => reader.cancel().catch(() => {}));
+  let received = '';
+  const nextEvent = async (name) => {
+    for (;;) {
+      const match = new RegExp(`event: ${name}\\ndata: (\\d+)\\n\\n`).exec(received);
+      if (match) {
+        received = received.slice(match.index + match[0].length);
+        return Number(match[1]);
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error(`The event stream ended before a ${name} event.`);
+      received += value;
+    }
+  };
+  assert.equal(await nextEvent('ready'), before.status.revision);
   // Change the solution layer on disk; the watcher reloads and recompiles.
   await write(solutions, {
     'Entities/sample_item/Entity.xml': entity(
@@ -435,13 +454,12 @@ test('a running runtime reloads solution changes, recompiles metadata and report
     ),
   });
   let after;
-  // A reload is complete once it records its SOURCES_RELOADED diagnostic.
-  for (let attempt = 0; attempt < 150; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
+  // A reload that saw the write before it finished leaves the old set; the watcher reports the rest of it as a further reload.
+  do {
+    const revision = await nextEvent('reload');
     after = await state();
-    if (after.diagnostics.some((d) => d.code === 'SOURCES_RELOADED') && mapping(after).entitySet === 'sample_itemrows')
-      break;
-  }
+    assert.ok(after.status.revision >= revision);
+  } while (mapping(after).entitySet !== 'sample_itemrows');
   assert.equal(mapping(after).entitySet, 'sample_itemrows');
   assert.equal(mapping(after).fieldMetadata.sample_code.maxLength, 12);
   assert.notEqual(after.status.sourceFingerprint, before.status.sourceFingerprint);
@@ -525,7 +543,7 @@ test('form and view changes in a solution layer reach the next rendered page aft
     watch: false,
     solutionRoots: [solutions],
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   assert.match(await (await fetch(app.url + '/')).text(), /Name label v1/);
   await write(solutions, {
     'Entities/sample_item/FormXml/main/{11111111-1111-1111-1111-111111111111}.xml': form('Name label v2'),

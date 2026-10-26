@@ -63,7 +63,7 @@ const seen = (sim) => {
 
 async function fixture(t, initial) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-reload-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await write(solution, initial);
   const options = {
@@ -79,7 +79,7 @@ async function fixture(t, initial) {
     solution,
     start: async () => {
       const sim = await createSimulator(options);
-      t.after(() => sim.close());
+      ownedFixture(t).add(() => sim.close());
       return sim;
     },
   };

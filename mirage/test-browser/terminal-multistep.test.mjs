@@ -103,8 +103,10 @@ test('terminal resumed multistep native postback shows saved success without los
     hidden.value = 'foreign';
     e.form.append(hidden);
   });
+  // Step one's #note is still in the document until the next step commits, so wait for that navigation.
+  const nextStep = page.waitForNavigation({ waitUntil: 'domcontentloaded' });
   await page.locator('#NextButton').click();
-  await page.waitForLoadState('domcontentloaded');
+  await nextStep;
   await page.locator('#note').fill('Final authored value');
   const post = page.waitForResponse((r) => r.request().method() === 'POST');
   const landing = page.waitForNavigation({ waitUntil: 'domcontentloaded' });

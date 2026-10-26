@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createSimulator } from '../api.mjs';
 import { connectRuntime } from '../testing.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import {
   captureCdpUrl,
   captureThroughRuntime,
@@ -20,7 +21,7 @@ const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
 
 async function project(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-capture-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'portal/web-pages'), { recursive: true });
   await fs.writeFile(path.join(root, 'portal/website.yml'), 'adx_name: Invented\nadx_websiteid: invented\n');
   await fs.writeFile(
@@ -180,7 +181,7 @@ test('capture through a runtime disconnects after a capture failure and a failed
 
 test('a running-runtime capture waits without a deadline, reports progress every 15 s and disconnects', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-long-capture-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const sourceDir = path.join(root, 'portal');
   await fs.mkdir(path.join(sourceDir, 'web-pages'), { recursive: true });
   await fs.writeFile(path.join(sourceDir, 'website.yml'), 'adx_name: Synthetic\nadx_websiteid: synthetic\n');
@@ -209,7 +210,7 @@ test('a running-runtime capture waits without a deadline, reports progress every
     res.end('{}');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
+  ownedFixture(t).add(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
@@ -381,7 +382,7 @@ test('installed CLI accepts applied partial shells and strict mode rejects their
     liveBridge: bridge,
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   await fs.appendFile(config, `    mirage: { port: ${new URL(app.url).port} }\n`);
   // Sequential: one runtime accepts one live connection at a time.
   for (const strict of [false, true]) {
@@ -440,7 +441,7 @@ test('capture CLI prints failed resources, exits one and disconnects the running
     watch: false,
     liveBridge: bridge,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const config = path.join(root, 'paqvilo.config.yml');
   await fs.appendFile(config, `    mirage: { port: ${new URL(app.url).port} }\n`);
   const { code, stdout, stderr } = await runCli([
@@ -621,7 +622,7 @@ test('runtime applies a bundled-jQuery shell despite verified native stylesheet 
     watch: false,
     liveBridge: bridge,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const client = await connectRuntime({ origin: app.url });
   const report = await captureThroughRuntime(client, 'http://127.0.0.1:9222', '/');
   assert.equal(report.applied, true);

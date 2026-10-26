@@ -7,6 +7,7 @@ import { executeFlowDefinition, runTrackedFlow } from '../lib/flow-runtime.mjs';
 import { createFlowRunStore } from '../lib/flow-runs.mjs';
 import { createFlowTriggerRunner } from '../lib/flow-triggers.mjs';
 import { operationCatalogue } from '../lib/operation-catalogue.mjs';
+import { whenScheduled } from './support/scheduler-gates.mjs';
 
 // One failure rule for every provider-backed action (pack connector, Http, child flow): an answer of 400 or above
 // fails the action (ActionFailed), keeps its outputs and runs the runAfter Failed branch.
@@ -104,6 +105,7 @@ test('a retried 503 that never recovers fails the action with every attempt jour
   });
   const runs = createFlowRunStore({ store, scheduler });
   const definition = withHandlers(call('Busy', { retryPolicy: { type: 'fixed', count: 2, interval: 'PT1S' } }));
+  let retry = whenScheduled(scheduler, 'connector-retry');
   const pending = runTrackedFlow({
     runs,
     processId: '77777777-7777-4777-8777-777777777771',
@@ -112,8 +114,10 @@ test('a retried 503 that never recovers fails the action with every attempt jour
     store,
     connectors,
   });
+  // Each of the two retries waits PT1S on the manual scheduler: advance once its pause is queued.
   for (let i = 0; i < 2; i++) {
-    await new Promise((resolve) => setImmediate(resolve));
+    await retry;
+    retry = whenScheduled(scheduler, 'connector-retry');
     await scheduler.advance(1000);
   }
   assert.deepEqual(await pending, { status: 502, body: { status: 'Failed', code: 'ActionFailed', upstream: 503 } });

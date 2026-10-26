@@ -111,7 +111,8 @@ test('opening, replacing and reopening an actual modal form keeps field context 
     });
   }
   const pill = page.locator('#paqvilo-panel .pill');
-  await pill.waitFor();
+  // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+  await page.locator('#paqvilo-panel').locator('.pill:visible, .wrap.open').first().waitFor();
   if (await pill.isVisible()) await pill.click();
   await page.locator('#paqvilo-panel .tabs [data-act=tab][data-v=runtime]').click();
   await page.locator('#paqvilo-panel [data-act=xray]').click();

@@ -40,12 +40,12 @@ const tables = {
 
 async function setup(t, { withStorage = true } = {}) {
   const diagnostics = [];
-  let storage;
+  const owner = ownedFixture(t);
+  let storage, local;
   if (withStorage) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sharepoint-documents-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
-    const local = createLocalDiskStorage({ root });
-    ownedFixture(t).add(() => local.close());
+    owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+    local = createLocalDiskStorage({ root });
     storage = createStorageRouter({ config: storageSettings({}), providers: { local } });
   }
   let api;
@@ -57,12 +57,12 @@ async function setup(t, { withStorage = true } = {}) {
       return EXTENSION.install(internal, options);
     },
   };
-  const fixture = await contractModuleFixture(t, {
-    mappings,
-    tables,
-    extension,
-    options: { storage, diagnostic: (entry) => diagnostics.push(entry) },
-  });
+  // The organization and its API close before the storage they write to, and that storage before its directory goes.
+  const fixture = await contractModuleFixture(
+    { after: (callback) => owner.add(callback) },
+    { mappings, tables, extension, options: { storage, diagnostic: (entry) => diagnostics.push(entry) } },
+  );
+  if (local) owner.add(() => local.close());
   return { ...fixture, api, sp: api.sharepoint, diagnostics };
 }
 

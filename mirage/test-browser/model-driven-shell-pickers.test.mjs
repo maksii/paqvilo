@@ -8,8 +8,7 @@ import { sharedBrowser } from './shared-browser.mjs';
 const chrome = sharedBrowser();
 
 test('native shell selectors filter, navigate, dismiss and preserve keyboard focus', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const appRoot = path.join(fixture.solutionDir, 'AppModules/x_review');
   await fs.mkdir(appRoot, { recursive: true });
   await fs.writeFile(
@@ -137,12 +136,22 @@ test('column menu applies sorting, reordering, widths and column-specific filter
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
-  // Keep the old Copper row visible while a filtered refresh is in flight.
-  // Waiting for that row alone cannot prove the new grid was applied.
+  // Hold the filtered refresh: the old Copper row stays visible while it is in flight, so waiting for that row
+  // alone cannot prove the new grid was applied.
+  let releaseFilter, filterRequested;
+  const filterGate = new Promise((resolve) => {
+    releaseFilter = resolve;
+  });
+  const filterHeld = new Promise((resolve) => {
+    filterRequested = resolve;
+  });
+  t.after(() => releaseFilter());
   await page.route('**/_apps/api/tables/x_item?*', async (route) => {
     const query = JSON.parse(new URL(route.request().url()).searchParams.get('query') ?? '{}');
-    if (query.filters?.some((filter) => filter.value === 'Copper'))
-      await new Promise((resolve) => setTimeout(resolve, 150));
+    if (query.filters?.some((filter) => filter.value === 'Copper')) {
+      filterRequested();
+      await filterGate;
+    }
     await route.continue();
   });
   const gridChange = async (action) => {
@@ -223,14 +232,22 @@ test('column menu applies sorting, reordering, widths and column-specific filter
   );
   assert.equal(await page.getByRole('button', { name: 'Filter 1 column', exact: true }).textContent(), 'Name');
   await page.getByLabel('Filter 1 value').fill('Copper');
-  await gridChange(() => page.getByRole('button', { name: 'Apply', exact: true }).click());
+  await gridChange(async () => {
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await filterHeld;
+    assert.equal(
+      await page.locator('tbody').getByText('Silver', { exact: true }).count(),
+      1,
+      'the previous rows remain rendered while the filtered read is in flight',
+    );
+    releaseFilter();
+  });
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Silver', exact: true }).count(), 0);
 });
 
 test('filter drawer uses typed scalar values, literal contains, null conditions and isolated drafts', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const entityFile = path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml');
   const labels = (label) => `<displaynames><displayname description="${label}" languagecode="1033"/></displaynames>`;
   const option = (value, label) =>
@@ -336,8 +353,7 @@ test('filter drawer uses typed scalar values, literal contains, null conditions 
 });
 
 test('new required owner controls default to the active organization staff principal', async (t) => {
-  const initial = await modelDrivenFixture(t);
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(t, { defer: true });
   const entityFile = path.join(initial.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(
     entityFile,
@@ -461,8 +477,7 @@ test('new required owner controls default to the active organization staff princ
 });
 
 test('subgrid exported view picker preserves its named parent relationship across view and search changes', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const formFile = path.join(fixture.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
   await fs.writeFile(
     formFile,
@@ -571,8 +586,7 @@ test('subgrid exported view picker preserves its named parent relationship acros
 });
 
 test('populated grids preserve source widths, numeric alignment, compact rows and typed owner navigation', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const entityFile = path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(
     entityFile,
@@ -677,8 +691,7 @@ test('populated grids preserve source widths, numeric alignment, compact rows an
 });
 
 test('a view without its primary-name column opens the selected record by double-clicking a data cell', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const view = path.join(fixture.solutionDir, 'Entities/x_item/SavedQueries/items.xml');
   await fs.writeFile(view, (await fs.readFile(view, 'utf8')).replace('<cell name="x_name" width="200"/>', ''));
   const sim = await fixture.start();

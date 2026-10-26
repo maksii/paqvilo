@@ -1,13 +1,12 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFile, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createInterface } from 'node:readline';
-import { createFixture, SITE } from './fixture.mjs';
+import { createFixture, SITE, tempDirSync } from './fixture.mjs';
 import { inspectCheckout } from '../lense/commands/doctor.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
@@ -117,7 +116,7 @@ test('offline doctor diagnoses the extract and unavailable baseline without fetc
 });
 
 test('offline doctor skips the baseline with a note in a repository without commits', (t) => {
-  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-unborn-')));
+  const dir = tempDirSync('paqvilo-unborn-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
   fs.cpSync(fx.dir, dir, { recursive: true, filter: (source) => path.basename(source) !== '.git' });
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
@@ -152,7 +151,8 @@ test('standalone CLI resolves the baseline in the portal repository and discover
   assert.equal(report.reports[0].source, fx.dir);
   assert.equal(
     report.reports[0].baseline.commit,
-    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.dir, encoding: 'utf8', windowsHide: true }).trim(),
+    // Without inherited GIT_* variables: a Git hook's GIT_DIR would name the toolkit repository instead.
+    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.dir, env, encoding: 'utf8', windowsHide: true }).trim(),
   );
   assert.equal(listed.status, 0, listed.stdout + listed.stderr);
   assert.equal(JSON.parse(listed.stdout).sourceRoot, fx.dir);
@@ -474,7 +474,7 @@ test('browser/profile CLI choices are discoverable offline and incompatible comm
 });
 
 test('mirage init writes a validated project file from the catalogue site and refuses silent overwrites', async () => {
-  const solutions = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-init-solutions-')));
+  const solutions = tempDirSync('paqvilo-init-solutions-');
   try {
     fs.mkdirSync(path.join(solutions, 'Example.Solutions.BaseLayer'));
     fs.mkdirSync(path.join(solutions, 'Example.Solutions.BusinessLayer'));
@@ -569,7 +569,7 @@ test('mirage init writes a validated project file from the catalogue site and re
 });
 
 test('list and doctor expose catalogue Mirage settings and offline readiness without changing overlay readiness', async () => {
-  const roots = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-roots-')));
+  const roots = tempDirSync('paqvilo-mirage-roots-');
   try {
     fs.mkdirSync(path.join(roots, 'Base'));
     const config = fx.file('mirage-settings-catalogue.yml');
@@ -654,7 +654,7 @@ test('list and doctor expose catalogue Mirage settings and offline readiness wit
 test('mirage stop ends owned starting processes, prunes stale records and never touches other programs', async (t) => {
   const { stopOwnedSessions, mirageStatus, ownedSessions, processIdentity, isAlive } =
     await import('../lense/commands/mirage.mjs');
-  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-owned-')));
+  const root = tempDirSync('paqvilo-mirage-owned-');
   const paths = {
     discoveryRoot: path.join(root, 'simulator'),
     ownershipFile: path.join(root, 'mirage', 'sessions.json'),
@@ -757,7 +757,7 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
     discovery(unrelated.pid),
     JSON.stringify({ pid: unrelated.pid, url: 'http://127.0.0.1:9/', sourceDir }),
   );
-  const report = await stopOwnedSessions({ paths, sourceDir, deadline: 5000 });
+  const report = await stopOwnedSessions({ paths, sourceDir });
   assert.deepEqual(
     report.stopped.map((item) => [item.pid, item.graceful, item.wasReady]),
     [[starting.pid, false, false]],

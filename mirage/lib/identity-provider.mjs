@@ -146,9 +146,16 @@ export async function startIdentityProvider({
       ]),
     ),
   );
-  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const jwk = publicKey.export({ format: 'jwk' });
-  const kid = createHash('sha256').update(jwk.n).digest('base64url').slice(0, 16);
+  // Generated on first signature or key discovery: a 2048-bit key pair blocks the event loop.
+  let signingKey;
+  const signingKeys = () => {
+    if (!signingKey) {
+      const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const jwk = publicKey.export({ format: 'jwk' });
+      signingKey = { privateKey, jwk, kid: createHash('sha256').update(jwk.n).digest('base64url').slice(0, 16) };
+    }
+    return signingKey;
+  };
   let origin = null;
   let cookieName = 'paqvilo-mirage-idp';
   const sessions = new Map();
@@ -158,6 +165,7 @@ export async function startIdentityProvider({
   const authority = (provider) => `${origin}/${provider.slug}/`;
   const tokenEndpoint = (provider) => `${authority(provider)}oauth2/token`;
   const signToken = (payload) => {
+    const { privateKey, kid } = signingKeys();
     const header = base64url(JSON.stringify({ typ: 'JWT', alg: 'RS256', kid }));
     const body = base64url(JSON.stringify(payload));
     return `${header}.${body}.${sign('sha256', Buffer.from(`${header}.${body}`), privateKey).toString('base64url')}`;
@@ -622,8 +630,10 @@ export async function startIdentityProvider({
           'sub',
         ],
       });
-    if (req.method === 'GET' && route === 'discovery/keys')
+    if (req.method === 'GET' && route === 'discovery/keys') {
+      const { jwk, kid } = signingKeys();
       return json(res, 200, { keys: [{ kty: jwk.kty, use: 'sig', kid, alg: 'RS256', n: jwk.n, e: jwk.e }] });
+    }
     if (req.method === 'POST' && route === 'oauth2/token') return token(req, res, provider);
     if (['GET', 'POST'].includes(req.method) && route === 'openid/userinfo') return userinfo(req, res, provider);
     if (route === 'oauth2/authorize' && ['GET', 'POST'].includes(req.method)) {

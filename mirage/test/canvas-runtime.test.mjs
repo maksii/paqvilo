@@ -169,9 +169,12 @@ test('an unsupported control is listed, refused when driven and reported by the 
 test('the canvas-apps capability record is behaviour with the rendering gap in its fidelity notes', () => {
   const record = describeCanvasRuntime({ evaluatorLevel: 'behaviour' });
   assert.equal(record.level, 'behaviour');
+  assert.ok(record.operations.length > 0);
   assert.ok(record.operations.every((operation) => operation.level === 'behaviour'));
   assert.match(record.fidelity.notes[0], /not rendered/);
-  assert.ok(describeCanvasRuntime().operations.every((operation) => operation.level === 'contract'));
+  const contract = describeCanvasRuntime().operations;
+  assert.equal(contract.length, record.operations.length);
+  assert.ok(contract.every((operation) => operation.level === 'contract'));
 });
 
 test('behaviour chains split at top-level semicolons only', () => {

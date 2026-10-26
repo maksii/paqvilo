@@ -11,11 +11,12 @@ test('standalone and model-driven configuration respect project catalogue, perso
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const project = { configFile: path.join(directory, 'project.json') };
   const file = path.join(directory, 'paqvilo.config.yml');
-  const previous = process.env.PAQVILO_EDITOR;
-  delete process.env.PAQVILO_EDITOR;
+  // Shell settings such as PAQVILO_EDITOR or PAQVILO_SITE would otherwise override the files under test.
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('PAQVILO_')));
+  for (const key of Object.keys(inherited)) delete process.env[key];
   t.after(() => {
-    if (previous === undefined) delete process.env.PAQVILO_EDITOR;
-    else process.env.PAQVILO_EDITOR = previous;
+    delete process.env.PAQVILO_EDITOR;
+    Object.assign(process.env, inherited);
   });
   assert.equal(standaloneMirageConfiguration(project).editor, 'code');
   await fs.writeFile(

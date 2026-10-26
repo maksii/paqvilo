@@ -78,13 +78,11 @@ test('a contract 2 step reaches /_sim/api/messages through a dry-run standalone 
   );
   await store.create('x_widget', { x_widgetid: WIDGET, x_name: 'Invented widget' }, { admin: true });
 
-  let messages = [];
-  for (let attempt = 0; attempt < 100 && !messages.length; attempt += 1) {
-    const response = await fetch(`${sim.url}/_sim/api/messages?entity=x-queue`);
-    assert.equal(response.status, 200);
-    messages = (await response.json()).messages;
-    if (!messages.length) await new Promise((resolve) => setTimeout(resolve, 50));
-  }
+  // The asynchronous step runs as committed work; settling the runtime drains it before the read.
+  await sim.settle();
+  const response = await fetch(`${sim.url}/_sim/api/messages?entity=x-queue`);
+  assert.equal(response.status, 200);
+  const { messages } = await response.json();
   assert.equal(messages.length, 1);
   assert.equal(messages[0].body.PrimaryEntityId, WIDGET);
   assert.equal(messages[0].properties.organizationUri, sim.dataverse.origin);

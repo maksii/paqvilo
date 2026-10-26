@@ -77,8 +77,9 @@ function report(
 
 // Share, Unshare, Reparent and Merge declared by any relationship: one diagnostic per table and action.
 function scanDeclared(api, state) {
+  const references = api.store.referencesByTable({});
   for (const logical of Object.keys(api.store.state.mappings ?? {})) {
-    for (const reference of api.store.referencesTo(logical, {})) {
+    for (const reference of references.get(logical) ?? []) {
       for (const [action, code] of Object.entries(NOT_SIMULATED)) {
         const behaviour = reference.cascade?.[action];
         if (behaviour == null || behaviour === 'NoCascade') continue;

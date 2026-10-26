@@ -99,9 +99,11 @@ test(
     const page = await context.newPage();
     detach = await attachSession(context, session);
     const opened = [];
+    let arrived = () => {};
     panel = enablePanel(context, session, {
       open: async (...args) => {
         opened.push(args);
+        arrived();
         return null;
       },
     });
@@ -109,16 +111,17 @@ test(
     page.on('pageerror', (error) => errors.push(error.message));
     const panelLocator = (selector) => page.locator(`#paqvilo-panel ${selector}`);
     const openTab = async (tab) => {
-      await panelLocator('.pill').waitFor({ state: 'attached' });
+      // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+      await panelLocator('.pill:visible, .wrap.open').first().waitFor();
       if (await panelLocator('.pill').isVisible()) await panelLocator('.pill').click();
       await panelLocator(`.tabs [data-act="tab"][data-v="${tab}"]`).click();
     };
     // Resolves with what the panel asked the editor to open after one click.
     const openedBy = async (locator) => {
       const before = opened.length;
+      const next = new Promise((resolve) => (arrived = resolve));
       await locator.click();
-      for (const deadline = Date.now() + 5000; opened.length === before && Date.now() < deadline;)
-        await new Promise((resolve) => setTimeout(resolve, 10));
+      await next;
       assert.equal(opened.length, before + 1, 'the panel opened one source');
       return opened.at(-1);
     };

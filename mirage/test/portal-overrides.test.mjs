@@ -7,7 +7,9 @@ import { createSimulator } from '../server.mjs';
 import { applyPortalOverrides, validatePortalOverrides } from '../lib/portal-overrides.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 
-async function setupPortalOverrides(t) {
+// persist: a state file, for the test that restarts from it; the others run in memory (a state file costs a full
+// serialization and fsync per transaction).
+async function setupPortalOverrides(t, { persist = false } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-portal-overrides-'));
   let app;
   t.after(async () => {
@@ -33,7 +35,7 @@ async function setupPortalOverrides(t) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, content);
   }
-  const stateFile = path.join(directory, 'state.json');
+  const stateFile = persist ? path.join(directory, 'state.json') : undefined;
   const initial = {
     mappings: { item: { entitySet: 'items', idColumn: 'itemid' } },
     tables: { item: [{ itemid: 'one', name: 'Allowed' }] },
@@ -102,7 +104,7 @@ test('local web role changes control contact memberships and actual API read gra
 });
 
 test('admin settings/snippets affect Liquid and API, persist/reload, reset to current source and require CSRF', async (t) => {
-  const fixture = await setupPortalOverrides(t);
+  const fixture = await setupPortalOverrides(t, { persist: true });
   const state = await (await fetch(fixture.app.url + '/_sim/api/state?summary=1')).json();
   assert.equal(state.config.portalSnippets[0].value, 'Source greeting');
   // Portal API reads run as a browser session with the Reader role (a session role override).

@@ -406,9 +406,13 @@ describe('query conversion, validation, timestamp and knowledge searches', () =>
   });
 
   it('RetrieveTimestamp returns the current server time as an ISO timestamp', async () => {
+    // The organization runs on wall time here, so the answer lies between the moments the call started and ended.
+    const started = Date.now();
     const body = await (await call(webApi('RetrieveTimestamp'))).json();
-    assert.match(body.Timestamp, /^\d{4}-\d{2}-\d{2}T/);
-    assert.ok(Math.abs(Date.parse(body.Timestamp) - Date.now()) < 60_000, body.Timestamp);
+    const ended = Date.now();
+    assert.match(body.Timestamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    const answered = Date.parse(body.Timestamp);
+    assert.ok(answered >= started && answered <= ended, `${body.Timestamp} outside the call`);
   });
 
   it('FullTextSearchKnowledgeArticle finds articles by text, filters by state and drops older versions on request', async () => {
