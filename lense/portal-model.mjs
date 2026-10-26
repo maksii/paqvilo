@@ -162,14 +162,12 @@ async function walkAsync(roots) {
   return files;
 }
 
-async function sourceFileStatAsync(sourceDir, file) {
+// `root` is the extract's realpath, resolved once per prefetch (null when unresolvable); the synchronous load
+// that follows every prefetch resolves it again.
+async function sourceFileStatAsync(realRoot, file) {
   try {
-    const [root, resolved, stat] = await Promise.all([
-      fs.promises.realpath(sourceDir),
-      fs.promises.realpath(file),
-      fs.promises.stat(file),
-    ]);
-    const relative = path.relative(root, resolved);
+    const [root, resolved, stat] = await Promise.all([realRoot, fs.promises.realpath(file), fs.promises.stat(file)]);
+    const relative = root && path.relative(root, resolved);
     return relative &&
       relative !== '..' &&
       !relative.startsWith(`..${path.sep}`) &&
@@ -833,8 +831,9 @@ export class PortalModel {
           ),
         ];
     const cache = new Map();
+    const realRoot = fs.promises.realpath(sourceDir).catch(() => null);
     await orderedMap(files, 16, async (file) => {
-      const before = await sourceFileStatAsync(sourceDir, file);
+      const before = await sourceFileStatAsync(realRoot, file);
       if (!before) return;
       let text;
       try {
@@ -842,7 +841,7 @@ export class PortalModel {
       } catch {
         return;
       }
-      const after = await sourceFileStatAsync(sourceDir, file);
+      const after = await sourceFileStatAsync(realRoot, file);
       if (!after || fileStamp(before) !== fileStamp(after)) return;
       cache.set(
         file,

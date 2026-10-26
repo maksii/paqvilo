@@ -712,22 +712,21 @@ export class HtmlRewriter {
     const valid = new Map();
     const stamps = new Map();
     const root = model.sourceDir ? await fs.promises.realpath(model.sourceDir) : null;
+    // Each stat/realpath pair runs together: every sequential fs promise costs a thread-pool round trip.
     await orderedMap(files, 16, async (file) => {
       const key = sourceCacheKey(file);
       try {
-        const real = await fs.promises.realpath(file);
+        const [real, before] = await Promise.all([fs.promises.realpath(file), fs.promises.stat(file)]);
         const relative = root ? path.relative(root, real) : null;
         if (
           root &&
           (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))
         )
           throw new Error('outside source root');
-        const before = await fs.promises.stat(file);
         if (!before.isFile()) throw new Error('not a regular source file');
         const text = await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER, encoding: 'utf8' });
-        const after = await fs.promises.stat(file);
-        if (!sameStamp(before, after) || (await fs.promises.realpath(file)) !== real)
-          throw new Error('source changed during startup');
+        const [after, current] = await Promise.all([fs.promises.stat(file), fs.promises.realpath(file)]);
+        if (!sameStamp(before, after) || current !== real) throw new Error('source changed during startup');
         raw.set(key, text.replace(/^\uFEFF/, ''));
         valid.set(key, true);
         stamps.set(key, { file, real, info: after });
@@ -740,11 +739,8 @@ export class HtmlRewriter {
     // prefetched snapshot once all reads finish; the constructor retries only stale entries.
     await orderedMap(stamps, 16, async ([key, stamp]) => {
       try {
-        if (
-          sameStamp(stamp.info, await fs.promises.stat(stamp.file)) &&
-          (await fs.promises.realpath(stamp.file)) === stamp.real
-        )
-          return;
+        const [info, real] = await Promise.all([fs.promises.stat(stamp.file), fs.promises.realpath(stamp.file)]);
+        if (sameStamp(stamp.info, info) && real === stamp.real) return;
       } catch {
         /* removed or replaced source */
       }
