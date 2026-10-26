@@ -1,4 +1,5 @@
 // Test-file fixtures: one browser per file, an isolated context per test.
+import fs from 'node:fs/promises';
 import http from 'node:http';
 import { before, after } from 'node:test';
 import { chromium } from 'playwright-core';
@@ -38,6 +39,33 @@ export async function loopbackServer(t, handler) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => closeServer(server));
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
+}
+
+/**
+ * Reads a simulator's admin state once before a page times its first render. The first read in a process builds the
+ * organization runtime (lazy modules and system tables: about 1 s idle, over 8 s on a loaded host), which admin view
+ * tests do not measure and which would otherwise consume their short per-step timeouts.
+ */
+export async function warmState(app) {
+  const response = await fetch(app.url + '/__sim/api/state');
+  if (!response.ok) throw new Error(`Simulator state returned HTTP ${response.status}`);
+  await response.arrayBuffer();
+}
+
+/** A page in a fresh context on a warmed simulator; the context, the simulator and its directory close with the test. */
+export async function adminPage(t, browser, app, directory) {
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  t.after(async () => {
+    await context.close();
+    await app.close();
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  const page = await context.newPage();
+  await warmState(app);
+  page.setDefaultTimeout(10_000);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  return { page, errors };
 }
 
 /**

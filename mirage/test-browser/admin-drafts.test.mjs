@@ -8,6 +8,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
+import { adminPage } from './shared-browser.mjs';
 
 let browser;
 before(async () => {
@@ -41,17 +42,7 @@ async function fixture(t) {
       simulator: { mode: 'local', pageMode: 'local', identity: { roles: [] }, live: {}, endpoints: [] },
     },
   });
-  const context = await browser.newContext({ serviceWorkers: 'block' });
-  t.after(async () => {
-    await context.close();
-    await app.close();
-    await fs.rm(directory, { recursive: true, force: true });
-  });
-  const page = await context.newPage();
-  page.setDefaultTimeout(10_000);
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  return { app, page, errors };
+  return { app, ...(await adminPage(t, browser, app, directory)) };
 }
 
 test(
