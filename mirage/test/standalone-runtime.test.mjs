@@ -75,7 +75,8 @@ async function readOwnedArcSecret(challenge) {
     throw new Error('Arc challenge must contain exactly the generated 64 hexadecimal characters.');
   return secret;
 }
-async function fixture(t, options, sourceOverrides = {}) {
+// Writes the invented Solution only; tests that start their own runtime (or CLI) need no fixture runtime.
+async function solutionSources(t, sourceOverrides = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-organization-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
@@ -92,6 +93,10 @@ async function fixture(t, options, sourceOverrides = {}) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, content);
   }
+  return { root, solution, files };
+}
+async function fixture(t, options, sourceOverrides) {
+  const { root, solution, files } = await solutionSources(t, sourceOverrides);
   const stateFile = path.join(root, 'must-not-be-written.json');
   const sim = await createSimulator({
     solutionRoots: [solution],
@@ -350,7 +355,7 @@ for (const kind of ['dataverse-api', 'model-driven'])
   });
 
 test('standalone project CLI forwards organization platform settings into the actual query runtime', async (t) => {
-  const { root, solution } = await fixture(t, { runtime: { kind: 'model-driven' } });
+  const { root, solution } = await solutionSources(t);
   const file = path.join(root, 'cli-project.json');
   await fs.writeFile(
     file,
@@ -382,26 +387,26 @@ test('standalone project CLI forwards organization platform settings into the ac
     { cwd: toolkitRoot, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
   );
   const exited = new Promise((resolve) => child.once('exit', resolve));
-  t.after(async () => {
+  // Stop the CLI (which holds its state file) before the owned directory is removed.
+  ownedFixture(t).add(async () => {
     if (child.exitCode === null) {
       child.stdin.write('stop\n');
+      // Bounded fallback for a CLI that ignores the documented stdin stop command.
       const timer = setTimeout(() => child.kill(), 10000);
       await exited;
       clearTimeout(timer);
     }
   });
+  // Startup settles on the ready report or the child's failure; no wall-clock bound below the test's own timeout,
+  // since importing and starting the runtime on a loaded runner has no documented startup budget.
   const started = await new Promise((resolve, reject) => {
     let stdout = '',
       stderr = '';
-    const timeout = setTimeout(() => reject(new Error('Standalone CLI startup timed out: ' + stderr)), 20000);
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
       try {
         const report = JSON.parse(stdout);
-        if (report.url) {
-          clearTimeout(timeout);
-          resolve(report);
-        }
+        if (report.url) resolve(report);
       } catch {
         /* await complete JSON */
       }
@@ -409,14 +414,8 @@ test('standalone project CLI forwards organization platform settings into the ac
     child.stderr.on('data', (chunk) => {
       stderr += chunk;
     });
-    child.once('error', (error) => {
-      clearTimeout(timeout);
-      reject(error);
-    });
-    child.once('exit', (code) => {
-      clearTimeout(timeout);
-      reject(new Error(`Standalone CLI exited ${code}: ${stderr}`));
-    });
+    child.once('error', reject);
+    child.once('exit', (code) => reject(new Error(`Standalone CLI exited ${code}: ${stderr}`)));
   });
   const status = await body(await fetch(started.url + '/_sim/api/status'));
   assert.equal(status.platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value, 1);
@@ -503,8 +502,7 @@ for (const kind of ['dataverse-api', 'model-driven'])
     });
 
 test('independent client directory and ZIP sources reload without changing complete organization metadata', async (t) => {
-  const { sim: initial, root, solution } = await fixture(t, { runtime: { kind: 'model-driven' } });
-  await initial.close();
+  const { root, solution } = await solutionSources(t);
   const clientRoot = path.join(root, 'external-clients'),
     archive = path.join(root, 'external.zip');
   await fs.mkdir(path.join(clientRoot, 'WebResources'), { recursive: true });
@@ -534,7 +532,8 @@ test('independent client directory and ZIP sources reload without changing compl
     modelDriven: { trustedExtensions: true, clientSources: [clientRoot, archive] },
     watch: true,
   });
-  t.after(() => sim.close());
+  // The watcher closes before the owned directory is removed; t.after hooks run in registration order.
+  ownedFixture(t).add(() => sim.close());
   const catalogue = await body(await ui(sim, 'GET'));
   assert.ok(catalogue.tables.x_item);
   const urls = Object.fromEntries(

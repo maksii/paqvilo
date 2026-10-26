@@ -23,6 +23,58 @@ finally { $taskHandle.Dispose() }
 [IO.File]::SetLastWriteTimeUtc($taskPath, $taskTimestamp)
 `;
 
+// POSIX keeps the change timestamp in the signature, so the same in-place edit with an exactly restored
+// modification time (touch -r copies nanoseconds) is a StateConflict before any write.
+for (const journal of [false, true])
+  test(
+    `POSIX change time detects a metadata-preserving in-place edit (${journal ? 'journal' : 'JSON'})`,
+    {
+      skip: process.platform === 'win32' ? 'Windows excludes ChangeTime; covered by the Windows boundary test' : false,
+    },
+    async (t) => {
+      const root = await fs.mkdtemp(join(tmpdir(), 'paqvilo-posix-state-'));
+      t.after(() => fs.rm(root, { recursive: true, force: true }));
+      const file = join(root, 'state.json'),
+        reference = join(root, 'timestamps'),
+        persistence = { journalThresholdBytes: journal ? 0 : Number.MAX_SAFE_INTEGER };
+      const store = await new DataStore({
+        file,
+        persistence,
+        state: {
+          settings: { permissionMode: 'permissive' },
+          mappings: { item: { idColumn: 'itemid', entitySet: 'items' } },
+          tables: { item: [{ itemid: 'one', name: 'seed' }] },
+        },
+      }).init();
+      await store.update('items', 'one', { name: 'step' });
+      const touch = (...args) => {
+        const result = spawnSync('touch', args, { encoding: 'utf8' });
+        assert.equal(result.status, 0, result.stderr || result.error?.message);
+      };
+      await fs.writeFile(reference, '');
+      touch('-r', file, reference);
+      const before = await fs.stat(file, { bigint: true }),
+        text = await fs.readFile(file, 'utf8'),
+        offset = Buffer.byteLength(text.slice(0, text.lastIndexOf('"step"')));
+      const handle = await fs.open(file, 'r+');
+      try {
+        await handle.write(Buffer.from('"evil"'), 0, 6, offset);
+      } finally {
+        await handle.close();
+      }
+      touch('-r', reference, file);
+      const after = await fs.stat(file, { bigint: true });
+      assert.deepEqual(
+        [after.ino, after.size, after.mtimeNs],
+        [before.ino, before.size, before.mtimeNs],
+        'the edit must preserve identity, size and the exact modification time',
+      );
+      assert.notEqual(stateFileSignature(after), stateFileSignature(before));
+      await assert.rejects(store.update('items', 'one', { note: 'refused' }), { code: 'StateConflict' });
+      assert.ok((await fs.readFile(file, 'utf8')).includes('"evil"'));
+    },
+  );
+
 for (const journal of [false, true])
   test(
     `Windows metadata-preserving edits match the documented ${journal ? 'journal checksum' : 'JSON replacement'} boundary`,
