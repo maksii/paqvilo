@@ -40,6 +40,97 @@ test('attachment setup runs before Fetch and disposes its own hooks on target re
   assert.equal(tab.cdp.listenerCount('Runtime.executionContextCreated'), 0);
 });
 
+test('an initial blank DOMContentLoaded leaves late admission available for an escaped portal document', async () => {
+  const fake = fakeBrowser(),
+    tab = fake.openTab();
+  const detach = await interceptOrigin(fake.context, ORIGIN, (route) => route.fallback());
+  tab.page.emit('domcontentloaded');
+  await setImmediate();
+  assert.equal(tab.page.reloads, 0);
+  assert.equal(tab.page.listenerCount('domcontentloaded'), 1, 'a blank document cannot consume portal admission');
+  tab.page.url = () => ORIGIN + '/escaped';
+  tab.page.emit('domcontentloaded');
+  await setImmediate();
+  assert.equal(tab.page.reloads, 1, 'the later unobserved portal document is repaired');
+  tab.page.emit('domcontentloaded');
+  await setImmediate();
+  assert.equal(tab.page.reloads, 1, 'one completed repair is not replayed');
+  await detach();
+  assert.equal(tab.page.listenerCount('domcontentloaded'), 0);
+});
+
+test('a DOMContentLoaded received during an obsolete capture admits the latest unobserved document', async () => {
+  const fake = fakeBrowser(),
+    tab = fake.openTab(ORIGIN + '/first');
+  const held = Promise.withResolvers(),
+    entered = Promise.withResolvers();
+  const send = tab.cdp.send;
+  let frames = 0;
+  tab.cdp.send = async (method, params) => {
+    const result = await send(method, params);
+    if (method === 'Page.getFrameTree' && ++frames === 2) {
+      entered.resolve();
+      await held.promise;
+    }
+    return result;
+  };
+  const opening = interceptOrigin(fake.context, ORIGIN, (route) => route.fallback());
+  await entered.promise;
+  tab.page.url = () => ORIGIN + '/second';
+  tab.page.emit('domcontentloaded');
+  held.resolve();
+  const detach = await opening;
+  assert.equal(tab.page.reloads, 1, 'an obsolete capture is not evidence of an intercepted current document');
+  tab.page.emit('domcontentloaded');
+  await setImmediate();
+  assert.equal(tab.page.reloads, 1);
+  await detach();
+});
+
+test('an intercepted main request supersedes late repair while its cancellation binding is refreshed', async (t) => {
+  const fake = fakeBrowser(),
+    tab = fake.openTab(ORIGIN + '/old');
+  const entered = Promise.withResolvers(),
+    refreshGate = Promise.withResolvers(),
+    routeEntered = Promise.withResolvers(),
+    routeGate = Promise.withResolvers(),
+    answered = Promise.withResolvers();
+  const send = tab.cdp.send;
+  let bindings = 0,
+    detach;
+  tab.cdp.send = async (method, params) => {
+    const result = await send(method, params);
+    if (method === 'Runtime.addBinding' && ++bindings === 2) {
+      entered.resolve();
+      await refreshGate.promise;
+    }
+    return result;
+  };
+  const opening = interceptOrigin(fake.context, ORIGIN, async (route) => {
+    routeEntered.resolve();
+    await routeGate.promise;
+    await route.fulfill({ body: 'new document' });
+    answered.resolve();
+  });
+  t.after(async () => {
+    refreshGate.resolve();
+    routeGate.resolve();
+    await (detach ?? (await opening))();
+  });
+  await entered.promise;
+  tab.pause('new-navigation', ORIGIN + '/new', { type: 'Document' });
+  await routeEntered.promise;
+  refreshGate.resolve();
+  detach = await opening;
+  assert.equal(tab.page.reloads, 0, 'the old document cannot replace the intercepted pending navigation');
+  assert.deepEqual(fake.answers('new-navigation'), [], 'the newer response remains deliberately held');
+  routeGate.resolve();
+  await answered.promise;
+  assert.equal(fake.answers('new-navigation').length, 1);
+  assert.equal(fake.answers('new-navigation')[0].method, 'Fetch.fulfillRequest');
+  assert.equal(Buffer.from(fake.answers('new-navigation')[0].body, 'base64').toString(), 'new document');
+});
+
 test('draft cancellation bindings are bounded and removed after normal or failed setup', async () => {
   for (const fail of [false, true]) {
     const fake = fakeBrowser(),

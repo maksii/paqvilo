@@ -44,8 +44,8 @@ function installLateDraftTracker(slot, origins, binding) {
     Function.prototype.toString.call(nativeStop) === 'function stop() { [native code] }'
       ? nativeStop.bind(window)
       : null;
-  const originalBinding = window[binding];
-  const notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null;
+  let originalBinding = window[binding];
+  let notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null;
   const clear = () => {
     const previous = pending;
     pending = null;
@@ -93,6 +93,13 @@ function installLateDraftTracker(slot, origins, binding) {
     configurable: true,
     value: Object.freeze({
       dirty: () => changed,
+      refreshBinding() {
+        // A new execution context can initialize this early script before its
+        // CDP binding is installed. Capture the admitted function before inspection,
+        // rather than permanently retaining that earlier absence.
+        originalBinding = window[binding];
+        notify = typeof originalBinding === 'function' ? originalBinding.bind(window) : null;
+      },
       repair(destination) {
         if (!stop || !notify || typeof navigation?.addEventListener !== 'function') return false;
         clear();
@@ -118,6 +125,8 @@ function installLateDraftTracker(slot, origins, binding) {
 // checking drafts and starting the GET happen in the same JavaScript turn.
 function repairLateDocument(expected, destination, slot) {
   if (this !== document || location.href !== expected) return 'superseded';
+  // Keep cleanup ownership current even when an observed draft declines repair.
+  window[slot]?.refreshBinding();
   if (window[slot]?.dirty()) return 'draft';
   for (const node of document.querySelectorAll('input, textarea, select, [contenteditable]')) {
     if (
@@ -385,9 +394,9 @@ export async function interceptOrigins(
       cdp.on('Runtime.bindingCalled', record.onDraftSignal);
       const draftSource = `(${installLateDraftTracker.toString()})(${JSON.stringify(record.draftSlot)},${JSON.stringify([...allowed])},${JSON.stringify(record.draftBinding)})`;
       await configure('Page.enable');
+      await configure('Runtime.enable');
       await configure('Runtime.addBinding', { name: record.draftBinding });
       record.draftBindingReady = true;
-      await configure('Runtime.enable');
       record.draftScript = await configure('Page.addScriptToEvaluateOnNewDocument', { source: draftSource });
       await configure('Runtime.evaluate', { expression: draftSource });
       // CSP remains enforced unless explicitly disabled for this development session.
@@ -441,9 +450,16 @@ export async function interceptOrigins(
     }
     // A tab opened by the portal (target=_blank, window.open) may have asked for its page before
     // interception was on. Load that page once more so it gets the local sources too.
+    let latePending = false,
+      lateQueued = false,
+      lateDone = false;
     const late = async () => {
-      if (stopped || sawDocument || page.isClosed() || !matches(page.url())) return;
-      sawDocument = true;
+      if (stopped || sawDocument || lateDone || page.isClosed() || !matches(page.url())) return;
+      if (latePending) {
+        lateQueued = true;
+        return;
+      }
+      latePending = true;
       const address = page.url();
       let objectId, captured;
       const stillCurrent = async () => {
@@ -468,7 +484,16 @@ export async function interceptOrigins(
           before.loaderId !== after.loaderId
         )
           return;
-        if (!objectId) return reloadRequired();
+        if (!objectId) {
+          lateDone = true;
+          return reloadRequired();
+        }
+        // A loader admitted after the initial about:blank setup can have lost
+        // its Runtime binding during the context transition. Re-establish this
+        // owned capability in the current context before allowing a repair.
+        await configure('Runtime.removeBinding', { name: record.draftBinding });
+        await configure('Runtime.addBinding', { name: record.draftBinding });
+        if (stopped || record.closed || sawDocument || page.isClosed()) return;
         // A late popup can be a POST result. Assign a new GET URL, never replay
         // that submission. A replaced loader cannot use this document handle.
         const result = await configure('Runtime.callFunctionOn', {
@@ -477,21 +502,35 @@ export async function interceptOrigins(
           arguments: [{ value: address }, { value: refreshUrl(address) }, { value: record.draftSlot }],
           returnByValue: true,
         });
+        if (result.result?.value === 'reloading') lateDone = true;
         if (
           (result.exceptionDetails || !['reloading', 'superseded'].includes(result.result?.value)) &&
           (await stillCurrent())
-        )
+        ) {
+          lateDone = true;
           reloadRequired();
+        }
       } catch {
-        if (await stillCurrent()) reloadRequired();
+        if (await stillCurrent()) {
+          lateDone = true;
+          reloadRequired();
+        }
       } finally {
         if (objectId) cdp.send('Runtime.releaseObject', { objectId }).catch(() => {});
+        latePending = false;
+        // A native navigation already in flight before Fetch.enable can finish
+        // while the old loader is checked. Its DOMContentLoaded is admission
+        // work for the latest document, not proof that any request was overlaid.
+        if (lateQueued) {
+          lateQueued = false;
+          await late();
+        }
       }
     };
     record.late = () => {
       late().catch(() => {});
     };
-    page.once('domcontentloaded', record.late);
+    page.on('domcontentloaded', record.late);
     if (matches(page.url())) await late();
   };
   const startAttachment = (page, initial = false) => {

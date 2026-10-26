@@ -427,6 +427,68 @@ test('late repair distinguishes pristine native controls from edited form state'
   }
 });
 
+test('late inspection restores and cleans its current cancellation binding', { timeout: 30000 }, async (t) => {
+  for (const edited of [false, true])
+    await t.test(edited ? 'edited document' : 'pristine document', async (t) => {
+      let detach, bindingName;
+      const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', () => detach?.());
+      const context = await browser.newContext({ serviceWorkers: 'block' }),
+        page = await context.newPage();
+      await page.goto(origin);
+      const attach = context.newCDPSession.bind(context);
+      t.mock.method(context, 'newCDPSession', async (...args) => {
+        const cdp = await attach(...args),
+          send = cdp.send.bind(cdp);
+        let binding,
+          delayed = false;
+        cdp.send = async (method, params) => {
+          if (method === 'Runtime.addBinding' && !delayed) {
+            delayed = true;
+            binding = params;
+            bindingName = params.name;
+            return {};
+          }
+          const answer = await send(method, params);
+          if (
+            method === 'Runtime.evaluate' &&
+            params.expression?.includes('function installLateDraftTracker') &&
+            binding
+          ) {
+            await send('Runtime.addBinding', binding);
+            await send('Runtime.evaluate', { expression: `delete window[${JSON.stringify(binding.name)}]` });
+            if (edited) await page.locator('#draft').fill('keep early draft');
+            binding = null;
+          }
+          return answer;
+        };
+        return cdp;
+      });
+      const diagnostics = [];
+      detach = await interceptOrigin(
+        context,
+        origin,
+        (route) =>
+          route.fulfill({
+            headers: { 'content-type': 'text/html' },
+            body: '<!doctype html><input id="draft"><script>window.localPreview=true</script>',
+          }),
+        { onError: (error) => diagnostics.push(error) },
+      );
+      if (edited) {
+        assert.equal(diagnostics.length, 1);
+        assert.equal(diagnostics[0].code, 'reload_required');
+        assert.equal(await page.locator('#draft').inputValue(), 'keep early draft');
+        assert.equal(await page.evaluate(() => window.localPreview), undefined);
+      } else {
+        assert.deepEqual(diagnostics, [], 'the restored cancellation binding must admit a pristine repair');
+        await page.waitForFunction(() => window.localPreview === true);
+      }
+      await detach();
+      detach = null;
+      assert.equal(await page.evaluate((name) => typeof window[name], bindingName), 'undefined');
+    });
+});
+
 test('cancelled and superseded repairs release their navigation ownership', { timeout: 30000 }, async (t) => {
   for (const mode of ['superseded', 'aborted'])
     await t.test(mode, async (t) => {

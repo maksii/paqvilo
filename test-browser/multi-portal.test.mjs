@@ -260,7 +260,32 @@ test(
     );
     const main = context.pages()[0] ?? (await context.newPage());
     const assertPortal = async (page, fixture, value, color) => {
-      await page.waitForFunction((expected) => window.localSite === expected, value);
+      try {
+        await page.waitForFunction((expected) => window.localSite === expected, value);
+      } catch (cause) {
+        let timer;
+        const observed = await Promise.race([
+          page
+            .evaluate(() => ({
+              localSite: window.localSite,
+              readyState: document.readyState,
+              draftTrackers: Object.getOwnPropertyNames(window)
+                .filter((name) => name.startsWith('__paqviloLateDraft_') && !name.endsWith('Changed'))
+                .map((name) => ({
+                  dirty: window[name]?.dirty?.(),
+                  binding: typeof window[name + 'Changed'],
+                })),
+            }))
+            .catch(() => ({ unavailable: true })),
+          new Promise((resolve) => {
+            timer = setTimeout(resolve, 2000, { unavailable: true });
+          }),
+        ]).finally(() => clearTimeout(timer));
+        throw new Error(
+          `Local source readiness failed: ${JSON.stringify({ fixture: fixture.name, expected: value, observed, warnings: logs.filter((line) => /WARN|ERROR/.test(line)).slice(-8) })}`,
+          { cause },
+        );
+      }
       await page.waitForFunction(
         (label) => document.getElementById('paqvilo-panel')?.dataset.label === label,
         fixture.name.replace(/-(dev|test|extra)$/, ' @ $1'),
