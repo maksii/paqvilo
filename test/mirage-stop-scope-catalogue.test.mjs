@@ -162,11 +162,12 @@ test(
     const elsewhere = path.join(work.directory, 'different hint cwd');
     await fs.mkdir(elsewhere);
     for (const runtime of [[], ['--runtime', 'model-driven']]) {
-      const [first, second] = await Promise.all(
-        ['first', 'second'].map((site) =>
-          work.start(['--config', config, '--site', site, '--project', project, ...runtime, '--port', '0']),
-        ),
-      );
+      // Sequential: both sites run the same standalone project, whose default state file one
+      // runtime at a time may write.
+      const site = (name) =>
+        work.start(['--config', config, '--site', name, '--project', project, ...runtime, '--port', '0']);
+      const first = await site('first');
+      const second = await site('second');
       const ownershipCwd = runtime.length ? work.cwd : path.dirname(config);
       const stop = [
         'mirage',
