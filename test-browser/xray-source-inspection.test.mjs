@@ -52,6 +52,138 @@ async function fixture(t, html) {
   return { fx, page, inspector, inspect };
 }
 
+test('observed declared grids hydrate both exported tables without page requests or form-table inference', async (t) => {
+  const html =
+    '<table data-paqvilo-table="fx_widget"><tr><th id="first" data-paqvilo-column="fx_title">First</th></tr></table>' +
+    '<table data-paqvilo-table="fx_other"><tr><th id="second" data-paqvilo-column="fx_title">Second</th></tr></table>';
+  const { fx, page } = await fixture(t, html);
+  const other = path.join(fx.solution, 'Entities/fx_other/Entity.xml');
+  fs.mkdirSync(path.dirname(other), { recursive: true });
+  fs.writeFileSync(
+    other,
+    '<Entity><Name>fx_other</Name><EntityInfo><entity Name="fx_other"><EntitySetName>fx_others</EntitySetName><attributes><attribute PhysicalName="fx_title"><Type>nvarchar</Type><Name>fx_title</Name><LogicalName>fx_title</LogicalName></attribute></attributes></entity></EntityInfo></Entity>',
+  );
+  fs.writeFileSync(path.join(fx.portal, 'web-pages/other/Other.webpage.copy.html'), html);
+  const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { solutionRoots: [fx.solution] } });
+  const rendered = await page.evaluate(inspectRenderedPage);
+  assert.deepEqual(
+    rendered.controls.filter((row) => row.gridTable).map((row) => row.gridTable),
+    ['fx_widget', 'fx_other'],
+  );
+  const { report } = await inspector.inspect('/other', rendered);
+  assert.deepEqual(report.apiReferences, []);
+  assert.ok(
+    report.columns.some(
+      (row) => row.entity === 'fx_other' && row.name === 'fx_title' && row.evidence === 'declared-grid-table-candidate',
+    ),
+    JSON.stringify({
+      columns: report.columns.map((row) => ({ entity: row.entity, name: row.name, evidence: row.evidence })),
+      tables: report.tables.map((row) => row.logicalName),
+    }),
+  );
+  const data = {
+    origin: 'http://127.0.0.1:11111',
+    token: 'declared-grid-source',
+    sourceRevision: report.sourceRevision,
+  };
+  await page.evaluate(xrayUi, data);
+  await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
+    data,
+    report,
+  });
+  for (const [id, table] of [
+    ['first', 'fx_widget'],
+    ['second', 'fx_other'],
+  ]) {
+    const evidence = await page
+      .locator('#' + id)
+      .evaluate((node) => document.getElementById('paqvilo-xray').__px.identify(node).evidence);
+    assert.equal(evidence.owner.status, 'exact');
+    assert.equal(evidence.owner.component.key, 'column:' + table + ':fx_title');
+    assert.equal(evidence.source.status, 'exact');
+    const ref = evidence.source.refs.find((row) => row.status === 'exact');
+    const opened = await inspector.lookupSource({
+      sourceKey: ref.key,
+      sourceRevision: ref.sourceRevision,
+      contentRevision: ref.contentRevision,
+      route: '/other',
+    });
+    assert.equal(opened.state, 'exact', 'the admitted table remains available to the independent source-opening check');
+  }
+  await page.locator('#second').evaluate((node) => node.closest('table').removeAttribute('data-paqvilo-table'));
+  const unbound = await page
+    .locator('#second')
+    .evaluate((node) => document.getElementById('paqvilo-xray').__px.identify(node).evidence);
+  assert.notEqual(
+    unbound.owner.status,
+    'exact',
+    'hydrated metadata cannot keep ownership after its rendered declaration is removed',
+  );
+});
+
+test('a selected declared grid beyond the control scan cap requests a bounded source refresh', async (t) => {
+  const { fx, page } = await fixture(
+    t,
+    '<input>'.repeat(900) +
+      '<table data-paqvilo-table="fx_late"><tr><th id="late" data-paqvilo-column="fx_title">Late</th></tr></table>',
+  );
+  const other = path.join(fx.solution, 'Entities/fx_late/Entity.xml');
+  fs.mkdirSync(path.dirname(other), { recursive: true });
+  fs.writeFileSync(
+    other,
+    '<Entity><Name>fx_late</Name><EntityInfo><entity Name="fx_late"><attributes><attribute PhysicalName="fx_title"><Type>nvarchar</Type><LogicalName>fx_title</LogicalName></attribute></attributes></entity></EntityInfo></Entity>',
+  );
+  const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { solutionRoots: [fx.solution] } });
+  const rendered = await page.evaluate(inspectRenderedPage);
+  assert.equal(
+    rendered.controls.some((row) => row.gridTable === 'fx_late'),
+    false,
+    'the ordinary scan remains bounded',
+  );
+  const { report } = await inspector.inspect('/other', rendered);
+  const data = {
+    origin: 'http://127.0.0.1:11111',
+    token: 'invented-selected-grid',
+    sourceRevision: report.sourceRevision,
+  };
+  await page.evaluate(xrayUi, data);
+  await page.evaluate(
+    ({ data, report }) => {
+      const api = document.getElementById('paqvilo-xray').__px;
+      api.update(data, report);
+      window.gridRefreshes = 0;
+      document.getElementById('paqvilo-xray').addEventListener('paqvilo-xray', (event) => {
+        if (event.detail.action === 'refresh') window.gridRefreshes++;
+      });
+      api.select(document.getElementById('late'));
+    },
+    { data, report },
+  );
+  await page.waitForFunction(() => window.gridRefreshes === 1);
+  const focused = await page.evaluate(inspectRenderedPage);
+  assert.equal(
+    focused.controls[0].gridTable,
+    'fx_late',
+    'selection prioritizes the actual grid before unrelated inputs',
+  );
+  const fresh = (await inspector.inspect('/other', focused)).report;
+  await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
+    data: { ...data, sourceRevision: fresh.sourceRevision },
+    report: fresh,
+  });
+  const evidence = await page
+    .locator('#late')
+    .evaluate((node) => document.getElementById('paqvilo-xray').__px.identify(node).evidence);
+  assert.equal(evidence.owner.status, 'exact');
+  assert.equal(evidence.owner.component.key, 'column:fx_late:fx_title');
+  assert.equal(evidence.source.status, 'exact');
+  assert.equal(
+    await page.evaluate(() => window.gridRefreshes),
+    1,
+    'hydration does not keep refreshing an exact selection',
+  );
+});
+
 test('first trusted selection renders its card and clipped outline without reading geometry after the card rebuild', async (t) => {
   const { page, inspect } = await fixture(
     t,

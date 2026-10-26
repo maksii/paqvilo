@@ -262,7 +262,34 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
       }),
     });
 
+  // One synchronous projection may name a form file hundreds of times (its
+  // controls, tabs and sections). Admit that file once for this projection,
+  // retaining the bounded byte cache. The next query, and especially Open
+  // source, must perform the filesystem checks again.
+  let sourceReads;
+  const withSourceReads = (fn) => {
+    const parent = sourceReads;
+    sourceReads = new Map();
+    try {
+      return fn();
+    } finally {
+      sourceReads = parent;
+    }
+  };
   const sourceFile = (file) => {
+    if (sourceReads?.has(file)) return sourceReads.get(file);
+    const result = readSourceFile(file);
+    if (sourceReads) {
+      sourceReads.set(file, result);
+      while (
+        sourceReads.size > 16 ||
+        [...sourceReads.values()].reduce((sum, item) => sum + (item?.size ?? 0), 0) > 16 * 1024 * 1024
+      )
+        sourceReads.delete(sourceReads.keys().next().value);
+    }
+    return result;
+  };
+  const readSourceFile = (file) => {
     if (typeof file !== 'string' || !path.isAbsolute(file)) return null;
     let fd;
     try {
@@ -927,10 +954,10 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
     ]);
   };
   return Object.freeze({
-    query,
+    query: (request) => withSourceReads(() => query(request)),
     resolveOpen,
-    sourceRefsFor,
-    sourceRefsForForm,
+    sourceRefsFor: (keys, options) => withSourceReads(() => sourceRefsFor(keys, options)),
+    sourceRefsForForm: (key, options) => withSourceReads(() => sourceRefsForForm(key, options)),
     formControls,
     controlKeysForForm: (key) => formControls(key).map((control) => control.key),
     sourceRevision,

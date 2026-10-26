@@ -1,5 +1,28 @@
 # Release notes
 
+## 0.9.8
+
+- Admit each shared model-driven source file once per synchronous metadata projection, retaining fresh filesystem
+  validation for subsequent queries and source-opening actions. Keep the source-byte cache bounded.
+- Stream complete model-driven metadata one table at a time with backpressure and disconnect handling, retaining
+  the same JSON bytes, exact numeric precision, forms, fields and security capabilities. Avoid cloning business
+  state to initialize the live-bridge configuration.
+- Resolve explicitly table-bound custom-grid column declarations through the direct-observation adapter, including
+  explicitly linked scroll-head clones. Load their exported table definitions on demand, including selected grids
+  beyond the bounded page scan. Unbound columns retain candidates; API requests and cell values supply no ownership.
+- Accept a verified native basic-form wrapper when its optional layout reports an all-zero form ID. Explicit
+  unknown form declarations and generic wrappers remain unresolved.
+- Join native quick-view iframe declarations to a verified parent form and exported QuickForms target. Check
+  the current document path and conflicting navigation hints; retain unknown or conflicting boundaries.
+- Carry verified attribute-host identity through accessible same-origin rich-text editor frames. Independent inner
+  forms, conflicting declarations, missing exports and inaccessible frames retain their evidence boundaries.
+- Extend regressions for crowded cards, frame shortcuts, dynamic modal/quick-view identities, nested editors and
+  owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy,
+  covering tab/popup deadlines, cancellation, retry, watcher/agent continuity and shared transport loss.
+
+Synthetic and native qualification are distinct. Loopback passes establish the exercised contracts; they do not
+establish native control coverage, a deployed source revision or production readiness.
+
 ## 0.9.7
 
 ### Improved

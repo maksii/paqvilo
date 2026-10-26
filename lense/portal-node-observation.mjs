@@ -1,5 +1,8 @@
 /** Self-contained structural Power Pages read. No values, row IDs, text or URL parameters. */
-export function observePortalNode(node, { scope, bindings = {}, sourceRefs = [], sourceRefsByComponent = null } = {}) {
+export function observePortalNode(
+  node,
+  { scope, bindings = {}, sourceRefs = [], sourceRefsByComponent = null, frameDepth = 0 } = {},
+) {
   const result = { version: 1, scope, facts: [], sourceRefs: [], availability: [], componentAnchors: [] };
   if (!node?.isConnected || !node.ownerDocument) return result;
   const doc = node.ownerDocument;
@@ -71,7 +74,29 @@ export function observePortalNode(node, { scope, bindings = {}, sourceRefs = [],
   let conflict = false,
     observedTable = false,
     conflictReason = 'conflicting-rendered-table-context';
+  const gridCell = ancestors.find((item) => item.matches('td,th,[data-paqvilo-column]'));
+  const gridTable = gridCell?.closest('table');
+  let chosenGrid = false;
   for (const current of ancestors) {
+    if (current === gridTable && bindings.grid?.name) {
+      const cloneId = attribute(current, 'data-paqvilo-grid');
+      const targets = cloneId ? [...current.getRootNode().querySelectorAll('#' + CSS.escape(cloneId))] : [current];
+      const table = targets.length === 1 && targets[0].localName === 'table' ? targets[0] : null;
+      const name = attribute(table, 'data-paqvilo-table').toLowerCase();
+      // The column comes from the passive declaration reader, but its table
+      // must also be declared by this exact grid (or its explicit clone target).
+      // Never borrow an enclosing form's table for an unbound custom grid.
+      if (!/^[a-z][a-z0-9_]*$/.test(name) || bindings.grid.table?.toLowerCase() !== name) break;
+      const tableNames = ['data-entityname', 'data-entity', 'data-paqvilo-table']
+        .map((key) => attribute(current, key).toLowerCase())
+        .filter(Boolean);
+      if ((declaredTable && declaredTable !== name) || tableNames.some((value) => value !== name)) conflict = true;
+      declaredTable = name;
+      observedTable = true;
+      chosenGrid = true;
+      boundary = current;
+      break;
+    }
     const layouts = [];
     const nativeWrapper = /^(?:EntityFormControl|WebFormControl)(?:_|$)/.test(current.id ?? '');
     const genericView = current.id === 'EntityFormView' || current.id === 'EntityFormControl_EntityFormView';
@@ -128,7 +153,17 @@ export function observePortalNode(node, { scope, bindings = {}, sourceRefs = [],
     declaredTable ||= tableNames[0] ?? '';
     const formIds = [
       attribute(current, 'data-formid'),
-      ...layouts.map((layout) => (typeof layout.Id === 'string' ? layout.Id : '')),
+      ...layouts.map((layout) => {
+        if (typeof layout.Id !== 'string') return '';
+        // Native Power Pages layouts can carry the empty GUID even while the
+        // wrapper names the actual basic form. This is an absent layout ID,
+        // not a second component that can contradict that observed wrapper.
+        if (norm(layout.Id) === '0'.repeat(32)) {
+          result.availability.push({ capability: 'layout-form-id', reason: 'native-layout-form-id-unavailable' });
+          return '';
+        }
+        return layout.Id;
+      }),
     ].filter(Boolean);
     const declaredForms = formIds.map((formId) =>
       forms.filter((form) => [form.id, form.formXml?.id].some((id) => norm(id) === norm(formId))),
@@ -216,7 +251,160 @@ export function observePortalNode(node, { scope, bindings = {}, sourceRefs = [],
     });
     return result;
   }
-  if (!boundary) return result;
+  if (!boundary && !result.availability.length && frameDepth < 16) {
+    // Native quick views declare their control, lookup and form name on the
+    // containing iframe. Join that exact placement to an independently observed
+    // parent form and its exported QuickForms target. URL hints supply no proof.
+    let frame;
+    try {
+      const candidate = doc.defaultView.frameElement;
+      const expected = candidate?.getAttribute('data-path');
+      const address = expected && new URL(expected, candidate.ownerDocument.baseURI);
+      const current = new URL(doc.URL);
+      if (
+        candidate?.isConnected &&
+        !candidate.hasAttribute('sandbox') &&
+        candidate.contentDocument === doc &&
+        candidate.ownerDocument.defaultView.location.origin === doc.defaultView.location.origin &&
+        candidate.matches('iframe.quickform[data-controlid][data-lookup-element][data-formname]') &&
+        address?.origin === current.origin &&
+        address.pathname === current.pathname &&
+        candidate.id === attribute(candidate, 'data-controlid')
+      )
+        frame = candidate;
+    } catch {
+      /* Inaccessible frames remain boundaries. */
+    }
+    if (
+      frame &&
+      ancestors.includes(doc.documentElement) &&
+      !ancestors.some((item) => item.matches('[data-formid],[data-form-layout]') || genericNativeId(item.id))
+    ) {
+      const parent = observePortalNode(frame, {
+        scope,
+        bindings,
+        sourceRefs,
+        sourceRefsByComponent,
+        frameDepth: frameDepth + 1,
+      });
+      const enclosingForms = parent.facts.filter((fact) =>
+        ['basic-form', 'advanced-form', 'form'].includes(fact.binding?.kind),
+      );
+      const placements = (bindings.quickForms ?? []).filter(
+        (placement) =>
+          placement.id === frame.id &&
+          placement.lookup === attribute(frame, 'data-lookup-element') &&
+          placement.formName === attribute(frame, 'data-formname') &&
+          enclosingForms.some((fact) =>
+            [placement.formId, placement.ownerFormXmlId].some((id) => id && norm(id) === norm(fact.binding.id)),
+          ),
+      );
+      const targets = placements.flatMap((placement) =>
+        forms.filter(
+          (form) =>
+            formKind(form) === 'form' &&
+            placement.targetFormId &&
+            norm(form.id) === norm(placement.targetFormId) &&
+            form.entity?.toLowerCase() === placement.entity?.toLowerCase() &&
+            form.name === placement.formName,
+        ),
+      );
+      if (placements.length === 1 && targets.length === 1) {
+        // Parameters can contradict a declaration after navigation, but cannot
+        // establish ownership in the absence of that rendered placement.
+        const params = [...new URL(doc.URL).searchParams];
+        const aliases = forms.filter((form) => norm(form.formXml?.id) === norm(targets[0].id)).map((form) => form.id);
+        const urlConflict = params.some(
+          ([key, value]) =>
+            value &&
+            (['entityname', 'tablename', 'etn', 'typename'].includes(key.toLowerCase())
+              ? value.toLowerCase() !== targets[0].entity.toLowerCase()
+              : ['entityformid', 'formid'].includes(key.toLowerCase())
+                ? ![targets[0].id, ...aliases].some((id) => norm(id) === norm(value))
+                : key.toLowerCase() === 'formname' && value !== targets[0].name),
+        );
+        if (urlConflict || (declaredTable && declaredTable !== targets[0].entity.toLowerCase())) {
+          result.facts.push({ scope, dimension: 'owner', kind: 'binding-conflict', reason: conflictReason });
+          return result;
+        }
+        chosenForm = targets[0];
+        declaredTable = chosenForm.entity.toLowerCase();
+        boundary = doc.documentElement;
+      }
+    }
+  }
+  if (!boundary) {
+    // Editor documents do not repeat their host's component/column IDs. Follow
+    // only an accessible same-origin frame chain to a known attribute host,
+    // never through an independent inner form or an unresolved component.
+    const editor = ancestors.some((item) =>
+      item.matches('textarea,[contenteditable="true"],[contenteditable=""],[role="textbox"]'),
+    );
+    if (
+      editor &&
+      !result.availability.length &&
+      !ancestors.some((item) => item.matches('form,[data-formid],[data-form-layout]') || genericNativeId(item.id))
+    ) {
+      let currentDoc = doc,
+        depth = ancestors.length;
+      for (let level = 0; level < 16; level++) {
+        let frame;
+        try {
+          frame = currentDoc.defaultView.frameElement;
+          if (
+            !frame?.isConnected ||
+            frame.hasAttribute('sandbox') ||
+            frame.contentDocument !== currentDoc ||
+            frame.ownerDocument.defaultView.location.origin !== doc.defaultView.location.origin
+          )
+            break;
+        } catch {
+          break;
+        }
+        for (let parent = frame; parent && depth < 256; parent = parent.parentElement, depth++) {
+          const name = /^(.*)_(?:ControlView|Container)$/i.exec(parent.id)?.[1];
+          if (!name) {
+            if (
+              parent.matches('form,[data-formid],[data-form-layout]') ||
+              /^(?:EntityFormControl|WebFormControl)(?:_|$)/.test(parent.id ?? '')
+            )
+              return result;
+            continue;
+          }
+          const packet = observePortalNode(parent, { scope, bindings, sourceRefs, sourceRefsByComponent });
+          const owner = packet.facts.find((fact) => fact.dimension === 'owner' && fact.binding?.kind === 'column');
+          const innerNames = ancestors.flatMap((item) =>
+            ['data-attribute', 'data-field', 'data-fieldname', 'data-pcf-native-field']
+              .map((key) => attribute(item, key).toLowerCase())
+              .filter(Boolean),
+          );
+          if (
+            owner &&
+            ((declaredTable && owner.binding.entity !== declaredTable) ||
+              innerNames.some((name) => name !== owner.binding.field.toLowerCase()))
+          ) {
+            result.facts.push({ scope, dimension: 'owner', kind: 'binding-conflict', reason: conflictReason });
+            return result;
+          }
+          // Even an unknown nearest host is a boundary; a more distant host
+          // cannot replace its missing or conflicting definition.
+          return {
+            ...packet,
+            componentAnchors: packet.componentAnchors.map((anchor) => ({
+              ...anchor,
+              ancestorDepth: depth + anchor.ancestorDepth,
+            })),
+          };
+        }
+        if (depth >= 256) {
+          result.availability.push({ reason: 'editor-host-ancestor-limit' });
+          break;
+        }
+        currentDoc = frame.ownerDocument;
+      }
+    }
+    return result;
+  }
   const refsFor = (key) => sourceRefsByComponent?.get(key) ?? sourceRefs.filter((ref) => ref.componentKey === key);
   const add = (binding, dimension, predicate = 'identity', proof = 'native-component-id', extra = {}) => {
     const refs = refsFor(binding.key);
@@ -338,13 +526,27 @@ export function observePortalNode(node, { scope, bindings = {}, sourceRefs = [],
         .map((name) => attribute(structural, name))
         .filter(Boolean)
     : [];
-  const names = explicitNames.length
-    ? explicitNames
-    : cell && bindings.grid?.name
-      ? [bindings.grid.name]
-      : control
-        ? [control.id, attribute(control, 'name')].filter(Boolean)
-        : [];
+  const host = ancestors.slice(0, ancestors.indexOf(boundary)).find((item) => {
+    const name = /^(.*)_(?:ControlView|Container)$/i.exec(item.id)?.[1];
+    return (
+      name &&
+      (node === item ||
+        control ||
+        ancestors.some((ancestor) =>
+          ancestor.matches('[contenteditable="true"],[contenteditable=""],[role="textbox"]'),
+        ))
+    );
+  });
+  const hostName = host && /^(.*)_(?:ControlView|Container)$/i.exec(host.id)[1];
+  const names = hostName
+    ? [hostName]
+    : explicitNames.length
+      ? explicitNames
+      : chosenGrid && cell && bindings.grid?.name
+        ? [bindings.grid.name]
+        : control
+          ? [control.id, attribute(control, 'name')].filter(Boolean)
+          : [];
   const fields = (bindings.columns ?? bindings.fields ?? []).filter(
     (field) =>
       field.entity?.toLowerCase() === declaredTable &&
@@ -374,6 +576,11 @@ export function observePortalNode(node, { scope, bindings = {}, sourceRefs = [],
       'owner',
       'identity',
       'native-field-id',
+      {
+        label: chosenGrid
+          ? 'Rendered grid table and declared column joined to the selected export'
+          : 'Rendered field or attribute host joined to the selected export',
+      },
     );
   }
   result.sourceRefs = [...new Map(result.sourceRefs.map((ref) => [ref.id, ref])).values()];

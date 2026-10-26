@@ -3,6 +3,7 @@ import { setImmediate } from 'node:timers/promises';
 import { createOfflineSessions } from './offline.mjs';
 import { encodeModelDrivenProvenance } from './provenance-transport.mjs';
 import { withFileSourceMap, identityMapUrl, hasSourceMap, fileSourceMapEstimate } from '../../../lense/source-map.mjs';
+import { metadataResponseChunks } from './metadata-response.mjs';
 
 const assets = {
   'app.mjs': 'text/javascript; charset=utf-8',
@@ -332,12 +333,11 @@ export function createModelDrivenHandler({
             const result = await metadataOnly(source, data, actor, res, { index: api[1] === 'index', entity });
             return entity ? result.tables[entity] : result;
           });
-          if (!res.destroyed)
-            json(
-              res,
-              200,
-              req.headers['x-mirage-provenance-format'] === '1' ? encodeModelDrivenProvenance(result) : result,
-            );
+          if (!res.destroyed) {
+            const payload =
+              req.headers['x-mirage-provenance-format'] === '1' ? encodeModelDrivenProvenance(result) : result;
+            await json(res, 200, payload, {}, { chunks: metadataResponseChunks(payload) });
+          }
           return true;
         }
         const route = /^tables\/([a-z][\w]*)(?:\/([^/]+))?$/i.exec(api[1]);
@@ -371,7 +371,8 @@ export function createModelDrivenHandler({
           json(res, method === 'POST' ? 201 : 200, result);
         }
       } catch (error) {
-        if (!res.destroyed)
+        if (res.headersSent) res.destroy(error);
+        else if (!res.destroyed)
           json(res, error.status ?? 500, { error: { message: error.message, code: error.code ?? 'ModelDrivenError' } });
       }
       return true;

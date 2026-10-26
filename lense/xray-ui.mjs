@@ -1291,6 +1291,7 @@ function xrayBrowserImpl(data) {
               lists: b.exportedLists,
               views: report?.views ?? [],
               columns: report?.columns ?? b.fields,
+              quickForms: (report?.nativeComponents ?? []).filter((component) => component.kind === 'quickform'),
             },
             sourceRefs: index.rows,
             sourceRefsByComponent: index.byComponent,
@@ -1344,10 +1345,11 @@ function xrayBrowserImpl(data) {
     if (
       !d.modelDriven &&
       node === selected &&
-      node.ownerDocument !== document &&
-      node.matches('input:not([type=hidden]):not([type=password]),select,textarea,output,label') &&
       (initial.owner.status === 'unavailable' || initial.source.status === 'unavailable') &&
-      initial.enclosing.some((row) => row.component?.kind === 'table')
+      ((node.ownerDocument !== document &&
+        node.matches('input:not([type=hidden]):not([type=password]),select,textarea,output,label') &&
+        initial.enclosing.some((row) => row.component?.kind === 'table')) ||
+        (b.grid?.table && b.grid?.name))
     ) {
       const key = JSON.stringify([scope, anchorGeneration]);
       if (!portalHydrations.has(key)) {

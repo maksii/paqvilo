@@ -690,6 +690,9 @@ test('native subgrids and quick views trace child views, tables, fields, action 
     false,
   );
   const grid = report.nativeComponents.find((control) => control.id === 'ChildGrid');
+  const quick = report.nativeComponents.find((control) => control.id === 'ChildQuick');
+  assert.equal(quick.ownerFormXmlId, 'widget-form');
+  assert.equal(quick.targetFormId, 'quick-form');
   assert.equal(grid.evidence, 'rendered-control-id');
   assert.equal(grid.relationship, 'fx_widget_children');
   assert.equal(

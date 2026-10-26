@@ -116,9 +116,29 @@ Field identifiers are checked against the selected export and explicit table con
 
 Custom grids can declare their own binding with `data-paqvilo-table="logical_table"` on the table and `data-paqvilo-column="logical_column"` on its cells or headers. For DataTables, X-ray reads declared column `name` metadata (`sName`) and its cell/header indices without invoking renderers or row-data getters. A table declaration supplies its table context; a column name alone retains all matching table candidates. A scroll-head clone can declare `data-paqvilo-grid="original-table-id"` and `data-dt-column` on its headers to use that original grid's declarations. No table ownership is inferred from API requests, cell contents, sibling grids or wrapper proximity. Unknown declared columns remain labelled as declarations whose source definition is unavailable.
 
+A unique declared table/column pair joined to its exported column can establish the selected grid's column identity
+and local **definition** source. This identifies its declaration; it does not prove which custom renderer ran or
+which record supplied the cell. A grid without its own table declaration cannot borrow the containing form's table.
+Duplicate clone-target IDs and contradictory rendered table declarations do not resolve to the first match.
+Rendered table declarations load their exported definitions on demand, without requiring a Web API request.
+Selecting a grid beyond the bounded page scan requests a source refresh that prioritizes that grid.
+
 Select the field inside an accessible same-origin modal iframe to inspect that document's current form and table, even when the opener's include graph omits the form. Closing, reopening or navigating the modal does not transfer the old selection to a new control. A repeated field name in a different table must resolve against its current rendered component. URL parameters and configured defaults remain context; they do not independently prove ownership. Conflicting rendered form/table declarations remain unresolved, and cross-origin or sandboxed frames remain inspection boundaries.
 
+A native layout can report an all-zero form ID. That placeholder supplies no identity; an independently verified,
+unique native basic-form wrapper can still identify its exported definition. A generic wrapper cannot.
+
+Native quick-view iframes can declare their control, lookup, form name and document path. X-ray joins those
+declarations to a verified parent form and that control's exported QuickForms target. The target FormXml and
+selected column must both exist. A changed document path, conflicting URL hints, missing target, conflicting
+placements or unverified parent prevents inheritance; URL parameters alone remain candidates.
+
 Attribute-scoped native hosts such as `<logical_column>_ControlView` and `<logical_column>_Container` can carry a known field/form binding through nested same-origin rich-text editor frames. Shared internal editor IDs do not replace that host binding. Record IDs, credentials and editor contents are not needed for this inspection.
+
+Exact editor attribution requires the host to join a verified rendered form and exported column. A generic form
+wrapper or frame URL alone remains candidate context. An independently identified inner form, unknown nearest
+attribute host or conflicting explicit column prevents inheritance from a more distant host. Editor-host traversal
+stops at sixteen frame levels or 256 ancestors and reports an ancestor-limit boundary when reached.
 
 X-ray work is bounded so large pages stay responsive. It skips an individual markup source above 1,048,576 UTF-16 code units and reports the omission; discovery and drawing stop at 800 candidate elements and 250 background outlines; details show up to 60 source matches. **Limits & freshness** shows that a search was limited and its omission count before you expand it; its source paths describe index omissions, not sources attributed to the selection. Large pages can therefore show partial background coverage, but selection still inspects the element under the pointer. Closed shadow roots and inaccessible frames are boundaries, and static Liquid matching cannot prove which branch rendered. Missing exports and failed refreshes clear previous identities instead of presenting them as current. Inspection reports are cached and reused until the sources change; the agent API reports omitted sources in `elementSourceLimits`.
 

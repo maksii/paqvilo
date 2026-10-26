@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import nativeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -88,6 +89,41 @@ async function fixture(t, count = 3) {
   };
   return { imported, xml, fields, formFile, entityFile };
 }
+
+test('source projections admit each shared file once and recheck edits and replacements on the next operation', async (t) => {
+  const source = await fixture(t, 256);
+  const index = createModelDrivenMetadataIndex(source.imported);
+  const open = nativeFs.openSync;
+  let opens = 0;
+  t.mock.method(nativeFs, 'openSync', (...args) => {
+    opens++;
+    return open(...args);
+  });
+  const keys = [
+    'table:fixture_item',
+    ...Object.keys(source.fields).map((name) => 'column:fixture_item:' + name),
+    ...Object.keys(source.fields).map((_, n) => modelDrivenControlKey(guid(1), { uniqueId: guid(n + 1000) })),
+  ];
+  const refs = index.sourceRefsFor(keys);
+  assert.equal(refs.length, keys.length);
+  assert.equal(opens, 2, '256 fields and 256 controls share two admitted files');
+  opens = 0;
+  const response = index.query({ active: { formId: guid(1) }, budget: { items: 1000, bytes: 2 * 1024 * 1024 } });
+  assert.equal(response.catalogue.forms[0].controlsComplete, true);
+  assert.equal(opens, 1, 'a new query admits its form file once');
+  const ref = refs.find((item) => item.componentKey === keys.at(-1));
+  await fs.writeFile(source.formFile, source.xml.replace('fixture_field_255', 'changed_field_255'));
+  assert.equal(
+    index.resolveOpen({ sourceKey: ref.id, sourceRevision: ref.sourceRevision, contentRevision: ref.contentRevision })
+      .ok,
+    false,
+    'Open source independently rejects a file changed after projection',
+  );
+  assert.ok(index.sourceRefsFor([keys.at(-1)])[0].currentContentRevision);
+  await fs.unlink(source.formFile);
+  await fs.mkdir(source.formFile);
+  assert.deepEqual(index.sourceRefsFor([keys.at(-1)]), [], 'a directory replacement cannot reuse admitted bytes');
+});
 
 test('active form/control lookup passes old global caps without serializing arbitrary prefix details', async (t) => {
   const source = await fixture(t, 1105);

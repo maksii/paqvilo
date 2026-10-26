@@ -68,13 +68,15 @@ import {
   routes as ENVIRONMENT_ROUTES,
 } from './sim-environment-routes.mjs';
 import { docsLinks } from './docs-links.mjs';
+import { writeJsonChunks } from './json-response.mjs';
 
 const fail = (message, status = 400, code = 'RuntimeRequestInvalid') =>
   Object.assign(new Error(message), { status, code });
 const toolkitPackage = JSON.parse(await fs.readFile(new URL('../../package.json', import.meta.url), 'utf8'));
 const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ?? toolkitPackage.repository);
-const json = (res, status, value, headers = {}) => {
+const json = (res, status, value, headers = {}, { chunks } = {}) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
+  if (chunks && status !== 204) return writeJsonChunks(res, chunks);
   res.end(status === 204 ? undefined : stringifyExactJson(value));
 };
 async function readBody(req) {

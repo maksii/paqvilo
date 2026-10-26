@@ -159,6 +159,7 @@ import { importModelDrivenResources, clientExtensionCatalogue } from './lib/mode
 import { powerPagesTables, managementOverlay } from './lib/model-driven/power-pages.mjs';
 import { createModelDrivenStorage } from './lib/model-driven-storage.mjs';
 import { createSolutionMetadataOverlay } from './lib/dataverse-solution-metadata.mjs';
+import { writeJsonChunks } from './lib/json-response.mjs';
 import { createSourceSolutionComponentStorage } from './lib/dataverse-source-components.mjs';
 import { importSolutionData, applySolutionData } from './lib/solution-data.mjs';
 import { scanSolutionSources, buildSolutionSchema, assertReloadableScan } from './lib/solution-schema.mjs';
@@ -452,7 +453,7 @@ async function jsonObjectBody(req) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw error('Request body must be a JSON object.');
   return body;
 }
-function json(res, status, value, headers = {}) {
+function json(res, status, value, headers = {}, { chunks } = {}) {
   res[auditResponse] = {
     rowCount: Array.isArray(value?.value)
       ? value.value.length
@@ -468,6 +469,7 @@ function json(res, status, value, headers = {}) {
     'cache-control': 'no-store',
     ...headers,
   });
+  if (chunks && status !== 204) return writeJsonChunks(res, chunks);
   res.end(status === 204 ? undefined : stringifyExactJson(value));
 }
 
@@ -1083,7 +1085,9 @@ async function createPowerPagesSimulator({
   });
   const live =
     liveBridge ??
-    new LiveBridge(store.snapshot().simulator?.live ?? { origin }, { writesPermitted: allowLiveWrites === true });
+    new LiveBridge(store.snapshot({ sections: ['simulator'] }).simulator?.live ?? { origin }, {
+      writesPermitted: allowLiveWrites === true,
+    });
   // The runtime flag governs every bridge, an injected one included: without it no write
   // leaves this runtime, whatever the bridge or the /_sim switch would allow.
   live.writesPermitted = allowLiveWrites === true;
