@@ -26,9 +26,14 @@ function gitOptions(cwd, { buffer = false, input } = {}) {
 }
 
 const git = (cwd, args, options) => execFileSync('git', [...GIT_ARGS, ...args], gitOptions(cwd, options));
-const gitAsync = (cwd, args) =>
+const gitAsync = (cwd, args, options) =>
   new Promise((resolve, reject) => {
-    execFile('git', [...GIT_ARGS, ...args], gitOptions(cwd), (err, stdout) => (err ? reject(err) : resolve(stdout)));
+    const { input, ...settings } = gitOptions(cwd, options);
+    const child = execFile('git', [...GIT_ARGS, ...args], settings, (err, stdout) =>
+      err ? reject(err) : resolve(stdout),
+    );
+    // A Git process that exits early reports through the callback; an unread stdin is no crash.
+    if (input !== undefined) child.stdin.on('error', () => {}).end(input);
   });
 
 /**
@@ -71,6 +76,29 @@ export async function gitDirectories(sourceDir) {
   } catch {
     return null;
   }
+}
+
+/** Blob contents (null for a missing path or a non-blob) of a `cat-file --batch` response, in request order. */
+function parseBatch(entries, output) {
+  let offset = 0;
+  const loaded = new Map();
+  for (const { file } of entries) {
+    const newline = output.indexOf(10, offset);
+    if (newline < 0) throw new Error('incomplete git batch response');
+    const header = output.toString('utf8', offset, newline);
+    offset = newline + 1;
+    if (header.endsWith(' missing')) {
+      loaded.set(file, null);
+      continue;
+    }
+    const match = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
+    if (!match) throw new Error('invalid git batch response');
+    const size = Number(match[2]);
+    if (offset + size >= output.length || output[offset + size] !== 10) throw new Error('incomplete git blob');
+    loaded.set(file, match[1] === 'blob' ? output.toString('utf8', offset, offset + size) : null);
+    offset += size + 1;
+  }
+  return loaded;
 }
 
 /** The read-only command that resolves a baseline ref to its commit; throws for an unsafe ref. */
@@ -184,38 +212,40 @@ export class GitBaseline {
       : rel.replace(/\\/g, '/');
   }
 
+  #batch(files) {
+    const entries = this.available
+      ? [...new Set(files.map((file) => path.resolve(file)))]
+          .filter((file) => !this.cache.has(file))
+          .map((file) => ({ file, rel: this.#relative(file) }))
+          .filter(({ rel }) => rel && !/[\r\n]/.test(rel))
+      : [];
+    return { entries, input: entries.map(({ rel }) => `${this.commit}:./${rel}\n`).join('') };
+  }
+
   /** Read many baseline blobs in one process. Each batch response is framed by its byte length. */
   preload(files) {
-    if (!this.available) return;
-    const entries = [...new Set(files.map((file) => path.resolve(file)))]
-      .filter((file) => !this.cache.has(file))
-      .map((file) => ({ file, rel: this.#relative(file) }))
-      .filter(({ rel }) => rel && !/[\r\n]/.test(rel));
+    const { entries, input } = this.#batch(files);
     if (!entries.length) return;
     try {
-      const input = entries.map(({ rel }) => `${this.commit}:./${rel}\n`).join('');
       const output = git(this.sourceDir, ['cat-file', '--batch'], { buffer: true, input });
-      let offset = 0;
-      const loaded = new Map();
-      for (const { file } of entries) {
-        const newline = output.indexOf(10, offset);
-        if (newline < 0) throw new Error('incomplete git batch response');
-        const header = output.toString('utf8', offset, newline);
-        offset = newline + 1;
-        if (header.endsWith(' missing')) {
-          loaded.set(file, null);
-          continue;
-        }
-        const match = /^[0-9a-f]+ (\w+) (\d+)$/.exec(header);
-        if (!match) throw new Error('invalid git batch response');
-        const size = Number(match[2]);
-        if (offset + size >= output.length || output[offset + size] !== 10) throw new Error('incomplete git blob');
-        loaded.set(file, match[1] === 'blob' ? output.toString('utf8', offset, offset + size) : null);
-        offset += size + 1;
-      }
-      for (const [file, content] of loaded) this.cache.set(file, content);
+      for (const [file, content] of parseBatch(entries, output)) this.cache.set(file, content);
     } catch {
       // A failed batch leaves show() available as an individual-file fallback.
+    }
+  }
+
+  /** preload() without blocking the event loop; a result read for a superseded commit is dropped. */
+  async preloadAsync(files) {
+    const { entries, input } = this.#batch(files);
+    if (!entries.length) return;
+    const version = this.baselineVersion;
+    try {
+      const output = await gitAsync(this.sourceDir, ['cat-file', '--batch'], { buffer: true, input });
+      if (version !== this.baselineVersion) return;
+      for (const [file, content] of parseBatch(entries, output))
+        if (!this.cache.has(file)) this.cache.set(file, content);
+    } catch {
+      // As preload(): show() remains the individual-file fallback.
     }
   }
 

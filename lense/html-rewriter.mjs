@@ -711,6 +711,10 @@ export class HtmlRewriter {
     const raw = new Map();
     const valid = new Map();
     const stamps = new Map();
+    // The baseline blobs refresh() compares changed sources with load while the sources are read.
+    const baselines = baseline.preloadAsync?.(
+      model.inlineSources.filter((src) => changed.has(src.file)).map((src) => src.file),
+    );
     const root = model.sourceDir ? await fs.promises.realpath(model.sourceDir) : null;
     // Each stat/realpath pair runs together: every sequential fs promise costs a thread-pool round trip.
     await orderedMap(files, 16, async (file) => {
@@ -748,6 +752,7 @@ export class HtmlRewriter {
       valid.delete(key);
       stamps.delete(key);
     });
+    await baselines;
     return new HtmlRewriter(options, { raw, valid, changed, stamps });
   }
 
