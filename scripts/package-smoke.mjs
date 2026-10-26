@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { validateReleaseFiles } from './release-check.mjs';
 import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
 import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
+import { assertSmokeProcess } from './smoke-process.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npm = process.env.npm_execpath;
@@ -109,7 +110,7 @@ for (const options of [
       timeout: 120000,
       maxBuffer: 4 * 1024 * 1024,
     });
-    if (result.status !== 0) throw new Error(`Installed consumer bootstrap failed: ${result.stdout}\n${result.stderr}`);
+    assertSmokeProcess(result, 'Installed consumer bootstrap failed');
   };
   bootstrapConsumer();
   const lockFile = path.join(consumer, 'package-lock.json'),
