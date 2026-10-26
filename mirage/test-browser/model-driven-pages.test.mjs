@@ -4,9 +4,12 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { stringify } from 'yaml';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
+// Tests that select staff or create records own their simulator; read-only tests share one.
+const scope = fileScope();
+let sharedApp;
 
 // The custom page: a project canvas app whose OnStart reads the navigateTo parameters (Param("recordId"),
 // Param("entityName")) and looks the record up in Dataverse; its screen's OnVisible sets a context variable.
@@ -46,9 +49,8 @@ const grid = `ComponentFramework.registerControl('Invented.Grid', class {
   destroy() {}
 });`;
 
-async function fixture(t) {
-  const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: true } });
-  await initial.sim.close();
+async function app(owner) {
+  const initial = await modelDrivenFixture(owner, { modelDriven: { trustedExtensions: true }, defer: true });
   const dir = initial.solutionDir,
     write = async (name, content) => {
       await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
@@ -112,8 +114,11 @@ async function fixture(t) {
     projectRoot: initial.root,
     canvas: { sources: ['apps/x_invented_page', 'apps/x_other_page'] },
   });
-  const origin = sim.origin ?? sim.url;
-  t.after(() => sim.close());
+  return { sim, origin: sim.origin ?? sim.url };
+}
+
+async function fixture(t, { readOnly = false } = {}) {
+  const { sim, origin } = await (readOnly ? (sharedApp ??= app(scope)) : app(t));
   const page = await chrome.page(t);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -292,7 +297,7 @@ test('navigateTo opens web resources, records and custom pages; a missing custom
 });
 
 test('Xrm.App.sidePanes hosts pages beside the workspace and closes them', async (t) => {
-  const { page, origin, errors } = await fixture(t);
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
   await openRecord(page, origin);
   await page.evaluate(async () => {
     const pane = await window.Xrm.App.sidePanes.createPane({ title: 'Invented pane', paneId: 'invented' });
@@ -340,7 +345,7 @@ test('Xrm.App.sidePanes hosts pages beside the workspace and closes them', async
 });
 
 test('a dataset component on a related subgrid receives the parent rows and the staff context', async (t) => {
-  const { page, origin, errors } = await fixture(t);
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
   await openRecord(page, origin);
   await page.getByRole('tab', { name: 'Related items' }).click();
   await page.getByText('Rows: Copper child', { exact: true }).waitFor();

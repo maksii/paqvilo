@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 // On the Power Pages host the model-driven catalogue holds the portal provider's site tables; a dashboard list over one
 // renders on the page, so its preflight row is satisfied as well (one table set for row and page).
 test('a dashboard list over a portal site table is satisfied on the Power Pages host, as its page renders it', async (t) => {
-  const initial = await modelDrivenFixture(t, {}, { started: false });
+  const initial = await modelDrivenFixture(t, { defer: true });
   const BOARD = '77777777-7777-4777-8777-7777777777c1';
   await fs.writeFile(
     path.join(initial.solutionDir, 'Other/Customizations.xml'),
@@ -23,7 +22,6 @@ test('a dashboard list over a portal site table is satisfied on the Power Pages 
     ),
   );
   const sim = await initial.start();
-  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const report = await (await fetch(`${origin}/_sim/api/preflight`)).json();
   const row = report.requirements.find((entry) => entry.id === 'model-driven:dashboard/x_example/board');

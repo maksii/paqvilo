@@ -4,7 +4,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { validateValues } from '../lib/model-driven/data.mjs';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const field = {
   name: 'x_choices',
@@ -69,7 +68,7 @@ test('boolean metadata choice values retain boolean form writes for both option 
 });
 
 test('imported multiselect metadata round trips through the shared organization pipeline', async (t) => {
-  const fixture = await modelDrivenFixture(t, {}, { started: false });
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const file = path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml');
   const xml = await fs.readFile(file, 'utf8');
   await fs.writeFile(
@@ -80,7 +79,6 @@ test('imported multiselect metadata round trips through the shared organization 
     ),
   );
   const sim = await fixture.start();
-  ownedFixture(t).add(() => sim.close());
   const origin = sim.url;
   const catalogue = await (await fetch(origin + '/_apps/api')).json();
   assert.equal(catalogue.tables.x_item.fields.x_choices.type, 'multiselect');
