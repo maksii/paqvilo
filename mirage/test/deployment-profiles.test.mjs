@@ -18,6 +18,28 @@ import { profileFixture } from './fixtures/deployment-profiles.mjs';
 import { initProject, cliArgs, mirageReadiness } from '../../lense/commands/mirage.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
 
+// The simulator announces each finished source reload on /__sim/events ("event: reload"). The watcher's write-stability
+// and debounce windows make the time to a reload machine-dependent, so a test waits on these announcements, never a clock:
+// the returned function resolves once the predicate holds, re-checking it after every reload.
+async function reloadEvents(app, fixture) {
+  const controller = new AbortController();
+  fixture.onCleanup(() => controller.abort());
+  const response = await fetch(`${app.url}/__sim/events`, { signal: controller.signal });
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = '';
+  return async (predicate) => {
+    while (!(await predicate())) {
+      let match;
+      while (!(match = /event: reload\ndata: \d+\n\n/.exec(buffer))) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error('The simulator event stream ended before the expected reload.');
+        buffer += value;
+      }
+      buffer = buffer.slice(match.index + match[0].length);
+    }
+  };
+}
+
 test('profile mappings validate defaults, required sections, IDs, paths and enabled flags', () => {
   for (const [config, message] of [
     [null, /must be an object containing only/],
@@ -248,24 +270,18 @@ test('external profile changes reload local rendering and seeded values with a n
   }
   const app = await createSimulator({ ...fixture, watch: true });
   fixture.onCleanup(() => app.close());
+  const reloaded = await reloadEvents(app, fixture);
   const status = async () => await (await fetch(app.url + '/__sim/api/status')).json();
   const fingerprint = (await status()).sourceFingerprint;
   await fs.writeFile(
     path.join(fixture.root, 'profiles/dev.yml'),
     'adx_contentsnippet:\n- adx_contentsnippetid: greeting\n  adx_value: Reloaded',
   );
-  // Poll the bounded local watcher rather than assuming a fixed delay.
-  const end = Date.now() + 10000;
-  let published = await status();
-  while (
-    (app.portal.snippets.Greeting !== 'Reloaded' || published.sourceFingerprint === fingerprint) &&
-    Date.now() < end
-  ) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    published = await status();
-  }
+  await reloaded(
+    async () => app.portal.snippets.Greeting === 'Reloaded' && (await status()).sourceFingerprint !== fingerprint,
+  );
   assert.equal(app.portal.snippets.Greeting, 'Reloaded');
-  assert.notEqual(published.sourceFingerprint, fingerprint);
+  assert.notEqual((await status()).sourceFingerprint, fingerprint);
   await fs.writeFile(
     path.join(fixture.root, 'profiles/dev-settings.json'),
     JSON.stringify({
@@ -273,9 +289,7 @@ test('external profile changes reload local rendering and seeded values with a n
       ConnectionReferences: [],
     }),
   );
-  const valuesEnd = Date.now() + 10000;
-  while (app.state().data.environmentvariablevalue[0].value !== 'Reloaded variable' && Date.now() < valuesEnd)
-    await new Promise((resolve) => setTimeout(resolve, 50));
+  await reloaded(() => app.state().data.environmentvariablevalue[0].value === 'Reloaded variable');
   assert.equal(app.state().data.environmentvariablevalue[0].value, 'Reloaded variable');
   assert.equal(app.state().data.connectionreference.length, 0);
 });
@@ -320,6 +334,11 @@ test('no-profile pin restores source values, removes owned seeds only and preser
   );
 });
 
+// Negative windows: there is no positive signal for "has not happened". A close that ignored the held reload finishes in a
+// few turns; a late source write would come from the watcher's 200 ms write-stability and 250 ms debounce (server.mjs).
+const SHUTDOWN_PROBE_MS = 40;
+const LATE_WRITE_WINDOW_MS = 200 + 250;
+
 test(
   'shutdown drains an in-flight source reload before fixture removal and rejects later reloads',
   { timeout: 15000 },
@@ -351,14 +370,16 @@ test(
     const shutdown = app.close().then(() => {
       closed = true;
     });
-    await new Promise((resolve) => setTimeout(resolve, 40));
+    // Nothing signals "close is waiting", so a bounded window proves close has not finished while the reload is held.
+    await new Promise((resolve) => setTimeout(resolve, SHUTDOWN_PROBE_MS));
     assert.equal(closed, false, 'shutdown must wait for the accepted reload');
     release();
     await Promise.all([pending, shutdown]);
     await app.reload();
     assert.equal(replacements, 1, 'a closed runtime cannot schedule another source write');
     await fs.rm(fixture.root, { recursive: true, force: true, maxRetries: 5 });
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // No late writer may recreate the removed fixture: wait out one watcher write-stability and debounce window.
+    await new Promise((resolve) => setTimeout(resolve, LATE_WRITE_WINDOW_MS));
     await assert.rejects(fs.stat(fixture.root), { code: 'ENOENT' });
   },
 );
