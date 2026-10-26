@@ -4,7 +4,9 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 
-export async function modelDrivenFixture(t, options = {}) {
+// `started: false` writes the sources without starting a runtime, for a test that edits them before its first start.
+// Close a runtime from start() with ownedFixture(t).add: a later t.after hook would run after the sources are removed.
+export async function modelDrivenFixture(t, options = {}, { started = true } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-app-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const sourceDir = path.join(root, 'portal'),
@@ -90,6 +92,7 @@ export async function modelDrivenFixture(t, options = {}) {
       ...options,
       ...extra,
     });
+  if (!started) return { sim: null, origin: null, root, sourceDir, solutionDir, stateFile, start };
   const sim = await start();
   ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;

@@ -1,6 +1,6 @@
 // Local portals Web API (/_api) against the documented Power Pages and
 // Dataverse Web API behaviour.
-import test from 'node:test';
+import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -210,6 +210,17 @@ async function start(t, { settings = SETTINGS, state = fixture(), observed = nul
   return { app, call, json };
 }
 
+// Read-only tests of the default settings and state share one runtime; tests that write, or need other settings,
+// state or observations, start their own.
+let shared;
+const cleanup = [];
+before(async () => {
+  shared = await start({ after: (fn) => cleanup.push(fn) });
+});
+after(async () => {
+  for (const fn of cleanup) await fn();
+});
+
 test('route, Prefer and annotation helpers follow the OData conventions', () => {
   assert.deepEqual(parseWebApiRoute('/_api/accounts'), { kind: 'collection', set: 'accounts' });
   assert.deepEqual(parseWebApiRoute('/_api/accounts()'), { kind: 'collection', set: 'accounts' });
@@ -363,8 +374,8 @@ test('error envelope uses the local Power Pages error-code contract and optional
   }
 });
 
-test('collection reads return row versions, primary keys, lookup properties and formatted values', async (t) => {
-  const { json } = await start(t);
+test('collection reads return row versions, primary keys, lookup properties and formatted values', async () => {
+  const { json } = shared;
   const { status, body, headers, url } = await json(
     '/_api/accounts?$select=name,revenue,industrycode,_primarycontactid_value,statecode,createdon&$filter=accountid eq ' +
       G(1),
@@ -417,8 +428,8 @@ test('collection reads return row versions, primary keys, lookup properties and 
   );
 });
 
-test('select-less collection reads are refused; select-less record reads return the allow-listed columns', async (t) => {
-  const { json } = await start(t);
+test('select-less collection reads are refused; select-less record reads return the allow-listed columns', async () => {
+  const { json } = shared;
   const collection = await json('/_api/contacts');
   assert.equal(collection.status, 403);
   assert.deepEqual(collection.body.error, {
@@ -442,8 +453,8 @@ test('select-less collection reads are refused; select-less record reads return 
   );
 });
 
-test('$filter grammar: logical, string, lambda and Dataverse functions; unknown identifiers are 400 and disallowed columns 403', async (t) => {
-  const { json } = await start(t);
+test('$filter grammar: logical, string, lambda and Dataverse functions; unknown identifiers are 400 and disallowed columns 403', async () => {
+  const { json } = shared;
   const names = async (filter) =>
     (await json(`/_api/accounts?$select=name&$orderby=name&$filter=${encodeURIComponent(filter)}`)).body.value.map(
       (row) => row.name,
@@ -533,8 +544,8 @@ test('$top, $count (capped at 5000), odata.maxpagesize paging and the $skip rest
   assert.equal(count, '5000');
 });
 
-test('$expand of single- and collection-valued navigation properties with nested options', async (t) => {
-  const { json } = await start(t);
+test('$expand of single- and collection-valued navigation properties with nested options', async () => {
+  const { json } = shared;
   const { body } = await json(
     `/_api/accounts(${G(1)})?$select=name&$expand=primarycontactid($select=fullname),contact_customer_accounts($select=fullname;$orderby=fullname desc;$top=1)`,
   );
@@ -545,8 +556,8 @@ test('$expand of single- and collection-valued navigation properties with nested
   assert.match(body.contact_customer_accounts[0]['@odata.etag'], /^W\/"\d+"$/);
 });
 
-test('$apply groupby and aggregate', async (t) => {
-  const { json } = await start(t);
+test('$apply groupby and aggregate', async () => {
+  const { json } = shared;
   const { status, body } = await json(
     '/_api/accounts?$apply=groupby((statecode),aggregate(employees with sum as total))',
   );
@@ -557,8 +568,8 @@ test('$apply groupby and aggregate', async (t) => {
   ]);
 });
 
-test('single property, $value, navigation and $count routes', async (t) => {
-  const { json, call } = await start(t);
+test('single property, $value, navigation and $count routes', async () => {
+  const { json, call } = shared;
   assert.deepEqual((await json(`/_api/accounts(${G(1)})/name`)).body, { value: 'Contoso' });
   assert.equal(await (await call(`/_api/accounts(${G(1)})/name/$value`)).text(), 'Contoso');
   assert.equal((await call(`/_api/accounts(${G(3)})/revenue`)).status, 204, 'null properties answer 204');
@@ -771,7 +782,7 @@ test('innererror scopes: Webapi/error/innererror false wins, the default keeps i
     'code',
     'message',
   ]);
-  const plain = await start(t);
+  const plain = shared;
   assert.deepEqual(Object.keys((await plain.json('/_api/ppsimparitymissings')).body.error).sort(), ['code', 'message']);
   const read = new DataError('x', 403, 'PermissionDenied', { operation: 'read', table: 'account' });
   assert.deepEqual(
@@ -1055,8 +1066,8 @@ test('alternate keys are unique and duplicate primary keys are rejected', async 
   assert.equal(duplicateId.status, 412);
 });
 
-test('anti-forgery tokens, disabled tables, configuration tables, entity set names and cloud flows', async (t) => {
-  const { json, call } = await start(t);
+test('anti-forgery tokens, disabled tables, configuration tables, entity set names and cloud flows', async () => {
+  const { json, call } = shared;
   const missing = await json('/_api/accounts', { method: 'POST', body: { name: 'No token' }, token: false });
   assert.equal(missing.status, 401);
   assert.equal(missing.body.error.code, '90040107');
@@ -1112,8 +1123,8 @@ test('anti-forgery tokens, disabled tables, configuration tables, entity set nam
   assert.equal(duplicate.status, 400);
 });
 
-test('FetchXML through the Web API: aliases carry AttributeName, nulls are omitted and $count counts matches', async (t) => {
-  const { json } = await start(t);
+test('FetchXML through the Web API: aliases carry AttributeName, nulls are omitted and $count counts matches', async () => {
+  const { json } = shared;
   const xml = `<fetch><entity name="account"><attribute name="name" alias="title"/><attribute name="revenue"/><attribute name="primarycontactid"/><order attribute="name"/><link-entity name="contact" from="contactid" to="primarycontactid" link-type="outer" alias="pc"><attribute name="fullname"/></link-entity></entity></fetch>`;
   const { status, body } = await json(`/_api/accounts?fetchXml=${encodeURIComponent(xml)}&$count=true`);
   assert.equal(status, 200);
