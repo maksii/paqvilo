@@ -76,7 +76,7 @@ function readOwned(file, { reportPublication = false } = {}) {
     if (opened.nlink !== 1) return reportPublication && opened.nlink === 2 ? { publishing: true } : null;
     // On platforms without NOFOLLOW, reject a linked name before reading any
     // bytes. The descriptor remains the sole target of the bounded reads.
-    if (!sameFileVersion(opened, fs.lstatSync(file))) return null;
+    if (!sameFileVersion(opened, fs.lstatSync(file))) return reportPublication ? { publishing: true } : null;
     const buffer = Buffer.alloc(opened.size + 1);
     let length = 0;
     while (length < buffer.length) {
@@ -92,10 +92,13 @@ function readOwned(file, { reportPublication = false } = {}) {
       after.size !== bytes.length ||
       !sameFileVersion(after, fs.lstatSync(file))
     )
-      return null;
+      return reportPublication ? { publishing: true } : null;
     return { bytes, info: after };
-  } catch {
-    return null;
+  } catch (error) {
+    // Windows can temporarily deny access while another process retires its
+    // publication link. Only collision reuse waits for these specific errors;
+    // a later successful descriptor read must still pass every ownership check.
+    return reportPublication && ['EBUSY', 'EPERM', 'EACCES'].includes(error.code) ? { publishing: true } : null;
   } finally {
     if (handle !== undefined) fs.closeSync(handle);
   }
@@ -140,7 +143,11 @@ export function persistCommandPayload(directory, bytes) {
     return file;
   }
   const temporary = path.join(storage.absolute, `.stop-${randomUUID()}.tmp`);
-  let handle, temporaryIdentity;
+  let handle,
+    temporaryIdentity,
+    completed = false,
+    cleanupFailed = false,
+    result;
   try {
     checkDirectory(storage);
     handle = fs.openSync(
@@ -160,10 +167,11 @@ export function persistCommandPayload(directory, bytes) {
       fs.linkSync(temporary, file);
     } catch (error) {
       if (error.code !== 'EEXIST') throw failure('Cannot publish command payload.', 'COMMAND_PAYLOAD_WRITE');
-      return existing();
+      result = existing();
     }
     checkDirectory(storage);
-    return file;
+    completed = true;
+    result ??= file;
   } catch (error) {
     if (error.code?.startsWith('COMMAND_PAYLOAD_')) throw error;
     throw failure('Cannot persist command payload.', 'COMMAND_PAYLOAD_WRITE');
@@ -182,10 +190,15 @@ export function persistCommandPayload(directory, bytes) {
         info.ino === temporaryIdentity.ino
       )
         fs.unlinkSync(temporary);
+      else if (completed) cleanupFailed = true;
     } catch {
-      /* Preserve unfamiliar paths rather than trying broader cleanup. */
+      // Never claim a completed publication when its temporary file could not
+      // be safely retired. Preserve unfamiliar paths without broader cleanup.
+      if (completed) cleanupFailed = true;
     }
   }
+  if (cleanupFailed) throw failure('Cannot retire command payload temporary file.', 'COMMAND_PAYLOAD_WRITE');
+  return result;
 }
 
 /** Remove only explicitly released, intact payloads with no remaining ownership reference. */

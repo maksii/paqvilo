@@ -209,6 +209,7 @@ test(
     const { directory } = fixture(t);
     const bytes = payload('shared publication');
     const start = new SharedArrayBuffer(4);
+    const retire = new SharedArrayBuffer(4);
     const workers = Array.from(
       { length: 6 },
       () =>
@@ -218,9 +219,21 @@ test(
     const fs = require('node:fs');
     (async () => {
       const { persistCommandPayload } = await import(workerData.module);
-      const unlink = fs.unlinkSync;
+      const unlink = fs.unlinkSync, stat = fs.fstatSync;
+      fs.fstatSync = (fd, ...args) => {
+        const info = stat(fd, ...args);
+        if (info.nlink === 2) {
+          Atomics.store(new Int32Array(workerData.retire), 0, 1);
+          Atomics.notify(new Int32Array(workerData.retire), 0);
+          parentPort.postMessage({ observedLink: true });
+        }
+        return info;
+      };
       fs.unlinkSync = (file) => {
-        if (String(file).endsWith('.tmp')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+        if (String(file).endsWith('.tmp') && fs.lstatSync(file).nlink === 2) {
+          parentPort.postMessage({ heldLink: true });
+          Atomics.wait(new Int32Array(workerData.retire), 0, 0);
+        }
         return unlink(file);
       };
       parentPort.postMessage({ ready: true });
@@ -236,11 +249,19 @@ test(
               directory,
               bytes,
               start,
+              retire,
             },
           },
         ),
     );
     ownedFixture(t).add(() => Promise.all(workers.map((worker) => worker.terminate())));
+    let releaseHeld, releaseObserved;
+    const held = new Promise((resolve) => {
+      releaseHeld = resolve;
+    });
+    const observed = new Promise((resolve) => {
+      releaseObserved = resolve;
+    });
     const ready = [],
       outcomes = [];
     for (const worker of workers) {
@@ -249,6 +270,8 @@ test(
           worker.once('error', reject);
           worker.on('message', (message) => {
             if (message.ready) resolve();
+            if (message.heldLink) releaseHeld();
+            if (message.observedLink) releaseObserved();
           });
         }),
       );
@@ -264,6 +287,7 @@ test(
     await Promise.all(ready);
     Atomics.store(new Int32Array(start), 0, 1);
     Atomics.notify(new Int32Array(start), 0);
+    await Promise.all([held, observed]);
     const results = await Promise.all(outcomes);
     assert.ok(
       results.every((result) => result.file === filename(directory, bytes)),
@@ -338,4 +362,80 @@ test('pruning preserves tampered payloads, directories, links and files outside 
   assert.throws(() => pruneCommandPayloads(alias, [path.join(alias, path.basename(corrupt))], []), {
     code: 'COMMAND_PAYLOAD_DIRECTORY',
   });
+});
+
+test('failed temporary unlink cannot report a reusable canonical payload', (t) => {
+  const { directory } = fixture(t);
+  const bytes = payload('failed cleanup');
+  const unlink = fs.unlinkSync;
+  let injected = false;
+  t.mock.method(fs, 'unlinkSync', (file) => {
+    if (String(file).endsWith('.tmp')) {
+      injected = true;
+      throw Object.assign(new Error('invented cleanup failure'), { code: 'EBUSY' });
+    }
+    return unlink(file);
+  });
+  assert.throws(() => persistCommandPayload(directory, bytes), { code: 'COMMAND_PAYLOAD_WRITE' });
+  assert.equal(injected, true);
+  assert.equal(fs.statSync(filename(directory, bytes)).nlink, 2);
+});
+
+test('collision reuse survives a transient sharing failure when acquiring the canonical descriptor', (t) => {
+  const { directory } = fixture(t);
+  const bytes = payload('transient acquisition');
+  const file = filename(directory, bytes);
+  const link = fs.linkSync,
+    open = fs.openSync;
+  let collision = false,
+    injected = false;
+  t.mock.method(fs, 'linkSync', (from, to) => {
+    if (String(to) !== file) return link(from, to);
+    fs.writeFileSync(file, bytes);
+    collision = true;
+    throw Object.assign(new Error('invented concurrent winner'), { code: 'EEXIST' });
+  });
+  t.mock.method(fs, 'openSync', (name, ...args) => {
+    if (String(name) === file && collision && !injected) {
+      injected = true;
+      throw Object.assign(new Error('invented transient sharing violation'), { code: 'EBUSY' });
+    }
+    return open(name, ...args);
+  });
+  assert.equal(persistCommandPayload(directory, bytes), file);
+  assert.equal(injected, true);
+  assert.deepEqual(fs.readFileSync(file), bytes);
+  assert.equal(fs.statSync(file).nlink, 1);
+});
+
+test('collision reuse rechecks a canonical link count changing between descriptor and pathname checks', (t) => {
+  const { directory } = fixture(t);
+  const bytes = payload('link transition');
+  const file = filename(directory, bytes);
+  const temporaryLink = path.join(directory, 'transition-link.tmp');
+  const link = fs.linkSync,
+    stat = fs.lstatSync;
+  let collision = false,
+    injected = false;
+  t.mock.method(fs, 'linkSync', (from, to) => {
+    if (String(to) !== file) return link(from, to);
+    fs.writeFileSync(file, bytes);
+    collision = true;
+    throw Object.assign(new Error('invented concurrent winner'), { code: 'EEXIST' });
+  });
+  t.mock.method(fs, 'lstatSync', (name, ...args) => {
+    if (String(name) === file && collision && !injected) {
+      injected = true;
+      link(file, temporaryLink);
+      const during = stat(file, ...args);
+      assert.equal(during.nlink, 2);
+      fs.unlinkSync(temporaryLink);
+      return during;
+    }
+    return stat(name, ...args);
+  });
+  assert.equal(persistCommandPayload(directory, bytes), file);
+  assert.equal(injected, true);
+  assert.deepEqual(fs.readFileSync(file), bytes);
+  assert.equal(fs.statSync(file).nlink, 1);
 });
