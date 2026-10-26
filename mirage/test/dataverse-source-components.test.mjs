@@ -284,8 +284,8 @@ async function client(sim, oldSecret) {
 }
 
 test('selected source app/form API writes and tombstones update catalogue, retain sitemap and survive restart without source writes', async (t) => {
-  const fixture = await modelDrivenFixture(t, { dataverse: { enabled: true } });
-  await fixture.sim.close();
+  // The form id is edited into the export before the first start, so the fixture only writes its files.
+  const fixture = await modelDrivenFixture(t, { dataverse: { enabled: true } }, { started: false });
   const formFile = path.join(fixture.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('{item-form}', `{${FORM}}`));
   const beforeForm = await fs.readFile(formFile, 'utf8');
