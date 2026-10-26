@@ -44,6 +44,8 @@ const profile = {
   evidence: 'Invented exact numeric column source',
   grants: [{ entity: 'precisionrow', operations: ['read', 'create', 'update', 'delete'] }],
 };
+// A hang guard for the one-file csc.exe build of the invented plug-in; a normal build finishes in about a second.
+const COMPILE_TIMEOUT_MS = 20_000;
 const text = (value) => (typeof value === 'object' ? value.value : String(value));
 const typed = (type, value) => ({ $type: type, value });
 
@@ -296,7 +298,7 @@ var link=q.AddLink("precisionrow","precisionrowid","precisionrowid");link.Entity
     const build = spawnSync(
       path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
       ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000 },
+      { shell: false, windowsHide: true, encoding: 'utf8', timeout: COMPILE_TIMEOUT_MS },
     );
     assert.equal(build.status, 0, build.stdout + build.stderr);
     const runtime = await prepareClrRuntime({
@@ -356,7 +358,7 @@ var link=q.AddLink("precisionrow","precisionrowid","precisionrowid");link.Entity
     );
     const hosts = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
     assert.equal(hosts.length, 1);
-    assert.ok(hosts.every((note) => note.absenceVerified));
+    assert.equal(hosts[0].absenceVerified, true, 'the owned CLR host is verified gone');
     if (process.env.PAQ_TEST_CLR_EVIDENCE) {
       const hash = async (file) =>
         createHash('sha256')
