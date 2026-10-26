@@ -80,6 +80,8 @@ Set `mirage.canvas.sources` in the site configuration to project-relative extrac
 
 ## Power Fx
 
+The optional [PAC differential check](power-fx-oracle.md) compares a fixed pure corpus with Microsoft's console evaluator. It established corrections for selected `IfError` replacement coercion and exact numeric `Text` formatting. It does not replace the local interpreter or establish complete host parity.
+
 Mirage includes a Power Fx interpreter (`mirage/lib/power-fx.mjs`): the documented grammar (operators, `;` chaining, `As`, `With`, records, tables, string interpolation, `[@Name]` disambiguation), typed values (number, text, Boolean, date, time and date/time with time zone semantics, GUID, records, tables, blank, error values with the documented `ErrorKind` codes, untyped values from `ParseJSON`) and the function table: every function of the formula-column reference plus the table, behaviour and text functions that Functions, low-code plug-ins and canvas apps use. Unknown functions answer 400 `PowerFxFunctionUnsupported` naming the function; connector functions are not part of the engine. `Now`, `Today` and date parts read in the host's time zone (UTC by default); `UTCNow` and `UTCToday` read in UTC. A numeric overflow, an invalid date text (`DateValue("2023-02-30")`) and a failed element of `ForAll` are error values that `IfError` handles. Adding a number to a date/time adds wall-clock days, as `DateAdd(..., TimeUnit.Days)` does, also across daylight-saving changes. The capability record `power-fx` is at behaviour. The preflight shows no `power-fx:evaluator` requirement while the engine is enabled.
 
 `createPowerFxEvaluator({ adapter, engine })` in `mirage/lib/canvas-power-fx.mjs` is the single Power Fx entry point. Its contract is:

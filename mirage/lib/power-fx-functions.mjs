@@ -52,6 +52,67 @@ const fail = (kind, message) => fxError(ErrorKind[kind], message);
 const notHosted = (name) => fail('NotSupported', `${name} is not available in this host.`);
 const firstError = (...values) => values.find((value) => value instanceof FxError);
 
+// Infer only result types fixed by syntax, without evaluating an unselected formula or invoking host functions.
+// Dynamic names, connector calls and mixed-type arithmetic need a full Power Fx type checker and remain unknown.
+function knownResultType(node) {
+  if (!node) return null;
+  if (node.t === 'lit') {
+    if (node.v instanceof FxError && node.v.errors.every((error) => error.Kind === ErrorKind.Numeric)) return 'number';
+    if (isExactNumeric(node.v) || typeof node.v === 'number') return 'number';
+    if (typeof node.v === 'string') return 'text';
+    if (typeof node.v === 'boolean') return 'boolean';
+  }
+  if (node.t === 'interp') return 'text';
+  if (node.t === 'pct' || (node.t === 'unary' && node.op !== '!')) {
+    const operand = knownResultType(node.e);
+    return operand === 'number' || operand === 'float' ? operand : null;
+  }
+  if (node.t === 'unary') return 'boolean';
+  if (node.t === 'bin') {
+    if (node.op === '^') return 'float';
+    if (['/', '*'].includes(node.op)) {
+      const left = knownResultType(node.l),
+        right = knownResultType(node.r);
+      if (left === 'float' || right === 'float') return 'float';
+      if (left === 'number' && right === 'number') return 'number';
+      return null;
+    }
+    if (node.op === '&') return 'text';
+    if (['=', '<>', '<', '<=', '>', '>=', 'in', 'exactin', '&&', '||'].includes(node.op)) return 'boolean';
+    if (['+', '-'].includes(node.op) && knownResultType(node.l) === 'number' && knownResultType(node.r) === 'number')
+      return 'number';
+  }
+  if (node.t === 'call') {
+    return (
+      {
+        Text: 'text',
+        Value: 'number',
+        Decimal: 'number',
+        Float: 'float',
+        Boolean: 'boolean',
+        DateValue: 'date',
+        Date: 'date',
+        DateTimeValue: 'datetime',
+        TimeValue: 'time',
+      }[node.name] ?? null
+    );
+  }
+  return null;
+}
+function coerceIfErrorReplacement(fx, value, type) {
+  if (value instanceof FxError || isBlank(value)) return value;
+  if (type === 'number') return typeof value === 'string' ? parseNumber(value, fx.language) : toDecimal(value);
+  if (type === 'float') return FUNCTIONS.Float.fn(fx, value);
+  if (type === 'text') return toText(value, fx);
+  if (type === 'boolean') return toBoolean(value);
+  if (['date', 'datetime', 'time'].includes(type)) return toDate(value, type, fx);
+  fx.warn({
+    code: 'POWER_FX_IFERROR_TYPE_UNKNOWN',
+    message: 'IfError replacement type could not be determined; coercion was not applied.',
+  });
+  return value;
+}
+
 // ---- Shared helpers
 
 // A table argument's rows: a data source read without delegation (with the warning), an untyped array as Value records.
@@ -155,14 +216,31 @@ function formatNumber(value, format) {
   const decimals = (decPattern.match(/[0#]/g) ?? []).length;
   const minDecimals = (decPattern.match(/0/g) ?? []).length;
   const minInt = (intPattern.match(/0/g) ?? []).length;
-  const x = scaled(percent ? value * 100 : value, decimals, 'round');
-  const [whole, fraction = ''] = Math.abs(x).toFixed(decimals).split('.');
+  // Power Fx formats decimal digits without converting an exact Decimal to a double.
+  // Float formatting uses the platform's 15-significant-digit decimal presentation.
+  const input = value instanceof FxFloat ? round15(value.value) : value;
+  const partsValue = decimalParts(input);
+  let coefficient = partsValue.coefficient;
+  let scale = partsValue.scale - (percent ? 2 : 0);
+  if (scale < 0) {
+    coefficient *= 10n ** BigInt(-scale);
+    scale = 0;
+  }
+  const negative = coefficient < 0n;
+  let magnitude = negative ? -coefficient : coefficient;
+  if (scale > decimals) {
+    const divisor = 10n ** BigInt(scale - decimals);
+    magnitude = magnitude / divisor + ((magnitude % divisor) * 2n >= divisor ? 1n : 0n);
+  } else magnitude *= 10n ** BigInt(decimals - scale);
+  const digits = magnitude.toString().padStart(decimals + 1, '0');
+  const whole = decimals ? digits.slice(0, -decimals) : digits;
+  const fraction = decimals ? digits.slice(-decimals) : '';
   let intText = whole === '0' && minInt === 0 ? '' : whole.padStart(minInt, '0');
   if (intPattern.includes(',')) intText = intText.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   let decText = fraction;
   while (decText.length > minDecimals && decText.endsWith('0')) decText = decText.slice(0, -1);
   const body = intText + (decText || (pattern.includes('.') && minDecimals) ? `.${decText}` : '');
-  return `${x < 0 ? '-' : ''}${prefix}${body}${suffix}`;
+  return `${negative && magnitude !== 0n ? '-' : ''}${prefix}${body}${suffix}`;
 }
 
 // ---- Dates (Learn "DateAdd, DateDiff", "Day, Month, Year, Hour, Minute, Second, and Weekday", "WeekNum and ISOWeekNum") --
@@ -648,7 +726,8 @@ export const FUNCTIONS = {
             Observed: error.Observed ?? null,
             Details: error.Details ?? null,
           }));
-          return fx.inScope({ vars: { FirstError: all[0], AllErrors: all } }, () => fx.ev(args[i + 1]));
+          const replacement = fx.inScope({ vars: { FirstError: all[0], AllErrors: all } }, () => fx.ev(args[i + 1]));
+          return coerceIfErrorReplacement(fx, replacement, knownResultType(args[i]));
         }
       }
       return i < args.length ? fx.ev(args[i]) : last;
@@ -827,7 +906,7 @@ export const FUNCTIONS = {
         return formatDate(date, pattern, fx.timeZone, typeof language === 'string' ? language : fx.language);
       }
       if (typeof value === 'string') return value;
-      const x = toNumber(value);
+      const x = isExactNumeric(value) || value instanceof FxFloat ? value : toNumber(value);
       return x instanceof FxError ? x : formatNumber(x, pattern);
     },
   },
