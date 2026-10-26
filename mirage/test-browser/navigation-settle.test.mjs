@@ -11,13 +11,28 @@ before(async () => {
 });
 after(() => browser?.close());
 
-// Page /a starts a slow script write (PATCH /write) and a slow
-// read (GET /read) on load and links to /b; it can also issue a synchronous request that is
-// answered with a redirect. The server records whether each response finished or the client
-// closed it first.
-async function fixture(t, { writeDelay = 400, pause = true, timeout = 10000 } = {}) {
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+};
+
+// Page /a starts a script write (PATCH /write) and a slow read (GET /read) on load and links
+// to /b; it can also issue a synchronous request that is answered with a redirect. The server
+// holds /write until the test releases it (`holdWrite`) and records whether each response
+// finished or the client closed it first. With `syncRedirect`, /b is answered while the
+// synchronous request still waits for its redirect.
+async function fixture(t, { holdWrite = true, pause = true, timeout = 10000, syncRedirect = false } = {}) {
   const outcomes = [];
   const requests = [];
+  const write = deferred(),
+    writeClosed = deferred(),
+    documentPaused = deferred(),
+    redirectRequested = deferred(),
+    documentAnswered = deferred();
+  t.after(() => write.resolve());
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
     requests.push(url.pathname);
@@ -29,17 +44,32 @@ async function fixture(t, { writeDelay = 400, pause = true, timeout = 10000 } = 
           "document.getElementById('next').addEventListener('click', () => setTimeout(() => { var x = new XMLHttpRequest(); x.open('GET', '/redirect', false); x.send(); window.synchronous = x.status; }, 20));" +
           '</script>',
       );
-    if (url.pathname === '/b') return setTimeout(() => res.end('<!doctype html><title>B</title>'), 200);
-    if (url.pathname === '/redirect') return setTimeout(() => res.writeHead(301, { location: '/target' }).end(), 500);
+    if (url.pathname === '/b') {
+      if (!syncRedirect) return res.end('<!doctype html><title>B</title>');
+      return redirectRequested.promise.then(() =>
+        res.end('<!doctype html><title>B</title>', () => documentAnswered.resolve()),
+      );
+    }
+    if (url.pathname === '/redirect') {
+      redirectRequested.resolve();
+      return documentAnswered.promise.then(() => res.writeHead(301, { location: '/target' }).end());
+    }
     if (url.pathname === '/target') return res.end('ok');
-    const delay = url.pathname === '/write' ? writeDelay : 400;
-    res.on('close', () => outcomes.push({ path: url.pathname, finished: res.writableFinished }));
+    res.on('close', () => {
+      outcomes.push({ path: url.pathname, finished: res.writableFinished });
+      if (url.pathname === '/write') writeClosed.resolve();
+    });
+    if (url.pathname === '/write')
+      return (holdWrite ? write.promise : Promise.resolve()).then(() => {
+        if (!res.destroyed) {
+          res.statusCode = 204;
+          res.end();
+        }
+      });
+    // Reads never hold a navigation; this one stays slow.
     setTimeout(() => {
-      if (!res.destroyed) {
-        res.statusCode = url.pathname === '/write' ? 204 : 200;
-        res.end();
-      }
-    }, delay);
+      if (!res.destroyed) res.end();
+    }, 400);
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => {
@@ -80,6 +110,7 @@ async function fixture(t, { writeDelay = 400, pause = true, timeout = 10000 } = 
   const waits = [];
   if (pause) {
     cdp.on('Fetch.requestPaused', (event) => {
+      if (new URL(event.request.url).pathname === '/b') documentPaused.resolve();
       awaitWritesBeforeDocument(
         event.frameId,
         () => [...records.values()],
@@ -92,11 +123,20 @@ async function fixture(t, { writeDelay = 400, pause = true, timeout = 10000 } = 
     await cdp.send('Fetch.enable', { patterns: [DOCUMENT_REQUEST_PATTERN] });
   }
   const origin = `http://127.0.0.1:${server.address().port}`;
-  return { page, outcomes, requests, waits, origin };
+  return {
+    page,
+    outcomes,
+    requests,
+    waits,
+    origin,
+    releaseWrite: write.resolve,
+    writeClosed: writeClosed.promise,
+    documentPaused: documentPaused.promise,
+  };
 }
 
 test("a navigation waits until the replaced document's in-flight script write settles", async (t) => {
-  const { page, outcomes, waits, origin } = await fixture(t, { writeDelay: 1200 });
+  const { page, outcomes, requests, waits, origin, releaseWrite, documentPaused } = await fixture(t);
   const write = page.waitForRequest((request) => request.url().endsWith('/write'));
   await page.goto(origin + '/a');
   await write;
@@ -105,13 +145,17 @@ test("a navigation waits until the replaced document's in-flight script write se
     const link = document.getElementById('next');
     link.replaceWith(link.cloneNode(true));
   });
-  await page.click('#next');
+  // A Playwright click returns only after the navigation proceeds; a page click lets the test hold it first.
+  await page.evaluate(() => document.getElementById('next').click());
+  // The paused navigation holds its document request while the write is held.
+  await documentPaused;
+  assert.equal(requests.includes('/b'), false);
+  releaseWrite();
   await page.waitForURL(origin + '/b');
   // The write completed in the old document before it was replaced; reads do not hold navigation.
   assert.equal(waits.length, 1);
   assert.deepEqual(waits[0].writes, ['PATCH /write']);
   assert.equal(waits[0].settled, true);
-  assert.ok(waits[0].waitedMs >= 500, `waited ${waits[0].waitedMs} ms`);
   assert.deepEqual(
     outcomes.find((row) => row.path === '/write'),
     { path: '/write', finished: true },
@@ -120,7 +164,7 @@ test("a navigation waits until the replaced document's in-flight script write se
 });
 
 test('without the pause the browser abandons the write; the wait itself is bounded', async (t) => {
-  const plain = await fixture(t, { writeDelay: 1500, pause: false });
+  const plain = await fixture(t, { pause: false });
   const write = plain.page.waitForRequest((request) => request.url().endsWith('/write'));
   await plain.page.goto(plain.origin + '/a');
   await write;
@@ -131,13 +175,14 @@ test('without the pause the browser abandons the write; the wait itself is bound
   await plain.page.click('#next');
   await plain.page.waitForURL(plain.origin + '/b');
   // The server records the abandoned response when the client closes it.
-  while (!plain.outcomes.some((row) => row.path === '/write')) await new Promise((resolve) => setTimeout(resolve, 20));
+  await plain.writeClosed;
   assert.deepEqual(
     plain.outcomes.find((row) => row.path === '/write'),
     { path: '/write', finished: false },
   );
 
-  const bounded = await fixture(t, { writeDelay: 5000, timeout: 300 });
+  // The write stays held, so only the 300ms bound ends the wait.
+  const bounded = await fixture(t, { timeout: 300 });
   const slow = bounded.page.waitForRequest((request) => request.url().endsWith('/write'));
   await bounded.page.goto(bounded.origin + '/a');
   await slow;
@@ -156,10 +201,13 @@ test('without the pause the browser abandons the write; the wait itself is bound
 });
 
 test('pausing only documents lets a redirected synchronous request finish while its frame navigates', async (t) => {
-  const { page, requests, origin } = await fixture(t, { writeDelay: 50 });
+  const { page, requests, origin } = await fixture(t, { holdWrite: false, syncRedirect: true });
+  const written = page.waitForEvent('requestfinished', (request) => request.url().endsWith('/write'));
   await page.goto(origin + '/a');
-  await page.waitForLoadState('networkidle');
-  // The click starts the navigation; the page then sends a synchronous request answered with a redirect.
+  // No write remains in flight to hold the navigation.
+  await written;
+  // The click starts the navigation; the page then sends a synchronous request answered with a
+  // redirect only after /b was answered, so the redirect arrives while the frame navigates.
   await page.click('#next');
   await page.waitForURL(origin + '/b', { timeout: 10000 });
   assert.ok(requests.includes('/target'), `requests: ${requests.join(', ')}`);
