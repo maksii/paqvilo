@@ -6,6 +6,7 @@ on:
   pull_request:
     branches:
       - main
+      - 0.9.8
   schedule:
     - cron: 19 6 * * 1
   workflow_dispatch: null

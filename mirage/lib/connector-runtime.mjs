@@ -14,6 +14,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import { DataError } from './data-error.mjs';
+import { compileDefinition, validateDefinition } from './connector-definition.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { DEAD_LETTER_SUFFIX } from './message-bus.mjs';
 import { localOrganizationService, validateServiceProfile } from './local-organization-service.mjs';
@@ -38,6 +39,7 @@ import { effectiveEnvironmentVariables } from './secret-resolver.mjs';
 export const DATAVERSE_CONNECTOR = 'shared_commondataserviceforapps';
 const CODES = {
   ConnectorNotConfigured: 501,
+  ConnectorNotSimulated: 501,
   ConnectionNotBound: 409,
   ConnectionUnauthorized: 401,
   PermissionDenied: 403,
@@ -1289,6 +1291,17 @@ export function createConnectorRuntime({
     if (registry.has(provider.id)) throw new Error('Ambiguous connector provider: ' + provider.id);
     registry.set(provider.id, provider);
   };
+  const definitions = new Map();
+  for (const pack of packs)
+    for (const [id, document] of Object.entries(pack.connectorDefinitions ?? {})) {
+      if (definitions.has(id))
+        throw new Error(`Data pack ${pack.id}: connectorDefinitions.${id} is declared by more than one pack`);
+      definitions.set(id, compileDefinition(document));
+    }
+  const validateOperation = (connectorId, request) => {
+    const definition = definitions.get(connectorId);
+    return definition ? validateDefinition(definition, request) : null;
+  };
   const fixtures = packs.flatMap((pack) => pack.httpFixtures ?? []);
   // Connection OAuth tokens (authorization code flow) per connection id: sealed in state.simulator.connectionTokens (flow-vault.mjs),
   // or in this runtime's memory without a store.
@@ -1531,7 +1544,14 @@ export function createConnectorRuntime({
   const unsupportedReason = (connectorId, operationId) => {
     syncCustom();
     const custom = customIds.map((id) => registry.get(id)).find((p) => p.connectors.includes(connectorId));
-    if (!custom) return null;
+    if (!custom) {
+      const definition = definitions.get(connectorId);
+      return definition
+        ? definition.operations.has(operationId)
+          ? 'ConnectorNotSimulated: the operation has no simulated behaviour.'
+          : 'CONNECTOR_OPERATION_UNKNOWN: the connector definition has no such operation.'
+        : null;
+    }
     if (custom.blocked) return `${custom.blocked.code}: ${custom.blocked.message}`;
     return custom.operations.includes(operationId)
       ? null
@@ -1544,6 +1564,8 @@ export function createConnectorRuntime({
   function invoke({
     connectorId,
     operationId,
+    method,
+    path,
     parameters = {},
     connection,
     context = {},
@@ -1584,12 +1606,21 @@ export function createConnectorRuntime({
     };
     let answer;
     try {
+      const operation = validateOperation(connectorId, { operationId, method, path, parameters });
+      if (operation) operationId = operation.operationId;
+      if (
+        !connection &&
+        definitions.has(connectorId) &&
+        !Object.hasOwn(connections, connectorId) &&
+        !defaultProvider(connectorId)
+      )
+        fail('ConnectorNotSimulated', 'The connector operation has a definition but no simulated behaviour.');
       resolved = connection ?? resolve({ connectorId, principal: context.principal });
       const provider = registry.get(resolved.provider);
       if (!provider) fail('ConnectorNotConfigured', 'The connection names a provider that is not registered.');
       if (!supportsOperation(provider, connectorId, operationId))
         fail(
-          'OperationUnsupported',
+          definitions.has(connectorId) ? 'ConnectorNotSimulated' : 'OperationUnsupported',
           provider.reason?.(operationId) ?? 'The provider does not implement this connector operation.',
         );
       const ctx = {
@@ -1684,6 +1715,8 @@ export function createConnectorRuntime({
   return {
     resolve,
     supports,
+    validateOperation,
+    hasDefinition: (connectorId) => definitions.has(connectorId),
     invoke,
     unsupportedReason,
     /** Pack flowActions handlers by action type (flow-actions.mjs). */
@@ -1864,6 +1897,19 @@ const packFail = (packId, message) => {
 };
 /** Per-export validators for the pack-export registry; each throws an Error naming the pack. */
 export const CONNECTOR_PACK_EXPORTS = {
+  connectorDefinitions: {
+    check(value, packId) {
+      if (!isMap(value)) packFail(packId, 'connectorDefinitions must map connector ids to Swagger 2.0 documents');
+      for (const [id, document] of Object.entries(value)) {
+        if (!/^[\w.-]{1,250}$/.test(id)) packFail(packId, `connectorDefinitions.${id} is not a connector id`);
+        try {
+          compileDefinition(document);
+        } catch (error) {
+          packFail(packId, `connectorDefinitions.${id}: ${error.message}`);
+        }
+      }
+    },
+  },
   connectors: {
     check(value, packId) {
       if (!isMap(value)) packFail(packId, 'connectors must map connector ids to { operations }');
