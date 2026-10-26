@@ -347,8 +347,11 @@ const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const toolkitPackage = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ?? toolkitPackage.repository);
 // Bind evidence to the mirage loaded by this process as well as portal sources. The cached form is the same digest and
-// seeds the cache, so the first state read compares file stats instead of hashing the toolkit a second time.
-const implementationFingerprint = await cachedImplementationSourceFingerprint(ROOT);
+// seeds the cache, so the first state read compares file stats instead of hashing the toolkit a second time. The walk
+// starts at import, as before, but only a starting runtime waits for it: importing this module does not.
+const loadedImplementationFingerprint = cachedImplementationSourceFingerprint(ROOT);
+// A failure surfaces in the runtime that awaits it, not as an unhandled rejection of an import that starts none.
+loadedImplementationFingerprint.catch(() => {});
 const auditResponse = Symbol('auditResponse');
 const mime = (file) =>
   ({
@@ -745,6 +748,7 @@ async function createPowerPagesSimulator({
   const bootstrapState = initialState(portal, bootstrapOptions());
   let generatedPresets = bootstrapState.presets;
   bootstrapTimings.presetLibraryMs = Math.round(performance.now() - presetLibraryStarted);
+  const implementationFingerprint = await loadedImplementationFingerprint;
   const runtimeFingerprint = implementationFingerprint;
   const calculateFingerprint = async (digest) =>
     createHash('sha256')
