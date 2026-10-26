@@ -35,7 +35,8 @@ const base = {
 const style =
   '<style>body{margin:0;font:14px Arial} .case{margin:130px 40px;width:650px} input,select,textarea,button{padding:8px;margin:5px}label{display:block;padding:8px} .box{height:140px;width:300px;overflow:auto} .tall{height:600px} dialog{padding:30px;width:650px}</style>';
 
-test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async (t) => {
+// Each case uses its own browser context, so cases run concurrently in one browser.
+test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurrency: 4 }, async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   const results = [];
@@ -57,63 +58,81 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       );
     }
   });
-  const scenario = async (id, title, html, run, report = base) =>
-    t.test(`${id} ${title}`, async () => {
-      const context = await browser.newContext({ viewport: { width: 1400, height: 1000 }, serviceWorkers: 'block' });
-      context.setDefaultTimeout(2500);
-      await context.route('**/*', (route) => route.abort());
-      const page = await context.newPage(),
-        errors = [];
-      page.on('pageerror', (error) => errors.push(error.message));
-      const row = { id, title, fixture: 'synthetic DOM + explicit exported report', status: 'running' };
-      results.push(row);
-      try {
-        await page.route('http://127.0.0.1:11887/**', (route) =>
-          route.fulfill({ contentType: 'text/html', body: style + `<div class="case">${html}</div>` }),
-        );
-        await page.goto('http://127.0.0.1:11887/');
-        const data = { origin: 'http://127.0.0.1:11887', token: 'invented-audit-session' };
-        await page.evaluate(xrayUi, data);
-        await page.evaluate(
-          ({ data, report }) => {
-            const api = document.getElementById('paqvilo-xray').__px;
-            api.update(data, report);
-            api.toggle(true);
-          },
-          { data, report },
-        );
-        const xray = page.locator('#paqvilo-xray');
-        const pick = async (selector) => {
-          const rect = await page.locator(selector).boundingBox();
-          assert.ok(rect, `${selector} has a visible box`);
-          await page.mouse.click(rect.x + Math.min(20, rect.width / 2), rect.y + rect.height / 2);
-        };
-        const field = async (name) => {
-          await page.waitForFunction((name) => {
-            const evidence = document.getElementById('paqvilo-xray').__px.selection()?.evidence;
-            return [evidence?.owner.component, ...(evidence?.candidates ?? []).map((item) => item.component)].some(
-              (item) => item && item.entity + '.' + (item.field ?? item.name) === name,
-            );
-          }, name);
-        };
-        await run({ page, xray, pick, field });
-        assert.deepEqual(errors, [], 'no browser errors');
-        row.status = 'passed';
-        if (process.env.XRAY_AUDIT_REPORT && ['I13', 'D07', 'G07'].includes(id)) {
-          const file = path.join(path.dirname(path.resolve(process.env.XRAY_AUDIT_REPORT)), id + '.png');
-          fs.mkdirSync(path.dirname(file), { recursive: true });
-          await page.screenshot({ path: file });
-          row.screenshot = file;
+  const cases = [];
+  const scenario = (id, title, html, run, report = base) => {
+    cases.push(
+      t.test(`${id} ${title}`, async () => {
+        const context = await browser.newContext({ viewport: { width: 1400, height: 1000 }, serviceWorkers: 'block' });
+        context.setDefaultTimeout(2500);
+        await context.route('**/*', (route) => route.abort());
+        const page = await context.newPage(),
+          errors = [];
+        page.on('pageerror', (error) => errors.push(error.message));
+        const row = { id, title, fixture: 'synthetic DOM + explicit exported report', status: 'running' };
+        results.push(row);
+        try {
+          await page.route('http://127.0.0.1:11887/**', (route) =>
+            route.fulfill({ contentType: 'text/html', body: style + `<div class="case">${html}</div>` }),
+          );
+          await page.goto('http://127.0.0.1:11887/');
+          const data = { origin: 'http://127.0.0.1:11887', token: 'invented-audit-session' };
+          await page.evaluate(xrayUi, data);
+          await page.evaluate(
+            ({ data, report }) => {
+              const api = document.getElementById('paqvilo-xray').__px;
+              api.update(data, report);
+              api.toggle(true);
+            },
+            { data, report },
+          );
+          const xray = page.locator('#paqvilo-xray');
+          const pick = async (selector) => {
+            const rect = await page.locator(selector).boundingBox();
+            assert.ok(rect, `${selector} has a visible box`);
+            await page.mouse.click(rect.x + Math.min(20, rect.width / 2), rect.y + rect.height / 2);
+          };
+          const field = async (name) => {
+            await page.waitForFunction((name) => {
+              const evidence = document.getElementById('paqvilo-xray').__px.selection()?.evidence;
+              return [evidence?.owner.component, ...(evidence?.candidates ?? []).map((item) => item.component)].some(
+                (item) => item && item.entity + '.' + (item.field ?? item.name) === name,
+              );
+            }, name);
+          };
+          // X-ray paints selections and scans in animation frames; after two more frames every paint scheduled before
+          // the call (including a rescheduled warm-up paint) has run.
+          const painted = () =>
+            page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+          // The X-ray wheel handler scrolls synchronously; once a window listener has seen the wheel, it has scrolled.
+          const wheeled = async (x, y) => {
+            await page.evaluate(() => {
+              window.auditWheelCount = 0;
+              window.addEventListener('wheel', () => window.auditWheelCount++, true);
+            });
+            await page.mouse.move(x, y);
+            await page.mouse.wheel(0, 100);
+            await page.waitForFunction(() => window.auditWheelCount === 1);
+          };
+          await run({ page, xray, pick, field, painted, wheeled });
+          assert.deepEqual(errors, [], 'no browser errors');
+          row.status = 'passed';
+          if (process.env.XRAY_AUDIT_REPORT && ['I13', 'D07', 'G07'].includes(id)) {
+            const file = path.join(path.dirname(path.resolve(process.env.XRAY_AUDIT_REPORT)), id + '.png');
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            await page.screenshot({ path: file });
+            row.screenshot = file;
+          }
+        } catch (error) {
+          row.status = 'failed';
+          row.error = String(error.message).slice(0, 1500);
+          throw error;
+        } finally {
+          await context.close();
         }
-      } catch (error) {
-        row.status = 'failed';
-        row.error = String(error.message).slice(0, 1500);
-        throw error;
-      } finally {
-        await context.close();
-      }
-    });
-  await scenario(
+      }),
+    );
+  };
+  scenario(
     'I01',
     'Explicit form, FormXml, table and column',
     '<form data-formid="form-a"><input id="audit_first"></form>',
@@ -124,7 +143,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await xray.getByText('System form A', { exact: true }).first().waitFor({ state: 'attached' });
     },
   );
-  await scenario(
+  scenario(
     'I02',
     'Label child resolves its associated column',
     '<div data-entityname="audit_a"><label for="audit_first"><span id="caption">Title</span></label><input id="audit_first"></div>',
@@ -133,7 +152,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_a.audit_first');
     },
   );
-  await scenario(
+  scenario(
     'I03',
     'Implicit label resolves its column',
     '<div data-entityname="audit_a"><label><span id="caption">Title</span><input id="audit_first"></label></div>',
@@ -142,7 +161,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_a.audit_first');
     },
   );
-  await scenario(
+  scenario(
     'I04',
     'Field annotation on wrapper survives a generated input ID',
     '<div data-entityname="audit_a"><div data-fieldname="audit_first"><input id="generated"></div></div>',
@@ -151,7 +170,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_a.audit_first');
     },
   );
-  await scenario(
+  scenario(
     'I05',
     'Compatible nested metadata retains form identity',
     '<form data-formid="form-a"><div data-entityname="audit_a"><input id="audit_first"></div></form>',
@@ -161,7 +180,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await xray.getByText('Form A', { exact: true }).first().waitFor({ state: 'attached' });
     },
   );
-  await scenario(
+  scenario(
     'I06',
     'Nested view overrides enclosing native form table',
     '<div id="EntityFormControl_forma" data-formid="form-a"><div data-viewid="view-b"><input id="audit_shared"></div></div>',
@@ -171,7 +190,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await xray.getByText('Form A', { exact: true }).count(), 0);
     },
   );
-  await scenario(
+  scenario(
     'I07',
     'Compatible table annotations retain enclosing view/list',
     '<section data-entityname="audit_a" data-viewid="view-a" data-listid="list-a"><div data-entityname="audit_a"><input id="audit_first"></div></section>',
@@ -182,7 +201,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await xray.getByText('List A', { exact: true }).first().waitFor({ state: 'attached' });
     },
   );
-  await scenario(
+  scenario(
     'I08',
     'Dialog without metadata does not mask a native form ID',
     '<dialog open><div id="EntityFormControl_forma_EntityFormView"><input id="audit_first"></div></dialog>',
@@ -191,7 +210,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await xray.getByText('Form A', { exact: true }).first().waitFor({ state: 'attached' });
     },
   );
-  await scenario(
+  scenario(
     'I09',
     'Deep wrappers retain form/table context',
     `<form data-formid="form-a">${'<div>'.repeat(40)}<input id="audit_shared">${'</div>'.repeat(40)}</form>`,
@@ -200,12 +219,12 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_a.audit_shared');
     },
   );
-  await scenario('I10', 'Ambiguous column remains ambiguous', '<input id="audit_shared">', async ({ pick, xray }) => {
+  scenario('I10', 'Ambiguous column remains ambiguous', '<input id="audit_shared">', async ({ pick, xray }) => {
     await pick('#audit_shared');
     assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'candidate');
     assert.equal(await xray.locator('[data-evidence-role=alternatives] .ie-row').count(), 2);
   });
-  await scenario(
+  scenario(
     'I11',
     'Unrelated button ID is not a Dataverse column',
     '<button id="audit_first">Action</button>',
@@ -214,7 +233,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await xray.locator('.binding').count(), 0);
     },
   );
-  await scenario(
+  scenario(
     'I12',
     'Conflicting explicit table and view are not presented as a certain column',
     '<div data-entityname="audit_a" data-viewid="view-b"><input id="audit_shared"></div>',
@@ -224,7 +243,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await xray.locator('.binding strong').filter({ hasText: 'audit_a.audit_shared' }).count(), 0);
     },
   );
-  await scenario(
+  scenario(
     'D01',
     'Selected field name updates in place',
     '<div data-entityname="audit_a"><input id="field" name="audit_first"></div>',
@@ -235,7 +254,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_a.audit_second');
     },
   );
-  await scenario(
+  scenario(
     'D02',
     'Selected label for updates in place',
     '<div data-entityname="audit_a"><label id="caption" for="audit_first">Label</label><input id="audit_first"><input id="audit_second"></div>',
@@ -246,7 +265,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_a.audit_second');
     },
   );
-  await scenario(
+  scenario(
     'D03',
     'Selected grid cell data-th updates in place',
     '<div data-entityname="audit_a"><span id="cell" data-th="audit_first">Cell</span></div>',
@@ -257,7 +276,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_a.audit_second');
     },
   );
-  await scenario(
+  scenario(
     'D04',
     'Open-shadow column metadata updates in place',
     '<div id="component"></div>',
@@ -272,7 +291,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_a.audit_second');
     },
   );
-  await scenario(
+  scenario(
     'D05',
     'Moving a selected field changes table context',
     '<div id="one" data-entityname="audit_a"><input id="audit_shared"></div><div id="two" data-entityname="audit_b"></div>',
@@ -283,7 +302,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_b.audit_shared');
     },
   );
-  await scenario(
+  scenario(
     'D06',
     'Replacing selected element does not select another node with same ID',
     '<input id="audit_first">',
@@ -294,36 +313,36 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await xray.locator('.binding').count(), 0);
     },
   );
-  await scenario(
+  scenario(
     'G01',
     'Viewport-fixed child escapes an untransformed overflow ancestor',
     '<div style="height:80px;width:80px;overflow:hidden"><button id="fixed" style="position:fixed;left:350px;top:300px">Fixed</button></div>',
-    async ({ page, pick, xray }) => {
+    async ({ page, pick, xray, painted }) => {
       await pick('#fixed');
-      await page.waitForTimeout(350);
+      await painted();
       const a = await page.locator('#fixed').boundingBox(),
         b = await xray.locator('.selected').boundingBox();
       assert.ok(b, 'visible fixed element has an outline');
       assert.ok(Math.abs(a.x - b.x) < 2 && Math.abs(a.width - b.width) < 2);
     },
   );
-  await scenario(
+  scenario(
     'G02',
     'Scaled overflow clipping matches the visible client area',
     '<div id="clip" style="width:300px;height:100px;overflow:hidden;transform:scale(.7);transform-origin:top left"><button id="wide" style="margin-left:200px;width:300px">Wide</button></div>',
-    async ({ page, xray }) => {
+    async ({ page, xray, painted }) => {
       const r = await page.locator('#clip').boundingBox();
       await page.mouse.click(r.x + 155, r.y + 15);
-      await page.waitForTimeout(350);
+      await painted();
       const b = await xray.locator('.selected').boundingBox();
       assert.ok(b && b.x + b.width <= r.x + r.width + 1);
     },
   );
-  await scenario(
+  scenario(
     'G03',
     'Nested wheel scrolling chains when the inner scroller reaches its edge',
     '<div id="outer" class="box"><div style="height:100px"></div><div id="inner" class="box" style="height:80px"><div class="tall">Inner content</div></div><div class="tall"></div></div>',
-    async ({ page }) => {
+    async ({ page, wheeled }) => {
       await page.evaluate(() => {
         document.getElementById('outer').scrollTop = 80;
         const inner = document.getElementById('inner');
@@ -344,10 +363,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
           true,
         );
       });
-      await page.mouse.move(r.x + 20, r.y + 20);
-      await page.waitForTimeout(100);
-      await page.mouse.wheel(0, 100);
-      await page.waitForTimeout(150);
+      await wheeled(r.x + 20, r.y + 20);
       assert.ok(
         (await page.locator('#outer').evaluate((node) => node.scrollTop)) > 80,
         JSON.stringify(
@@ -360,25 +376,22 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       );
     },
   );
-  await scenario(
+  scenario(
     'G04',
     'Overscroll containment prevents parent chaining',
     '<div id="outer" class="box"><div style="height:100px"></div><div id="inner" class="box" style="height:80px;overscroll-behavior:contain"><div class="tall">Inner content</div></div><div class="tall"></div></div>',
-    async ({ page }) => {
+    async ({ page, wheeled }) => {
       await page.evaluate(() => {
         document.getElementById('outer').scrollTop = 80;
         const inner = document.getElementById('inner');
         inner.scrollTop = inner.scrollHeight;
       });
       const r = await page.locator('#inner').boundingBox();
-      await page.mouse.move(r.x + 20, r.y + 20);
-      await page.waitForTimeout(50);
-      await page.mouse.wheel(0, 100);
-      await page.waitForTimeout(150);
+      await wheeled(r.x + 20, r.y + 20);
       assert.equal(await page.locator('#outer').evaluate((node) => node.scrollTop), 80);
     },
   );
-  await scenario(
+  scenario(
     'G05',
     'Line-mode wheel uses line distances',
     '<div id="scroll" class="box" style="line-height:20px"><div class="tall">Content</div></div>',
@@ -401,7 +414,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.ok((await page.locator('#scroll').evaluate((node) => node.scrollTop)) >= 40);
     },
   );
-  await scenario('G06', 'Ctrl-wheel preserves browser zoom default', '<p>Zoom fixture</p>', async ({ xray }) => {
+  scenario('G06', 'Ctrl-wheel preserves browser zoom default', '<p>Zoom fixture</p>', async ({ xray }) => {
     const prevented = await xray.locator('.shield').evaluate((node) => {
       const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, ctrlKey: true, deltaY: 100 });
       node.dispatchEvent(event);
@@ -409,7 +422,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
     });
     assert.equal(prevented, false);
   });
-  await scenario(
+  scenario(
     'L01',
     'Removing an active modal preserves the inspector',
     '<button id="outside">Outside</button><dialog id="modal"><input id="audit_first"></dialog>',
@@ -432,7 +445,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       );
     },
   );
-  await scenario(
+  scenario(
     'L02',
     'Disposal releases interception and removes all overlay UI',
     '<button id="action" onclick="window.auditClicks=(window.auditClicks||0)+1">Action</button>',
@@ -445,7 +458,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await page.locator('#paqvilo-xray').count(), 0);
     },
   );
-  await scenario(
+  scenario(
     'L03',
     'Ctrl reset on blur restores inspect mode',
     '<button id="action">Action</button>',
@@ -457,7 +470,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await page.keyboard.up('Control');
     },
   );
-  await scenario(
+  scenario(
     'L04',
     'Keyboard parent selection works after using inspector controls',
     '<form data-formid="form-a"><input id="audit_first"></form>',
@@ -468,7 +481,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.match(await xray.locator('.element-label').textContent(), /^form/);
     },
   );
-  await scenario(
+  scenario(
     'L05',
     'Tab stays inside inspector during inspection',
     '<input id="audit_first">',
@@ -480,7 +493,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       );
     },
   );
-  await scenario(
+  scenario(
     'S01',
     'Same selector in two templates remains two candidates',
     '<aside class="shared"><span id="text">Content</span></aside>',
@@ -498,7 +511,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       ],
     },
   );
-  await scenario(
+  scenario(
     'S02',
     'Missing export produces an explicit unknown instead of a guessed file',
     '<p id="unknown">Unknown</p>',
@@ -509,7 +522,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await xray.locator('.source').count(), 0);
     },
   );
-  await scenario(
+  scenario(
     'S03',
     'Input values are absent from inspector content',
     '<div data-entityname="audit_a"><input id="audit_first" value="VALUE_MUST_NOT_APPEAR"><textarea id="notes">TEXT_MUST_NOT_APPEAR</textarea></div>',
@@ -518,7 +531,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.doesNotMatch(await xray.textContent(), /VALUE_MUST_NOT_APPEAR|TEXT_MUST_NOT_APPEAR/);
     },
   );
-  await scenario(
+  scenario(
     'S04',
     'Unproven static candidate browsing preserves file without claiming an exact line',
     '<p id="source">Content</p>',
@@ -543,16 +556,17 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       ],
     },
   );
-  await scenario(
+  scenario(
     'I13',
     'Shared system form identifies both candidate basic forms',
     '<div data-formid="system-a" data-entityname="audit_a"><input id="audit_first"></div>',
-    async ({ pick, xray, page }) => {
+    async ({ pick, xray, painted }) => {
       await pick('#audit_first');
       await xray.getByText('Form A', { exact: true }).first().waitFor({ state: 'attached' });
       await xray.getByText('Form A alternate', { exact: true }).first().waitFor({ state: 'attached' });
       assert.notEqual(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'exact');
-      await page.waitForTimeout(350);
+      // A later paint may re-render the card; its rows must not change.
+      await painted();
       assert.equal(await xray.locator('[data-evidence-role=enclosing] .ie-row').count(), 2);
       assert.equal(await xray.getByText('System form A', { exact: true }).count(), 1);
     },
@@ -564,7 +578,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       ],
     },
   );
-  await scenario(
+  scenario(
     'I14',
     'Explicit form table conflict remains unresolved',
     '<form data-formid="form-a" data-entityname="audit_b"><input id="audit_shared"></form>',
@@ -574,7 +588,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await xray.locator('.binding').count(), 0);
     },
   );
-  await scenario(
+  scenario(
     'I15',
     'Nearest native form wins within the same table',
     '<div id="EntityFormControl_forma"><div id="EntityFormControl_forminner"><input id="audit_first"></div></div>',
@@ -588,7 +602,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       forms: [...base.forms, { ...base.forms[0], id: 'form-inner', name: 'Inner form', ref: 'forms/inner.yml' }],
     },
   );
-  await scenario(
+  scenario(
     'I16',
     'List identity does not match a different component kind',
     '<div data-listid="list-a"><input id="audit_first"></div>',
@@ -611,7 +625,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       ],
     },
   );
-  await scenario(
+  scenario(
     'I17',
     'Multistep form identity retains its FormXml and column',
     '<div data-formid="advanced-a"><input id="audit_first"></div>',
@@ -630,7 +644,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       ],
     },
   );
-  await scenario(
+  scenario(
     'I18',
     'Code component schema resolves its exported source',
     '<div data-pcf-schema="audit.Control"><button id="control">Control</button></div>',
@@ -650,7 +664,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       ],
     },
   );
-  await scenario(
+  scenario(
     'D07',
     'Slotted field inherits shadow metadata and updates after slot reassignment',
     '<div id="component"><input id="audit_shared" slot="a"></div>',
@@ -665,7 +679,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await field('audit_b.audit_shared');
     },
   );
-  await scenario(
+  scenario(
     'D08',
     'New open root is discovered without a document child mutation',
     '<div id="component"></div>',
@@ -679,41 +693,41 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.ok((await xray.locator('.mark').count()) > 0);
     },
   );
-  await scenario(
+  scenario(
     'G07',
     'Transformed containing block clips a fixed descendant',
     '<div id="clip" style="position:relative;transform:translateZ(0);height:80px;width:180px;overflow:hidden"><button id="fixed" style="position:fixed;left:120px;top:10px;width:180px">Fixed clipped</button></div>',
-    async ({ page, xray }) => {
+    async ({ page, xray, painted }) => {
       const r = await page.locator('#clip').boundingBox();
       await page.mouse.click(r.x + 140, r.y + 25);
-      await page.waitForTimeout(350);
+      await painted();
       const b = await xray.locator('.selected').boundingBox();
       assert.ok(b && b.x + b.width <= r.x + r.width + 1);
     },
   );
-  await scenario(
+  scenario(
     'G08',
     'Absolutely positioned child escapes overflow before its containing block',
     '<div style="width:80px;height:80px;overflow:hidden"><button id="absolute" style="position:absolute;left:350px;top:300px">Absolute</button></div>',
-    async ({ page, pick, xray }) => {
+    async ({ page, pick, xray, painted }) => {
       await pick('#absolute');
-      await page.waitForTimeout(350);
+      await painted();
       const a = await page.locator('#absolute').boundingBox(),
         b = await xray.locator('.selected').boundingBox();
       assert.ok(b && Math.abs(a.width - b.width) < 2);
     },
   );
-  await scenario(
+  scenario(
     'G09',
     'Visible descendant of visibility-hidden ancestor still has an outline',
     '<div style="visibility:hidden"><button id="visible" style="visibility:visible">Visible child</button></div>',
-    async ({ page, pick, xray }) => {
+    async ({ pick, xray, painted }) => {
       await pick('#visible');
-      await page.waitForTimeout(350);
+      await painted();
       assert.ok(await xray.locator('.selected').boundingBox());
     },
   );
-  await scenario(
+  scenario(
     'G10',
     'RTL horizontal wheel moves in both negative and positive directions',
     '<div id="scroll" class="box" style="direction:rtl;overflow-x:auto"><div style="width:900px;height:40px">Wide</div></div>',
@@ -739,7 +753,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await page.locator('#scroll').evaluate((node) => node.scrollLeft), -60);
     },
   );
-  await scenario(
+  scenario(
     'G11',
     'Diagonal wheel routes horizontal and vertical axes independently',
     '<div id="outer" class="box"><div id="inner" style="width:200px;height:80px;overflow:auto;overscroll-behavior-x:contain"><div style="height:40px;width:900px">Wide</div></div><div class="tall"></div></div>',
@@ -763,7 +777,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await page.locator('#outer').evaluate((node) => node.scrollTop), 90);
     },
   );
-  await scenario(
+  scenario(
     'L06',
     'Overlap keyboard cycling includes the open shadow stack',
     '<div id="component"></div>',
@@ -778,7 +792,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.match(await xray.locator('.element-label').textContent(), /shadow-region/);
     },
   );
-  await scenario(
+  scenario(
     'L07',
     'Interact mode allows an intentionally activated portal action',
     '<button id="action" onclick="window.auditClicks=(window.auditClicks||0)+1">Action</button>',
@@ -789,7 +803,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       await xray.getByRole('button', { name: 'Interact', exact: true }).click();
     },
   );
-  await scenario(
+  scenario(
     'S05',
     'Failed refresh clears previous source identities',
     '<input id="audit_first">',
@@ -811,7 +825,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await xray.locator('.source').count(), 0);
     },
   );
-  await scenario(
+  scenario(
     'S06',
     'Inactive source inspection clears an older report',
     '<input id="audit_first">',
@@ -834,7 +848,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await xray.locator('.binding').count(), 0);
     },
   );
-  await scenario(
+  scenario(
     'S07',
     'Page CSS and JavaScript expose dependency files with bounded claims',
     '<p id="unknown">Content</p>',
@@ -856,7 +870,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       ],
     },
   );
-  await scenario(
+  scenario(
     'D09',
     'Large DOM selection retains source identity in a late shadow root',
     '<div id="padding"></div><div id="component"></div>',
@@ -877,7 +891,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
         assert.ok(Math.abs(geometry.target[key] - geometry.outline[key]) <= 2, key);
     },
   );
-  await scenario(
+  scenario(
     'I19',
     'A unique column name without table context is only a candidate',
     '<input id="audit_first">',
@@ -887,4 +901,5 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000 }, async
       assert.equal(await xray.locator('[data-evidence-role=alternatives] .ie-row').count(), 1);
     },
   );
+  await Promise.all(cases);
 });
