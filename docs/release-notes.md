@@ -4,6 +4,8 @@
 
 - Admit each shared model-driven source file once per synchronous metadata projection, retaining fresh filesystem
   validation for subsequent queries and source-opening actions. Keep the source-byte cache bounded.
+- Use native Windows path resolution during source-index construction, preserving root confinement, file identity,
+  size limits and every before/after pathname and content-version check.
 - Stream complete model-driven metadata one table at a time with backpressure and disconnect handling, retaining
   the same JSON bytes, exact numeric precision, forms, fields and security capabilities. Avoid cloning business
   state to initialize the live-bridge configuration.
@@ -17,6 +19,15 @@
 - Read only approved form/table query hints for definition context, leaving row and unrelated query values unread.
 - Carry verified attribute-host identity through accessible same-origin rich-text editor frames. Independent inner
   forms, conflicting declarations, missing exports and inaccessible frames retain their evidence boundaries.
+- Retain original-table conflicts on linked grid clones, admit selected late clones within the scan bound, and
+  validate quick-view target declarations independently from the containing form across supported themes.
+- Preserve model-driven recommended requirement levels and PCF schema requirement values. Update every rendered
+  control bound to an attribute, retaining distinct control IDs and correct label associations across tabs.
+- Keep row-spanning baseline form controls within their declared section columns, including subsequent quick views.
+- Reuse the complete startup implementation fingerprint for the first state request while retaining source-change
+  invalidation and concurrent-file-removal handling. Defer unused runtime imports in scaffolded smoke tests and
+  declaration-only helpers; preserve strict content, authentication, denial and external-asset acceptance checks.
+- Allow queued Windows directory-handle releases to finish during verification cleanup without changing its retry budget.
 - Extend regressions for crowded cards, frame shortcuts, dynamic modal/quick-view identities, nested editors and
   owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy,
   covering tab/popup deadlines, cancellation, retry, watcher/agent continuity and shared transport loss.

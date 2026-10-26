@@ -61,6 +61,148 @@ test('implementation hashes ignore only generated SDK directories and retain aut
   );
 });
 
+test('cached fingerprints tolerate files and directories removed at their read gates without hiding other errors', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-fingerprint-removal-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const originalStat = fs.stat,
+    originalReaddir = fs.readdir;
+  t.after(() => {
+    fs.stat = originalStat;
+    fs.readdir = originalReaddir;
+  });
+  for (const fingerprint of [cachedSourceFingerprint, cachedImplementationSourceFingerprint]) {
+    const file = path.join(root, 'gone.mjs');
+    await fs.writeFile(file, 'owned source');
+    fs.stat = async function (name, ...args) {
+      if (name === file) {
+        await fs.unlink(file);
+        fs.stat = originalStat;
+      }
+      return Reflect.apply(originalStat, this, [name, ...args]);
+    };
+    assert.equal(
+      await fingerprint(root),
+      await sourceFingerprint(root),
+      'a file removed after directory discovery is absent from both hashes',
+    );
+    const directory = path.join(root, 'gone');
+    await fs.mkdir(directory);
+    await fs.writeFile(path.join(directory, 'source.mjs'), 'owned source');
+    fs.readdir = async function (name, ...args) {
+      if (name === directory) {
+        await fs.rm(directory, { recursive: true });
+        fs.readdir = originalReaddir;
+      }
+      return Reflect.apply(originalReaddir, this, [name, ...args]);
+    };
+    assert.equal(
+      await fingerprint(root),
+      await sourceFingerprint(root),
+      'a directory removed before traversal is absent from both hashes',
+    );
+  }
+  fs.readdir = async function (name, ...args) {
+    if (name === root) throw Object.assign(Error('Access denied'), { code: 'EACCES' });
+    return Reflect.apply(originalReaddir, this, [name, ...args]);
+  };
+  await assert.rejects(cachedSourceFingerprint(root), { code: 'EACCES' });
+});
+
+test(
+  'fresh startup seeds the complete implementation fingerprint cache and state reads still detect source edits',
+  { timeout: 60000 },
+  async (t) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-fingerprint-startup-'));
+    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    const toolkit = fileURLToPath(new URL('../../', import.meta.url));
+    const runtime = path.join(directory, 'mirage');
+    await fs.mkdir(runtime);
+    const target = path.join(runtime, 'server.mjs');
+    await fs.copyFile(path.join(toolkit, 'mirage/server.mjs'), target);
+    await fs.copyFile(path.join(toolkit, 'package.json'), path.join(directory, 'package.json'));
+    for (const entry of await fs.readdir(path.join(toolkit, 'mirage'), { withFileTypes: true })) {
+      if (entry.name === 'server.mjs' || entry.name === '.paqvilo') continue;
+      if (entry.isDirectory())
+        await fs.symlink(
+          path.join(toolkit, 'mirage', entry.name),
+          path.join(runtime, entry.name),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+      else if (entry.isFile())
+        await fs.copyFile(path.join(toolkit, 'mirage', entry.name), path.join(runtime, entry.name));
+    }
+    for (const [link, actual] of [
+      [path.join(directory, 'lense'), path.join(toolkit, 'lense')],
+      [path.join(directory, 'node_modules'), path.join(toolkit, 'node_modules')],
+    ])
+      await fs.symlink(actual, link, process.platform === 'win32' ? 'junction' : 'dir');
+    const source = path.join(directory, 'portal');
+    await fs.mkdir(source);
+    await fs.writeFile(path.join(source, 'website.yml'), 'adx_websiteid: fixture\nadx_name: Fingerprint fixture');
+    const program = `
+    import fs from 'node:fs/promises';
+    import path from 'node:path';
+    import {pathToFileURL} from 'node:url';
+    const target=process.env.PAQ_TEST_SERVER_FILE;
+    const read=fs.readFile; let reads=0;
+    fs.readFile=async function(file,...args){if(typeof file==='string'&&path.resolve(file)===target)reads++;return Reflect.apply(read,this,[file,...args]);};
+    const {createSimulator}=await import(pathToFileURL(target));
+    const atImport=reads;
+    const simulator=await createSimulator({sourceDir:process.env.PAQ_TEST_PORTAL,stateFile:process.env.PAQ_TEST_STATE,port:0,watch:false,dataverse:{enabled:false}});
+    try {
+      const state=async()=>{const response=await fetch(simulator.url+'/__sim/api/state?summary=1');if(!response.ok)throw Error('State '+response.status);return response.json();};
+      const first=await state(),afterFirst=reads;
+      const second=await state(),afterSecond=reads;
+      await fs.appendFile(target,'\\n// owned source change\\n');
+      const changed=await state();
+      console.log(JSON.stringify({atImport,afterFirst,afterSecond,afterChange:reads,first:first.status,second:second.status,changed:changed.status}));
+    } finally {await simulator.close();}
+  `;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', program], {
+      cwd: directory,
+      env: {
+        ...process.env,
+        PAQ_TEST_SERVER_FILE: target,
+        PAQ_TEST_PORTAL: source,
+        PAQ_TEST_STATE: path.join(directory, 'state.json'),
+      },
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '',
+      errors = '';
+    child.stdout.on('data', (chunk) => {
+      output += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      errors += chunk;
+    });
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        const closed = once(child, 'close');
+        child.kill();
+        await closed;
+      }
+    });
+    const [code] = await once(child, 'close');
+    assert.equal(code, 0, errors);
+    const result = JSON.parse(output.trim().split('\n').at(-1));
+    assert.ok(result.atImport >= 1);
+    assert.equal(
+      result.afterFirst,
+      result.atImport,
+      'the first state read must not hash unchanged implementation bytes again',
+    );
+    assert.equal(result.afterSecond, result.atImport, 'warm state reads retain the same complete fingerprint');
+    assert.equal(result.afterChange, result.atImport + 1, 'an authored source edit invalidates the cached bytes');
+    assert.equal(result.first.implementationChanged, false);
+    assert.equal(result.second.implementationChanged, false);
+    assert.equal(result.changed.implementationChanged, true);
+    assert.equal(result.changed.loadedImplementationFingerprint, result.first.loadedImplementationFingerprint);
+    assert.notEqual(result.changed.implementationFingerprint, result.first.implementationFingerprint);
+  },
+);
+
 test('fresh Mirage startup tolerates an exclusively locked SDK build product', { timeout: 60000 }, async (t) => {
   const sdkRoot = fileURLToPath(new URL('../test-sdk/', import.meta.url));
   const owned = await fs.mkdtemp(path.join(sdkRoot, 'fingerprint-lock-'));

@@ -12,6 +12,67 @@ import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { createFixture } from '../test/fixture.mjs';
 
+async function stopOwnedChild(child, closed, { graceful = false } = {}) {
+  if (graceful && child.exitCode === null && child.signalCode === null) {
+    let timer;
+    try {
+      await Promise.race([
+        closed,
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, 5000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+  return closed;
+}
+
+test('owned task shutdown drains pending stdio after the direct child exit', { timeout: 15000 }, async (t) => {
+  const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-init-drain-'));
+  const child = spawn(process.execPath, ['-e', 'process.stdout.write("owned-output");'], {
+    cwd: work,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const closed = once(child, 'close'),
+    exited = once(child, 'exit');
+  const release = Promise.withResolvers(),
+    destroying = Promise.withResolvers();
+  const destroy = child.stdout._destroy.bind(child.stdout);
+  // Hold the actual pipe's destruction callback: process exit must not let
+  // cleanup skip an outstanding stdio close, even when that close is delayed.
+  child.stdout._destroy = (error, callback) => {
+    destroying.resolve();
+    release.promise.then(() => destroy(error, callback));
+  };
+  let output = '';
+  child.stdout.on('data', (chunk) => {
+    output += chunk;
+  });
+  t.after(async () => {
+    release.resolve();
+    await stopOwnedChild(child, closed);
+    await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  });
+  assert.deepEqual(await exited, [0, null]);
+  await destroying.promise;
+  let drained = false;
+  const stopping = stopOwnedChild(child, closed).then((result) => {
+    drained = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(drained, false, 'exit alone cannot establish that stdio has closed');
+  release.resolve();
+  assert.deepEqual(await stopping, [0, null]);
+  assert.equal(output, 'owned-output');
+  await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  await assert.rejects(fs.stat(work), { code: 'ENOENT' });
+});
+
 test(
   'empty-project debugger task matches the actual local development ready line and reuses its browser',
   { timeout: 120000 },
@@ -62,21 +123,24 @@ test(
     child.stderr.on('data', (chunk) => {
       output += chunk;
     });
-    const exited = once(child, 'exit');
+    const closed = once(child, 'close');
     t.after(async () => {
+      let requestedBrowserClose = false;
       if (browser) {
         const session = await browser.newBrowserCDPSession().catch(() => null);
-        await session?.send('Browser.close').catch(() => {});
+        if (session) {
+          requestedBrowserClose = true;
+          await session.send('Browser.close').catch(() => {});
+        }
         await browser.close().catch(() => {});
       }
-      if (child.exitCode === null) child.kill('SIGTERM');
-      await exited;
+      await stopOwnedChild(child, closed, { graceful: requestedBrowserClose });
       const cleanup = spawn(
         process.execPath,
         [cli, 'mirage', 'stop', '--config', path.join(work, 'paqvilo.config.yml'), '--site', 'portal', '--json'],
         { cwd: work, env, windowsHide: true, stdio: 'ignore' },
       );
-      await once(cleanup, 'exit');
+      assert.deepEqual(await once(cleanup, 'close'), [0, null]);
       fixture.cleanup();
       await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     });

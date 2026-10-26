@@ -4,8 +4,69 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { spawnSync } from 'node:child_process';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import readline from 'node:readline';
+import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
+
+test('drained fixture removal retains errors after its bounded asynchronous retry policy', async (t) => {
+  const failure = Object.assign(new Error('Invented persistent cleanup failure'), { code: 'EACCES' });
+  const calls = [];
+  t.mock.method(fs, 'rm', async (...args) => {
+    calls.push(args);
+    throw failure;
+  });
+  await assert.rejects(removeFixtureDirectory('invented-owned-directory'), (error) => error === failure);
+  assert.deepEqual(calls, [
+    ['invented-owned-directory', { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }],
+  ]);
+});
+
+test(
+  'fixture removal permits a scheduled Windows exclusive log-handle release',
+  {
+    timeout: 15000,
+    skip: process.platform !== 'win32' && 'Windows exclusive file handles prevent deletion',
+  },
+  async (t) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-fixture-log-'));
+    const child = spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '$stream = [System.IO.File]::Open($env:PAQVILO_FIXTURE_LOG, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None); try { [Console]::WriteLine("holding-log"); [Console]::In.ReadLine() | Out-Null } finally { $stream.Dispose() }',
+      ],
+      {
+        env: { ...process.env, PAQVILO_FIXTURE_LOG: path.join(directory, 'chrome_debug.log') },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
+    );
+    const closed = once(child, 'close');
+    const lines = readline.createInterface({ input: child.stdout });
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await closed;
+      lines.close();
+      await removeFixtureDirectory(directory);
+    });
+    assert.equal((await once(lines, 'line', { signal: t.signal }))[0], 'holding-log');
+    await assert.rejects(fs.rm(directory, { recursive: true, force: true }), (error) =>
+      ['EBUSY', 'EPERM'].includes(error.code),
+    );
+    let released = false;
+    setImmediate(() => {
+      released = true;
+      child.stdin.end('release\n');
+    });
+    await removeFixtureDirectory(directory);
+    assert.equal(released, true);
+    assert.deepEqual(await closed, [0, null]);
+    await assert.rejects(fs.stat(directory), { code: 'ENOENT' });
+  },
+);
 
 test('one context shares its owner across builders and retains the declared close order', async () => {
   const hooks = [],

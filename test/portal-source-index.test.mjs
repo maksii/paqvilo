@@ -11,6 +11,24 @@ import { inspectionFixture } from './source-inspection-fixture.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { loadDeploymentProfiles, resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 
+test(
+  'Windows source links use native canonical paths and still refuse edited source bytes',
+  { skip: process.platform !== 'win32' },
+  async (t) => {
+    const fx = inspectionFixture();
+    t.after(fx.cleanup);
+    const index = buildPortalSourceIndex({ portal: await importPortal(fx.portal) });
+    const source = index.templates.get('main');
+    assert.ok(source);
+    const native = fs.realpathSync.native;
+    t.mock.method(fs, 'realpathSync', () => assert.fail('source links must not repeat the legacy component walker'));
+    fs.realpathSync.native = native;
+    assert.equal(sourceEditorTarget(source).file, native(source.file));
+    fs.writeFileSync(source.file, source.text + '\n<!-- edited -->');
+    assert.equal(sourceEditorTarget(source), null, 'native lookup retains the final content revision guard');
+  },
+);
+
 test('shared index revision agrees with renderer/inspector and source links revalidate current field identity', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);

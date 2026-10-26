@@ -1,11 +1,10 @@
 import { createHash } from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
 import { componentIdentity, componentContent } from '../../lense/portal-model.mjs';
 import { portalField, effectiveSnippetRecords } from './importer.mjs';
 import { createModelDrivenMetadataIndex } from '../../lense/model-driven-metadata.mjs';
-import { readLocalFileSync } from '../../lense/local-file.mjs';
+import { readLocalFileSync, realLocalPath } from '../../lense/local-file.mjs';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const configurationGuards = new WeakMap();
@@ -414,8 +413,8 @@ export function buildPortalSourceIndex({
 export function sourceEditorTarget(source, region = source.region, cache = null) {
   if (!source.file || !source.sourceDir) return null;
   try {
-    const root = fs.realpathSync(source.sourceDir),
-      file = fs.realpathSync(source.file);
+    const root = realLocalPath(source.sourceDir),
+      file = realLocalPath(source.file);
     const relative = path.relative(root, file);
     const outside = !relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative);
     const externalProfile = outside && trustedProfileFiles.get(source) === file;

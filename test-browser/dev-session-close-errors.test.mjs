@@ -15,7 +15,7 @@ import { loadDevTargets } from '../lense/config.mjs';
 import { startDevSessions } from '../lense/dev-sessions.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
 import { OverlaySession } from '../lense/session.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../mirage/testing/owned-fixture.mjs';
 import { openBrowser } from '../lense/browser.mjs';
 import { createCdpFaultProxy } from './helpers/cdp-fault-proxy.mjs';
 
@@ -24,7 +24,7 @@ async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-dev-close-'));
   const source = createFixture();
   owner.remove(() => source.cleanup());
-  owner.remove(() => fs.rm(directory, { recursive: true, force: true }));
+  owner.remove(() => removeFixtureDirectory(directory));
   const server = http.createServer((request, response) => {
     if (!request.url.startsWith('/')) return response.writeHead(403).end();
     response
@@ -231,6 +231,19 @@ for (const attached of [false, true]) {
       const { owner, origin, context, selection } = await fixture(t);
       const logs = [];
       let stopped = false;
+      const interception = new WeakMap();
+      context.on('page', (page) => interception.set(page, Promise.withResolvers()));
+      const attach = context.newCDPSession.bind(context);
+      t.mock.method(context, 'newCDPSession', async (page) => {
+        const cdp = await attach(page),
+          send = cdp.send.bind(cdp);
+        cdp.send = async (method, params) => {
+          const result = await send(method, params);
+          if (method === 'Fetch.enable') interception.get(page).resolve();
+          return result;
+        };
+        return cdp;
+      });
       const runtime = await startDevSessions(context, selection, {
         attached,
         stop: () => {
@@ -241,6 +254,7 @@ for (const attached of [false, true]) {
       owner.add(() => runtime.close());
       const healthy = [await context.newPage(), await context.newPage()];
       for (const [index, page] of healthy.entries()) {
+        await interception.get(page).promise;
         await page.goto(origin);
         await page.waitForLoadState('networkidle');
         await page.evaluate((value) => {

@@ -517,13 +517,19 @@ function inspectRenderedPageImpl() {
       while (boundary?.ownerDocument === selected.ownerDocument) {
         if (
           boundary.matches?.(
-            '[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-listid],table[data-paqvilo-table],[id^=EntityFormControl],[id^=WebFormControl]',
+            '[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-listid],table[data-paqvilo-table],table[data-paqvilo-grid],[id^=EntityFormControl],[id^=WebFormControl]',
           )
         )
           break;
         boundary = boundary.assignedSlot ?? boundary.parentElement ?? boundary.getRootNode?.()?.host;
       }
       pending.push(boundary ?? selected.ownerDocument.documentElement);
+      if (boundary?.matches('table[data-paqvilo-grid]')) {
+        const id = boundary.getAttribute('data-paqvilo-grid');
+        const targets = id ? [...boundary.getRootNode().querySelectorAll('#' + CSS.escape(id))] : [];
+        if (targets.length === 1 && targets[0].matches('table[data-paqvilo-table]') && own(targets[0]))
+          pending.push(targets[0]);
+      }
     }
   } catch {
     /* An inaccessible or changing selection cannot widen the scan. */

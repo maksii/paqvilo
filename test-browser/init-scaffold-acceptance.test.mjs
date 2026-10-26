@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { prepareProject } from '../lense/project-scaffold.mjs';
+import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 const toolkit = fileURLToPath(new URL('../', import.meta.url));
 // Ignore personal source/identity configuration while retaining the browser
@@ -58,24 +59,51 @@ test(
     assert.ok(recipe, 'runnable public-API example exists');
     const file = path.join(root, 'test-browser/local.acceptance.test.mjs');
     await fs.writeFile(file, recipe);
-    let result = await run(root);
+    const started = Date.now();
+    const result = await run(root);
+    t.diagnostic(`baseline CLI completed after ${Date.now() - started} ms`);
     assert.equal(result.code, 0, result.output);
-    for (const changed of [
-      recipe.replace(
-        '<h1 id="fixture-title">Invented acceptance content</h1>',
-        '<h1 id="fixture-title">Regressed content</h1>',
+    const variants = [
+      [
+        'content',
+        recipe.replace(
+          '<h1 id="fixture-title">Invented acceptance content</h1>',
+          '<h1 id="fixture-title">Regressed content</h1>',
+        ),
+        'rendered content and browser requests must pass',
+      ],
+      [
+        'authenticated access',
+        recipe.replace("roles: ['Reader']", "roles: ['Other role']"),
+        'authenticated fixture read must succeed',
+      ],
+      [
+        'anonymous denial',
+        recipe.replace("initial.settings.permissionMode = 'enforce'", "initial.settings.permissionMode = 'permissive'"),
+        'anonymous fixture read must be denied',
+      ],
+      [
+        'external asset',
+        recipe.replace(
+          '<h1 id="fixture-title">Invented acceptance content</h1>',
+          '<h1 id="fixture-title">Invented acceptance content</h1><img src="https://unexpected.example.test/asset.png">',
+        ),
+        'unexpected external requests fail hermetic acceptance',
+      ],
+    ];
+    const outcomes = await Promise.allSettled(
+      variants.map(([name, changed, expected]) =>
+        withProcessSlot(async () => {
+          assert.notEqual(changed, recipe);
+          const isolated = await project(t);
+          await fs.writeFile(path.join(isolated, 'test-browser/local.acceptance.test.mjs'), changed);
+          const rejected = await run(isolated);
+          t.diagnostic(`${name} CLI completed after ${Date.now() - started} ms`);
+          assert.equal(rejected.code, 1, rejected.output);
+          assert.ok(rejected.output.includes(expected), `${name} must fail its intended assertion: ${rejected.output}`);
+        }, 2),
       ),
-      recipe.replace("roles: ['Reader']", "roles: ['Other role']"),
-      recipe.replace("initial.settings.permissionMode = 'enforce'", "initial.settings.permissionMode = 'permissive'"),
-      recipe.replace(
-        '<h1 id="fixture-title">Invented acceptance content</h1>',
-        '<h1 id="fixture-title">Invented acceptance content</h1><img src="https://unexpected.example.test/asset.png">',
-      ),
-    ]) {
-      assert.notEqual(changed, recipe);
-      await fs.writeFile(file, changed);
-      result = await run(root);
-      assert.equal(result.code, 1, result.output);
-    }
+    );
+    for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
   },
 );

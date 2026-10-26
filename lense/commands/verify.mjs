@@ -752,8 +752,11 @@ export default async function verify(cfg, args) {
     await cleanup('browser', () => close?.());
     const kept = Boolean(process.env.PAQVILO_KEEP_TEMP);
     if (!kept)
+      // Windows can retain a retiring process/directory handle until the next
+      // event-loop turn. Keep the existing bounded retry policy asynchronous;
+      // synchronous retries prevent those scheduled releases from running.
       await cleanup('temporary sources', () =>
-        fs.rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }),
+        fs.promises.rm(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 }),
       );
     if (report) {
       report.cleanup = {

@@ -173,7 +173,7 @@ export function renderControl(field, value, context = {}) {
       : renderer(field, value, context),
     primary = rendered.primary ?? rendered.element;
   primary.name = field.name;
-  primary.id = `field-${field.name}`;
+  primary.id = `field-${context.controlId ?? field.name}`;
   primary.setAttribute('aria-label', field.label ?? field.name);
   primary.required = Boolean(field.required);
   primary.disabled = Boolean(context.disabled || context.readOnlyText);

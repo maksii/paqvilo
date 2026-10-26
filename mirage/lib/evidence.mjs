@@ -77,11 +77,13 @@ async function cachedFingerprint(sourceDir, implementation) {
   const root = path.resolve(sourceDir);
   const lines = [];
   async function walk(dir) {
-    const entries = (await fs.readdir(dir, { withFileTypes: true }))
+    const entries = ((await fs.readdir(dir, { withFileTypes: true }).catch(gone)) ?? [])
       .filter((entry) => !excludedEntry(root, dir, entry, implementation))
       .sort((a, b) => a.name.localeCompare(b.name));
     const stats = await Promise.all(
-      entries.map((entry) => (entry.isFile() ? fs.stat(path.join(dir, entry.name), { bigint: true }) : null)),
+      entries.map((entry) =>
+        entry.isFile() ? fs.stat(path.join(dir, entry.name), { bigint: true }).catch(gone) : null,
+      ),
     );
     for (const [index, entry] of entries.entries()) {
       const file = path.join(dir, entry.name);

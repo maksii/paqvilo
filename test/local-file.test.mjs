@@ -5,6 +5,37 @@ import os from 'node:os';
 import path from 'node:path';
 import { readLocalFile, readLocalFileSync } from '../lense/local-file.mjs';
 
+test(
+  'Windows descriptor reads avoid legacy component traversal while retaining every pathname check',
+  { skip: process.platform !== 'win32' },
+  (t) => {
+    const native = fs.realpathSync.native;
+    const root = native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-native-read-')));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const directory = path.join(root, ...Array.from({ length: 12 }, (_, index) => 'nested-' + index));
+    fs.mkdirSync(directory, { recursive: true });
+    const file = path.join(directory, 'source.txt');
+    fs.writeFileSync(file, 'invented bytes');
+    const calls = [];
+    t.mock.method(fs, 'realpathSync', () => assert.fail('the legacy component walker must not run'));
+    fs.realpathSync.native = (target) => {
+      calls.push(target);
+      return native(target);
+    };
+    assert.equal(readLocalFileSync(file, { root, expectedRealPath: native(file), encoding: 'utf8' }), 'invented bytes');
+    assert.equal(
+      calls.filter((target) => target === file).length,
+      3,
+      'the original pathname is checked before open, before bytes, and after bytes',
+    );
+    assert.equal(
+      calls.filter((target) => target === root).length,
+      1,
+      'root confinement still uses a resolved physical path',
+    );
+  },
+);
+
 test('an expected canonical pathname refuses a link inserted after caller validation before opening bytes', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-read-expected-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

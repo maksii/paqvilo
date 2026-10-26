@@ -95,8 +95,10 @@ function observePortalNodeImpl(
       // must also be declared by this exact grid (or its explicit clone target).
       // Never borrow an enclosing form's table for an unbound custom grid.
       if (!/^[a-z][a-z0-9_]*$/.test(name) || bindings.grid.table?.toLowerCase() !== name) break;
-      const tableNames = ['data-entityname', 'data-entity', 'data-paqvilo-table']
-        .map((key) => attribute(current, key).toLowerCase())
+      const tableNames = [...new Set([current, table])]
+        .flatMap((element) =>
+          ['data-entityname', 'data-entity', 'data-paqvilo-table'].map((key) => attribute(element, key).toLowerCase()),
+        )
         .filter(Boolean);
       if ((declaredTable && declaredTable !== name) || tableNames.some((value) => value !== name)) conflict = true;
       declaredTable = name;
@@ -109,17 +111,22 @@ function observePortalNodeImpl(
     const nativeWrapper = /^(?:EntityFormControl|WebFormControl)(?:_|$)/.test(current.id ?? '');
     const genericView = current.id === 'EntityFormView' || current.id === 'EntityFormControl_EntityFormView';
     const genericWrapper = genericNativeId(current.id);
+    // A child frame's own layout constrains its target, not this containing form.
     const nativeLayouts =
-      nativeWrapper || genericView ? [...current.querySelectorAll(':scope > [data-form-layout]')].slice(0, 2) : [];
+      nativeWrapper || genericView
+        ? [...current.querySelectorAll(':scope > [data-form-layout]:not(iframe)')].slice(0, 2)
+        : [];
     if (current.id === 'WebFormControl')
       nativeLayouts.push(
-        ...[...current.querySelectorAll(':scope > #WebFormPanel > #EntityFormView > [data-form-layout]')].slice(0, 2),
+        ...[
+          ...current.querySelectorAll(':scope > #WebFormPanel > #EntityFormView > [data-form-layout]:not(iframe)'),
+        ].slice(0, 2),
       );
     if (current.id === 'EntityFormControl')
       nativeLayouts.push(
         ...[
           ...current.querySelectorAll(
-            ':scope > #EntityFormPanel > #EntityFormControl_EntityFormView > [data-form-layout]',
+            ':scope > #EntityFormPanel > #EntityFormControl_EntityFormView > [data-form-layout]:not(iframe)',
           ),
         ].slice(0, 2),
       );
@@ -288,7 +295,7 @@ function observePortalNodeImpl(
       ancestors.includes(doc.documentElement) &&
       !ancestors.some((item) => item.matches('[data-formid],[data-form-layout]') || genericNativeId(item.id))
     ) {
-      const parent = observePortalNodeImpl(frame, {
+      const parent = observePortalNodeImpl(frame.assignedSlot ?? frame.parentElement ?? frame.getRootNode()?.host, {
         scope,
         bindings,
         sourceRefs,
@@ -322,6 +329,36 @@ function observePortalNodeImpl(
         // establish ownership in the absence of that rendered placement.
         const params = definitionQuery(new URL(doc.URL), { formName: true });
         const aliases = forms.filter((form) => norm(form.formXml?.id) === norm(targets[0].id)).map((form) => form.id);
+        const frameTables = ['data-entityname', 'data-entity', 'data-paqvilo-table']
+          .map((key) => attribute(frame, key).toLowerCase())
+          .filter(Boolean);
+        const frameForms = [attribute(frame, 'data-formid')].filter(Boolean);
+        const encoded = attribute(frame, 'data-form-layout');
+        if (encoded) {
+          try {
+            if (encoded.length > 65536) throw Error('Oversized layout');
+            const layout = JSON.parse(encoded);
+            if (!layout || typeof layout !== 'object' || Array.isArray(layout)) throw Error('Invalid layout');
+            if (typeof layout.EntityName === 'string' && layout.EntityName)
+              frameTables.push(layout.EntityName.toLowerCase());
+            if (typeof layout.Id === 'string' && layout.Id && norm(layout.Id) !== '0'.repeat(32))
+              frameForms.push(layout.Id);
+          } catch {
+            result.availability.push({ reason: 'invalid-rendered-form-layout' });
+            return result;
+          }
+        }
+        if (
+          frameForms.some(
+            (id) => !forms.some((form) => [form.id, form.formXml?.id].some((value) => norm(value) === norm(id))),
+          )
+        ) {
+          result.availability.push({ reason: 'nearest-component-definition-missing' });
+          return result;
+        }
+        const frameConflict =
+          frameTables.some((entity) => entity !== targets[0].entity.toLowerCase()) ||
+          frameForms.some((id) => ![targets[0].id, ...aliases].some((value) => norm(value) === norm(id)));
         const urlConflict = params.some(
           ([key, value]) =>
             value &&
@@ -331,7 +368,7 @@ function observePortalNodeImpl(
                 ? ![targets[0].id, ...aliases].some((id) => norm(id) === norm(value))
                 : key.toLowerCase() === 'formname' && value !== targets[0].name),
         );
-        if (urlConflict || (declaredTable && declaredTable !== targets[0].entity.toLowerCase())) {
+        if (frameConflict || urlConflict || (declaredTable && declaredTable !== targets[0].entity.toLowerCase())) {
           result.facts.push({ scope, dimension: 'owner', kind: 'binding-conflict', reason: conflictReason });
           return result;
         }
@@ -355,6 +392,7 @@ function observePortalNodeImpl(
     ) {
       let currentDoc = doc,
         depth = ancestors.length;
+      const editorChain = [...ancestors];
       for (let level = 0; level < 16; level++) {
         let frame;
         try {
@@ -370,6 +408,7 @@ function observePortalNodeImpl(
           break;
         }
         for (let parent = frame; parent && depth < 256; parent = parent.parentElement, depth++) {
+          editorChain.push(parent);
           const name = /^(.*)_(?:ControlView|Container)$/i.exec(parent.id)?.[1];
           if (!name) {
             if (
@@ -381,14 +420,20 @@ function observePortalNodeImpl(
           }
           const packet = observePortalNodeImpl(parent, { scope, bindings, sourceRefs, sourceRefsByComponent });
           const owner = packet.facts.find((fact) => fact.dimension === 'owner' && fact.binding?.kind === 'column');
-          const innerNames = ancestors.flatMap((item) =>
+          const innerNames = editorChain.flatMap((item) =>
             ['data-attribute', 'data-field', 'data-fieldname', 'data-pcf-native-field']
               .map((key) => attribute(item, key).toLowerCase())
               .filter(Boolean),
           );
+          const innerTables = editorChain.flatMap((item) =>
+            ['data-entityname', 'data-entity', 'data-paqvilo-table']
+              .map((key) => attribute(item, key).toLowerCase())
+              .filter((name) => /^[a-z][a-z0-9_]*$/.test(name)),
+          );
           if (
             owner &&
             ((declaredTable && owner.binding.entity !== declaredTable) ||
+              innerTables.some((name) => name !== owner.binding.entity.toLowerCase()) ||
               innerNames.some((name) => name !== owner.binding.field.toLowerCase()))
           ) {
             result.facts.push({ scope, dimension: 'owner', kind: 'binding-conflict', reason: conflictReason });

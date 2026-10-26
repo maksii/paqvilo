@@ -2783,7 +2783,7 @@ async function renderRecord() {
       wrapper.className = 'field';
       bindModel(wrapper, controlBinding(cell));
       const label = document.createElement('label');
-      label.htmlFor = 'field-' + field.name;
+      label.htmlFor = 'field-' + (cell.sourceControl?.id ?? field.name);
       label.textContent = field.label;
       if (field.required) {
         const required = document.createElement('span');
@@ -2909,6 +2909,7 @@ function bindPcfState(
 function renderFieldControl(cell, field, disabled) {
   const lease = provenance.currentLease();
   return renderControl(field, record[field.name], {
+    controlId: cell.sourceControl?.id ?? field.name,
     provenance: (event) => bindPcfState(event, controlBinding(cell), lease),
     disabled,
     tables: catalogue.tables,
@@ -3003,6 +3004,7 @@ function applyControlState(name, key, value) {
   }
 }
 function createShellClient(selectedForm) {
+  const requiredLevels = new Map();
   const cells = selectedForm.tabs
     .flatMap((tab) => tab.sections.flatMap((section) => section.fields))
     .filter((cell) => cell.name && cell.supported);
@@ -3085,17 +3087,23 @@ function createShellClient(selectedForm) {
     },
     isDirty: (name) => (name ? touchedFields.has(name) : dirty),
     required: (name, value) => {
-      const cell = cells.find((cell) => cell.name === name),
-        entry = controls.find((entry) => entry.name === name),
-        primary = entry?.control.primary ?? entry?.control.element;
-      if (value !== undefined && cell) {
-        const states = clientControlState.get(controlName(cell)) ?? new Map();
-        states.set('required', value);
-        clientControlState.set(controlName(cell), states);
-        applyControlState(controlName(cell), 'required', value);
+      if (value !== undefined) {
+        requiredLevels.set(name, value);
+        for (const cell of cells.filter((cell) => cell.name === name)) {
+          const states = clientControlState.get(controlName(cell)) ?? new Map();
+          states.set('required', value);
+          clientControlState.set(controlName(cell), states);
+          applyControlState(controlName(cell), 'required', value);
+        }
       }
-      const configured = cell && clientControlState.get(controlName(cell))?.get('required');
-      return configured !== undefined ? configured === 'required' : (primary?.required ?? table.fields[name]?.required);
+      return (
+        requiredLevels.get(name) ??
+        (table.fields[name]?.required
+          ? 'required'
+          : table.fields[name]?.requiredLevel === 'recommended'
+            ? 'recommended'
+            : 'none')
+      );
     },
     controlNames: (name) => [
       ...cells.filter((cell) => !name || cell.name === name).map(controlName),

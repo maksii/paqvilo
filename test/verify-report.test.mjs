@@ -84,17 +84,21 @@ test('strict mode treats truncated diagnostic text as incomplete even when prefi
 test('JSON verification emits one final failure report when temporary cleanup also fails', async (t) => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-cleanup-report-'));
   const remove = fs.rmSync;
+  const removeAsync = fs.promises.rm;
   let temporary;
+  let cleanupAttempts = 0;
   t.after(() => {
     if (temporary) remove(temporary, { recursive: true, force: true });
     remove(stateDir, { recursive: true, force: true });
   });
-  t.mock.method(fs, 'rmSync', (file, options) => {
+  t.mock.method(fs.promises, 'rm', async (file, options) => {
     if (path.basename(file).startsWith('paqvilo-verify-')) {
       temporary = file;
+      cleanupAttempts++;
+      assert.deepEqual(options, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
       throw new Error('fixture cleanup failure');
     }
-    return remove(file, options);
+    return removeAsync(file, options);
   });
   const output = [];
   t.mock.method(console, 'log', (line) => output.push(line));
@@ -108,6 +112,8 @@ test('JSON verification emits one final failure report when temporary cleanup al
     site: { startPath: '/' },
   };
   assert.equal(await verify(cfg, { json: true }), 1);
+  assert.equal(cleanupAttempts, 1);
+  assert.equal(fs.existsSync(temporary), true);
   assert.equal(output.length, 1);
   const report = JSON.parse(output[0]);
   assert.equal(report.passed, false);

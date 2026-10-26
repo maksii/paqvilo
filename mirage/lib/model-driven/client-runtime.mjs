@@ -647,7 +647,10 @@ export function createFormClientRuntime(host) {
                   ?.map((value) => field.options?.find((option) => option.value === value)?.label)
                   .filter((value) => value !== undefined) ?? null)
               : (field.options?.find((option) => option.value === fieldValue(name))?.label ?? null),
-          getRequiredLevel: () => (host.required?.(name) ? 'required' : 'none'),
+          getRequiredLevel: () => {
+            const level = host.required?.(name);
+            return typeof level === 'string' ? level : level ? 'required' : 'none';
+          },
           setRequiredLevel: (value) => {
             if (!['none', 'required', 'recommended'].includes(value)) throw new Error('Invalid required level.');
             host.required?.(name, value);

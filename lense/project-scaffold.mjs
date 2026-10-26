@@ -189,8 +189,8 @@ export async function prepareProject(directory, options = {}) {
   for (const site of sites) files[`test-browser/fixtures/${site}/.gitkeep`] = '';
   files['test-browser/smoke.test.mjs'] = await template('smoke.test.mjs.template', {
     binding: packs.length
-      ? "import { mirage } from '../support/mirage.mjs';"
-      : "import { createSimulator } from 'paqvilo/mirage';",
+      ? "const { mirage } = await import('../support/mirage.mjs');"
+      : "const { createSimulator } = await import('paqvilo/mirage');",
     factory: packs.length ? 'mirage.createSimulator' : 'createSimulator',
     sites: JSON.stringify(sites),
   });

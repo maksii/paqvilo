@@ -149,7 +149,7 @@ test('no-pack/no-vscode generate runnable tests without pack adapters or editor 
   assert.ok(!manifest.scripts.setup.includes('refresh-editor'));
   assert.equal(YAML.parse(await read(directory, 'paqvilo.config.yml')).sites.portal.mirage.dataPacks, undefined);
   assert.match(manifest.scripts.test, /test\/\*\.test\.mjs$/);
-  assert.match(await read(directory, 'test-browser/smoke.test.mjs'), /from 'paqvilo\/mirage'/);
+  assert.match(await read(directory, 'test-browser/smoke.test.mjs'), /await import\('paqvilo\/mirage'\)/);
 });
 
 test('agent guidance is concise, covers setup/validation/boundaries and links to maintained toolkit docs', async (t) => {

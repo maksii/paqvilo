@@ -556,7 +556,10 @@ export function renderPcfControl(field, initialValue, options = {}) {
         attributes: {
           LogicalName: link?.field ?? '',
           DisplayName: link?.field === field.name ? (field.label ?? field.name) : (link?.field ?? property.name),
-          RequiredLevel: field.required ? 2 : 0,
+          RequiredLevel:
+            { none: 0, systemrequired: 1, applicationrequired: 2, required: 2, recommended: 3 }[
+              String(field.requiredLevel ?? '').toLowerCase()
+            ] ?? (field.required ? 2 : 0),
           ...(field.maxLength ? { MaxLength: field.maxLength } : {}),
           ...(field.options
             ? { Options: field.options.map((option) => ({ Value: option.value, Label: option.label })) }

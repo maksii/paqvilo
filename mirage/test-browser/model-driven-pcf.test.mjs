@@ -222,6 +222,34 @@ test('trusted standard PCF uses compiled exports, typed context, dirty outputs a
   assert.deepEqual(errors, []);
 });
 
+test('bound PCF column metadata preserves all exported requirement levels independently of disabled presentation', async (t) => {
+  const { page, errors } = await fixture(t);
+  const states = await page.evaluate(async () => {
+    const result = [];
+    for (const [requiredLevel, required] of [
+      ['none', false],
+      ['recommended', false],
+      ['systemrequired', true],
+      ['applicationrequired', true],
+      [undefined, true],
+    ]) {
+      window.field = { ...window.field, requiredLevel, required };
+      await window.mount({ ...window.options, disabled: true });
+      result.push({
+        requiredLevel: window.pcfContext.parameters.value.attributes.RequiredLevel,
+        disabled: window.pcfContext.mode.isControlDisabled,
+      });
+      window.control.destroy();
+    }
+    return result;
+  });
+  assert.deepEqual(
+    states,
+    [0, 3, 1, 2, 2].map((requiredLevel) => ({ requiredLevel, disabled: true })),
+  );
+  assert.deepEqual(errors, []);
+});
+
 test('PCF date-only raw values preserve local calendar dates and choices expose exported formatted labels', async (t) => {
   const { page, errors } = await fixture(t);
   const values = await page.evaluate(async () => {

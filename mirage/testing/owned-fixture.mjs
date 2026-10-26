@@ -1,6 +1,13 @@
 // Test-only ownership: acquire a single after hook before registering resources.
 // Shared fixture builders receive the same TestContext and therefore the same owner.
+import fs from 'node:fs/promises';
+
 const owners = new WeakMap();
+
+/** Remove drained fixture state while Windows retires an already-closed browser handle. */
+export function removeFixtureDirectory(directory) {
+  return fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
 
 const fail = (errors, message) => {
   if (errors.length === 1) throw errors[0];

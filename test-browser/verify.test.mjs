@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import verify, { diagnosticSnapshot } from '../lense/commands/verify.mjs';
 import { editSource } from '../lense/source-edit.mjs';
@@ -315,12 +315,21 @@ for (const layout of ['classic', 'enhanced'])
         const stdout = [];
         const log = console.log;
         if (layout === 'enhanced') console.log = (line) => stdout.push(line);
+        let result;
         try {
-          assert.equal(await verify(fx.cfg, { strict, json: layout === 'enhanced' }), strict ? 1 : 0);
+          result = await verify(fx.cfg, { strict, json: layout === 'enhanced' });
         } finally {
           chromium.launchPersistentContext = launch;
           console.log = log;
+          const evidenceDir = new URL('../.paqvilo/extended-round/', import.meta.url);
+          const report = reportFor(fx.cfg).report;
+          fs.mkdirSync(evidenceDir, { recursive: true });
+          fs.writeFileSync(
+            new URL(`verify-${layout}-${uncommittedInline ? 'working-copy' : 'baseline'}.json`, evidenceDir),
+            JSON.stringify(report, null, 2),
+          );
         }
+        assert.equal(result, strict ? 1 : 0);
         const { report, screenshot } = reportFor(fx.cfg);
         assert.equal(report.passed, !strict, 'strict mode fails the newly observed post-edit console error');
         assert.equal(report.inlineBaseline.available, layout === 'classic' || uncommittedInline);
@@ -398,12 +407,6 @@ for (const layout of ['classic', 'enhanced'])
         assert.ok(fx.requests.some((request) => request.pathname === IMAGE_URL));
         for (const [file, original] of fx.sourceFiles)
           assert.equal(fs.readFileSync(file, 'utf8'), original, 'the caller source stays unchanged');
-        const evidenceDir = new URL('../.paqvilo/extended-round/', import.meta.url);
-        fs.mkdirSync(evidenceDir, { recursive: true });
-        fs.writeFileSync(
-          new URL(`verify-${layout}-${uncommittedInline ? 'working-copy' : 'baseline'}.json`, evidenceDir),
-          JSON.stringify(report, null, 2),
-        );
       },
     );
   }
@@ -438,6 +441,50 @@ test(
     assert.equal(reportFor(fx.cfg).report.diagnostics.afterEdits, null);
     assert.equal(fs.existsSync(temporaryWork), false);
     assert.equal(fx.requests.length, 0);
+  },
+);
+
+test(
+  'verify cleanup permits a scheduled Windows handle release without blocking the event loop',
+  { timeout: 30_000, skip: process.platform !== 'win32' && 'Windows current-directory handles prevent deletion' },
+  async (t) => {
+    const fx = await fixture(t, 'classic');
+    const launch = chromium.launchPersistentContext;
+    const log = console.log;
+    let child, closed, temporaryWork;
+    t.after(async () => {
+      if (child && child.exitCode === null) child.kill();
+      await closed;
+      if (temporaryWork) fs.rmSync(temporaryWork, { recursive: true, force: true });
+    });
+    chromium.launchPersistentContext = async (profileDir) => {
+      temporaryWork = path.dirname(profileDir);
+      child = spawn(
+        process.execPath,
+        ['-e', 'process.on("message",()=>process.exit(0));process.send("holding-directory");'],
+        { cwd: temporaryWork, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true },
+      );
+      closed = once(child, 'close');
+      assert.equal((await once(child, 'message', { signal: t.signal }))[0], 'holding-directory');
+      setImmediate(() => {
+        if (child.connected) child.send('release', () => {});
+      });
+      throw new Error('deliberate setup failure while an owned handle is retiring');
+    };
+    console.log = () => {};
+    try {
+      assert.equal(await verify(fx.cfg, { json: true }), 1);
+    } finally {
+      chromium.launchPersistentContext = launch;
+      console.log = log;
+      if (child?.connected) child.send('release', () => {});
+      await closed;
+    }
+    const { report } = reportFor(fx.cfg);
+    assert.match(report.error, /^deliberate setup failure while an owned handle is retiring$/);
+    assert.deepEqual(report.cleanup.errors, []);
+    assert.equal(report.cleanup.temporarySourceRemoved, true);
+    assert.equal(fs.existsSync(temporaryWork), false);
   },
 );
 

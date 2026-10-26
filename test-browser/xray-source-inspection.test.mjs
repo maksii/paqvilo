@@ -121,68 +121,90 @@ test('observed declared grids hydrate both exported tables without page requests
   );
 });
 
-test('a selected declared grid beyond the control scan cap requests a bounded source refresh', async (t) => {
-  const { fx, page } = await fixture(
-    t,
-    '<input>'.repeat(900) +
-      '<table data-paqvilo-table="fx_late"><tr><th id="late" data-paqvilo-column="fx_title">Late</th></tr></table>',
-  );
-  const other = path.join(fx.solution, 'Entities/fx_late/Entity.xml');
-  fs.mkdirSync(path.dirname(other), { recursive: true });
-  fs.writeFileSync(
-    other,
-    '<Entity><Name>fx_late</Name><EntityInfo><entity Name="fx_late"><attributes><attribute PhysicalName="fx_title"><Type>nvarchar</Type><LogicalName>fx_title</LogicalName></attribute></attributes></entity></EntityInfo></Entity>',
-  );
-  const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { solutionRoots: [fx.solution] } });
-  const rendered = await page.evaluate(inspectRenderedPage);
-  assert.equal(
-    rendered.controls.some((row) => row.gridTable === 'fx_late'),
-    false,
-    'the ordinary scan remains bounded',
-  );
-  const { report } = await inspector.inspect('/other', rendered);
-  const data = {
-    origin: 'http://127.0.0.1:11111',
-    token: 'invented-selected-grid',
-    sourceRevision: report.sourceRevision,
-  };
-  await page.evaluate(xrayUi, data);
-  await page.evaluate(
-    ({ data, report }) => {
-      const api = document.getElementById('paqvilo-xray').__px;
-      api.update(data, report);
-      window.gridRefreshes = 0;
-      document.getElementById('paqvilo-xray').addEventListener('paqvilo-xray', (event) => {
-        if (event.detail.action === 'refresh') window.gridRefreshes++;
-      });
-      api.select(document.getElementById('late'));
-    },
-    { data, report },
-  );
-  await page.waitForFunction(() => window.gridRefreshes === 1);
-  const focused = await page.evaluate(inspectRenderedPage);
-  assert.equal(
-    focused.controls[0].gridTable,
-    'fx_late',
-    'selection prioritizes the actual grid before unrelated inputs',
-  );
-  const fresh = (await inspector.inspect('/other', focused)).report;
-  await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
-    data: { ...data, sourceRevision: fresh.sourceRevision },
-    report: fresh,
+for (const clone of [false, true])
+  test(`a selected ${clone ? 'linked clone' : 'declared grid'} beyond the control scan cap requests a bounded source refresh`, async (t) => {
+    const { fx, page } = await fixture(
+      t,
+      '<input>'.repeat(900) +
+        `<table id="late-original" data-paqvilo-table="fx_late"><tr><th ${clone ? '' : 'id="late"'} data-paqvilo-column="fx_title">Late</th></tr></table>` +
+        (clone
+          ? '<table data-paqvilo-grid="late-original"><tr><th id="late" data-paqvilo-column="fx_title">Clone</th></tr></table>'
+          : ''),
+    );
+    const other = path.join(fx.solution, 'Entities/fx_late/Entity.xml');
+    fs.mkdirSync(path.dirname(other), { recursive: true });
+    fs.writeFileSync(
+      other,
+      '<Entity><Name>fx_late</Name><EntityInfo><entity Name="fx_late"><attributes><attribute PhysicalName="fx_title"><Type>nvarchar</Type><LogicalName>fx_title</LogicalName></attribute></attributes></entity></EntityInfo></Entity>',
+    );
+    const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { solutionRoots: [fx.solution] } });
+    const rendered = await page.evaluate(inspectRenderedPage);
+    assert.equal(
+      rendered.controls.some((row) => row.gridTable === 'fx_late'),
+      false,
+      'the ordinary scan remains bounded',
+    );
+    const { report } = await inspector.inspect('/other', rendered);
+    const data = {
+      origin: 'http://127.0.0.1:11111',
+      token: 'invented-selected-grid',
+      sourceRevision: report.sourceRevision,
+    };
+    await page.evaluate(xrayUi, data);
+    await page.evaluate(
+      ({ data, report }) => {
+        const api = document.getElementById('paqvilo-xray').__px;
+        api.update(data, report);
+        window.gridRefreshes = 0;
+        document.getElementById('paqvilo-xray').addEventListener('paqvilo-xray', (event) => {
+          if (event.detail.action === 'refresh') window.gridRefreshes++;
+        });
+        api.select(document.getElementById('late'));
+      },
+      { data, report },
+    );
+    await page.waitForFunction(() => window.gridRefreshes === 1);
+    const focused = await page.evaluate(inspectRenderedPage);
+    assert.equal(
+      focused.controls[0].gridTable,
+      'fx_late',
+      'selection prioritizes the actual grid before unrelated inputs',
+    );
+    assert.ok(focused.controls.length <= 300, 'selected-grid priority preserves the control scan cap');
+    const fresh = (await inspector.inspect('/other', focused)).report;
+    await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
+      data: { ...data, sourceRevision: fresh.sourceRevision },
+      report: fresh,
+    });
+    const evidence = await page
+      .locator('#late')
+      .evaluate((node) => document.getElementById('paqvilo-xray').__px.identify(node).evidence);
+    assert.equal(evidence.owner.status, 'exact');
+    assert.equal(evidence.owner.component.key, 'column:fx_late:fx_title');
+    assert.equal(evidence.source.status, 'exact');
+    assert.equal(
+      await page.evaluate(() => window.gridRefreshes),
+      1,
+      'hydration does not keep refreshing an exact selection',
+    );
+    if (clone) {
+      await page.locator('#late-original').evaluate((node) => node.after(node.cloneNode(true)));
+      const ambiguous = await page.evaluate(inspectRenderedPage);
+      assert.equal(
+        ambiguous.controls.some((row) => row.gridTable === 'fx_late'),
+        false,
+        'a duplicate clone target cannot choose which original to prioritize',
+      );
+      const ambiguousEvidence = await page
+        .locator('#late')
+        .evaluate((node) => document.getElementById('paqvilo-xray').__px.identify(node).evidence);
+      assert.notEqual(
+        ambiguousEvidence.owner.status,
+        'exact',
+        'admitted metadata cannot replace a unique clone target',
+      );
+    }
   });
-  const evidence = await page
-    .locator('#late')
-    .evaluate((node) => document.getElementById('paqvilo-xray').__px.identify(node).evidence);
-  assert.equal(evidence.owner.status, 'exact');
-  assert.equal(evidence.owner.component.key, 'column:fx_late:fx_title');
-  assert.equal(evidence.source.status, 'exact');
-  assert.equal(
-    await page.evaluate(() => window.gridRefreshes),
-    1,
-    'hydration does not keep refreshing an exact selection',
-  );
-});
 
 test('first trusted selection renders its card and clipped outline without reading geometry after the card rebuild', async (t) => {
   const { page, inspect } = await fixture(

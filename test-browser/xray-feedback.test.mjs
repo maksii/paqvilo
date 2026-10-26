@@ -111,6 +111,28 @@ test('two declared grids retain exact declared columns across clones, reordering
   assert.equal(await page.evaluate(() => window.businessCalls), 0);
 });
 
+test('a linked grid clone preserves conflicting declarations on its original table', async (t) => {
+  const { page, inspect } = await fixture(
+    t,
+    '<table id="original" data-paqvilo-table="x_first"><tr><th id="direct" data-paqvilo-column="x_title">Direct</th></tr></table>' +
+      '<table data-paqvilo-grid="original"><tr><th id="clone" data-paqvilo-column="x_title">Clone</th></tr></table>',
+  );
+  for (const attribute of ['data-entityname', 'data-entity']) {
+    await page.locator('#original').evaluate((node, attribute) => node.setAttribute(attribute, 'x_second'), attribute);
+    for (const id of ['direct', 'clone'])
+      assert.equal(
+        (await inspect(page.locator('#' + id))).owner.status,
+        'conflicting',
+        `${id} must retain the original grid's ${attribute} contradiction`,
+      );
+    await page.locator('#original').evaluate((node, attribute) => node.removeAttribute(attribute), attribute);
+    for (const id of ['direct', 'clone']) exactColumn(await inspect(page.locator('#' + id)), 'x_first', 'x_title');
+  }
+  await page.locator('#clone').evaluate((node) => node.closest('table').setAttribute('data-entityname', 'x_second'));
+  assert.equal((await inspect(page.locator('#clone'))).owner.status, 'conflicting');
+  exactColumn(await inspect(page.locator('#direct')), 'x_first', 'x_title');
+});
+
 for (const count of [4, 900]) {
   test(`verified attribute hosts carry two empty/disabled editors through nested frames (${count} candidates)`, async (t) => {
     const { page, inspect, data, report } = await fixture(
@@ -151,6 +173,25 @@ for (const count of [4, 900]) {
     });
     const replacement = editors[0].locator('textarea');
     exactColumn(await inspect(replacement), 'x_first', 'x_notes');
+    for (const [attribute, value] of [
+      ['data-fieldname', 'x_summary'],
+      ['data-entityname', 'x_second'],
+    ]) {
+      await page
+        .frameLocator('#notes')
+        .locator('#nested')
+        .evaluate((node, declaration) => node.setAttribute(...declaration), [attribute, value]);
+      assert.equal(
+        (await inspect(replacement)).owner.status,
+        'conflicting',
+        'an intervening editor frame cannot discard its own ' + attribute + ' declaration',
+      );
+      await page
+        .frameLocator('#notes')
+        .locator('#nested')
+        .evaluate((node, attribute) => node.removeAttribute(attribute), attribute);
+      exactColumn(await inspect(replacement), 'x_first', 'x_notes');
+    }
     await replacement.evaluate((node) => node.setAttribute('data-fieldname', 'editor'));
     assert.equal((await inspect(replacement)).owner.status, 'conflicting');
     await page.evaluate(
@@ -277,6 +318,31 @@ test('native quick-view placements join their observed parent and exported targe
     exactColumn(evidence, entity, 'x_title');
     assert.ok(evidence.enclosing.some((row) => row.component.key === 'form:' + formId));
   }
+  await page.locator('#two').evaluate((node) => node.setAttribute('data-entityname', 'x_second'));
+  exactColumn(await inspect(page.frameLocator('#two').locator('input')), 'x_second', 'x_title');
+  await page.locator('#two').evaluate((node) => node.setAttribute('data-entityname', 'x_first'));
+  assert.equal(
+    (await inspect(page.frameLocator('#two').locator('input'))).owner.status,
+    'conflicting',
+    'the frame target declaration must agree with its exported quick-view target, not its parent table',
+  );
+  await page.locator('#two').evaluate((node) => {
+    node.setAttribute('data-entityname', 'x_second');
+    node.setAttribute('data-formid', 'basic-b');
+    node.setAttribute('data-form-layout', JSON.stringify({ Id: 'layout-b', EntityName: 'x_second' }));
+  });
+  exactColumn(await inspect(page.frameLocator('#two').locator('input')), 'x_second', 'x_title');
+  await page.locator('#two').evaluate((node) => node.setAttribute('data-formid', 'unknown'));
+  assert.notEqual((await inspect(page.frameLocator('#two').locator('input'))).owner.status, 'exact');
+  await page.locator('#two').evaluate((node) => {
+    node.removeAttribute('data-formid');
+    node.setAttribute('data-form-layout', 'invalid');
+  });
+  assert.notEqual((await inspect(page.frameLocator('#two').locator('input'))).owner.status, 'exact');
+  await page.locator('#two').evaluate((node) => {
+    node.removeAttribute('data-form-layout');
+    node.removeAttribute('data-entityname');
+  });
   await page.locator('#one').evaluate((node) => (node.src = '/quick-one?navigation=next'));
   await page
     .frameLocator('#one')

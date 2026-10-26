@@ -10,14 +10,14 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import run from '../lense/commands/model-driven.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../mirage/testing/owned-fixture.mjs';
 import { createStandaloneRuntime } from '../mirage/lib/standalone-runtime.mjs';
 import { modelDrivenActionAvailability } from '../lense/model-driven-action-runner.mjs';
 
 async function fixture(t, { resetDocument = false } = {}) {
   const owner = ownedFixture(t);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-model-close-'));
-  owner.remove(() => fs.rm(directory, { recursive: true, force: true }));
+  owner.remove(() => removeFixtureDirectory(directory));
   const solution = path.join(directory, 'solution');
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
   await fs.mkdir(path.join(solution, 'WebResources'));
