@@ -10,6 +10,7 @@ import { startIdentityProvider } from '../lib/identity-provider.mjs';
 import { identityChooserFixture } from '../test/fixtures/identity-chooser.mjs';
 import { identityProviderSettings, identityProviderAssets } from '../lib/identity-provider-settings.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { closeServer } from './shared-browser.mjs';
 
 test(
   'identity chooser works without JS, enhances search/pins/recent, and supports project appearance',
@@ -17,7 +18,8 @@ test(
   async (t) => {
     const callback = http.createServer((req, res) => res.end('<h1>Signed in</h1>'));
     await new Promise((resolve) => callback.listen(0, '127.0.0.1', resolve));
-    ownedFixture(t).add(() => new Promise((resolve) => callback.close(resolve)));
+    // Closed while the browser still holds keep-alive sockets, so drop them rather than wait.
+    ownedFixture(t).add(() => closeServer(callback));
     const root = await fs.mkdtemp(join(tmpdir(), 'idp-appearance-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     await fs.writeFile(join(root, 'custom.css'), '.chooser-header{background:rgb(240,230,255)}');

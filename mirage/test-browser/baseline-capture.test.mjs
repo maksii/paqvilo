@@ -11,6 +11,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { captureScenario } from '../baseline-capture.mjs';
 import { compareScenario } from '../baseline-compare.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { closeServer } from './shared-browser.mjs';
 
 test(
   'baseline capture records, guards writes, redacts tokens and compares captures',
@@ -64,7 +65,8 @@ test(
     });
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
-    ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
+    // Browser keep-alive sockets would hold close() open; the capture contexts are closed by then.
+    ownedFixture(t).add(() => closeServer(server));
     const origin = `http://127.0.0.1:${server.address().port}`;
     const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
     ownedFixture(t).add(() => browser.close());
