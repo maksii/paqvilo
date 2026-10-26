@@ -37,6 +37,12 @@ export function inspectProjectBoundary(directory = root) {
       const rel = path.relative(directory, file).replaceAll('\\', '/');
       if (entry.isDirectory()) walk(file);
       else if (textFile.test(entry.name)) {
+        const runtime =
+          /^(?:lense|mirage)\//.test(rel) &&
+          !/^(?:lense|mirage)\/(?:test|test-browser|testing|docs)\//.test(rel) &&
+          /\.[cm]?js$/.test(entry.name);
+        // Only empty templates and runtime modules have content rules; other files are not read.
+        if (!runtime && !rel.startsWith('templates/')) continue;
         const source = fs.readFileSync(file, 'utf8');
         if (rel.startsWith('templates/')) {
           if (/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/i.test(source))
@@ -47,11 +53,7 @@ export function inspectProjectBoundary(directory = root) {
           }
           if (/\bobserved\s*:\s*\{/.test(source)) findings.push(`${rel}: project observation in empty template`);
         }
-        if (
-          /^(?:lense|mirage)\//.test(rel) &&
-          !/^(?:lense|mirage)\/(?:test|test-browser|testing|docs)\//.test(rel) &&
-          /\.[cm]?js$/.test(entry.name)
-        ) {
+        if (runtime) {
           for (const finding of runtimeImports(source, file, directory)) findings.push(`${rel}: ${finding}`);
         }
       }
