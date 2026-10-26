@@ -3,13 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
-import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { runWorkspaceTask } from './helpers/workspace-task.mjs';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { createFixture } from '../test/fixture.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 test(
   'empty-project debugger task matches the actual local development ready line and reuses its browser',
@@ -31,11 +30,7 @@ test(
     const task = tasks.tasks.find((item) => item.label === launch.preLaunchTask);
     assert.equal(task.type, 'process');
     assert.equal(manifest.scripts['mirage:dev:portal:debug'], 'npm run mirage:dev:portal -- --debug-port 9223');
-    const listener = net.createServer();
-    listener.listen(0, '127.0.0.1');
-    await once(listener, 'listening');
-    const port = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
+    const port = await freeDebugPort();
     const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
     const args = task.args

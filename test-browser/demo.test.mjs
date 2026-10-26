@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
 import { spawn, execFile } from 'node:child_process';
 import { once } from 'node:events';
 import { promisify } from 'node:util';
@@ -12,6 +11,7 @@ import { chromium } from 'playwright-core';
 import { fileURLToPath } from 'node:url';
 import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 test(
   'demo command opens a populated browser, supports the walkthrough and stops its Mirage',
@@ -19,11 +19,7 @@ test(
   async (t) => {
     const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-demo-browser-'));
     const directory = path.join(work, 'example');
-    const listener = net.createServer();
-    listener.listen(0, '127.0.0.1');
-    await once(listener, 'listening');
-    const debugPort = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
+    const debugPort = await freeDebugPort();
     const cli = process.env.PAQVILO_DEMO_CLI || fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
     const child = spawn(

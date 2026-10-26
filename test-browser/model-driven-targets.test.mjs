@@ -4,13 +4,13 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
-import net from 'node:net';
 import { once } from 'node:events';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -140,11 +140,7 @@ async function modelTargetsFixture(t) {
       })),
     }),
   );
-  const listener = net.createServer();
-  listener.listen(0, '127.0.0.1');
-  await once(listener, 'listening');
-  const debugPort = listener.address().port;
-  await new Promise((resolve) => listener.close(resolve));
+  const debugPort = await freeDebugPort();
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) =>

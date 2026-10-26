@@ -4,13 +4,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import net from 'node:net';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { openBrowser } from '../lense/browser.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 // Late-inspection tests share one browser; each test owns its contexts and loopback server.
 let sharedBrowser;
@@ -71,10 +71,7 @@ test(
     fixture.listen(0, '127.0.0.1');
     await once(fixture, 'listening');
     const origin = `http://127.0.0.1:${fixture.address().port}`;
-    const reservation = net.createServer().listen(0, '127.0.0.1');
-    await once(reservation, 'listening');
-    const debugPort = reservation.address().port;
-    await new Promise((resolve) => reservation.close(resolve));
+    const debugPort = await freeDebugPort();
     const launch = chromium.launchPersistentContext;
     t.mock.method(chromium, 'launchPersistentContext', function (profile, options) {
       return launch.call(this, profile, {

@@ -4,7 +4,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
-import net from 'node:net';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +14,7 @@ import { createStandaloneRuntime } from '../mirage/lib/standalone-runtime.mjs';
 import { modelDrivenActionAvailability } from '../lense/model-driven-action-runner.mjs';
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 // A startup deadline for scenarios whose target phase stalls until cleanup: long enough for
 // the earlier phases (browser launch or CDP connection) on a loaded host, short for the test.
@@ -310,10 +310,7 @@ test(
   { timeout: BROWSER_TEST_TIMEOUT_MS },
   async (t) => {
     const setup = await fixture(t, { resetDocument: true });
-    const portServer = net.createServer();
-    await new Promise((resolve) => portServer.listen(0, '127.0.0.1', resolve));
-    const port = portServer.address().port;
-    await new Promise((resolve) => portServer.close(resolve));
+    const port = await freeDebugPort();
     const external = await chromium.launchPersistentContext(path.join(setup.directory, 'external-profile'), {
       channel: setup.channel === 'chromium' ? undefined : setup.channel,
       headless: true,

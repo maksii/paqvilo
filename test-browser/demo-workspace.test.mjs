@@ -3,12 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
 import { execFile } from 'node:child_process';
-import { once } from 'node:events';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { runWorkspaceTask } from './helpers/workspace-task.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 test(
   'scaffolded VS Code task signals readiness and attaches to its own development browser',
@@ -27,11 +26,7 @@ test(
     const launch = JSON.parse(await fs.readFile(path.join(directory, '.vscode/launch.json'), 'utf8'));
     const configuration = launch.configurations.find((item) => item.name === 'Demo: Mirage and browser debugger');
     const task = tasks.tasks.find((item) => item.label === configuration.preLaunchTask);
-    const listener = net.createServer();
-    listener.listen(0, '127.0.0.1');
-    await once(listener, 'listening');
-    const port = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
+    const port = await freeDebugPort();
     // The dependency installation is covered by the independent package smoke.
     // Use its installed CLI when supplied; isolate the browser port for this test.
     const args = task.args.slice(1).map((argument) => (argument === '9222' ? String(port) : argument));

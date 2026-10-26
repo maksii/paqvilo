@@ -4,13 +4,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import net from 'node:net';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { createOwnedPageBindings } from '../lense/owned-page-binding.mjs';
 import { comparison } from '../lense/panel.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 const server = http.createServer((request, response) =>
   response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><h1>Invented</h1>'),
@@ -60,10 +60,7 @@ const rejectionOf = (page, value) =>
 // Only the external-owner test needs a persistent profile with a debugging port.
 async function persistentFixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-binding-test-'));
-  const reservation = net.createServer();
-  await new Promise((resolve) => reservation.listen(0, '127.0.0.1', resolve));
-  const port = reservation.address().port;
-  await new Promise((resolve) => reservation.close(resolve));
+  const port = await freeDebugPort();
   const context = await chromium.launchPersistentContext(
     root,
     browserLaunchOptions({

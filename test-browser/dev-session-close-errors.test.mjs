@@ -4,7 +4,6 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import net from 'node:net';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +18,7 @@ import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 async function fixture(t) {
   const owner = ownedFixture(t);
@@ -330,11 +330,7 @@ test('actual development CLI exits nonzero after agent filesystem cleanup failur
     ),
   );
   env.PAQVILO_TEST_LOOPBACK_PROXY = origin;
-  const listener = net.createServer();
-  listener.listen(0, '127.0.0.1');
-  await once(listener, 'listening');
-  const debugPort = listener.address().port;
-  await new Promise((resolve) => listener.close(resolve));
+  const debugPort = await freeDebugPort();
   const child = spawn(
     process.execPath,
     ['--import', preload, 'lense/cli.mjs', 'dev', '--config', config, '--headless', '--debug-port', String(debugPort)],
