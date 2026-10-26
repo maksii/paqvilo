@@ -36,7 +36,9 @@ async function body(response, expected = 200) {
   return text ? JSON.parse(text) : null;
 }
 async function pack(t, level) {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'mirage-simulation-runtime-'));
+  // Persistence refuses declared files below a symbolic link (lib/transactional-files.mjs), and a runner's temporary
+  // directory may be one (a symlinked TMPDIR, macOS /var): start from its real path.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), 'mirage-simulation-runtime-')));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'data.json'),
     module = path.join(root, 'pack.mjs');

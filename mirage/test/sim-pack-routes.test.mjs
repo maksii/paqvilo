@@ -33,7 +33,9 @@ async function json(response, status = 200) {
 }
 
 test('standalone /packs lists an invented pack with exports, presets provenance and DATA ownership', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-packs-'));
+  // Persistence refuses declared files below a symbolic link (lib/transactional-files.mjs), and a runner's temporary
+  // directory may be one (a symlinked TMPDIR, macOS /var): start from its real path.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'sim-packs-')));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await writeFiles(root, {
     'solution/Other/Solution.xml':

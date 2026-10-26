@@ -10,7 +10,9 @@ import { ownedFixture } from '../testing/owned-fixture.mjs';
  * project directory is removed.
  */
 export async function modelDrivenFixture(t, { defer = false, ...options } = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-app-'));
+  // Persistence refuses declared files below a symbolic link (lib/transactional-files.mjs), and a runner's temporary
+  // directory may be one (a symlinked TMPDIR, macOS /var): start from its real path.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-app-')));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const sourceDir = path.join(root, 'portal'),
     solutionDir = path.join(root, 'solution');
