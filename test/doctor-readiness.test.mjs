@@ -175,17 +175,17 @@ test('doctor JSON normalizes nested Mirage errors and aggregates only opted-in g
     doctor(fx.dir, '--config', config, '--mirage', '--json'),
   ]);
   const optional = JSON.parse(optionalRun.stdout);
+  assert.equal(optionalRun.status, 0, optionalRun.stderr);
   assert.equal(optional.ok, true);
   assert.deepEqual(optional.errors, []);
   assert.ok(optional.reports[0].mirage.errors.some((error) => error.message.includes('missing-project.yml')));
   const gated = JSON.parse(gatedRun.stdout);
+  assert.equal(gatedRun.status, 1, gatedRun.stderr);
   assert.equal(gated.ok, false);
   assert.ok(gated.errors.some((error) => error.message.includes('missing-project.yml')));
-  assert.ok(
-    gated.reports[0].mirage.errors.every(
-      (error) => typeof error.code === 'string' && typeof error.message === 'string',
-    ),
-  );
+  const nested = gated.reports[0].mirage.errors;
+  assert.ok(nested.length > 0);
+  assert.ok(nested.every((error) => typeof error.code === 'string' && typeof error.message === 'string'));
 });
 
 test('deployment-profile diagnostics use forward slashes for project-relative paths', async (t) => {

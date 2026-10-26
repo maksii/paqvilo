@@ -7,7 +7,8 @@ import { spawn } from 'node:child_process';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
-import { tempDir } from './fixture.mjs';
+import { tempDir, withoutToolkitEnvironment } from './fixture.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 const toolkit = fileURLToPath(new URL('../', import.meta.url));
 const environment = Object.fromEntries(
@@ -15,7 +16,7 @@ const environment = Object.fromEntries(
 );
 async function project(t, options = {}) {
   const root = await tempDir('init-acceptance-');
-  t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   await prepareProject(root, { name: 'acceptance-fixture', noVscode: true, ...options });
   await fs.mkdir(path.join(root, 'node_modules'));
   await fs.symlink(toolkit, path.join(root, 'node_modules/paqvilo'), process.platform === 'win32' ? 'junction' : 'dir');
@@ -140,12 +141,15 @@ test('a malformed nonempty fixture fails rather than silently skipping in lightw
     [[], ['--strict']].map((args) => run(root, ['tools/test-browser.mjs', ...args])),
   )) {
     assert.notEqual(result.code, 0, result.output);
-    assert.match(result.output, /fail 1|failed|malformed|parse/i);
+    // The smoke case itself ran and failed: neither a crash of the runner nor a skipped case.
+    assert.match(result.output, /\bfail 1\b/, result.output);
+    assert.match(result.output, /\bskipped 0\b/, result.output);
   }
 });
 
 test('site-bound recipe applies distinct platform and deployment defaults and attaches intended configured or dynamic origins', async (t) => {
   const root = await project(t, { noPack: true });
+  withoutToolkitEnvironment(t);
   const config = path.join(root, 'synthetic.config.yml'),
     sites = {};
   for (const [index, site] of ['alpha', 'beta'].entries()) {
@@ -181,7 +185,7 @@ test('site-bound recipe applies distinct platform and deployment defaults and at
   await fs.writeFile(config, YAML.stringify({ sourceRoot: '.', defaultSite: 'alpha', sites }));
   const { siteMirage, attachSite } = await import(pathToFileURL(path.join(root, 'support/site.mjs')));
   const apps = [];
-  t.after(async () => {
+  ownedFixture(t).add(async () => {
     for (const app of apps) await app.close();
   });
   for (const [index, site] of ['alpha', 'beta'].entries()) {
