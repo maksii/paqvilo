@@ -43,9 +43,11 @@ test('broken PCF manifest diagnostics name Solution-relative files and reach the
   );
   assert.deepEqual(delivered, imported.diagnostics);
 
-  // No absolute local path (drive letter, root or the temporary directory) survives in any diagnostic.
+  // No absolute local path (drive letter, root or the temporary directory) survives in any diagnostic. The import
+  // resolves real paths, which differ from the temporary path when it uses a Windows 8.3 short name or a symlink.
   const text = JSON.stringify(imported.diagnostics);
-  for (const local of [root, solution]) assert.equal(text.includes(JSON.stringify(local).slice(1, -1)), false, text);
+  for (const local of [root, solution, await fs.realpath(root), await fs.realpath(solution)])
+    assert.equal(text.includes(JSON.stringify(local).slice(1, -1)), false, text);
   for (const entry of imported.diagnostics)
     for (const key of ['file', 'source'])
       if (entry[key] !== undefined) assert.doesNotMatch(entry[key], /^(?:[a-z]:|[\\/])/i);

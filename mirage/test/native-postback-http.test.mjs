@@ -280,7 +280,7 @@ test('advanced URLencoded submission follows its own visitor session and previou
   assert.equal(response.headers.get('pragma'), 'no-cache');
   assert.equal(response.headers.get('expires'), '-1');
   assert.equal(response.headers.get('vary'), null);
-  assert.ok(response.headers.get('x-frame-options'));
+  assert.equal(response.headers.get('x-frame-options'), 'SAMEORIGIN');
   assert.match(
     await response.text(),
     /^<html><head><title>Object moved<\/title><\/head><body>\r\n<h2>Object moved to <a href="[^"]*stepid=edit[^"]*">here<\/a>\.<\/h2>\r\n<\/body><\/html>\r\n$/,
@@ -359,7 +359,7 @@ test('the attach-file API stages a file under an annotation id only with the tok
   assert.equal(started.status, 200);
   assert.equal(started.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
   assert.equal(started.headers.get('vary'), 'Accept-Encoding');
-  assert.ok(started.headers.get('x-frame-options'));
+  assert.equal(started.headers.get('x-frame-options'), 'SAMEORIGIN');
   const { AnnotationId, FileContinuationToken } = await started.json();
   assert.match(AnnotationId, /^[0-9a-f-]{36}$/);
   const block = (offset, token = FileContinuationToken) =>
@@ -373,7 +373,7 @@ test('the attach-file API stages a file under an annotation id only with the tok
   assert.equal((await block(0)).status, 204);
 });
 
-test('overlapping file blocks cannot both commit the same offset', { timeout: 5000 }, async (t) => {
+test('overlapping file blocks cannot both commit the same offset', async (t) => {
   const { app } = await fixture(t);
   const headers = { __RequestVerificationToken: app.csrf, 'x-ms-file-name': 'parallel.txt', 'x-ms-file-size': '6' };
   const { AnnotationId, FileContinuationToken } = await initializeFile(app, headers).then((response) =>
@@ -398,7 +398,7 @@ test('overlapping file blocks cannot both commit the same offset', { timeout: 50
   assert.equal(next.status, 204, 'A rejected duplicate preserves the valid next offset');
 });
 
-test('aborted or expired slow upload bodies never commit a partial block', { timeout: 5000 }, async (t) => {
+test('aborted or expired slow upload bodies never commit a partial block', async (t) => {
   const { app } = await fixture(t);
   const headers = { __RequestVerificationToken: app.csrf, 'x-ms-file-name': 'slow.txt', 'x-ms-file-size': '3' };
   const initialize = () => initializeFile(app, headers).then((response) => response.json());

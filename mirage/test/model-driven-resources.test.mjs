@@ -12,12 +12,13 @@ import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { validateValues } from '../lib/model-driven/data.mjs';
 import { importModelDrivenProject } from '../../lense/model-driven.mjs';
 import { importCodeComponents } from '../lib/code-components.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const descriptor = (name, file) =>
   `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
 async function fixture(t, files) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-client-resources-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, data] of Object.entries(files)) {
     const file = path.join(root, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -396,7 +397,7 @@ test('an empty model-driven client allowlist preserves the separate Power Pages 
     watch: false,
     port: 0,
   });
-  t.after(() => runtime.close());
+  ownedFixture(t).add(() => runtime.close());
   const catalogue = await fetch(runtime.url + '/_apps/api').then((response) => response.json());
   assert.equal(catalogue.clientExtensions.trusted, false);
   assert.deepEqual(catalogue.clientExtensions.pcf.controls, []);
@@ -563,7 +564,7 @@ test('application icons use passive declared image resources without enabling So
     modelDriven: { trustedExtensions: false },
     watch: false,
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const catalogue = await (await fetch(sim.url + '/_apps/api')).json();
   assert.equal(catalogue.clientExtensions.trusted, false);
   const icon = catalogue.clientExtensions.resources.find((resource) => resource.type === 'image');
@@ -597,7 +598,9 @@ test('modelDriven.enabled false switches the model-driven surface off on both ho
     try {
       const status = await (await fetch(sim.url + '/_sim/api/status')).json();
       assert.equal(status.links.modelDriven, null);
-      assert.notEqual((await fetch(sim.url + '/main.aspx', { redirect: 'manual' })).status, 200);
+      // The shell and its catalogue API are not served at all (an error page would also be "not 200").
+      for (const route of ['/main.aspx', '/_apps/api'])
+        assert.equal((await fetch(sim.url + route, { redirect: 'manual' })).status, 404, route);
     } finally {
       await sim.close();
     }

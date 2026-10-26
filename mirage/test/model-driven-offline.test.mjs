@@ -211,7 +211,8 @@ test('the /_sim/ Capabilities view lists the offline sessions on request', async
   const { view } = await import('../admin/view-capabilities.mjs');
   const { HELP } = await import('../admin/help-content.mjs');
   const requested = [],
-    data = {};
+    data = {},
+    refreshed = Promise.withResolvers();
   const ctx = {
     data,
     help: HELP,
@@ -220,7 +221,7 @@ test('the /_sim/ Capabilities view lists the offline sessions on request', async
     docs: () => ({}),
     pager: () => ({ page: 1, size: 10, search: '' }),
     open: () => false,
-    refresh: async () => {},
+    refresh: async () => refreshed.resolve(),
     notify() {},
     setButtonPending: () => true,
     request: async (path) => {
@@ -252,7 +253,8 @@ test('the /_sim/ Capabilities view lists the offline sessions on request', async
     }),
     true,
   );
-  await new Promise((resolve) => setTimeout(resolve));
+  // The click loads the sessions and then refreshes the view.
+  await refreshed.promise;
   const html = view.render(ctx);
   assert.deepEqual(requested, ['/model-driven/offline']);
   assert.match(html, /data-table="cap-offline"/);
@@ -415,7 +417,8 @@ test('downsync honours staff security and the profile filter; offline writes que
       ],
     ],
   );
-  assert.ok(down.nextSync);
+  // The next sync follows the shortest profile interval (x_item, 30 minutes) after this download.
+  assert.equal(Date.parse(down.nextSync) - Date.parse(down.lastSync), 30 * 60000);
   const list = await offline('A', {
     action: 'retrieveMultiple',
     entity: 'x_item',
