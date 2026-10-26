@@ -100,8 +100,7 @@ test('scan reuse validates file inventory, order and content identity before sha
 });
 
 test('bound contexts share immutable schema parses and invalidate changed Solution and portal sources', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const config = path.join(fixture.root, 'catalogue.json');
   const profile = path.join(fixture.root, 'profile.json');
   const writeProfile = (value) =>
@@ -530,8 +529,7 @@ test('form/view-only source layers retain mapped OData columns through public li
     },
     tables: { x_item: [{ x_itemid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', x_name: 'Mapped row', x_quantity: 2 }] },
   };
-  const fixture = await modelDrivenFixture(t, { stateFile: null, initial });
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   await fs.unlink(path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml'));
   const sim = await fixture.start({
     stateFile: null,
