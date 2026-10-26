@@ -135,6 +135,7 @@ const initial = () => ({
 
 async function setup(t, options = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-api-'));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(FILES)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
@@ -148,10 +149,7 @@ async function setup(t, options = {}) {
     observed: { webApiWildcard: 'exempt', evidence: 'synthetic fixture with a wildcard field list' },
     ...options,
   });
-  t.after(async () => {
-    await app.close();
-    await fs.rm(dir, { recursive: true, force: true });
-  });
+  ownedFixture(t).add(() => app.close());
   const csrf = app.csrf;
   const call = async (route, method = 'GET', body, headers = {}) => {
     const response = await fetch(app.url + route, {
@@ -578,37 +576,16 @@ test('the log channel streams requests, Liquid reads, plugin evaluations and dia
   const { app, call } = await setup(t);
   const controller = new AbortController();
   t.after(() => controller.abort());
-  const stream = await fetch(app.url + '/__sim/events?channels=logs', { signal: controller.signal });
-  const reader = stream.body.getReader();
-  const events = [];
-  let buffer = '';
-  const pump = (async () => {
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) return;
-        buffer += Buffer.from(value).toString('utf8');
-        let index;
-        while ((index = buffer.indexOf('\n\n')) >= 0) {
-          const block = buffer.slice(0, index);
-          buffer = buffer.slice(index + 2);
-          const type = /^event: (.+)$/m.exec(block)?.[1];
-          const data = /^data: (.+)$/m.exec(block)?.[1];
-          if (type === 'log') events.push(JSON.parse(data));
-        }
-      }
-    } catch {
-      /* aborted */
-    }
-  })();
-  const waitFor = async (predicate, label) => {
-    const deadline = Date.now() + 5000;
-    while (Date.now() < deadline) {
-      if (events.some(predicate)) return events.find(predicate);
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-    throw new Error(`No ${label} log event: ${JSON.stringify(events.map((event) => event.type))}`);
-  };
+  const logs = eventStream(await fetch(app.url + '/__sim/events?channels=logs', { signal: controller.signal }));
+  // Each wait resolves when its event arrives; a closed stream fails with the events seen so far.
+  const waitFor = (predicate, label) =>
+    logs
+      .next((event) => event.type === 'log' && predicate(JSON.parse(event.data)), label)
+      .then((event) => JSON.parse(event.data));
+  // Portal pages subscribe without the logs channel. Writes to one stream keep their order, so the reload that
+  // follows the page request below is a positive signal that every earlier log event would have arrived.
+  const portal = eventStream(await fetch(app.url + '/__sim/events', { signal: controller.signal }));
+  await portal.next((event) => event.type === 'ready', 'ready');
   await waitFor((event) => event.type === 'connected', 'connected');
   await call('/__sim/api/personas/select', 'POST', { contactId: 'alex' });
   await fetch(app.url + '/');
@@ -631,14 +608,67 @@ test('the log channel streams requests, Liquid reads, plugin evaluations and dia
   assert.match(plugin.error.message, /Last name is required/);
   await fetch(app.url + '/no-such-page/');
   await waitFor((event) => event.type === 'diagnostic' && event.diagnostic.code === 'UNMAPPED_RESOURCE', 'diagnostic');
-  assert.ok(events.every((event, index) => index === 0 || event.sequence > events[index - 1].sequence));
-  // Portal pages subscribe without the logs channel and receive no log events.
-  const portal = await fetch(app.url + '/__sim/events', { signal: controller.signal });
-  const first = await portal.body.getReader().read();
-  assert.doesNotMatch(Buffer.from(first.value).toString('utf8'), /event: log/);
+  const sequences = logs.events.filter((event) => event.type === 'log').map((event) => JSON.parse(event.data).sequence);
+  assert.deepEqual(
+    sequences,
+    [...sequences].sort((a, b) => a - b),
+    'log sequences increase',
+  );
+  assert.equal(new Set(sequences).size, sequences.length);
+  const revision = app.state().status.revision;
+  assert.equal((await call('/__sim/api/config', 'PATCH', { permissionMode: 'enforce' })).status, 200);
+  await portal.next((event) => event.type === 'reload' && Number(event.data) > revision, 'reload');
+  assert.deepEqual(
+    portal.events.filter((event) => event.type === 'log'),
+    [],
+    'the portal stream receives reloads but no log events',
+  );
   controller.abort();
-  await pump;
+  await Promise.all([logs.done, portal.done]);
 });
+
+/** Parses a server-sent event stream into { type, data } events; next(predicate) waits for a matching one. */
+function eventStream(response) {
+  const reader = response.body.getReader(),
+    decoder = new TextDecoder();
+  const events = [],
+    wakers = new Set();
+  let buffer = '',
+    closed = false;
+  const done = (async () => {
+    try {
+      for (;;) {
+        const { value, done: end } = await reader.read();
+        if (end) break;
+        buffer += decoder.decode(value, { stream: true });
+        let index;
+        while ((index = buffer.indexOf('\n\n')) >= 0) {
+          const block = buffer.slice(0, index);
+          buffer = buffer.slice(index + 2);
+          events.push({ type: /^event: (.+)$/m.exec(block)?.[1], data: /^data: (.+)$/m.exec(block)?.[1] });
+          for (const wake of [...wakers]) wake();
+        }
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError') throw error;
+    } finally {
+      closed = true;
+      for (const wake of [...wakers]) wake();
+    }
+  })();
+  const next = (predicate, label) =>
+    new Promise((resolve, reject) => {
+      const wake = () => {
+        const found = events.find(predicate);
+        if (found || closed) wakers.delete(wake);
+        if (found) resolve(found);
+        else if (closed) reject(new Error(`No ${label} event: ${JSON.stringify(events.map((event) => event.type))}`));
+      };
+      wakers.add(wake);
+      wake();
+    });
+  return { events, next, done };
+}
 
 test('administration calls through /_sim are not audited as portal pages and their errors are not runtime diagnostics', async (t) => {
   const { app, call } = await setup(t);
