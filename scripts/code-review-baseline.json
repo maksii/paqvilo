@@ -4130,6 +4130,48 @@
       "lines": 22,
       "type": "clone",
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
+    },
+    {
+      "key": "tests:clone:mirage/test/capture-shell-client.test.mjs|mirage/test/public-api.test.mjs:519ecd0d6b4a942576fc86d2fac38af920fd4021d7af568698a7c80c8d035773",
+      "files": ["mirage/test/capture-shell-client.test.mjs", "mirage/test/public-api.test.mjs"],
+      "lines": 13,
+      "type": "clone",
+      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
+    },
+    {
+      "key": "tests:clone:mirage/test/plugin-read-mock-response.test.mjs|mirage/test/plugin-sdk-values.test.mjs:dc669f7f2cd81d3161e0a054166d3bc56183825a4735c904007efd4de2c92667",
+      "files": ["mirage/test/plugin-read-mock-response.test.mjs", "mirage/test/plugin-sdk-values.test.mjs"],
+      "lines": 29,
+      "type": "clone",
+      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
+    },
+    {
+      "key": "tests:clone:mirage/test/plugin-read-mock-response.test.mjs|mirage/test/plugin-shared-variables.test.mjs:dc669f7f2cd81d3161e0a054166d3bc56183825a4735c904007efd4de2c92667",
+      "files": ["mirage/test/plugin-read-mock-response.test.mjs", "mirage/test/plugin-shared-variables.test.mjs"],
+      "lines": 29,
+      "type": "clone",
+      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
+    },
+    {
+      "key": "tests:clone:mirage/test/portal-authorization.test.mjs|mirage/test/portal-form-read-projection.test.mjs:323142b16993a773cd147caaa6cfdc3328eaf928729466ffdd74d4da84ee719a",
+      "files": ["mirage/test/portal-authorization.test.mjs", "mirage/test/portal-form-read-projection.test.mjs"],
+      "lines": 13,
+      "type": "clone",
+      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
+    },
+    {
+      "key": "tests:clone:mirage/test/portal-authorization.test.mjs|mirage/test/portal-read-masking.test.mjs:ec63569007854384edf1a233fcf476f61332697f042b51c633a7ba37e070fd42",
+      "files": ["mirage/test/portal-authorization.test.mjs", "mirage/test/portal-read-masking.test.mjs"],
+      "lines": 14,
+      "type": "clone",
+      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
+    },
+    {
+      "key": "tests:clone:mirage/test/portal-search.test.mjs|mirage/test/portal-search.test.mjs:7dbd6ec0714d82dd56b372c2b295d3620962a579d57ca28b872447ff77a9285f",
+      "files": ["mirage/test/portal-search.test.mjs", "mirage/test/portal-search.test.mjs"],
+      "lines": 20,
+      "type": "clone",
+      "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     }
   ]
 }

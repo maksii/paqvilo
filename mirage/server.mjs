@@ -1765,6 +1765,10 @@ async function createPowerPagesSimulator({
         throw error('Configured local operation failure.', item.configuration.status, 'LocalOperationMockFailure');
       return JSON.stringify(Object.hasOwn(item.configuration, 'body') ? item.configuration.body : {});
     }
+    // The site's application user exists with the site on the platform. Provision the local one here, before the
+    // bounded run: its one-time creation is a persisted transaction (host work), never exported-code time, so a first
+    // Dataverse.InvokeCustomApi must not spend the run's local time limit on it. Idempotent once it exists.
+    await portalApplicationUser();
     const context = {
       record,
       portal,
