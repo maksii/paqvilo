@@ -41,7 +41,7 @@ export function isSourceFile(sourceDir, file) {
 }
 
 // Resolving every metadata file and the extract root through realpath dominated index reloads
-// (two realpath calls per file). Reuse directories only within one synchronous index load.
+// (two realpath calls per file). Reuse directories only within one synchronous index build.
 // Keeping them across loads/requests is unsafe: an ancestor can become a junction while a
 // descendant retains the same inode. Reads outside indexing always resolve fresh paths.
 const MAX_REAL_DIRECTORIES = 8192;
@@ -53,6 +53,17 @@ function realDirectory(dir) {
   const real = fs.realpathSync.native(dir);
   if (realDirectories && realDirectories.size < MAX_REAL_DIRECTORIES) realDirectories.set(dir, real);
   return real;
+}
+
+/** Runs one synchronous index build (a model load or a rewriter refresh) that reuses resolved directories. */
+export function indexingPass(build) {
+  const previous = realDirectories;
+  realDirectories = new Map();
+  try {
+    return build();
+  } finally {
+    realDirectories = previous;
+  }
 }
 
 /** Real path and stat of `file`; a symbolic link or junction is followed explicitly. */
@@ -98,7 +109,7 @@ function readYaml(file, allowSequence = false) {
 
 const fileStamp = (stat) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
 
-function walk(dir, out = []) {
+function walk(dir, out = [], real = null) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -106,10 +117,21 @@ function walk(dir, out = []) {
     if (err.code === 'ENOENT' || err.code === 'ENOTDIR') return out;
     throw err;
   }
+  // During an index load, a directory entry (never a link or junction) of a resolved directory
+  // resolves to the same name inside it: one realpath per walk root instead of one per directory.
+  if (realDirectories && !real)
+    try {
+      real = realDirectory(dir);
+    } catch {
+      real = null;
+    }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walk(full, out);
-    else if (entry.isFile()) out.push(full);
+    if (entry.isDirectory()) {
+      const child = real && path.join(real, entry.name);
+      if (child && realDirectories.size < MAX_REAL_DIRECTORIES) realDirectories.set(full, child);
+      walk(full, out, child);
+    } else if (entry.isFile()) out.push(full);
   }
   return out;
 }
@@ -842,13 +864,7 @@ export class PortalModel {
   }
 
   load() {
-    const previous = realDirectories;
-    realDirectories = new Map();
-    try {
-      this.#load();
-    } finally {
-      realDirectories = previous;
-    }
+    indexingPass(() => this.#load());
   }
 
   #load() {

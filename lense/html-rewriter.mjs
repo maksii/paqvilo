@@ -12,7 +12,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readLocalFile } from './local-file.mjs';
 import { diffLines } from './line-diff.mjs';
-import { urlKey, sourceText, createSourceReader, isSourceFile } from './portal-model.mjs';
+import { urlKey, sourceText, createSourceReader, isSourceFile, indexingPass } from './portal-model.mjs';
 import { applyRenderEdits, finalizePortalProvenance } from '../mirage/lib/render-provenance.mjs';
 
 /** URL prefix of everything the overlay answers itself; nothing under it exists on the portal. */
@@ -779,7 +779,12 @@ export class HtmlRewriter {
   }
 
   /** Re-reads changed sources, or all sources when no file list is supplied. */
-  refresh(files, { revalidate = false } = {}) {
+  refresh(files, options) {
+    // One synchronous index build: source checks resolve each directory once, not once per source.
+    indexingPass(() => this.#refresh(files, options));
+  }
+
+  #refresh(files, { revalidate = false } = {}) {
     const invalidate = (key) => {
       this.sourceCache.delete(key);
       this.sourceStamps.delete(key);
@@ -788,11 +793,17 @@ export class HtmlRewriter {
       this.sourceCache.clear();
       this.sourceStamps.clear();
     } else for (const file of files) invalidate(sourceCacheKey(file));
+    // Native realpath resolves like the startup prefetch (fs.promises.realpath), so stamps it took stay
+    // comparable (8.3 names, drive-letter case), without lstat-ing every path component.
     if (revalidate)
       for (const key of this.sourceCache.keys()) {
         const stamp = this.sourceStamps.get(key);
         try {
-          if (stamp && sameStamp(stamp.info, fs.statSync(stamp.file)) && fs.realpathSync(stamp.file) === stamp.real)
+          if (
+            stamp &&
+            sameStamp(stamp.info, fs.statSync(stamp.file)) &&
+            fs.realpathSync.native(stamp.file) === stamp.real
+          )
             continue;
         } catch {
           /* removed or replaced source */
@@ -968,11 +979,11 @@ export class HtmlRewriter {
       // never label old bytes with the new file's stamp and then retain them indefinitely.
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
-          const real = fs.realpathSync(src.file);
+          const real = fs.realpathSync.native(src.file);
           const before = fs.statSync(src.file);
           text = readText(src.file);
           const after = fs.statSync(src.file);
-          if (text != null && sameStamp(before, after) && fs.realpathSync(src.file) === real) {
+          if (text != null && sameStamp(before, after) && fs.realpathSync.native(src.file) === real) {
             this.sourceStamps.set(key, { file: src.file, real, info: after });
             break;
           }
