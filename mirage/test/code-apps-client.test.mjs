@@ -11,7 +11,9 @@ test('client sends context token and documented query options with paging', asyn
   globalThis.fetch = async (url, init) => {
     calls.push({ url, init });
     if (url.endsWith('/context')) return new Response('{}', { headers: { 'x-sim-csrf': 'local-token' } });
-    return new Response(JSON.stringify({ value: [{ name: 'A' }], '@odata.nextLink': '/_api/items?$skiptoken=next' }));
+    return new Response(
+      JSON.stringify({ value: [{ name: 'A' }], '@odata.count': 3, '@odata.nextLink': '/_api/items?$skiptoken=next' }),
+    );
   };
   configure({ app: 'sample' });
   const result = await dataClient.getAll('items', {
@@ -20,12 +22,14 @@ test('client sends context token and documented query options with paging', asyn
     orderBy: ['name desc'],
     top: 2,
     maxPageSize: 1,
+    count: true,
   });
-  assert.deepEqual(result, { data: [{ name: 'A' }], skipToken: 'next' });
+  assert.deepEqual(result, { data: [{ name: 'A' }], count: 3, skipToken: 'next' });
   const params = new URL(calls[1].url, 'http://localhost').searchParams;
   assert.equal(params.get('$filter'), "name eq 'A'");
   assert.equal(params.get('$orderby'), 'name desc');
   assert.equal(params.get('$top'), '2');
+  assert.equal(params.get('$count'), 'true');
   assert.match(calls[1].init.headers.prefer, /odata.maxpagesize=1/);
   assert.equal(calls[1].init.headers['x-sim-csrf'], 'local-token');
   await dataClient.getAll('items', { skipToken: result.skipToken });
@@ -37,6 +41,7 @@ test('unsupported options fail instead of silently changing the query', async ()
   await assert.rejects(dataClient.getAll('items', { skip: 1 }), /does not support skip/);
   await assert.rejects(dataClient.getAll('items', { expand: 'owner' }), /Unsupported Mirage query option: expand/);
   await assert.rejects(dataClient.getAll('items', { maxPageSize: 0 }), /positive integer/);
+  await assert.rejects(dataClient.getAll('items', { count: 'yes' }), /count must be a boolean/);
 });
 
 test('HTTP errors preserve status even when the response is not JSON', async (t) => {

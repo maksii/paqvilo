@@ -122,6 +122,7 @@
     "./mirage": "./mirage/api.mjs",
     "./mirage/acceptance": "./mirage/acceptance-api.mjs",
     "./mirage/testing": "./mirage/testing.mjs",
+    "./mirage/code-apps": "./mirage/lib/code-apps-sdk.js",
     "./mirage/packs": "./mirage/packs.mjs",
     "./mirage/fixtures": "./mirage/fixtures.mjs",
     "./lense": "./lense/api.mjs",
@@ -133,6 +134,7 @@
   "packageManager": "npm@11.19.1",
   "devDependencies": {
     "@eslint/js": "10.0.1",
+    "@microsoft/power-apps": "1.5.0",
     "eslint": "10.13.0",
     "eslint-config-prettier": "10.1.8",
     "eslint-plugin-import-x": "4.17.1",

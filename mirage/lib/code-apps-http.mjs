@@ -165,6 +165,7 @@ export function createCodeAppsHandler({
           {
             app: {
               appId: app.appId ?? '',
+              appSettings: {},
               environmentId: app.environmentId ?? organization.environmentId ?? organization.organizationId,
               queryParams: Object.fromEntries(url.searchParams),
               dataverseOrgUrl: organization.origin,
@@ -173,7 +174,7 @@ export function createCodeAppsHandler({
             user: {
               fullName: row.fullname ?? '',
               objectId: row.azureactivedirectoryobjectid ?? '',
-              systemUserId: row.systemuserid,
+              systemUserId: row.systemuserid ?? '',
               tenantId: organization.tenantId ?? '',
               userPrincipalName: row.domainname ?? '',
             },

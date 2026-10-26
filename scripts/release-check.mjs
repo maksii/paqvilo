@@ -377,6 +377,8 @@ export const REQUIRED_RELEASE_FILES = [
   'docs/faq.md',
   ...DOCUMENTATION_ASSETS,
   'examples/project/pack/pack.mjs',
+  'mirage/lib/code-apps-sdk.js',
+  'mirage/lib/code-apps-sdk.d.ts',
   ...CODE_APP_EXAMPLE_FILES,
   'examples/project/AGENTS.md',
   'examples/project/test/portal.test.mjs',
@@ -448,6 +450,7 @@ export function validateReleaseFiles(files) {
       !COMPANY_QUALIFICATION_SOURCES.has(name) &&
       !designDocuments.has(name) &&
       name !== 'mirage/lib/plugin-clr-host.cs' &&
+      name !== 'mirage/lib/code-apps-sdk.d.ts' &&
       !demoSources.test(name.replaceAll('***', 'redacted-id')) &&
       !demoPluginSources.test(name) &&
       !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) &&

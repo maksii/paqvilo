@@ -55,17 +55,37 @@ For Mirage runs only, import the Mirage adapter explicitly. Proxy `/_apps/code` 
 
 Call `configure({ app: '<name>' })` before the first call. Use the same host name (`localhost` or `127.0.0.1`) for the dev server and Mirage, so the browser sends the staff-session cookie.
 
+### Optional SDK data executor
+
+Applications that retain generated SDK data services can install an explicit executor override for Mirage. Microsoft documents [`IDataOperationExecutor`](https://learn.microsoft.com/javascript/api/@microsoft/power-apps/idataoperationexecutor?view=powerapps-js-latest) and [`setDataOperationExecutor`](https://learn.microsoft.com/javascript/api/@microsoft/power-apps/?view=powerapps-js-latest). The setter is exported from the internal-named `@microsoft/power-apps/internal/data` subpath in SDK 1.5.0; pin and validate this integration when upgrading the SDK. The SDK remains an application dependency; Paqvilo does not bundle it.
+
+```js
+// Mirage-only application entry. Keep this registration out of the native build.
+import { setDataOperationExecutor } from '@microsoft/power-apps/internal/data';
+import { createCodeAppSdkExecutor } from 'paqvilo/mirage/code-apps';
+import { configure, getContext } from 'paqvilo/mirage/lib/code-apps-client.js';
+
+configure({ app: 'invented-items' });
+setDataOperationExecutor(createCodeAppSdkExecutor({ entitySets: { Items: 'x_items' } }));
+const context = await getContext();
+// Generated data services can now call their real SDK getClient() methods.
+```
+
+`entitySets` explicitly maps generated source names to exported entity sets; omitted names pass through unchanged. The executor supports CRUD, query options accepted by the Mirage client, and explicit connector operations. It returns `{ success, data, error?, skipToken?, count? }` and preserves failed results, unlike the simpler throwing client. Files, images, raw Dataverse requests and partitioned operations return unsupported failures. This override supplies data execution only: SDK `getContext()` and other host services still require Microsoft's host. Select the Mirage context import in the simulation entry.
+
+The example-only SDK 1.5.0 dependency and `baseline-code-app-sdk.test.mjs` exercise the actual SDK entry points, mapped CRUD, CSRF and connector success/failure through the loopback bridge. This is separate from the app's real browser/organization acceptance test and does not prove native player compatibility.
+
 ## Limits
 
 - Mirage does not reproduce the player's own wire protocol with `@microsoft/power-apps`, or the `pa app run` host on port 8080.
-- Only the client surface above is shimmed. The generated service files call internal client APIs, so they are not drop-in compatible with the shim; code that runs against Mirage calls `dataClient` instead.
-- The shim maps `select`, `filter`, `orderBy`, `top` and `skipToken` to OData query options; `maxPageSize` sets `Prefer: odata.maxpagesize`. `skip`, `expand`, `count`, `partitionId` and other unsupported options are rejected explicitly. Pagination uses the returned `skipToken`; the adapter does not fetch every page automatically.
+- The simple client is not a drop-in SDK replacement. Retaining generated data services requires the explicit optional executor above; context and other host services remain separate.
+- The client maps `select`, `filter`, `orderBy`, `top`, `count` and `skipToken` to OData query options; `maxPageSize` sets `Prefer: odata.maxpagesize`. `skip`, `expand`, `partitionId` and other unsupported options are rejected explicitly. Dataverse itself [does not support `$skip`](https://learn.microsoft.com/power-apps/developer/data-platform/webapi/query/page-results). Pagination uses the returned `skipToken`; the adapter does not fetch every page automatically.
 
 Microsoft documentation: [overview](https://learn.microsoft.com/power-apps/developer/code-apps/overview), [architecture](https://learn.microsoft.com/power-apps/developer/code-apps/architecture), [get context](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/retrieve-context), [connect to Dataverse](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/connect-to-dataverse), [create an app](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/create-an-app-from-scratch), [CLI](https://learn.microsoft.com/power-apps/developer/code-apps/reference/cli), [pac code](https://learn.microsoft.com/power-platform/developer/cli/reference/code).
 
 ## Run the invented example
 
-The repository's [example project](../../examples/project/code-app/) contains a small browser app, a local app server and an invented `x_item` Solution. In the toolkit checkout, use Node 24 and install dependencies once, then in `examples/project` run `npm install`. No Power Platform account, Power Apps CLI, SDK or Vite is needed for this example. It is local simulation and does not deploy or connect to an environment.
+The repository's [example project](../../examples/project/code-app/) contains a small browser app, a local app server and an invented `x_item` Solution. In the toolkit checkout, use the pinned Node/npm versions and install dependencies once, then in `examples/project` run `npm install`. No Power Platform account, Power Apps CLI or Vite is needed for the browser sample. Its SDK development dependency is used only by the separate executor regression. The app uses local simulation and does not deploy or connect to an environment.
 
 Start these in two terminals from `examples/project`:
 
@@ -88,7 +108,7 @@ Run the focused browser acceptance from the toolkit checkout with `node --test e
 
 ## Native Power Apps development
 
-For a real code app, follow Microsoft's [quickstart](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/create-an-app-from-scratch): use a code-app-enabled environment, Node LTS and the Power Apps CLI, initialize the app, then run `pa app run` and open **Local Play** in the signed-in browser profile. Microsoft documents `getContext` from `@microsoft/power-apps/app` and generated Dataverse services created with `pa app add data-source --connector dataverse --table <logical-name>`. Those services and the Microsoft SDK require their native Power Apps host; Mirage does not implement that host protocol. Keep native SDK imports and generated services in the native build, and select the project's Mirage adapter for local simulation. Never alias the whole SDK to the Mirage adapter or assume the adapter's result and error behavior is identical. Native authentication, connectors, delegated queries, security and player behavior require separate validation in an authorized environment.
+For a real code app, follow Microsoft's [quickstart](https://learn.microsoft.com/power-apps/developer/code-apps/how-to/create-an-app-from-scratch): use a code-app-enabled environment, Node LTS and the Power Apps CLI, initialize the app, then run `pa app run` and open **Local Play** in the signed-in browser profile. Microsoft documents `getContext` from `@microsoft/power-apps/app` and generated Dataverse services created with `pa app add data-source --connector dataverse --table <logical-name>`. The SDK's default execution uses Microsoft's host; Mirage does not implement that host protocol. Keep the native build on its normal SDK configuration. For simulation, select the project's Mirage adapter or the explicit data executor above, while using Mirage's context import. Never alias the whole SDK to the Mirage adapter or assume the simpler client's result and error behavior is identical. Native authentication, online connectors, delegated queries, security and player behavior require separate validation in an authorized environment.
 
 Create a separate native project with the official template and its SDK/Vite integration:
 
@@ -105,7 +125,7 @@ pa app run
 
 The template installs `@microsoft/power-apps` and `@microsoft/power-apps-vite`, and registers `powerApps()` from `@microsoft/power-apps-vite/plugin` in Vite. Preserve that integration in the native build. Online connector setup needs an existing connection in the same environment, the correct connector identifier, user consent and source access. Discover connections with `pa connection list` and use the connection when adding the data source; do not map a native connection ID to an invented local provider implicitly. Generated files and `power.config.json` belong to the native project. `pa app push` publishes the compiled app and is a separate online action.
 
-The baseline was checked against Microsoft's current documentation and official Vite template on 2026-10-26, with SDK 1.5.0, Vite plugin 1.0.13 and PAC 2.13.1. The template's SDK context component compiled, `pac code init` generated local configuration, and PAC/Vite startup served their local endpoints. PAC's `code` namespace is the older preview path; current documentation recommends the npm Power Apps CLI above. These startup checks alone do not establish native host rendering, authentication or connector execution. A native Local Play check must observe app content and SDK context in the intended signed-in browser.
+The baseline was checked against Microsoft's current documentation and official Vite template on 2026-10-26, with SDK 1.5.0, Vite plugin 1.0.13 and PAC 2.13.1. The template's SDK context component compiled, `pac code init` generated local configuration, and PAC/Vite startup served their local endpoints. PAC's `code` namespace is the older preview path; current documentation recommends the npm Power Apps CLI above. In the intended signed-in browser, a native attempt using `127.0.0.1` displayed an app error; retries using `localhost` remained at “Fetching your app” for 45 seconds. No SDK context or loopback request was observed. The cause remains unproven. Preserve the official CLI/plugin URL and its `localhost` defaults for native Local Play; Mirage's broader loopback URL support does not establish native player URL compatibility. These startup checks do not establish native host rendering, authentication or connector execution.
 
 If either fixed port is occupied, set `CODE_APP_PORT` to the same free port in both terminals and set `MIRAGE_PORT` for Mirage; set `MIRAGE_URL` to that runtime's loopback URL for the app server. For example, set `CODE_APP_PORT=5200`, `MIRAGE_PORT=8788` and `MIRAGE_URL=http://127.0.0.1:8788` in the respective terminal environments. The app server accepts loopback HTTP only. The Vite proxy example is for a loopback-only development server; the proxy must validate the browser's origin before rebasing it to Mirage, as the example server does.
 

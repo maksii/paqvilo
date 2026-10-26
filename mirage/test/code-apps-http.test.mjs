@@ -112,6 +112,7 @@ test('context returns the documented IContext shape from the staff session', asy
   assert.deepEqual(Object.keys(context).sort(), ['app', 'host', 'user']);
   assert.deepEqual(context.app, {
     appId: APP_ID,
+    appSettings: {},
     environmentId: 'env-invented',
     queryParams: { recordId: '42', mode: 'edit' },
     dataverseOrgUrl: DATAVERSE,

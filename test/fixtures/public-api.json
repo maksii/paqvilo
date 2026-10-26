@@ -28,6 +28,7 @@
       "presetLibrary",
       "resolveSolutionRoots"
     ],
+    "paqvilo/mirage/code-apps": ["createCodeAppSdkExecutor"],
     "paqvilo/mirage/acceptance": [
       "browserChannel",
       "browserLaunchOptions",

@@ -24,6 +24,7 @@
       },
       "devDependencies": {
         "@eslint/js": "10.0.1",
+        "@microsoft/power-apps": "1.5.0",
         "eslint": "10.13.0",
         "eslint-config-prettier": "10.1.8",
         "eslint-plugin-import-x": "4.17.1",
@@ -314,6 +315,13 @@
       "integrity": "sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA==",
       "dev": true,
       "license": "MIT"
+    },
+    "node_modules/@microsoft/power-apps": {
+      "version": "1.5.0",
+      "resolved": "https://registry.npmjs.org/@microsoft/power-apps/-/power-apps-1.5.0.tgz",
+      "integrity": "sha512-aOJ6/eOfUm2xIqLbIPOQIeAbgjFWTQcFrdmnLQH5eCKQavth1dK8LRKn4s9uVtOE/Tay+Ijf0M1OJVcwChfO7A==",
+      "dev": true,
+      "license": "See license in LICENSE file"
     },
     "node_modules/@napi-rs/wasm-runtime": {
       "version": "1.2.5",

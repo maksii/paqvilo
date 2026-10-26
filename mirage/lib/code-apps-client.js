@@ -65,7 +65,7 @@ const key = (id) => `(${encodeURIComponent(String(id).replace(/[{}]/g, ''))})`;
 // Mirage accepts documented query options plus its own skipToken continuation. Dataverse does not support $skip.
 const query = (options = {}) => {
   if (options.skip != null) throw new Error('Mirage does not support skip; use skipToken to continue a page.');
-  const supported = new Set(['select', 'filter', 'orderBy', 'top', 'skipToken', 'maxPageSize']);
+  const supported = new Set(['select', 'filter', 'orderBy', 'top', 'skipToken', 'maxPageSize', 'count']);
   for (const option of Object.keys(options)) {
     if (!supported.has(option)) throw new Error(`Unsupported Mirage query option: ${option}`);
   }
@@ -75,6 +75,10 @@ const query = (options = {}) => {
   if (options.orderBy) params.set('$orderby', [options.orderBy].flat().join(','));
   if (options.top != null) params.set('$top', String(options.top));
   if (options.skipToken) params.set('$skiptoken', options.skipToken);
+  if (options.count != null) {
+    if (typeof options.count !== 'boolean') throw new Error('count must be a boolean.');
+    params.set('$count', String(options.count));
+  }
   const text = params.toString();
   return text ? '?' + text : '';
 };
@@ -98,6 +102,7 @@ export const dataClient = {
     const { data } = await call(`dataverse/${entitySet}${query(options)}`, { headers });
     return {
       data: data?.value ?? [],
+      ...(typeof data?.['@odata.count'] === 'number' ? { count: data['@odata.count'] } : {}),
       ...(data?.['@odata.nextLink']
         ? { skipToken: new URL(data['@odata.nextLink'], 'http://localhost').searchParams.get('$skiptoken') }
         : {}),
