@@ -1,11 +1,11 @@
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
@@ -218,11 +218,11 @@ test('Association revalidates current rows after stage20 SDK changes rather than
 });
 test(
   'Original DLL uses typed relationship calls, named responses and stage-context with rollback',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-sdk-associate-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'AssociationOriginal.cs'),
       assembly = path.join(root, 'AssociationOriginal.dll');
     await fs.writeFile(
@@ -231,15 +231,11 @@ test(
 namespace Invented {public sealed class Driver:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var s=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var related=new EntityReferenceCollection{new EntityReference("child",new Guid("${childId}"))};var r=new Relationship("root_child"){PrimaryEntityRole=EntityRole.Referenced};s.Associate("root",new Guid("${rootId}"),r,related);var gone=(DisassociateResponse)s.Execute(new DisassociateRequest{Target=new EntityReference("root",new Guid("${rootId}")),Relationship=r,RelatedEntities=related});var tags=new EntityReferenceCollection{new EntityReference("tag",new Guid("${tagId}"))};var added=(AssociateResponse)s.Execute(new AssociateRequest{Target=new EntityReference("root",new Guid("${rootId}")),Relationship=new Relationship("root_tag"),RelatedEntities=tags});if(((Entity)c.InputParameters["Target"]).GetAttributeValue<string>("title")=="reject")throw new InvalidPluginExecutionException("Caller rejected association writes");}}
 public sealed class Observer:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var target=(EntityReference)c.InputParameters["Target"];var r=(Relationship)c.InputParameters["Relationship"];var rows=(EntityReferenceCollection)c.InputParameters["RelatedEntities"];if(target.LogicalName!="root"||target.Id!=new Guid("${rootId}")||rows.Count!=1||r.SchemaName!="root_child"&&r.SchemaName!="root_tag"||!c.IsInTransaction||c.ParentContext.MessageName!="Create")throw new Exception("Typed association context lost");if(c.Stage==20)c.SharedVariables["role"]=r.PrimaryEntityRole.HasValue?r.PrimaryEntityRole.Value.ToString():"none";else if((string)c.SharedVariables["role"]!=(r.PrimaryEntityRole.HasValue?r.PrimaryEntityRole.Value.ToString():"none"))throw new Exception("Association frame lost");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original {0} stage {1}",c.MessageName,c.Stage);}}}`,
     );
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000 },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const steps = [],
       runtimes = new Map();
-    let number = 0;
+    let number = 0,
+      prepared;
     const add = async (type, entity, message, stage) => {
       const id = '30000000-0000-0000-0000-' + String(++number).padStart(12, '0');
       const step = {
@@ -258,25 +254,23 @@ public sealed class Observer:IPlugin {public void Execute(IServiceProvider servi
         typeName: 'Invented.' + type,
       };
       steps.push(step);
-      runtimes.set(
-        id,
-        await prepareClrRuntime({
-          trust: 'execute-local-assembly',
-          root,
-          assembly: path.basename(assembly),
-          typeName: step.typeName,
-          sdkRoot: path.dirname(sdk),
-          sdkAssembly: path.basename(sdk),
-          cacheRoot: path.join(root, '.paqvilo/cache'),
-          serviceProfile: profile,
-          context: {
-            initiatingUserId: user,
-            organizationId: '50000000-0000-0000-0000-000000000001',
-            businessUnitId: '60000000-0000-0000-0000-000000000001',
-          },
-          timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
-        }),
-      );
+      prepared ??= await prepareClrRuntime({
+        trust: 'execute-local-assembly',
+        root,
+        assembly: path.basename(assembly),
+        typeName: step.typeName,
+        sdkRoot: path.dirname(sdk),
+        sdkAssembly: path.basename(sdk),
+        cacheRoot: path.join(root, '.paqvilo/cache'),
+        serviceProfile: profile,
+        context: {
+          initiatingUserId: user,
+          organizationId: '50000000-0000-0000-0000-000000000001',
+          businessUnitId: '60000000-0000-0000-0000-000000000001',
+        },
+        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
+      });
+      runtimes.set(id, retypeClrRuntime(prepared, { typeName: step.typeName }));
     };
     await add('Driver', 'widget', 'Create', 20);
     for (const operation of ['Associate', 'Disassociate'])
@@ -306,7 +300,9 @@ public sealed class Observer:IPlugin {public void Execute(IServiceProvider servi
     assert.equal(store.snapshot().tables.child[0].parentid, null);
     assert.equal(store.snapshot().tables.edge.length, 1);
     assert.equal(notes.filter((note) => note.message === 'Original Associate stage 20').length, 4);
-    assert.ok(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED').every((note) => note.absenceVerified));
+    const stopped = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
+    assert.equal(stopped.length, notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STARTED').length);
+    assert.ok(stopped.length > 0 && stopped.every((note) => note.absenceVerified));
     if (process.env.PAQ_TEST_CLR_EVIDENCE) {
       const hash = async (file) =>
           createHash('sha256')

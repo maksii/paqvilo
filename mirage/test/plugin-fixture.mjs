@@ -2,6 +2,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 export const pluginId = (n) => `d5100000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 export const assemblyXml = `<PluginAssembly PluginAssemblyId="{${pluginId(1)}}"><Name>Invented.WidgetRules</Name><Version>1.0.0.0</Version><IsolationMode>2</IsolationMode><SourceType>0</SourceType><PluginTypes><PluginType PluginTypeId="{${pluginId(2)}}"><TypeName>Invented.WidgetRules.Validate</TypeName></PluginType></PluginTypes></PluginAssembly>`;
@@ -76,9 +79,60 @@ export async function pluginFixture(t, { simulator = true } = {}) {
       },
     },
   });
-  t.after(async () => {
-    await app.close();
-    await fs.rm(dir, { recursive: true, force: true });
-  });
+  // Runtimes a test adds with ownedFixture(t).add, such as one restarted from these sources, close before dir goes.
+  ownedFixture(t).add(() => app.close());
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   return { dir, portal, solution, app };
+}
+
+/** Disables the fixture's exported steps from..to, so only the remaining registrations run. */
+export async function disableSteps(solution, from, to) {
+  for (let n = from; n <= to; n++) {
+    const file = path.join(solution, 'SdkMessageProcessingSteps', pluginId(n) + '.xml');
+    await fs.writeFile(
+      file,
+      (await fs.readFile(file, 'utf8')).replace('<StateCode>0</StateCode>', '<StateCode>1</StateCode>'),
+    );
+  }
+}
+
+/**
+ * Compiles invented C# for Invented.WidgetRules.Validate, registers it for step 3 through an explicit pack and starts
+ * a simulator over the fixture's sources; the runtime closes before the fixture directory is removed.
+ */
+export async function originalStepSimulator(t, fixture, initial, { source, evidence, grants = [] }) {
+  const sdk = clrSdk(),
+    sourceFile = path.join(fixture.dir, 'Original.cs'),
+    assembly = path.join(fixture.dir, 'Invented.WidgetRules.dll'),
+    pack = path.join(fixture.dir, 'original-step-pack.mjs'),
+    user = '10000000-0000-0000-0000-000000000001';
+  await fs.writeFile(sourceFile, source);
+  compileClr(sourceFile, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });
+  const descriptor = {
+    trust: 'execute-local-assembly',
+    root: fixture.dir,
+    assembly: path.basename(assembly),
+    typeName: 'Invented.WidgetRules.Validate',
+    sdkRoot: path.dirname(sdk),
+    sdkAssembly: path.basename(sdk),
+    cacheRoot: path.join(fixture.dir, 'cache'),
+    context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
+    serviceProfile: { userId: user, evidence, grants },
+    timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
+  };
+  await fs.writeFile(
+    pack,
+    'export default {id:"invented-original-step",name:"Invented original step",description:"Owned original CLR step fixture",matches:()=>true,presets:()=>({}),pluginRuntimes:' +
+      JSON.stringify({ [pluginId(3)]: descriptor }) +
+      '};',
+  );
+  const app = await createSimulator({
+    sourceDir: fixture.portal,
+    solutionRoots: [fixture.solution],
+    initial,
+    watch: false,
+    dataPacks: [{ id: 'invented-original-step', module: pack }],
+  });
+  ownedFixture(t).add(() => app.close());
+  return app;
 }
