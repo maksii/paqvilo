@@ -24,6 +24,8 @@ test('atomic formatting retains CLI ignores and configuration and is idempotent'
     ...(await prettier.resolveConfig(target, { editorconfig: true })),
     filepath: target,
   });
+  // The expectation itself must carry the project's Prettier and EditorConfig choices, not Prettier defaults.
+  assert.equal(expected, "const result = { name: 'Invented', values: [1, 2] };\r\n");
   await formatProject(root);
   assert.equal(await fs.readFile(target, 'utf8'), expected);
   assert.equal(await fs.readFile(path.join(root, 'ignored.mjs'), 'utf8'), source);
