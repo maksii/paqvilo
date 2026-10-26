@@ -294,9 +294,10 @@ function httpsRequest(url, { ca, method = 'GET', headers = {}, body } = {}) {
   });
 }
 
+// The CA file's directory is removed with the fixture's directories, after the runtimes that use it have closed.
 async function certificatePath(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-tls-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   return path.join(directory, 'dataverse-ca.pem');
 }
 
@@ -500,7 +501,7 @@ test('the arc mode reports the IMDS origin without a header, and an unknown mode
 
 test('Solution custom APIs are seeded into the customapi tables and re-seeded after a reset', async (t) => {
   const solution = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-solution-'));
-  t.after(() => fs.rm(solution, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(solution, { recursive: true, force: true }));
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
   await fs.writeFile(
     path.join(solution, 'Other', 'Solution.xml'),
@@ -1046,7 +1047,7 @@ test("a classic workflow's run mode is listed and set through the admin route, a
   const token = (await clientCredentials(app.dataverse, created.secret)).body.access_token;
   // An activated on-demand classic workflow on systemuser (invented): it has no pack handler, so its default run is a placeholder.
   const WORKFLOW = 'bbbbbbbb-0000-0000-0000-000000000077';
-  app.store.transact(() => {
+  await app.store.transact(() => {
     (app.store.state.tables.workflow ??= []).push({
       workflowid: WORKFLOW,
       name: 'Invented admin run',
@@ -1072,7 +1073,7 @@ test("a classic workflow's run mode is listed and set through the admin route, a
   assert.equal(entry.override, null);
   assert.equal(entry.processMode, 'background');
 
-  // Runs ExecuteWorkflow and returns the job row once it has finished.
+  // Runs ExecuteWorkflow and returns its job row once the runtime has settled every committed job.
   async function run() {
     const response = await fetch(
       `${app.dataverse.origin}/api/data/v9.2/workflows(${WORKFLOW})/Microsoft.Dynamics.CRM.ExecuteWorkflow`,
@@ -1084,12 +1085,10 @@ test("a classic workflow's run mode is listed and set through the admin route, a
     );
     assert.equal(response.status, 200, await response.clone().text());
     const { asyncoperationid } = await response.json();
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      const job = app.store.tableRows('asyncoperation').find((item) => item.asyncoperationid === asyncoperationid);
-      if (job?.statecode === 3) return job;
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    throw new Error('the job did not finish');
+    await app.settle();
+    const job = app.store.tableRows('asyncoperation').find((item) => item.asyncoperationid === asyncoperationid);
+    assert.equal(job?.statecode, 3, 'the settled job is Completed');
+    return job;
   }
   const patch = (body) => admin(`/dataverse/workflows/${WORKFLOW}`, { method: 'PATCH', body });
 

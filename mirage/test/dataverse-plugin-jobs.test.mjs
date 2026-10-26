@@ -131,7 +131,7 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
     assert.equal(job.primaryentitytype, 'contoso_widget');
     assert.equal(job.messagename, 'Create');
     assert.equal(job.depth, 1);
-    assert.ok(job.startedon && job.completedon);
+    assert.ok(Date.parse(job.startedon) <= Date.parse(job.completedon), `${job.startedon} .. ${job.completedon}`);
   });
 
   it('a failing run ends Completed/Failed with the message, the friendly message and error code 0 for an error without a Dataverse code', async () => {
@@ -196,8 +196,9 @@ describe('the portal path is unchanged by system jobs', () => {
     const run = async (dataverse) => {
       // A fixed clock: createdon and modifiedon are stamped by the write, so both runs must see the same instant.
       mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-19T12:00:00Z') });
-      const world_ = await world({ dataverse, handlers, steps: [step()] });
+      let world_ = null;
       try {
+        world_ = await world({ dataverse, handlers, steps: [step()] });
         const response = await world_.store.create(
           'contoso_widget',
           { contoso_widgetid: WIDGET, contoso_name: 'portal' },
@@ -211,7 +212,7 @@ describe('the portal path is unchanged by system jobs', () => {
           completed: world_.diagnostics.filter((entry) => entry.code === 'PLUGIN_ASYNC_COMPLETED').length,
         };
       } finally {
-        await world_.close();
+        await world_?.close();
         mock.timers.reset();
       }
     };
@@ -353,7 +354,7 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
   const ADMIN = { systemuserid: 'aaaaaaaa-0000-4000-8000-000000000001' };
   const ORIGIN = 'http://127.0.0.1:5555';
   // A Custom API with no response properties (an action, 204). Its plugintypeid names the plug-in type ROUTED_TYPE.
-  function routed({ customApis = new Map(), typeName = ROUTED_TYPE } = {}) {
+  async function routed({ customApis = new Map(), typeName = ROUTED_TYPE } = {}) {
     const state = emptyState();
     state.tables.customapi = [
       {
@@ -389,10 +390,11 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
         },
       },
     ]);
-    installCustomApis(
+    // Awaited: install also queues its seeding transaction, which must not outlive the test.
+    await installCustomApis(
       { store, change: (fn) => fn(), registry, principals: { privileges: () => grants } },
       { handlers: customApis, pluginTypes },
-    );
+    ).ready;
     const op = ops.find((o) => o.name === 'sample_Routed');
     const call = () =>
       op.handle({
@@ -408,7 +410,7 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
   }
 
   it('the type handler runs for the API and its messages name the type', async () => {
-    const { call, calls } = routed();
+    const { call, calls } = await routed();
     const response = await call();
     assert.equal(response.status, 204);
     assert.deepEqual(calls, ['sample_Routed']);
@@ -427,14 +429,14 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
         },
       },
     ]);
-    const { call, calls } = routed({ customApis: handlers });
+    const { call, calls } = await routed({ customApis: handlers });
     await call();
     assert.deepEqual(used, ['customApis']);
     assert.deepEqual(calls, []);
   });
 
   it('a plug-in type with no handler leaves the API without one: the action answers 204 without running a handler', async () => {
-    const { call, calls } = routed({ typeName: 'Contoso.Plugins.Unhandled' });
+    const { call, calls } = await routed({ typeName: 'Contoso.Plugins.Unhandled' });
     assert.deepEqual(await call(), { status: 204 });
     assert.deepEqual(calls, []);
   });
@@ -442,8 +444,12 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
 
 describe('TriggerServiceEndpointCheck probes a loopback webhook endpoint', () => {
   let server;
-  afterEach(() => {
-    server?.close();
+  // Awaited, so the next test starts only after the endpoint stopped listening and dropped its connections.
+  afterEach(async () => {
+    if (server) {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
     server = null;
   });
 

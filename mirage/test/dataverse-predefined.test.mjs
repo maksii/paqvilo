@@ -270,9 +270,10 @@ test('a navigation predefined query that names no collection-valued relationship
 test('install registers the hook and returns its seeding, so awaiting install means the mappings exist', async () => {
   const store = new DataStore({ state: emptyState() });
   const hooks = {};
-  // A write already queued on the store delays the seeding, so only an awaited install sees it done.
-  const earlier = store.transact(() => new Promise((resolve) => setTimeout(resolve, 20)));
-  await install({
+  // A write already queued on the store holds the seeding until it is released, so only an awaited install sees it done.
+  const { promise: held, resolve: release } = Promise.withResolvers();
+  const earlier = store.transact(() => held);
+  const installed = install({
     store,
     registry: { register() {} },
     recordHooks: {
@@ -282,6 +283,9 @@ test('install registers the hook and returns its seeding, so awaiting install me
     },
   });
   assert.equal(typeof hooks.query, 'function');
+  assert.equal(store.state.mappings.savedquery, undefined, 'the seeding waits behind the queued write');
+  release();
+  await installed;
   assert.equal(store.state.mappings.savedquery?.entitySet, 'savedqueries');
   assert.equal(store.state.mappings.userquery?.entitySet, 'userqueries');
   await earlier;
