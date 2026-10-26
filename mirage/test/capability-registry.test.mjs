@@ -130,7 +130,9 @@ test('every describe() shape the modules declare normalises', () => {
   assert.equal(registry.get('storage:azurite').providerKind, 'azurite');
   assert.equal(registry.get('message-bus:local').level, 'behaviour');
   assert.equal(registry.get('local-service:functions').level, 'contract');
-  assert.ok(registry.list({ kind: 'service' }).every((record) => record.kind === 'service'));
+  const services = registry.list({ kind: 'service' });
+  assert.ok(services.length > 0);
+  assert.ok(services.every((record) => record.kind === 'service'));
   assert.ok(registry.list({ level: 'contract' }).some((record) => record.name === 'storage:azurite'));
 });
 
