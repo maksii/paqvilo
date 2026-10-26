@@ -44,6 +44,8 @@
 - Explicit `npm run validate` and `ci:verify -- --full` always execute fresh. Starting verification revokes the previous
   receipt; a failed audit, preparation step or suite cannot leave an earlier qualifying pass. Cached pre-push reuse
   rechecks the source tree, toolchain and fixtures after dependency audits.
+- Panel regressions wait for actual intercepted-request replies, including delayed source metadata reads, while
+  retaining paused, online and local-response assertions without fixed-sleep timing assumptions.
 - Keep the original concurrent API regression and add a deterministic paused-commit test for queued writes and reads,
   preserved sibling values and stale ETag rejection. Requests share the existing bounded test deadline and identify
   the failing method/path, avoiding independent ten-second fetch timers that expire on busy hosted Windows runners.

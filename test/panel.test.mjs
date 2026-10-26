@@ -49,23 +49,48 @@ async function setup(online = {}, overrides = {}, panelOptions = {}) {
   panels.push(panel);
   await interceptOrigin(b.context, ORIGIN, session.route);
   const { token } = panel.stateFor(tab.page);
+  const pendingByCdp = new WeakMap();
+  const request = (from, id, url, options) => {
+    let pending = pendingByCdp.get(from.cdp);
+    if (!pending) {
+      pending = new Map();
+      pendingByCdp.set(from.cdp, pending);
+      const send = from.cdp.send;
+      from.cdp.send = async (method, params) => {
+        const result = await send(method, params);
+        if (method.startsWith('Fetch.')) pending.get(params?.requestId)?.();
+        return result;
+      };
+    }
+    assert.equal(pending.has(id), false, 'request IDs must identify one pending answer');
+    const answered = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`Intercepted request ${id} did not answer within the panel API deadline`));
+      }, 5_000);
+      pending.set(id, () => {
+        clearTimeout(timer);
+        pending.delete(id);
+        resolve(b.answers(id));
+      });
+    });
+    from.pause(id, url, options);
+    return answered;
+  };
   let n = 0;
   const call = async (name, body, headers = { 'x-paqvilo-token': token }) => {
     const id = `api${++n}`;
-    tab.pause(id, `${ORIGIN}/__paqvilo/api/${name}`, {
+    const answers = await request(tab, id, `${ORIGIN}/__paqvilo/api/${name}`, {
       type: 'Fetch',
       method: 'POST',
       headers,
       postData: JSON.stringify(body ?? {}),
     });
-    const deadline = Date.now() + 5_000;
-    while (b.answers(id).length === 0 && Date.now() < deadline) await tick(5);
-    const answers = b.answers(id);
     assert.equal(answers.length, 1, 'panel API ' + name + ' must answer once');
     assert.equal(answers[0].method, 'Fetch.fulfillRequest', 'a request of the panel is never sent to the portal');
     return { status: answers[0].responseCode, ...JSON.parse(Buffer.from(answers[0].body, 'base64').toString()) };
   };
-  return { b, tab, session, panel, call, opened };
+  return { b, tab, session, panel, call, opened, request };
 }
 
 test('evidence editor links revalidate identity and revisions and ignore a forged file or line', async (t) => {
@@ -350,9 +375,11 @@ test('a comparison lists changed lines with a little context and folds the rest'
 });
 
 test('what a tab served from local sources is what its panel lists', async () => {
-  const { tab, panel } = await setup();
-  tab.pause('r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
-  tab.pause('r2', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
+  const { tab, panel, request } = await setup();
+  await Promise.all([
+    request(tab, 'r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' }),
+    request(tab, 'r2', `${ORIGIN}/scripts/app.js`, { type: 'Script' }),
+  ]);
   await tick(350);
   const [item, ...more] = panel.stateFor(tab.page).items;
   assert.equal(more.length, 0);
@@ -382,10 +409,9 @@ test('a file opens in the editor at the line asked for, and only files of the so
 });
 
 test('a paused override shows the online file until it is switched back on', async () => {
-  const { b, tab, call, panel } = await setup();
+  const { b, tab, call, panel, request } = await setup();
   assert.equal((await call('toggle', { rel: 'web-files/app.js', off: true })).ok, true);
-  tab.pause('r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
-  await tick();
+  await request(tab, 'r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
   assert.deepEqual(
     b.answers('r1').map((a) => a.method),
     ['Fetch.continueRequest'],
@@ -395,17 +421,54 @@ test('a paused override shows the online file until it is switched back on', asy
     ['web-files/app.js'],
   );
   await call('toggle', { rel: 'web-files/app.js', off: false });
-  tab.pause('r2', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
-  await tick();
+  await request(tab, 'r2', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
   assert.equal(b.answers('r2')[0].method, 'Fetch.fulfillRequest');
 });
 
+test(
+  'a panel request waits for the actual browser answer while script-source inspection is held',
+  { timeout: 60_000 },
+  async (t) => {
+    const { b, tab, session, request } = await setup();
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const held = Promise.withResolvers();
+    const entered = Promise.withResolvers();
+    t.after(() => held.resolve());
+    const sourceIndexFor = session.sourceInspector.sourceIndexFor.bind(session.sourceInspector);
+    t.mock.method(session.sourceInspector, 'sourceIndexFor', async (...args) => {
+      entered.resolve();
+      await held.promise;
+      return sourceIndexFor(...args);
+    });
+    let completed = false;
+    const answer = request(tab, 'held-script', `${ORIGIN}/scripts/app.js`, { type: 'Script' }).then((answers) => {
+      completed = true;
+      return answers;
+    });
+    await entered.promise;
+    // Reproduce the old fixed wait without allowing the asynchronous proof to finish.
+    t.mock.timers.tick(30);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(completed, false, 'starting asynchronous source inspection is not a browser answer');
+    assert.deepEqual(b.answers('held-script'), []);
+    held.resolve();
+    const answers = await answer;
+    assert.equal(answers.length, 1);
+    assert.equal(answers[0].method, 'Fetch.fulfillRequest');
+    assert.equal(
+      Buffer.from(answers[0].body, 'base64').toString(),
+      fs.readFileSync(fx.file('web-files/app.js'), 'utf8'),
+    );
+  },
+);
+
 test('online mode overrides nothing, and the panel still answers', async () => {
-  const { b, tab, call, panel } = await setup();
+  const { b, tab, call, panel, request } = await setup();
   await call('mode', { online: true });
-  tab.pause('r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
-  tab.pause('r2', `${ORIGIN}/`, { type: 'Document' });
-  await tick();
+  await Promise.all([
+    request(tab, 'r1', `${ORIGIN}/scripts/app.js`, { type: 'Script' }),
+    request(tab, 'r2', `${ORIGIN}/`, { type: 'Document' }),
+  ]);
   assert.deepEqual(
     b.answers('r1').map((a) => a.method),
     ['Fetch.continueRequest'],
@@ -416,8 +479,7 @@ test('online mode overrides nothing, and the panel still answers', async () => {
   );
   assert.equal(panel.stateFor(tab.page).online, true);
   await call('mode', { online: false });
-  tab.pause('r3', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
-  await tick();
+  await request(tab, 'r3', `${ORIGIN}/scripts/app.js`, { type: 'Script' });
   assert.equal(b.answers('r3')[0].method, 'Fetch.fulfillRequest');
 });
 
@@ -1022,7 +1084,7 @@ test('Mirage navigation fetches a page summary; the full Inspect report is fetch
 });
 
 test("Mirage browser sessions: Tweaks show this browser's session and identity provider; sign-in and sign-out run the portal's own flow in the page", async () => {
-  const { b, tab, session, panel, call } = await setup();
+  const { b, tab, session, panel, call, request } = await setup();
   session.cfg.mirage = true;
   let signedIn = null;
   let override = null;
@@ -1148,14 +1210,15 @@ test("Mirage browser sessions: Tweaks show this browser's session and identity p
   let n = 0;
   const callFrom = async (from, name, body) => {
     const id = `session-api${++n}`;
-    from.pause(id, `${ORIGIN}/__paqvilo/api/${name}`, {
+    const answers = await request(from, id, `${ORIGIN}/__paqvilo/api/${name}`, {
       type: 'Fetch',
       method: 'POST',
       headers: { 'x-paqvilo-token': panel.stateFor(from.page).token },
       postData: JSON.stringify(body ?? {}),
     });
-    await tick();
-    return JSON.parse(Buffer.from(b.answers(id)[0].body, 'base64').toString());
+    assert.equal(answers.length, 1, 'panel API ' + name + ' must answer once');
+    assert.equal(answers[0].method, 'Fetch.fulfillRequest', 'a request of the panel is never sent to the portal');
+    return JSON.parse(Buffer.from(answers[0].body, 'base64').toString());
   };
   const returnsTo = async (cases) => {
     for (const [url, target] of cases) {
