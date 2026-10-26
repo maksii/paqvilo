@@ -249,6 +249,29 @@ test('a reused file is regenerated when it does not cover the requested hosts', 
   assert.equal(new crypto.X509Certificate(widened.cert).checkHost('mirage-extra.localhost'), 'mirage-extra.localhost');
 });
 
+test('a reused file whose key does not match its certificate, or that does not parse, is regenerated', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'paqvilo-tls-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'mirage.pem');
+  const one = createSelfSignedCertificate(),
+    other = createSelfSignedCertificate();
+  await writeFile(file, one.cert + other.key);
+  const mismatched = await ensureCertificate(file);
+  assert.notEqual(mismatched.fingerprint256, one.fingerprint256);
+  assert.equal(
+    new crypto.X509Certificate(mismatched.cert).checkPrivateKey(crypto.createPrivateKey(mismatched.key)),
+    true,
+  );
+  assert.equal((await ensureCertificate(file)).fingerprint256, mismatched.fingerprint256, 'the replacement is reused');
+  await writeFile(
+    file,
+    '-----BEGIN CERTIFICATE-----\nbm90IGEgY2VydGlmaWNhdGU=\n-----END CERTIFICATE-----\n' + other.key,
+  );
+  const unparsable = await ensureCertificate(file);
+  assert.notEqual(unparsable.fingerprint256, mismatched.fingerprint256);
+  assert.equal(await readFile(file, 'utf8'), unparsable.cert + unparsable.key, 'the replacement is written');
+});
+
 test('ensureCertificate(null) returns an in-memory CA with no file', async () => {
   const certificate = await ensureCertificate(null);
   assert.equal(certificate.file, null);
