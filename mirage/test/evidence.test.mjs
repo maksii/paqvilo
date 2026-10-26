@@ -167,6 +167,23 @@ test('a file removed during the walk is left out and another read failure reject
   await assert.rejects(sourceFingerprint(root), { code: 'EBUSY' });
 });
 
+test('cached implementation fingerprints skip a file removed while the signature walk runs', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-cached-removal-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'kept.mjs'), 'export const kept = true;');
+  const removed = path.join(root, 'removed.mjs');
+  await fs.writeFile(removed, 'export const removed = true;');
+  // Another process (a test cleaning up its fixture) removes the file between the listing and its stat.
+  const stat = fs.stat;
+  t.mock.method(fs, 'stat', async (file, ...rest) => {
+    if (file === removed) await fs.rm(removed);
+    return stat.call(fs, file, ...rest);
+  });
+  const digest = await cachedImplementationSourceFingerprint(root);
+  t.mock.restoreAll();
+  assert.equal(digest, await implementationSourceFingerprint(root));
+});
+
 test('an on-demand browser asset edit invalidates evidence from still-loaded modules', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-implementation-evidence-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
