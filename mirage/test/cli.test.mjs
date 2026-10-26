@@ -10,11 +10,13 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { runtimePort } from '../lib/runtime-port.mjs';
 import { withProcessSlot } from './process-slots.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
 async function fixture(t, files) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-cli-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  // The real path: the CLI reports state and Solution paths as the OS resolves them (8.3 aliases expanded).
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-cli-')));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [name, value] of Object.entries(files)) {
     const file = path.join(directory, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -358,7 +360,7 @@ test(
       ended = true;
       return values;
     });
-    t.after(async () => {
+    ownedFixture(t).add(async () => {
       if (!ended) await stop(child, completion);
     });
     const discovery = await startup(child, completion, () => ({ stdout, stderr }));

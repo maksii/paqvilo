@@ -114,7 +114,7 @@ test('the Ready job row is saved in the same commit as its triggering row and a 
   assert.equal(ticks(store), 1, 'the post-commit path only schedules the run');
   // A process exit now: a new runtime on the same file finds the staged job and runs it.
   const restarted = await open(file);
-  t.after(() => restarted.runner.close());
+  ownedFixture(t).add(() => restarted.runner.close());
   committedJobs(restarted.store).resume();
   await restarted.store.scheduler.runDue();
   assert.equal(jobsOf(restarted.store.state).length, 0);

@@ -4055,7 +4055,7 @@
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     },
     {
-      "key": "tests:clone:mirage/test/capture-shell-client.test.mjs|mirage/test/public-api.test.mjs:519ecd0d6b4a942576fc86d2fac38af920fd4021d7af568698a7c80c8d035773",
+      "key": "tests:clone:mirage/test/capture-shell-client.test.mjs|mirage/test/public-api.test.mjs:9a1c83f3e2d0d47c09eaaed3be0d4ec0c37357c5110e27bf6cd174a65ca120f1",
       "files": ["mirage/test/capture-shell-client.test.mjs", "mirage/test/public-api.test.mjs"],
       "lines": 13,
       "type": "clone",

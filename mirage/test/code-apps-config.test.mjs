@@ -8,7 +8,8 @@ import { codeAppSettings, readCodeAppConfig, loadCodeApps, codeAppInventoryRecor
 const APP = '77777777-7777-4777-8777-777777777777';
 
 async function tempDir(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-apps-config-'));
+  // The real path: loaded apps report their folder as the OS resolves it (8.3 aliases expanded).
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-apps-config-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }

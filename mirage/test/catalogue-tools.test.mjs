@@ -28,7 +28,8 @@ const runMirage = (args, timeout) =>
   );
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-'));
+  // The real path: reports name cache and state files as the OS resolves them (8.3 aliases expanded).
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-')));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'portal/web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',

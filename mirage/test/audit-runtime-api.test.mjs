@@ -118,7 +118,7 @@ test('a legacy non-boolean externalAssets value cannot bypass confinement after 
   await app.store.compact();
   await app.close();
   const restarted = await createSimulator({ sourceDir: root, stateFile, watch: false });
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   const status = await (await fetch(restarted.url + '/_sim/api/status')).json();
   assert.equal(status.confinePortalPages, true);
   assert.equal(status.externalAssets, false);
@@ -221,10 +221,7 @@ test('failed source reload keeps the applied runtime and a later valid reload re
     file = path.join(root, 'Home.webpage.yml'),
     source = await fs.readFile(file, 'utf8');
   await fs.rm(file);
-  await assert.rejects(
-    app.reload(),
-    /recognised pages|recognized pages|No portal|no imported|no recognised|no recognized/i,
-  );
+  await assert.rejects(app.reload(), { code: 'PORTAL_SOURCE_EMPTY', message: /^No portal pages were recognised in / });
   assert.equal(app.state().status.sourceFingerprint, before.status.sourceFingerprint);
   assert.equal(app.state().status.revision, before.status.revision);
   assert.match(await (await fetch(app.url)).text(), /Invented runtime audit/);
@@ -288,6 +285,6 @@ test('portal sessions remain isolated between concurrent runtimes and expire aft
   const port = Number(new URL(first.app.url).port);
   await first.app.close();
   const restarted = await createSimulator({ sourceDir: first.root, stateFile: first.stateFile, watch: false, port });
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   assert.equal((await read(restarted)).signedIn, false);
 });
