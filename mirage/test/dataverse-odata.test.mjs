@@ -321,6 +321,7 @@ test('key text with control characters is a DataError 400 0x80060888, mapped to 
   } catch (error) {
     thrown = error;
   }
+  assert.ok(thrown instanceof DataError, 'a key with CR/LF is refused');
   const mapped = dataverseError(thrown, { requestId: 'req-3' });
   assert.equal(mapped.status, 400);
   assert.deepEqual(mapped.body, {
