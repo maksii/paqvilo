@@ -264,7 +264,7 @@ jobs:
         run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }} ${{ matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.full == 'true' && '--sdk' || '' }}
       - name: Verify the selected suite
         run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
-      - name: Verify the full Windows SDK clients
+      - name: Verify the full Windows SDK clients and storage volume
         if: matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.full == 'true'
         run: node scripts/ci.mjs sdk
   package:

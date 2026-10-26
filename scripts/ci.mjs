@@ -391,6 +391,10 @@ function verifySdkGates() {
   execute('dotnet', ['restore', 'mirage/test-sdk/cert-auth/Gate/Gate.csproj', '--locked-mode']);
   for (const project of ['tds', 'dynamics-web-api', 'cert-auth'])
     npm(['--prefix', 'mirage/test-sdk/' + project, 'test']);
+  execute('dotnet', ['restore', 'mirage/test-sdk/serviceclient/Gate/Gate.csproj', '--locked-mode']);
+  execute(process.execPath, ['--test', '--test-timeout=600000', 'mirage/test-sdk/serviceclient/gate.test.mjs']);
+  // The shipped verify-storage check: 600,000 rows past the engine string limit, about 1 GiB of temporary disk.
+  execute(process.execPath, ['--expose-gc', '--max-old-space-size=4096', 'mirage/test-volume/state-storage.mjs']);
 }
 
 const unitPlatformNeedsSdk = () => process.platform === 'win32';
@@ -399,7 +403,17 @@ export function verifyLane(suite, { unit = true, browser = true, shard = null } 
   requireFixtures(suite, { unit, browser, shard });
   if (unit) {
     if (suite === 'lense') runPackageTests('', 'test', shard);
-    if (suite === 'mirage') runPackageTests('mirage', 'test', shard);
+    if (suite === 'mirage') {
+      runPackageTests('mirage', 'test', shard);
+      // In-process gates without extra installs: size ratios, never absolute times, and the toolkit's own client.
+      // A sharded lane runs them once, beside the first shard.
+      if (!shard || shard.startsWith('1/'))
+        execute(process.execPath, [
+          '--test',
+          'mirage/test-volume/write-volume.test.mjs',
+          'mirage/test-sdk/toolkit-client/gate.test.mjs',
+        ]);
+    }
     if (suite === 'examples') {
       npmScript('test:example');
       npmScript('test:company');

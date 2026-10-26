@@ -425,7 +425,10 @@ Not simulated:
 
 ## SDK compatibility checks
 
-The opt-in `npm run test:sdk` runs real clients against a local organization from `mirage/test-sdk/`:
+`npm run test:sdk` runs real clients against a local organization from `mirage/test-sdk/`. Validation also runs
+`toolkit-client` in every Mirage unit lane, and `tds`, `dynamics-web-api`, `cert-auth` and `serviceclient` in the full
+Windows gate. `python-dataverse` and `webapi-samples` stay manual: they need a Python environment and a clone of
+Microsoft's samples outside the locked manifests, and each refuses versions other than its pins.
 
 | Gate               | Client                                                    | Exercises                                                                                                                  |
 | ------------------ | --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |

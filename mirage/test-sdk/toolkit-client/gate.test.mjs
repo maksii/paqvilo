@@ -1,5 +1,5 @@
 // SDK verification gate: the toolkit's own Dataverse client and data loader against the simulated Dataverse API.
-// Opt-in (`npm run test:sdk`).
+// Runs in every Mirage unit lane (scripts/ci.mjs) and in `npm run test:sdk`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

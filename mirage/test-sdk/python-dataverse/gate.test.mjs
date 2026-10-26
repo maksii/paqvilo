@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startGate } from '../harness.mjs';
@@ -88,6 +88,14 @@ test(
       assert.ok(found?.ok, `required step ${name} missing or not ok`);
     }
     assert.equal(code, 0, `gate exited ${code}; stderr:\n${stderr}`);
+    // The venv is created by hand, so prove it holds the pinned clients rather than whatever pip resolved.
+    const pins = Object.fromEntries(
+      readFileSync(path.join(HERE, 'requirements.txt'), 'utf8')
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .map((line) => line.split('==')),
+    );
+    assert.deepEqual(steps.find((step) => step.step === 'versions')?.detail, pins);
 
     const requests = gate.requests();
     const url = (entry) => decodeURIComponent(entry.url);
