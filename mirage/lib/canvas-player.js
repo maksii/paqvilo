@@ -69,6 +69,7 @@
       el = node('input');
       el.type = kind === 'datepicker' ? 'date' : 'text';
       el.value = valueText(p.Text ?? p.SelectedDate ?? p.Default);
+      if (kind === 'datepicker') el.value = valueText(p.SelectedDate).slice(0, 10);
       el.disabled = disabled;
       el.addEventListener('change', () => act({ action: 'input', control: control.name, value: el.value, ...scope }));
     } else if (kind === 'checkbox' || kind === 'toggle') {

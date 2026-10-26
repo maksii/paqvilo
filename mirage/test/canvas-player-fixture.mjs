@@ -59,6 +59,13 @@ export const files = {
             Width: '=200',
             Height: '=40',
           }),
+          control('DateChoice', 'Classic/DatePicker@2.6.0', {
+            DefaultDate: '=Date(2000, 1, 2)',
+            X: '=240',
+            Y: '=170',
+            Width: '=140',
+            Height: '=40',
+          }),
           control(
             'List',
             'Gallery@2.15.0',

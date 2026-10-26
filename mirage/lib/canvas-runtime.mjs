@@ -1205,10 +1205,14 @@ export function createCanvasApp({
       if (next.some((index) => index < 0 || index >= list.length))
         throw fail(`${name} has no such item.`, 'CanvasItemNotFound', 404);
     } else throw fail(`${name} (${entry.type}) takes no input.`, 'CanvasActionInvalid');
+    const checked = entry.kind === 'checkbox' || entry.kind === 'toggle';
+    if (checked && read(name, 'Value', scope) === next) return;
     state.inputs.set(key, next);
     changed(key);
     log({ event: 'input', control: name, ...(scope.itemIndex !== undefined ? { item: scope.itemIndex } : {}) });
-    return behaviour(name, 'OnChange', scope);
+    const result = await behaviour(name, 'OnChange', scope);
+    if (checked) await behaviour(name, next ? 'OnCheck' : 'OnUncheck', scope);
+    return result;
   }
   let queue = Promise.resolve();
   const serial = (task) => {

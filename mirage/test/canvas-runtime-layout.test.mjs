@@ -119,3 +119,53 @@ test('initial viewport is validated before OnStart and forwarded to new sessions
   assert.equal(session.snapshot().variables.initialWidth, 390);
   assert.deepEqual(session.snapshot().viewport, { width: 390, height: 844 });
 });
+
+test('checkbox and toggle transitions run their change and check callbacks once with the new value', async () => {
+  const app = {
+    uniqueName: 'checks',
+    source: {
+      tree: {
+        screens: [
+          {
+            name: 'Home',
+            controls: [
+              { name: 'Check', control: 'Classic/CheckBox@2.1.0' },
+              { name: 'Toggle', control: 'Classic/Toggle@2.1.0' },
+            ],
+          },
+        ],
+      },
+      formulas: ['Check', 'Toggle'].flatMap((owner) => [
+        {
+          owner,
+          property: 'OnChange',
+          text: `=Collect(events, {control: "${owner}", event: "change", value: ${owner}.Value})`,
+        },
+        {
+          owner,
+          property: 'OnCheck',
+          text: `=Collect(events, {control: "${owner}", event: "check", value: ${owner}.Value})`,
+        },
+        {
+          owner,
+          property: 'OnUncheck',
+          text: `=Collect(events, {control: "${owner}", event: "uncheck", value: ${owner}.Value})`,
+        },
+      ]),
+    },
+  };
+  const runtime = createCanvasApp({ app, evaluator: createPowerFxEvaluator() });
+  await runtime.start();
+  for (const control of ['Check', 'Toggle']) {
+    for (const value of [true, true, false, false]) await runtime.act({ action: 'input', control, value });
+  }
+  assert.deepEqual(
+    runtime.snapshot().collections.events,
+    ['Check', 'Toggle'].flatMap((control) => [
+      { control, event: 'change', value: true },
+      { control, event: 'check', value: true },
+      { control, event: 'change', value: false },
+      { control, event: 'uncheck', value: false },
+    ]),
+  );
+});

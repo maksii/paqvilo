@@ -51,6 +51,9 @@ for (const format of ['directory', 'archive']) {
     assert.equal(await control('Switch').isChecked(), true);
     assert.equal(await control('Choice').locator('option').count(), 2);
     await action(() => control('Choice').selectOption({ index: 1 }));
+    assert.equal(await control('DateChoice').inputValue(), '2000-01-02');
+    await action(() => control('DateChoice').fill('2001-02-03'));
+    await page.waitForFunction(() => document.querySelector('[data-control="DateChoice"]')?.value === '2001-02-03');
     await action(() => page.locator('[data-item-index="0"] [data-control="OpenItem"]').click());
     await control('Return').waitFor();
     assert.equal(await control('Detail').innerText(), 'Alpha');
@@ -59,6 +62,7 @@ for (const format of ['directory', 'archive']) {
     assert.equal(await control('SearchBox').inputValue(), 'Al');
     assert.equal(await control('Check').isChecked(), true);
     assert.equal(await control('Switch').isChecked(), true);
+    assert.equal(await control('DateChoice').inputValue(), '2001-02-03');
     assert.equal(await control('VisitStatus').innerText(), 'visited');
     assert.equal(await control('Hidden').count(), 0);
     assert.equal(await control('Disabled').isDisabled(), true);
