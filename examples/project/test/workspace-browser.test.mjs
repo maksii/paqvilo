@@ -4,12 +4,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
-import { createSimulator } from 'paqvilo/mirage/server.mjs';
+import { openDemo, project } from './demo-browser.mjs';
 import { signInContext } from 'paqvilo/mirage/testing/session.mjs';
-
-const project = fileURLToPath(new URL('../', import.meta.url));
 
 async function observeWorkspaceMenus(page) {
   await page.addInitScript(() => {
@@ -100,34 +96,18 @@ test(
     ownedFixture(t).add(async () => {
       if (!completed) await reportWorkspaceFailure(diagnosticPage);
     });
-    const module = path.join(project, 'pack/pack.mjs');
     const source = await fs.readFile(
       path.join(project, 'portal/web-pages/pcf-account/PCF-account.webpage.copy.html'),
       'utf8',
     );
     const id = /codecomponent name:([0-9a-f-]{36})/i.exec(source)[1];
-    const sim = await createSimulator({
-      sourceDir: path.join(project, 'portal'),
-      solutionRoots: ['metadata', 'code-solution', 'solution'].map((name) => path.join(project, name)),
-      solutionOrder: 'explicit',
+    const { sim, browser, context } = await openDemo(t, {
       observed: {
         sdkMessages,
         codeComponents: { [id]: 'exa_ExamplePages.ExampleAccountFields' },
         evidence: 'Sample component tag and manifest',
       },
-      dataPacks: [{ module }],
-      port: 0,
-      watch: false,
     });
-    ownedFixture(t).add(() => sim.close());
-    await sim.applyPreset('example-demo');
-    const browser = await chromium.launch({
-      headless: true,
-      channel: process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : undefined),
-    });
-    ownedFixture(t).add(() => browser.close());
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-    context.setDefaultTimeout(15_000);
     await signInContext(context, sim, 'a4300000-0000-4000-8000-000000002001');
     const page = await context.newPage(),
       errors = [];

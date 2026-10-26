@@ -1,34 +1,13 @@
-import { ownedFixture } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
-import { createSimulator } from 'paqvilo/mirage/server.mjs';
+import { openDemo } from './demo-browser.mjs';
 import { signInContext } from 'paqvilo/mirage/testing/session.mjs';
 
-const project = fileURLToPath(new URL('../', import.meta.url));
 test(
   'Liquid pages compose bounded previews, exported view columns and permission-scoped results',
   { timeout: 90_000 },
   async (t) => {
-    const sim = await createSimulator({
-      sourceDir: path.join(project, 'portal'),
-      solutionRoots: ['metadata', 'code-solution', 'solution'].map((name) => path.join(project, name)),
-      solutionOrder: 'explicit',
-      dataPacks: [{ module: path.join(project, 'pack/pack.mjs') }],
-      port: 0,
-      watch: false,
-    });
-    ownedFixture(t).add(() => sim.close());
-    await sim.applyPreset('example-demo');
-    const browser = await chromium.launch({
-      headless: true,
-      channel: process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : undefined),
-    });
-    ownedFixture(t).add(() => browser.close());
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-    context.setDefaultTimeout(15_000);
+    const { sim, context } = await openDemo(t);
     const page = await context.newPage(),
       errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
