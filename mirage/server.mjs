@@ -142,12 +142,7 @@ import { captureObservedSnippetComposition } from './lib/observed-snippet-compos
 import { captureObservedStylesheets, resolveObservedStylesheet } from './lib/observed-stylesheets.mjs';
 import { resolveRichTextConfiguration, richTextConfigurationStatus } from './lib/richtext-config.mjs';
 import { pageAccess } from './lib/page-access.mjs';
-import {
-  implementationSourceFingerprint,
-  cachedImplementationSourceFingerprint,
-  observedEvidence,
-  implementationEvidence,
-} from './lib/evidence.mjs';
+import { cachedImplementationSourceFingerprint, observedEvidence, implementationEvidence } from './lib/evidence.mjs';
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata, portalMetadataEntities } from './lib/solution-metadata.mjs';
 import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './lib/model-driven/catalogue.mjs';
@@ -351,8 +346,9 @@ const DATAVERSE_BLOCKED_ATTACHMENTS =
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const toolkitPackage = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
 const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ?? toolkitPackage.repository);
-// Bind evidence to the mirage loaded by this process as well as portal sources.
-const implementationFingerprint = await implementationSourceFingerprint(ROOT);
+// Bind evidence to the mirage loaded by this process as well as portal sources. The cached form is the same digest and
+// seeds the cache, so the first state read compares file stats instead of hashing the toolkit a second time.
+const implementationFingerprint = await cachedImplementationSourceFingerprint(ROOT);
 const auditResponse = Symbol('auditResponse');
 const mime = (file) =>
   ({

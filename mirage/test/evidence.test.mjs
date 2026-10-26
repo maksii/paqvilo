@@ -126,11 +126,15 @@ test('cached implementation fingerprints match full hashes and follow same-size 
   const first = await cachedSourceFingerprint(root);
   assert.equal(first, await sourceFingerprint(root));
   assert.equal(await cachedSourceFingerprint(root), first, 'unchanged files reuse the digest');
-  await new Promise((resolve) => setTimeout(resolve, 25));
-  await fs.writeFile(path.join(root, 'admin', 'app.mjs'), 'export const version = 2;');
-  const edited = await cachedSourceFingerprint(root);
-  assert.notEqual(edited, first, 'a same-size edit invalidates the cached digest');
-  assert.equal(edited, await sourceFingerprint(root));
+  // Back-to-back same-size writes usually share one file-time tick (Linux coarse clocks): each must still be seen.
+  let edited = first;
+  for (const version of [2, 3, 4, 5]) {
+    await fs.writeFile(path.join(root, 'admin', 'app.mjs'), `export const version = ${version};`);
+    const next = await cachedSourceFingerprint(root);
+    assert.notEqual(next, edited, `a same-size edit to version ${version} invalidates the cached digest`);
+    assert.equal(next, await sourceFingerprint(root));
+    edited = next;
+  }
   await fs.writeFile(path.join(root, 'admin', 'style.css'), 'body{}');
   const added = await cachedSourceFingerprint(root);
   assert.notEqual(added, edited);
@@ -139,6 +143,28 @@ test('cached implementation fingerprints match full hashes and follow same-size 
   assert.equal(await cachedSourceFingerprint(root), edited);
   await fs.writeFile(path.join(root, 'node_modules', 'ignored.js'), 'still ignored');
   assert.equal(await cachedSourceFingerprint(root), edited, 'excluded folders stay excluded');
+});
+
+test('a file removed during the walk is left out and another read failure rejects the hash', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-fingerprint-reads-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  // More files than reads run at a time, so a failure arrives while later reads are still in flight.
+  for (let n = 0; n < 80; n++) await fs.writeFile(path.join(root, `file-${String(n).padStart(2, '0')}.txt`), `${n}`);
+  const removed = path.join(root, 'file-07.txt');
+  await fs.rm(removed);
+  const withoutRemoved = await sourceFingerprint(root);
+  await fs.writeFile(removed, '7');
+  const read = fs.readFile;
+  const failing = (files, code) =>
+    t.mock.method(fs, 'readFile', (target, ...rest) =>
+      files.includes(target) ? Promise.reject(Object.assign(new Error(code), { code })) : read(target, ...rest),
+    );
+  failing([removed], 'ENOENT');
+  assert.equal(await sourceFingerprint(root), withoutRemoved, 'a file gone before its read is not hashed');
+  t.mock.restoreAll();
+  // The second failure is still in flight when the first rejects the hash: it must not surface as an unhandled rejection.
+  failing([path.join(root, 'file-03.txt'), path.join(root, 'file-05.txt')], 'EBUSY');
+  await assert.rejects(sourceFingerprint(root), { code: 'EBUSY' });
 });
 
 test('an on-demand browser asset edit invalidates evidence from still-loaded modules', async (t) => {

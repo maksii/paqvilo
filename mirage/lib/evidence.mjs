@@ -34,9 +34,13 @@ const gone = (error) => {
   throw error;
 };
 
+// One awaited read per file costs a thread-pool round trip each (seconds for the toolkit tree on a loaded Windows host),
+// so files are read this many at a time, below the default descriptor limits, and hashed in walk order.
+const READ_CONCURRENCY = 32;
+
 async function fingerprint(sourceDir, implementation) {
   sourceDir = path.resolve(sourceDir);
-  const hash = createHash('sha256');
+  const files = [];
   async function walk(dir) {
     const entries = ((await fs.readdir(dir, { withFileTypes: true }).catch(gone)) ?? []).sort((a, b) =>
       a.name.localeCompare(b.name),
@@ -45,25 +49,40 @@ async function fingerprint(sourceDir, implementation) {
       if (excludedEntry(sourceDir, dir, entry, implementation)) continue;
       const file = path.join(dir, entry.name);
       if (entry.isDirectory()) await walk(file);
-      else if (entry.isFile()) {
-        const content = await fs.readFile(file).catch(gone);
-        if (!content) continue;
-        hash.update(path.relative(sourceDir, file).replaceAll('\\', '/'));
-        hash.update('\0');
-        hash.update(content);
-        hash.update('\0');
-      }
+      else if (entry.isFile()) files.push(file);
     }
   }
   await walk(sourceDir);
+  const hash = createHash('sha256'),
+    reads = [];
+  const read = (index) => {
+    if (index >= files.length) return;
+    const content = fs.readFile(files[index]).catch(gone);
+    content.catch(() => {}); // a read still in flight when an earlier one fails is not an unhandled rejection
+    reads[index] = content;
+  };
+  for (let index = 0; index < READ_CONCURRENCY; index++) read(index);
+  for (const [index, file] of files.entries()) {
+    const content = await reads[index];
+    reads[index] = null;
+    read(index + READ_CONCURRENCY);
+    if (!content) continue;
+    hash.update(path.relative(sourceDir, file).replaceAll('\\', '/'));
+    hash.update('\0');
+    hash.update(content);
+    hash.update('\0');
+  }
   return hash.digest('hex');
 }
 
 const fingerprintCache = new Map();
+// File times advance in ticks (Linux coarse clocks, Windows timer ticks, FAT 2 s), so a second same-size write in the
+// tick of the first keeps every stat field. A digest is reused only when no file changed within this window of the walk.
+const RACY_WINDOW_NS = 2_000_000_000n;
 /**
  * The same digest as sourceFingerprint, recomputed only when a file is added, removed or
- * its size, modification/change time or identity differs. Writing a file always changes
- * its change time, so served-on-demand edits still invalidate evidence immediately.
+ * its size, modification/change time or identity differs. A file written within RACY_WINDOW_NS
+ * of the walk could change again without a visible stat change, so its digest is never reused.
  */
 export async function cachedSourceFingerprint(sourceDir) {
   return cachedFingerprint(sourceDir, false);
@@ -75,7 +94,9 @@ export async function cachedImplementationSourceFingerprint(sourceDir) {
 
 async function cachedFingerprint(sourceDir, implementation) {
   const root = path.resolve(sourceDir);
-  const lines = [];
+  const lines = [],
+    walked = BigInt(Date.now()) * 1_000_000n;
+  let newest = 0n;
   async function walk(dir) {
     const entries = (await fs.readdir(dir, { withFileTypes: true }))
       .filter((entry) => !excludedEntry(root, dir, entry, implementation))
@@ -88,6 +109,7 @@ async function cachedFingerprint(sourceDir, implementation) {
       if (entry.isDirectory()) await walk(file);
       else if (stats[index]) {
         const stat = stats[index];
+        for (const time of [stat.mtimeNs, stat.ctimeNs]) if (time > newest) newest = time;
         lines.push(`${path.relative(root, file)}\0${stat.size}\0${stat.mtimeNs}\0${stat.ctimeNs}\0${stat.ino}`);
       }
     }
@@ -98,7 +120,8 @@ async function cachedFingerprint(sourceDir, implementation) {
   const cached = fingerprintCache.get(cacheKey);
   if (cached?.signature === key) return cached.digest;
   const digest = await fingerprint(root, implementation);
-  fingerprintCache.set(cacheKey, { signature: key, digest });
+  if (newest < walked - RACY_WINDOW_NS) fingerprintCache.set(cacheKey, { signature: key, digest });
+  else fingerprintCache.delete(cacheKey);
   return digest;
 }
 
