@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createFixture } from './fixture.mjs';
+import { createFixture, tempDirSync, withoutToolkitEnvironment } from './fixture.mjs';
 import { severalPortals } from '../lense/commands/mirage.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
@@ -19,7 +19,7 @@ const env = Object.fromEntries(
 function run(...args) {
   return spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 150_000 });
 }
-// Independent refusals run concurrently: each CLI process costs a quarter of a second to start.
+// Independent commands run concurrently: each CLI process costs a quarter of a second to start.
 function runAsync(...args) {
   return withProcessSlot(
     () =>
@@ -42,7 +42,7 @@ const json = (result) => JSON.parse(result.stdout);
  */
 function isolatedFixture() {
   const fixture = createFixture();
-  const container = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-portals-')));
+  const container = tempDirSync('paqvilo-portals-');
   const dir = path.join(container, 'portal');
   fs.cpSync(fixture.dir, dir, { recursive: true });
   fixture.cleanup();
@@ -71,7 +71,7 @@ test(
   { timeout: 300_000 },
   async () => {
     const classic = isolatedFixture();
-    const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-portals-')));
+    const work = tempDirSync('paqvilo-mirage-portals-');
     const config = path.join(work, 'paqvilo.config.yml');
     const project = (site) => path.join(work, `${site}.project.yml`);
     fs.writeFileSync(
@@ -111,11 +111,23 @@ test(
         ],
       );
       assert.ok(fs.existsSync(project('classic')) && fs.existsSync(project('enhanced')));
-      const [reinit, conflict, misplaced] = await Promise.all([
+      // A catalogue that puts two sites on one port is refused before anything starts.
+      const clash = path.join(work, 'clash.config.yml');
+      const catalogue = JSON.parse(fs.readFileSync(config, 'utf8'));
+      catalogue.sites.classic.mirage.port = 18797;
+      catalogue.sites.enhanced.mirage.port = 18797;
+      fs.writeFileSync(clash, JSON.stringify(catalogue));
+      // The refusals change nothing, so they run while the runtimes start; the stop report below proves that
+      // nothing but the two started runtimes ran.
+      const [reinit, conflict, misplaced, starting, ...refusals] = await Promise.all([
         runAsync('mirage', 'init', '--config', config, '--site', 'classic', '--json'),
         runAsync('mirage', 'start', '--config', config, '--portal', 'classic', '--json'),
         runAsync('mirage', 'status', '--config', config, '--allow-live-writes', '--json'),
+        runAsync('mirage', 'start', '--config', config, '--startup-timeout', '120000', '--json'),
+        runAsync('mirage', 'start', '--config', clash, '--json'),
+        runAsync('mirage', 'start', '--config', clash, '--port', '018797', '--json'),
       ]);
+      started = starting;
       // With --site, init stays with that site (and refuses to overwrite silently).
       assert.match(json(reinit).error.message, /already exists/);
 
@@ -129,7 +141,11 @@ test(
       assert.equal(misplaced.status, 1);
       assert.match(json(misplaced).error.message, /--allow-live-writes applies only to mirage dev and start/);
 
-      started = run('mirage', 'start', '--config', config, '--startup-timeout', '120000', '--json');
+      for (const refused of refusals) {
+        assert.equal(refused.status, 1);
+        assert.match(json(refused).error.message, /Each Mirage needs its own port \(port 18797: classic, enhanced\)/);
+      }
+
       assert.equal(started.status, 0, started.stdout + started.stderr);
       const portals = json(started).portals;
       assert.deepEqual(
@@ -146,34 +162,21 @@ test(
       );
       assert.notEqual(portals[0].url, portals[1].url);
 
-      const status = json(run('mirage', 'status', '--config', config, '--json')).sessions;
+      // Status only reads the runtimes; starting again reuses both.
+      const [listing, repeated] = await Promise.all([
+        runAsync('mirage', 'status', '--config', config, '--json'),
+        runAsync('mirage', 'start', '--config', config, '--json'),
+      ]);
+      const status = json(listing).sessions;
       for (const item of portals) {
         const listed = status.find((session) => session.pid === item.pid);
         assert.ok(listed, `status lists ${item.site}`);
         assert.deepEqual([listed.site, listed.ready, listed.owned], [item.site, true, true]);
       }
-
-      // Starting again reuses both runtimes.
-      const again = json(run('mirage', 'start', '--config', config, '--json')).portals;
       assert.deepEqual(
-        again.map((item) => [item.pid, item.started]),
+        json(repeated).portals.map((item) => [item.pid, item.started]),
         portals.map((item) => [item.pid, false]),
       );
-
-      // A catalogue that puts two sites on one port is refused before anything starts.
-      const clash = path.join(work, 'clash.config.yml');
-      const catalogue = JSON.parse(fs.readFileSync(config, 'utf8'));
-      catalogue.sites.classic.mirage.port = 18797;
-      catalogue.sites.enhanced.mirage.port = 18797;
-      fs.writeFileSync(clash, JSON.stringify(catalogue));
-      const refusals = await Promise.all([
-        runAsync('mirage', 'start', '--config', clash, '--json'),
-        runAsync('mirage', 'start', '--config', clash, '--port', '018797', '--json'),
-      ]);
-      for (const refused of refusals) {
-        assert.equal(refused.status, 1);
-        assert.match(json(refused).error.message, /Each Mirage needs its own port \(port 18797: classic, enhanced\)/);
-      }
     } finally {
       const stopped = run('mirage', 'stop', '--config', config, '--json');
       assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
@@ -193,11 +196,12 @@ test(
   },
 );
 
-test('the dev selection offers one local target per running Mirage first, the selected site opening first, then the live targets', async () => {
+test('the dev selection offers one local target per running Mirage first, the selected site opening first, then the live targets', async (t) => {
+  withoutToolkitEnvironment(t);
   const { loadConfig } = await import('../lense/config.mjs');
   const { portalSelection } = await import('../lense/commands/mirage.mjs');
   const classic = isolatedFixture();
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-portal-selection-')));
+  const work = tempDirSync('paqvilo-portal-selection-');
   try {
     const config = path.join(work, 'paqvilo.config.yml');
     fs.writeFileSync(
@@ -273,7 +277,7 @@ test('the dev selection offers one local target per running Mirage first, the se
 
 test('doctor --all warns when catalogue sites share a Mirage port', () => {
   const classic = isolatedFixture();
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-portal-doctor-')));
+  const work = tempDirSync('paqvilo-portal-doctor-');
   try {
     const config = path.join(work, 'paqvilo.config.yml');
     fs.writeFileSync(
@@ -315,7 +319,7 @@ test(
   { timeout: 300_000 },
   async () => {
     const classic = isolatedFixture();
-    const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-project-')));
+    const work = tempDirSync('paqvilo-mirage-project-');
     const config = path.join(work, 'paqvilo.config.yml');
     const projectFile = path.join(work, 'workspace.project.json');
     fs.writeFileSync(
@@ -424,7 +428,7 @@ test(
 );
 
 test('Mirage ownership records survive concurrent updates from several toolkit processes', async () => {
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-ownership-')));
+  const work = tempDirSync('paqvilo-ownership-');
   try {
     const ownershipFile = path.join(work, 'mirage', 'sessions.json');
     const module = new URL('../lense/commands/mirage.mjs', import.meta.url).href;
@@ -545,7 +549,7 @@ test('every Mirage started from the catalogue reads the catalogue file and check
 
 test('mirage stop keeps the record of a live process whose start identity cannot be verified, and never signals it', async (t) => {
   const { stopOwnedSessions, ownedSessions, processIdentity, isAlive } = await import('../lense/commands/mirage.mjs');
-  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-unverified-')));
+  const root = tempDirSync('paqvilo-mirage-unverified-');
   const paths = {
     discoveryRoot: path.join(root, 'simulator'),
     ownershipFile: path.join(root, 'mirage', 'sessions.json'),
@@ -588,7 +592,7 @@ test('mirage stop keeps the record of a live process whose start identity cannot
   // The first identity cannot be read now (PowerShell timing out on a busy machine, say); the
   // second was never recorded. Neither is proof of a reused process ID, nor safe to signal.
   const identityOf = (pid) => (pid === unreadable.pid ? null : processIdentity(pid));
-  const report = await stopOwnedSessions({ paths, sourceDir, deadline: 2000, identityOf });
+  const report = await stopOwnedSessions({ paths, sourceDir, identityOf });
   assert.deepEqual([report.stopped, report.pruned, report.remaining], [[], [], []]);
   assert.deepEqual(
     report.unverified.map((item) => [item.pid, item.reason]),
@@ -605,7 +609,7 @@ test('mirage stop keeps the record of a live process whose start identity cannot
   );
 
   // Once the identity can be read again, stop ends that process.
-  const again = await stopOwnedSessions({ paths, sourceDir, deadline: 5000 });
+  const again = await stopOwnedSessions({ paths, sourceDir });
   assert.deepEqual(
     again.stopped.map((item) => item.pid),
     [unreadable.pid],

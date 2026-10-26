@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 
 // Git exports GIT_DIR, GIT_INDEX_FILE and similar variables to hooks, and the pre-push hook runs these suites. Git
@@ -128,6 +129,29 @@ export function withoutToolkitEnvironment(t) {
       process.env[key] = value;
     });
   }
+}
+
+/**
+ * Serves `handle` on loopback until the test ends and returns its origin. A failed assertion in the handler ends its
+ * request at once instead of after the client's deadline; the failure is reported with the test, which fails on the
+ * request or, if the client tolerates that, when the server closes.
+ */
+export async function loopbackServer(t, handle) {
+  const failures = [];
+  const server = http.createServer((req, res) =>
+    handle(req, res).catch((error) => {
+      failures.push(error);
+      t.diagnostic(`fixture server: ${error.stack}`);
+      res.destroy();
+    }),
+  );
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    if (failures.length) throw failures[0];
+  });
+  return `http://127.0.0.1:${server.address().port}`;
 }
 
 let template;
