@@ -81,8 +81,11 @@ test(
       custom.getByRole('button', { name: 'Apply view' }).click(),
     ]);
     assert.equal(await custom.locator('[data-liquid-row]').count(), 1);
-    await custom.getByRole('link', { name: 'Arcwell Services' }).click();
-    assert.match(page.url(), /\/approach\/web-api\/account\//);
+    // A click only starts the navigation; wait for the account URL instead of reading the previous one.
+    await Promise.all([
+      page.waitForURL((url) => url.pathname.startsWith('/approach/web-api/account/')),
+      custom.getByRole('link', { name: 'Arcwell Services' }).click(),
+    ]);
     await page.goto(sim.url + '/liquid/data/?status=inactive');
     assert.equal(await page.locator('[data-liquid-card]').count(), 2);
     assert.match(await page.locator('[data-liquid-summary]').innerText(), /2 inactive accounts/);
