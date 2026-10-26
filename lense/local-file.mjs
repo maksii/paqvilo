@@ -52,17 +52,20 @@ export async function readLocalFile(file, { root, maxBytes = 32 * 1024 * 1024, e
   }
 }
 
+// Native resolution, as fs.promises.realpath in readLocalFile: the JavaScript fallback lstats every path component.
+const realpath = fs.realpathSync.native;
+
 export function readLocalFileSync(file, { root, maxBytes = 32 * 1024 * 1024, encoding, expectedRealPath } = {}) {
-  const real = fs.realpathSync(file);
+  const real = realpath(file);
   // An opt-in caller validation boundary also refuses a link inserted before this reader's first realpath.
   if (expectedRealPath !== undefined && real !== expectedRealPath) throw new Error('Local file changed before reading');
-  if (root && !inside(fs.realpathSync(root), real)) throw new Error('Local file is outside its source root');
+  if (root && !inside(realpath(root), real)) throw new Error('Local file is outside its source root');
   const descriptor = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
     const before = fs.fstatSync(descriptor, { bigint: true });
     checkSize(before, maxBytes);
     const expectedSize = Number(before.size);
-    if (fs.realpathSync(file) !== real || identity(fs.statSync(real, { bigint: true })) !== identity(before))
+    if (realpath(file) !== real || identity(fs.statSync(real, { bigint: true })) !== identity(before))
       throw new Error('Local file changed before reading');
     const buffer = Buffer.allocUnsafe(expectedSize + 1);
     let size = 0;
@@ -74,7 +77,7 @@ export function readLocalFileSync(file, { root, maxBytes = 32 * 1024 * 1024, enc
     if (
       size !== expectedSize ||
       version(fs.fstatSync(descriptor, { bigint: true })) !== version(before) ||
-      fs.realpathSync(file) !== real ||
+      realpath(file) !== real ||
       identity(fs.statSync(real, { bigint: true })) !== identity(before)
     )
       throw new Error('Local file changed during reading');
