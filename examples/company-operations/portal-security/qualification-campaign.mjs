@@ -6,6 +6,7 @@ import {
   materializeScopeHierarchyVariant,
   sealConfigurationWitnesses,
   requiredNativeWitnesses,
+  variantInputHashes,
 } from './qualification-domain.mjs';
 import { highRiskNativeConfigurations, equipmentLifecycleConfigurations } from './qualification-priority.mjs';
 import { planQualificationFixtures } from './qualification-fixtures.mjs';
@@ -145,8 +146,10 @@ export function validateLiquidNoReadReceipt(configuration, native, local) {
 }
 
 export function configurationCampaignDomain({ schema, catalogue }) {
+  // Hash the shared schema and catalogue once, not once per each of the 2117 variants.
+  const inputHashes = variantInputHashes({ schema, catalogue });
   const main = [...scopeHierarchyVariantCases()].map((variant) =>
-    materializeScopeHierarchyVariant(variant, { schema, catalogue }),
+    materializeScopeHierarchyVariant(variant, { schema, catalogue, inputHashes }),
   );
   const roleless = highRiskNativeConfigurations({ schema, catalogue }).configurations.filter(
     (configuration) => configuration.family === 'parent-roleless',

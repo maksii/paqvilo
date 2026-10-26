@@ -131,6 +131,24 @@ async function archiveBytes(directory, bytes) {
   const digest = sha(bytes),
     file = path.join(directory, digest + '.bin'),
     temporary = path.join(directory, digest + '.' + randomUUID() + '.tmp');
+  const verifyExisting = async (cause) => {
+    let existing;
+    try {
+      existing = await boundedBytes(file, bytes.length);
+    } catch (error) {
+      if (error.code === 'ENOENT') throw error;
+      // A grown, replaced or unreadable archive is a changed archive, not a bounds problem of the input.
+      throw new Error('An immutable replay input archive changed.', { cause: error });
+    }
+    if (sha(existing) !== digest) throw new Error('An immutable replay input archive changed.', { cause });
+  };
+  // A resumed campaign finds most archives in place: verify them without a durable temporary copy each.
+  try {
+    await verifyExisting();
+    return { file, sha256: digest };
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   await fs.mkdir(directory, { recursive: true });
   let handle;
   try {
@@ -143,8 +161,7 @@ async function archiveBytes(directory, bytes) {
       await fs.link(temporary, file);
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
-      if (sha(await boundedBytes(file, bytes.length)) !== digest)
-        throw new Error('An immutable replay input archive changed.', { cause: error });
+      await verifyExisting(error);
     }
   } finally {
     await handle?.close();
@@ -241,7 +258,8 @@ export async function replayRuntimeFingerprint({ archiveRoot, onArchive } = {}) 
     files.push({ file: path.resolve(project, relative), name: 'project/' + relative.replaceAll('../', '') });
   const receipts = await Promise.all(
     files
-      .sort((a, b) => a.name.localeCompare(b.name))
+      // Code-unit order: the digest must not depend on the host's collation locale or ICU version.
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
       .map(async (item) => {
         const bytes = await boundedBytes(item.file, 32 * 1024 * 1024);
         if (archiveRoot) await archiveBytes(archiveRoot, bytes);
