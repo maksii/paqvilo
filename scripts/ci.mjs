@@ -392,7 +392,9 @@ function verifySdkGates() {
   for (const project of ['tds', 'dynamics-web-api', 'cert-auth'])
     npm(['--prefix', 'mirage/test-sdk/' + project, 'test']);
   execute('dotnet', ['restore', 'mirage/test-sdk/serviceclient/Gate/Gate.csproj', '--locked-mode']);
-  execute(process.execPath, ['--test', '--test-timeout=600000', 'mirage/test-sdk/serviceclient/gate.test.mjs']);
+  execute(process.execPath, ['--test', '--test-timeout=600000', 'mirage/test-sdk/serviceclient/gate.test.mjs'], {
+    env: { ...process.env, PAQ_TEST_REQUIRE_SDK_GATES: '1' },
+  });
   // The shipped verify-storage check: 600,000 rows past the engine string limit, about 1 GiB of temporary disk.
   execute(process.execPath, ['--expose-gc', '--max-old-space-size=4096', 'mirage/test-volume/state-storage.mjs']);
 }

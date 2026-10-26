@@ -90,6 +90,9 @@ test(
   async (t) => {
     const port = await probePort80();
     if (!port.free) {
+      // The CI SDK gate (scripts/ci.mjs sdk) requires this client, so an occupied port fails there instead of skipping.
+      if (process.env.PAQ_TEST_REQUIRE_SDK_GATES === '1')
+        throw new Error(`port 80 is unavailable (${port.reason}); the required ServiceClient gate cannot run`);
       t.skip(`port 80 is unavailable (${port.reason}): ServiceClient drops the port, so the simulator must bind :80`);
       return;
     }
