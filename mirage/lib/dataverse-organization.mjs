@@ -285,6 +285,12 @@ async function composeOrganizationRuntime({
           ([name]) => !(Object.hasOwn(INTERNAL_TABLE_MAPPINGS, name) && INTERNAL_TABLE_MAPPINGS[name]),
         ),
       ),
+    mapping: (logical) =>
+      Object.hasOwn(INTERNAL_TABLE_MAPPINGS, logical) && INTERNAL_TABLE_MAPPINGS[logical]
+        ? null
+        : Object.hasOwn(store.state.mappings, logical)
+          ? store.state.mappings[logical]
+          : null,
     virtualTables: () => store.virtualTables?.() ?? {},
     globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...(store.state.dataverse?.globalOptionSets ?? {}) }),
     changeLog: () => store.state.dataverse?.metadataLog ?? [],
