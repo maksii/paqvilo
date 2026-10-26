@@ -458,9 +458,10 @@ function disclosure(key, label, renderer) {
 // controls the user changed instead of silently replacing them with stored values.
 const drafts = new Map();
 function rememberDraft(control) {
-  const form = control?.closest?.('#content form[id]');
+  const form = control?.closest?.('#content form[id], #content [data-draft-controls][id]');
   // File inputs cannot be restored programmatically; their contents are read immediately.
   if (!form || !control.id || !('value' in control) || control.type === 'file') return;
+  if (form.hasAttribute('data-draft-controls') && !form.dataset.draftControls.split(/\s+/).includes(control.id)) return;
   if (!drafts.has(form.id)) drafts.set(form.id, new Map());
   drafts
     .get(form.id)
@@ -1968,7 +1969,7 @@ function presetPicker() {
     title: 'Apply a preset',
     summary: `${presets.length} presets · changes local data`,
     help: panelHelp('plugins.apply', 'applying a preset'),
-    body: `<div class="toolbar"><label for="available-preset">Available preset</label>${filterBox('available-preset', presets.length, 'Filter presets')}<select id="available-preset" aria-describedby="available-preset-help">${presets.map((preset) => `<option value="${escape(preset.id)}">${escape(preset.name || preset.id)}${(state.diagnostics ?? []).some((d) => d.preset === preset.id && d.code?.startsWith('PACK_CONFIGURATION_PRESET_LINK')) ? ' · ⚠ invalid configuration link' : ''}${preset.configurationPreset ? ` · configuration: ${escape(preset.configurationPreset)}` : ''}</option>`).join('')}</select><label><input type="checkbox" id="preset-apply-configuration" aria-describedby="preset-apply-configuration-help"> Also apply the data preset’s configuration preset (if provided)</label><button class="button" data-apply-selected>Apply selected preset</button></div><details class="field-hints"><summary>What these fields do</summary><p>${controlHelp('available-preset', 'plugins.apply', 'preset')} ${controlHelp('preset-apply-configuration', 'plugins.apply', 'configuration')}</p></details>`,
+    body: `<div class="toolbar" id="preset-picker-controls" data-draft-controls="available-preset preset-apply-configuration"><label for="available-preset">Available preset</label>${filterBox('available-preset', presets.length, 'Filter presets')}<select id="available-preset" aria-describedby="available-preset-help">${presets.map((preset) => `<option value="${escape(preset.id)}">${escape(preset.name || preset.id)}${(state.diagnostics ?? []).some((d) => d.preset === preset.id && d.code?.startsWith('PACK_CONFIGURATION_PRESET_LINK')) ? ' · ⚠ invalid configuration link' : ''}${preset.configurationPreset ? ` · configuration: ${escape(preset.configurationPreset)}` : ''}</option>`).join('')}</select><label><input type="checkbox" id="preset-apply-configuration" aria-describedby="preset-apply-configuration-help"> Also apply the data preset’s configuration preset (if provided)</label><button class="button" data-apply-selected>Apply selected preset</button></div><details class="field-hints"><summary>What these fields do</summary><p>${controlHelp('available-preset', 'plugins.apply', 'preset')} ${controlHelp('preset-apply-configuration', 'plugins.apply', 'configuration')}</p></details>`,
   });
 }
 
@@ -4083,6 +4084,7 @@ document.addEventListener('click', async (event) => {
           }
           throw error;
         }
+        drafts.delete('preset-picker-controls');
         await refresh();
         notify('Preset applied.');
       },

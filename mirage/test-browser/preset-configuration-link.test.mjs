@@ -41,6 +41,7 @@ test(
     browser = await chromium.launch(browserLaunchOptions({ headless: true }));
     const page = await browser.newPage();
     await page.goto(app.url + '/_sim/#access');
+    await page.locator('#refresh:not([disabled])').waitFor();
     // The scenario picker is a kit section collapsed by default; the failure itself shows in the page notification.
     await page.locator('[data-ui-section="preset-picker"] > summary').click();
     await page.getByLabel('Available preset', { exact: true }).selectOption('mismatch');
@@ -81,3 +82,47 @@ test(
     assert.equal(diagnostics[0].pack, 'invented-links');
   },
 );
+
+test('preset picker retains edits made during the initial access view load', { timeout: 30000 }, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-preset-startup-ui-'));
+  await fixture(root);
+  let app, browser, releasePersonas, signalPersonas;
+  const personasHeld = new Promise((resolve) => (releasePersonas = resolve));
+  const personasRequested = new Promise((resolve) => (signalPersonas = resolve));
+  t.after(async () => {
+    releasePersonas();
+    await browser?.close();
+    await app?.close();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  app = await createSimulator({ sourceDir: root, initial: initial(), watch: false });
+  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  const page = await browser.newPage();
+  await page.route('**/personas', async (route) => {
+    signalPersonas();
+    await personasHeld;
+    await route.continue();
+  });
+  await page.goto(app.url + '/_sim/#access');
+  await personasRequested;
+  await page.locator('[data-ui-section="preset-picker"] > summary').click();
+  const preset = page.getByLabel('Available preset', { exact: true });
+  const initialPreset = await preset.inputValue();
+  const option = await page.locator('#available-preset option').last().getAttribute('value');
+  assert.ok(option);
+  assert.notEqual(option, initialPreset);
+  await preset.selectOption(option);
+  const includeConfiguration = page.getByLabel('Also apply the data preset’s configuration preset (if provided)');
+  await includeConfiguration.check();
+  releasePersonas();
+  await page.locator('#refresh:not([disabled])').waitFor();
+  assert.equal(await preset.inputValue(), option);
+  assert.equal(await includeConfiguration.isChecked(), true);
+  await page.evaluate(() => (location.hash = 'overview'));
+  await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+  await page.evaluate(() => (location.hash = 'access'));
+  await page.locator('#refresh:not([disabled])').waitFor();
+  await page.locator('[data-ui-section="preset-picker"] > summary').click();
+  assert.equal(await preset.inputValue(), initialPreset);
+  assert.equal(await includeConfiguration.isChecked(), false);
+});
