@@ -264,6 +264,8 @@ export async function readCanvasSource({ msapp, dir, name, version = null } = {}
  */
 async function readFxYaml(files, result, diagnostic) {
   result.app.format = 'fx.yaml';
+  const screenNames = new Set(),
+    controlNames = new Set();
   for (const file of files.filter((item) => SRC.test(item.name) && FX_YAML.test(item.name))) {
     const source = file.name,
       counter = new LineCounter();
@@ -278,6 +280,12 @@ async function readFxYaml(files, result, diagnostic) {
       continue;
     }
     const line = (node) => (node?.range ? counter.linePos(node.range[0]).line : null);
+    const collision = (node) =>
+      diagnostic(
+        'CANVAS_SOURCE_NAME_COLLISION',
+        `${source}: Control name collides in the local runtime at line ${line(node) ?? '?'}.`,
+        source,
+      );
     // One map: scalar entries are properties of `owner`, `Name As type` entries are children.
     const walk = (node, owner, screen, parent, out) => {
       for (const [key, value, keyNode] of entriesOf(node)) {
@@ -287,6 +295,9 @@ async function readFxYaml(files, result, diagnostic) {
           continue;
         }
         const name = match[1]?.replaceAll("''", "'") ?? match[2];
+        const normalized = name.toLowerCase();
+        if (controlNames.has(normalized) || screenNames.has(normalized)) collision(keyNode);
+        controlNames.add(normalized);
         out.push({ name, control: match[3], parent });
         walk(value, `${screen}.${name}`, screen, name, out);
       }
@@ -297,6 +308,9 @@ async function readFxYaml(files, result, diagnostic) {
         type = match?.[3]?.toLowerCase();
       if (type === 'appinfo') walk(body, 'App', 'App', null, []);
       else if (type === 'screen') {
+        const normalized = name.toLowerCase();
+        if (screenNames.has(normalized) || controlNames.has(normalized)) collision(body);
+        screenNames.add(normalized);
         const entry = { name, controls: [] };
         walk(body, name, name, null, entry.controls);
         result.screens.push(entry);

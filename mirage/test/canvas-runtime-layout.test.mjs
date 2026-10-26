@@ -285,3 +285,21 @@ test('colliding source names are refused before the runtime traverses the tree',
     status: 501,
   });
 });
+
+test('runtime rejects duplicate names even when raw source lacks diagnostics', () => {
+  const app = {
+    uniqueName: 'raw-collision',
+    source: {
+      tree: {
+        screens: [
+          { name: 'One', controls: [{ name: 'A' }, { name: 'B', parent: 'A' }] },
+          { name: 'Two', controls: [{ name: 'b' }, { name: 'a', parent: 'b' }] },
+        ],
+      },
+    },
+  };
+  assert.throws(() => createCanvasApp({ app, evaluator: createPowerFxEvaluator() }), {
+    code: 'CanvasSourceNameCollision',
+    status: 501,
+  });
+});

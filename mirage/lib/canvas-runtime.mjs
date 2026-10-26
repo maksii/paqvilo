@@ -224,9 +224,13 @@ export function createCanvasApp({
     controls = new Map(),
     lower = new Map();
   for (const screen of tree.screens) {
+    if (lower.has(screen.name.toLowerCase()))
+      throw fail('Canvas source has colliding names and cannot be hosted safely.', 'CanvasSourceNameCollision', 501);
     screens.set(screen.name, { name: screen.name });
     lower.set(screen.name.toLowerCase(), screen.name);
     for (const control of screen.controls ?? []) {
+      if (lower.has(control.name.toLowerCase()))
+        throw fail('Canvas source has colliding names and cannot be hosted safely.', 'CanvasSourceNameCollision', 501);
       const kind = control.componentName ? null : controlKind(control.control, format);
       controls.set(control.name, {
         name: control.name,

@@ -453,3 +453,21 @@ test('normal data source and component mappings remain readable', async () => {
     ['FxHeader'],
   );
 });
+
+test('legacy cross-screen name collisions refuse a cyclic runtime before starting', async () => {
+  const source = await readCanvasSource({
+    msapp: msappOf({
+      'Src/App.fx.yaml': 'App As appinfo:\n  OnStart: =Set(started, true)\n',
+      'Src/One.fx.yaml': 'One As screen:\n  A As groupContainer:\n    B As label:\n      Text: ="one"\n',
+      'Src/Two.fx.yaml': 'Two As screen:\n  B As groupContainer:\n    A As label:\n      Text: ="two"\n',
+    }),
+    name: 'legacy',
+  });
+  assert.ok(source.diagnostics.some((item) => item.code === 'CANVAS_SOURCE_NAME_COLLISION'));
+  const { createCanvasApp } = await import('../lib/canvas-runtime.mjs');
+  const { createPowerFxEvaluator } = await import('../lib/canvas-power-fx.mjs');
+  assert.throws(() => createCanvasApp({ app: { uniqueName: 'legacy', source }, evaluator: createPowerFxEvaluator() }), {
+    code: 'CanvasSourceNameCollision',
+    status: 501,
+  });
+});
