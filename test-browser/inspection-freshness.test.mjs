@@ -2,6 +2,7 @@ import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Response ordering and history navigation.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter, once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { createFixture, SITE } from '../test/fixture.mjs';
@@ -11,7 +12,9 @@ import { enablePanel } from '../lense/panel.mjs';
 import { panelUi } from '../lense/panel-ui.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
 
+// Routed entirely by page.route; nothing listens on this loopback port.
 const origin = 'http://127.0.0.1:11111';
+const LATE_REPORT_WINDOW_MS = 100;
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -55,11 +58,13 @@ async function fixture(t) {
     source.cleanup();
   });
   const page = await context.newPage(),
-    pending = [];
+    pending = [],
+    arrivals = new EventEmitter();
   page.setDefaultTimeout(5000);
   await page.route('**/*', (route) => {
     if (new URL(route.request().url()).pathname === '/__paqvilo/api/inspect') {
       pending.push({ route, body: route.request().postDataJSON() });
+      arrivals.emit('request');
       return;
     }
     if (route.request().resourceType() === 'document')
@@ -75,8 +80,8 @@ async function fixture(t) {
   await page.evaluate(xrayUi, state);
   await page.evaluate(panelUi, state);
   const waitForRequest = async (count) => {
-    const end = Date.now() + 5000;
-    while (pending.length < count && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 10));
+    const signal = AbortSignal.timeout(5000);
+    while (pending.length < count) await once(arrivals, 'request', { signal });
     assert.equal(pending.length, count);
     return pending[count - 1];
   };
@@ -145,8 +150,11 @@ test('a delayed manual refresh clears its old report and cannot overwrite a newe
       .__px.identify(document.getElementById('picked'))
       .evidence.source.refs.some((ref) => ref.name === 'Latest source'),
   );
+  const obsolete = page.waitForResponse((response) => new URL(response.url()).pathname === '/__paqvilo/api/inspect');
   await answer(1, 2, 'Obsolete refresh');
-  await page.waitForTimeout(100);
+  await obsolete;
+  // A rejected late report leaves nothing to observe; allow its page handler one short window.
+  await page.waitForTimeout(LATE_REPORT_WINDOW_MS);
   assert.deepEqual(await identity(), ['Latest source']);
   assert.doesNotMatch(await page.locator('#paqvilo-xray .card').innerText(), /Old source|Obsolete refresh/);
 });

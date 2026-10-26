@@ -11,15 +11,6 @@ import { chromium } from 'playwright-core';
 import { startDevSessions } from '../lense/dev-sessions.mjs';
 import { createFixture, SITE, HOME_ID } from '../test/fixture.mjs';
 
-async function until(check, message) {
-  const deadline = Date.now() + 15_000;
-  while (Date.now() < deadline) {
-    if (await check()) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  assert.fail(message);
-}
-
 test(
   'sustained saves preserve forms, scope reloads, show Git drift and repin HEAD through the panel',
   { timeout: 120_000 },
@@ -127,8 +118,15 @@ test(
     runtime = await startDevSessions(context, { mode: 'selected', initial: cfg, targets: [cfg] }, { log: () => {} });
     const { session, panel } = runtime.active.get(origin);
     const pinned = session.baseline.commit;
+    // The first published comparison of the locally served web file is the result to check;
+    // it is also observed local application before any draft is typed.
+    const compared = (async () => {
+      const signal = AbortSignal.timeout(15_000);
+      while (!session.onlineState.has('/day.css')) await once(session, 'online-state', { signal });
+      return session.onlineState.get('/day.css');
+    })();
     await Promise.all([home.goto(origin), about.goto(origin + '/about-us/')]);
-    await until(() => session.onlineState.get('/day.css') === 'same', 'comparison must use browser sign-in');
+    assert.equal(await compared, 'same', 'comparison must use browser sign-in');
     assert.ok(signedInComparisons > 0);
     await home.locator('#draft').fill('keep my draft');
     await about.locator('#draft').fill('another draft');

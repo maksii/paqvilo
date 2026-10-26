@@ -291,12 +291,14 @@ test(
     const retiredData = inspector.snapshot();
     const cdp = await context.newCDPSession(page);
     await cdp.send('Debugger.enable');
+    // The scheduled refresh runs page JavaScript, which pauses; close while it is held there.
+    const paused = new Promise((resolve) => cdp.once('Debugger.paused', resolve));
     await cdp.send('Debugger.pause');
     inspector.refresh();
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    const stoppingAt = Date.now();
+    await paused;
+    // The debugger resumes only after close settles: a disposal that waited for the paused
+    // page would never settle and the test deadline would fail it.
     await inspector.close();
-    assert.ok(Date.now() - stoppingAt < 2000, 'A paused debugger must not block inspector disposal');
     await cdp.send('Debugger.resume');
     await cdp.detach();
     await page.waitForFunction(() => !document.getElementById('paqvilo-panel'));
@@ -326,8 +328,19 @@ test(
       page = await context.newPage();
     let inspector,
       release,
+      blocked,
       fail = false,
       block = false;
+    const inspectionBlocked = new Promise((resolve) => {
+      blocked = resolve;
+    });
+    // The inspector publishes no change event; poll its own snapshot for the expected state.
+    const settled = async (ready) => {
+      const deadline = Date.now() + 10_000;
+      while (!ready(inspector.snapshot()) && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      return inspector.snapshot();
+    };
     ownedFixture(t).add(async () => {
       release?.();
     });
@@ -353,6 +366,7 @@ test(
         if (block)
           await new Promise((resolve) => {
             release = resolve;
+            blocked();
           });
         if (fail) {
           fail = false;
@@ -380,36 +394,27 @@ test(
         'Selected element ownership and local source identity are evaluated separately from native form context.',
       )
       .waitFor();
-    const initialBy = Date.now() + 5000;
-    while (inspector.snapshot().pendingInspection && Date.now() < initialBy)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(inspector.snapshot().pendingInspection, false, 'initial context settled');
+    assert.equal(
+      (await settled((state) => !state.pendingInspection)).pendingInspection,
+      false,
+      'initial context settled',
+    );
     block = true;
     inspector.refresh();
-    const waitDeadline = Date.now() + 5000;
-    while (!release && Date.now() < waitDeadline) await new Promise((resolve) => setTimeout(resolve, 10));
+    await inspectionBlocked;
     await host.getByText('Updating source inspection…', { exact: true }).waitFor();
     assert.equal(inspector.snapshot().pendingInspection, true);
     if (process.env.PAQVILO_MODEL_FEEDBACK_EVIDENCE)
       await page.screenshot({ path: process.env.PAQVILO_MODEL_FEEDBACK_EVIDENCE });
     block = false;
-    assert.ok(release);
     release();
-    const finishBy = Date.now() + 5000;
-    while (inspector.snapshot().pendingInspection && Date.now() < finishBy)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(inspector.snapshot().pendingInspection, false);
+    assert.equal((await settled((state) => !state.pendingInspection)).pendingInspection, false);
     fail = true;
     inspector.refresh();
-    const errorBy = Date.now() + 5000;
-    while (!inspector.snapshot().inspectionError && Date.now() < errorBy)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.match(inspector.snapshot().inspectionError, /could not be refreshed/);
+    assert.match((await settled((state) => state.inspectionError)).inspectionError, /could not be refreshed/);
     inspector.refresh();
-    const retryBy = Date.now() + 5000;
-    while ((inspector.snapshot().pendingInspection || inspector.snapshot().inspectionError) && Date.now() < retryBy)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(inspector.snapshot().inspectionError, '');
-    assert.equal(inspector.snapshot().pendingInspection, false);
+    const retried = await settled((state) => !state.pendingInspection && !state.inspectionError);
+    assert.equal(retried.inspectionError, '');
+    assert.equal(retried.pendingInspection, false);
   },
 );

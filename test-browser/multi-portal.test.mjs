@@ -15,11 +15,15 @@ import { openBrowser } from '../lense/browser.mjs';
 import { startDevSessions } from '../lense/dev-sessions.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
 import { createFixture, HOME_ID } from '../test/fixture.mjs';
+import { servesAgentSession } from './helpers/agent-endpoint.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 const APP = 'web-files/app.js';
 const CSS = 'web-files/theme.css';
 const script = (value) => `window.localSite = ${JSON.stringify(value)};\n`;
 const style = (color) => `#theme { color: ${color}; }\n`;
+// lense/dev-sessions.mjs rebuilds a failed portal activation only after this interval.
+const ACTIVATION_RETRY_COOLDOWN_MS = 5000;
 
 async function serve(name, servers, { redirectTo, markup = '' } = {}) {
   const requests = [];
@@ -70,7 +74,7 @@ test(
       );
     });
     ownedFixture(t).remove(async () => {
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
     const fixture = await serve('placement', servers);
     const launch = chromium.launchPersistentContext;
@@ -168,7 +172,7 @@ test(
       beta.cleanup();
     });
     ownedFixture(t).remove(async () => {
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
     const [alphaDev, alphaTest, betaDev, betaExtra, foreign] = await Promise.all(
       ['alpha-dev', 'alpha-test', 'beta-dev', 'beta-extra', 'foreign'].map((name) => serve(name, servers)),
@@ -482,15 +486,7 @@ test(
     for (const discovery of discoveries)
       assert.equal(fs.existsSync(discovery.file), false, 'agent discovery is removed');
     for (const discovery of discoveries)
-      await assert.rejects(
-        fetch(discovery.endpoint + '/v1/session', {
-          redirect: 'error',
-          headers: { authorization: `Bearer ${discovery.token}` },
-          signal: AbortSignal.timeout(1000),
-        }),
-        /fetch failed/,
-        'agent API listener is closed',
-      );
+      assert.equal(await servesAgentSession(discovery), false, 'agent API listener is closed');
     context.off('page', observe);
     assert.equal(
       context.listenerCount('page'),
@@ -563,7 +559,7 @@ test(
       beta.cleanup();
     });
     ownedFixture(t).remove(async () => {
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
     const header = 'web-templates/header/Header.webtemplate.source.html';
     const original = '<h2 id="work-status">Initial status</h2>\n';
@@ -636,8 +632,11 @@ test(
     assert.equal(runtime.active.size, 1, 'an unavailable unused portal does not stop the working portal');
     assert.ok(logs.some((line) => line.includes('Restore the checkout and reload')));
     fs.renameSync(hidden, beta.dir);
-    // dev-sessions retries a failed activation only after its 5 s cooldown.
-    await new Promise((resolve) => setTimeout(resolve, 5100));
+    // dev-sessions retries a failed activation only after its 5 s wall-clock cooldown. Move
+    // the clock forward past it instead of sleeping; a forward jump is ordinary elapsed time
+    // for every other Date-based measurement in this process.
+    const realNow = Date.now;
+    t.mock.method(Date, 'now', () => realNow.call(Date) + ACTIVATION_RETRY_COOLDOWN_MS);
     await main.goto(betaServer.origin);
     await main.waitForFunction(() => window.localSite === 'beta-restored');
     assert.equal(runtime.active.size, 2, 'the restored portal activates in the same browser');
@@ -704,7 +703,7 @@ test(
         await new Promise((resolve) => server.close(resolve));
       }
       fixture.cleanup();
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
     const beta = await serve('cli-beta', servers);
     const alpha = await serve('cli-alpha', servers, { redirectTo: beta.origin });

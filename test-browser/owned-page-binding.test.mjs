@@ -23,8 +23,14 @@ before(async () => {
 });
 after(async () => {
   await browser?.close();
+  // Keep-alive sockets from the separate CDP-attached profile would otherwise hold close() open.
+  server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
 });
+
+// lense/owned-page-binding.mjs: concurrent callbacks per bridge and the reply delivery deadline.
+const OWNED_CALL_CAPACITY = 32;
+const REPLY_DEADLINE_MS = 1500;
 
 // A fresh context per test on the shared browser.
 async function fixture(t) {
@@ -64,7 +70,8 @@ async function persistentFixture(t) {
   await page.goto(origin);
   t.after(async () => {
     await context.close();
-    await fs.rm(root, { recursive: true, force: true });
+    // Windows can report the profile busy briefly after its browser process exits.
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   return { context, page, origin, port };
 }
@@ -132,8 +139,11 @@ test(
       const raw = Object.getOwnPropertyNames(window).find((name) => name.startsWith('__paqviloOwned_'));
       window[raw](JSON.stringify({ id: 1, name: 'inventedEcho', args: ['foreign'] }));
     });
-    await f.page.waitForTimeout(50);
-    assert.equal(calls, 2);
+    // Binding calls arrive in order on one DevTools session and refused calls return before
+    // any callback, so a later accepted call is a barrier for the two refused ones above.
+    await f.page.goto(f.origin);
+    assert.equal(await f.page.evaluate(() => window.inventedEcho('barrier')), 'barrier');
+    assert.equal(calls, 3);
   },
 );
 
@@ -282,10 +292,10 @@ test('closing the bridge preserves a real user debugger pause and the owned brow
     return 'continued';
   });
   await paused;
-  const started = Date.now();
   try {
+    // The pause is released only after close settles, so a close that waited for the
+    // user's debugger would never settle and the test deadline would fail it.
     await bridge.close();
-    assert.ok(Date.now() - started < 2500);
     assert.equal(resumed, false);
     assert.equal(f.page.isClosed(), false);
   } finally {
@@ -302,14 +312,18 @@ test(
     const f = await fixture(t),
       original = f.context.newCDPSession.bind(f.context);
     let send,
-      blocked = true;
+      blocked = true,
+      allDelayed;
     const delayed = [];
+    const capacityHeld = new Promise((resolve) => {
+      allDelayed = resolve;
+    });
     f.context.newCDPSession = async (page) => {
       const session = await original(page);
       send = session.send.bind(session);
       session.send = (method, params) => {
         if (blocked && method === 'Runtime.callFunctionOn') {
-          delayed.push(params);
+          if (delayed.push(params) === OWNED_CALL_CAPACITY) allDelayed();
           return new Promise(() => {});
         }
         return send(method, params);
@@ -331,11 +345,12 @@ test(
         ),
       );
     });
-    const deadline = Date.now() + 2000;
-    while (delayed.length < 32 && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.equal(delayed.length, 32);
-    // Past the 1.5 s reply deadline, in Node and in the page's expiresAt stamp.
-    await new Promise((resolve) => setTimeout(resolve, 1600));
+    await capacityHeld;
+    assert.equal(delayed.length, OWNED_CALL_CAPACITY);
+    // Every reply's deadline timer was scheduled before its blocked send was recorded, and
+    // Node fires timers in expiry order, so this later timer runs only after all of them have
+    // released capacity. The page also sees its expiresAt stamp in the past.
+    await new Promise((resolve) => setTimeout(resolve, REPLY_DEADLINE_MS + 100));
     blocked = false;
     assert.equal(await f.page.evaluate(() => window.inventedEcho('fresh-after-deadlines')), 'fresh-after-deadlines');
     for (const params of delayed) await send('Runtime.callFunctionOn', params);
