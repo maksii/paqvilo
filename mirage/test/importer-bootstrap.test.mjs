@@ -22,7 +22,7 @@ async function write(root, files) {
 }
 async function temp(t, prefix) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   return fs.realpath(dir);
 }
 const portalFiles = {
@@ -543,7 +543,7 @@ test('form and view changes in a solution layer reach the next rendered page aft
     watch: false,
     solutionRoots: [solutions],
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   assert.match(await (await fetch(app.url + '/')).text(), /Name label v1/);
   await write(solutions, {
     'Entities/sample_item/FormXml/main/{11111111-1111-1111-1111-111111111111}.xml': form('Name label v2'),
