@@ -33,6 +33,8 @@ const renderedFields = [
   'validationregularexpressionerrormessage',
 ];
 const localizedValues = (value) => {
+  // Only a JSON array can be localized; skip parsing (and throwing on) markup.
+  if (!/^[ \t\n\r]*\[/.test(value)) return null;
   try {
     const parsed = JSON.parse(value);
     return Array.isArray(parsed) && parsed.some((entry) => entry && Number.isSafeInteger(Number(entry.LCID)))
@@ -410,12 +412,42 @@ export function buildPortalSourceIndex({
   };
 }
 
+// One index build resolves each root/file once. Windows realpath costs one
+// lstat per path component, and a JSON-array export shares one file per row.
+const realpathCaches = new WeakMap();
+const cachedRealpath = (value, cache) => {
+  if (!cache) return fs.realpathSync(value);
+  let paths = realpathCaches.get(cache);
+  if (!paths) realpathCaches.set(cache, (paths = new Map()));
+  if (!paths.has(value)) paths.set(value, fs.realpathSync(value));
+  return paths.get(value);
+};
+
+// Line of `offset` (CRLF, CR and LF each end one line) and the position of the
+// last line-break character before it. Breaks are indexed once per snapshot
+// text, so every row of a shared export file costs a binary search, not a rescan.
+const textPosition = (snapshot, text, offset) => {
+  const key = text === snapshot.bytes ? 'rawBreaks' : 'normalizedBreaks';
+  const breaks = (snapshot[key] ??= Array.from(text.matchAll(/\r\n|\r|\n/g), (match) => [
+    match.index,
+    match.index + match[0].length,
+  ]));
+  let low = 0,
+    high = breaks.length;
+  while (low < high) {
+    const middle = (low + high) >> 1;
+    if (breaks[middle][0] < offset) low = middle + 1;
+    else high = middle;
+  }
+  return { line: low + 1, last: low ? Math.min(breaks[low - 1][1], offset) - 1 : -1 };
+};
+
 /** Recompute a physical location only for an actual unchanged standalone source file. */
 export function sourceEditorTarget(source, region = source.region, cache = null) {
   if (!source.file || !source.sourceDir) return null;
   try {
-    const root = fs.realpathSync(source.sourceDir),
-      file = fs.realpathSync(source.file);
+    const root = cachedRealpath(source.sourceDir, cache),
+      file = cachedRealpath(source.file, cache);
     const relative = path.relative(root, file);
     const outside = !relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative);
     const externalProfile = outside && trustedProfileFiles.get(source) === file;
@@ -549,11 +581,10 @@ export function sourceEditorTarget(source, region = source.region, cache = null)
           ? matches[0]
           : matches[0].items.find((pair) => [field, 'adx_' + field, 'mspp_' + field].includes(pair.key?.value))?.value;
         if (node?.range) {
-          const prefix = text.slice(0, node.range[0]),
-            last = Math.max(prefix.lastIndexOf('\n'), prefix.lastIndexOf('\r'));
+          const { line, last } = textPosition(snapshot, text, node.range[0]);
           return {
             file,
-            line: prefix.split(/\r\n|\r|\n/).length,
+            line,
             column: node.range[0] - last,
             mapped: false,
             container: true,
@@ -571,9 +602,7 @@ export function sourceEditorTarget(source, region = source.region, cache = null)
       };
     }
     const start = Math.min(text.length, Math.max(0, region?.start ?? 0));
-    const prefix = text.slice(0, start),
-      last = Math.max(prefix.lastIndexOf('\n'), prefix.lastIndexOf('\r'));
-    const line = prefix.split(/\r\n|\r|\n/).length;
+    const { line, last } = textPosition(snapshot, text, start);
     return {
       file,
       line,

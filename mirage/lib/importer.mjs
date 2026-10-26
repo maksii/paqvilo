@@ -369,6 +369,8 @@ export async function importPortal(
           rows = YAML.parse(text, { uniqueKeys: false });
         }
         if (!Array.isArray(rows)) rows = [rows];
+        // Every row of a multi-record file shares the file's revision.
+        const sourceRevision = sourceRevisionOf(text);
         for (const row of rows) {
           if (!row || typeof row !== 'object') continue;
           const record = {
@@ -387,7 +389,7 @@ export async function importPortal(
               ? { powerpagecomponenttype: COMPONENT_TYPE_OF_KIND[kind] }
               : {}),
             _file: file,
-            _sourceRevision: sourceRevisionOf(text),
+            _sourceRevision: sourceRevision,
           };
           records.push(record);
           if (kind === 'website') website = record;

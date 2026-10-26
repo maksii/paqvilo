@@ -35,6 +35,39 @@ test('shared index revision agrees with renderer/inspector and source links reva
   assert.equal((await inspector.lookupSource(body)).state, 'stale');
 });
 
+test('index builds resolve each shared export file once instead of once per record', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const file = path.join(fx.portal, 'contentsnippet.yml');
+  const resolutions = async (count) => {
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        Array.from({ length: count }, (_, index) => ({
+          adx_contentsnippetid: 'shared-' + index,
+          adx_name: 'Shared ' + index,
+          adx_value: `<b id="shared-${index}"></b>`,
+        })),
+      ),
+    );
+    const portal = await importPortal(fx.portal);
+    const realpath = t.mock.method(fs, 'realpathSync');
+    try {
+      const index = buildPortalSourceIndex({ portal });
+      const linked = [...index.sources.values()].filter(
+        (source) => source.file === file && source.fieldPath[0] === 'value' && source.ref,
+      );
+      assert.equal(linked.length, count, 'every row keeps its own editor reference into the shared file');
+      return realpath.mock.callCount();
+    } finally {
+      realpath.mock.restore();
+    }
+  };
+  // Windows realpath costs one lstat per path component; per-row resolution
+  // made a 4,200-row export take minutes to index.
+  assert.equal(await resolutions(40), await resolutions(80));
+});
+
 test('localized JSON source identity follows LCID rather than mutable array position', () => {
   const record = {
     kind: 'advancedformstep',
@@ -170,6 +203,25 @@ test('web-file implementation opens actual blob code and treats a leading BOM as
   const second = await inspector.lookupSource({ ...request, region: { start: offset, end: offset + 1 } });
   assert.equal(second.editorTarget.line, 2);
   assert.equal(second.editorTarget.column, 1);
+});
+
+test('editor positions count CRLF, CR and LF as one line break each at every offset, with or without a shared cache', async (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const text = 'a\r\nbb\rc\n\nd\r\r\ne';
+  fs.writeFileSync(path.join(fx.portal, 'web-files/widget.js'), text);
+  const index = await createSourceInspector({ sourceDir: fx.portal }).sourceIndexFor('/');
+  const source = [...index.sources.values()].find(
+    (source) => source.componentKey === 'web-file:widget-js' && source.rawBytes,
+  );
+  const cache = new Map();
+  for (let start = 0; start <= text.length; start++) {
+    const prefix = text.slice(0, start),
+      last = Math.max(prefix.lastIndexOf('\n'), prefix.lastIndexOf('\r'));
+    const expected = { line: prefix.split(/\r\n|\r|\n/).length, column: Math.max(1, start - last) };
+    for (const target of [sourceEditorTarget(source, { start }), sourceEditorTarget(source, { start }, cache)])
+      assert.deepEqual({ line: target.line, column: target.column }, expected, 'offset ' + start);
+  }
 });
 
 for (const entry of [
