@@ -32,13 +32,18 @@ after(async () => {
 const OWNED_CALL_CAPACITY = 32;
 const REPLY_DEADLINE_MS = 1500;
 
-// A fresh context per test on the shared browser.
+// A fresh context per test on the shared browser. t.after hooks run in registration order,
+// so bridges registered through own() close (newest first) before this context does.
 async function fixture(t) {
   const context = await browser.newContext();
-  t.after(() => context.close());
+  const owned = [];
+  t.after(async () => {
+    for (const close of owned.reverse()) await close();
+    await context.close();
+  });
   const page = await context.newPage();
   await page.goto(origin);
-  return { context, page, origin };
+  return { context, page, origin, own: (close) => owned.push(close) };
 }
 
 // The rejection message of one owned call, or null when it resolves.
@@ -116,7 +121,7 @@ test(
         },
       },
     });
-    t.after(() => bridge.close());
+    f.own(() => bridge.close());
     assert.equal(await f.page.evaluate(() => window.inventedEcho('valid')), 'valid');
     assert.equal(await rejectionOf(f.page, 'x'.repeat(300)), 'The owned page request is too large.');
     assert.equal(await rejectionOf(f.page, 'large-result'), 'The owned page request failed.');
@@ -167,7 +172,7 @@ test('late callback replies remain confined to the original document context', {
       },
     },
   });
-  t.after(() => bridge.close());
+  f.own(() => bridge.close());
   const old = f.page.evaluate(() => window.inventedEcho('old')).catch(() => 'document-retired');
   await started;
   await f.page.reload();
@@ -191,7 +196,7 @@ test(
         },
       },
     });
-    t.after(() => bridge.close());
+    f.own(() => bridge.close());
     assert.equal(await rejectionOf(f.page, 'never'), 'The owned page request failed.');
     const debuggerSession = await f.context.newCDPSession(f.page);
     let pauses = 0;
@@ -334,7 +339,7 @@ test(
       origin: f.origin,
       bindings: { inventedEcho: (_source, value) => value },
     });
-    t.after(() => bridge.close());
+    f.own(() => bridge.close());
     await f.page.evaluate(() => {
       window.ownedDeliveryProbe = Promise.all(
         Array.from({ length: 32 }, () =>
@@ -377,7 +382,7 @@ test(
         inventedEcho: (_source, input) => (input === 'valid' ? valid : 'x'.repeat(16 * 1024 * 1024 + 1)),
       },
     });
-    t.after(() => bridge.close());
+    f.own(() => bridge.close());
     const result = await f.page.evaluate(async () => {
       const value = await window.inventedEcho('valid');
       return {

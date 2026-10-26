@@ -7,9 +7,13 @@ import { selectionEvidenceCurrent } from '../lense/inspection-source-open.mjs';
 
 test('guarded opening reads a retained control before paint instead of trusting its cached old field', async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
-  const context = await browser.newContext();
-  t.after(() => context.close());
+  let context;
+  // t.after hooks run in registration order: close the context before its browser.
+  t.after(async () => {
+    await context?.close();
+    await browser.close();
+  });
+  context = await browser.newContext();
   const page = await context.newPage();
   const origin = 'http://127.0.0.1:11884';
   await page.route(origin + '/**', (route) =>

@@ -5,10 +5,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { once } from 'node:events';
+import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
 import { fileURLToPath } from 'node:url';
+import { childOutput } from './helpers/child-output.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 test(
   'demo command opens a populated browser, supports the walkthrough and stops its Mirage',
@@ -39,14 +42,8 @@ test(
       ],
       { cwd: work, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
     );
-    let output = '',
-      browser;
-    child.stdout.on('data', (data) => {
-      output += data;
-    });
-    child.stderr.on('data', (data) => {
-      output += data;
-    });
+    const output = childOutput(child);
+    let browser;
     const exited = once(child, 'exit');
     const closeOwnedBrowser = async () => {
       if (!browser?.isConnected()) return;
@@ -80,29 +77,35 @@ test(
         );
         await once(cleanup, 'exit');
       }
-      await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      await fs.rm(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
-    const deadline = Date.now() + 120_000;
-    while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(`Demo exited before opening its browser: ${output}`);
-      try {
-        if ((await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(1000) })).ok)
-          break;
-      } catch {
-        /* browser starting */
-      }
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
+    // dev prints its debugger port once the owned browser is listening on it.
+    await output.waitFor(new RegExp(`debugger\\s+port ${debugPort}\\b`), {
+      timeoutMs: 120_000,
+      label: 'Demo opening its browser',
+    });
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
     const context = browser.contexts()[0];
     context.setDefaultTimeout(15_000);
     // The normal dev lifecycle creates and navigates the first tab itself.
-    let page;
-    while (Date.now() < deadline) {
-      page = context.pages().find((candidate) => /^http:\/\/127\.0\.0\.1:\d+\/$/.test(candidate.url()));
-      if (page) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    const home = (candidate) => /^http:\/\/127\.0\.0\.1:\d+\/$/.test(candidate.url());
+    const page =
+      context.pages().find(home) ??
+      (await new Promise((resolve) => {
+        const watched = new Map();
+        const watch = (candidate) => {
+          const navigated = (frame) => {
+            if (frame !== candidate.mainFrame() || !home(candidate)) return;
+            for (const [tab, listener] of watched) tab.off('framenavigated', listener);
+            context.off('page', watch);
+            resolve(candidate);
+          };
+          watched.set(candidate, navigated);
+          candidate.on('framenavigated', navigated);
+        };
+        context.pages().forEach(watch);
+        context.on('page', watch);
+      }));
     assert.ok(page, 'the command must open and navigate a browser without a manual console link');
     const url = new URL(page.url()).origin;
     // Keep the CLI's own interception intact. These authored sources and sign-in use only loopback.
@@ -482,10 +485,26 @@ test(
         JSON.stringify({ errors }, null, 2),
       );
 
+    // Ask the project's own runtime records rather than probing released ports afterwards,
+    // which another process on a busy host may already have been given.
+    const liveRuntimes = async () => {
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        [cli, 'mirage', 'status', '--config', path.join(directory, 'paqvilo.config.yml'), '--json'],
+        { cwd: work, env, windowsHide: true },
+      );
+      const status = JSON.parse(stdout);
+      assert.equal(status.action, 'status');
+      return status.sessions
+        .filter((session) => session.processAlive && session.url)
+        .map((session) => new URL(session.url).origin)
+        .filter((origin) => [url, launch.origin].includes(origin))
+        .sort();
+    };
+    assert.ok((await liveRuntimes()).includes(url), 'the running demo runtime is recorded for this project');
     await closeOwnedBrowser();
     const [code] = await exited;
-    assert.equal(code, 0, output);
-    await assert.rejects(fetch(url, { signal: AbortSignal.timeout(1000) }), /fetch failed/);
-    await assert.rejects(fetch(launch.origin, { signal: AbortSignal.timeout(1000) }), /fetch failed/);
+    assert.equal(code, 0, output.text);
+    assert.deepEqual(await liveRuntimes(), [], 'the demo stops every Mirage runtime it started');
   },
 );

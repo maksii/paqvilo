@@ -12,6 +12,7 @@ import { once } from 'node:events';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { attachSession } from '../lense/browser.mjs';
 import { SITE } from '../test/fixture.mjs';
@@ -79,7 +80,7 @@ test(
       await new Promise((resolve) => server.close(resolve));
     });
     ownedFixture(t).remove(async () => {
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
     const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
     context = await chromium.launchPersistentContext(path.join(work, 'profile'), {

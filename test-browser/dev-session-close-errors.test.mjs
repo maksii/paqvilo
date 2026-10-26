@@ -16,13 +16,17 @@ import { startDevSessions } from '../lense/dev-sessions.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { servesAgentSession } from './helpers/agent-endpoint.mjs';
+import { childOutput } from './helpers/child-output.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 async function fixture(t) {
   const owner = ownedFixture(t);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-dev-close-'));
   const source = createFixture();
   owner.remove(() => source.cleanup());
-  owner.remove(() => fs.rm(directory, { recursive: true, force: true }));
+  // The actual-CLI case keeps its owned browser profile in this directory.
+  owner.remove(() => fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const server = http.createServer((request, response) => {
     if (!request.url.startsWith('/')) return response.writeHead(403).end();
     response
@@ -91,6 +95,10 @@ for (const attached of [false, true]) {
       const { owner, origin, context, selection } = await fixture(t);
       const logs = [];
       let stopped = false;
+      // Open the healthy tabs before startup so their interception is installed before they
+      // navigate; a tab opened afterwards can need a late repair reload that would replace a
+      // draft typed too early. Only the failing tab is new to the running session.
+      const healthy = [await context.newPage(), await context.newPage()];
       const runtime = await startDevSessions(context, selection, {
         attached,
         stop: () => {
@@ -99,10 +107,8 @@ for (const attached of [false, true]) {
         log: (line) => logs.push(line),
       });
       owner.add(() => runtime.close());
-      const healthy = [await context.newPage(), await context.newPage()];
       for (const [index, page] of healthy.entries()) {
         await page.goto(origin);
-        await page.waitForLoadState('networkidle');
         await page.evaluate((value) => {
           const input = document.createElement('input');
           input.id = 'draft';
@@ -205,6 +211,7 @@ for (const multiple of [false, true]) {
           if (cause !== expectedFailure) throw cause;
         }
       });
+      const credentials = await readDiscovery(discovery);
       await fs.unlink(discovery);
       await fs.mkdir(discovery);
       const stopLogs = record.stopLogs;
@@ -259,11 +266,9 @@ for (const multiple of [false, true]) {
       assert.equal(runtime.active.size, 0);
       assert.equal(context.listenerCount('page'), pageListeners);
       assert.equal(record.session.eventNames().length, 0);
-      await assert.rejects(
-        fetch(record.agent.endpoint + '/v1/session', {
-          signal: AbortSignal.timeout(1000),
-        }),
-        /fetch failed/,
+      assert.equal(
+        await servesAgentSession(credentials),
+        false,
         'the failed remover must not leave its HTTP listener open',
       );
       await assert.rejects(runtime.close(), (cause) => cause === failure);
@@ -315,7 +320,7 @@ test(
 );
 
 test('actual development CLI exits nonzero after agent filesystem cleanup failure', { timeout: 30000 }, async (t) => {
-  const { owner, directory, config, origin } = await fixture(t);
+  const { owner, config, origin } = await fixture(t);
   const preload = new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href;
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
@@ -341,39 +346,23 @@ test('actual development CLI exits nonzero after agent filesystem cleanup failur
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
-  let output = '';
-  for (const stream of [child.stdout, child.stderr])
-    stream.on('data', (chunk) => {
-      output = (output + chunk).slice(-32000);
-    });
+  const output = childOutput(child, { limit: 32000 });
   const closed = new Promise((resolve) => child.once('close', (code) => resolve(code)));
   child.on('error', () => {}); // Abort is owned by the test deadline; close is still awaited.
-  let discovery, blocker, remoteBrowser;
+  let blocker, remoteBrowser;
   owner.add(async () => {
     if (child.exitCode === null && child.signalCode === null && !child.killed) child.kill();
     await closed;
     if (blocker) await fs.rmdir(blocker);
   });
   owner.add(() => remoteBrowser?.close());
-  const agentDir = path.join(directory, '.paqvilo', 'agents');
-  const deadline = Date.now() + 15000;
-  while (!discovery && Date.now() < deadline) {
-    assert.equal(child.exitCode, null, 'actual dev must reach its agent startup');
-    try {
-      const name = (await fs.readdir(agentDir)).find((name) => name.endsWith('.json'));
-      if (name) {
-        blocker = path.join(agentDir, name);
-        discovery = JSON.parse(await fs.readFile(blocker, 'utf8'));
-      }
-    } catch {
-      /* the first discovery write may still be in flight */
-    }
-    if (!discovery) await new Promise((resolve) => setTimeout(resolve, 30));
-  }
-  assert.ok(
-    discovery,
-    'actual CLI published its owned agent: ' + output.replace(/[A-Za-z0-9+/_=-]{32,}/g, '[redacted]').slice(-4000),
-  );
+  // dev prints the discovery path once the file is completely written.
+  const [, advertised] = await output.waitFor(/^agent API\s+.+?: (.+\.json)\s*$/m, {
+    timeoutMs: 15_000,
+    label: 'actual dev must reach its agent startup',
+  });
+  blocker = advertised;
+  const discovery = JSON.parse(await fs.readFile(blocker, 'utf8'));
   assert.equal(discovery.pid, child.pid, 'the blocker belongs to this exact CLI child');
   await fs.unlink(blocker);
   await fs.mkdir(blocker);
@@ -385,7 +374,7 @@ test('actual development CLI exits nonzero after agent filesystem cleanup failur
   const protocol = await remoteBrowser.newBrowserCDPSession();
   await protocol.send('Browser.close');
   assert.equal(await closed, 1, 'actual CLI must report unsuccessful shutdown');
-  assert.equal(output.includes(discovery.token), false, 'discovery credentials must not enter diagnostics');
-  assert.match(output, /EISDIR|EPERM|directory/);
+  assert.equal(output.text.includes(discovery.token), false, 'discovery credentials must not enter diagnostics');
+  assert.match(output.text, /EISDIR|EPERM|directory/);
   assert.equal(remoteBrowser.isConnected(), false, 'the exact owned browser disconnected');
 });

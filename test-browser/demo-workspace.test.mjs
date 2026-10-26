@@ -4,11 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
-import { spawn, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { once } from 'node:events';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright-core';
+import { runWorkspaceTask } from './helpers/workspace-task.mjs';
 
 test(
   'scaffolded VS Code task signals readiness and attaches to its own development browser',
@@ -35,51 +35,18 @@ test(
     // The dependency installation is covered by the independent package smoke.
     // Use its installed CLI when supplied; isolate the browser port for this test.
     const args = task.args.slice(1).map((argument) => (argument === '9222' ? String(port) : argument));
-    args.push(
-      '--headless',
-      '--browser',
-      process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium'),
-    );
-    const child = spawn(process.execPath, [cli, ...args], {
+    const run = runWorkspaceTask(t, {
+      cli,
+      args,
       cwd: directory,
       env,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      task,
+      port,
+      stop: ['--config', path.join(directory, 'paqvilo.config.yml'), '--site', 'example'],
+      work,
+      label: 'Workspace task readiness',
     });
-    let output = '',
-      browser;
-    child.stdout.on('data', (chunk) => {
-      output += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      output += chunk;
-    });
-    const exited = once(child, 'exit');
-    t.after(async () => {
-      if (browser) {
-        const session = await browser.newBrowserCDPSession().catch(() => null);
-        await session?.send('Browser.close').catch(() => {});
-        await browser.close().catch(() => {});
-      }
-      if (child.exitCode === null) child.kill('SIGTERM');
-      await exited;
-      const cleanup = spawn(
-        process.execPath,
-        [cli, 'mirage', 'stop', '--config', path.join(directory, 'paqvilo.config.yml'), '--site', 'example', '--json'],
-        { cwd: work, env, windowsHide: true, stdio: 'ignore' },
-      );
-      await once(cleanup, 'exit');
-      await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    });
-    const ready = new RegExp(task.problemMatcher.background.endsPattern, 'm');
-    const deadline = Date.now() + 60000;
-    while (!ready.test(output) && Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(`Workspace task exited before readiness: ${output}`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    assert.match(output, ready, 'F5 must wait for the task readiness signal');
-    assert.match(output, new RegExp(`debugger\\s+port ${port}\\b`));
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+    const browser = await run.attach('F5 must wait for the task readiness signal');
     const page = browser
       .contexts()[0]
       .pages()
