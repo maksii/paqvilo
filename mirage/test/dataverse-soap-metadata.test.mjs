@@ -268,7 +268,7 @@ test('RetrieveAllEntities returns a collection of both invented tables in the co
   const value = valueOf(run('RetrieveAllEntities', [['EntityFilters', 1]]), 'EntityMetadata');
   assert.equal(typeOfNode(value), 'a:EntityMetadataCollection');
   const logical = value.children.map((item) => textOfChild(item, 'LogicalName'));
-  assert.ok(logical.includes('invented_widget') && logical.includes('invented_owner'));
+  assert.deepEqual(logical.sort(), ['invented_owner', 'invented_widget']);
   assert.ok(value.children.every((item) => item.name === 'EntityMetadata' && item.ns === NS.a));
 });
 
@@ -465,7 +465,9 @@ test('CreateEntity decodes the typed EntityMetadata and its primary column, crea
   const mapping = store.state.mappings.new_bankaccount;
   assert.ok(mapping, 'the invented table exists');
   assert.equal(mapping.dataverseMetadata.labels.DisplayName[1033], 'Bank Account');
-  assert.ok(store.state.mappings.new_bankaccount.fields.new_accountname, 'the primary column is created');
+  assert.equal(mapping.nameColumn, 'new_accountname', 'the primary column is the primary name');
+  assert.equal(mapping.fields.new_accountname?.dataverseType, 'nvarchar');
+  assert.equal(mapping.fields.new_accountname.columnMetadata.maxLength, 100);
 });
 
 test('CreateAttribute adds a typed column and answers its AttributeId; DeleteAttribute and DeleteEntity remove them', async () => {
@@ -488,7 +490,9 @@ test('CreateAttribute adds a typed column and answers its AttributeId; DeleteAtt
   );
   assert.equal(created.responseType, 'CreateAttributeResponse');
   assert.match(created.results.get('AttributeId').value, /^[0-9a-f]{8}-[0-9a-f]{4}-/);
-  assert.ok(store.state.mappings.new_shelf.fields.new_quantity, 'the column is created with the Web API writer');
+  const quantity = store.state.mappings.new_shelf.fields.new_quantity;
+  assert.equal(quantity?.dataverseType, 'int', 'the column is created with the Web API writer');
+  assert.deepEqual([quantity.columnMetadata.minValue, quantity.columnMetadata.maxValue], [0, 100]);
 
   await handlers.get('DeleteAttribute')(
     new Map([
