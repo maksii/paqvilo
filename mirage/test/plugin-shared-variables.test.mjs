@@ -1,10 +1,10 @@
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
@@ -62,11 +62,11 @@ test('Explicit error bodies reject unsupported plugin mocks just as supported mo
 
 test(
   'Original DLL reads PreValidation variables through ParentContext across CRUD, ranks and nested SDK calls',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-plugin-shared-'));
     t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(directory, 'SharedAudit.cs'),
       assembly = path.join(directory, 'SharedAudit.dll');
     await fs.writeFile(
@@ -97,19 +97,7 @@ test(
  }}
  `,
     );
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      [
-        '/nologo',
-        '/target:library',
-        '/out:' + assembly,
-        '/reference:' + sdk,
-        '/reference:System.Runtime.Serialization.dll',
-        source,
-      ],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root: directory,

@@ -7,6 +7,7 @@ import { DataStore } from '../lib/data.mjs';
 import { createSimulator } from '../server.mjs';
 import { runPluginPhase, pluginPhaseRequiresCheckpoint } from '../lib/exported-plugins.mjs';
 import { pluginFixture, pluginId } from './plugin-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 
 const member = { contactId: 'own-contact', roles: ['Member'] };
@@ -155,7 +156,7 @@ test('exported inert Create steps leave Parent-scoped basic form and Web API ins
     initial,
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const csrf = app.csrf,
     headers = {
       ...signInHeaders(app, member.contactId, { roles: member.roles }),
@@ -211,7 +212,7 @@ test('placeholder, disabled and target-only mock steps keep HTTP row writes jour
     watch: false,
   };
   let app = await createSimulator({ ...options, initial: fixtureApp.store.snapshot() });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const csrf = app.csrf,
     rowId = pluginId(80);
   const admin = (route, body) =>

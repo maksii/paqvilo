@@ -1,11 +1,11 @@
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
@@ -84,11 +84,11 @@ test('Named SDK Execute validates parameter contracts before writes and retains 
 
 test(
   'Original DLL casts named SDK Execute responses and secondary writes retain caller rollback',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-sdk-execute-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'ExecuteOriginal.cs'),
       assembly = path.join(root, 'ExecuteOriginal.dll');
     await fs.writeFile(
@@ -105,14 +105,7 @@ var deleted=(DeleteResponse)s.Execute(new DeleteRequest{Target=new EntityReferen
 ((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original typed Execute completed");if(target.GetAttributeValue<string>("title")=="reject")throw new InvalidPluginExecutionException("Original Execute rejected after write");
 }}}`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
-    const build = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-      shell: false,
-      windowsHide: true,
-      encoding: 'utf8',
-      timeout: 20000,
-    });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,

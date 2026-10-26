@@ -1,10 +1,10 @@
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { DataStore } from '../lib/data.mjs';
 import { clrContext, recordToSdkEntity, prepareClrRuntime } from '../lib/plugin-clr.mjs';
@@ -111,84 +111,73 @@ test('External update CLR context preserves the native message and typed externa
   assert.deepEqual(result.outputParameters.values, {});
 });
 
-test(
-  'Original external-event DLL receives typed snapshots after commit',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
-  async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-external-context-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
-      source = path.join(root, 'ExternalObserver.cs'),
-      assembly = path.join(root, 'ExternalObserver.dll');
-    await fs.writeFile(
-      source,
-      `using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class ExternalObserver:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(c.MessageName!="OnExternalUpdated"||c.Mode!=1||c.Stage!=40||c.IsInTransaction)throw new InvalidPluginExecutionException("External execution context mismatch");var target=(Entity)c.InputParameters["Target"];var before=(Entity)c.InputParameters["PreImage"];var changed=(string[])c.InputParameters["ChangedFields"];if(target.GetAttributeValue<string>("title")!="After"||before.GetAttributeValue<string>("title")!="Before"||changed.Length!=1||changed[0]!="title")throw new InvalidPluginExecutionException("External snapshots lost type or value");((ITracingService)services.GetService(typeof(ITracingService))).Trace("External snapshots verified");}}}`,
-    );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      build = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-        shell: false,
-        windowsHide: true,
-        encoding: 'utf8',
-        timeout: 20000,
-      });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
-    const runtime = await prepareClrRuntime({
-      trust: 'execute-local-assembly',
-      root,
-      assembly: path.basename(assembly),
-      typeName: 'Invented.ExternalObserver',
-      sdkRoot: path.dirname(sdk),
-      sdkAssembly: path.basename(sdk),
-      cacheRoot: path.join(root, 'cache'),
-      serviceProfile: profile,
-      context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
-      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
-    });
-    const step = {
-      id: '30000000-0000-0000-0000-000000000001',
-      enabled: true,
-      assemblyId: 'invented',
-      typeName: 'Invented.ExternalObserver',
-      entity: 'widget',
-      message: 'OnExternalUpdated',
-      stage: 40,
-      rank: 1,
-      mode: 1,
-      supportedDeployment: 0,
-      filteringAttributes: ['title'],
-      images: [],
-    };
-    const runtimes = new Map([[step.id, runtime]]),
-      items = () =>
-        pluginCatalogue({
-          plugins: { steps: [step] },
-          runtimes,
-          overrides: { ['plugin-step:' + step.id]: { mode: 'clr' } },
-        }),
-      store = data(),
-      notes = [];
-    const runner = createAsyncPluginRunner({
-      store,
-      items,
-      handlers: new Map(),
-      runtimes,
-      diagnostic: (note) => notes.push(note),
-    });
-    ownedFixture(t).add(() => runner.close());
-    await store.transact(() =>
-      store.recordCommittedEvent('widget', 'onexternalupdated', { widgetid: id, title: 'After' }, ['title'], {
-        target: { title: 'After' },
-        previous: { widgetid: id, title: 'Before' },
-        identity: {},
+test('Original external-event DLL receives typed snapshots after commit', { skip: CLR_SKIP }, async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-external-context-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+  const sdk = clrSdk(),
+    source = path.join(root, 'ExternalObserver.cs'),
+    assembly = path.join(root, 'ExternalObserver.dll');
+  await fs.writeFile(
+    source,
+    `using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class ExternalObserver:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(c.MessageName!="OnExternalUpdated"||c.Mode!=1||c.Stage!=40||c.IsInTransaction)throw new InvalidPluginExecutionException("External execution context mismatch");var target=(Entity)c.InputParameters["Target"];var before=(Entity)c.InputParameters["PreImage"];var changed=(string[])c.InputParameters["ChangedFields"];if(target.GetAttributeValue<string>("title")!="After"||before.GetAttributeValue<string>("title")!="Before"||changed.Length!=1||changed[0]!="title")throw new InvalidPluginExecutionException("External snapshots lost type or value");((ITracingService)services.GetService(typeof(ITracingService))).Trace("External snapshots verified");}}}`,
+  );
+  compileClr(source, assembly, { references: [sdk] });
+  const runtime = await prepareClrRuntime({
+    trust: 'execute-local-assembly',
+    root,
+    assembly: path.basename(assembly),
+    typeName: 'Invented.ExternalObserver',
+    sdkRoot: path.dirname(sdk),
+    sdkAssembly: path.basename(sdk),
+    cacheRoot: path.join(root, 'cache'),
+    serviceProfile: profile,
+    context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
+    timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
+  });
+  const step = {
+    id: '30000000-0000-0000-0000-000000000001',
+    enabled: true,
+    assemblyId: 'invented',
+    typeName: 'Invented.ExternalObserver',
+    entity: 'widget',
+    message: 'OnExternalUpdated',
+    stage: 40,
+    rank: 1,
+    mode: 1,
+    supportedDeployment: 0,
+    filteringAttributes: ['title'],
+    images: [],
+  };
+  const runtimes = new Map([[step.id, runtime]]),
+    items = () =>
+      pluginCatalogue({
+        plugins: { steps: [step] },
+        runtimes,
+        overrides: { ['plugin-step:' + step.id]: { mode: 'clr' } },
       }),
-    );
-    await runner.drain();
-    assert.equal(notes.filter((note) => note.code === 'PLUGIN_STEP_CLR_EXECUTED').length, 1, JSON.stringify(notes));
-    assert.equal(notes.filter((note) => note.code === 'PLUGIN_ASYNC_FAILED').length, 0);
-    assert.equal(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED' && note.absenceVerified).length, 1);
-    assert.deepEqual(store.snapshot().tables.widget, []);
-  },
-);
+    store = data(),
+    notes = [];
+  const runner = createAsyncPluginRunner({
+    store,
+    items,
+    handlers: new Map(),
+    runtimes,
+    diagnostic: (note) => notes.push(note),
+  });
+  ownedFixture(t).add(() => runner.close());
+  await store.transact(() =>
+    store.recordCommittedEvent('widget', 'onexternalupdated', { widgetid: id, title: 'After' }, ['title'], {
+      target: { title: 'After' },
+      previous: { widgetid: id, title: 'Before' },
+      identity: {},
+    }),
+  );
+  await runner.drain();
+  assert.equal(notes.filter((note) => note.code === 'PLUGIN_STEP_CLR_EXECUTED').length, 1, JSON.stringify(notes));
+  assert.equal(notes.filter((note) => note.code === 'PLUGIN_ASYNC_FAILED').length, 0);
+  assert.equal(notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED' && note.absenceVerified).length, 1);
+  assert.deepEqual(store.snapshot().tables.widget, []);
+});
 
 test('System Create output begins at PostOperation and later-ranked output replacements survive', () => {
   const args = base(data(), 'create');
@@ -277,11 +266,11 @@ test('Backend choices writes require exact source type, Int32 values and declare
 
 test(
   'Original DLL receives stage-correct results and typed Target, images, SDK choices writes and reload',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-context-values-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'ContextValues.cs'),
       assembly = path.join(root, 'ContextValues.dll');
     await fs.writeFile(
@@ -295,14 +284,7 @@ if(c.Stage==20){if(((OptionSetValue)c.OutputParameters["custom"]).Value!=3)throw
 if(c.Stage==40){if(((OptionSetValue)c.OutputParameters["custom"]).Value!=3)throw new InvalidPluginExecutionException("Custom post output lost");if(c.OwningExtension.Name=="Post reader"){if((Guid)c.OutputParameters["id"]!=new Guid("${replacement}"))throw new InvalidPluginExecutionException("Post output replacement lost");}else{if((Guid)c.OutputParameters["id"]!=c.PrimaryEntityId)throw new InvalidPluginExecutionException("Main operation output not populated");Options(c.PostEntityImages["after"],2,3);var s=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);Options(s.Retrieve("widget",c.PrimaryEntityId,new ColumnSet("options")),2,3);c.OutputParameters["id"]=new Guid("${replacement}");}}
 trace.Trace("Typed context stage {0} {1}",c.Stage,c.OwningExtension.Name);}}}`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      build = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-        shell: false,
-        windowsHide: true,
-        encoding: 'utf8',
-        timeout: 20000,
-      });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,
@@ -373,11 +355,11 @@ trace.Trace("Typed context stage {0} {1}",c.Stage,c.OwningExtension.Name);}}}`,
 
 test(
   'Original Retrieve and RetrieveMultiple CLR observers see intervening ranked handler results and custom outputs',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-ranked-read-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'RankedRead.cs'),
       assembly = path.join(root, 'RankedRead.dll');
     await fs.writeFile(
@@ -388,14 +370,7 @@ if((string)c.OutputParameters["custom"]!="PreOperation custom")throw new Excepti
 if(c.OwningExtension.Name=="Read last"){if(e.GetAttributeValue<string>("title")!="Handler changed"||(string)c.OutputParameters["postCustom"]!="PostOperation custom")throw new Exception("Ranked result or custom output became stale");}
 else{e["title"]="CLR changed";c.OutputParameters["postCustom"]="PostOperation custom";}((ITracingService)services.GetService(typeof(ITracingService))).Trace("Ranked original {0} {1}",c.MessageName,c.OwningExtension.Name);}}}`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      build = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-        shell: false,
-        windowsHide: true,
-        encoding: 'utf8',
-        timeout: 20000,
-      });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,
