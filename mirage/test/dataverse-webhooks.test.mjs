@@ -101,7 +101,12 @@ async function startReceiver() {
         entry.path.startsWith(`${prefix}/`),
       ),
     async stop() {
-      child.kill();
+      // The receiver has exited before its directory goes (a running process can hold it busy on Windows).
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise((resolve) => child.once('exit', resolve));
+        child.kill();
+        await exited;
+      }
       await fs.rm(dir, { recursive: true, force: true });
     },
   };

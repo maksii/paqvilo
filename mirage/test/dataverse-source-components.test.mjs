@@ -16,6 +16,7 @@ import { parseSchemaDocument, buildSolutionSchema } from '../lib/solution-schema
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
 import { readSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const FORM = '77777777-7777-4777-8777-777777777778';
@@ -292,7 +293,7 @@ test('selected source app/form API writes and tombstones update catalogue, retai
   const appFile = path.join(fixture.solutionDir, 'AppModules/x_example/AppModule.xml'),
     beforeApp = await fs.readFile(appFile, 'utf8');
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const connected = await client(sim);
   assert.equal((await connected.read(await connected.api('GET', `/appmodules(${APP})`))).uniquename, 'x_example');
   assert.equal((await connected.read(await connected.api('GET', `/systemforms(${FORM})`))).type, 2);
@@ -329,7 +330,7 @@ test('selected source app/form API writes and tombstones update catalogue, retai
   );
   await sim.close();
   const restarted = await fixture.start();
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   const again = await client(restarted, connected.secret);
   assert.equal(
     (await again.read(await again.api('GET', `/RetrieveAppComponents(AppModuleId=${APP})`))).value.length,
@@ -357,7 +358,7 @@ test('selected source app/form API writes and tombstones update catalogue, retai
   );
   await restarted.close();
   const deletedRestart = await fixture.start();
-  t.after(() => deletedRestart.close());
+  ownedFixture(t).add(() => deletedRestart.close());
   const deletedClient = await client(deletedRestart, connected.secret);
   await deletedClient.read(await deletedClient.api('GET', `/appmodules(${APP})`), 404);
   assert.equal(
@@ -424,7 +425,7 @@ test('API archive import runs its model app, shares UI/API CRUD, restarts and ex
   );
   await fixture.sim.close();
   const restarted = await fixture.start();
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   const again = await client(restarted, connected.secret);
   assert.equal((await again.catalogue()).tables.new_runtimeitem.forms[0].id, formId);
   assert.equal(
