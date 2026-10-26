@@ -97,6 +97,9 @@ function git(cwd, ...args) {
       'maintenance.auto=false',
       '-c',
       'gc.auto=0',
+      // A deep TEMP (self-hosted runners) plus the fixture's paths can exceed 260 characters on Windows.
+      '-c',
+      'core.longpaths=true',
       ...args,
     ],
     { cwd, env, stdio: 'ignore', windowsHide: true, timeout: 30_000 },
