@@ -6,16 +6,16 @@ projects, the SDK client gates (`mirage/test-sdk/`), the volume checks (`mirage/
 scripts that run them. Each partition file below has one row per test file (or per workflow, script or optimisation)
 with the requirement it covers, its findings and their resolution.
 
-| Partition                                                                        | Scope                                                  |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| [lense-unit-0](lense-unit-0.md), [lense-unit-1](lense-unit-1.md)                 | `test/` and its shared helpers                         |
-| [lense-browser-0](lense-browser-0.md), [lense-browser-1](lense-browser-1.md)     | `test-browser/` and its helpers                        |
-| [mirage-unit-0](mirage-unit-0.md) … [mirage-unit-11](mirage-unit-11.md)          | `mirage/test/` (0 also owns the shared fixtures)       |
-| [mirage-browser-0](mirage-browser-0.md), [mirage-browser-1](mirage-browser-1.md) | `mirage/test-browser/`                                 |
-| [examples-sdk](examples-sdk.md)                                                  | example projects, C# probes, SDK gates, volume checks  |
-| [ci-infra](ci-infra.md)                                                          | workflows, `scripts/ci.mjs`, change scope, hooks       |
-| [cache-correctness](cache-correctness.md)                                        | stat-keyed caches in `lense/` and `mirage/lib/`        |
-| [perf-lense](perf-lense.md), [perf-mirage](perf-mirage.md)                       | measured runtime optimisations and rejected candidates |
+| Partition                                                                                     | Scope                                                  |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| [lense-unit-0](lense-unit-0.md), [lense-unit-1](lense-unit-1.md), [lense-gaps](lense-gaps.md) | `test/` and its shared helpers                         |
+| [lense-browser-0](lense-browser-0.md), [lense-browser-1](lense-browser-1.md)                  | `test-browser/` and its helpers                        |
+| [mirage-unit-0](mirage-unit-0.md) … [mirage-unit-11](mirage-unit-11.md)                       | `mirage/test/` (0 also owns the shared fixtures)       |
+| [mirage-browser-0](mirage-browser-0.md), [mirage-browser-1](mirage-browser-1.md)              | `mirage/test-browser/`                                 |
+| [examples-sdk](examples-sdk.md)                                                               | example projects, C# probes, SDK gates, volume checks  |
+| [ci-infra](ci-infra.md)                                                                       | workflows, `scripts/ci.mjs`, change scope, hooks       |
+| [cache-correctness](cache-correctness.md)                                                     | stat-keyed caches in `lense/` and `mirage/lib/`        |
+| [perf-lense](perf-lense.md), [perf-mirage](perf-mirage.md)                                    | measured runtime optimisations and rejected candidates |
 
 Recurring finding classes and their resolution:
 
