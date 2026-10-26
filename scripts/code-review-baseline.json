@@ -584,6 +584,13 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/capture-shell.mjs:launchCaptureBrowser",
+      "file": "mirage/capture-shell.mjs",
+      "type": "exports",
+      "name": "launchCaptureBrowser",
+      "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
+    },
+    {
       "key": "runtime:exports:mirage/dataverse-parity.mjs:compareRuns",
       "file": "mirage/dataverse-parity.mjs",
       "type": "exports",

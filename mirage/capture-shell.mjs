@@ -28,7 +28,13 @@ export function captureCdpUrl(value) {
   return url.origin;
 }
 
-async function launchCaptureBrowser(channel) {
+// Windows keeps files of a closed browser busy for seconds (2-12 s observed with the sandbox: chrome_debug.log).
+// The profile removal retries without blocking the event loop, up to 11 s of linear backoff.
+const removeProfile = (directory) =>
+  fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+
+/** A headless browser on a temporary profile with a loopback CDP port; close() removes the profile. */
+export async function launchCaptureBrowser(channel) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shell-'));
   let context;
   try {
@@ -47,13 +53,13 @@ async function launchCaptureBrowser(channel) {
         try {
           await context.close();
         } finally {
-          await fs.rm(directory, { recursive: true, force: true });
+          await removeProfile(directory);
         }
       },
     };
   } catch (error) {
     await context?.close().catch(() => {});
-    await fs.rm(directory, { recursive: true, force: true });
+    await removeProfile(directory);
     throw error;
   }
 }
