@@ -53,20 +53,22 @@ for (const journal of [false, true])
       };
       await fs.writeFile(reference, '');
       touch('-r', file, reference);
-      const before = await fs.stat(file, { bigint: true });
-      // Linux stamps ctime from a coarse clock (one tick can be 10 ms): an edit in the tick of the last save would
-      // keep ctime and test nothing. Rewrite the reference until its ctime passes the state file's.
-      while ((await fs.stat(reference, { bigint: true })).ctimeNs <= before.ctimeNs) touch('-r', file, reference);
-      const text = await fs.readFile(file, 'utf8'),
-        offset = Buffer.byteLength(text.slice(0, text.lastIndexOf('"step"')));
+      // Every read, stat and write goes through one descriptor, so the edited file is the one that was inspected.
       const handle = await fs.open(file, 'r+');
+      let before, after;
       try {
+        before = await handle.stat({ bigint: true });
+        // Linux stamps ctime from a coarse clock (one tick can be 10 ms): an edit in the tick of the last save would
+        // keep ctime and test nothing. Rewrite the reference until its ctime passes the state file's.
+        while ((await fs.stat(reference, { bigint: true })).ctimeNs <= before.ctimeNs) touch('-r', file, reference);
+        const text = await handle.readFile('utf8'),
+          offset = Buffer.byteLength(text.slice(0, text.lastIndexOf('"step"')));
         await handle.write(Buffer.from('"evil"'), 0, 6, offset);
+        touch('-r', reference, file);
+        after = await handle.stat({ bigint: true });
       } finally {
         await handle.close();
       }
-      touch('-r', reference, file);
-      const after = await fs.stat(file, { bigint: true });
       assert.deepEqual(
         [after.ino, after.size, after.mtimeNs],
         [before.ino, before.size, before.mtimeNs],
