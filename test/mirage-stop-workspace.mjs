@@ -63,14 +63,17 @@ async function stopProcessTree(child) {
     );
   else {
     // POSIX children run in their own process group; the CLI's SIGTERM handler stops a starting runtime.
-    process.kill(-child.pid, 'SIGTERM');
-    const timer = setTimeout(() => {
+    // The group can already be gone while the CLI's exit is still unreported (ESRCH): signal the CLI itself.
+    const signal = (name) => {
       try {
-        process.kill(-child.pid, 'SIGKILL');
-      } catch {
-        /* already ended */
+        process.kill(-child.pid, name);
+      } catch (error) {
+        if (error.code !== 'ESRCH') throw error;
+        child.kill(name);
       }
-    }, TERMINATE_GRACE_MS);
+    };
+    signal('SIGTERM');
+    const timer = setTimeout(() => signal('SIGKILL'), TERMINATE_GRACE_MS);
     await closed;
     clearTimeout(timer);
   }
@@ -87,9 +90,17 @@ export async function workspace(t) {
   let disposal;
   const dispose = () =>
     (disposal ??= (async () => {
-      await Promise.all([...running].map(stopProcessTree));
-      const left = await stopRecordedRuntimes(directory);
-      await reaper.finish();
+      // Every step runs even when an earlier one fails: a skipped step would leak a runtime, and an unfinished
+      // reaper keeps the inherited output open so the test runner never sees this file end.
+      const stopped = await Promise.allSettled([...running].map(stopProcessTree));
+      let left;
+      try {
+        left = await stopRecordedRuntimes(directory);
+      } finally {
+        await reaper.finish();
+      }
+      const failures = stopped.filter((result) => result.status === 'rejected').map((result) => result.reason);
+      if (failures.length) throw new AggregateError(failures, 'Ending the workspace CLIs failed.');
       assert.deepEqual(left, [], 'every runtime started in the workspace stopped');
     })());
   const owner = ownedFixture(t);
