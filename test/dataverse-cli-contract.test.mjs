@@ -138,3 +138,59 @@ test('offline data plan writes its complete report and --json prints that report
   assert.equal(summary.status, 0, summary.stderr);
   assert.equal(JSON.parse(summary.stdout).savedTo, report);
 });
+
+test('report outputs cannot replace their input or connection, including hard-link aliases', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-output-collision-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const catalogue = path.join(root, 'catalogue.json');
+  const connection = path.join(root, 'connection.json');
+  const alias = path.join(root, 'alias.json');
+  const input = JSON.stringify({
+    schemaVersion: 1,
+    datasetId: 'invented',
+    version: 'v1',
+    clock: '2026-01-01T00:00:00Z',
+    tables: [],
+    records: [],
+    associations: [],
+    queries: [],
+  });
+  await fs.writeFile(catalogue, input);
+  await fs.writeFile(connection, 'invented connection contents');
+  await fs.link(catalogue, alias);
+  for (const [args, expected] of [
+    [['data-plan', '--catalogue', catalogue, '--out', catalogue], '--catalogue'],
+    [['data-plan', '--catalogue', catalogue, '--out', alias], '--catalogue'],
+    [['data-plan', '--catalogue', catalogue, '--connection', connection, '--out', connection], '--connection'],
+    [['plan', '--manifest', catalogue, '--out', catalogue], '--manifest'],
+  ]) {
+    const result = run(...args, '--json');
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(JSON.parse(result.stdout).error.message, new RegExp(expected));
+    assert.equal(result.stderr, '');
+  }
+  assert.equal(await fs.readFile(catalogue, 'utf8'), input);
+  assert.equal(await fs.readFile(connection, 'utf8'), 'invented connection contents');
+});
+
+test('inspect does not print URL credentials, query values or fragments', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-inspect-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const connection = path.join(root, 'connection.json');
+  const input = JSON.stringify({
+    schemaVersion: 1,
+    environmentUrl: 'https://user:password@example.test/?token=invented-secret#private-fragment',
+  });
+  await fs.writeFile(connection, input);
+  const result = run('inspect', '--connection', connection);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).environmentUrl, 'https://example.test?[redacted]');
+  assert.doesNotMatch(result.stdout, /user|password|invented-secret|private-fragment/);
+  assert.equal(await fs.readFile(connection, 'utf8'), input);
+  await fs.writeFile(connection, JSON.stringify({ environmentUrl: 'data:invented-private-value' }));
+  const invalid = run('inspect', '--connection', connection, '--json');
+  assert.equal(invalid.status, 1);
+  assert.equal(invalid.stderr, '');
+  assert.equal(JSON.parse(invalid.stdout).error.message, 'Connection environmentUrl is invalid.');
+  assert.doesNotMatch(invalid.stdout, /invented-private-value/);
+});

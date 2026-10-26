@@ -473,7 +473,13 @@ try {
   phase = 'configuration';
   let cfg = null;
   let standaloneProject = null;
-  if (command === 'mirage' && values.project && !values.config && !values.site) {
+  if (
+    command === 'mirage' &&
+    (positionals[1] ?? 'status') !== 'status' &&
+    values.project &&
+    !values.config &&
+    !values.site
+  ) {
     const { loadProjectConfig } = await import('../mirage/lib/project-config.mjs');
     const candidate = await loadProjectConfig(values.project);
     if (candidate.runtime?.kind !== 'power-pages') standaloneProject = candidate;
@@ -481,7 +487,12 @@ try {
   const standalone =
     command === 'mirage' && (standaloneProject || (values.runtime && values.runtime !== 'power-pages'));
   let standaloneCatalogue;
-  if (command === 'mirage' && !values.project && (values.config || values.site)) {
+  if (
+    command === 'mirage' &&
+    (positionals[1] ?? 'status') !== 'status' &&
+    !values.project &&
+    (values.config || values.site)
+  ) {
     const catalogue = loadCatalogue(values),
       name = values.site ?? catalogue.root.defaultSite;
     if (catalogue.sites[name]?.mirage?.runtime?.kind && catalogue.sites[name].mirage.runtime.kind !== 'power-pages')

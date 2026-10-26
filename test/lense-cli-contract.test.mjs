@@ -236,3 +236,63 @@ test('offline Mirage inspect forwards source selection and omits inherited runti
     assert.ok(values.includes('--simulation'));
   }
 });
+
+test('Mirage status finds its ownership directory without requiring the project or catalogue to remain present', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli status '));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  for (const option of ['--project', '--config']) {
+    const missing = path.join(cwd, 'removed.json');
+    const result = await run(cwd, 'mirage', 'status', option, missing, '--json');
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.ok, true);
+    assert.deepEqual(report.sessions, []);
+  }
+});
+
+test('list redacts query and fragment values in configured and selected locations', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli list '));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  for (const [name, content] of Object.entries(FILES)) {
+    const file = path.join(cwd, 'portal', name);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content);
+  }
+  const config = path.join(cwd, 'catalogue.json');
+  fs.writeFileSync(
+    config,
+    JSON.stringify({
+      sourceRoot: cwd,
+      sites: {
+        sample: {
+          source: 'portal',
+          environments: {
+            dev: {
+              url: 'https://example.test/?token=config-secret#fragment-secret',
+              startPath: '/page?key=path-secret',
+            },
+          },
+        },
+      },
+    }),
+  );
+  for (const extra of [[], ['--json']]) {
+    const result = await runWithEnv(
+      cwd,
+      { PAQVILO_URL: 'https://other.test/?token=shell-secret', PAQVILO_START_PATH: '/page?key=start-secret' },
+      'list',
+      '--config',
+      config,
+      ...extra,
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.doesNotMatch(result.stdout, /config-secret|fragment-secret|path-secret|shell-secret|start-secret/);
+    assert.match(result.stdout, /redacted/);
+    if (extra.length) {
+      const report = JSON.parse(result.stdout);
+      assert.equal(report.sites[0].environments[0].url, 'https://example.test/?[redacted]');
+      assert.equal(report.settings.PAQVILO_URL, 'https://other.test/?[redacted]');
+      assert.equal(report.coverage.targets[0].startPath, '/page?[redacted]');
+    }
+  }
+});

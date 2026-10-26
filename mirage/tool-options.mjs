@@ -73,7 +73,11 @@ export function parseToolArgs(name, args) {
     if (options[key]?.type === 'string' && (args[i + 1] == null || args[i + 1].startsWith('--')))
       throw new Error(`--${key} requires a value`);
   }
-  return parseArgs({ args, options }).values;
+  const parsed = parseArgs({ args, options, tokens: true });
+  for (const token of parsed.tokens)
+    if (token.kind === 'option' && options[token.name].type === 'string' && token.value === '')
+      throw new Error(`--${token.name} requires a nonempty value`);
+  return parsed.values;
 }
 
 export function toolOptionsHelp(name) {

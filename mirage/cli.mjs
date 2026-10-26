@@ -182,9 +182,9 @@ Commands: ${MIRAGE_COMMANDS.join(', ')}
   paqvilo mirage capture-stylesheets --site SITE --env ENV --cdp http://127.0.0.1:PORT --stylesheet /styles/theme.css
   paqvilo mirage capture-snippet-composition --site SITE --env ENV --cdp http://127.0.0.1:PORT --path /PAGE/ --parent-snippet NAME --child-snippet NAME
   paqvilo mirage data generate --pack PACK_ID --profile PROFILE --state FILE [--out FILE] [--seed S]
-  paqvilo mirage data scaffold --profile smoke|dev --state FILE [--rows N] [--seed S] [--out FILE]
-    portal: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
     [--count NAME=N ...] [--pack-module PATH] [--materialize-persona-memberships]
+  paqvilo mirage data scaffold --profile smoke|dev --state FILE [--rows N] [--seed S] [--out FILE]
+    portal for scaffold or membership materialization: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
 
 Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --runtime power-pages|model-driven|dataverse-api, --simulation dry-run|simulation|deep, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
@@ -315,12 +315,17 @@ try {
     if (token.kind === 'option' && token.value === '') throw new Error(`--${token.name} requires a nonempty value`);
   }
 
+  if (args.portal && !args.project && command !== 'verify')
+    throw new Error('--portal selects a portal from --project.');
+  if (args.project && args.source && command !== 'verify')
+    throw new Error('Use either --project or --source, not both.');
   if (isCapture && !args.cdp) throw new Error(`${command} requires --cdp for the intended connected browser.`);
   if (isCapture && args.preset)
     throw new Error(`${command} does not apply presets. Apply --preset when starting serve.`);
 
   if (command === 'data') {
-    const { runDataCommand } = await import('./lib/data-generation.mjs');
+    const { runDataCommand, validateDataCommand } = await import('./lib/data-generation.mjs');
+    validateDataCommand(positionals.slice(1), args);
     // data scaffold resolves its portal like serve: a project file and portal,
     // an explicit --source (solution roots discovered unless --solution-root),
     // or the toolkit catalogue site/environment (--site/--env/--repo).

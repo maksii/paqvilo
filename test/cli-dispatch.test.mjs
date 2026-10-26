@@ -36,6 +36,10 @@ test('root flags reject trailing arguments and diagnostics use the requested str
     ['', '--json'],
     ['lense', '', '--json'],
     ['dataverse', '', '--json'],
+    ['doctor', '--help', '--bogus', '--json'],
+    ['mirage', '--help', '--bogus', '--json'],
+    ['mirage', 'help', '--bogus', '--json'],
+    ['mirage', '--help', '--bogus'],
   ];
   const results = await Promise.all(cases.map((args) => run(args)));
   for (const [index, args] of cases.entries()) {

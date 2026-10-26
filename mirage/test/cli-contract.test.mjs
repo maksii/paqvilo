@@ -205,3 +205,36 @@ test('missing selectors write usage to stderr while help succeeds on stdout', ()
     assert.equal(help.stderr, '', name);
   }
 });
+
+test('explicit source selectors and data flags are validated before source reads', () => {
+  for (const args of [
+    ['inspect', '--source', fixture, '--portal', 'missing'],
+    ['inspect', '--project', 'missing-project', '--source', fixture],
+    ['data', 'scaffold', '--pack', 'ignored'],
+    ['data', 'scaffold', 'unexpected'],
+  ]) {
+    const result = run('mirage/cli.mjs', ...args, '--json');
+    assert.equal(result.status, 1, args.join(' '));
+    const message = JSON.parse(result.stdout).error.message;
+    assert.match(
+      message,
+      /--portal selects|either --project or --source|supported only by data generate|exactly one action/,
+    );
+    assert.doesNotMatch(message, /ENOENT|portal extract/);
+    assert.equal(result.stderr, '');
+  }
+});
+
+test('public tool option tables reject empty string values', () => {
+  for (const [name, option] of [
+    ['portal-matrix', '--only='],
+    ['liquid-inventory', '--out='],
+    ['webapi-inventory', '--portal='],
+    ['render-sweep', '--path='],
+  ]) {
+    const result = run(`mirage/${name}.mjs`, option, '--json');
+    assert.ok(result.status > 0, name);
+    assert.match(JSON.parse(result.stdout).error.message, /requires a nonempty value/, name);
+    assert.equal(result.stderr, '', name);
+  }
+});

@@ -113,6 +113,16 @@ shell. A parseable JSON report alone does not establish success.
 - `map` normally writes mapping reports; `--no-write` suppresses those writes.
   List may persist an ignored Solution-discovery cache and reports successful
   cache writes in its JSON `writesFiles` field.
+- `mirage status --project FILE --json` can discover owned sessions even after
+  that project file is removed. The path still selects its ownership directory.
+- Direct Mirage source commands use `--portal` with `--project`; it cannot select
+  a portal from a plain `--source` directory. Data-generation flags such as
+  `--pack` and `--count` belong to `data generate`, rather than `data scaffold`.
+- Dataverse `--out` reports, journals and archives must use a different file from
+  the manifest, catalogue and connection inputs, including existing file aliases.
+  For example, use `dataverse plan --manifest './schema.json' --out './.paqvilo/schema-plan.json'`.
+- List output and Dataverse connection inspection redact URL query values and
+  fragments. Redaction affects displayed output and preserves stored settings.
 - Argument mistakes are rejected before source reads or startup where the command
   can validate them independently. Unknown options and options belonging to
   another action fail rather than being silently ignored.
