@@ -27,7 +27,7 @@ export const pluginStepsXml = [
 ];
 // `simulator: false` writes the portal and Solution sources only, for tests that read them without a running host.
 export async function pluginFixture(t, { simulator = true } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-plugins-'));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-plugins-')));
   const portal = path.join(dir, 'portal'),
     solution = path.join(dir, 'solution');
   const files = {

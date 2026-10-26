@@ -8,7 +8,7 @@ export async function performanceFixture({ tables = 16, columns = 24, records = 
     if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer`);
   if (!Number.isSafeInteger(records) || records < tables)
     throw new TypeError('records must be a safe integer with at least one record per table');
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-performance-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-performance-')));
   const solutionRoots = [path.join(root, 'solution')],
     sourceDir = path.join(root, 'portal');
   const inventory = {
