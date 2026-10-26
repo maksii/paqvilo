@@ -322,18 +322,6 @@ test('inspect and project files carry the data model; --data-model is validated 
       (result) => ({ code: 0, ...result }),
       (error) => error,
     );
-  const inspected = await run(['inspect', '--source', PROJECT, '--json']);
-  assert.equal(inspected.code, 0, inspected.stderr);
-  const report = JSON.parse(inspected.stdout);
-  assert.deepEqual(
-    [report.layout, report.dataModel, report.dataModelSource, report.serverLogics, report.pages.length],
-    ['short-key-yaml', 'enhanced', 'assumed', ['order-summary'], 2],
-  );
-  const standard = JSON.parse((await run(['inspect', '--source', SITE, '--data-model', 'standard', '--json'])).stdout);
-  assert.deepEqual([standard.format, standard.dataModelSource], ['standard', 'configured']);
-  const invalid = await run(['inspect', '--source', SITE, '--data-model', 'classic', '--json']);
-  assert.notEqual(invalid.code, 0);
-  assert.match(invalid.stderr, /--data-model must be standard or enhanced/);
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-code-site-project-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'mirage.project.yml');
@@ -341,6 +329,26 @@ test('inspect and project files carry the data model; --data-model is validated 
     file,
     `version: 1\nportals:\n  - id: code\n    path: ${JSON.stringify(PROJECT)}\n    dataModel: standard\nsolutions: []\n`,
   );
+  // The four invocations only read the same inputs, so they run side by side.
+  const [inspected, standardRun, invalid, refused] = await Promise.all([
+    run(['inspect', '--source', PROJECT, '--json']),
+    run(['inspect', '--source', SITE, '--data-model', 'standard', '--json']),
+    run(['inspect', '--source', SITE, '--data-model', 'classic', '--json']),
+    run(['inspect', '--project', file, '--data-model', 'enhanced', '--json']),
+  ]);
+  assert.equal(inspected.code, 0, inspected.stderr);
+  const report = JSON.parse(inspected.stdout);
+  assert.deepEqual(
+    [report.layout, report.dataModel, report.dataModelSource, report.serverLogics, report.pages.length],
+    ['short-key-yaml', 'enhanced', 'assumed', ['order-summary'], 2],
+  );
+  assert.equal(standardRun.code, 0, standardRun.stderr);
+  const standard = JSON.parse(standardRun.stdout);
+  assert.deepEqual([standard.format, standard.dataModelSource], ['standard', 'configured']);
+  assert.notEqual(invalid.code, 0);
+  assert.match(invalid.stderr, /--data-model must be standard or enhanced/);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.stderr, /--data-model is supplied by the project configuration/);
   const project = await loadProjectConfig(file);
   assert.equal(project.portals[0].dataModel, 'standard');
   const bootstrapped = await bootstrapProject(project);
@@ -348,8 +356,6 @@ test('inspect and project files carry the data model; --data-model is validated 
     [bootstrapped.portals[0].portal.dataModel, bootstrapped.portals[0].portal.dataModelSource],
     ['standard', 'configured'],
   );
-  const refused = await run(['inspect', '--project', file, '--data-model', 'enhanced', '--json']);
-  assert.match(refused.stderr, /--data-model is supplied by the project configuration/);
   await fs.writeFile(
     file,
     `version: 1\nportals:\n  - id: code\n    path: ${JSON.stringify(PROJECT)}\n    dataModel: classic\nsolutions: []\n`,
