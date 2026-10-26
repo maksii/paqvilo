@@ -94,6 +94,8 @@ for (const options of [
   );
   if (init.status !== 0 || !JSON.parse(init.stdout).ok)
     throw new Error(`Installed init failed: ${init.stdout}\n${init.stderr}`);
+  const npmLogs = path.join(consumer, '.paqvilo', 'npm-logs');
+  fs.mkdirSync(npmLogs, { recursive: true });
   const bootstrapConsumer = () => {
     const result = spawnSync(process.execPath, [path.join(consumer, 'tools/bootstrap.mjs')], {
       cwd: consumer,
@@ -104,13 +106,15 @@ for (const options of [
         npm_config_audit: 'false',
         npm_config_fund: 'false',
         npm_config_update_notifier: 'false',
+        npm_config_logs_dir: npmLogs,
+        npm_config_timing: 'true',
       },
       encoding: 'utf8',
       windowsHide: true,
       timeout: 120000,
       maxBuffer: 4 * 1024 * 1024,
     });
-    assertSmokeProcess(result, 'Installed consumer bootstrap failed');
+    assertSmokeProcess(result, `Installed consumer bootstrap failed (npm logs: ${npmLogs})`);
   };
   bootstrapConsumer();
   const lockFile = path.join(consumer, 'package-lock.json'),

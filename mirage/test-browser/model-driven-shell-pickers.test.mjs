@@ -697,11 +697,41 @@ test('a view without its primary-name column opens the selected record by double
   const sim = await fixture.start();
   t.after(() => sim.close());
   const page = await chrome.page(t);
+  const diagnostics = { responses: [], failures: [], pageErrors: [] };
+  const relevant = (url) => /\/_apps\/api\/(?:metadata\/x_item|tables\/x_item)(?:[/?]|$)/.test(url);
+  const cleanUrl = (url) => {
+    const parsed = new URL(url);
+    return parsed.origin + parsed.pathname;
+  };
+  const record = (list, entry) => {
+    if (list.length < 20) list.push(entry);
+  };
+  page.on('response', (response) => {
+    if (relevant(response.url()))
+      record(diagnostics.responses, { url: cleanUrl(response.url()), status: response.status() });
+  });
+  page.on('requestfailed', (request) => {
+    if (relevant(request.url()))
+      record(diagnostics.failures, {
+        url: cleanUrl(request.url()),
+        error: (request.failure()?.errorText ?? '').slice(0, 500),
+      });
+  });
+  page.on('pageerror', (error) => record(diagnostics.pageErrors, error.message.slice(0, 500)));
   await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const row = page
     .locator('tbody tr')
     .filter({ has: page.getByRole('checkbox', { name: 'Select Copper', exact: true }) });
-  await row.waitFor();
+  try {
+    await row.waitFor();
+  } catch (error) {
+    const grid = await page
+      .evaluate(() => (document.querySelector('main') ?? document.body)?.innerText.slice(0, 3000) ?? 'unavailable')
+      .catch(() => 'unavailable');
+    throw new Error(`Grid did not render Copper: ${JSON.stringify({ ...diagnostics, grid: grid.slice(0, 3000) })}`, {
+      cause: error,
+    });
+  }
   assert.equal(await row.getByRole('button').count(), 0);
   await row.locator('td').nth(1).dblclick();
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
