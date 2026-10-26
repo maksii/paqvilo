@@ -143,8 +143,10 @@ test('messages survive a restart through the store state, and a rolled-back tran
 
 test('receive waits for a message sent during waitMs', async () => {
   const { bus } = busFixture();
-  setTimeout(() => bus.send('fx-orders', { n: 7 }), 30);
-  const [message] = await bus.receive('fx-orders', { mode: 'receiveAndDelete', waitMs: 2000 });
+  // Store transactions run in call order, so the receive's first poll finds the queue empty before the send lands.
+  const waiting = bus.receive('fx-orders', { mode: 'receiveAndDelete', waitMs: 30_000 });
+  await bus.send('fx-orders', { n: 7 });
+  const [message] = await waiting;
   assert.equal(message.body.n, 7);
 });
 

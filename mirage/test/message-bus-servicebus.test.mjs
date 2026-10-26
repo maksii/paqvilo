@@ -3,6 +3,8 @@
 // A run against the real emulator is a manual check (mirage/docs/messaging-and-outbox.md), not part of CI.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import diagnosticsChannel from 'node:diagnostics_channel';
+import { once } from 'node:events';
 import net from 'node:net';
 import {
   createServiceBusEmulatorBus,
@@ -60,7 +62,8 @@ test('send, peek-lock receive and complete round-trip body, properties and messa
   assert.ok(message.lockedUntil && message.enqueuedTime);
   assert.deepEqual(await bus.receive('fx-orders'), [], 'a locked message is not delivered again');
   assert.equal(await bus.complete(message.lockToken), true);
-  await waitFor(() => broker.count('fx-orders') === 0);
+  await settled(bus);
+  assert.equal(broker.count('fx-orders'), 0);
   await assert.rejects(
     bus.complete(message.lockToken),
     (error) => error.code === 'MessageLockLost' && error.status === 410,
@@ -123,12 +126,16 @@ test('a topic send reaches its subscription; receive-and-delete removes on deliv
 });
 
 test('receive waits up to waitMs for a message sent later, and drains when nothing is available', async (t) => {
-  const { bus } = await fixture(t);
+  // The client bound is far beyond a loopback round trip, so an answer inside half of it can only be the drain answer.
+  const timeoutMs = 30_000;
+  const { bus } = await fixture(t, { bus: { timeoutMs } });
   const started = Date.now();
   assert.deepEqual(await bus.receive('fx-orders', { maxMessages: 5 }), []);
-  assert.ok(Date.now() - started < 1000, 'waitMs 0 answers after a drain, not after a timeout');
-  const waiting = bus.receive('fx-orders', { waitMs: 2000 });
-  setTimeout(() => bus.send('fx-orders', { n: 4 }), 100);
+  assert.ok(Date.now() - started < timeoutMs / 2, 'waitMs 0 answers after a drain, not after a timeout');
+  // The receiver link is attached, so this receive writes its credit at once; the send's transfer follows its sender
+  // attach round trip, so the message reaches the broker only while the receive waits.
+  const waiting = bus.receive('fx-orders', { waitMs: timeoutMs });
+  await bus.send('fx-orders', { n: 4 });
   const [message] = await waiting;
   assert.deepEqual(message.body, { n: 4 });
 });
@@ -143,13 +150,19 @@ test('a message larger than the broker frame size crosses as a multi-frame trans
 });
 
 test('a scheduled message carries x-opt-scheduled-enqueue-time and stays invisible until due', async (t) => {
-  const { bus } = await fixture(t);
-  const at = new Date(Date.now() + 400);
-  const sent = await bus.send('fx-orders', { n: 5 }, { scheduledEnqueueTime: at });
+  const { broker, bus } = await fixture(t);
+  // An hour ahead stays invisible however slow the runner; a second message due shortly shows delivery once due.
+  const later = new Date(Date.now() + 3_600_000);
+  const sent = await bus.send('fx-orders', { n: 5 }, { scheduledEnqueueTime: later });
   assert.equal(sent.state, 'scheduled');
   assert.deepEqual(await bus.receive('fx-orders'), []);
-  const [message] = await bus.receive('fx-orders', { waitMs: 1500 });
-  assert.equal(message.scheduledEnqueueTime, at.toISOString());
+  const soon = new Date(Date.now() + 200);
+  await bus.send('fx-orders', { n: 6 }, { scheduledEnqueueTime: soon });
+  const [message] = await bus.receive('fx-orders', { waitMs: 30_000 });
+  assert.ok(Date.now() >= soon.getTime(), 'not delivered before its scheduled enqueue time');
+  assert.deepEqual(message.body, { n: 6 });
+  assert.equal(message.scheduledEnqueueTime, soon.toISOString());
+  assert.equal(broker.count('fx-orders'), 2, 'the message scheduled later is still held');
 });
 
 test('an unknown entity is the broker AMQP error, named by entity', async (t) => {
@@ -225,18 +238,28 @@ test('preflight against a silent port answers not ready at its 1.8 s connect bou
 });
 
 test('the client keeps an idle connection alive with empty frames inside the broker idle-time-out', async (t) => {
+  // The keepalive interval is a mock timer; a later round trip orders after the empty frames it wrote.
+  t.mock.timers.enable({ apis: ['setInterval'] });
   const { broker, bus } = await fixture(t, { broker: { idleTimeoutMs: 100 } });
   await bus.send('fx-orders', { n: 1 });
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.ok(broker.stats.heartbeats >= 2);
+  assert.equal(broker.stats.heartbeats, 0);
+  t.mock.timers.tick(100);
+  await bus.send('fx-orders', { n: 2 });
+  assert.equal(broker.stats.heartbeats, 2, 'one empty frame every half of the 100 ms idle-time-out');
 });
 
 test('a dropped connection loses its locks and the next operation reconnects', async (t) => {
+  const sockets = [],
+    track = ({ socket }) => sockets.push(socket);
+  diagnosticsChannel.subscribe('net.client.socket', track);
+  t.after(() => diagnosticsChannel.unsubscribe('net.client.socket', track));
   const { broker, bus } = await fixture(t);
   await bus.send('fx-orders', { n: 1 });
   const [message] = await bus.receive('fx-orders');
+  assert.equal(sockets.length, 1);
+  const closed = once(sockets[0], 'close'); // runs after the client's own close listener, which fails the connection
   broker.dropConnections();
-  await new Promise((resolve) => setTimeout(resolve, 50)); // the client sees the socket close
+  await closed;
   await assert.rejects(bus.complete(message.lockToken), { code: 'MessageLockLost' });
   await bus.send('fx-orders', { n: 2 });
   assert.equal(broker.stats.connections, 2);
@@ -249,7 +272,8 @@ test("the client puts attach, flow, transfer and disposition fields at their spe
   await bus.abandon(message.lockToken);
   const [again] = await bus.receive('fx-orders', { waitMs: 500 });
   await bus.complete(again.lockToken);
-  await waitFor(() => broker.count('fx-orders') === 0);
+  await settled(bus);
+  assert.equal(broker.count('fx-orders'), 0);
   const of = (code) => broker.frames.filter((item) => item.code === code).map((item) => item.fields);
   const [sender, receiver] = of(0x12);
   assert.equal(sender[2], false, 'attach role sender');
@@ -327,10 +351,8 @@ test('settings, descriptor and entity mapping for servicebus-emulator', () => {
   );
 });
 
-async function waitFor(predicate, ms = 1000) {
-  const end = Date.now() + ms;
-  while (!predicate()) {
-    if (Date.now() > end) throw new Error('condition not reached');
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+// A receiver's settlement has no answer; a drain round trip on the same connection orders after it, so once the drain
+// returns the broker has applied every disposition sent before.
+async function settled(bus) {
+  assert.deepEqual(await bus.receive('fx-orders'), []);
 }
