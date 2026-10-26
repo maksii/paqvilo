@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { orderedMap } from '../../lense/async-map.mjs';
 import { stateDigest } from './state-stream.mjs';
 
 export const stateFingerprint = (state) => stateDigest({ config: state.config, data: state.data });
@@ -38,21 +39,38 @@ const gone = (error) => {
 // so files are read this many at a time, below the default descriptor limits, and hashed in walk order.
 const READ_CONCURRENCY = 32;
 
-async function fingerprint(sourceDir, implementation) {
-  sourceDir = path.resolve(sourceDir);
+/**
+ * Files in sorted depth-first order. Each level's directories are read concurrently (the same round-trip cost as
+ * file reads); a directory removed during the walk has no files.
+ */
+async function fingerprintFiles(root, implementation) {
+  const children = new Map();
+  let level = [root];
+  while (level.length) {
+    const nested = await orderedMap(level, READ_CONCURRENCY, async (dir) => {
+      const entries = ((await fs.readdir(dir, { withFileTypes: true }).catch(gone)) ?? [])
+        .filter((entry) => !excludedEntry(root, dir, entry, implementation))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      children.set(dir, entries);
+      return entries.filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name));
+    });
+    level = nested.flat();
+  }
   const files = [];
-  async function walk(dir) {
-    const entries = ((await fs.readdir(dir, { withFileTypes: true }).catch(gone)) ?? []).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    );
-    for (const entry of entries) {
-      if (excludedEntry(sourceDir, dir, entry, implementation)) continue;
+  const flatten = (dir) => {
+    for (const entry of children.get(dir)) {
       const file = path.join(dir, entry.name);
-      if (entry.isDirectory()) await walk(file);
+      if (entry.isDirectory()) flatten(file);
       else if (entry.isFile()) files.push(file);
     }
-  }
-  await walk(sourceDir);
+  };
+  flatten(root);
+  return files;
+}
+
+async function fingerprint(sourceDir, implementation) {
+  sourceDir = path.resolve(sourceDir);
+  const files = await fingerprintFiles(sourceDir, implementation);
   const hash = createHash('sha256'),
     reads = [];
   const read = (index) => {
@@ -94,29 +112,16 @@ export async function cachedImplementationSourceFingerprint(sourceDir) {
 
 async function cachedFingerprint(sourceDir, implementation) {
   const root = path.resolve(sourceDir);
-  const lines = [],
-    walked = BigInt(Date.now()) * 1_000_000n;
+  const walked = BigInt(Date.now()) * 1_000_000n;
   let newest = 0n;
-  async function walk(dir) {
-    const entries = ((await fs.readdir(dir, { withFileTypes: true }).catch(gone)) ?? [])
-      .filter((entry) => !excludedEntry(root, dir, entry, implementation))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    const stats = await Promise.all(
-      entries.map((entry) =>
-        entry.isFile() ? fs.stat(path.join(dir, entry.name), { bigint: true }).catch(gone) : null,
-      ),
-    );
-    for (const [index, entry] of entries.entries()) {
-      const file = path.join(dir, entry.name);
-      if (entry.isDirectory()) await walk(file);
-      else if (stats[index]) {
-        const stat = stats[index];
-        for (const time of [stat.mtimeNs, stat.ctimeNs]) if (time > newest) newest = time;
-        lines.push(`${path.relative(root, file)}\0${stat.size}\0${stat.mtimeNs}\0${stat.ctimeNs}\0${stat.ino}`);
-      }
-    }
-  }
-  await walk(root);
+  const files = await fingerprintFiles(root, implementation);
+  const stamps = await orderedMap(files, 2 * READ_CONCURRENCY, async (file) => {
+    const stat = await fs.stat(file, { bigint: true }).catch(gone);
+    if (!stat) return null;
+    for (const time of [stat.mtimeNs, stat.ctimeNs]) if (time > newest) newest = time;
+    return `${path.relative(root, file)}\0${stat.size}\0${stat.mtimeNs}\0${stat.ctimeNs}\0${stat.ino}`;
+  });
+  const lines = stamps.filter((line) => line !== null);
   const key = createHash('sha256').update(lines.join('\n')).digest('hex');
   const cacheKey = `${implementation ? 'implementation' : 'source'}\0${root}`;
   const cached = fingerprintCache.get(cacheKey);
