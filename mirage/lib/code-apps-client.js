@@ -12,6 +12,7 @@
 
 let base = null;
 let csrf = null;
+let generation = 0;
 
 export function configure({ app, origin = '' }) {
   if (typeof app !== 'string' || !app.trim()) throw new Error('A non-empty app name is required.');
@@ -19,12 +20,15 @@ export function configure({ app, origin = '' }) {
     throw new Error('Mirage code app requests must use the current origin.');
   base = `${origin}/_apps/code/${encodeURIComponent(app)}/`;
   csrf = null;
+  generation++;
 }
 
 async function call(path, { method = 'GET', body, headers = {} } = {}) {
   if (!base) throw new Error('Call configure({ app }) before using the Mirage code app shim.');
+  const configured = generation;
   // Every proxy call needs the token, GET included (code-apps-http.mjs); only context itself answers without it.
   if (!csrf && !path.startsWith('context')) await getContext();
+  if (generation !== configured) throw new Error('Mirage code app configuration changed during the request.');
   const response = await fetch(base + path, {
     method,
     credentials: 'same-origin',
@@ -52,7 +56,9 @@ async function call(path, { method = 'GET', body, headers = {} } = {}) {
 }
 
 export async function getContext() {
+  const configured = generation;
   const { data, response } = await call('context' + (typeof location === 'undefined' ? '' : location.search));
+  if (generation !== configured) throw new Error('Mirage code app configuration changed during the request.');
   csrf = response.headers.get('x-sim-csrf');
   return data;
 }
@@ -67,7 +73,8 @@ const query = (options = {}) => {
   if (options.skip != null) throw new Error('Mirage does not support skip; use skipToken to continue a page.');
   const supported = new Set(['select', 'filter', 'orderBy', 'top', 'skipToken', 'maxPageSize', 'count']);
   for (const option of Object.keys(options)) {
-    if (!supported.has(option)) throw new Error(`Unsupported Mirage query option: ${option}`);
+    if (!supported.has(option) && options[option] !== undefined)
+      throw new Error(`Unsupported Mirage query option: ${option}`);
   }
   const params = new URLSearchParams();
   if (options.select) params.set('$select', [options.select].flat().join(','));

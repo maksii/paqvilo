@@ -231,3 +231,16 @@ test('binding diagnostics recognize connector-id fallback when reference key dif
   });
   assert.deepEqual(config.diagnostics, []);
 });
+
+test('inherited binding properties do not satisfy a declared connection reference', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(
+    path.join(root, 'power.config.json'),
+    JSON.stringify({ connectionReferences: { reference: { apiName: '__proto__' } } }),
+  );
+  const config = readCodeAppConfig(root, 'power.config.json', { bindings: {} });
+  assert.deepEqual(
+    config.diagnostics.map((diagnostic) => diagnostic.code),
+    ['CODEAPP_CONNECTION_UNBOUND'],
+  );
+});

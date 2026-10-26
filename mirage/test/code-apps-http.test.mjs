@@ -469,3 +469,27 @@ test('browser shim calls the endpoints with the CSRF header from context', async
     (error) => error.status === 501 && error.code === 'ConnectorNotSimulated',
   );
 });
+
+test('connector exact keys take precedence and ambiguous aliases never call a provider', async (t) => {
+  const seen = [];
+  const app = {
+    name: 'invented',
+    connectionReferences: [
+      { key: 'first', apiId: 'x_first', dataSources: ['second', 'shared'] },
+      { key: 'second', apiId: 'x_second', dataSources: ['shared'] },
+    ],
+  };
+  const { request } = await fixture(t, {
+    apps: [app],
+    connectors: ({ reference }) => {
+      seen.push(reference.key);
+      return { ok: true };
+    },
+  });
+  const send = (key) => request(`/_apps/code/invented/connectors/${key}/Run`, { method: 'POST', csrf: CSRF, body: {} });
+  assert.equal((await send('second')).status, 200);
+  const ambiguous = await send('shared');
+  assert.equal(ambiguous.status, 409);
+  assert.equal((await ambiguous.json()).error.code, 'ConnectionReferenceAmbiguous');
+  assert.deepEqual(seen, ['second']);
+});

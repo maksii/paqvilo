@@ -265,9 +265,18 @@ export function createCodeAppsHandler({
         } catch {
           throw fail(404, 'ConnectionReferenceNotFound', 'Connection reference path is malformed.');
         }
-        const reference = (app.connectionReferences ?? []).find(
-          (item) => item.key === key || item.dataSources?.includes(key),
-        );
+        const references = app.connectionReferences ?? [];
+        let reference = references.find((item) => item.key === key);
+        if (!reference) {
+          const matches = references.filter((item) => item.dataSources?.includes(key));
+          if (matches.length > 1)
+            throw fail(
+              409,
+              'ConnectionReferenceAmbiguous',
+              `Data source '${key}' maps to multiple connection references.`,
+            );
+          reference = matches[0];
+        }
         if (!reference)
           throw fail(
             404,

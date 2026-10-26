@@ -137,7 +137,11 @@ export function readCodeAppConfig(dir, file = 'power.config.json', { bindings = 
         };
         result.connectionReferences.push(reference);
         const connectorId = reference.apiId ?? reference.key;
-        const binding = Object.hasOwn(bindings, key) ? bindings[key] : bindings[connectorId];
+        const binding = Object.hasOwn(bindings, key)
+          ? bindings[key]
+          : Object.hasOwn(bindings, connectorId)
+            ? bindings[connectorId]
+            : undefined;
         if (!isObject(binding) || (binding.connector && binding.connector !== connectorId))
           diagnostic(
             'CODEAPP_CONNECTION_UNBOUND',

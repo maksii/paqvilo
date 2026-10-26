@@ -68,3 +68,54 @@ test('configuration rejects missing app names and cross-origin browser targets',
   assert.throws(() => configure({ app: 'sample', origin: 'https://example.invalid' }), /current origin/);
   assert.doesNotThrow(() => configure({ app: 'sample', origin: 'http://localhost:3000' }));
 });
+
+test('reconfiguration while context is in flight never reuses the previous app token', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  const requests = [];
+  let release;
+  let started;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  const arrived = new Promise((resolve) => {
+    started = resolve;
+  });
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    if (url === '/_apps/code/first/context') {
+      started();
+      await pending;
+      return new Response('{}', { headers: { 'x-sim-csrf': 'first-token' } });
+    }
+    if (url === '/_apps/code/second/context') return new Response('{}', { headers: { 'x-sim-csrf': 'second-token' } });
+    return new Response('{"value":[]}');
+  };
+  configure({ app: 'first' });
+  const oldRequest = dataClient.getAll('items');
+  await arrived;
+  configure({ app: 'second' });
+  release();
+  await assert.rejects(oldRequest, /configuration changed/);
+  await dataClient.getAll('items');
+  assert.deepEqual(
+    requests.map((request) => request.url),
+    ['/_apps/code/first/context', '/_apps/code/second/context', '/_apps/code/second/dataverse/items'],
+  );
+  assert.equal(requests[2].init.headers['x-sim-csrf'], 'second-token');
+});
+
+test('optional SDK query fields set to undefined do not reject a valid read', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  globalThis.fetch = async (url) =>
+    url.endsWith('/context')
+      ? new Response('{}', { headers: { 'x-sim-csrf': 'token' } })
+      : new Response('{"value":[]}');
+  configure({ app: 'sample' });
+  assert.deepEqual(await dataClient.getAll('items', { partitionId: undefined, skip: undefined }), { data: [] });
+});
