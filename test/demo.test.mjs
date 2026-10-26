@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { prepareDemo } from '../lense/commands/demo.mjs';
+import { tempDir } from './fixture.mjs';
 
 test('demo copies an editable project, preserves source edits on repeat and refuses unrelated folders', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-demo-'));
+  const root = await tempDir('paqvilo-demo-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const directory = path.join(root, 'example');
   assert.equal((await prepareDemo(directory)).created, true);
@@ -17,10 +17,10 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   assert.equal((await prepareDemo(directory)).created, false);
   assert.equal(await fs.readFile(template, 'utf8'), 'My local changes');
   const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
-  assert.ok(!manifest.devDependencies.paqvilo.startsWith('file:'));
+  const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.devDependencies.paqvilo, toolkit.version, 'the copy depends on this published toolkit version');
   assert.match(manifest.devDependencies.yaml, /^\d/);
   assert.match(manifest.devDependencies['playwright-core'], /^\d/);
-  const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
   const example = JSON.parse(await fs.readFile(new URL('../examples/project/package.json', import.meta.url), 'utf8'));
   for (const dependency of ['yaml', 'playwright-core']) {
     assert.equal(manifest.devDependencies[dependency], toolkit.dependencies[dependency]);
