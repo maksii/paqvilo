@@ -180,15 +180,22 @@ test('real browser replacement finishes after current data despite missing old t
   );
 });
 test('real browser detached frame orphan cannot hide current parent fetch', async (t) => {
-  // The child frame is removed only after its fetch is in flight, and the parent's data answers only after that
-  // fetch reached the server, so the orphan exists while the parent request is still current.
+  // The parent removes the child frame once the server has its fetch, and its own data answers only after the
+  // removal, so the orphan exists while the parent request is still current.
   let parentFinished = false,
-    orphanReceived;
-  const orphan = new Promise((resolve) => (orphanReceived = resolve));
+    orphanReceived,
+    frameRemoved;
+  const orphan = new Promise((resolve) => (orphanReceived = resolve)),
+    removed = new Promise((resolve) => (frameRemoved = resolve));
   const server = http.createServer((req, res) => {
     if (req.url === '/orphan-child') return orphanReceived();
+    if (req.url === '/child-fetch-received') return orphan.then(() => res.end());
+    if (req.url === '/frame-removed') {
+      frameRemoved();
+      return res.end();
+    }
     if (req.url === '/parent-essential') {
-      orphan.then(() => {
+      removed.then(() => {
         parentFinished = true;
         res.end('data');
       });
@@ -198,8 +205,8 @@ test('real browser detached frame orphan cannot hide current parent fetch', asyn
       .writeHead(200, { 'content-type': 'text/html' })
       .end(
         req.url === '/child'
-          ? '<script>fetch("/orphan-child");parent.postMessage("orphan-started","*")</script>'
-          : '<iframe src="/child"></iframe><script>fetch("/parent-essential");addEventListener("message",()=>document.querySelector("iframe").remove())</script>',
+          ? '<script>fetch("/orphan-child")</script>'
+          : '<iframe src="/child"></iframe><script>fetch("/parent-essential");fetch("/child-fetch-received").then(()=>{document.querySelector("iframe").remove();return fetch("/frame-removed")})</script>',
       );
   });
   server.listen(0, '127.0.0.1');
