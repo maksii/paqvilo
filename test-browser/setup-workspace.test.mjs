@@ -55,6 +55,8 @@ async function localGit(directory, source) {
       encoding: 'utf8',
       windowsHide: true,
       stdio: 'pipe',
+      // Repository variables of a calling Git process would redirect these commands.
+      env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key))),
     });
   git('init', '--quiet');
   git('add', '.');
@@ -376,13 +378,19 @@ test(
     );
     let output = '',
       remote,
-      setupUrl;
-    child.stdout.on('data', (chunk) => {
-      output += chunk;
+      setupUrl,
+      announced;
+    // Dev prints the setup address before it announces that it watches sources.
+    const watching = new Promise((resolve, reject) => {
+      announced = resolve;
+      child.once('exit', () => reject(new Error(output)));
     });
-    child.stderr.on('data', (chunk) => {
+    const read = (chunk) => {
       output += chunk;
-    });
+      if (/Watching local sources|Watching sources|Browse pages and open tabs/.test(output)) announced();
+    };
+    child.stdout.on('data', read);
+    child.stderr.on('data', read);
     const exited = once(child, 'exit');
     t.resources.push(async () => {
       if (remote) {
@@ -394,16 +402,7 @@ test(
       await exited;
       if (setupUrl) await assert.rejects(fetch(setupUrl), /fetch failed/, 'the owned setup server stops with dev');
     });
-    const deadline = Date.now() + 45000;
-    while (
-      !/Watching local sources/.test(output) &&
-      !/Watching sources/.test(output) &&
-      !/Browse pages and open tabs/.test(output) &&
-      Date.now() < deadline
-    ) {
-      if (child.exitCode !== null) throw new Error(output);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    await watching;
     setupUrl = output.match(/setup\s+(http:\/\/127\.0\.0\.1:\d+\/_setup\/)/)?.[1];
     assert.ok(setupUrl, output);
     remote = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
@@ -442,7 +441,8 @@ test(
   async (t) => {
     const work = await temporary(t),
       demo = path.join(work, 'feedback');
-    await prepareDemo(demo);
+    // Any project with one website exercises the feedback; a scaffold needs no demo copy.
+    await prepareProject(demo, { name: 'feedback', sites: ['example'], noPack: true });
     const server = await startSetupServer({ directory: demo, processEnv: {} });
     t.resources.push(() => server.close());
     const page = await newPage(t, { viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
@@ -453,7 +453,8 @@ test(
     const reading = new Promise((resolve) => {
       releaseRead = resolve;
     });
-    t.after(() => releaseRead());
+    // Resources close in reverse order, so held routes are released before their context closes.
+    t.resources.push(() => releaseRead());
     await page.route('**/_setup/api/status', async (route) => {
       await reading;
       await route.continue();
@@ -478,7 +479,7 @@ test(
     const saving = new Promise((resolve) => {
       releaseSave = resolve;
     });
-    t.after(() => releaseSave());
+    t.resources.push(() => releaseSave());
     await page.route('**/_setup/api/config', async (route) => {
       writes++;
       await saving;
@@ -532,7 +533,7 @@ test(
     const timedOut = new Promise((resolve) => {
       releaseTimeout = resolve;
     });
-    t.after(() => releaseTimeout());
+    t.resources.push(() => releaseTimeout());
     await page.route('**/_setup/api/config', async (route) => {
       timeoutWrites++;
       await timedOut;
