@@ -881,6 +881,7 @@ export function mergeInventory(records) {
         current.reason = record.reason;
         current.tree = record.tree;
         current.unsupported = record.unsupported;
+        current.sourceDiagnostics = record.sourceDiagnostics;
         current.canvas = record.canvas;
         current.msapp = record.msapp;
         current.diagnostics = record.diagnostics;
