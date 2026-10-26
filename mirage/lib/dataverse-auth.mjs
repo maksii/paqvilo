@@ -301,6 +301,7 @@ function aadError(
 }
 
 // federatedIssuers() returns [{ issuer, jwks: { keys } }] for verifying federated client assertions.
+// signingKey: the token signing pair { privateKey, publicKey } (RSA KeyObjects); by default every authority generates its own.
 export function createAuthority({
   tenantId,
   applications,
@@ -308,8 +309,9 @@ export function createAuthority({
   federatedIssuers = () => [],
   clock = () => Date.now(),
   accessTokenLifetimeSeconds = 3600,
+  signingKey = null,
 }) {
-  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const { privateKey, publicKey } = signingKey ?? generateKeyPairSync('rsa', { modulusLength: 2048 });
   const { kty, n, e } = publicKey.export({ format: 'jwk' });
   // kid doubles as x5t: base64url of the SHA-1 of the DER SPKI (no X.509 certificate exists for this key).
   const kid = createHash('sha1')
