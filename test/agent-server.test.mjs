@@ -1,15 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { EventEmitter } from 'node:events';
 import { startAgentServer, redactText, redactUrl } from '../lense/agent-server.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 async function fixture(t, options = {}) {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-agent-api-'));
+  const stateDir = tempDirSync('pp-agent-api-');
   const origin = 'https://portal.example';
   let address = `${origin}/chapter/?token=secret#private`;
   let closed = false;

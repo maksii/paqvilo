@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDir } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const cleanEnv = () =>
@@ -23,7 +23,7 @@ const exists = async (file) => {
   }
 };
 async function workspace(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-bootstrap-'));
+  const root = await tempDir('paqvilo-bootstrap-');
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return root;
 }

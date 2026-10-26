@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once } from 'node:events';
 import agent, { agentRequest, listAgentSessions, readDiscovery } from '../lense/commands/agent.mjs';
+import { tempDir } from './fixture.mjs';
 
 async function fixture(t, handler) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-agent-client-'));
+  const dir = await tempDir('pp-agent-client-');
   const server = http.createServer(handler);
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');

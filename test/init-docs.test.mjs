@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { prepareProject } from '../lense/project-scaffold.mjs';
+import { tempDir } from './fixture.mjs';
 
 test('generated guides link correctly for single/multi/no-pack variants and agree on onboarding and validation', async (t) => {
-  const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-init-guides-'));
+  const work = await tempDir('paqvilo-init-guides-');
   t.after(() => fs.rm(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   for (const [index, options] of [
     {},

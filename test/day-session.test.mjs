@@ -2,7 +2,6 @@ import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
@@ -10,7 +9,7 @@ import { OverlaySession } from '../lense/session.mjs';
 import { PortalModel, isSourceFile } from '../lense/portal-model.mjs';
 import { GitBaseline, gitHead, gitDirectories } from '../lense/git.mjs';
 import { watchSources, logHits } from '../lense/commands/dev.mjs';
-import { createFixture, SITE } from './fixture.mjs';
+import { createFixture, SITE, tempDirSync } from './fixture.mjs';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const git = (cwd, ...args) =>
@@ -56,7 +55,7 @@ test('scratch saves are ignored while new page code and missing asset payloads r
 
 test('path caching cannot retain a descendant after an ancestor is moved outside and replaced by a junction', (t) => {
   const fx = fixture(t);
-  const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-outside-ancestor-')));
+  const outside = tempDirSync('pp-outside-ancestor-');
   t.after(() => fs.rmSync(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const file = fx.file('basic-forms/contact/Contact.basicform.custom_javascript.js');
   new PortalModel(fx.dir);
@@ -107,7 +106,7 @@ test('Git awareness handles branches, detached HEAD and linked worktree director
   const dirs = await gitDirectories(fx.file('web-pages/home'));
   assert.equal(dirs.toplevel, fx.dir);
   assert.equal(dirs.gitDir, dirs.commonDir);
-  const parent = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-linked-awareness-')));
+  const parent = tempDirSync('pp-linked-awareness-');
   const linked = path.join(parent, 'checkout');
   t.after(() => fs.rmSync(parent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   git(fx.dir, 'worktree', 'add', '--detach', linked, 'HEAD');

@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { spawnSync, execFile } from 'node:child_process';
@@ -13,11 +12,12 @@ import { loadCatalogue } from '../lense/config.mjs';
 import { createMirageContext } from '../mirage/api.mjs';
 import { DEV_READY, DEV_BACKGROUND } from '../lense/dev-messages.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDir } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
 async function project(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-init-'));
+  const directory = await tempDir('paqvilo-init-');
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return directory;
 }

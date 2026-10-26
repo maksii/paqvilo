@@ -8,6 +8,7 @@ import { prepareProject } from '../lense/project-scaffold.mjs';
 import { refreshEditor } from '../lense/project-editor.mjs';
 import { developmentScript, developmentWorkflows, developmentScriptDrift } from '../lense/project-workflows.mjs';
 import { loadCatalogue } from '../lense/config.mjs';
+import { tempDir } from './fixture.mjs';
 
 const scriptsFor = (options) =>
   Object.fromEntries(
@@ -15,7 +16,7 @@ const scriptsFor = (options) =>
   );
 const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-editor-refresh-'));
+  const root = await tempDir('paqvilo-editor-refresh-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const directory = path.join(root, 'project');
   await prepareProject(directory, { name: 'invented', noPack: true, sites: ['alpha'] });

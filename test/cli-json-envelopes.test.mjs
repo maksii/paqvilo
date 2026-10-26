@@ -3,13 +3,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tmpdir } from 'node:os';
 import { execFile, spawn } from 'node:child_process';
 import http from 'node:http';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
-import { createFixture } from './fixture.mjs';
+import { createFixture, tempDirSync } from './fixture.mjs';
 import { AGENT_ACTIONS } from '../lense/commands/agent.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
@@ -38,7 +37,7 @@ test('every bounded agent action has a documented reference section', () => {
 test('offline JSON envelopes disclose map writes, support no-write, and diagnose all lost settings in doctor', async (t) => {
   const fx = createFixture();
   t.after(fx.cleanup);
-  const work = fs.mkdtempSync(path.join(tmpdir(), 'paqvilo-offline-envelopes-'));
+  const work = tempDirSync('paqvilo-offline-envelopes-');
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   const config = path.join(work, 'catalogue.yml');
   fs.writeFileSync(

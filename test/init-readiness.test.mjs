@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync, execFile } from 'node:child_process';
@@ -14,6 +13,7 @@ import {
 } from '../lense/project-check.mjs';
 import { developmentScript, developmentWorkflows } from '../lense/project-workflows.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDir } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(
@@ -40,7 +40,7 @@ const write = async (directory, file, body) => {
 };
 const configFile = 'paqvilo.config.json';
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-ready-'));
+  const directory = await tempDir('paqvilo-ready-');
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const config = {
     sourceRoot: './sources',

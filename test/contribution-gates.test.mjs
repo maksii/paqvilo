@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +13,7 @@ import {
   suitesForScope,
   ciLanes,
 } from '../.github/scripts/change-scope.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 const classifyChanges = (files) => {
   const { runtime, package: packaged, dependencies } = completeScope(files);
@@ -254,7 +254,7 @@ test('documentation CI retains required CodeQL configurations without scheduling
 });
 
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-gates-'));
+  const root = tempDirSync('paqvilo-gates-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const env = { ...process.env };
   for (const name of Object.keys(env)) if (name.startsWith('GIT_')) delete env[name];
@@ -581,7 +581,7 @@ test('verification receipts require an identical tree, toolchain, browser, fixtu
 
 test('starting a validation revokes previous evidence even when the rerun fails', async (t) => {
   const { consumeVerificationReceipt, matchingVerification } = await import('../scripts/ci.mjs');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-verification-receipt-'));
+  const directory = tempDirSync('paq-verification-receipt-');
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'verification.json');
   const identity = { tree: 'previously-passing-tree' };
@@ -598,7 +598,7 @@ test('starting a validation revokes previous evidence even when the rerun fails'
 
 test('malformed validation evidence is revoked', async (t) => {
   const { consumeVerificationReceipt } = await import('../scripts/ci.mjs');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-malformed-receipt-'));
+  const directory = tempDirSync('paq-malformed-receipt-');
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'verification.json');
   const malformed = fs.openSync(file, 'wx');
@@ -861,7 +861,7 @@ test('full Windows runs require locked SDK client gates without expanding ordina
 
 test('example preparation removes stale local dependencies without following junctions and prepared imports match the lock', async (t) => {
   const { resetExampleModules, requireExampleBrowserDependency } = await import('../scripts/ci.mjs');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-example-deps-'));
+  const directory = tempDirSync('paq-example-deps-');
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const checkout = path.join(directory, 'checkout'),
     project = path.join(checkout, 'examples/project');
@@ -892,7 +892,7 @@ test('example preparation removes stale local dependencies without following jun
 
 test('Git status probes fail closed without refreshing the index with optional locks', async (t) => {
   const { checkedGitStatus, validationTree } = await import('../scripts/ci.mjs');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-git-status-'));
+  const directory = tempDirSync('paq-git-status-');
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   assert.throws(() => checkedGitStatus(directory), /Cannot determine Git worktree status/);
   assert.throws(() => checkedGitStatus(path.join(directory, 'missing')), /Cannot determine Git worktree status/);

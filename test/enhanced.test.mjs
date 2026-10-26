@@ -2,7 +2,6 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
@@ -15,7 +14,7 @@ import {
 } from '../lense/portal-model.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
-import { SITE } from './fixture.mjs';
+import { SITE, tempDirSync } from './fixture.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
@@ -58,7 +57,7 @@ const git = (...args) =>
   });
 
 beforeEach(() => {
-  dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-enh-')));
+  dir = tempDirSync('paqvilo-enh-');
   put(HOME, component(HOME, 2, 'Home', { isroot: true, partialurl: '/' }));
   put(HOME_EN, component(HOME_EN, 2, 'Home', { isroot: false, rootwebpageid: HOME, partialurl: '/' }));
   put(NEWS, component(NEWS, 2, 'Newsfeed', { isroot: true, partialurl: 'Newsfeed', parentpageid: HOME }));

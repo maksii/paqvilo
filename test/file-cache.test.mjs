@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { FileBodyCache } from '../lense/file-cache.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 function fixture(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-body-cache-'));
+  const dir = tempDirSync('pp-body-cache-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   return (name, body) => {
     const file = path.join(dir, name);

@@ -98,10 +98,23 @@ function git(cwd, ...args) {
   );
 }
 
+/**
+ * A new temporary directory by its real path. os.tmpdir() can be an 8.3 short name on Windows
+ * (C:\Users\RUNNER~1\...) or reached through a link, while the toolkit resolves real paths before
+ * comparing them; whether short names exist depends on the runner, so always resolve.
+ */
+export function tempDirSync(prefix) {
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
+export async function tempDir(prefix) {
+  return fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix)));
+}
+
 export function createFixture() {
-  // realpath: os.tmpdir() can be an 8.3 short path on Windows. The repository gets a parent folder of its own:
-  // Solution root discovery scans the repository's siblings, which would otherwise be every other folder in the temp folder.
-  const container = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-test-')));
+  // The repository gets a parent folder of its own: Solution root discovery scans the repository's siblings,
+  // which would otherwise be every other folder in the temp folder.
+  const container = tempDirSync('paqvilo-test-');
   const dir = path.join(container, path.basename(container));
   for (const [rel, content] of Object.entries(FILES)) {
     const file = path.join(dir, rel);

@@ -4,10 +4,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import YAML from 'yaml';
-import { createFixture } from './fixture.mjs';
+import { createFixture, tempDirSync } from './fixture.mjs';
 import { loadConfig } from '../lense/config.mjs';
 import { mirageSettings } from '../lense/config-schema.mjs';
 import { derivedSolutionOrder, initProject, mirageReadiness } from '../lense/commands/mirage.mjs';
@@ -43,7 +42,7 @@ function solutionRoots(work) {
 
 function workspace(t, mirage) {
   const portal = createFixture();
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-solution-order-')));
+  const work = tempDirSync('paqvilo-solution-order-');
   t.after(() => {
     portal.cleanup();
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -71,7 +70,7 @@ function workspace(t, mirage) {
 }
 
 test('Solution roots are layered in their dependency order, whatever the order they are listed in', async (t) => {
-  const work = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-solution-derive-')));
+  const work = tempDirSync('paqvilo-solution-derive-');
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   const { extension, core } = solutionRoots(work);
   assert.deepEqual(await derivedSolutionOrder([extension, core]), [core, extension]);

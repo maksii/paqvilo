@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { tempDirSync } from './fixture.mjs';
 
 function ciFixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-ci-receipt-command-'));
+  const directory = tempDirSync('paq-ci-receipt-command-');
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const write = (relative, content) => {
     const file = path.join(directory, relative);

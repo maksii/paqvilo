@@ -1,14 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { persistCommandPayload, pruneCommandPayloads, MAX_COMMAND_PAYLOAD_BYTES } from '../lense/command-payload.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 function fixture(t) {
-  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-command-payload-')));
+  const root = tempDirSync('paqvilo-command-payload-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   return { root, directory: path.join(root, '.paqvilo', 'commands') };
 }

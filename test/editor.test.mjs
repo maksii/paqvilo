@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { openInEditor, resolveEditorCommand } from '../lense/panel.mjs';
 import { DEV_PROBLEM_MATCHER, DEV_READY } from '../lense/dev-messages.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 test('tracked toolkit and demo debugger launches wait for CLI readiness and attach to their task port', () => {
   const debugPorts = [];
@@ -35,7 +35,7 @@ test('tracked toolkit and demo debugger launches wait for CLI readiness and atta
 });
 
 test('Windows editor discovery preserves PATH and explicit editor choices, then locates regular vendor CLIs', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-editor-'));
+  const dir = tempDirSync('paqvilo-editor-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const local = path.join(dir, 'Local App Data');
   const machine = path.join(dir, 'Program Files');
@@ -72,7 +72,7 @@ test(
   'Windows source-open invokes the discovered CLI with the exact quoted file location when PATH is empty',
   { skip: process.platform !== 'win32' },
   async (t) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-editor-launch-'));
+    const dir = tempDirSync('paqvilo-editor-launch-');
     const command = path.join(dir, 'Programs', 'Microsoft VS Code', 'bin', 'code.cmd');
     const capture = path.join(dir, 'captured.txt');
     const source = path.join(dir, 'Source & form (draft).js');

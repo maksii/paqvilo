@@ -1,20 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDir } from './fixture.mjs';
 
 const toolkit = fileURLToPath(new URL('../', import.meta.url));
 const environment = Object.fromEntries(
   Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && key !== 'NODE_TEST_CONTEXT'),
 );
 async function project(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'init-acceptance-'));
+  const root = await tempDir('init-acceptance-');
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   await prepareProject(root, { name: 'acceptance-fixture', noVscode: true, ...options });
   await fs.mkdir(path.join(root, 'node_modules'));

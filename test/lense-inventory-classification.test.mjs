@@ -2,12 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { importModelDrivenProject } from '../lense/model-driven.mjs';
 import { writeSolutionAssetEntries } from '../mirage/lib/dataverse-solution-assets.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const run = (...args) =>
@@ -19,7 +19,7 @@ const run = (...args) =>
   });
 
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(tmpdir(), 'lense-inventory-'));
+  const root = tempDirSync('lense-inventory-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const files = {
     'portal/website.yml': 'adx_websiteid: site\nadx_name: Invented',
