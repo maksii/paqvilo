@@ -156,7 +156,6 @@ for (const level of ['dry-run', 'simulation', 'deep'])
     // private checkpoint to survive a restart.
     if (level !== 'dry-run') await fs.rm(fixture.stateFile);
     const restarted = await fixture.start();
-    ownedFixture(t).add(() => restarted.close());
     assert.equal(
       restarted.store.tableRows('x_item')[0].x_name,
       level === 'dry-run' ? 'Pack source' : 'Changed in model app',
@@ -194,7 +193,6 @@ test('deep source-table columns survive source reload and checkpoint-free restar
   await sim.close();
   await fs.rm(fixture.stateFile);
   sim = await fixture.start();
-  ownedFixture(t).add(() => sim.close());
   c = await client(sim);
   const metadata = await body(
     await c.org('GET', "/EntityDefinitions(LogicalName='x_item')/Attributes(LogicalName='new_extra')"),
@@ -212,7 +210,7 @@ test('deep source-table columns survive source reload and checkpoint-free restar
 test('deep declared operation schema keeps source API edits and deletions after reload and checkpoint-free restart', async (t) => {
   // The custom APIs are part of the sources from the first start, so the fixture starts no runtime of its own.
   const data = await pack(t, 'deep'),
-    fixture = await modelDrivenFixture(t, data.options, { started: false });
+    fixture = await modelDrivenFixture(t, { ...data.options, defer: true });
   const files = new Map();
   for (const name of ['new_Kept', 'new_Deleted']) {
     const file = path.join(fixture.solutionDir, 'customapis', name, 'customapi.xml');
@@ -222,7 +220,6 @@ test('deep declared operation schema keeps source API edits and deletions after 
     files.set(file, xml);
   }
   let sim = await fixture.start();
-  ownedFixture(t).add(() => sim.close());
   let c = await client(sim);
   const keep = sim.store.tableRows('customapi').find((row) => row.uniquename === 'new_Kept');
   const remove = sim.store.tableRows('customapi').find((row) => row.uniquename === 'new_Deleted');
