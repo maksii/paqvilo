@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
@@ -365,7 +366,7 @@ test('saved state and status remain editable with legacy text class IDs while ne
     '<row><cell><control datafieldname="statecode" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row><row><cell><control datafieldname="statuscode" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row>';
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('</rows>', cells + '</rows>'));
   const sim = await source.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item');
@@ -450,7 +451,7 @@ test('inline lookup applies its exported lookup view and keeps lookup-only views
     .replace('value="1"', 'value="8"');
   await fs.writeFile(path.join(path.dirname(file), 'lookup.xml'), lookupView);
   const sim = await fixture.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const catalogue = await (await fetch(origin + '/_apps/api')).json();
   assert.equal(catalogue.tables.x_item.lookupViews[0].id, 'qualified-lookup');
@@ -507,7 +508,7 @@ test('advanced lookup preserves all exported columns and their widths instead of
     );
   await fs.writeFile(path.join(path.dirname(queryFile), 'wide.xml'), lookup);
   const sim = await source.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(

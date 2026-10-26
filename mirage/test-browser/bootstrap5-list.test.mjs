@@ -250,7 +250,7 @@ test('Bootstrap 5 lists: a header sort re-marks the header in place', async (t) 
   await grid
     .page()
     .waitForFunction(() => document.querySelectorAll('.entity-grid thead th')[1].classList.contains('sort'));
-  await grid.locator('thead th.sort-asc').nth(0).waitFor();
+  await grid.locator('thead th.sort-asc', { hasText: 'City' }).waitFor();
   await grid
     .page()
     .waitForFunction(() => document.querySelector('.entity-grid thead th a')?.getAttribute('style') === '');

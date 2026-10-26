@@ -5,6 +5,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 async function layoutFixture(t) {
   const source = await modelDrivenFixture(t);
@@ -71,14 +72,14 @@ async function layoutFixture(t) {
     'window.Layout={Editor:class{init(context,notify,state,container){this.input=document.createElement("input");this.input.setAttribute("aria-label","Mounted editor");this.input.style.cssText="width:100%;box-sizing:border-box";this.input.addEventListener("input",()=>{this.value=this.input.value;notify()});container.append(this.input)}updateView(context){this.value=context.parameters.value.raw;this.input.value=this.value??"";this.input.disabled=context.mode.isControlDisabled}getOutputs(){return{value:this.value}}destroy(){this.input.remove()}}};',
   );
   const sim = await source.start({ modelDriven: { trustedExtensions: true } });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   return sim.origin ?? sim.url;
 }
 
 test('exported two and three column forms preserve spacers, spans, labels and PCF widths across responsive reflow and saves', async (t) => {
   const origin = await layoutFixture(t);
   const browser = await chromium.launch(browserLaunchOptions());
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));

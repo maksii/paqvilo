@@ -7,6 +7,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const FILES = {
   'website.yml': 'adx_websiteid: site\nadx_name: Workspace fixture',
@@ -101,6 +102,7 @@ after(() => browser?.close());
 
 async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-workspace-'));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(FILES)) {
     await fs.mkdir(path.dirname(path.join(directory, name)), { recursive: true });
     await fs.writeFile(path.join(directory, name), body);
@@ -115,16 +117,13 @@ async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {
     ...(observed ? { observed } : {}),
     ...(allowLiveWrites ? { allowLiveWrites } : {}),
   });
+  ownedFixture(t).add(() => app.close());
   const context = await browser.newContext({
     serviceWorkers: 'block',
     acceptDownloads: true,
     viewport: { width: 1360, height: 900 },
   });
-  t.after(async () => {
-    await context.close();
-    await app.close();
-    await fs.rm(directory, { recursive: true, force: true });
-  });
+  ownedFixture(t).add(() => context.close());
   await context.route('**/*', (route) =>
     route.request().url().startsWith(app.url) ? route.continue() : route.abort(),
   );
@@ -610,7 +609,7 @@ test(
   'live logs stream requests and Liquid reads with type/text filters, pause, copy and audit correlation',
   { timeout: 180_000 },
   async (t) => {
-    const { app, context, page, errors, evidence } = await fixture(t);
+    const { app, context, page, errors, notice, evidence } = await fixture(t);
     await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: app.url });
     await page.goto(`${app.url}/_sim/#logs`);
     await page.locator('#log-status').getByText('Streaming', { exact: false }).waitFor();
@@ -635,6 +634,8 @@ test(
     await evidence('admin-live-logs');
     await page.getByLabel('Filter live logs', { exact: true }).fill('/secure/');
     await page.getByRole('button', { name: 'Copy filtered JSON', exact: true }).click();
+    // The clipboard write is asynchronous; its notice follows the completed write.
+    await notice('Filtered log copied.');
     const copied = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
     assert.ok(copied.length > 0 && copied.every((entry) => JSON.stringify(entry).includes('/secure/')));
     await page

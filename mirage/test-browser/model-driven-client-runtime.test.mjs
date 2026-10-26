@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
@@ -57,7 +58,7 @@ async function fixture(t, trusted = true) {
   );
   const sim = await initial.start();
   sim.origin = sim.origin ?? sim.url;
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   const errors = [],
     external = [];
@@ -71,6 +72,25 @@ async function fixture(t, trusted = true) {
   );
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
   return { page, sim, errors, external };
+}
+
+/** Starts the fixture's simulator and opens the Copper record once the client runtime and Xrm are ready. */
+async function openReadyRecord(t, initial) {
+  const sim = await initial.start();
+  sim.origin = sim.origin ?? sim.url;
+  ownedFixture(t).add(() => sim.close());
+  const page = await chrome.page(t);
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(
+    sim.origin +
+      '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  );
+  await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
+  await page.waitForFunction(
+    () => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm),
+  );
+  return { sim, page, errors };
 }
 
 // Native command bars move trailing source actions into More as the workspace narrows.
@@ -311,7 +331,7 @@ test('application form and view components select the authored surface before ge
       .replace('Stocked items', 'Excluded view'),
   );
   const sim = await initial.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   await page.goto((sim.origin ?? sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
@@ -356,7 +376,7 @@ test('form deep links, picker changes, saves and Xrm openForm preserve the selec
     ),
   );
   const sim = await initial.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t),
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -484,7 +504,7 @@ test('a persisted inactive two-state record disables its default UI while explic
       },
     },
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t),
     errors = [],
     writes = [];
@@ -701,20 +721,7 @@ test('a header-only column set through the client API is saved with the record; 
       '<form><header><rows><row><cell><control id="header_x_quantity" datafieldname="x_quantity"/></cell></row></rows></header><tabs>',
     );
   await fs.writeFile(formFile, xml);
-  const sim = await initial.start();
-  sim.origin = sim.origin ?? sim.url;
-  t.after(() => sim.close());
-  const page = await chrome.page(t);
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(
-    sim.origin +
-      '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-  );
-  await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
-  await page.waitForFunction(
-    () => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm),
-  );
+  const { sim, page, errors } = await openReadyRecord(t, initial);
   assert.equal(
     await page.evaluate(() => window.Xrm.Page.getControl('header_x_quantity')?.getName()),
     'header_x_quantity',
@@ -756,20 +763,7 @@ test('a save that cannot carry every changed column still runs Save & Close, the
         '<controlDescriptions><controlDescription forControl="{77777777-7777-4777-8777-7777777777c1}"><customControl formFactor="2" name="x_Invented.Phone"/></controlDescription></controlDescriptions></form>',
       ),
   );
-  const sim = await initial.start();
-  sim.origin = sim.origin ?? sim.url;
-  t.after(() => sim.close());
-  const page = await chrome.page(t);
-  const errors = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(
-    sim.origin +
-      '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-  );
-  await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
-  await page.waitForFunction(
-    () => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm),
-  );
+  const { sim, page, errors } = await openReadyRecord(t, initial);
   await page.evaluate(() => {
     window.Xrm.Page.getAttribute('x_name').setValue('Copper two');
     window.Xrm.Page.getAttribute('x_quantity').setValue(42);

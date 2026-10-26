@@ -11,6 +11,7 @@ import { createSimulator } from '../server.mjs';
 import { createFrameReadiness } from '../lib/frame-readiness.mjs';
 import { DataError } from '../lib/data.mjs';
 import { signInContext } from '../testing/session.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -84,6 +85,7 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
 
 async function fixture(t, transport, errorMarkup = 'inline') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'frame-save-feedback-'));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: invented-site\nadx_name: Invented frame',
     'Home.webpage.yml':
@@ -163,10 +165,7 @@ async function fixture(t, transport, errorMarkup = 'inline') {
       },
     },
   });
-  t.after(async () => {
-    await app.close();
-    await fs.rm(root, { recursive: true, force: true });
-  });
+  ownedFixture(t).add(() => app.close());
   return app;
 }
 
@@ -175,7 +174,7 @@ for (const transport of ['json', 'postback'])
     test(`${transport} ${markup} modal save failures re-render posted values and support a successful retry`, async (t) => {
       const app = await fixture(t, transport, markup);
       const context = await browser.newContext();
-      t.after(() => context.close());
+      ownedFixture(t).add(() => context.close());
       await signInContext(context, app, 'editor', { roles: ['Editor'] });
       assert.equal(
         app.store.allowed(

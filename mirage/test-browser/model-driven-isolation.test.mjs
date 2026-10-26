@@ -5,6 +5,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 test('portal → model-driven staff selection → portal preserves styles, scripts and contact session', async (t) => {
   const fixture = await modelDrivenFixture(t),
@@ -33,7 +34,7 @@ test('portal → model-driven staff selection → portal preserves styles, scrip
   const cookieAt = portalSession.cookieHeader.indexOf('='),
     configured = structuredClone(sim.store.state.simulator.identity);
   const browser = await chromium.launch(browserLaunchOptions());
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext({ viewport: { width: 1582, height: 1000 } });
   await context.addCookies([
     {

@@ -4,8 +4,12 @@ import http from 'node:http';
 import { before, after } from 'node:test';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
-/** Launches one browser for the calling test file; `page(t)` opens a fresh context that closes with the test. */
+/**
+ * Launches one browser for the calling test file; `page(t)` opens a fresh context that closes with the test, among the
+ * test's ownedFixture closers and so before its directories are removed (node:test runs t.after hooks first in, first out).
+ */
 export function sharedBrowser(launchOptions) {
   let browser;
   before(async () => {
@@ -18,7 +22,7 @@ export function sharedBrowser(launchOptions) {
     },
     async page(t, contextOptions) {
       const context = await browser.newContext(contextOptions);
-      t.after(() => context.close());
+      ownedFixture(t).add(() => context.close());
       return context.newPage();
     },
   };
@@ -31,13 +35,13 @@ export function closeServer(server) {
 }
 
 /**
- * Serves `handler` on an ephemeral loopback port until the test ends. Register it before the test's browser
- * context so teardown (last in, first out) closes the context first, then drops the server's sockets.
+ * Serves `handler` on an ephemeral loopback port until the test ends. It closes among the test's ownedFixture closers,
+ * dropping keep-alive sockets that a browser context still open at that point would otherwise hold.
  */
 export async function loopbackServer(t, handler) {
   const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => closeServer(server));
+  ownedFixture(t).add(() => closeServer(server));
   return { server, origin: `http://127.0.0.1:${server.address().port}` };
 }
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
@@ -112,7 +113,7 @@ test('exported duration formats create the duration control and save whole minut
     ),
   );
   const sim = await source.start();
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(

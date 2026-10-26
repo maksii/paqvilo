@@ -5,6 +5,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { sharedBrowser } from './shared-browser.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { importModelDrivenProject, createModelDrivenOverlay } from '../../lense/model-driven.mjs';
 import { createModelDrivenMetadataIndex } from '../../lense/model-driven-metadata.mjs';
 import { startModelDrivenInspector } from '../../lense/model-driven-inspector.mjs';
@@ -165,7 +166,7 @@ test(
       },
       stop() {},
     });
-    t.after(() => controller.close());
+    ownedFixture(t).add(() => controller.close());
     await page.waitForFunction(() => document.getElementById('paqvilo-xray')?.__px);
     const nativePage = await chrome.page(t);
     await nativePage.goto(origin + '/native-corpus');
@@ -190,7 +191,7 @@ test(
       },
       stop() {},
     });
-    t.after(() => nativeController.close());
+    ownedFixture(t).add(() => nativeController.close());
     await nativePage.waitForFunction(() => document.getElementById('paqvilo-xray')?.__px);
     const results = [];
     for (const scenario of scenarios)
