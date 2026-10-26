@@ -196,7 +196,15 @@ for (const phase of ['document', 'application'])
     release();
   });
 
-const startupTick = (ms) => new Promise((r) => setTimeout(r, ms));
+// Request settling polls every 50 ms until 100 ms pass without a pending request (lense/startup-progress.mjs).
+// Mock time steps through each poll and lets its continuation schedule the next one.
+const SETTLE_POLL_MS = 50;
+async function elapse(t, ms) {
+  for (let step = 0; step < ms; step += SETTLE_POLL_MS) {
+    t.mock.timers.tick(SETTLE_POLL_MS);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
 function startupRequestFixture() {
   const frame = {},
     child = {},
@@ -221,7 +229,8 @@ function startupRequestFixture() {
   const commit = (f = frame) => p.emit('framenavigated', f);
   return { p, frame, child, request, begin, finish, commit };
 }
-test('committed replacement retires old orphan only, preserving current preloads and redirect chain', async () => {
+test('committed replacement retires old orphan only, preserving current preloads and redirect chain', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const f = startupRequestFixture();
   f.p.goto = async () => {
     const first = f.begin(f.request('document', f.frame, true));
@@ -234,21 +243,23 @@ test('committed replacement retires old orphan only, preserving current preloads
     done = true;
     return x;
   });
-  await startupTick(10);
+  await elapse(t, SETTLE_POLL_MS);
   const redirect = f.begin(f.request('document', f.frame, true));
   f.finish(redirect);
   const current = f.begin(f.request('document', f.frame, true)),
     preload = f.begin(f.request('script'));
   f.commit();
   f.finish(current);
-  await startupTick(140);
+  await elapse(t, 500);
   assert.equal(done, false, 'current preload cannot be retired');
   f.finish(preload);
+  await elapse(t, 150);
   assert.equal(await loading, true);
   assert.equal(f.p.listenerCount('framenavigated'), 0);
   assert.equal(f.p.listenerCount('framedetached'), 0);
 });
-test('same-document navigation retains pending current document requests', async () => {
+test('same-document navigation retains pending current document requests', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const f = startupRequestFixture();
   f.p.goto = async () => {
     const doc = f.begin(f.request('document', f.frame, true));
@@ -257,9 +268,12 @@ test('same-document navigation retains pending current document requests', async
     f.begin(f.request('fetch'));
     f.commit();
   };
-  await assert.rejects(waitForStartupPage(f.p, f.p.url(), { timeout: 180 }), /did not settle/);
+  const rejected = assert.rejects(waitForStartupPage(f.p, f.p.url(), { timeout: 180 }), /did not settle/);
+  await elapse(t, 200);
+  await rejected;
 });
-test('detached child retirement retains live parent requests', async () => {
+test('detached child retirement retains live parent requests', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const f = startupRequestFixture();
   let done = false;
   f.p.goto = async () => {
@@ -272,15 +286,17 @@ test('detached child retirement retains live parent requests', async () => {
     done = true;
     return x;
   });
-  await startupTick(10);
+  await elapse(t, SETTLE_POLL_MS);
   const parent = f.begin(f.request('fetch'));
   f.p.emit('framedetached', f.child);
-  await startupTick(140);
+  await elapse(t, 500);
   assert.equal(done, false);
   f.finish(parent);
+  await elapse(t, 150);
   assert.equal(await loading, true);
 });
-test('unknown frame ownership remains pending across committed navigations', async () => {
+test('unknown frame ownership remains pending across committed navigations', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const f = startupRequestFixture();
   f.p.goto = async () => {
     const doc = f.begin(f.request('document', f.frame, true));
@@ -291,7 +307,9 @@ test('unknown frame ownership remains pending across committed navigations', asy
     f.commit();
     f.finish(next);
   };
-  await assert.rejects(waitForStartupPage(f.p, f.p.url(), { timeout: 180 }), /did not settle/);
+  const rejected = assert.rejects(waitForStartupPage(f.p, f.p.url(), { timeout: 180 }), /did not settle/);
+  await elapse(t, 200);
+  await rejected;
 });
 
 test('native model-driven navigation completes at load without mistaking a worker or background fetch for readiness', async () => {

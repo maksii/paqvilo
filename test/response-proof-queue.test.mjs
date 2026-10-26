@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
 import { createResponseProofQueue } from '../lense/response-proof-queue.mjs';
 
 const url = 'https://fixture.invalid/script.js?version=invented';
@@ -50,6 +49,10 @@ test('an acknowledged body waits for its actual Network frame, loader and full U
 test('expired or evicted acknowledgements never acquire evidence from later requests', async (t) => {
   const requests = new Map(),
     admitted = [];
+  // The queue ages entries by performance.now() and sweeps them with a timer; both are controlled here.
+  let now = performance.now();
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const queue = createResponseProofQueue({ requests, admit: (...args) => admitted.push(args) });
   t.after(() => queue.clear());
   for (let i = 0; i < 257; i++) await queue.fulfill({ ...event, networkId: String(i) }, { proofId: String(i) });
@@ -58,7 +61,10 @@ test('expired or evicted acknowledgements never acquire evidence from later requ
   await Promise.resolve();
   assert.equal(admitted.length, 1);
   assert.equal(admitted[0][2].proofId, '256');
-  await delay(3100);
+  now += 3100;
+  // Before the sweep runs, a request still refuses an acknowledgement past its age.
+  queue.requested('254', request);
+  t.mock.timers.tick(3100);
   queue.requested('255', request);
   await Promise.resolve();
   assert.equal(admitted.length, 1);

@@ -63,6 +63,18 @@ test('diagnostic toggles preserve source routes and unrelated duplicate flags, t
   assert.equal(url.searchParams.get('etn'), 'x_person');
   assert.equal(url.hash, '#tab');
   assert.deepEqual(url.searchParams.getAll('flags').slice(0, 2), ['Keep=true', 'Other=yes']);
+  assert.deepEqual(
+    new Set(url.searchParams.getAll('flags').slice(2)),
+    new Set([
+      'DisableFormHandlers=true',
+      'DisableFormHandlers=businessrule',
+      'DisableFormLibraries=true',
+      'themeoption=darkmode',
+    ]),
+    'every native flag toggle was applied',
+  );
+  for (const parameter of ['monitor', 'ribbondebug', 'perf']) assert.equal(url.searchParams.get(parameter), 'true');
+  assert.throws(() => modelDrivenDiagnosticUrl(source, 'debugging:invented'), /Unknown diagnostic action/);
   assert.equal(
     modelDrivenDiagnosticUrl(changed, 'debugging:forms-monitor'),
     changed,

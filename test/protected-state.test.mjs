@@ -9,16 +9,20 @@ import { PassThrough, Writable } from 'node:stream';
 import { syncBuiltinESMExports } from 'node:module';
 import { saveProtectedState, loadProtectedState } from '../lense/dataverse/index.mjs';
 import { protectSecret } from '../lense/dataverse/connection.mjs';
-test('protected JSON validates private location, bounded purpose and JSON without revealing values', async () => {
+test('protected JSON validates private location, bounded purpose and JSON without revealing values', async (t) => {
+  // A private directory: a regressed validation would otherwise write into the shared temporary folder.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protected-json-invalid-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await assert.rejects(
-    saveProtectedState(path.join(os.tmpdir(), 'outside.json'), { password: 'sample' }, { purpose: 'fixture' }),
+    saveProtectedState(path.join(dir, 'outside.json'), { password: 'sample' }, { purpose: 'fixture' }),
     /ignored/,
   );
-  const file = path.join(os.tmpdir(), '.paqvilo', 'fixture.json');
+  const file = path.join(dir, '.paqvilo', 'fixture.json');
   await assert.rejects(saveProtectedState(file, { password: 'sample' }, { purpose: 'space invalid' }), /purpose/);
   await assert.rejects(saveProtectedState(file, { value: undefined }, { purpose: 'fixture' }), /plain acyclic JSON/);
   await assert.rejects(saveProtectedState(file, { value: Infinity }, { purpose: 'fixture' }), /plain acyclic JSON/);
   await assert.rejects(saveProtectedState(file, { value: 'x'.repeat(300000) }, { purpose: 'fixture' }), /size bound/);
+  await assert.rejects(fs.access(path.dirname(file)), { code: 'ENOENT' });
 });
 test('protected state has encrypted durable roundtrip, purpose binding and exclusive writes or explicit platform refusal', async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protected-json-'));

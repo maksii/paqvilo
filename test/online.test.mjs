@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setImmediate } from 'node:timers/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { fetchOnline, mapLimit, portalResourceUrl, compareWebFile } from '../lense/online.mjs';
 
 test('resource paths keep their origin and encode literal reserved filename characters once', () => {
@@ -45,7 +47,19 @@ test('browser-authenticated comparisons keep redirects confined and dispose ever
       };
     },
   };
-  assert.equal((await fetchOnline('https://portal.example', '/app.js', 2, { request })).status, 302);
+  // The 503 is retried after a 400 ms backoff: advance it once the first response has been disposed. The product
+  // imports the promise setTimeout by name, so the mock reaches it only through synchronized builtin exports.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.timers.reset();
+    syncBuiltinESMExports();
+  });
+  const retried = fetchOnline('https://portal.example', '/app.js', 2, { request });
+  await setImmediate();
+  assert.equal(disposed, 1);
+  t.mock.timers.tick(400);
+  assert.equal((await retried).status, 302);
   assert.equal((await fetchOnline('https://portal.example', '/app.js', 1, { request })).body.toString(), 'ok');
   assert.match((await fetchOnline('https://portal.example', '/app.js', 1, { request })).error, /32 MiB/);
   assert.equal(disposed, 4);
@@ -58,7 +72,8 @@ test('bounded mapping preserves order and rejects a limit that would silently om
     peak = 0;
   const result = await mapLimit([3, 1, 2, 4], 2, async (value) => {
     peak = Math.max(peak, ++active);
-    await new Promise((resolve) => setTimeout(resolve, value));
+    // Each item takes `value` event-loop turns, so later items finish first without depending on timer resolution.
+    for (let turn = 0; turn < value; turn++) await setImmediate();
     active--;
     return value * 2;
   });
