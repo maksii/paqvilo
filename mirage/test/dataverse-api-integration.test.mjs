@@ -117,6 +117,23 @@ function fixtureState() {
 
 // A custom API row is registered from the table, as the server does for a Solution's customapis folder.
 const customApis = { name: 'customapi', install: (api) => installCustomApis(api) };
+// Two extension routes: one declared anonymous, one behind the bearer check like every other route.
+const ANON = '/api/custom/anon';
+const BEARER = '/api/custom/bearer';
+const routes = {
+  name: 'anonymous-routes',
+  install: (api) => {
+    api.addRoute(
+      (pathname) => pathname === ANON,
+      () => ({ status: 200, body: { anonymous: true } }),
+      { anonymous: true },
+    );
+    api.addRoute(
+      (pathname) => pathname === BEARER,
+      () => ({ status: 200, body: { anonymous: false } }),
+    );
+  },
+};
 
 describe('dataverse API: wired modules over HTTP', () => {
   let api;
@@ -153,7 +170,7 @@ describe('dataverse API: wired modules over HTTP', () => {
         { domainname: 'basic@example.test', fullname: 'Basic', objectId: BASIC_OID, roles: ['Basic User'] },
       ],
     });
-    api = await startDataverseApi({ store, settings, log: () => {}, extensions: [...EXTENSIONS, customApis] });
+    api = await startDataverseApi({ store, settings, log: () => {}, extensions: [...EXTENSIONS, customApis, routes] });
     origin = api.origin;
     tenantId = api.tenantId;
     organizationId = api.organizationId;
@@ -491,54 +508,14 @@ describe('dataverse API: wired modules over HTTP', () => {
     assert.equal(response.status, 200);
     assert.ok((await response.text()).includes('Name="PublishDuplicateRule"'));
   });
-});
-
-describe('anonymous extension routes', () => {
-  const ANON = '/api/custom/anon';
-  const BEARER = '/api/custom/bearer';
-  let server;
-
-  before(async () => {
-    process.env[SECRET_VAR] = 'anonymous-route-secret';
-    const store = await new DataStore({ state: fixtureState() }).init();
-    const settings = dataverseSettings({
-      enabled: true,
-      applications: [
-        {
-          appId: APP_ID,
-          displayName: 'Anonymous route app',
-          secretEnvironmentVariable: SECRET_VAR,
-          roles: ['System Administrator'],
-        },
-      ],
-    });
-    const routes = {
-      name: 'anonymous-routes',
-      install: (api) => {
-        api.addRoute(
-          (pathname) => pathname === ANON,
-          () => ({ status: 200, body: { anonymous: true } }),
-          { anonymous: true },
-        );
-        api.addRoute(
-          (pathname) => pathname === BEARER,
-          () => ({ status: 200, body: { anonymous: false } }),
-        );
-      },
-    };
-    server = await startDataverseApi({ store, settings, log: () => {}, extensions: [routes] });
-  });
-
-  after(async () => {
-    delete process.env[SECRET_VAR];
-    await server?.close();
-  });
 
   it('an anonymous extension route answers without a bearer; a normal one still returns 401', async () => {
-    const open = await fetch(`${server.origin}${ANON}`);
+    const open = await call(ANON, { token: null });
     assert.equal(open.status, 200);
     assert.deepEqual(await open.json(), { anonymous: true });
-    const closed = await fetch(`${server.origin}${BEARER}`);
-    assert.equal(closed.status, 401);
+    assert.equal((await call(BEARER, { token: null })).status, 401);
+    const signed = await call(BEARER);
+    assert.equal(signed.status, 200);
+    assert.deepEqual(await signed.json(), { anonymous: false });
   });
 });
