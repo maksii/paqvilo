@@ -219,7 +219,10 @@ test('emulator preflight probes the loopback health endpoint', async (t) => {
     response.end('ok');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   const connectionString =
     'Endpoint=sb://127.0.0.1;SharedAccessKeyName=x;SharedAccessKey=invented-key-value;UseDevelopmentEmulator=true;';
   const healthy = await serviceBusEmulatorPreflight({ connectionString, healthPort: server.address().port });
