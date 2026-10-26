@@ -6,13 +6,16 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DataStore } from '../lib/data.mjs';
+import { fixedClock } from '../lib/runtime-clock.mjs';
 import { createPortalRenderer } from '../lib/liquid.mjs';
 import { createSimulator } from '../server.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const DAY = 24 * 60 * 60 * 1000;
-const isoDaysAgo = (days) => new Date(Date.now() - days * DAY).toISOString().replace(/\.\d+Z$/, 'Z');
+// Relative date operators read the store clock: one fixed instant keeps rows and conditions on the same days and year.
+const NOW = Date.parse('2026-06-15T12:00:00Z');
+const isoDaysAgo = (days) => new Date(NOW - days * DAY).toISOString().replace(/\.\d+Z$/, 'Z');
 
 const fixture = () => ({
   mappings: {
@@ -124,7 +127,7 @@ const fixture = () => ({
   },
   settings: { permissionMode: 'permissive' },
 });
-const store = async (state = fixture()) => new DataStore({ state }).init();
+const store = async (state = fixture()) => new DataStore({ state, clock: fixedClock(NOW) }).init();
 const names = (result, column = 'name') => result.entities.map((row) => row[column]);
 const accounts = (filter, extra = '') =>
   `<fetch><entity name="account"><attribute name="name"/>${extra}<order attribute="name"/><filter>${filter}</filter></entity></fetch>`;
@@ -228,7 +231,7 @@ test('date operators evaluate whole days and relative ranges', async () => {
     ['A_B Corp', 'A[B] Corp', 'Café Noir'].sort(),
   );
   // last-year is calendar-relative: pin rows just inside and outside the previous calendar year.
-  const lastYear = new Date().getUTCFullYear() - 1;
+  const lastYear = new Date(NOW).getUTCFullYear() - 1;
   const dated = fixture();
   for (const [index, createdon] of [
     `${lastYear - 1}-12-31T12:00:00Z`,

@@ -12,7 +12,6 @@ const call = (operationId, runAfter = {}, parameters = {}) => ({
   runAfter,
   inputs: { host: { apiId: '/providers/Microsoft.PowerApps/apis/x_slow', operationId }, parameters },
 });
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function runtime(operations) {
   const store = await new DataStore({ state: emptyState() }).init();
@@ -23,14 +22,17 @@ async function runtime(operations) {
 }
 
 test('two provider branches overlap in time', async () => {
-  const log = [];
-  const slow = (name) => async () => {
+  const log = [],
+    started = { a: Promise.withResolvers(), b: Promise.withResolvers() };
+  // Each provider answers only once the other one has started: run in sequence, the first would wait forever.
+  const overlapping = (name, other) => async () => {
     log.push(name + ':start');
-    await sleep(25);
+    started[name].resolve();
+    await started[other].promise;
     log.push(name + ':end');
     return { statusCode: 200, body: { name } };
   };
-  const { store, connectors } = await runtime({ A: slow('a'), B: slow('b') });
+  const { store, connectors } = await runtime({ A: overlapping('a', 'b'), B: overlapping('b', 'a') });
   const definition = {
     triggers: manual,
     actions: {
@@ -99,13 +101,23 @@ test('a join on Failed runs only when its dependency failed, and the run status 
 });
 
 test('a Foreach honours concurrency.repetitions as its degree of parallelism', async () => {
+  const ITEMS = [1, 2, 3, 4, 5];
+  const held = [];
   let inflight = 0,
-    peak = 0;
+    peak = 0,
+    started = 0,
+    degree = 1;
+  // An item call is held until `degree` calls are in flight or the last item started, so the peak reaches the degree of
+  // parallelism the loop granted without relying on timing; a loop that runs fewer at a time leaves its calls held.
   const { store, connectors } = await runtime({
     Item: async (request) => {
       inflight++;
+      started++;
       peak = Math.max(peak, inflight);
-      await sleep(15);
+      if (inflight >= degree || started === ITEMS.length) for (const release of held.splice(0)) release();
+      else await new Promise((resolve) => held.push(resolve));
+      // One turn in flight: calls a loop starts together (more than its degree) overlap here and raise the peak.
+      await new Promise((resolve) => setImmediate(resolve));
       inflight--;
       return { statusCode: 200, body: { n: request.parameters.n } };
     },
@@ -115,7 +127,7 @@ test('a Foreach honours concurrency.repetitions as its degree of parallelism', a
     actions: {
       each: {
         type: 'Foreach',
-        foreach: [1, 2, 3, 4, 5],
+        foreach: ITEMS,
         ...(repetitions ? { runtimeConfiguration: { concurrency: { repetitions } } } : {}),
         actions: { item: call('Item', {}, { n: '@item()' }) },
       },
@@ -127,6 +139,8 @@ test('a Foreach honours concurrency.repetitions as its degree of parallelism', a
     [5, 5],
   ]) {
     peak = 0;
+    started = 0;
+    degree = expected;
     const answer = await executeFlowDefinition({
       definition: loop(repetitions),
       input: {},

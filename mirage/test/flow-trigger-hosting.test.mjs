@@ -368,9 +368,8 @@ test('a Dataverse action trigger runs a tracked flow with the action inputs and 
   enable(second.overrides, PERFORMED);
   await second.runner.syncTriggers();
   committedJobs(second.store).resume();
+  // runDue() runs the resumed job on the manual scheduler and returns once its run settled.
   await second.scheduler.runDue();
-  for (let i = 0; i < 50 && !second.runs.list({ processId: PERFORMED }).some((r) => r.status === 'Succeeded'); i++)
-    await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(
     second.runs.list({ processId: PERFORMED }).map((r) => [r.status, r.triggertype]),
     [['Succeeded', 'Automated']],

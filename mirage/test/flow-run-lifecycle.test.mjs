@@ -14,6 +14,7 @@ import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { createHostFlowRuns, flowRunsOf } from '../lib/flow-runs.mjs';
 import { runTrackedFlow } from '../lib/flow-runtime.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { whenScheduled } from './support/scheduler-gates.mjs';
 
 const FLOW = '77777777-7777-4777-8777-0000000000f1';
 const CHILD = '77777777-7777-4777-8777-0000000000f2';
@@ -222,13 +223,12 @@ test('a retry policy retries an http provider answering 503 twice and journals t
     },
   };
   const { runs, scheduler, start } = await unit(t, flows);
-  let settled = false;
-  const pending = start(FLOW).finally(() => {
-    settled = true;
-  });
-  // The retry waits run on the manual scheduler: move it on until the run answers (never a real sleep of 10 s).
-  for (let i = 0; i < 200 && !settled; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
+  let retry = whenScheduled(scheduler, 'connector-retry');
+  const pending = start(FLOW);
+  // Each 503 queues a PT10S retry pause on the manual scheduler (never a real sleep): advance once it is queued.
+  for (let i = 0; i < 2; i++) {
+    await retry;
+    retry = whenScheduled(scheduler, 'connector-retry');
     await scheduler.advance(10000);
   }
   const answer = await pending;
@@ -559,29 +559,20 @@ async function standalone(t) {
       headers: { 'x-sim-csrf': sim.csrf, ...(body ? { 'content-type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
-  const until = async (read, check) => {
-    let value;
-    for (let i = 0; i < 200; i++) {
-      value = await read();
-      if (check(value)) return value;
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    assert.fail('Timed out: ' + JSON.stringify(value));
-  };
   const item = await json(await api('POST', '/x_items', { x_name: 'Invented item' }), 201);
   await json(
     await api('POST', `/workflows(${FLOW})/Microsoft.Dynamics.CRM.ExecuteWorkflow`, { EntityId: item.x_itemid }),
     200,
   );
-  const [wait] = await until(
-    async () => json(await simApi('GET', '/flow-waits'), 200),
-    (waits) => waits.length === 1,
-  );
-  return { json, api, simApi, until, wait };
+  // The ExecuteWorkflow job runs on the runtime scheduler: settle() returns once it ran and its run suspended.
+  await sim.settle();
+  const waits = await json(await simApi('GET', '/flow-waits'), 200);
+  assert.equal(waits.length, 1, JSON.stringify(waits));
+  return { sim, json, api, simApi, wait: waits[0] };
 }
 
 test('standalone: ExecuteWorkflow waits for an approval, the flow-waits answer resumes it and the run succeeds', async (t) => {
-  const { json, simApi, until, wait } = await standalone(t);
+  const { sim, json, simApi, wait } = await standalone(t);
   assert.equal(wait.kind, 'approval');
   assert.equal((await json(await simApi('GET', `/flow-runs/${wait.runId}`), 200)).status, 'Waiting');
   const answered = await json(
@@ -593,10 +584,9 @@ test('standalone: ExecuteWorkflow waits for an approval, the flow-waits answer r
     202,
   );
   assert.equal(answered.outcome, 'Approve');
-  const run = await until(
-    async () => json(await simApi('GET', `/flow-runs/${wait.runId}`), 200),
-    (value) => value.status !== 'Running' && value.status !== 'Waiting',
-  );
+  // The answer resumes the run on the runtime scheduler (202 Accepted): settle() returns once it finished.
+  await sim.settle();
+  const run = await json(await simApi('GET', `/flow-runs/${wait.runId}`), 200);
   assert.equal(run.status, 'Succeeded', JSON.stringify(run));
   assert.equal(run.journal.approve.outputs.body.outcome, 'Approve');
   assert.equal(run.journal.approve.outputs.body.responses[0].comments, 'Invented');
