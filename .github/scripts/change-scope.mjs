@@ -76,7 +76,7 @@ export function dependencyConsumers(root = toolkitRoot) {
   return reverse;
 }
 
-function emptyScope() {
+function initialScope() {
   return {
     runtime: false,
     package: false,
@@ -88,13 +88,15 @@ function emptyScope() {
     smoke: false,
     site: false,
     full: false,
-    codeql: false,
-    languages: '[]',
+    // Required code-scanning comparisons need the same configurations as main,
+    // including PRs that change only documentation or one source language.
+    codeql: true,
+    languages: JSON.stringify(['actions', 'csharp', 'javascript-typescript']),
   };
 }
 
 export function classifyChanges(files, { root = toolkitRoot, full = false } = {}) {
-  const scope = emptyScope();
+  const scope = initialScope();
   scope.quality = files.length > 0;
   scope.package = files.some((file) => !/^(?:site\/|\.github\/|SECURITY\.md$|CODE_OF_CONDUCT\.md$)/.test(file));
   scope.dependencies = files.some((file) =>
@@ -155,19 +157,6 @@ export function classifyChanges(files, { root = toolkitRoot, full = false } = {}
     ])
       scope[name] = true;
   }
-  const languages = new Set();
-  for (const file of files) {
-    if (/\.[cm]?[jt]sx?$/.test(file) || /(?:^|\/)(?:package(?:-lock)?\.json|npm-shrinkwrap\.json)$/.test(file))
-      languages.add('javascript-typescript');
-    else if (/\.cs$|\.csproj$|packages\.lock\.json$/.test(file)) languages.add('csharp');
-    else if (/^\.github\/(?:workflows|actions)\//.test(file)) languages.add('actions');
-    else if (!secondary.test(file) && !/\.(?:css|html|svg|png|jpe?g|gif|woff2?|ya?ml|json|md)$/.test(file)) {
-      for (const language of ['javascript-typescript', 'actions', 'csharp']) languages.add(language);
-    }
-  }
-  if (full) for (const language of ['javascript-typescript', 'actions', 'csharp']) languages.add(language);
-  scope.codeql = languages.size > 0;
-  scope.languages = JSON.stringify([...languages].sort());
   return scope;
 }
 

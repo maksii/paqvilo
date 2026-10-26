@@ -36,7 +36,10 @@ suites, Windows/CLR regressions and package smoke. Documentation-only PRs retain
 and release checks. Local `npm run ci:verify -- --full` prepares the same mandatory
 fixtures, always executes fresh and writes an ignored receipt for the verified source tree, toolchain
 and platform; ordinary scoped pre-push can reuse that exact result after refreshing dependency audits and signatures. Starting verification revokes previous evidence, so a failed rerun cannot leave a qualifying pass. Confirm the required hosted gates on the final pushed PR head separately from local results. The security workflow performs dependency review and CodeQL
-analysis. After successful analysis/processing, `Security gate` checks the analyzed
+analysis. Every PR reports the same JavaScript/TypeScript, Actions and C# configurations as main, including
+documentation-only PRs. Omitting an unchanged language leaves CodeQL unable to compare the PR with main and can
+block merging even when `Security gate` succeeds. Runtime suite selection remains independent of these required
+analysis configurations. After successful analysis/processing, `Security gate` checks the analyzed
 ref for open CodeQL findings and fails when any remain or the alert API cannot be
 read. It uses read-only security permissions and does not check out or execute PR
 sources with that token. The first alert is enough to fail; pagination cannot hide
