@@ -81,9 +81,12 @@ export function buildPortalSourceIndex({
       const sidecar = file.replace(/\.ya?ml$/i, '.' + suffixes[field]);
       if (!fieldBodies.has(sidecar)) {
         try {
+          // Most fields have no sidecar: one stat instead of a failing guarded read.
           fieldBodies.set(
             sidecar,
-            readLocalFileSync(sidecar, { root: portal.sourceDir, maxBytes: 8 * 1024 * 1024, encoding: 'utf8' }),
+            fs.existsSync(sidecar)
+              ? readLocalFileSync(sidecar, { root: portal.sourceDir, maxBytes: 8 * 1024 * 1024, encoding: 'utf8' })
+              : null,
           );
         } catch {
           fieldBodies.set(sidecar, null);

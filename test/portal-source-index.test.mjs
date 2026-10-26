@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import YAML from 'yaml';
 import { createSourceInspector } from '../lense/source-inspection.mjs';
 import { buildPortalSourceIndex, sourceEditorTarget } from '../mirage/lib/portal-source-index.mjs';
@@ -35,11 +36,11 @@ test('shared index revision agrees with renderer/inspector and source links reva
   assert.equal((await inspector.lookupSource(body)).state, 'stale');
 });
 
-test('index builds resolve each shared export file once instead of once per record', async (t) => {
+test('imports and index builds touch each shared export file once instead of once per record', async (t) => {
   const fx = inspectionFixture();
   t.after(fx.cleanup);
   const file = path.join(fx.portal, 'contentsnippet.yml');
-  const resolutions = async (count) => {
+  const work = async (count) => {
     fs.writeFileSync(
       file,
       JSON.stringify(
@@ -50,7 +51,14 @@ test('index builds resolve each shared export file once instead of once per reco
         })),
       ),
     );
-    const portal = await importPortal(fx.portal);
+    const reads = t.mock.method(fs.promises, 'readFile');
+    let portal;
+    try {
+      portal = await importPortal(fx.portal);
+    } finally {
+      reads.mock.restore();
+    }
+    assert.equal(portal.snippets['Shared ' + (count - 1)], `<b id="shared-${count - 1}"></b>`);
     const realpath = t.mock.method(fs, 'realpathSync');
     try {
       const index = buildPortalSourceIndex({ portal });
@@ -58,14 +66,40 @@ test('index builds resolve each shared export file once instead of once per reco
         (source) => source.file === file && source.fieldPath[0] === 'value' && source.ref,
       );
       assert.equal(linked.length, count, 'every row keeps its own editor reference into the shared file');
-      return realpath.mock.callCount();
+      return { reads: reads.mock.callCount(), resolutions: realpath.mock.callCount() };
     } finally {
       realpath.mock.restore();
     }
   };
-  // Windows realpath costs one lstat per path component; per-row resolution
-  // made a 4,200-row export take minutes to index.
-  assert.equal(await resolutions(40), await resolutions(80));
+  // Each absent sidecar probe and each Windows realpath (one lstat per path
+  // component) is a filesystem round trip; per-row work made a 4,200-row
+  // export take minutes to import and index.
+  assert.deepEqual(await work(40), await work(80));
+});
+
+test('resolved source paths are remembered for one index build only, so a retargeted root is followed', (t) => {
+  const fx = inspectionFixture();
+  t.after(fx.cleanup);
+  const copy = path.join(fx.work, 'copy'),
+    link = path.join(fx.work, 'selected');
+  fs.cpSync(fx.portal, copy, { recursive: true });
+  fs.symlinkSync(fx.portal, link, 'junction');
+  const relative = 'web-templates/Partial.webtemplate.source.html';
+  const text = fs.readFileSync(path.join(fx.portal, relative), 'utf8');
+  const source = {
+    file: path.join(link, relative),
+    sourceDir: link,
+    region: { start: 0 },
+    contentRevision: createHash('sha256').update(text).digest('hex'),
+  };
+  assert.equal(sourceEditorTarget(source, undefined, new Map()).file, fs.realpathSync(path.join(fx.portal, relative)));
+  fs.unlinkSync(link);
+  fs.symlinkSync(copy, link, 'junction');
+  assert.equal(
+    sourceEditorTarget(source, undefined, new Map()).file,
+    fs.realpathSync(path.join(copy, relative)),
+    'a later build resolves the retargeted root again',
+  );
 });
 
 test('localized JSON source identity follows LCID rather than mutable array position', () => {
