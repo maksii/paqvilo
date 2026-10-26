@@ -5,10 +5,14 @@ import fs from 'node:fs';
 // Well past the 2 s racy window of lense/file-cache.mjs (kept private there), with room for slow test hosts.
 const SETTLED_OFFSET_MS = 60_000;
 
-/** Fixtures written moments ago are judged as an unchanged tree is once the racy window has passed. */
+/**
+ * Fixtures written moments ago are judged as an unchanged tree is once the racy window has passed. Restore the real
+ * clock (the returned mock) before an edit the test expects to be detected: under the shifted clock a same-size
+ * rewrite in the same file-time tick is indistinguishable from the settled file.
+ */
 export function settleFileTimes(t) {
   const now = Date.now;
-  t.mock.method(Date, 'now', () => now() + SETTLED_OFFSET_MS);
+  return t.mock.method(Date, 'now', () => now() + SETTLED_OFFSET_MS).mock;
 }
 
 /** The same for child Node processes, including ones they start: the environment with an --import of a shifted clock. */

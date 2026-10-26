@@ -10,6 +10,7 @@ import { createFixture, SITE, ONLINE_HOME, HOME_ID } from './fixture.mjs';
 import { fakeBrowser } from './fake-browser.mjs';
 import { watchSources } from '../lense/commands/dev.mjs';
 import { createSimulator } from '../mirage/server.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 
 const ORIGIN = 'https://portal.example.com';
 const fx = createFixture();
@@ -282,7 +283,9 @@ test('Mirage Liquid output is not patched a second time by the remote overlay', 
   assert.equal(fallbacks, 1);
 });
 
-test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work', async () => {
+test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work', async (t) => {
+  // The served-body cache never trusts a stamp taken within the file's time tick; the fixture was written moments ago.
+  settleFileTimes(t);
   const s = new OverlaySession({ origin: ORIGIN, sourceDir: fx.dir, site: SITE, sourceMaps: true });
   const b = fakeBrowser();
   const tab = b.openTab();

@@ -81,7 +81,7 @@ test('portal restart consumes one integrity-checked restore and rejects a stale 
 
 test('scan reuse validates file inventory, order and content identity before sharing parsed facts', async (t) => {
   // The reuse assertions below concern files written moments ago.
-  settleFileTimes(t);
+  const settled = settleFileTimes(t);
   const root = await workspace(t),
     file = path.join(root, 'AppModules', 'x_app', 'AppModule.xml');
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -89,6 +89,8 @@ test('scan reuse validates file inventory, order and content identity before sha
   const scan = await scanSolutionSources([root]);
   assert.equal(await scanSolutionSources([root], { previous: scan }), scan);
   assert.notEqual(await scanSolutionSources([root], { previous: scan, order: 'derived' }), scan);
+  // A same-size edit, possibly in the same file-time tick: the real clock lets the racy window catch it.
+  settled.restore();
   await fs.writeFile(file, '<AppModule><UniqueName>x_two</UniqueName></AppModule>');
   const changed = await scanSolutionSources([root], { previous: scan });
   assert.notEqual(changed, scan);

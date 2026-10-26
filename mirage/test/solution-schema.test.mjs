@@ -558,7 +558,7 @@ test('Web API tables receive complete column metadata on their mapping; user map
 
 test('parsed files are cached by file identity and re-read after any change', async (t) => {
   // The reuse assertions below concern files written moments ago.
-  settleFileTimes(t);
+  const settled = settleFileTimes(t);
   const root = await tree(t, {
     'Entities/sample_item/Entity.xml': entityXml('sample_item', { set: 'sample_items', full: true }),
   });
@@ -571,6 +571,8 @@ test('parsed files are cached by file identity and re-read after any change', as
   assert.deepEqual(scan.cache.stats, { hits: 1, misses: 0 });
   const file = path.join(root, 'Entities/sample_item/Entity.xml');
   const original = await fs.readFile(file, 'utf8');
+  // A same-size edit, possibly in the same file-time tick: the real clock lets the racy window catch it.
+  settled.restore();
   await fs.writeFile(file, original.replace('sample_items', 'sample_xtems'));
   scan = await scanSolutionSources([root], { cacheFile });
   assert.equal(scan.cache.stats.misses, 1);
