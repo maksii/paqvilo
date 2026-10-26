@@ -262,7 +262,15 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
       }),
     });
 
+  // One synchronous sourceRefsFor pass validates each file once: a table's columns, forms and controls name the same
+  // few files, and re-opening each for every reference made the first catalogue request grow with unrelated tables.
+  let passFiles = null;
   const sourceFile = (file) => {
+    if (!passFiles) return readSourceFile(file);
+    if (!passFiles.has(file)) passFiles.set(file, readSourceFile(file));
+    return passFiles.get(file);
+  };
+  const readSourceFile = (file) => {
     if (typeof file !== 'string' || !path.isAbsolute(file)) return null;
     let fd;
     try {
@@ -899,16 +907,23 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
       sourceRef: { ...current, ...(region ? { region } : {}) },
     };
   };
-  const sourceRefsFor = (keys, options) =>
-    keys.flatMap((key) => {
-      if (key.startsWith('command:')) readRibbons();
-      if (/^(control|tab|section):/.test(key)) {
-        const match = /^(?:control|tab|section):([^:]+):/.exec(key);
-        if (match) compile(modelDrivenKey('form', match[1]));
-      }
-      const component = components.get(key);
-      return component ? refsFor(component, options) : [];
-    });
+  const sourceRefsFor = (keys, options) => {
+    const outer = passFiles;
+    passFiles ??= new Map();
+    try {
+      return keys.flatMap((key) => {
+        if (key.startsWith('command:')) readRibbons();
+        if (/^(control|tab|section):/.test(key)) {
+          const match = /^(?:control|tab|section):([^:]+):/.exec(key);
+          if (match) compile(modelDrivenKey('form', match[1]));
+        }
+        const component = components.get(key);
+        return component ? refsFor(component, options) : [];
+      });
+    } finally {
+      passFiles = outer;
+    }
+  };
   const formControls = (key) => compile(key)?.controls ?? [];
   const sourceRefsForForm = (key, { controlNames, controlKeys, includeStructure = true } = {}) => {
     const form = compile(key);

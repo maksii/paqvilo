@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
@@ -468,6 +469,39 @@ test('quadrupling unrelated forms does not grow selected-table metadata transfer
     }
   }
   assert.ok(Math.abs(sizes[1] - sizes[0]) < 128, `${sizes[0]} -> ${sizes[1]} bytes`);
+});
+
+test('selected-table provenance opens a source file no more often when more columns and controls name it', async () => {
+  const opensPerFile = [];
+  for (const columns of [2, 16]) {
+    const fixture = await performanceFixture({ tables: 1, columns, records: 1 });
+    let sim;
+    const openSync = fsSync.openSync;
+    try {
+      sim = await createSimulator({
+        runtime: { kind: 'model-driven' },
+        solutionRoots: fixture.solutionRoots,
+        watch: false,
+      });
+      const root = fsSync.realpathSync.native(fixture.root),
+        opens = new Map();
+      fsSync.openSync = (file, ...rest) => {
+        if (typeof file === 'string' && file.startsWith(root)) opens.set(file, (opens.get(file) ?? 0) + 1);
+        return openSync(file, ...rest);
+      };
+      const response = await fetch(sim.url + '/_apps/api/metadata/x_scale0');
+      fsSync.openSync = openSync;
+      assert.equal(response.status, 200);
+      assert.ok((await response.json()).provenanceRefs.length > columns, 'every column and control carries provenance');
+      assert.ok(opens.size > 0, 'the first catalogue request reads its source files');
+      opensPerFile.push(Math.max(...opens.values()));
+    } finally {
+      fsSync.openSync = openSync;
+      await sim?.close();
+      await fixture.cleanup();
+    }
+  }
+  assert.equal(opensPerFile[1], opensPerFile[0], `${opensPerFile[0]} -> ${opensPerFile[1]} opens of one source file`);
 });
 
 test('form/view-only source layers retain mapped OData columns through public list and record routes and reload', async (t) => {
