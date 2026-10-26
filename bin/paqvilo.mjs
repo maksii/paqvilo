@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { parseArgs } from 'node:util';
 import { MIRAGE_TOOLS, MIRAGE_LIFECYCLE, mirageToolHelp } from '../mirage/tool-registry.mjs';
@@ -147,17 +147,7 @@ if (['--version', '-v'].includes(product)) {
         'Mirage demo: paqvilo mirage demo (editable sample and development browser).\nMirage lifecycle: init, dev, start, status, stop (catalogue and browser options: paqvilo lense --help).',
       );
   }
-  const file = fileURLToPath(new URL(program, import.meta.url));
-  if (program.startsWith('../lense/')) {
-    // Toolkit programs run in this process, as a direct `node <program> ...` start would run them:
-    // no second Node start (about a fifth of a second) and no wrapper left behind when this process is killed.
-    process.argv = [process.argv[0], file, ...forwarded];
-    await import(pathToFileURL(file).href);
-  } else runChild(file, forwarded);
-}
-
-function runChild(file, forwarded) {
-  const child = spawn(process.execPath, [file, ...forwarded], {
+  const child = spawn(process.execPath, [fileURLToPath(new URL(program, import.meta.url)), ...forwarded], {
     stdio: 'inherit',
     windowsHide: true,
   });
