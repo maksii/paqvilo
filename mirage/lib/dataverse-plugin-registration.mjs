@@ -399,13 +399,14 @@ export function overlayRegisteredSteps(plugins, store) {
 }
 
 // Insert-or-replace by id: a row with the same id is removed first, so the seeded rows match the Solution on every reseed.
-function upsert(store, logical, idColumn, rows) {
+// Rows built here for the call (fresh) are stored as they are; others are copied.
+function upsert(store, logical, idColumn, rows, { fresh = false } = {}) {
   store.state.tables[logical] ??= [];
   const table = store.state.tables[logical];
   const ids = new Set(rows.map((row) => String(row[idColumn]).toLowerCase()));
   for (let i = table.length - 1; i >= 0; i--)
     if (ids.has(String(table[i][idColumn]).toLowerCase())) store.removeRow(logical, table, i);
-  for (const row of rows) store.insertRow(logical, table, structuredClone(row));
+  for (const row of rows) store.insertRow(logical, table, fresh ? row : structuredClone(row));
 }
 
 // Seeds sdkmessage and sdkmessagefilter, then the Solution rows when given. Runs inside a store transaction.
@@ -414,8 +415,8 @@ function seed(api, plugins = null) {
   const org = organizationOf(store) || String(api.settings?.organizationId ?? '').toLowerCase(); // reset runs before the organization row is re-seeded
   const stepMessages = (plugins?.steps ?? []).map((step) => step.message).filter(Boolean);
   const names = [...(api.registry?.names?.() ?? []), ...stepMessages];
-  upsert(store, 'sdkmessage', 'sdkmessageid', messageRows(store, org, names));
-  upsert(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRows(store, org));
+  upsert(store, 'sdkmessage', 'sdkmessageid', messageRows(store, org, names), { fresh: true });
+  upsert(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRows(store, org), { fresh: true });
   if (plugins)
     for (const [logical, rows] of Object.entries(solutionPluginRows(plugins, { organizationId: org })))
       upsert(store, logical, `${logical}id`, rows);
