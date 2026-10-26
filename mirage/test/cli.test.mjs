@@ -16,7 +16,9 @@ const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
 async function fixture(t, files) {
   // The real path: the CLI reports state and Solution paths as the OS resolves them (8.3 aliases expanded).
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-cli-')));
-  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
+  // Removed after every owned server and child has closed (a failed after hook skips the hooks registered after it, so
+  // closers must not depend on this one); retries cover a just-killed child's files that Windows still reports busy.
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   for (const [name, value] of Object.entries(files)) {
     const file = path.join(directory, name);
     await fs.mkdir(path.dirname(file), { recursive: true });
@@ -192,7 +194,7 @@ test('CLI: multi-portal serve closes its runtime after browser attachment fails'
   });
   rejectedCdp.listen(0, '127.0.0.1');
   await once(rejectedCdp, 'listening');
-  t.after(() => closeServer(rejectedCdp));
+  ownedFixture(t).add(() => closeServer(rejectedCdp));
   const result = await run(
     t,
     [
@@ -235,7 +237,7 @@ test(
     });
     unrelated.listen(0, '127.0.0.1');
     await once(unrelated, 'listening');
-    t.after(() => closeServer(unrelated));
+    ownedFixture(t).add(() => closeServer(unrelated));
     const unrelatedUrl = `http://127.0.0.1:${unrelated.address().port}/unrelated`;
     const badPaths = [unrelatedUrl, unrelatedUrl.replace('http:', ''), '/\\127.0.0.1/unsafe'];
     const [inspected, profiled, enhanced, rendered, unknownOption, missingCdp, withPreset, ...badRenders] =
