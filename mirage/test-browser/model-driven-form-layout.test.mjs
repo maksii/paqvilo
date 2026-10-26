@@ -8,8 +8,7 @@ import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 async function layoutFixture(t) {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const attributes = ['x_notes', 'x_left', 'x_right', 'x_hidden', 'x_pcf', 'x_third']
     .map(
       (name) =>
@@ -72,7 +71,6 @@ async function layoutFixture(t) {
     'window.Layout={Editor:class{init(context,notify,state,container){this.input=document.createElement("input");this.input.setAttribute("aria-label","Mounted editor");this.input.style.cssText="width:100%;box-sizing:border-box";this.input.addEventListener("input",()=>{this.value=this.input.value;notify()});container.append(this.input)}updateView(context){this.value=context.parameters.value.raw;this.input.value=this.value??"";this.input.disabled=context.mode.isControlDisabled}getOutputs(){return{value:this.value}}destroy(){this.input.remove()}}};',
   );
   const sim = await source.start({ modelDriven: { trustedExtensions: true } });
-  ownedFixture(t).add(() => sim.close());
   return sim.origin ?? sim.url;
 }
 

@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
@@ -31,8 +30,7 @@ const script = `var InventedClient = {
 };`;
 
 async function fixture(t, trusted = true) {
-  const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: trusted } });
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(t, { defer: true, modelDriven: { trustedExtensions: trusted } });
   const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
   let xml = await fs.readFile(formFile, 'utf8');
   xml = xml.replace('<control datafieldname="x_quantity"', '<control visible="false" datafieldname="x_quantity"');
@@ -58,7 +56,6 @@ async function fixture(t, trusted = true) {
   );
   const sim = await initial.start();
   sim.origin = sim.origin ?? sim.url;
-  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   const errors = [],
     external = [];
@@ -78,7 +75,6 @@ async function fixture(t, trusted = true) {
 async function openReadyRecord(t, initial) {
   const sim = await initial.start();
   sim.origin = sim.origin ?? sim.url;
-  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -305,8 +301,7 @@ test('Solution code stays inert by default while ordinary CRUD continues to work
 });
 
 test('application form and view components select the authored surface before generic table defaults', async (t) => {
-  const initial = await modelDrivenFixture(t);
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(t, { defer: true });
   const appFile = path.join(initial.solutionDir, 'AppModules/x_example/AppModule.xml');
   await fs.writeFile(
     appFile,
@@ -331,7 +326,6 @@ test('application form and view components select the authored surface before ge
       .replace('Stocked items', 'Excluded view'),
   );
   const sim = await initial.start();
-  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t);
   await page.goto((sim.origin ?? sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
@@ -350,8 +344,7 @@ test('application form and view components select the authored surface before ge
 });
 
 test('form deep links, picker changes, saves and Xrm openForm preserve the selected app-owned form', async (t) => {
-  const initial = await modelDrivenFixture(t);
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(t, { defer: true });
   const reviewId = 'b1168cab-0940-40f2-a83a-f79675751ade',
     excludedId = '1603bd23-cd05-4ca3-a16f-31503d42359a';
   const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml'),
@@ -376,7 +369,6 @@ test('form deep links, picker changes, saves and Xrm openForm preserve the selec
     ),
   );
   const sim = await initial.start();
-  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t),
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -455,8 +447,7 @@ test('a persisted inactive two-state record disables its default UI while explic
     releaseRead = resolve;
   });
   t.after(() => releaseRead());
-  const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: true } });
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(t, { defer: true, modelDriven: { trustedExtensions: true } });
   const entityFile = path.join(initial.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(
     entityFile,
@@ -510,7 +501,6 @@ test('a persisted inactive two-state record disables its default UI while explic
       },
     },
   });
-  ownedFixture(t).add(() => sim.close());
   const page = await chrome.page(t),
     errors = [],
     writes = [];
@@ -707,8 +697,7 @@ test('a persisted inactive two-state record disables its default UI while explic
 });
 
 test('a header-only column set through the client API is saved with the record; dirty clears for persisted values', async (t) => {
-  const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: true } });
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(t, { defer: true, modelDriven: { trustedExtensions: true } });
   const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
   let xml = await fs.readFile(formFile, 'utf8');
   // x_quantity moves from the body to the form header (header controls are named header_<column>).
@@ -747,8 +736,7 @@ test('a header-only column set through the client API is saved with the record; 
 });
 
 test('a save that cannot carry every changed column still runs Save & Close, then names the columns', async (t) => {
-  const initial = await modelDrivenFixture(t, { modelDriven: { trustedExtensions: true } });
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(t, { defer: true, modelDriven: { trustedExtensions: true } });
   const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
   // x_quantity is bound to a custom control the shell does not host: it stays a form attribute a client script can set,
   // but the save cannot carry it.

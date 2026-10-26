@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
@@ -352,8 +351,7 @@ test('standard memo controls use the compact native height while declared rows a
 });
 
 test('saved state and status remain editable with legacy text class IDs while new-record state honors source create restrictions', async (t) => {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const entityFile = path.join(source.solutionDir, 'Entities/x_item/Entity.xml');
   const fields =
     '<attribute PhysicalName="statecode"><Name>statecode</Name><Type>state</Type><ValidForCreateApi>0</ValidForCreateApi><ValidForUpdateApi>1</ValidForUpdateApi><displaynames><displayname description="Record state" languagecode="1033"/></displaynames><optionset><states><state value="0" defaultstatus="1" invariantname="Active"><labels><label description="Open" languagecode="1033"/></labels></state><state value="1" defaultstatus="2" invariantname="Inactive"><labels><label description="Closed" languagecode="1033"/></labels></state></states></optionset></attribute><attribute PhysicalName="statuscode"><Name>statuscode</Name><Type>status</Type><displaynames><displayname description="Record reason" languagecode="1033"/></displaynames><optionset><statuses><status value="1" state="0"><labels><label description="Pending" languagecode="1033"/></labels></status><status value="2" state="1"><labels><label description="Finished" languagecode="1033"/></labels></status></statuses></optionset></attribute>';
@@ -366,7 +364,6 @@ test('saved state and status remain editable with legacy text class IDs while ne
     '<row><cell><control datafieldname="statecode" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row><row><cell><control datafieldname="statuscode" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row>';
   await fs.writeFile(formFile, (await fs.readFile(formFile, 'utf8')).replace('</rows>', cells + '</rows>'));
   const sim = await source.start();
-  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item');
@@ -441,8 +438,7 @@ test('advanced lookup uses staged Done, preserves a cancelled value, queries exp
 });
 
 test('inline lookup applies its exported lookup view and keeps lookup-only views outside the application view picker', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const file = path.join(fixture.solutionDir, 'Entities/x_item/SavedQueries/items.xml');
   const lookupView = (await fs.readFile(file, 'utf8'))
     .replace('{items-view}', '{qualified-lookup}')
@@ -451,7 +447,6 @@ test('inline lookup applies its exported lookup view and keeps lookup-only views
     .replace('value="1"', 'value="8"');
   await fs.writeFile(path.join(path.dirname(file), 'lookup.xml'), lookupView);
   const sim = await fixture.start();
-  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const catalogue = await (await fetch(origin + '/_apps/api')).json();
   assert.equal(catalogue.tables.x_item.lookupViews[0].id, 'qualified-lookup');
@@ -484,8 +479,7 @@ test('inline lookup applies its exported lookup view and keeps lookup-only views
 });
 
 test('advanced lookup preserves all exported columns and their widths instead of truncating after five', async (t) => {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const names = Array.from({ length: 6 }, (_, index) => `x_detail${index + 1}`);
   const entityFile = path.join(source.solutionDir, 'Entities/x_item/Entity.xml');
   const attributes = names
@@ -508,7 +502,6 @@ test('advanced lookup preserves all exported columns and their widths instead of
     );
   await fs.writeFile(path.join(path.dirname(queryFile), 'wide.xml'), lookup);
   const sim = await source.start();
-  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(

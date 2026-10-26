@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
@@ -102,8 +101,7 @@ test('duration choices and typed units preserve numeric minutes, keyboard focus 
 });
 
 test('exported duration formats create the duration control and save whole minutes through the staff API', async (t) => {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const file = path.join(source.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(
     file,
@@ -113,7 +111,6 @@ test('exported duration formats create the duration control and save whole minut
     ),
   );
   const sim = await source.start();
-  ownedFixture(t).add(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(
