@@ -17,6 +17,7 @@ import {
 import { validatePack } from '../lib/preset-registry.mjs';
 import { createSimulator } from '../server.mjs';
 import { isExactNumeric, stringifyExactJson } from '../lib/exact-numeric.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 test('modern flow imports bound the opened file and reject growth during its read', async (t) => {
   const { dir } = await source(t, '');
@@ -116,7 +117,7 @@ test('exported server connector writes exact raw literals and returns raw-number
 const role = 'd0000000-0000-4000-8000-000000000001';
 async function source(t, code) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-operation-'));
-  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'logic.js');
   await fs.writeFile(file, code);
   return { dir, record: { name: 'sample', file: await fs.realpath(file), roleIds: [role] } };
@@ -415,7 +416,7 @@ test('registered HTTP operations enforce exported roles and CSRF and server logi
       },
     },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const token = app.csrf;
   const post = (route, headers = {}) =>
     fetch(app.url + route, {
@@ -523,7 +524,7 @@ test('Imported flow HTTP failure retains completed connector commits and Respons
       },
     },
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const send = (ok) =>
     fetch(app.url + '/_api/cloudflow/v1.0/trigger/' + flow, {
       method: 'POST',

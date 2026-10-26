@@ -14,6 +14,7 @@ import { inspectFlowTrigger } from '../lib/flow-runtime.mjs';
 import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 import { createFlowRoutes } from '../lib/sim-flow-routes.mjs';
 import { PACK_EXPORTS } from '../lib/pack-exports.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 // Recurrence and pack connector triggers are hosted by the trigger runner (opt-in: exported mode plus explicit
 // local activation); HTTP Request and manual flows start on demand through /_sim/api.
@@ -85,7 +86,7 @@ async function host(t, { overrides = {}, extra = {}, file = null } = {}) {
   const store = await new DataStore({ file, state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
   storeScheduler(store, scheduler);
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const pack = {
     id: 'fx-pack',
     flowTriggers: {
@@ -125,7 +126,7 @@ async function host(t, { overrides = {}, extra = {}, file = null } = {}) {
   const runs = createHostFlowRuns({ store, clock, scheduler, approvals: connectors.approvals, flowOf: cloudFlow });
   const api = { store };
   runs.attach(api);
-  t.after(() => runs.close());
+  ownedFixture(t).add(() => runs.close());
   const runner = createFlowTriggerRunner({
     store,
     items,
@@ -134,7 +135,7 @@ async function host(t, { overrides = {}, extra = {}, file = null } = {}) {
     connectors,
     diagnostic: (n) => notes.push(n),
   });
-  t.after(() => runner.close());
+  ownedFixture(t).add(() => runner.close());
   return { store, scheduler, runs, runner, notes, overrides, subscriptions, unsubscribed, api, clock, polls };
 }
 const enable = (overrides, id) => {
@@ -335,7 +336,7 @@ test('a Dataverse action trigger runs a tracked flow with the action inputs and 
     /Unsupported Dataverse action trigger parameter: x_other/,
   );
   const file = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'flow-action-trigger-')), 'state.json');
-  t.after(() => fs.rm(path.dirname(file), { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(path.dirname(file), { recursive: true, force: true }));
   const first = await host(t, { extra: { [PERFORMED]: wrap(definition) }, file });
   enable(first.overrides, PERFORMED);
   assert.equal((await first.runner.syncTriggers()).find((h) => h.processId === PERFORMED).state, 'subscribed');

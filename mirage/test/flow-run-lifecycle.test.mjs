@@ -42,7 +42,7 @@ const reply = (after, body, statuses = ['Succeeded']) => ({
 async function unit(t, flows = {}, { file = null, clock = fixedClock(), packs = [] } = {}) {
   const store = await new DataStore({ file, state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const connectors = createConnectorRuntime({ store, scheduler, clock, packs });
   const notes = [];
   const flowOf = (id) => (flows[id] ? { definition: flows[id], mode: 'exported', connectors } : null);
@@ -55,7 +55,7 @@ async function unit(t, flows = {}, { file = null, clock = fixedClock(), packs = 
     flowOf,
   });
   runs.attach({});
-  t.after(() => runs.close());
+  ownedFixture(t).add(() => runs.close());
   const start = (id, input = {}, context = {}) =>
     runTrackedFlow({ runs, processId: id, trigger: 'Test', definition: flows[id], input, store, connectors, context });
   return { store, clock, scheduler, connectors, runs, notes, start };
@@ -110,7 +110,7 @@ test('an approval wait timeout resumes with TimedOut and the runAfter TimedOut b
 
 test('after a restart rearm() schedules the recorded wait again and the replay runs from the state file', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-run-lifecycle-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'state.json');
   const flows = {
     [FLOW]: {
@@ -208,7 +208,7 @@ test('a retry policy retries an http provider answering 503 twice and journals t
     res.end(JSON.stringify({ calls }));
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => new Promise((resolve) => server.close(resolve)));
   const uri = `http://127.0.0.1:${server.address().port}/invented`;
   const flows = {
     [FLOW]: {
