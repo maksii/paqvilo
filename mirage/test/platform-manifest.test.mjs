@@ -175,9 +175,18 @@ test('AXD scripts load inside the form on form pages and nowhere else; captured 
   assert.equal(plain.bodyScripts, '<script src="/scripts/extra.js"></script>');
 });
 
-async function shellFixture(t, { shellProfile, settings = [], observed = null } = {}) {
+// The default shell is read-only for its tests: they send GETs or a request the runtime refuses (the workflow POST),
+// so they share one runtime that closes after the file instead of starting one each.
+let defaultShell;
+test.after(async () => (await defaultShell)?.close());
+async function shellFixture(t, options) {
+  if (!options) return (defaultShell ??= startShell());
+  const shell = await startShell(options);
+  ownedFixture(t).add(shell.close);
+  return shell;
+}
+async function startShell({ shellProfile, settings = [], observed = null } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-shell-'));
-  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Shell\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
     'Home.webpage.yml':
@@ -249,16 +258,26 @@ async function shellFixture(t, { shellProfile, settings = [], observed = null } 
       },
     },
   };
-  const app = await createSimulator({
-    sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
-    initial,
-    watch: false,
-    ...(observed ? { observed } : {}),
-  });
-  ownedFixture(t).add(() => app.close());
+  let app;
+  // The runtime closes before its source and state directory is removed; a failed start still removes it.
+  const close = async () => {
+    await app?.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  };
+  try {
+    app = await createSimulator({
+      sourceDir: dir,
+      stateFile: path.join(dir, 'state.json'),
+      initial,
+      watch: false,
+      ...(observed ? { observed } : {}),
+    });
+  } catch (error) {
+    await close();
+    throw error;
+  }
   const session = signInHeaders(app, CONTACT, { roles: ['Member'] });
-  return { app, get: (pathname, headers = session) => fetch(app.url + pathname, { headers }) };
+  return { app, close, get: (pathname, headers = session) => fetch(app.url + pathname, { headers }) };
 }
 
 const bodyOf = (html) => html.slice(html.indexOf('<body'), html.lastIndexOf('</body>'));

@@ -7,6 +7,7 @@ import { buildPermissionModel, resolveScopedRelationship } from '../lib/permissi
 import { importSolutionData } from '../lib/solution-data.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 function fixture() {
   const records = [
@@ -54,7 +55,7 @@ function fixture() {
 }
 async function metadata(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-permission-cardinality-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const xml = `<ImportExportXml><EntityRelationships>${['organization', 'contact'].map((target) => `<EntityRelationship Name="assignment_${target}"><EntityRelationshipType>OneToMany</EntityRelationshipType><ReferencingEntityName>assignment</ReferencingEntityName><ReferencedEntityName>${target}</ReferencedEntityName><ReferencingAttributeName>${target}id</ReferencingAttributeName><ReferencedAttributeName>${target}id</ReferencedAttributeName></EntityRelationship>`).join('')}</EntityRelationships></ImportExportXml>`;
   await fs.writeFile(path.join(root, 'customizations.xml'), xml);
   return { root, relationships: (await importSolutionData([root])).relationships };
@@ -123,6 +124,7 @@ test('runtime loading an existing state recompiles stale metadata cardinality', 
   const stateFile = path.join(root, 'state.json');
   await fs.writeFile(stateFile, JSON.stringify(state));
   const app = await createSimulator({ sourceDir, stateFile, solutionRoots: [root], watch: false });
-  t.after(() => app.close());
+  // The runtime closes before the metadata root holding its state file is removed.
+  ownedFixture(t).add(() => app.close());
   assert.equal(app.store.snapshot().permissions.find((p) => p.id === 'organizations').relationship.many, true);
 });

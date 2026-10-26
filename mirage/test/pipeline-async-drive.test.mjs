@@ -34,29 +34,27 @@ const profile = {
 };
 test.after(() => closeSyncIoBridge());
 
-// A receiver in this process that answers after `delayMs`; ticks() counts timer callbacks that ran meanwhile.
-async function inProcessReceiver(t, { delayMs = 300 } = {}) {
+// A receiver in this process that answers only after this process's timers have fired `ticks` more times. The step's
+// caller is still waiting then, so an answer proves Mirage kept running timers; a frozen loop never answers.
+async function inProcessReceiver(t, { ticks = 5 } = {}) {
   const received = [];
   const server = http.createServer((req, res) => {
     req.resume();
     req.on('end', () => {
       received.push(req.url);
-      setTimeout(() => res.writeHead(200).end(), delayMs);
+      let fired = 0;
+      const timer = setInterval(() => {
+        if (++fired < ticks) return;
+        clearInterval(timer);
+        res.writeHead(200).end();
+      }, 10);
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   return { url: `http://127.0.0.1:${server.address().port}/hook`, received };
 }
-const ticking = () => {
-  let ticks = 0;
-  const timer = setInterval(() => ticks++, 25);
-  return () => {
-    clearInterval(timer);
-    return ticks;
-  };
-};
-// A loopback receiver on its own thread: /drop reads the request and drops the connection; /slow answers after 3 s; any
+// A loopback receiver on its own thread: /drop reads the request and drops the connection; /hang never answers; any
 // other path answers 200. log() lists [path, header x-invented-key] it received.
 async function threadReceiver(t) {
   const worker = new Worker(
@@ -68,8 +66,7 @@ async function threadReceiver(t) {
       req.on('end', () => {
         log.push([req.url.split('?')[0], req.headers['x-invented-key'] ?? null, new URL(req.url, 'http://x').searchParams.get('key')]);
         if (req.url.startsWith('/drop')) req.socket.destroy();
-        else if (req.url.startsWith('/slow')) setTimeout(() => res.writeHead(200).end(), 3000);
-        else res.writeHead(200).end();
+        else if (!req.url.startsWith('/hang')) res.writeHead(200).end();
       });
     });
     server.listen(0, '127.0.0.1', () => parentPort.postMessage({ port: server.address().port }));
@@ -150,17 +147,14 @@ test(
   async (t) => {
     const receiver = await inProcessReceiver(t);
     const { store } = await widgetWorld({ url: receiver.url });
-    const stop = ticking();
     const answer = await createConnectorRuntime({ store }).invoke({
       connectorId: 'shared_commondataserviceforapps',
       operationId: 'CreateRecord',
       parameters: { entityName: 'x_widgets', 'item/x_name': 'from a flow' },
       context: { principal: profile },
     });
-    const ticks = stop();
     assert.equal(answer.statusCode, 201);
     assert.deepEqual([store.tableRows('x_widget').length, receiver.received], [1, ['/hook']]);
-    assert.ok(ticks >= 5, `timers kept running while the step waited (${ticks} ticks)`);
   },
 );
 
@@ -168,7 +162,7 @@ test(
   'the Assign cascade updates each child on the asynchronous drive: an in-process synchronous web hook on the child answers',
   { timeout: 30_000 },
   async (t) => {
-    const receiver = await inProcessReceiver(t, { delayMs: 100 });
+    const receiver = await inProcessReceiver(t);
     const owner = (id) => ({ id, logical_name: 'systemuser', name: 'Invented user' });
     const link = { from: 'x_parentid', to: 'x_parentid', cascade: { assign: 'Cascade' } };
     const { request, json, store } = await contractModuleFixture(t, {
@@ -223,15 +217,12 @@ test(
       },
     });
     wire(store, [], 'x_child', 'Update');
-    const stop = ticking();
     await json(
       await request('PATCH', `/x_parents(${PARENT})`, { 'ownerid@odata.bind': `/systemusers(${USER_TWO})` }),
       200,
     );
-    const ticks = stop();
     assert.equal(store.tableRows('x_child')[0].ownerid.id, USER_TWO);
     assert.deepEqual(receiver.received, ['/hook']);
-    assert.ok(ticks >= 2, `timers kept running while the child's step waited (${ticks} ticks)`);
   },
 );
 
@@ -239,7 +230,7 @@ test(
   'CalculateRollupField writes on the asynchronous drive: an in-process synchronous web hook on the row answers',
   { timeout: 30_000 },
   async (t) => {
-    const receiver = await inProcessReceiver(t, { delayMs: 100 });
+    const receiver = await inProcessReceiver(t);
     let internal = null;
     const extension = {
       ...ROLLUP,
@@ -300,12 +291,9 @@ test(
       },
     });
     wire(store, [], 'x_parent', 'Update');
-    const stop = ticking();
     const result = await recalculate(internal, 'x_parent', PARENT, 'x_count');
-    const ticks = stop();
     assert.deepEqual([result.value, result.state, store.tableRows('x_parent')[0].x_count], [1, 1, 1]);
     assert.deepEqual(receiver.received, ['/hook']);
-    assert.ok(ticks >= 2, `timers kept running while the step waited (${ticks} ticks)`);
   },
 );
 
@@ -385,12 +373,12 @@ test('a worker crash is reported to the waiting caller within the call, and the 
   });
   await closeSyncIoBridge();
   syncIoWorker.url = new URL(`file:///${crashing.replaceAll('\\', '/').replace(/^\//, '')}`);
-  const started = Date.now();
+  // The post never gets an answer, so only the crash report can end the call before its deadline, which would fail
+  // with a timeout code instead.
   assert.throws(
-    () => syncIo('http-post', { url: `${receiver.origin}/slow`, headers: {}, body: '{}' }, { timeoutMs: 20_000 }),
+    () => syncIo('http-post', { url: `${receiver.origin}/hang`, headers: {}, body: '{}' }, { timeoutMs: 20_000 }),
     (error) => error.code === 'SyncIoWorkerFailed' && /invented worker crash/.test(error.message),
   );
-  assert.ok(Date.now() - started < 2500, `answered within the call (${Date.now() - started} ms), not at the deadline`);
   syncIoWorker.url = real;
   assert.equal(syncIo('http-post', { url: `${receiver.origin}/ok`, headers: {}, body: '{}' }), 200);
 });
