@@ -54,7 +54,7 @@ before(async () => {
 after(() => browser?.close());
 
 // One x_item list (page size 3) included twice on the home page, as a modern and a classic list.
-async function launch(t, { operations = ['read'], features = false } = {}) {
+async function launch(t, { operations = ['read'], features = false, beforeNavigate } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'modern-list-browser-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const solutionDir = path.join(dir, 'solution');
@@ -117,13 +117,40 @@ list.on('rowclick',function(e){window.clicked.push(e.row.getId());});window.page
   const script = await fetch(app.url + PAGES_CLIENT_API_SCRIPT);
   const served = [[script.status, script.headers.get('content-type')]];
   await page.route('**/*', (route) => (route.request().url().startsWith(app.url) ? route.fallback() : route.abort()));
+  await beforeNavigate?.(page);
   await page.goto(`${app.url}/`);
   await page.waitForFunction(() => window.pagesReady === true);
   return { page, errors, bodies, served, app };
 }
 
 test('a modern list continues the secured list query on scroll and publishes rows through $pages', async (t) => {
-  const { page, errors, bodies, served } = await launch(t);
+  const releases = new Map(),
+    arrivals = new Map();
+  for (const number of [2, 3]) {
+    let release, arrived;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const seen = new Promise((resolve) => {
+      arrived = resolve;
+    });
+    releases.set(number, { gate, release });
+    arrivals.set(number, { seen, arrived });
+  }
+  t.after(() => {
+    for (const { release } of releases.values()) release();
+  });
+  const { page, errors, bodies, served } = await launch(t, {
+    beforeNavigate: (page) =>
+      page.route('**/_services/entity-grid-data.json/**', async (route) => {
+        const number = route.request().postDataJSON()?.page;
+        if (releases.has(number)) {
+          arrivals.get(number).arrived();
+          await releases.get(number).gate;
+        }
+        await route.fallback();
+      }),
+  });
   assert.ok(
     served.some(([status, type]) => status === 200 && /javascript/.test(type)),
     JSON.stringify(served),
@@ -134,10 +161,11 @@ test('a modern list continues the secured list query on scroll and publishes row
   assert.equal((await page.evaluate(() => window.loadedPages))[0], 3);
   // Scrolling to the end loads the next pages until the query has no more records: every scroll to the sentinel
   // publishes one more loaded page, and a sentinel still in view continues by itself.
-  for (let attempt = 0; attempt < 2 && (await modern.locator('tbody tr').count()) < 7; attempt++) {
-    const loaded = await page.evaluate(() => window.loadedPages.length);
+  for (const number of [2, 3]) {
     await modern.locator('[data-pp-modern-list-more]').scrollIntoViewIfNeeded();
-    await page.waitForFunction((loaded) => window.loadedPages.length > loaded, loaded);
+    await arrivals.get(number).seen;
+    releases.get(number).release();
+    await page.waitForFunction((number) => window.loadedPages.length >= number, number);
   }
   assert.deepEqual(
     await modern.locator('tbody tr td:first-child').allInnerTexts(),
@@ -178,6 +206,43 @@ test('a modern list without read permission shows the access-denied message', as
   assert.equal(await page.locator('#modern tbody tr').count(), 0);
   assert.deepEqual(await page.evaluate(() => window.loadedPages), []);
   assert.deepEqual(errors, []);
+});
+
+test('a stale row count cannot guarantee that the pagination sentinel stays visible', async (t) => {
+  let release, arrived;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const seen = new Promise((resolve) => {
+    arrived = resolve;
+  });
+  t.after(() => release());
+  const { page } = await launch(t, {
+    beforeNavigate: (page) =>
+      page.route('**/_services/entity-grid-data.json/**', async (route) => {
+        if (route.request().postDataJSON()?.page === 3) {
+          arrived();
+          await gate;
+        }
+        await route.fallback();
+      }),
+  });
+  const modern = page.locator('#modern [data-pp-modern-list]');
+  await modern.locator('tbody tr').first().waitFor();
+  await modern.locator('[data-pp-modern-list-more]').scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => window.loadedPages.length >= 2);
+  await modern.locator('[data-pp-modern-list-more]').scrollIntoViewIfNeeded();
+  await seen;
+  const staleCount = await modern.locator('tbody tr').count();
+  assert.equal(staleCount, 6);
+  release();
+  await page.waitForFunction(() => window.loadedPages.length === 3);
+  assert.equal(await modern.locator('tbody tr').count(), 7);
+  // The former loop entered on staleCount < 7 and then waited for this now-hidden sentinel.
+  await assert.rejects(
+    modern.locator('[data-pp-modern-list-more]').scrollIntoViewIfNeeded({ timeout: 250 }),
+    /Timeout/,
+  );
 });
 
 test('a modern list searches, sorts, switches views and runs the delete action through the classic grid engine', async (t) => {
