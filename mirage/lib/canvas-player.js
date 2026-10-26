@@ -252,12 +252,13 @@
   start.addEventListener('click', async () => {
     const [width, height] = resolution.value.split('x').map(Number);
     await act({ action: 'start', viewport: { width, height } });
+    const [desiredWidth, desiredHeight] = resolution.value.split('x').map(Number);
     if (
       snapshot &&
       snapshot.started !== false &&
-      (snapshot.viewport?.width !== width || snapshot.viewport?.height !== height)
+      (snapshot.viewport?.width !== desiredWidth || snapshot.viewport?.height !== desiredHeight)
     )
-      await act({ action: 'resize', width, height });
+      await act({ action: 'resize', width: desiredWidth, height: desiredHeight });
   });
   resolution.addEventListener('change', () => {
     const [width, height] = resolution.value.split('x').map(Number);

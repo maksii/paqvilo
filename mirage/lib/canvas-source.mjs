@@ -283,6 +283,16 @@ async function readFxYaml(files, result, diagnostic) {
  * their control tree) and `unsupported` (controls the runtime lists but does not host); an app without readable source
  * stays `inventory` with the diagnostic as reason.
  */
+// A readable screen does not prove the remaining source was parsed. Keep partial
+// trees available for inspection, while exposing gaps to coverage consumers.
+export function canvasSourceCoverageGaps(source) {
+  return (source.diagnostics ?? []).filter((item) =>
+    ['CANVAS_SOURCE_YAML_INVALID', 'CANVAS_SOURCE_SCHEMA_UNKNOWN', 'CANVAS_SOURCE_DATASOURCE_INVALID'].includes(
+      item.code,
+    ),
+  );
+}
+
 export function canvasInventoryRecord(
   source,
   { id = null, solution = null, layer = null, file = null, format = null } = {},
@@ -293,6 +303,7 @@ export function canvasInventoryRecord(
     if (dataSource.connectorId) dependencies.push({ component: 'connector', name: dataSource.connectorId });
   }
   const parsed = source.screens.length > 0;
+  const sourceGaps = canvasSourceCoverageGaps(source);
   return {
     component: 'canvasapp',
     componentType: 300,
@@ -310,6 +321,7 @@ export function canvasInventoryRecord(
       : (source.diagnostics.find((item) => item.severity === 'error')?.code ??
         source.diagnostics[0]?.code ??
         'CANVAS_SOURCE_NO_PAYAML'),
+    ...(sourceGaps.length ? { sourceDiagnostics: sourceGaps } : {}),
     ...(parsed ? { tree: canvasTree(source), unsupported: unsupportedControls(source) } : {}),
   };
 }

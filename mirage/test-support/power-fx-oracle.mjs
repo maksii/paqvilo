@@ -3,12 +3,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
+import { compareNumeric, exactNumeric, isExactNumeric } from '../lib/exact-numeric.mjs';
 
 export const CORPUS = Object.freeze([
   { id: 'language', category: 'host', expression: 'Language()', hostDifference: true },
   { id: 'text', category: 'text', expression: 'Upper("hello")' },
   { id: 'unicode', category: 'text', expression: 'Upper("\u00e9")' },
   { id: 'math', category: 'math', expression: 'Round(2.345,2)' },
+  { id: 'scientific', category: 'math', expression: 'Float("1e100")' },
+  { id: 'format-german', category: 'text', expression: 'Text(1234.5,"#,##0.00","de-DE")' },
+  { id: 'format-french', category: 'text', expression: 'Text(1234.5,"#,##0.00","fr-FR")' },
+  { id: 'format-invalid-locale', category: 'error', expression: 'Text(1234.5,"#,##0.00","x-invalid-@")' },
+  { id: 'exact-scalar', category: 'math', expression: '1234567890123456789012345678' },
+  { id: 'blank', category: 'coercion', expression: 'Blank()' },
   { id: 'date', category: 'date', expression: 'Text(Date(2026,1,2),"yyyy-mm-dd","en-US")' },
   { id: 'table', category: 'table', expression: 'Concat(["a","b"],Value)' },
   { id: 'filter', category: 'table', expression: 'CountRows(Filter([1,2,3],Value > 1))' },
@@ -62,9 +69,14 @@ export function parsePacResults(buffer, corpus = CORPUS) {
       } catch {
         throw fail('PacOutputInvalid', `Invalid string result for ${row.id}.`);
       }
-    } else if (/^-?(?:\d+)(?:\.\d+)?$/.test(value)) result = { kind: 'value', value: Number(value) };
-    else if (/^(true|false)$/i.test(value)) result = { kind: 'value', value: value.toLowerCase() === 'true' };
-    else if (/^(blank|\(blank\))$/i.test(value)) result = { kind: 'value', value: null };
+    } else if (/^-?(?:\d+)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(value)) {
+      try {
+        result = { kind: 'value', value: exactNumeric(value) };
+      } catch {
+        throw fail('PacOutputInvalid', `Out-of-range numeric result for ${row.id}.`);
+      }
+    } else if (/^(true|false)$/i.test(value)) result = { kind: 'value', value: value.toLowerCase() === 'true' };
+    else if (/^(blank(?:\(\))?|\(blank\))$/i.test(value)) result = { kind: 'value', value: null };
     else throw fail('PacOutputInvalid', `Unsupported output for ${row.id}.`);
     found.push(result);
   }
@@ -73,7 +85,12 @@ export function parsePacResults(buffer, corpus = CORPUS) {
 }
 export function compareResults(reference, actual, pacProbe, mirageProbe) {
   if (reference.kind !== actual.kind) return 'difference';
-  if (reference.kind !== 'error') return Object.is(reference.value, actual.value) ? 'match' : 'difference';
+  if (reference.kind !== 'error') {
+    const numeric = (value) => typeof value === 'number' || isExactNumeric(value);
+    if (numeric(reference.value) && numeric(actual.value))
+      return compareNumeric(reference.value, actual.value) === 0 ? 'match' : 'difference';
+    return Object.is(reference.value, actual.value) ? 'match' : 'difference';
+  }
   const kind = (probe) =>
     probe?.kind === 'value' && typeof probe.value === 'string' && /^\d+$/.test(probe.value) ? probe.value : null;
   const pacKind = kind(pacProbe),

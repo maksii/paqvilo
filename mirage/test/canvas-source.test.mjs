@@ -360,3 +360,40 @@ test('canvas source inventories an msapp without inflating its large media entri
   zipped[zipped.indexOf(Buffer.from(media)) + media.length + 2048] ^= 0xff;
   assertInventory(await readCanvasSource({ msapp: zipped, name: 'InventedCanvas' }));
 });
+
+test('partial canvas source cannot claim complete app or rendering coverage', async () => {
+  const { canvasRequirementRows } = await import('../lib/source-graph.mjs');
+  for (const broken of [
+    'Screens: [',
+    '# $schema=https://powerapps.com/schemas/pa-yaml/v9.1/pa.schema.json\nApp: {}\n',
+  ]) {
+    const source = await readCanvasSource({
+      msapp: msappOf({ 'Src/HomeScreen.pa.yaml': HOME, 'Src/App.pa.yaml': broken }),
+      name: 'partial',
+    });
+    assert.equal(source.screens.length, 1);
+    const record = canvasInventoryRecord(source);
+    assert.equal(record.level, 'behaviour'); // Parsed screens remain available for inspection.
+    assert.equal(record.sourceDiagnostics.length, 1);
+    const rows = canvasRequirementRows([record]);
+    assert.equal(rows.find((row) => row.id === 'canvas:app/partial').status, 'unsupported');
+    assert.equal(rows.find((row) => row.id === 'canvas:app/partial').reason, record.sourceDiagnostics[0].code);
+    assert.equal(rows.find((row) => row.id === 'canvas:rendering').status, 'unsupported');
+  }
+  const unreadable = canvasInventoryRecord(
+    await readCanvasSource({ msapp: Buffer.from('invalid'), name: 'unreadable' }),
+  );
+  const row = canvasRequirementRows([unreadable]).find((item) => item.id === 'canvas:app/unreadable');
+  assert.equal(row.status, 'unsupported');
+  assert.equal(row.reason, 'CANVAS_SOURCE_ARCHIVE_INVALID');
+});
+
+test('Solution canvas inventory retains partial source coverage diagnostics', async () => {
+  const { canvasMsappRecord } = await import('../lib/solution-inventory.mjs');
+  const { canvasRequirementRows } = await import('../lib/source-graph.mjs');
+  const record = await canvasMsappRecord(msappOf({ 'Src/HomeScreen.pa.yaml': HOME, 'Src/App.pa.yaml': 'App: [' }), {
+    name: 'partial',
+  });
+  assert.equal(record.sourceDiagnostics[0].code, 'CANVAS_SOURCE_YAML_INVALID');
+  assert.equal(canvasRequirementRows([record]).find((row) => row.id === 'canvas:rendering').status, 'unsupported');
+});

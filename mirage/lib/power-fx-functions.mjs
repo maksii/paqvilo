@@ -190,7 +190,16 @@ const rounding = (mode) => ({
 
 // ---- Number formatting (Learn "Text function": 0 # , . % placeholders, literal text)
 
-function formatNumber(value, format) {
+function formatNumber(value, format, language) {
+  let separators;
+  try {
+    if (!Intl.NumberFormat.supportedLocalesOf([language]).length) throw new RangeError();
+    separators = new Intl.NumberFormat(language).formatToParts(1234.5);
+  } catch {
+    return fail('BadLanguageCode', `Language code '${language}' not supported.`);
+  }
+  const group = separators.find((part) => part.type === 'group')?.value ?? ',';
+  const decimal = separators.find((part) => part.type === 'decimal')?.value ?? '.';
   const fmt = String(format).replace(/^\[\$-[^\]]*\]/, '');
   const parts = [...fmt.matchAll(/"([^"]*)"|\\(.)|([0#,.])|(.)/gs)].map((m) =>
     m[3] !== undefined ? { p: m[3] } : { t: m[1] ?? m[2] ?? m[4] },
@@ -236,10 +245,10 @@ function formatNumber(value, format) {
   const whole = decimals ? digits.slice(0, -decimals) : digits;
   const fraction = decimals ? digits.slice(-decimals) : '';
   let intText = whole === '0' && minInt === 0 ? '' : whole.padStart(minInt, '0');
-  if (intPattern.includes(',')) intText = intText.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  if (intPattern.includes(',')) intText = intText.replace(/\B(?=(\d{3})+(?!\d))/g, () => group);
   let decText = fraction;
   while (decText.length > minDecimals && decText.endsWith('0')) decText = decText.slice(0, -1);
-  const body = intText + (decText || (pattern.includes('.') && minDecimals) ? `.${decText}` : '');
+  const body = intText + (decText || (pattern.includes('.') && minDecimals) ? `${decimal}${decText}` : '');
   return `${negative && magnitude !== 0n ? '-' : ''}${prefix}${body}${suffix}`;
 }
 
@@ -907,7 +916,7 @@ export const FUNCTIONS = {
       }
       if (typeof value === 'string') return value;
       const x = isExactNumeric(value) || value instanceof FxFloat ? value : toNumber(value);
-      return x instanceof FxError ? x : formatNumber(x, pattern);
+      return x instanceof FxError ? x : formatNumber(x, pattern, numberLanguage(fx, language));
     },
   },
   Concatenate: {

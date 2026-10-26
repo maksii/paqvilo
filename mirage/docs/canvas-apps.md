@@ -63,6 +63,8 @@ An unknown app returns 404 `CanvasAppNotFound`. A page path answers 405 to any m
 
 ## Preflight
 
+Partial YAML, unknown schemas and invalid data-source declarations block complete app/rendering coverage even when some screens remain playable. Unreadable apps have an explicit unsupported app requirement. The shared rendering verdict includes both Solution and project apps, so a supported Solution cannot hide an unsupported project source. List and inventory API results expose incomplete-source diagnostics separately from the playable local subset.
+
 A canvas app whose source parses reports level `behaviour`. Its `canvas:app/<name>` requirement (Solution and project `canvas.sources` apps alike) is satisfied when every control is hosted, else `unsupported` with `CANVAS_CONTROL_UNSUPPORTED` naming the controls. `canvas:rendering` is a `contract` requirement with reason `CANVAS_RENDERING_BASELINE`: it is satisfied when each app has readable source and no unsupported controls, and otherwise is unsupported. Rendering admission is narrower than logic hosting: Image, modern controls and component instances remain rendering gaps even when their formulas run. This reports the baseline player, not full Power Apps rendering parity. An app without readable source stays at `inventory` with its source diagnostic as the reason. The `canvas` host surface and the `canvas-apps` capability record are `behaviour`.
 
 ## Project configuration

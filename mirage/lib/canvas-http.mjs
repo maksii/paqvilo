@@ -1,5 +1,6 @@
 import { canvasViewport } from './canvas-runtime.mjs';
 import { canvasRenderingGaps } from './canvas-rendering.mjs';
+import { canvasSourceCoverageGaps } from './canvas-source.mjs';
 // Canvas app host under the reserved `/_apps/canvas/` prefix: the inventory page of every app and, when the host wires
 // the headless runtime (canvas-runtime.mjs), the app view: screens and controls with their current property values,
 // variables, collections, data sources, forms, notifications and errors, with HTML forms that drive it. Nothing is
@@ -14,6 +15,8 @@ import { canvasPlayerAsset, canvasPlayerPage } from './canvas-player.mjs';
 const PREFIX = '/_apps/canvas/';
 const API_PREFIX = '/_apps/api/canvas/';
 const BANNER = 'Canvas apps are not rendered; their screens, controls and formulas run headlessly';
+const PLAYER_BANNER =
+  'Canvas apps use a bounded local player; unsupported features and incomplete sources are reported';
 const INVENTORY_BANNER = 'Canvas apps are inventoried only on this host; nothing is executed';
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
@@ -25,7 +28,8 @@ const escapeHtml = (value) =>
     (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
   );
 // An app is hosted (behaviour) when this host wires the runtime and the app has readable screens; else inventory.
-const levelOf = (source, hosted) => (hosted && source.screens.length ? 'behaviour' : 'inventory');
+const levelOf = (source, hosted) =>
+  hosted && source.screens.length && !canvasSourceCoverageGaps(source).length ? 'behaviour' : 'inventory';
 const reasonOf = (hosted) => (hosted ? 'CANVAS_RENDERING_BASELINE' : 'CANVAS_HOST_NOT_IMPLEMENTED');
 
 function send(res, status, type, body) {
@@ -34,9 +38,9 @@ function send(res, status, type, body) {
 }
 // Exact decimals (exact-numeric.mjs) keep every digit: a 28-digit Decimal is written as its number lexeme.
 const json = (res, status, value) => send(res, status, 'application/json; charset=utf-8', stringifyExactJson(value));
-const page = (title, body, hosted) =>
+const page = (title, body, hosted, playerList = false) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>` +
-  `<body><p role="status"><strong>${hosted ? BANNER : INVENTORY_BANNER}</strong></p>${body}</body></html>`;
+  `<body><p role="status"><strong>${hosted ? (playerList ? PLAYER_BANNER : BANNER) : INVENTORY_BANNER}</strong></p>${body}</body></html>`;
 const summary =
   (hosted) =>
   ({ uniqueName, source }) => ({
@@ -47,6 +51,7 @@ const summary =
     formulas: source.formulas.length,
     diagnostics: source.diagnostics.length,
     level: levelOf(source, hosted),
+    ...(canvasSourceCoverageGaps(source).length ? { reason: canvasSourceCoverageGaps(source)[0].code } : {}),
   });
 const failure = (status, code, message) => Object.assign(new Error(message), { status, code });
 const shown = (value) => {
@@ -402,6 +407,7 @@ export function createCanvasHandler({
             )
             .join('')}</ul>`,
           Boolean(runtime),
+          true,
         ),
       );
     }
@@ -414,7 +420,7 @@ export function createCanvasHandler({
       return json(res, 200, {
         uniqueName: app.uniqueName,
         level: levelOf(app.source, Boolean(runtime)),
-        reason: reasonOf(runtime),
+        reason: canvasSourceCoverageGaps(app.source)[0]?.code ?? reasonOf(runtime),
         ...app.source,
         rendering: { level: 'contract', gaps: canvasRenderingGaps(app.source) },
       });

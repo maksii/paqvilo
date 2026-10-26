@@ -214,3 +214,45 @@ test('canvas.enabled false unmounts /_apps/canvas/ on the Power Pages host too',
   const dashboard = await (await fetch(sim.url + '/_sim/api/dashboard')).json();
   assert.equal(dashboard.nodes.find((node) => node.id === 'app:canvas')?.status, 'disabled');
 });
+
+test('Solution and project canvas rendering preflight includes incomplete project source', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-coverage-'));
+  const owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const payload = writeSolutionAssetEntries([{ name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(HOME) }]);
+  for (const [relative, bytes] of Object.entries({
+    'solution/Other/Solution.xml':
+      '<ImportExportXml><SolutionManifest><UniqueName>Invented</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'solution/CanvasApps/x_app.meta.xml':
+      '<CanvasApp><Name>x_app</Name><CanvasAppId>77777777-7777-4777-8777-777777777777</CanvasAppId></CanvasApp>',
+    'solution/CanvasApps/x_app_DocumentUri.msapp': payload,
+    'project/Src/HomeScreen.pa.yaml': HOME,
+    'project/Src/App.pa.yaml': 'App: [',
+  })) {
+    const file = path.join(root, relative);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, bytes);
+  }
+  const options = {
+    runtime: { kind: 'dataverse-api' },
+    solutionRoots: [path.join(root, 'solution')],
+    projectRoot: root,
+    canvas: { sources: ['project'] },
+    port: 0,
+    watch: false,
+    simulation: { level: 'dry-run' },
+    dataverse: { enabled: true, tls: false, tds: { enabled: false } },
+  };
+  const offline = await preflight(options);
+  const sim = await createSimulator(options);
+  owner.add(() => sim.close());
+  for (const report of [offline, await sim.preflight()]) {
+    const rows = Object.fromEntries(
+      report.requirements.filter((row) => row.kind === 'canvas').map((row) => [row.id, row]),
+    );
+    assert.equal(rows['canvas:app/x_app'].status, 'satisfied');
+    assert.equal(rows['canvas:app/project'].status, 'unsupported');
+    assert.equal(rows['canvas:app/project'].reason, 'CANVAS_SOURCE_YAML_INVALID');
+    assert.equal(rows['canvas:rendering'].status, 'unsupported');
+  }
+});

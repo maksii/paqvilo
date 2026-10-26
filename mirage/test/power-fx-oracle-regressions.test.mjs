@@ -42,3 +42,12 @@ test('IfError keeps branches lazy and reports unknown replacement type', () => {
   assert.equal(unknown.value, 'fallback');
   assert.ok(unknown.diagnostics.some((entry) => entry.code === 'POWER_FX_IFERROR_TYPE_UNKNOWN'));
 });
+
+test('Text applies the specified language to numeric separators', () => {
+  const run = (formula) => powerFxEngine.evaluateSync(formula).value;
+  assert.equal(run('Text(1234.5,"#,##0.00","de-DE")'), '1.234,50');
+  assert.equal(run('Text(1234.5,"#,##0.00","fr-FR")'), '1\u202f234,50');
+  const invalid = evaluateFx('Text(1234.5,"#,##0.00","x-invalid-@")').value;
+  assert.ok(invalid instanceof FxError);
+  assert.equal(invalid.errors[0].Kind, ErrorKind.BadLanguageCode);
+});

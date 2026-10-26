@@ -28,6 +28,8 @@ The observed PAC language was `en-150`; Mirage's default was `en-US`. Culture-se
 
 The checked-in regressions use sanitized expected values established by PAC. Machine-specific commands and raw research evidence stay under ignored `.paqvilo/`; no auth profiles or business data are fixtures.
 
+A subsequent review added exact numeric scalar comparisons, scientific notation, `Blank()` and numeric locale-separator cases. The parser preserves significant digits instead of first rounding both sides to JavaScript numbers. Numeric `Text` uses the requested locale's decimal/group separators and reports invalid language tags; culture-specific grouping patterns beyond the tested cases remain a gap.
+
 ## Scope
 
 PAC is a console host. Canvas apps, Dataverse formula columns and other Power Fx hosts enable different functions and apply different context rules. A matching pure corpus is evidence for those cases, not proof of complete Canvas, Dataverse or Power Fx parity. The current runner targets the tested Windows PAC output; Linux, macOS, other PAC versions and localized console messages have not been validated.

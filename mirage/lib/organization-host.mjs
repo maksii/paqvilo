@@ -1372,7 +1372,15 @@ function hostReports(c) {
       const localServices = c.config.localServices ? await preflightLocalServices(c.config.localServices, { env }) : [];
       // Missing project canvas sources are requirements of the source graph (kind canvas-source).
       // Project canvas apps get the canvas:app/<name> rows Solution apps get (source-graph.mjs canvasRequirementRows), once each.
-      const known = new Set((graph?.requirements?.() ?? []).map((row) => row.id));
+      const graphRows = graph?.requirements?.() ?? [];
+      const known = new Set(graphRows.map((row) => row.id));
+      const projectCanvasRows = canvasRequirementRows(canvas.records);
+      const projectRendering = projectCanvasRows.find((row) => row.id === 'canvas:rendering');
+      // Rendering is a shared requirement across both Solution and project apps.
+      // A satisfied Solution row must not hide an unsupported project app.
+      const combinedGraphRows = graphRows.map((row) =>
+        row.id === 'canvas:rendering' && projectRendering?.status === 'unsupported' ? projectRendering : row,
+      );
       const missing = [
         ...canvas.diagnostics
           .filter((entry) => entry.code === 'CANVAS_SOURCE_MISSING')
@@ -1383,13 +1391,14 @@ function hostReports(c) {
             status: 'missing',
             reason: entry.code,
           })),
-        ...canvasRequirementRows(canvas.records).filter((row) => !known.has(row.id)),
+        ...projectCanvasRows.filter((row) => !known.has(row.id)),
       ];
-      const sourceGraph = missing.length
-        ? Object.create(graph ?? null, {
-            requirements: { value: () => [...(graph?.requirements?.() ?? []), ...missing] },
-          })
-        : graph;
+      const sourceGraph =
+        missing.length || combinedGraphRows.some((row, index) => row !== graphRows[index])
+          ? Object.create(graph ?? null, {
+              requirements: { value: () => [...combinedGraphRows, ...missing] },
+            })
+          : graph;
       return buildPreflightReport({
         runtime: c.runtime,
         simulation: level,

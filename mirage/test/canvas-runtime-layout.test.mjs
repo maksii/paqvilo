@@ -120,6 +120,31 @@ test('initial viewport is validated before OnStart and forwarded to new sessions
   assert.deepEqual(session.snapshot().viewport, { width: 390, height: 844 });
 });
 
+test('an unchanged viewport does not repeat a connector-backed property', async () => {
+  const widths = [];
+  const runtime = createCanvasApp({
+    app: {
+      uniqueName: 'viewport-connector',
+      source: {
+        dataSources: [{ name: 'Svc', connectorId: 'invented' }],
+        tree: { screens: [{ name: 'Home', controls: [{ name: 'Result', control: 'Label@2.5.1' }] }] },
+        formulas: [{ owner: 'Result', property: 'Text', text: '=Svc.Width({width: App.Width}).text' }],
+      },
+    },
+    evaluator: createPowerFxEvaluator(),
+    connectors: async ({ body }) => {
+      widths.push(body.width);
+      return { statusCode: 200, body: { text: String(body.width) } };
+    },
+  });
+  await runtime.start();
+  await runtime.act({ action: 'resize', width: 1366, height: 768 });
+  assert.deepEqual(widths, [1366]);
+  const outcome = await runtime.act({ action: 'resize', width: 390, height: 844 });
+  assert.deepEqual(widths, [1366, 390]);
+  assert.equal(outcome.snapshot.screens[0].controls[0].properties.Text, '390');
+});
+
 test('checkbox and toggle transitions run their change and check callbacks once with the new value', async () => {
   const app = {
     uniqueName: 'checks',

@@ -124,3 +124,29 @@ test('PAC error preambles fail even when all echoed results follow', () => {
     { kind: 'value', value: 2 },
   ]);
 });
+
+test('PAC numeric parsing preserves exact digits and recognizes Blank()', () => {
+  const corpus = [
+    { id: 'large', expression: 'x' },
+    { id: 'blank', expression: 'y' },
+  ];
+  const [large, blank] = parsePacResults(Buffer.from('>> x\n9007199254740993\n>> y\nBlank()\n'), corpus);
+  assert.equal(large.value.value, '9007199254740993');
+  assert.equal(blank.value, null);
+  assert.equal(compareResults(large, { kind: 'value', value: 9007199254740992 }), 'difference');
+  assert.equal(
+    compareResults(large, {
+      kind: 'value',
+      value: { $type: 'DataverseNumeric', numericType: 'Decimal', value: '9007199254740993' },
+    }),
+    'match',
+  );
+});
+
+test('scientific PAC numeric output is parsed without double rounding', () => {
+  const [result] = parsePacResults(Buffer.from('>> x\n1E+100\n'), [{ id: 'float', expression: 'x' }]);
+  assert.equal(compareResults(result, { kind: 'value', value: 1e100 }), 'match');
+  assert.throws(() => parsePacResults(Buffer.from('>> x\n1E+999\n'), [{ id: 'float', expression: 'x' }]), {
+    code: 'PacOutputInvalid',
+  });
+});

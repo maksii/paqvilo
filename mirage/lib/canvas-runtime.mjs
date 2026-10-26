@@ -1277,8 +1277,11 @@ export function createCanvasApp({
             break;
           }
           case 'resize': {
-            state.viewport = canvasViewport(request);
-            changed('viewport');
+            const viewport = canvasViewport(request);
+            if (viewport.width !== state.viewport.width || viewport.height !== state.viewport.height) {
+              state.viewport = viewport;
+              changed('viewport');
+            }
             break;
           }
           case 'refresh':

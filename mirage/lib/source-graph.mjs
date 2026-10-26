@@ -391,23 +391,33 @@ const DOCUMENT_GRID = /<TargetEntityType>\s*sharepointdocumentlocation\s*<\/Targ
 function canvasNodes(records = []) {
   const apps = records.filter((record) => record.component === 'canvasapp'),
     nodes = [];
-  for (const record of apps.filter((item) => item.level === 'behaviour')) {
+  for (const record of apps) {
     const gaps = (record.unsupported ?? []).map((item) => `${item.screen}.${item.name} (${item.control})`);
+    const sourceGaps = record.sourceDiagnostics ?? [];
     nodes.push({
       kind: 'canvas',
       key: `app/${record.name}`,
       name: record.name,
       level: 'behaviour',
       source: record.source ?? null,
-      requirement: gaps.length
-        ? {
-            status: 'unsupported',
-            reason: 'CANVAS_CONTROL_UNSUPPORTED',
-            level: 'inventory',
-            components: gaps,
-            message: `Not hosted by the canvas runtime: ${gaps.join('; ')}.`,
-          }
-        : { status: 'satisfied', reason: null, level: 'behaviour' },
+      requirement:
+        record.level !== 'behaviour' || sourceGaps.length
+          ? {
+              status: 'unsupported',
+              reason: sourceGaps[0]?.code ?? record.reason ?? 'CANVAS_SOURCE_NO_PAYAML',
+              level: 'inventory',
+              components: sourceGaps.map((item) => item.source ?? item.code),
+              message: 'Canvas source is incomplete or unreadable; coverage cannot be established.',
+            }
+          : gaps.length
+            ? {
+                status: 'unsupported',
+                reason: 'CANVAS_CONTROL_UNSUPPORTED',
+                level: 'inventory',
+                components: gaps,
+                message: `Not hosted by the canvas runtime: ${gaps.join('; ')}.`,
+              }
+            : { status: 'satisfied', reason: null, level: 'behaviour' },
     });
   }
   if (apps.length)
@@ -418,7 +428,9 @@ function canvasNodes(records = []) {
       level: 'contract',
       source: null,
       requirement: {
-        status: apps.every((app) => app.level === 'behaviour' && !canvasRenderingGaps(app).length)
+        status: apps.every(
+          (app) => app.level === 'behaviour' && !app.sourceDiagnostics?.length && !canvasRenderingGaps(app).length,
+        )
           ? 'satisfied'
           : 'unsupported',
         reason: 'CANVAS_RENDERING_BASELINE',

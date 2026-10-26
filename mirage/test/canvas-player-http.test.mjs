@@ -72,3 +72,32 @@ test('player GET is inert, assets are same-origin and start requires CSRF', asyn
   const inspect = await (await fetch(`${url}/_apps/canvas/test?view=inspect`)).text();
   assert.match(inspect, /Headless app/);
 });
+
+test('partial canvas sources remain playable but list and inventory report incomplete coverage', async (t) => {
+  const source = {
+    app: { name: 'Partial' },
+    screens: [{ name: 'Home', controls: [] }],
+    formulas: [],
+    diagnostics: [{ code: 'CANVAS_SOURCE_YAML_INVALID', message: 'Invalid screen', source: 'Src/Broken.pa.yaml' }],
+  };
+  const handler = createCanvasHandler({
+    apps: () => [{ uniqueName: 'partial', source }],
+    runtime: { existing: () => null },
+  });
+  const server = http.createServer((req, res) => {
+    if (!handler(req, res)) res.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const list = await (await fetch(`${url}/_apps/canvas/`, { headers: { accept: 'application/json' } })).json();
+  assert.equal(list.apps[0].level, 'inventory');
+  assert.equal(list.apps[0].reason, 'CANVAS_SOURCE_YAML_INVALID');
+  const inventory = await (await fetch(`${url}/_apps/canvas/api/partial`)).json();
+  assert.equal(inventory.level, 'inventory');
+  assert.equal(inventory.reason, 'CANVAS_SOURCE_YAML_INVALID');
+  assert.match(await (await fetch(`${url}/_apps/canvas/partial`)).text(), /data-testid="canvas-start"/);
+  const html = await (await fetch(`${url}/_apps/canvas/`)).text();
+  assert.match(html, /bounded local player/);
+  assert.doesNotMatch(html, /Canvas apps are not rendered/);
+});
