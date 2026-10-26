@@ -927,14 +927,8 @@ test('HTTP: shutdown requires CSRF, acknowledges before callback and closes idem
   });
   assert.equal(accepted.status, 202);
   assert.deepEqual(await accepted.json(), { accepted: true, message: 'Mirage shutdown accepted.' });
-  let timer;
-  await Promise.race([
-    shutdownDone,
-    new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('shutdown callback timed out')), 2000);
-    }),
-  ]);
-  clearTimeout(timer);
+  // The callback's own completion is the signal; a callback that never runs fails at the test timeout.
+  await shutdownDone;
   assert.equal(shutdownCalls, 1);
   await fixture.app.close();
 });

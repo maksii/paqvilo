@@ -38,7 +38,8 @@ function run(code, environmentVariables) {
       website: {},
       settings: {},
       environmentVariables,
-      timeout: 2000,
+      // The documented local server-logic allowance (mirage/docs/operations.md); the scripts here are trivial.
+      timeout: 5000,
     },
   });
   const messages = [];
@@ -51,6 +52,7 @@ function run(code, environmentVariables) {
       }
     });
     worker.on('error', reject);
+    worker.on('exit', (code) => reject(new Error(`The worker exited (${code}) without a result`)));
   });
 }
 
