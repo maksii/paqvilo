@@ -71,22 +71,21 @@ for (const journal of [false, true])
         await handle.write(Buffer.from('"evil"'), 0, 6, offset);
         touch('-r', reference, file);
         after = await handle.stat({ bigint: true });
+        assert.deepEqual(
+          [after.ino, after.size, after.mtimeNs],
+          [before.ino, before.size, before.mtimeNs],
+          'the edit must preserve identity, size and the exact modification time',
+        );
+        assert.notEqual(stateFileSignature(after), stateFileSignature(before));
+        await assert.rejects(store.update('items', 'one', { note: 'refused' }), { code: 'StateConflict' });
+        // The refused update left the edited bytes in place: the inspected file is still linked (not replaced by a
+        // rename) and still holds the edit.
+        const kept = Buffer.alloc(Number(after.size));
+        await handle.read(kept, 0, kept.length, 0);
+        assert.ok((await handle.stat()).nlink > 0, 'the edited file must not have been replaced');
+        assert.ok(kept.toString('utf8').includes('"evil"'));
       } finally {
         await handle.close();
-      }
-      assert.deepEqual(
-        [after.ino, after.size, after.mtimeNs],
-        [before.ino, before.size, before.mtimeNs],
-        'the edit must preserve identity, size and the exact modification time',
-      );
-      assert.notEqual(stateFileSignature(after), stateFileSignature(before));
-      await assert.rejects(store.update('items', 'one', { note: 'refused' }), { code: 'StateConflict' });
-      // Read back through a descriptor as well: the refused update must have left the edited bytes in place.
-      const kept = await fs.open(file, 'r');
-      try {
-        assert.ok((await kept.readFile('utf8')).includes('"evil"'));
-      } finally {
-        await kept.close();
       }
     },
   );
