@@ -135,7 +135,7 @@ test('canvas list and inventory API answer inventory without the runtime and beh
   ).json();
   assert.deepEqual(
     [hostedList.level, hostedList.reason, hostedList.apps[0].level],
-    ['behaviour', 'CANVAS_NOT_RENDERED', 'behaviour'],
+    ['behaviour', 'CANVAS_RENDERING_BASELINE', 'behaviour'],
   );
   const htmlList = await fetch(url + '/_apps/canvas/');
   assert.match(await htmlList.text(), /href="\/_apps\/canvas\/fx_inventedcanvas"/);

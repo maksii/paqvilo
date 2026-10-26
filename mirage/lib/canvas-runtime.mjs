@@ -25,6 +25,13 @@ const ENUMS = Object.freeze({
   FormMode: enumOf('Edit', 'New', 'View'),
   DisplayMode: enumOf('Edit', 'View', 'Disabled'),
   ScreenTransition: enumOf('None', 'Fade', 'Cover', 'CoverRight', 'UnCover', 'UnCoverRight'),
+  ScreenSize: Object.freeze({ Small: 1, Medium: 2, Large: 3, ExtraLarge: 4 }),
+  Layout: enumOf('Horizontal', 'Vertical'),
+  LayoutDirection: enumOf('Horizontal', 'Vertical'),
+  LayoutAlignItems: enumOf('Start', 'Center', 'End', 'Stretch'),
+  LayoutJustifyContent: enumOf('Start', 'Center', 'End', 'SpaceBetween', 'SpaceAround', 'SpaceEvenly'),
+  LayoutAlign: enumOf('SetByContainer', 'Start', 'Center', 'End', 'Stretch'),
+  LayoutOverflow: enumOf('Hide', 'Scroll'),
 });
 const CANVAS_DATA_ROW_LIMIT = 500;
 const BEHAVIOUR_PROPERTY = /^On[A-Z]/;
@@ -133,6 +140,14 @@ const literal = (raw) =>
   raw === 'true' ? true : raw === 'false' ? false : raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : raw;
 const fail = (message, code, status = 400) => Object.assign(new Error(message), { code, status });
 
+/** Validate and copy a player viewport before any app behavior runs. */
+export function canvasViewport(viewport) {
+  const { width, height } = viewport ?? {};
+  if (![width, height].every((value) => Number.isInteger(value) && value >= 1 && value <= 8192))
+    throw fail('viewport needs integer width and height between 1 and 8192.', 'CanvasActionInvalid');
+  return { width, height };
+}
+
 /** A JSON-safe copy of a formula value for snapshots and API answers. */
 function observable(value, depth = 0) {
   if (value === undefined || value === null) return null;
@@ -169,6 +184,7 @@ export function createCanvasApp({
   launch = () => {},
   diagnostic = () => {},
   parameters = {},
+  viewport = { width: 1366, height: 768 },
 }) {
   if (!evaluator) throw new TypeError('createCanvasApp needs the Power Fx evaluator (createPowerFxEvaluator).');
   const core = evaluator.describe?.().source === 'core';
@@ -195,7 +211,12 @@ export function createCanvasApp({
     // A formula starts with `=`; any other scalar is a literal value.
     formulas
       .get(owner)
-      .set(row.property, raw.startsWith('=') ? { formula: raw.slice(1).trim() } : { value: literal(raw) });
+      .set(
+        row.property,
+        raw.startsWith('=')
+          ? { formula: raw.slice(1).trim(), source: row.source, line: row.line }
+          : { value: literal(raw), source: row.source, line: row.line },
+      );
   }
   const screens = new Map(),
     controls = new Map(),
@@ -208,6 +229,7 @@ export function createCanvasApp({
       controls.set(control.name, {
         name: control.name,
         type: control.control ?? null,
+        variant: control.variant ?? null,
         kind,
         supported: Boolean(kind),
         screen: screen.name,
@@ -281,6 +303,7 @@ export function createCanvasApp({
     }
   const state = {
     current: null,
+    viewport: canvasViewport(viewport),
     history: [],
     inputs: new Map(),
     selected: new Map(),
@@ -321,6 +344,10 @@ export function createCanvasApp({
       const next = queue.pop();
       for (const dependent of dependents.get(next) ?? []) {
         cache.delete(dependent);
+        if (dependent.startsWith('prop:')) {
+          const property = dependent.slice(5);
+          propertyAnswers.delete(property.includes('#') ? property : `${property}#`);
+        }
         queue.push(dependent);
       }
       dependents.delete(next);
@@ -337,7 +364,19 @@ export function createCanvasApp({
     if (state.errors.length > MAX_LOG) state.errors.shift();
     return entry;
   };
+  const location = (where) => {
+    let entry;
+    for (const [owner, properties] of formulas) {
+      if (where.startsWith(`${owner}.`)) {
+        entry = properties.get(where.slice(owner.length + 1));
+        if (entry) break;
+      }
+    }
+    if (!entry && where.startsWith('App.Formulas.')) entry = formulas.get('App')?.get('Formulas');
+    return entry?.source ? { file: entry.source, ...(entry.line ? { line: entry.line } : {}) } : {};
+  };
   const fromError = (error, where) => ({
+    ...location(where),
     code: error.code ?? 'CanvasFormulaError',
     kind: error.details?.kind ?? error.kind ?? 'Unknown',
     message: error.message,
@@ -346,6 +385,7 @@ export function createCanvasApp({
   });
   const fromFxError = (value, where) =>
     value.errors.map((item) => ({
+      ...location(where),
       code: 'PowerFxError',
       kind: kindName(item.Kind),
       message: item.Message ?? '',
@@ -393,6 +433,21 @@ export function createCanvasApp({
       define(name, () => reference(name, galleryOf(name) && scope.gallery === galleryOf(name) ? scope : {}));
     for (const name of namedFormulas.keys()) define(name, () => read('App', `#formula:${name}`, {}));
     define('App', () => ({
+      get Width() {
+        return read('App', 'Width');
+      },
+      get Height() {
+        return read('App', 'Height');
+      },
+      get MinScreenWidth() {
+        return read('App', 'MinScreenWidth');
+      },
+      get MinScreenHeight() {
+        return read('App', 'MinScreenHeight');
+      },
+      get SizeBreakpoints() {
+        return read('App', 'SizeBreakpoints');
+      },
       get ActiveScreen() {
         track('screen:current');
         return state.current ? reference(state.current, {}) : null;
@@ -593,6 +648,29 @@ export function createCanvasApp({
     left === right ||
     (isPlain(left) && isPlain(right) && JSON.stringify(observable(left)) === JSON.stringify(observable(right)));
   function compute(name, property, scope) {
+    if (name === 'App' && (property === 'Width' || property === 'Height')) {
+      track('viewport');
+      return state.viewport[property.toLowerCase()];
+    }
+    if (name === 'App' && ['MinScreenWidth', 'MinScreenHeight', 'SizeBreakpoints'].includes(property)) {
+      const result = declared(name, property, scope);
+      return result.found ? result.value : property === 'SizeBreakpoints' ? [600, 900, 1200] : 0;
+    }
+    if (screens.has(name) && !controls.has(name)) {
+      const result = declared(name, property, scope);
+      if (result.found) return result.value;
+      if (property === 'Width' || property === 'Height')
+        return Math.max(read('App', property), Number(read('App', `MinScreen${property}`)) || 0);
+      if (property === 'Size') {
+        const breakpoints = read('App', 'SizeBreakpoints');
+        const width = read(name, 'Width');
+        return (
+          1 +
+          (Array.isArray(breakpoints) ? breakpoints : []).filter((item) => width >= Number(item?.Value ?? item)).length
+        );
+      }
+      if (property === 'Orientation') return read(name, 'Width') > read(name, 'Height') ? 'Horizontal' : 'Vertical';
+    }
     if (name === 'App' && property.startsWith('#formula:'))
       return pure(namedFormulas.get(property.slice(9)), {}, `App.Formulas.${property.slice(9)}`);
     switch (`${kindOf(name)}.${property}`) {
@@ -1159,7 +1237,8 @@ export function createCanvasApp({
     /**
      * One driver action: { action: 'select', control, item? } runs OnSelect (item = gallery row index); 'input' sets a
      * control's user value ({ control, value, item? }) and runs OnChange; 'navigate' { screen }; 'back'; 'run' { formula }
-     * runs a behaviour formula on the current screen; 'evaluate' { formula } answers its value; 'refresh' rereads data.
+     * runs a behaviour formula on the current screen; 'evaluate' { formula } answers its value; 'resize' { width, height }
+     * changes the bounded viewport; 'refresh' rereads data.
      */
     act: (request) =>
       serial(async () => {
@@ -1193,13 +1272,18 @@ export function createCanvasApp({
             result = value instanceof FxDataSource ? rowsOf(value) : value;
             break;
           }
+          case 'resize': {
+            state.viewport = canvasViewport(request);
+            changed('viewport');
+            break;
+          }
           case 'refresh':
             propertyAnswers.clear();
             forget();
             break;
           default:
             throw fail(
-              `Unknown canvas action ${request?.action}; use select, input, navigate, back, run, evaluate or refresh.`,
+              `Unknown canvas action ${request?.action}; use select, input, navigate, back, run, evaluate, resize or refresh.`,
               'CanvasActionInvalid',
             );
         }
@@ -1216,12 +1300,18 @@ export function createCanvasApp({
     snapshot() {
       const describe = (name, scope = {}) => {
         const entry = controls.get(name);
-        const names = [...new Set([...(formulas.get(name)?.keys() ?? []), ...(OUTPUTS[entry.kind] ?? [])])].filter(
-          (property) => !BEHAVIOUR_PROPERTY.test(property),
-        );
+        const names = [
+          ...new Set([
+            ...(formulas.get(name)?.keys() ?? []),
+            ...(OUTPUTS[entry.kind] ?? []),
+            ...Object.keys(COMMON_DEFAULTS),
+            ...Object.keys(CONTROL_CATALOGUE[entry.kind]?.defaults ?? {}),
+          ]),
+        ].filter((property) => !BEHAVIOUR_PROPERTY.test(property));
         const out = {
           name,
           type: entry.type,
+          variant: entry.variant,
           kind: entry.kind,
           parent: entry.parent,
           supported: entry.supported,
@@ -1249,6 +1339,7 @@ export function createCanvasApp({
         app: app.uniqueName,
         name: source.app?.name ?? app.uniqueName,
         rendered: false,
+        viewport: { ...state.viewport },
         currentScreen: state.current,
         history: state.history.map((entry) => entry.screen),
         variables: Object.fromEntries(
@@ -1277,7 +1368,7 @@ export function createCanvasApp({
           name: screen,
           current: screen === state.current,
           properties: Object.fromEntries(
-            [...(formulas.get(screen)?.keys() ?? [])]
+            [...new Set([...(formulas.get(screen)?.keys() ?? []), 'Width', 'Height', 'Size', 'Orientation'])]
               .filter((property) => !BEHAVIOUR_PROPERTY.test(property))
               .map((property) => [property, observable(read(screen, property))]),
           ),
@@ -1322,7 +1413,7 @@ const OUTPUTS = Object.freeze({
   form: ['Mode', 'DisplayMode', 'Updates', 'Valid', 'Unsaved', 'LastSubmit', 'Error', 'ErrorKind'],
   formviewer: ['Mode', 'DisplayMode'],
   card: ['Default', 'Update', 'Valid', 'DisplayMode'],
-  screen: [],
+  screen: ['Width', 'Height', 'Size', 'Orientation'],
 });
 
 /**
@@ -1346,7 +1437,7 @@ export function createCanvasRuntime({
     `${uniqueName}\u0000${principal?.kind ?? 'anonymous'}:${principal?.principalId ?? ''}`;
   const resolve = (value) => (typeof value === 'function' ? value() : value);
   return {
-    async session(uniqueName, principal, { parameters = {} } = {}) {
+    async session(uniqueName, principal, { parameters = {}, viewport } = {}) {
       const key = keyOf(uniqueName, principal);
       if (!instances.has(key)) {
         const app = (apps() ?? []).find((entry) => entry.uniqueName === uniqueName);
@@ -1362,6 +1453,7 @@ export function createCanvasRuntime({
           launch,
           diagnostic,
           parameters,
+          ...(viewport === undefined ? {} : { viewport }),
         });
         instances.set(key, created);
         await created.start().catch((error) => {
@@ -1385,8 +1477,8 @@ export function createCanvasRuntime({
 }
 
 /**
- * Capability record `canvas-apps`: the hosted logic is behaviour; rendering is the documented boundary (requirement row
- * `canvas:rendering`, source-graph.mjs). `evaluatorLevel` is the Power Fx evaluator's describe().level.
+ * Capability record `canvas-apps`: the hosted logic is behaviour and the local player has bounded rendering support.
+ * `evaluatorLevel` is the Power Fx evaluator's describe().level.
  */
 export function describeCanvasRuntime({ evaluatorLevel = 'contract' } = {}) {
   const level = evaluatorLevel === 'contract' || evaluatorLevel === 'inventory' ? 'contract' : 'behaviour';
@@ -1399,13 +1491,13 @@ export function describeCanvasRuntime({ evaluatorLevel = 'contract' } = {}) {
     stateOwner: 'memory',
     lifecycle: 'per-session',
     requires: ['power-fx'],
-    operations: ['open', 'select', 'input', 'navigate', 'back', 'run', 'evaluate', 'refresh'].map((name) => ({
+    operations: ['open', 'select', 'input', 'navigate', 'back', 'run', 'evaluate', 'resize', 'refresh'].map((name) => ({
       name,
       level,
     })),
     fidelity: {
       notes: [
-        'Canvas apps are not rendered: screens, controls and formulas run headlessly at /_apps/canvas/<app> and POST /_apps/api/canvas/<app> (requirement canvas:rendering).',
+        'A bounded local HTML player presents supported controls; the runtime snapshot remains headless and does not claim pixel-perfect Power Apps rendering.',
         `Dataverse tables are Power Fx data sources read and written as the caller; delegable queries push down, others read up to ${CANVAS_DATA_ROW_LIMIT} rows with the delegation warning.`,
         'Controls outside the hosted catalogue (canvas-controls.mjs) and component instances are listed as unsupported (requirement canvas:app/<name>).',
       ],

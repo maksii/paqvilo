@@ -54,7 +54,7 @@ test('Solution canvas metadata, payload and metadata-only overlay agree between 
   const running = await sim.preflight({ strict: true, scenario: { id: 'logic', requires: ['canvas:app/x_app'] } });
   for (const report of [offline, running]) {
     assert.ok(report.requirements.some((row) => row.id === 'canvas:app/x_app' && row.status === 'satisfied'));
-    assert.ok(report.requirements.some((row) => row.id === 'canvas:rendering' && row.status === 'placeholder'));
+    assert.ok(report.requirements.some((row) => row.id === 'canvas:rendering' && row.status === 'satisfied'));
     assert.ok(!report.requirements.some((row) => row.reason === 'CANVAS_HOST_NOT_IMPLEMENTED'));
   }
 });
@@ -141,7 +141,7 @@ test('canvas.sources adds a project canvas app to the inventory', async () => {
   const rows = Object.fromEntries(
     report.requirements.filter((row) => row.kind === 'canvas').map((row) => [row.id, row.status]),
   );
-  assert.deepEqual(rows, { 'canvas:app/fx_invented': 'satisfied', 'canvas:rendering': 'placeholder' });
+  assert.deepEqual(rows, { 'canvas:app/fx_invented': 'satisfied', 'canvas:rendering': 'satisfied' });
   // The runtime is wired: the driver API asks for a principal instead of answering CanvasRuntimeUnavailable.
   const driver = await fetch(sim.url + '/_apps/api/canvas/fx_invented');
   assert.deepEqual([driver.status, (await driver.json()).error.code], [401, 'CanvasPrincipalRequired']);

@@ -1,3 +1,5 @@
+import { canvasViewport } from './canvas-runtime.mjs';
+import { canvasRenderingGaps } from './canvas-rendering.mjs';
 // Canvas app host under the reserved `/_apps/canvas/` prefix: the inventory page of every app and, when the host wires
 // the headless runtime (canvas-runtime.mjs), the app view: screens and controls with their current property values,
 // variables, collections, data sources, forms, notifications and errors, with HTML forms that drive it. Nothing is
@@ -7,12 +9,14 @@
 // /_apps/api/canvas/<app> answers the snapshot.
 // Mount before the model-driven handler: that handler answers 404 for every other `/_apps/*` path.
 import { stringifyExactJson } from './exact-numeric.mjs';
+import { canvasPlayerAsset, canvasPlayerPage } from './canvas-player.mjs';
 
 const PREFIX = '/_apps/canvas/';
 const API_PREFIX = '/_apps/api/canvas/';
 const BANNER = 'Canvas apps are not rendered; their screens, controls and formulas run headlessly';
 const INVENTORY_BANNER = 'Canvas apps are inventoried only on this host; nothing is executed';
-const CSP = "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
+const CSP =
+  "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
 const BODY_LIMIT = 64 * 1024;
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const escapeHtml = (value) =>
@@ -22,7 +26,7 @@ const escapeHtml = (value) =>
   );
 // An app is hosted (behaviour) when this host wires the runtime and the app has readable screens; else inventory.
 const levelOf = (source, hosted) => (hosted && source.screens.length ? 'behaviour' : 'inventory');
-const reasonOf = (hosted) => (hosted ? 'CANVAS_NOT_RENDERED' : 'CANVAS_HOST_NOT_IMPLEMENTED');
+const reasonOf = (hosted) => (hosted ? 'CANVAS_RENDERING_BASELINE' : 'CANVAS_HOST_NOT_IMPLEMENTED');
 
 function send(res, status, type, body) {
   res.writeHead(status, { 'content-type': type, 'content-length': Buffer.byteLength(body) });
@@ -263,17 +267,18 @@ export function createCanvasHandler({
           'CanvasParametersInvalid',
           'parameters must be an object of text, number or Boolean values.',
         );
+      const viewport = action.viewport === undefined ? undefined : canvasViewport(action.viewport);
       if (action.action === 'reset') runtime.reset(app.uniqueName, caller);
-      const snapshot = await (await runtime.session(app.uniqueName, caller, { parameters })).observe();
+      const snapshot = await (await runtime.session(app.uniqueName, caller, { parameters, viewport })).observe();
       if (form) {
-        res.writeHead(303, { location: `${PREFIX}${encodeURIComponent(app.uniqueName)}` });
+        res.writeHead(303, { location: `${PREFIX}${encodeURIComponent(app.uniqueName)}?view=inspect` });
         return res.end();
       }
       return json(res, 200, { result: null, errors: [], snapshot });
     }
     const outcome = await (await runtime.session(app.uniqueName, caller)).act(action);
     if (form) {
-      res.writeHead(303, { location: `${PREFIX}${encodeURIComponent(app.uniqueName)}` });
+      res.writeHead(303, { location: `${PREFIX}${encodeURIComponent(app.uniqueName)}?view=inspect` });
       return res.end();
     }
     // A failed data-source write answers its status (403 when the principal may not write), with the snapshot after it.
@@ -400,6 +405,8 @@ export function createCanvasHandler({
         ),
       );
     }
+    const asset = await canvasPlayerAsset(rest);
+    if (asset) return send(res, 200, asset.type, asset.body);
     const [, inventory, encoded] = /^(api\/)?([^/]+)$/.exec(rest) ?? [];
     const app = encoded && find(encoded);
     if (!app) throw failure(404, 'CanvasAppNotFound', 'Canvas app not found.');
@@ -409,7 +416,10 @@ export function createCanvasHandler({
         level: levelOf(app.source, Boolean(runtime)),
         reason: reasonOf(runtime),
         ...app.source,
+        rendering: { level: 'contract', gaps: canvasRenderingGaps(app.source) },
       });
+    if (runtime && app.source.screens.length && url.searchParams.get('view') !== 'inspect')
+      return send(res, 200, 'text/html; charset=utf-8', canvasPlayerPage(app, csrf() ?? ''));
     return view(req, res, app);
   };
   return (req, res, url = new URL(req.url, 'http://localhost')) => {

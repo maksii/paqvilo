@@ -28,7 +28,14 @@ export const CONTROL_CATALOGUE = Object.freeze({
   container: { title: 'Container', doc: `${LEARN}control-container`, defaults: {} },
 });
 /** Defaults every hosted control shares; DisplayMode.Edit for every control is a guess. */
-export const COMMON_DEFAULTS = Object.freeze({ Visible: true, DisplayMode: 'Edit' });
+export const COMMON_DEFAULTS = Object.freeze({
+  Visible: true,
+  DisplayMode: 'Edit',
+  X: 0,
+  Y: 0,
+  Width: 100,
+  Height: 40,
+});
 
 // pa.yaml `Control: [Classic/]Type@version` (the Classic/ prefix names the classic variant of a control that also has a modern one).
 // Type ids beyond Label, Gallery and Button are guessed from the control names.

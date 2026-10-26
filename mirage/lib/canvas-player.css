@@ -1,0 +1,92 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  font:
+    14px system-ui,
+    sans-serif;
+  color: #222;
+}
+header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid #ccc;
+  flex-wrap: wrap;
+}
+h1 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+body > p {
+  margin: 0.5rem 1rem;
+}
+main {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  padding: 1rem;
+}
+.stage-scroll {
+  overflow: auto;
+  max-width: calc(100vw - 370px);
+  border: 1px solid #aaa;
+}
+.stage {
+  position: relative;
+  background: white;
+  overflow: hidden;
+  width: 1366px;
+  height: 768px;
+}
+aside {
+  width: 330px;
+  max-height: 80vh;
+  overflow: auto;
+}
+aside pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.canvas-control {
+  position: absolute;
+  overflow: hidden;
+}
+.canvas-container {
+  overflow: hidden;
+}
+.canvas-gallery {
+  overflow: auto;
+}
+.canvas-row {
+  position: relative;
+  overflow: hidden;
+}
+.unsupported {
+  border: 1px dashed #ad4c00;
+  background: #fff4dd;
+  color: #733300;
+}
+input,
+select,
+button {
+  font: inherit;
+}
+.canvas-control > input,
+.canvas-control > select {
+  width: 100%;
+  height: 100%;
+}
+@media (max-width: 800px) {
+  main {
+    display: block;
+  }
+  .stage-scroll {
+    max-width: 100%;
+  }
+  aside {
+    width: auto;
+  }
+}

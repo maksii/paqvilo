@@ -1,3 +1,4 @@
+import { canvasRenderingGaps } from './canvas-rendering.mjs';
 // Read-only index over the sources the existing loaders already produced (Solution scan, schema, metadata, workflows,
 // optional portal). Nothing is re-read or rewritten; consumers ask the graph which source of a component is in effect
 // and what a run still requires.
@@ -383,9 +384,8 @@ const field = (record, name) => record?.[`adx_${name}`] ?? record?.[`mspp_${name
 const DOCUMENT_GRID = /<TargetEntityType>\s*sharepointdocumentlocation\s*<\/TargetEntityType>/i;
 
 /**
- * Canvas apps (canvas-runtime.mjs hosts their logic headlessly): canvas:app/<name> is satisfied when every control is
- * hosted, else unsupported (CANVAS_CONTROL_UNSUPPORTED) naming the controls; canvas:rendering is the documented boundary
- * (apps are never rendered: placeholder at inventory) while there is a canvas app. One rule for Solution inventory apps
+ * Canvas apps: canvas:app/<name> describes hosted logic; canvas:rendering describes the bounded local HTML player
+ * at contract fidelity. Unknown controls and unreadable sources remain explicit rendering gaps. One rule for Solution inventory apps
  * (hostSurfaceNodes) and project canvas.sources apps (canvasRequirementRows, merged by organization-host.mjs preflight).
  */
 function canvasNodes(records = []) {
@@ -415,13 +415,16 @@ function canvasNodes(records = []) {
       kind: 'canvas',
       key: 'rendering',
       name: 'Canvas rendering',
-      level: 'inventory',
+      level: 'contract',
       source: null,
       requirement: {
-        status: 'placeholder',
-        reason: 'CANVAS_NOT_RENDERED',
-        level: 'inventory',
-        message: 'Canvas apps run headlessly at /_apps/canvas/<app>; screens are not rendered.',
+        status: apps.every((app) => app.level === 'behaviour' && !canvasRenderingGaps(app).length)
+          ? 'satisfied'
+          : 'unsupported',
+        reason: 'CANVAS_RENDERING_BASELINE',
+        level: 'contract',
+        message:
+          'The local HTML player renders the hosted basic control catalogue at /_apps/canvas/<app>. Native visual fidelity, media, components and modern-control parity are not implemented; unreadable apps and unsupported controls cannot be rendered.',
       },
     });
   return nodes;

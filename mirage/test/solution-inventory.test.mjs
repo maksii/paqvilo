@@ -89,7 +89,7 @@ test('canvas metadata and payload fidelity agree through either order and metada
     assert.deepEqual(app.sources, ['base/app.msapp', 'extension/app.meta.xml']);
     assert.ok(graph.requirements().some((row) => row.id === 'canvas:app/x_app' && row.status === 'satisfied'));
     assert.ok(!graph.requirements().some((row) => row.reason === 'CANVAS_HOST_NOT_IMPLEMENTED'));
-    assert.ok(graph.requirements().some((row) => row.reason === 'CANVAS_NOT_RENDERED'));
+    assert.ok(graph.requirements().some((row) => row.reason === 'CANVAS_RENDERING_BASELINE'));
   }
   const broken = await canvasMsappRecord(Buffer.from('invalid'), { name: 'x_app' });
   const [failed] = mergeInventory([payload, broken, metadata]);
