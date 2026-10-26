@@ -4,7 +4,7 @@ Help make the Power Pages feedback loop clearer and more reliable. Reproducible 
 
 ## Set up a contribution
 
-Install Node.js 24.22.1 LTS with npm 11.19.1, .NET SDK 10.0.113, Git and Edge/Chrome, then clone the repository and run `npm run setup:repo`. Linux CI installs matching Chromium with `node node_modules/playwright-core/cli.js install --with-deps chromium` and selects it using `PAQVILO_BROWSER=chromium`.
+Install Node.js 24.22.1 LTS with npm 11.19.1, .NET SDK 10.0.114 (or a later 10.0.1xx patch), Git and Edge/Chrome, then clone the repository and run `npm run setup:repo`. Linux CI installs matching Chromium with `node node_modules/playwright-core/cli.js install --with-deps chromium` and selects it using `PAQVILO_BROWSER=chromium`.
 
 ```sh
 git clone https://github.com/maksii/paqvilo.git

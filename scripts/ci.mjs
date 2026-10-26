@@ -41,12 +41,23 @@ export function verifyClrSdk(sdk) {
     throw new Error('CLR SDK fixture DLL digest mismatch; run ci:prepare to restore the verified public fixture.');
 }
 
+/**
+ * True when `actual` is the pinned SDK or a later patch of its feature band (10.0.1xx), the servicing updates
+ * global.json's latestPatch roll-forward accepts. A different band, major or minor is a different compiler.
+ */
+export function dotnetSatisfies(expected, actual) {
+  const parse = (version) => /^(\d+)\.(\d+)\.(\d)(\d{2})$/.exec(version)?.slice(1).map(Number);
+  const [want, have] = [parse(expected), parse(actual)];
+  if (!want || !have) return false;
+  return want.slice(0, 3).every((part, index) => part === have[index]) && have[3] >= want[3];
+}
+
 function requireDotnet() {
   const expected = JSON.parse(fs.readFileSync(path.join(root, 'global.json'), 'utf8')).sdk.version;
   const version = spawnSync('dotnet', ['--version'], { cwd: root, encoding: 'utf8', windowsHide: true });
-  if (version.status !== 0 || version.stdout.trim() !== expected)
+  if (version.status !== 0 || !dotnetSatisfies(expected, version.stdout.trim()))
     throw new Error(
-      `Incomplete CI validation: .NET SDK ${expected} is required; install the SDK pinned in global.json.`,
+      `Incomplete CI validation: .NET SDK ${expected} or a later ${expected.replace(/\d{2}$/, 'xx')} patch is required; install it as global.json specifies.`,
     );
 }
 

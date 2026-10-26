@@ -757,7 +757,13 @@ test('SDK fixtures reject stale DLL bytes and compiler pinning matches every CLR
   write('fixture.dll', 'invented stale SDK bytes');
   assert.throws(() => verifyClrSdk(path.join(root, 'fixture.dll')), /DLL digest mismatch/);
   const pin = JSON.parse(fs.readFileSync(new URL('../global.json', import.meta.url), 'utf8'));
-  assert.deepEqual(pin.sdk, { version: '10.0.113', rollForward: 'disable', allowPrerelease: false });
+  // Servicing patches of the pinned feature band are accepted; another band, minor or major is refused.
+  assert.deepEqual(pin.sdk, { version: '10.0.114', rollForward: 'latestPatch', allowPrerelease: false });
+  const { dotnetSatisfies } = await import('../scripts/ci.mjs');
+  assert.equal(dotnetSatisfies('10.0.114', '10.0.114'), true);
+  assert.equal(dotnetSatisfies('10.0.114', '10.0.120'), true);
+  for (const other of ['10.0.113', '10.0.200', '10.1.100', '11.0.114', '10.0.114-preview.1', ''])
+    assert.equal(dotnetSatisfies('10.0.114', other), false, other);
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
   for (const name of ['test', 'windows', 'browser']) {
     const setup = ci.jobs[name].steps.find((step) => step.uses?.startsWith('actions/setup-dotnet@'));
