@@ -6,6 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
+import { settledClockEnv } from './support/file-times.mjs';
 import {
   stateFingerprint,
   observedEvidence,
@@ -147,25 +148,26 @@ test(
     const read=fs.readFile; let reads=0;
     fs.readFile=async function(file,...args){if(typeof file==='string'&&path.resolve(file)===target)reads++;return Reflect.apply(read,this,[file,...args]);};
     const {createSimulator}=await import(pathToFileURL(target));
-    const atImport=reads;
     const simulator=await createSimulator({sourceDir:process.env.PAQ_TEST_PORTAL,stateFile:process.env.PAQ_TEST_STATE,port:0,watch:false,dataverse:{enabled:false}});
+    const atStart=reads;
     try {
       const state=async()=>{const response=await fetch(simulator.url+'/__sim/api/state?summary=1');if(!response.ok)throw Error('State '+response.status);return response.json();};
       const first=await state(),afterFirst=reads;
       const second=await state(),afterSecond=reads;
       await fs.appendFile(target,'\\n// owned source change\\n');
       const changed=await state();
-      console.log(JSON.stringify({atImport,afterFirst,afterSecond,afterChange:reads,first:first.status,second:second.status,changed:changed.status}));
+      console.log(JSON.stringify({atStart,afterFirst,afterSecond,afterChange:reads,first:first.status,second:second.status,changed:changed.status}));
     } finally {await simulator.close();}
   `;
+    // The runtime was copied moments ago: a shifted clock lets its fingerprint be cached, as for settled files.
     const child = spawn(process.execPath, ['--input-type=module', '-e', program], {
       cwd: directory,
-      env: {
+      env: settledClockEnv({
         ...process.env,
         PAQ_TEST_SERVER_FILE: target,
         PAQ_TEST_PORTAL: source,
         PAQ_TEST_STATE: path.join(directory, 'state.json'),
-      },
+      }),
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -187,14 +189,15 @@ test(
     const [code] = await once(child, 'close');
     assert.equal(code, 0, errors);
     const result = JSON.parse(output.trim().split('\n').at(-1));
-    assert.ok(result.atImport >= 1);
+    // Startup, not import, waits for the loaded implementation's fingerprint.
+    assert.ok(result.atStart >= 1, 'startup hashes the loaded implementation');
     assert.equal(
       result.afterFirst,
-      result.atImport,
+      result.atStart,
       'the first state read must not hash unchanged implementation bytes again',
     );
-    assert.equal(result.afterSecond, result.atImport, 'warm state reads retain the same complete fingerprint');
-    assert.equal(result.afterChange, result.atImport + 1, 'an authored source edit invalidates the cached bytes');
+    assert.equal(result.afterSecond, result.atStart, 'warm state reads retain the same complete fingerprint');
+    assert.equal(result.afterChange, result.atStart + 1, 'an authored source edit invalidates the cached bytes');
     assert.equal(result.first.implementationChanged, false);
     assert.equal(result.second.implementationChanged, false);
     assert.equal(result.changed.implementationChanged, true);

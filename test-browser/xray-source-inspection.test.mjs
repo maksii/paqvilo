@@ -91,6 +91,7 @@ test('observed declared grids hydrate both exported tables without page requests
     data,
     report,
   });
+  const exactRefs = new Map();
   for (const [id, table] of [
     ['first', 'fx_widget'],
     ['second', 'fx_other'],
@@ -102,6 +103,7 @@ test('observed declared grids hydrate both exported tables without page requests
     assert.equal(evidence.owner.component.key, 'column:' + table + ':fx_title');
     assert.equal(evidence.source.status, 'exact');
     const ref = evidence.source.refs.find((row) => row.status === 'exact');
+    exactRefs.set(table, ref);
     const opened = await inspector.lookupSource({
       sourceKey: ref.key,
       sourceRevision: ref.sourceRevision,
@@ -110,6 +112,16 @@ test('observed declared grids hydrate both exported tables without page requests
     });
     assert.equal(opened.state, 'exact', 'the admitted table remains available to the independent source-opening check');
   }
+  // A real source edit reloads the inspector's sources; the table admitted from the rendered grid stays admitted.
+  fs.appendFileSync(path.join(fx.portal, 'web-pages/other/Other.webpage.copy.html'), '<!-- edited -->');
+  const admittedRef = exactRefs.get('fx_other');
+  const reopened = await inspector.lookupSource({
+    sourceKey: admittedRef.key,
+    sourceRevision: admittedRef.sourceRevision,
+    contentRevision: admittedRef.contentRevision,
+    route: '/other',
+  });
+  assert.notEqual(reopened.reason, 'source-evidence-unavailable', 'a reload must not forget the admitted table');
   await page.locator('#second').evaluate((node) => node.closest('table').removeAttribute('data-paqvilo-table'));
   const unbound = await page
     .locator('#second')

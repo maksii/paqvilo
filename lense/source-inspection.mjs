@@ -1735,6 +1735,9 @@ export async function enrichInspection(
 
 export function createSourceInspector(cfg) {
   let loading = null;
+  // Exported tables admitted from rendered declared grids, by language. A source reload (an edit, or a stamp too
+  // recent to prove the sources unchanged) re-admits them, so an Open source check after it still finds them.
+  const admittedTables = new Map();
   const fileCache = new SolutionFileCache();
   // Retain only current exported source indexes, one per currently configured
   // language. Their already-indexed hints survive global LRU eviction and refresh.
@@ -1829,8 +1832,12 @@ export function createSourceInspector(cfg) {
         const language =
           !direct && initial.portal.websiteLanguages?.find((row) => row.code?.toLowerCase() === prefix?.toLowerCase());
         const selected = language ? await variant(language) : initial;
+        const admitted = admittedTables.get(language?.id ?? '') ?? new Set();
         const declared = [
-          ...new Set((rendered.controls ?? []).slice(0, 300).map((row) => row.gridTable?.toLowerCase())),
+          ...new Set([
+            ...admitted,
+            ...(rendered.controls ?? []).slice(0, 300).map((row) => row.gridTable?.toLowerCase()),
+          ]),
         ].filter((name) => typeof name === 'string' && /^[a-z][a-z0-9_]{0,127}$/.test(name));
         if (sources.roots.length && declared.some((name) => !selected.metadata.entities?.[name])) {
           // Serialize admissions so concurrent selections cannot replace each
@@ -1856,6 +1863,8 @@ export function createSourceInspector(cfg) {
                 observed: sources.observed,
               });
               if (!missing.some((name) => metadata.entities?.[name])) return;
+              for (const name of missing) if (metadata.entities?.[name] && admitted.size < 300) admitted.add(name);
+              admittedTables.set(language?.id ?? '', admitted);
               selected.metadata = metadata;
               reports = new Map();
               reportBytes = 0;
