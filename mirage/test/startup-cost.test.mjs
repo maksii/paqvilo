@@ -17,10 +17,14 @@ import { createMirageContext } from '../lib/mirage-context.mjs';
 import { SolutionFileCache } from '../lib/solution-cache.mjs';
 import { SCHEMA_PARSER_ID } from '../lib/solution-schema.mjs';
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
+
+// Watchers and runtimes are owned closers so they stop before their directories are removed
+// (t.after hooks run in registration order).
 
 async function workspace(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-cost-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
 
@@ -314,7 +318,7 @@ test('recursive source watching uses bounded Windows handles, observes atomic sa
     ignored: (file) => file.endsWith('.tmp'),
     awaitWriteFinish: { stabilityThreshold: 20 },
   });
-  t.after(() => watcher.close());
+  ownedFixture(t).add(() => watcher.close());
   await once(watcher, 'ready');
   if (process.platform === 'win32') assert.equal(watcher.nativeWatchCount(), root.split(path.sep).length);
   const observed = new Promise((resolve, reject) => {
@@ -345,7 +349,7 @@ test(
     await fs.mkdir(root, { recursive: true });
     await fs.writeFile(file, '<Entity Name="initial"/>');
     const watcher = watchSources([root], { ignoreInitial: true, awaitWriteFinish: { stabilityThreshold: 20 } });
-    t.after(() => watcher.close());
+    ownedFixture(t).add(() => watcher.close());
     await once(watcher, 'ready');
     const waitFor = (wanted) =>
       new Promise((resolve, reject) => {
@@ -379,7 +383,7 @@ test(
 
 test('the shell index and selected-table transport exclude unrelated forms and re-evaluate each caller', async (t) => {
   const fixture = await performanceFixture({ tables: 16, records: 16, formsPerTable: 4 });
-  t.after(fixture.cleanup);
+  ownedFixture(t).remove(fixture.cleanup);
   const sim = await createSimulator({
     runtime: { kind: 'model-driven' },
     solutionRoots: fixture.solutionRoots,
@@ -398,7 +402,7 @@ test('the shell index and selected-table transport exclude unrelated forms and r
       ],
     },
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const read = async (route, cookie) => {
     const response = await fetch(sim.url + '/_apps/api/' + route, {
       headers: { 'x-mirage-provenance-format': '1', ...(cookie ? { cookie } : {}) },
@@ -550,7 +554,7 @@ test('form/view-only source layers retain mapped OData columns through public li
       ],
     },
   });
-  t.after(() => sim.close());
+  ownedFixture(t).add(() => sim.close());
   const read = async (id, options, status = 200, cookie) => {
     const route =
       '/_apps/api/tables/x_item' +

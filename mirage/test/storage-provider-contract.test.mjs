@@ -53,6 +53,8 @@ test('local-disk keeps bytes content-addressed, survives reopen and compacts orp
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const blobs = path.join(root, 'blobs');
   const first = createLocalDiskStorage({ root: blobs });
+  // Closed explicitly below; also owned so a failed assertion cannot leave it open while the root is removed.
+  ownedFixture(t).add(() => first.close());
   const a = await first.put('x/one', Buffer.from('same'));
   const b = await first.put('x/two', Buffer.from('same'));
   assert.equal(a.sha256, b.sha256);

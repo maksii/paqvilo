@@ -8,6 +8,11 @@ import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const ID = '11111111-1111-4111-8111-111111111111';
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// No event reports an ignored change, so proving that no reload happened needs a quiet window. The standalone
+// watcher reloads 200 ms (write stability) + 100 ms (poll) + 100 ms (debounce) after an event; 700 ms covers it
+// with margin. On a slower host a missed reload makes this pass weakly, never fail spuriously; the positive reload
+// observed afterwards proves the watcher was live.
+const NO_RELOAD_WINDOW_MS = 700;
 async function eventually(fn) {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
@@ -55,7 +60,6 @@ for (const level of [null, 'simulation'])
       ownedFixture(t).add(() => sim.close());
       // The root itself is a selected Solution. Runtime checkpoint/cache and pack DATA
       // therefore sit below the watch root and must not be mistaken for authored XML.
-      await pause(300);
       await sim.store.update('x_item', ID, { x_name: 'Saved record' }, { admin: true });
       const revision = sim.store.revision;
       for (const relative of ['bin/generated.xml', 'obj/compiled.json', 'Entities/x_item/bin/build.xml']) {
@@ -63,7 +67,7 @@ for (const level of [null, 'simulation'])
         await fs.mkdir(path.dirname(file), { recursive: true });
         await fs.writeFile(file, '<generated/>');
       }
-      await pause(700);
+      await pause(NO_RELOAD_WINDOW_MS);
       assert.equal(sim.store.revision, revision, 'Runtime outputs must not cause source reload/save loops.');
       assert.equal(sim.store.tableRows('x_item')[0].x_name, 'Saved record');
       const entityFile = path.join(root, 'Entities/x_item/Entity.xml');
@@ -76,7 +80,7 @@ for (const level of [null, 'simulation'])
         return (await response.json()).tables.x_item.singular === 'After source edit';
       });
       const reloaded = sim.store.revision;
-      await pause(700);
+      await pause(NO_RELOAD_WINDOW_MS);
       assert.equal(sim.store.revision, reloaded, 'The reload checkpoint must not trigger another reload.');
       assert.equal(sim.store.tableRows('x_item')[0].x_name, 'Saved record');
     },
