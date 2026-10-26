@@ -233,11 +233,12 @@ test('release workflows gate the preview metadata and publish only the tested ar
     if (['test', 'browser', 'windows'].includes(name)) {
       const mode = name === 'browser' ? '--browser' : '--unit';
       assert.ok(steps[prepare].run.startsWith('npm run ci:prepare -- --suite ${{ matrix.suite }} ' + mode));
-      const verify = steps.findIndex(
-        (step) => step.run === 'npm run ci:verify -- --suite ${{ matrix.suite }} ' + mode + ' --prepared',
+      const verify = steps.findIndex((step) =>
+        step.run?.startsWith('npm run ci:verify -- --suite ${{ matrix.suite }} ' + mode + ' --prepared'),
       );
       assert.ok(verify > prepare, name + ' must validate the prepared, stamped suite');
-      assert.equal(ci.jobs[name].strategy.matrix.suite, '${{ fromJSON(needs.changes.outputs.suites) }}');
+      const lanes = name === 'browser' ? 'browsers' : 'units';
+      assert.equal(ci.jobs[name].strategy.matrix.include, `\${{ fromJSON(needs.changes.outputs.${lanes}) }}`);
     }
   }
 });

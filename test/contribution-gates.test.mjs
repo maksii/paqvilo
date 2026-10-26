@@ -12,6 +12,7 @@ import {
   preCommitScripts,
   githubScope,
   suitesForScope,
+  ciLanes,
 } from '../.github/scripts/change-scope.mjs';
 
 const classifyChanges = (files) => {
@@ -40,8 +41,7 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
   });
   for (const file of [
     'mirage/README.md',
-    'mirage/docs/dataverse-api.md',
-    'examples/project/README.md',
+    'mirage/docs/operations.md',
     'examples/company-operations/plugins/README.md',
     'AGENTS.md',
     'LICENSE',
@@ -65,6 +65,15 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
   ])
     assert.equal(classifyChanges([file]).runtime, true, file);
   assert.equal(classifyChanges(['mirage/package-lock.json']).dependencies, true);
+  // Documents that suites assert against (settings tables, documented error codes) select those suites.
+  for (const [file, suites] of [
+    ['docs/configuration.md', ['mirage']],
+    ['mirage/docs/dataverse-api.md', ['mirage']],
+    ['docs/lense.md', ['lense']],
+  ]) {
+    assert.equal(classifyChanges([file]).runtime, true, file);
+    assert.deepEqual(suitesForScope(completeScope([file])), suites, file);
+  }
 });
 
 test('description, title, base and source events validate the same complete PR diff with a stable required gate', (t) => {
@@ -445,6 +454,43 @@ test('literal and package imports expand suites while isolated overlays remain L
   assert.deepEqual(suitesForScope(completeScope(['unclassified/file.mjs'], { root })), ['lense', 'mirage', 'examples']);
 });
 
+test('quoted file, directory and template references select the suites that read or spawn them', (t) => {
+  const { root, write } = fixture(t);
+  write('package.json', JSON.stringify({ name: 'paqvilo' }));
+  write('mirage/lib/assets/icon.svg', '<svg/>');
+  write(
+    'mirage/lib/server.mjs',
+    "export const icon = new URL('./assets/icon.svg', import.meta.url); export const url = './';",
+  );
+  write('mirage/lib/other.mjs', 'export {};');
+  write('mirage/tool.mjs', 'export {};');
+  write('bin/cli.mjs', 'export const run = (tool) => new URL(`../mirage/${tool}.mjs`, import.meta.url);');
+  write('test/server.test.mjs', "import '../mirage/lib/server.mjs';");
+  write('test/cli.test.mjs', "const cli = new URL('../bin/cli.mjs', import.meta.url);");
+  write(
+    'examples/project/test/fixture.test.mjs',
+    "const fixtures = new URL('../../../mirage/lib/assets/', import.meta.url);",
+  );
+  write('mirage/test/guide.test.mjs', "const guide = new URL('../../docs/guide.md', import.meta.url);");
+  write('docs/guide.md', '# Invented guide\n');
+  write('docs/other.md', '# Unread guide\n');
+  assert.deepEqual(suitesForScope(completeScope(['mirage/lib/assets/icon.svg'], { root })), [
+    'lense',
+    'mirage',
+    'examples',
+  ]);
+  assert.deepEqual(suitesForScope(completeScope(['mirage/tool.mjs'], { root })), ['lense', 'mirage']);
+  assert.deepEqual(
+    suitesForScope(completeScope(['mirage/lib/other.mjs'], { root })),
+    ['mirage'],
+    "a bare './' is a URL",
+  );
+  assert.deepEqual(suitesForScope(completeScope(['docs/guide.md'], { root })), ['mirage']);
+  assert.equal(completeScope(['docs/guide.md'], { root }).runtime, true);
+  assert.deepEqual(suitesForScope(completeScope(['docs/other.md'], { root })), []);
+  assert.equal(completeScope(['docs/other.md'], { root }).runtime, false);
+});
+
 test('main, explicit full, scheduled and manual runs select every gate', () => {
   for (const [eventName, event, env] of [
     ['push', {}, { GITHUB_REF: 'refs/heads/main' }],
@@ -461,8 +507,32 @@ test('main, explicit full, scheduled and manual runs select every gate', () => {
 
 test('workflow matrices use selected suites on the pinned runtime and shared local commands', () => {
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  for (const [name, kind, lanes] of [
+    ['test', 'unit', 'units'],
+    ['windows', 'unit', 'units'],
+    ['browser', 'browser', 'browsers'],
+  ]) {
+    assert.equal(ci.jobs[name].strategy.matrix.include, `\${{ fromJSON(needs.changes.outputs.${lanes}) }}`);
+    for (const step of ['ci:prepare', 'ci:verify'])
+      assert.match(
+        ci.jobs[name].steps.find((entry) => entry.run?.includes(step)).run,
+        new RegExp(
+          `--${kind} .*\\$\\{\\{ matrix\\.shard && format\\('--shard \\{0\\}', matrix\\.shard\\) \\|\\| '' \\}\\}`,
+        ),
+      );
+    // Every selected suite keeps its lane, and a sharded suite keeps every shard exactly once.
+    for (const suite of ['lense', 'mirage', 'examples']) {
+      const shards = ciLanes(kind, [suite]).map((lane) => [lane.suite, lane.shard]);
+      const total = shards.length;
+      assert.deepEqual(
+        shards,
+        total === 1 ? [[suite, undefined]] : shards.map((_, index) => [suite, `${index + 1}/${total}`]),
+        `${kind} ${suite}`,
+      );
+    }
+  }
+  assert.ok(ciLanes('unit', ['mirage']).length > 1, 'the longest suite is sharded');
   for (const name of ['test', 'windows', 'browser']) {
-    assert.match(ci.jobs[name].strategy.matrix.suite, /fromJSON\(needs.changes.outputs.suites\)/);
     assert.equal(ci.jobs[name].strategy.matrix.node, undefined);
     assert.equal(
       ci.jobs[name].steps.find((step) => step.uses?.startsWith('actions/setup-node@')).with['node-version-file'],
@@ -775,10 +845,14 @@ test('full Windows runs require locked SDK client gates without expanding ordina
   assert.equal(fullSdkGate(completeScope(['lense/panel-ui.mjs']), 'win32'), false);
   assert.equal(fullSdkGate(completeScope(['package.json']), 'win32'), false);
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  // Exactly one Mirage leg (the first shard, or the whole suite) prepares and runs the SDK clients.
+  const once = "matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/'))";
   const step = ci.jobs.windows.steps.find((step) => step.run === 'node scripts/ci.mjs sdk');
-  assert.equal(step?.if, "matrix.suite == 'mirage' && needs.changes.outputs.full == 'true'");
+  assert.equal(step?.if, `${once} && needs.changes.outputs.full == 'true'`);
   assert.ok(
-    ci.jobs.windows.steps.some((step) => step.run?.includes("needs.changes.outputs.full == 'true' && '--sdk'")),
+    ci.jobs.windows.steps.some((step) =>
+      step.run?.includes(`${once} && needs.changes.outputs.full == 'true' && '--sdk'`),
+    ),
   );
   const source = fs.readFileSync(new URL('../scripts/ci.mjs', import.meta.url), 'utf8');
   assert.match(source, /if \(fullSdkGate\(scope\)\) verifySdkGates\(\)/);

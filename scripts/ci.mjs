@@ -92,6 +92,110 @@ async function clrFixture() {
   environment('PAQ_TEST_XRM_SDK', sdk);
 }
 
+// Public MIT-licensed exports for the ecosystem import checks in this suite file, pinned by
+// commit and archive digest. Only the listed subtrees are extracted.
+const ECOSYSTEM_TEST = 'test/short-key-fixtures.test.mjs';
+const ECOSYSTEM = [
+  [
+    'microsoft/power-pages-samples',
+    'da7f1bc128c11ff11c23fc814be4a2b10cfd82ef',
+    '4dcb914b21b89dc8a543b217564c6a2347eea9c1e399685f1aafc4642f1ff172',
+    ['samples', 'templates'],
+  ],
+  [
+    'microsoft/gov-apptemplates',
+    '64dabc2652a13a2423ee3fb1d6f4bfe8f33fe1d9',
+    '5b2e3dc640d17f371fd3ba63e3d2220b5619d46c5b5a722eeb9fbd677f9025b7',
+    ['portals/core-portal'],
+  ],
+  [
+    'microsoft/contoso-real-estate-power-platform',
+    'dbd5f76d8098d838f8cbdd050134ea6094b68cf5',
+    'af122e203c50a194e83e625b3d82e7bf503d4f0cf3da7aaeeb54adf43a723649',
+    ['src/portal/solution/ContosoRealEstatePortal/src'],
+  ],
+  [
+    '365Evergreen/WorkmateProSWA',
+    '6e83e55120638992684bb74bd2000cac14326dc6',
+    'fa82507f2b321b2694fde63c9e836aa6e82d5972ca2cb0f3a5490bad1f6cbdb4',
+    ['dataverse/hired-schemas/HiRedAUstartersolution'],
+  ],
+  [
+    'tonipohl/PowerPagesCodeMagazine',
+    '2fe359cc37ad546aead7437942b222ce9e697e8f',
+    '4094027be41fb4bf5f71e771e2af38fb4889e92a2a1e88dbcdf330c7f86ae047',
+    ['ContosoCoursesRegistrationSite_1_0_0_0'],
+  ],
+];
+const ecosystemRoot = () => path.join(root, '.paqvilo/ci/ecosystem');
+// Windows ships bsdtar in System32; another tar earlier on PATH (such as MSYS) misreads drive paths.
+const tar = () =>
+  process.platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+
+async function ecosystemFixtures() {
+  const directory = ecosystemRoot();
+  fs.mkdirSync(directory, { recursive: true });
+  for (const [repository, commit, digest, members] of ECOSYSTEM) {
+    const name = repository.replace('/', '__');
+    const archive = path.join(directory, name + '.tar.gz');
+    // A persistent runner keeps the archive; a changed pin replaces it.
+    if (fs.existsSync(archive) && createHash('sha256').update(fs.readFileSync(archive)).digest('hex') !== digest)
+      fs.rmSync(archive);
+    if (!fs.existsSync(archive))
+      await downloadVerifiedArchive(`https://codeload.github.com/${repository}/tar.gz/${commit}`, archive, digest, {
+        maxBytes: 256 * 1024 * 1024,
+      });
+    // Extract afresh from the verified archive so no earlier run's edits survive.
+    const target = path.join(directory, name);
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.mkdirSync(target);
+    const prefix = `${repository.split('/')[1]}-${commit}/`;
+    execute(tar(), [
+      '-xzf',
+      archive,
+      '-C',
+      target,
+      '--strip-components=1',
+      ...members.map((member) => prefix + member),
+    ]);
+  }
+}
+
+function requireEcosystemFixtures() {
+  for (const [repository, , , members] of ECOSYSTEM)
+    for (const member of members)
+      if (!fs.existsSync(path.join(ecosystemRoot(), repository.replace('/', '__'), member)))
+        throw new Error('Incomplete CI validation: public ecosystem fixtures missing; run ci:prepare.');
+  // Not a PAQVILO_ name: the toolkit rejects unknown PAQVILO_ settings in every spawned CLI.
+  environment('PAQ_TEST_ECOSYSTEM_FIXTURES', ecosystemRoot());
+}
+
+// Shards partition a package's `node --test [flags] <glob>` script by sorted file index, as node:test does.
+function packageTests(directory, script) {
+  const command = JSON.parse(fs.readFileSync(path.join(root, directory, 'package.json'), 'utf8')).scripts[script];
+  const words = command.split(' ');
+  const flags = words.slice(2, -1);
+  if (words[0] !== 'node' || words[1] !== '--test' || flags.some((flag) => !flag.startsWith('--')))
+    throw new Error(`Cannot shard the ${directory || 'root'} ${script} script.`);
+  return { flags, files: fs.globSync(words.at(-1), { cwd: path.join(root, directory) }).sort() };
+}
+
+export function shardFiles(files, shard) {
+  const [index, total] = shard.split('/').map(Number);
+  return files.filter((_, position) => position % total === index - 1);
+}
+
+function runPackageTests(directory, script, shard) {
+  if (!shard) return npm([...(directory ? ['--prefix', directory] : []), 'run', script]);
+  const { flags, files } = packageTests(directory, script);
+  execute(process.execPath, ['--test', ...flags, ...shardFiles(files, shard)], { cwd: path.join(root, directory) });
+}
+
+const needsEcosystem = (suite, unit, shard) =>
+  unit &&
+  ['mirage', 'all'].includes(suite) &&
+  (!shard || shardFiles(packageTests('mirage', 'test').files, shard).includes(path.normalize(ECOSYSTEM_TEST)));
+
 export function requiresClrFixture(suite, platform = process.platform) {
   return platform === 'win32' && ['mirage', 'examples', 'all'].includes(suite);
 }
@@ -130,7 +234,10 @@ export function requireExampleBrowserDependency(project, checkout = root) {
     );
 }
 
-export async function prepareLane(suite, { browser = false, quality = false, sdk = false } = {}) {
+export async function prepareLane(
+  suite,
+  { browser = false, unit = true, quality = false, sdk = false, shard = null } = {},
+) {
   if (!['lense', 'mirage', 'examples', 'all', 'quality'].includes(suite)) throw new Error(`Unknown CI suite: ${suite}`);
   if (!['lense', 'quality'].includes(suite)) requireDotnet();
   quality ||= suite === 'quality';
@@ -140,6 +247,7 @@ export async function prepareLane(suite, { browser = false, quality = false, sdk
     npm(['ci', '--prefix', 'mirage/test-sdk/tds', '--ignore-scripts', '--no-audit', '--no-fund']);
   }
   if (requiresClrFixture(suite)) await clrFixture();
+  if (needsEcosystem(suite, unit, shard)) await ecosystemFixtures();
   if (suite === 'all' || quality || sdk) {
     for (const project of ['mirage/test-sdk/dynamics-web-api', 'mirage/test-sdk/cert-auth'])
       npm(['ci', '--prefix', project, '--ignore-scripts', '--no-audit', '--no-fund']);
@@ -179,14 +287,25 @@ export async function prepareLane(suite, { browser = false, quality = false, sdk
       environment('PAQ_TEST_SDK_PROBES_RESTORED', '1');
     }
   }
-  if (browser) {
-    execute(process.execPath, [
-      'node_modules/playwright-core/cli.js',
-      'install',
-      ...(process.platform === 'linux' ? ['--with-deps'] : []),
-      'chromium',
-    ]);
-  }
+  if (browser) installChromium();
+}
+
+// System libraries need root. Use passwordless sudo when available (GitHub-hosted Linux);
+// otherwise the runner must already provide them (CONTRIBUTING.md) and a launch reports what is missing.
+export function chromiumInstallArguments(platform = process.platform, canInstallSystemDependencies = rootAvailable) {
+  return [
+    'node_modules/playwright-core/cli.js',
+    'install',
+    ...(platform === 'linux' && canInstallSystemDependencies() ? ['--with-deps'] : []),
+    'chromium',
+  ];
+}
+function rootAvailable() {
+  if (process.getuid?.() === 0) return true;
+  return spawnSync('sudo', ['-n', 'true'], { stdio: 'ignore', timeout: 10_000 }).status === 0;
+}
+function installChromium() {
+  execute(process.execPath, chromiumInstallArguments());
 }
 
 function requireSdkClients() {
@@ -217,12 +336,13 @@ function requireQualityDependencies() {
   }
 }
 
-function requireFixtures(suite, browser) {
+function requireFixtures(suite, { unit = true, browser = true, shard = null } = {}) {
   if (suite !== 'lense') requireDotnet();
   if (suite === 'mirage') {
     if (!fs.existsSync(path.join(root, 'mirage/test-sdk/tds/node_modules/tedious/lib/tedious.js')))
       throw new Error('Incomplete CI validation: install the locked TDS fixture with ci:prepare.');
   }
+  if (needsEcosystem(suite, unit, shard)) requireEcosystemFixtures();
   if (requiresClrFixture(suite)) {
     const sdk =
       process.env.PAQ_TEST_XRM_SDK ||
@@ -264,11 +384,11 @@ function verifySdkGates() {
 
 const unitPlatformNeedsSdk = () => process.platform === 'win32';
 
-export function verifyLane(suite, { unit = true, browser = true } = {}) {
-  requireFixtures(suite, browser);
+export function verifyLane(suite, { unit = true, browser = true, shard = null } = {}) {
+  requireFixtures(suite, { unit, browser, shard });
   if (unit) {
-    if (suite === 'lense') npmScript('test');
-    if (suite === 'mirage') npm(['--prefix', 'mirage', 'test']);
+    if (suite === 'lense') runPackageTests('', 'test', shard);
+    if (suite === 'mirage') runPackageTests('mirage', 'test', shard);
     if (suite === 'examples') {
       npmScript('test:example');
       npmScript('test:company');
@@ -284,8 +404,8 @@ export function verifyLane(suite, { unit = true, browser = true } = {}) {
     }
   }
   if (browser) {
-    if (suite === 'lense') npmScript('test:browser');
-    if (suite === 'mirage') npm(['--prefix', 'mirage', 'run', 'test:browser']);
+    if (suite === 'lense') runPackageTests('', 'test:browser', shard);
+    if (suite === 'mirage') runPackageTests('mirage', 'test:browser', shard);
     if (suite === 'examples') {
       npmScript('test:example:browser');
       npmScript('test:company:browser');
@@ -401,6 +521,7 @@ async function main() {
       prepared: { type: 'boolean' },
       quality: { type: 'boolean' },
       sdk: { type: 'boolean' },
+      shard: { type: 'string' },
     },
     strict: true,
   });
@@ -426,9 +547,23 @@ async function main() {
     throw new Error('--full requires unit and browser validation; use --suite for a partial run.');
   if (values.full && values.suite) throw new Error('--full selects every suite and cannot be combined with --suite.');
   if (values.base && values.suite) throw new Error('--base cannot be combined with an explicit --suite.');
+  if (values.shard !== undefined) {
+    const [index, total] = values.shard.split('/').map(Number);
+    if (
+      !/^[1-9]\d*\/[1-9]\d*$/.test(values.shard) ||
+      index > total ||
+      !['lense', 'mirage'].includes(values.suite) ||
+      !(values.unit || values.browser)
+    )
+      throw new Error('--shard <index>/<total> splits only --suite lense|mirage with --unit or --browser.');
+  }
   if (command === 'sdk') {
     if (Object.values(values).some(Boolean)) throw new Error('The SDK gate command takes no options.');
     return verifySdkGates();
+  }
+  if (command === 'browser') {
+    if (Object.values(values).some(Boolean)) throw new Error('The browser installation command takes no options.');
+    return installChromium();
   }
   const full = values.full;
   const suite = values.suite;
@@ -437,7 +572,9 @@ async function main() {
   if (command === 'prepare')
     return prepareLane(values.quality ? 'quality' : (suite ?? 'all'), {
       browser: values.quality ? false : browser,
+      unit: values.quality ? false : unit,
       sdk: values.sdk,
+      shard: values.shard,
     });
   if (command !== 'verify')
     throw new Error(
@@ -488,7 +625,7 @@ async function main() {
   let fixturesReady = true;
   try {
     if (!suite && scope.quality) requireQualityDependencies();
-    for (const selected of suites) requireFixtures(selected, browser);
+    for (const selected of suites) requireFixtures(selected, { unit, browser, shard: values.shard });
   } catch {
     fixturesReady = false; /* Missing fixtures require preparation, never a cached pass. */
   }
@@ -512,7 +649,9 @@ async function main() {
   if (!values.prepared && (suites.length || scope.quality))
     await prepareLane(suites.length === 0 ? 'quality' : suites.length === 1 ? suites[0] : 'all', {
       browser: Boolean((suites.length && browser) || scope.smoke),
+      unit,
       quality: !suite && Boolean(scope.quality),
+      shard: values.shard,
     });
   const baselineIdentity = verificationIdentity(Boolean(full));
   if (!suite && !baselineIdentity)
@@ -523,7 +662,7 @@ async function main() {
     if (scope.runtime) npmScript('check');
     if (scope.package) npmScript('release:check');
   }
-  for (const selected of suites) verifyLane(selected, { unit, browser });
+  for (const selected of suites) verifyLane(selected, { unit, browser, shard: values.shard });
   if (fullSdkGate(scope)) verifySdkGates();
   if (scope.smoke) {
     npmScript('cache:package');

@@ -24,6 +24,8 @@ function ciFixture(t) {
   const env = { ...process.env, GITHUB_ACTIONS: 'false' };
   for (const name of Object.keys(env)) if (name.startsWith('GIT_')) delete env[name];
   delete env.PAQ_TEST_XRM_SDK;
+  // Inherited, this makes a nested `node --test` skip every file and still exit 0.
+  delete env.NODE_TEST_CONTEXT;
   return { directory, write, env };
 }
 
@@ -52,6 +54,69 @@ test('a failed prepared suite revokes an earlier full receipt through the CI com
   assert.match(result.stderr, /failed \(37\)/);
   assert.doesNotMatch(result.stdout, /reused|completed without errors/);
   assert.equal(fs.existsSync(receipt), false, 'a previous full pass cannot survive a failed suite rerun');
+});
+
+test(
+  'unit shards run the package test script over disjoint files that together cover the suite',
+  { timeout: 90_000 },
+  (t) => {
+    const { directory, write, env } = ciFixture(t);
+    write('package.json', JSON.stringify({ scripts: { test: 'node --test --test-concurrency=1 test/*.test.mjs' } }));
+    for (const name of ['a', 'b', 'c', 'd', 'e'])
+      write(
+        `test/${name}.test.mjs`,
+        `import fs from 'node:fs'; fs.appendFileSync(process.env.SHARD_LOG, ${JSON.stringify(name + '\n')});`,
+      );
+    env.npm_execpath = write('fake-npm.mjs', 'process.exit(99);');
+    const ci = (...args) =>
+      spawnSync(process.execPath, [path.join(directory, 'scripts/ci.mjs'), ...args], {
+        cwd: directory,
+        env,
+        encoding: 'utf8',
+        windowsHide: true,
+        timeout: 60_000,
+      });
+    const ran = [];
+    for (const shard of ['1/2', '2/2']) {
+      env.SHARD_LOG = path.join(directory, `shard-${shard[0]}.log`);
+      const result = ci('verify', '--suite', 'lense', '--unit', '--prepared', '--shard', shard);
+      assert.equal(result.status, 0, result.stderr);
+      ran.push(fs.readFileSync(env.SHARD_LOG, 'utf8').trim().split('\n').sort());
+    }
+    // Shards own sorted file indexes 0, 2, 4 and 1, 3.
+    assert.deepEqual(ran, [
+      ['a', 'c', 'e'],
+      ['b', 'd'],
+    ]);
+    for (const args of [
+      ['--suite', 'lense', '--unit', '--shard', '3/2'],
+      ['--suite', 'lense', '--unit', '--shard', '0/2'],
+      ['--suite', 'lense', '--unit', '--shard', 'x'],
+      ['--suite', 'examples', '--unit', '--shard', '1/2'],
+      ['--suite', 'lense', '--shard', '1/2'],
+      ['--full', '--shard', '1/2'],
+    ]) {
+      const result = ci('verify', '--prepared', ...args);
+      assert.equal(result.status, 1, args.join(' '));
+      assert.match(result.stderr, /--shard|--full/, args.join(' '));
+    }
+  },
+);
+
+test('Chromium system libraries are installed only where root is available without a prompt', async () => {
+  const { chromiumInstallArguments } = await import('../scripts/ci.mjs');
+  assert.deepEqual(
+    chromiumInstallArguments('linux', () => true),
+    ['node_modules/playwright-core/cli.js', 'install', '--with-deps', 'chromium'],
+  );
+  assert.deepEqual(
+    chromiumInstallArguments('linux', () => false),
+    ['node_modules/playwright-core/cli.js', 'install', 'chromium'],
+  );
+  assert.deepEqual(
+    chromiumInstallArguments('win32', () => true),
+    ['node_modules/playwright-core/cli.js', 'install', 'chromium'],
+  );
 });
 
 test(
