@@ -13,10 +13,11 @@ import {
 } from '../lib/richtext-config.mjs';
 import { captureRichTextAssets } from '../lib/richtext-assets.mjs';
 import { createSimulator } from '../server.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 async function fixture(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-rte-baseline-'));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'exported.js'),
     source = {
       defaultSupportedProps: { extraPlugins: 'specialchar', height: 145 },
@@ -216,7 +217,7 @@ test('HTTP mapped local configuration serves validated observation until source 
     origin: f.live.origin,
     watch: false,
   });
-  t.after(() => app.close());
+  ownedFixture(t).add(() => app.close());
   const resource = app.portal.webFiles.find((file) => file.url === '/exported.js');
   assert.ok(resource);
   const capture = await captureRichTextConfiguration(f.cache, f.live, {
@@ -244,7 +245,7 @@ test('HTTP mapped local configuration serves validated observation until source 
     origin: f.live.origin,
     watch: false,
   });
-  t.after(() => reopened.close());
+  ownedFixture(t).add(() => reopened.close());
   let served = await fetch(reopened.url + '/exported.js');
   assert.equal(served.status, 200, served.status === 200 ? '' : await served.text());
   assert.equal(served.headers.get('x-sim-resource-provider'), 'observed-richtext-json');
