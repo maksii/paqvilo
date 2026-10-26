@@ -5,7 +5,24 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { runAcceptance } from '../acceptance.mjs';
+import { navigationCommitBudget } from '../lib/navigation-budget.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+
+function fixtureApi(pathname, res, fallback) {
+  if (!pathname.startsWith('/__sim/api/')) return false;
+  res.setHeader('content-type', 'application/json');
+  res.end(
+    JSON.stringify(
+      pathname.endsWith('/state')
+        ? {
+            config: { mode: 'local', pageMode: 'local', endpoints: [] },
+            status: { sourceFingerprint: 'fixture', implementationFingerprint: 'fixture' },
+          }
+        : fallback,
+    ),
+  );
+  return true;
+}
 
 async function navigationFixture(
   t,
@@ -28,6 +45,7 @@ async function navigationFixture(
     crossOrigin = false,
     timeout = 4000,
     navigationCommitReserveMs,
+    gateDocumentOnWrites = false,
   } = {},
 ) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-document-commit-'));
@@ -37,23 +55,17 @@ async function navigationFixture(
   const writes = `fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{})`;
   const form = `<form action="/submit" method="${redirect ? 'POST' : 'GET'}"><button id="save">Save</button></form>`;
   const script = `document.querySelector('form').addEventListener('submit',event=>{${actionDelay ? `const end=Date.now()+${actionDelay};while(Date.now()<end){}` : ''}${noNavigation ? 'event.preventDefault();' : ''}${noCommit ? "fetch('/never').catch(()=>{});" : late ? '' : writes};setTimeout(()=>{${historyChange}},50);${late ? `setTimeout(()=>{${writes}},150);` : ''}})`;
+  let observedWrites = 0;
+  let releaseDocument;
+  const writesArrived = new Promise((resolve) => {
+    releaseDocument = resolve;
+  });
   const server = http.createServer((req, res) => {
     req.resume();
     const pathname = new URL(req.url, 'http://fixture').pathname;
-    if (pathname.startsWith('/__sim/api/')) {
-      res.setHeader('content-type', 'application/json');
-      return res.end(
-        JSON.stringify(
-          pathname.endsWith('/state')
-            ? {
-                config: { mode: 'local', pageMode: 'local', endpoints: [] },
-                status: { sourceFingerprint: 'fixture', implementationFingerprint: 'fixture' },
-              }
-            : { events: [] },
-        ),
-      );
-    }
+    if (fixtureApi(pathname, res, { events: [] })) return;
     if (pathname.startsWith('/slow-') || pathname === '/never') {
+      if (pathname.startsWith('/slow-') && ++observedWrites === 2) releaseDocument();
       if (pathname !== '/never' && (completed || writeMs)) {
         const timer = setTimeout(() => res.end('done'), writeMs || 1000);
         res.once('close', () => clearTimeout(timer));
@@ -61,6 +73,10 @@ async function navigationFixture(
       return;
     }
     res.setHeader('content-type', 'text/html');
+    if (pathname === '/submit' && gateDocumentOnWrites) {
+      void writesArrived.then(() => res.end('<p id="done">Saved</p>'));
+      return;
+    }
     if (pathname === '/submit' || pathname.startsWith('/hop-')) {
       const timer = setTimeout(
         () => {
@@ -388,14 +404,25 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     const flow = await navigationFixture(t, {
       history: 'none',
       writeMs: 30000,
-      documentDelay: 2500,
+      gateDocumentOnWrites: true,
       timeout: 4000,
       navigationCommitReserveMs: 3000,
     });
     assert.equal(flow.passed, true, JSON.stringify(flow));
     assert.equal(flow.navigationCancelledRequests.length, 2);
+    assert.ok(flow.navigationWaits.length > 0);
+    assert.equal(navigationCommitBudget(4000).reserveMs, 2000);
+    assert.equal(navigationCommitBudget(4000, { explicitMs: 3000 }).reserveMs, 3000);
     assert.ok(
-      flow.navigationWaits.every((wait) => wait.commitReservePolicy === 'explicit' && wait.commitReserveMs === 3000),
+      flow.navigationWaits.every(
+        (wait) =>
+          wait.commitReservePolicy === 'explicit' &&
+          wait.commitReserveMs === 3000 &&
+          wait.writeHoldAllowanceMs <= 1000 &&
+          wait.settled === false &&
+          wait.writes.includes('PATCH /slow-one') &&
+          wait.writes.includes('POST /slow-two'),
+      ),
     );
   });
   for (const status of [204, 205])
@@ -480,19 +507,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     const server = http.createServer((req, res) => {
       req.resume();
       const pathname = new URL(req.url, 'http://fixture').pathname;
-      if (pathname.startsWith('/__sim/api/')) {
-        res.setHeader('content-type', 'application/json');
-        return res.end(
-          JSON.stringify(
-            pathname.endsWith('/state')
-              ? {
-                  config: { mode: 'local', pageMode: 'local', endpoints: [] },
-                  status: { sourceFingerprint: 'fixture', implementationFingerprint: 'fixture' },
-                }
-              : { items: [] },
-          ),
-        );
-      }
+      if (fixtureApi(pathname, res, { items: [] })) return;
       if (pathname.startsWith('/slow-')) return;
       res.setHeader('content-type', 'text/html');
       if (['/save', '/hop', '/done'].includes(pathname)) {
