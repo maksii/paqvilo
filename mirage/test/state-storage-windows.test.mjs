@@ -53,8 +53,11 @@ for (const journal of [false, true])
       };
       await fs.writeFile(reference, '');
       touch('-r', file, reference);
-      const before = await fs.stat(file, { bigint: true }),
-        text = await fs.readFile(file, 'utf8'),
+      const before = await fs.stat(file, { bigint: true });
+      // Linux stamps ctime from a coarse clock (one tick can be 10 ms): an edit in the tick of the last save would
+      // keep ctime and test nothing. Rewrite the reference until its ctime passes the state file's.
+      while ((await fs.stat(reference, { bigint: true })).ctimeNs <= before.ctimeNs) touch('-r', file, reference);
+      const text = await fs.readFile(file, 'utf8'),
         offset = Buffer.byteLength(text.slice(0, text.lastIndexOf('"step"')));
       const handle = await fs.open(file, 'r+');
       try {
