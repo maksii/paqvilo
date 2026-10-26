@@ -296,3 +296,22 @@ test('list redacts query and fragment values in configured and selected location
     }
   }
 });
+
+test('parse failures identify interleaved commands and actions without treating option values as commands', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli parse '));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  for (const [args, expectedCommand, expectedAction] of [
+    [['--json', 'list', '--unknown'], 'list', undefined],
+    [['--config', 'agent', '--json', 'list', '--unknown'], 'list', undefined],
+    [['--config', 'list', 'agent', 'events', '--unknown'], 'agent', 'events'],
+    [['--json', 'agent', '--unknown'], 'agent', 'sessions'],
+  ]) {
+    const result = await run(cwd, ...args);
+    assert.equal(result.status, 1, args.join(' '));
+    assert.equal(result.stderr, '');
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.command, expectedCommand);
+    assert.equal(report.action, expectedAction);
+    assert.equal(report.error.code, 'unsupported_option');
+  }
+});

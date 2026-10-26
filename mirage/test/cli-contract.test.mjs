@@ -238,3 +238,39 @@ test('public tool option tables reject empty string values', () => {
     assert.equal(result.stderr, '', name);
   }
 });
+
+test('data counts fail before resolving a missing catalogue', () => {
+  for (const args of [
+    ['scaffold', '--rows', 'invalid'],
+    ['generate', '--materialize-persona-memberships', '--count', 'items=invalid'],
+    ['generate', '--materialize-persona-memberships', '--count', 'items=1', '--count', 'items=2'],
+  ]) {
+    const result = run('mirage/cli.mjs', 'data', ...args, '--config', 'missing-catalogue.yml', '--json');
+    assert.equal(result.status, 1);
+    assert.match(JSON.parse(result.stdout).error.message, /--rows|--count/);
+    assert.equal(result.stderr, '');
+  }
+});
+
+test('conformance output cannot replace suite or rules through direct or hard-linked paths', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-conformance-'));
+  try {
+    const suite = path.join(dir, 'suite.json'),
+      rules = path.join(dir, 'rules.json'),
+      alias = path.join(dir, 'alias.json');
+    const suiteData = JSON.stringify({ tests: [] }),
+      rulesData = JSON.stringify({ rules: [] });
+    await fs.writeFile(suite, suiteData);
+    await fs.writeFile(rules, rulesData);
+    await fs.link(suite, alias);
+    for (const out of [suite, rules, alias]) {
+      const result = run('mirage/liquid-conformance.mjs', '--suite', suite, '--rules', rules, '--out', out, '--json');
+      assert.equal(result.status, 2);
+      assert.match(JSON.parse(result.stdout).error.message, /--out must not refer to the suite or rules/);
+      assert.equal(await fs.readFile(suite, 'utf8'), suiteData);
+      assert.equal(await fs.readFile(rules, 'utf8'), rulesData);
+    }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});

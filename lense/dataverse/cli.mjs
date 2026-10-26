@@ -3,8 +3,10 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
+import { fileIdentity, sameFile } from '../file-identity.mjs';
 import {
   loadConnection,
+  environmentOrigin,
   publicConnection,
   registerApplication,
   connectExistingApplication,
@@ -61,33 +63,19 @@ connection file. PAC output/tokens are never printed. Registration is not retrie
 after an uncertain or partial outcome. Lense/Mirage commands do not provision.
 `;
 
-// An output report, journal or ZIP must never replace an input or credential file.
-async function rejectOutputInputCollision(values) {
+async function validateFileSelections(command, values) {
+  if (command === 'connect') {
+    const [registration, secret] = await Promise.all([
+      fileIdentity(values.registration),
+      fileIdentity(values['secret-file']),
+    ]);
+    if (sameFile(registration, secret)) throw new Error('--registration and --secret-file must be different files');
+  }
   if (values.out === undefined) return;
-  const identity = async (file) => {
-    const resolved = path.resolve(file);
-    try {
-      const [real, stat] = await Promise.all([fs.realpath(resolved), fs.stat(resolved, { bigint: true })]);
-      return { resolved, real, stat };
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      return { resolved };
-    }
-  };
-  const normalize = (file) => (process.platform === 'win32' ? file.toLowerCase() : file);
-  const output = await identity(values.out);
+  const output = await fileIdentity(values.out);
   for (const key of ['manifest', 'catalogue', 'connection']) {
-    if (values[key] === undefined) continue;
-    const input = await identity(values[key]);
-    const samePath = normalize(output.resolved) === normalize(input.resolved);
-    const sameRealPath = output.real && input.real && normalize(output.real) === normalize(input.real);
-    const sameFile =
-      output.stat &&
-      input.stat &&
-      output.stat.ino &&
-      output.stat.dev === input.stat.dev &&
-      output.stat.ino === input.stat.ino;
-    if (samePath || sameRealPath || sameFile) throw new Error(`--out must not overwrite --${key}`);
+    if (values[key] !== undefined && sameFile(output, await fileIdentity(values[key])))
+      throw new Error(`--out must not overwrite --${key}`);
   }
 }
 
@@ -152,7 +140,14 @@ async function main() {
   for (const key of contract.allowed) {
     if (typeof values[key] === 'string' && !values[key].trim()) throw new Error(`--${key} must not be empty`);
   }
-  await rejectOutputInputCollision(values);
+  if (command === 'register' && values.environment !== undefined) {
+    try {
+      environmentOrigin(values.environment);
+    } catch {
+      throw new Error('--environment must be an HTTPS organisation origin without credentials, query or path');
+    }
+  }
+  await validateFileSelections(command, values);
   const output = (value) => console.log(JSON.stringify(value, null, 2));
   if (command === 'register') {
     output(

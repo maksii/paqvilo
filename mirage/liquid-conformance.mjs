@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { reportCliError } from './cli-output.mjs';
 import { parseArgs as parseNodeArgs } from 'node:util';
+import { fileIdentity, sameFile } from '../lense/file-identity.mjs';
 /**
  * golden-liquid conformance report for the Mirage Liquid engine.
  *
@@ -273,8 +274,19 @@ function parseArgs(argv) {
   };
 }
 
+// Never replace the golden suite or rules through a direct path, symlink or hardlink.
+async function assertDistinctOutput(output, inputs) {
+  if (!output) return;
+  const selected = await fileIdentity(output);
+  for (const input of inputs) {
+    if (sameFile(selected, await fileIdentity(input)))
+      throw new Error('--out must not refer to the suite or rules file');
+  }
+}
+
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
+  await assertDistinctOutput(options.out, [options.suite, options.rules ?? DEFAULT_RULES]);
   const report = await conformance(options);
   const body =
     options.format === 'json'

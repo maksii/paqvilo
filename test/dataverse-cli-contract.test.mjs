@@ -194,3 +194,63 @@ test('inspect does not print URL credentials, query values or fragments', async 
   assert.equal(JSON.parse(invalid.stdout).error.message, 'Connection environmentUrl is invalid.');
   assert.doesNotMatch(invalid.stdout, /invented-private-value/);
 });
+
+test('register rejects an invalid environment before invoking PAC', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-invalid-register-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const result = spawnSync(
+    process.execPath,
+    [
+      cli,
+      'dataverse',
+      'register',
+      '--connection',
+      path.join(root, '.paqvilo', 'connection.json'),
+      '--name',
+      'invented',
+      '--environment',
+      'not-a-url',
+      '--json',
+    ],
+    {
+      env: { ...process.env, PAQVILO_PAC_EXECUTABLE: path.join(root, 'missing-pac') },
+      encoding: 'utf8',
+      timeout: 30000,
+      windowsHide: true,
+    },
+  );
+  assert.equal(result.status, 1);
+  assert.match(JSON.parse(result.stdout).error.message, /--environment must be an HTTPS organisation origin/);
+  assert.equal(result.stderr, '');
+  assert.deepEqual(await fs.readdir(root), []);
+});
+
+test('connect refuses registration and consumable secret aliases before reading or writing', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-connect-collision-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, '.paqvilo');
+  await fs.mkdir(directory);
+  const registration = path.join(directory, 'registration.json');
+  const alias = path.join(directory, 'alias.json');
+  const original = 'invented registration and secret bytes';
+  await fs.writeFile(registration, original);
+  await fs.link(registration, alias);
+  for (const secret of [registration, alias]) {
+    const result = run(
+      'connect',
+      '--registration',
+      registration,
+      '--secret-file',
+      secret,
+      '--connection',
+      path.join(directory, 'connection.json'),
+      '--consume-secret-file',
+      '--json',
+    );
+    assert.equal(result.status, 1);
+    assert.match(JSON.parse(result.stdout).error.message, /must be different files/);
+    assert.equal(result.stderr, '');
+    assert.equal(await fs.readFile(registration, 'utf8'), original);
+  }
+  assert.deepEqual((await fs.readdir(directory)).sort(), ['alias.json', 'registration.json']);
+});

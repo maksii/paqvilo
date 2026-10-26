@@ -121,6 +121,13 @@ shell. A parseable JSON report alone does not establish success.
 - Dataverse `--out` reports, journals and archives must use a different file from
   the manifest, catalogue and connection inputs, including existing file aliases.
   For example, use `dataverse plan --manifest './schema.json' --out './.paqvilo/schema-plan.json'`.
+- `liquid-conformance --out` must also differ from its suite and rules files.
+  Dataverse `connect` requires separate registration and secret files, including
+  when `--consume-secret-file` is used. Existing links are checked by file identity.
+- Data `--rows` and `--count` values are validated before source resolution, so
+  invalid counts are reported even when a selected catalogue or project is missing.
+  `data scaffold --rows 0` creates no ordinary table rows; required persona rows
+  are still created from exported web roles.
 - List output and Dataverse connection inspection redact URL query values and
   fragments. Redaction affects displayed output and preserves stored settings.
 - Argument mistakes are rejected before source reads or startup where the command
