@@ -47,25 +47,34 @@ export class FileBodyCache {
   read(file, variant = '', transform = (body) => body) {
     file = path.resolve(file);
     const key = JSON.stringify([file, variant]);
-    let before;
+    // One descriptor supplies the stamp, the bytes and the after-check, so they describe the same file even when the
+    // path is replaced meanwhile. Non-blocking: a FIFO in the source tree is refused below instead of waiting for a writer.
+    let fd, before;
     try {
-      before = fs.statSync(file, { bigint: true });
+      fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
+      before = fs.fstatSync(fd, { bigint: true });
       if (!before.isFile()) throw new Error('Local source is not a regular file');
     } catch (err) {
+      if (fd !== undefined) fs.closeSync(fd);
       this.invalidate([file]);
       throw err;
     }
+    let body, after;
     const version = stamp(before);
-    const cached = this.entries.get(key);
-    if (cached?.stamp === version) {
-      this.entries.delete(key);
-      this.entries.set(key, cached);
-      return cached.body;
+    try {
+      const cached = this.entries.get(key);
+      if (cached?.stamp === version) {
+        this.entries.delete(key);
+        this.entries.set(key, cached);
+        return cached.body;
+      }
+      this.#remove(key);
+      body = transform(fs.readFileSync(fd));
+      // A write racing this read, or landing in the same file-time tick after it, must not leave a stale cached version.
+      after = fs.fstatSync(fd, { bigint: true });
+    } finally {
+      fs.closeSync(fd);
     }
-    this.#remove(key);
-    const body = transform(fs.readFileSync(file));
-    // A write racing this read, or landing in the same file-time tick after it, must not leave a stale cached version.
-    const after = fs.statSync(file, { bigint: true });
     if (
       stamp(after) === version &&
       !racyStat(after) &&

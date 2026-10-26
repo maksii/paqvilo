@@ -60,7 +60,12 @@ for (const journal of [false, true])
         before = await handle.stat({ bigint: true });
         // Linux stamps ctime from a coarse clock (one tick can be 10 ms): an edit in the tick of the last save would
         // keep ctime and test nothing. Rewrite the reference until its ctime passes the state file's.
-        while ((await fs.stat(reference, { bigint: true })).ctimeNs <= before.ctimeNs) touch('-r', file, reference);
+        const marker = await fs.open(reference, 'r');
+        try {
+          while ((await marker.stat({ bigint: true })).ctimeNs <= before.ctimeNs) touch('-r', file, reference);
+        } finally {
+          await marker.close();
+        }
         const text = await handle.readFile('utf8'),
           offset = Buffer.byteLength(text.slice(0, text.lastIndexOf('"step"')));
         await handle.write(Buffer.from('"evil"'), 0, 6, offset);
@@ -76,7 +81,13 @@ for (const journal of [false, true])
       );
       assert.notEqual(stateFileSignature(after), stateFileSignature(before));
       await assert.rejects(store.update('items', 'one', { note: 'refused' }), { code: 'StateConflict' });
-      assert.ok((await fs.readFile(file, 'utf8')).includes('"evil"'));
+      // Read back through a descriptor as well: the refused update must have left the edited bytes in place.
+      const kept = await fs.open(file, 'r');
+      try {
+        assert.ok((await kept.readFile('utf8')).includes('"evil"'));
+      } finally {
+        await kept.close();
+      }
     },
   );
 

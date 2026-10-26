@@ -290,10 +290,25 @@ test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work',
   const b = fakeBrowser();
   const tab = b.openTab();
   const detach = await interceptOrigin(b.context, ORIGIN, s.route);
-  const read = fs.readFileSync;
+  // The body cache reads through a descriptor it opened for the file, so count reads of that descriptor too.
+  const app = path.join(fx.dir, 'web-files/app.js'),
+    open = fs.openSync,
+    close = fs.closeSync,
+    read = fs.readFileSync,
+    appDescriptors = new Set();
   let reads = 0;
+  fs.openSync = function (file, ...args) {
+    const fd = open.call(this, file, ...args);
+    if (typeof file === 'string' && path.resolve(file) === app) appDescriptors.add(fd);
+    return fd;
+  };
+  // Descriptor numbers are reused after close.
+  fs.closeSync = function (fd) {
+    appDescriptors.delete(fd);
+    return close.call(this, fd);
+  };
   fs.readFileSync = function (file, ...args) {
-    if (path.resolve(String(file)) === path.join(fx.dir, 'web-files/app.js')) reads++;
+    if (appDescriptors.has(file) || (typeof file === 'string' && path.resolve(file) === app)) reads++;
     return read.call(this, file, ...args);
   };
   try {
@@ -305,6 +320,8 @@ test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work',
     assert.equal(reads, 1);
     assert.equal(b.answers('get1')[0].body, b.answers('get2')[0].body);
   } finally {
+    fs.openSync = open;
+    fs.closeSync = close;
     fs.readFileSync = read;
     await detach();
   }
