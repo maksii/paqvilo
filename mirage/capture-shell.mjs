@@ -1,3 +1,4 @@
+import { reportCliError } from './cli-output.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -365,7 +366,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.log(JSON.stringify(report, null, 2));
     process.exitCode = captureExitCode(report, values);
   } catch (error) {
-    console.error(captureFailure(error).message);
+    reportCliError(captureFailure(error));
     process.exitCode = 1;
   }
 }

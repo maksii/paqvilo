@@ -2,6 +2,8 @@
 
 Paqvilo provides local-first, pro-code tools for Microsoft Power Pages. Start with [getting started](getting-started.md) for Node.js and npm setup, a working local example and your own exported site.
 
+The [CLI guide](cli.md) covers command help, quoting on Windows/Linux, Unicode and OneDrive paths, defaults, JSON output and exit codes.
+
 | Task                                                          | Guide                                                                                     |
 | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
 | Install and open your first portal                            | [Getting started](getting-started.md)                                                     |

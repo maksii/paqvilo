@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { reportCliError } from './cli-output.mjs';
+import { parseArgs as parseNodeArgs } from 'node:util';
 /**
  * golden-liquid conformance report for the Mirage Liquid engine.
  *
@@ -242,26 +244,33 @@ export function markdown(report) {
 }
 
 function parseArgs(argv) {
-  const options = { format: 'text', timeoutMs: 5000 };
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    const value = () => {
-      if (i + 1 >= argv.length) throw new Error(`${arg} needs a value`);
-      return argv[++i];
-    };
-    if (arg === '--suite') options.suite = value();
-    else if (arg === '--rules') options.rules = value();
-    else if (arg === '--out') options.out = value();
-    else if (arg === '--timeout') options.timeoutMs = Number(value());
-    else if (arg === '--json') options.format = 'json';
-    else if (arg === '--markdown') options.format = 'markdown';
-    else throw new Error(`Unknown argument ${arg}`);
-  }
-  if (!options.suite)
+  const { values } = parseNodeArgs({
+    args: argv,
+    options: {
+      suite: { type: 'string' },
+      rules: { type: 'string' },
+      out: { type: 'string' },
+      timeout: { type: 'string' },
+      json: { type: 'boolean' },
+      markdown: { type: 'boolean' },
+    },
+  });
+  if (values.json && values.markdown) throw new Error('Use either --json or --markdown');
+  const raw = values.timeout ?? '5000';
+  const timeoutMs = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647)
+    throw new Error('--timeout must be an integer between 1 and 2147483647 milliseconds');
+  if (!values.suite)
     throw new Error(
       'Usage: node mirage/liquid-conformance.mjs --suite <golden_liquid.json> [--rules FILE] [--json | --markdown] [--out FILE] [--timeout MS]',
     );
-  return options;
+  return {
+    suite: values.suite,
+    rules: values.rules,
+    out: values.out,
+    timeoutMs,
+    format: values.json ? 'json' : values.markdown ? 'markdown' : 'text',
+  };
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -280,6 +289,6 @@ async function main(argv = process.argv.slice(2)) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))
   main().catch((error) => {
-    process.stderr.write(`${error.message}\n`);
+    reportCliError(error);
     process.exitCode = 2;
   });

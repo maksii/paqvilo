@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { reportCliError } from './cli-output.mjs';
 /**
  * Read-only bootstrap quality report: what the Mirage derives from the portal
  * export and the selected solution layers (tables, columns, relationships, grants,
@@ -588,7 +589,7 @@ if (isMain) {
     }
     console.log(args.json ? JSON.stringify(report, null, 2) : formatReport(report));
   } catch (error) {
-    console.error(error.message);
+    reportCliError(error);
     process.exitCode = 1;
   }
 }

@@ -41,7 +41,7 @@ const HELP = `paqvilo dataverse — provision schema through Dataverse, then exp
            Report asynchronous alternate-key activation; non-ready is not success.
   audit-lookups --manifest FILE --connection FILE
            Complete auditing on declared custom lookups after relationship creation.
-  scope-solutions --manifest FILE --connection FILE
+  scope-solutions --manifest FILE --connection FILE [--out JOURNAL]
            Narrow declared table roots to explicit subcomponents before exporting.
   export   --connection FILE --solution NAME --out ZIP [--unpack DIRECTORY]
            Export unmanaged solution from Dataverse; optionally unpack using PAC.
@@ -54,6 +54,8 @@ const HELP = `paqvilo dataverse — provision schema through Dataverse, then exp
   data-query   --catalogue FILE --connection FILE [--out REPORT]
                Run paged FetchXML and compare expected rows under this app identity.
 
+All commands accept --json for machine-readable errors. Plans and data reports
+print the full result alongside --out when --json is set.
 Credentials use Windows DPAPI CurrentUser, or an environment-secret reference in a
 connection file. PAC output/tokens are never printed. Registration is not retried
 after an uncertain or partial outcome. Lense/Mirage commands do not provision.
@@ -61,10 +63,32 @@ after an uncertain or partial outcome. Lense/Mirage commands do not provision.
 
 const [command, ...args] = process.argv.slice(2);
 async function main() {
-  if (!command || ['--help', '-h'].includes(command) || args.some((a) => ['--help', '-h'].includes(a))) {
+  if (command === undefined || ['--help', '-h'].includes(command)) {
     console.log(HELP);
     return;
   }
+  const commands = {
+    register: { allowed: ['connection', 'name', 'role', 'environment'], required: ['connection', 'name'] },
+    connect: {
+      allowed: ['registration', 'secret-file', 'connection', 'role', 'consume-secret-file'],
+      required: ['registration', 'secret-file', 'connection'],
+    },
+    inspect: { allowed: ['connection'], required: ['connection'] },
+    verify: { allowed: ['connection'], required: ['connection'] },
+    plan: { allowed: ['manifest', 'connection', 'out', 'json'], required: ['manifest'] },
+    apply: { allowed: ['manifest', 'connection', 'out'], required: ['manifest', 'connection'] },
+    publish: { allowed: ['manifest', 'connection'], required: ['manifest', 'connection'] },
+    keys: { allowed: ['manifest', 'connection'], required: ['manifest', 'connection'] },
+    'audit-lookups': { allowed: ['manifest', 'connection'], required: ['manifest', 'connection'] },
+    'scope-solutions': { allowed: ['manifest', 'connection', 'out'], required: ['manifest', 'connection'] },
+    export: { allowed: ['connection', 'solution', 'out', 'unpack'], required: ['connection', 'solution', 'out'] },
+    'data-plan': { allowed: ['catalogue', 'connection', 'out', 'json'], required: ['catalogue'] },
+    'data-apply': { allowed: ['catalogue', 'connection', 'out'], required: ['catalogue', 'connection'] },
+    'data-compare': { allowed: ['catalogue', 'connection', 'out', 'json'], required: ['catalogue', 'connection'] },
+    'data-query': { allowed: ['catalogue', 'connection', 'out', 'json'], required: ['catalogue', 'connection'] },
+  };
+  const contract = Object.hasOwn(commands, command) ? commands[command] : null;
+  if (!contract) throw new Error('Unknown dataverse command; run paqvilo dataverse --help.');
   const { values } = parseArgs({
     args,
     options: {
@@ -81,8 +105,23 @@ async function main() {
       registration: { type: 'string' },
       'secret-file': { type: 'string' },
       'consume-secret-file': { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
     },
   });
+  for (const key of Object.keys(values)) {
+    if (key !== 'help' && key !== 'json' && !contract.allowed.includes(key))
+      throw new Error(`--${key} is not valid for dataverse ${command}`);
+  }
+  if (values.help) {
+    console.log(HELP);
+    return;
+  }
+  for (const key of contract.required) {
+    if (!values[key]?.trim()) throw new Error(`--${key} required for dataverse ${command}`);
+  }
+  for (const key of contract.allowed) {
+    if (typeof values[key] === 'string' && !values[key].trim()) throw new Error(`--${key} must not be empty`);
+  }
   const output = (value) => console.log(JSON.stringify(value, null, 2));
   if (command === 'register') {
     output(
@@ -169,8 +208,6 @@ async function main() {
     );
     return;
   }
-  if (!['plan', 'apply', 'publish', 'keys', 'audit-lookups', 'scope-solutions'].includes(command))
-    throw new Error('Unknown dataverse command; run paqvilo dataverse --help.');
   if (!values.manifest) throw new Error('--manifest required');
   const manifest = await readManifest(path.resolve(values.manifest));
   if (command === 'plan') {
@@ -244,8 +281,12 @@ async function main() {
   }
 }
 main().catch((error) => {
-  console.error(
-    JSON.stringify({ ok: false, error: { code: error.code ?? 'DATAVERSE_COMMAND_FAILED', message: error.message } }),
-  );
+  // JSON parser diagnostics can include credential-file contents.
+  const message = error instanceof SyntaxError ? 'Invalid JSON input.' : error.message.replace(/[\r\n]+/g, ' ');
+  const terminator = args.indexOf('--');
+  const json = args.slice(0, terminator < 0 ? args.length : terminator).includes('--json');
+  if (json)
+    console.log(JSON.stringify({ ok: false, error: { code: error.code ?? 'DATAVERSE_COMMAND_FAILED', message } }));
+  else console.error(`paqvilo dataverse: ${message}`);
   process.exitCode = 1;
 });

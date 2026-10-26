@@ -95,6 +95,8 @@ Lense interactions use the live portal's backend and can change live data. Mirag
 
 ## Documentation
 
+See the [CLI guide](docs/cli.md) for command help, quoting, paths, JSON output and exit codes.
+
 | Task                                          | Guide                                                                                                                                                                           |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Set up your first project                     | [Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md)                                                                                          |

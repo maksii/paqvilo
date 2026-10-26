@@ -31,10 +31,67 @@ import {
 import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, unknownMirageCommand } from './tool-registry.mjs';
 import { runtimeOptions, configuredSettingKeys } from './lib/config-keys.mjs';
 
+const argv = process.argv.slice(2);
+const terminator = argv.indexOf('--');
+const jsonRequested = (terminator < 0 ? argv : argv.slice(0, terminator)).includes('--json');
+const valueOptions = new Set([
+  'source',
+  'runtime',
+  'simulation',
+  'repo',
+  'config',
+  'site',
+  'env',
+  'port',
+  'state',
+  'state-dir',
+  'origin',
+  'cdp',
+  'preset',
+  'preset-mode',
+  'path',
+  'managed-control-path',
+  'stylesheet',
+  'parent-snippet',
+  'child-snippet',
+  'output',
+  'local',
+  'solution-root',
+  'solution-order',
+  'project',
+  'portal',
+  'deployment-profile',
+  'pack',
+  'pack-module',
+  'profile',
+  'seed',
+  'rows',
+  'out',
+  'count',
+  'scenario',
+  'data-model',
+]);
+const invocationCommand = () => {
+  for (let i = 0; i < argv.length; i++) {
+    const word = argv[i];
+    if (word === '--') return argv[i + 1];
+    if (!word.startsWith('-')) return word;
+    const key = word.startsWith('--') && !word.includes('=') ? word.slice(2) : '';
+    if (valueOptions.has(key)) i++;
+  }
+};
+const invocationError = (error) => {
+  if (jsonRequested)
+    console.log(
+      JSON.stringify({ schemaVersion: 1, ok: false, error: { code: 'MIRAGE_FAILED', message: error.message } }),
+    );
+  else console.error(error.message);
+};
 let parsed;
 try {
   parsed = parseArgs({
     allowPositionals: true,
+    tokens: true,
     options: {
       source: { type: 'string' },
       runtime: { type: 'string' },
@@ -73,7 +130,7 @@ try {
       out: { type: 'string' },
       count: { type: 'string', multiple: true },
       'materialize-persona-memberships': { type: 'boolean' },
-      help: { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
       json: { type: 'boolean' },
       // preflight: a scenario JSON file { id, requires: [...] } scopes blocking; --strict blocks on every unsatisfied requirement.
       scenario: { type: 'string' },
@@ -87,11 +144,11 @@ try {
     },
   });
 } catch (error) {
-  console.error(error.message);
+  invocationError(error);
   // preflight reports invocation errors with exit code 2.
-  process.exit(process.argv[2] === 'preflight' ? 2 : 1);
+  process.exit(invocationCommand() === 'preflight' ? 2 : 1);
 }
-const { values: args, positionals } = parsed;
+const { values: args, positionals, tokens } = parsed;
 const stateDir = path.resolve(
   args['state-dir'] ??
     path.join(
@@ -104,6 +161,10 @@ const stateDir = path.resolve(
     ),
 );
 const command = positionals[0] ?? 'serve';
+if (args.help && command !== 'help' && !MIRAGE_CORE_COMMANDS.includes(command)) {
+  invocationError(new Error(unknownMirageCommand(command)));
+  process.exit(1);
+}
 if (args.help || command === 'help') {
   console.log(`Power Pages local mirage
 
@@ -143,6 +204,121 @@ Live access uses the selected connected browser identity. Exact parity requires 
 }
 try {
   if (!MIRAGE_CORE_COMMANDS.includes(command)) throw new Error(unknownMirageCommand(command));
+  if (command !== 'data' && positionals.length > 1)
+    throw new Error(`Unexpected positional argument: ${positionals[1]}`);
+  // Defaults are not evidence that an option was supplied: inspect only parser tokens.
+  const sourceOptions = [
+    'source',
+    'config',
+    'site',
+    'env',
+    'repo',
+    'project',
+    'portal',
+    'solution-root',
+    'solution-order',
+    'data-model',
+  ];
+  const runtimeOptionNames = ['runtime', 'simulation'];
+  const matrix = {
+    inspect: [...sourceOptions, ...runtimeOptionNames, 'deployment-profile', 'json'],
+    preflight: [...sourceOptions, ...runtimeOptionNames, 'preset', 'pack-module', 'scenario', 'strict', 'json'],
+    serve: [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'port',
+      'state',
+      'state-dir',
+      'origin',
+      'cdp',
+      'preset',
+      'preset-mode',
+      'apply-configuration',
+      'deployment-profile',
+      'pack-module',
+      'no-watch',
+      'allow-live-writes',
+      'json',
+    ],
+    render: [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'state',
+      'state-dir',
+      'origin',
+      'cdp',
+      'preset',
+      'preset-mode',
+      'apply-configuration',
+      'deployment-profile',
+      'pack-module',
+      'path',
+      'output',
+    ],
+    'capture-shell': [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'state',
+      'state-dir',
+      'origin',
+      'cdp',
+      'deployment-profile',
+      'pack-module',
+      'path',
+      'managed-control-path',
+    ],
+    'capture-stylesheets': [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'state',
+      'state-dir',
+      'origin',
+      'cdp',
+      'deployment-profile',
+      'pack-module',
+      'stylesheet',
+    ],
+    'capture-snippet-composition': [
+      ...sourceOptions,
+      ...runtimeOptionNames,
+      'state',
+      'state-dir',
+      'origin',
+      'cdp',
+      'deployment-profile',
+      'pack-module',
+      'path',
+      'parent-snippet',
+      'child-snippet',
+    ],
+    verify: ['local', 'origin', 'cdp', 'path', 'output', 'state-dir', 'config', 'project', 'site'],
+    data: [
+      ...sourceOptions.filter((option) => option !== 'solution-order'),
+      'pack',
+      'pack-module',
+      'profile',
+      'seed',
+      'rows',
+      'state',
+      'out',
+      'count',
+      'materialize-persona-memberships',
+      'json',
+    ],
+  };
+  const isCapture = ['capture-shell', 'capture-stylesheets', 'capture-snippet-composition'].includes(command);
+  const allowed = new Set([...matrix[command], 'help', ...(isCapture ? ['preset'] : [])]);
+  for (const token of tokens) {
+    if (token.kind === 'option' && !allowed.has(token.name))
+      throw new Error(`--${token.name} is not supported by mirage ${command}`);
+    if (token.kind === 'option' && token.name === 'port') runtimePort(token.value);
+    if (token.kind === 'option' && token.value === '') throw new Error(`--${token.name} requires a nonempty value`);
+  }
+
+  if (isCapture && !args.cdp) throw new Error(`${command} requires --cdp for the intended connected browser.`);
+  if (isCapture && args.preset)
+    throw new Error(`${command} does not apply presets. Apply --preset when starting serve.`);
+
   if (command === 'data') {
     const { runDataCommand } = await import('./lib/data-generation.mjs');
     // data scaffold resolves its portal like serve: a project file and portal,
@@ -879,7 +1055,7 @@ try {
     }
   }
 } catch (error) {
-  console.error(error.message);
+  invocationError(error);
   process.exitCode = command === 'preflight' ? 2 : 1;
 }
 

@@ -100,6 +100,7 @@ export default async function list(_cfg, args) {
     miragePaths(null, { config: catalogue.configFile }).discoveryRoot,
     'cache/solution-discovery.json',
   );
+  const writesFiles = new Set();
   for (const site of sites) {
     const roots = site.mirage.resolved.solutionRoots;
     if (!roots.length) continue;
@@ -109,7 +110,7 @@ export default async function list(_cfg, args) {
         order: site.mirage.resolved.solutionOrder ?? 'derived',
       });
       try {
-        await scan.cache?.save({ prune: false });
+        if (await scan.cache?.save({ prune: false })) writesFiles.add(cacheFile);
       } catch {
         /* the cache only saves parsing time */
       }
@@ -158,6 +159,7 @@ export default async function list(_cfg, args) {
           ok: usable,
           errors: usable ? [] : [{ code: problemCode, message: problem ?? 'No usable site and environment' }],
           offline: true,
+          writesFiles: [...writesFiles],
           sourceRoot: catalogue.sourceRoot,
           resolved,
           sites,

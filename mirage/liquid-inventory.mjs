@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { reportCliError } from './cli-output.mjs';
 import { parseToolArgs, toolOptionsHelp, inventoryInputs } from './tool-options.mjs';
 /**
  * Liquid inventory for an exported Power Pages site (PAC standard YAML or enhanced data model).
@@ -762,10 +763,12 @@ function summarize(report) {
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseToolArgs('liquid-inventory', argv);
-  if (options.help || !(options.portal || options.config || options.site)) {
-    console.log(`Usage: paqvilo mirage liquid-inventory ${toolOptionsHelp('liquid-inventory')}`);
-    return options.help ? 0 : 2;
+  const usage = `Usage: paqvilo mirage liquid-inventory ${toolOptionsHelp('liquid-inventory')}`;
+  if (options.help) {
+    console.log(usage);
+    return 0;
   }
+  if (!(options.portal || options.config || options.site)) throw new Error(usage);
   const inputs = await inventoryInputs(options);
   const portal = await importPortal(inputs.sourceDir);
   const report = await inventoryPortal(portal, {
@@ -787,7 +790,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       process.exitCode = code;
     },
     (error) => {
-      console.error(error.stack ?? String(error));
+      reportCliError(error);
       process.exitCode = 2;
     },
   );

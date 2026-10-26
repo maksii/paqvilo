@@ -186,7 +186,10 @@ try {
   }));
 } catch (err) {
   const code = err.code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' ? 'unsupported_option' : 'invalid_argument';
-  if (process.argv.includes('--json') || process.argv[2] === 'agent')
+  const parseArguments = process.argv.slice(2);
+  const separator = parseArguments.indexOf('--');
+  const jsonRequested = (separator < 0 ? parseArguments : parseArguments.slice(0, separator)).includes('--json');
+  if (jsonRequested || process.argv[2] === 'agent')
     console.log(
       JSON.stringify({
         schemaVersion: 1,
@@ -263,13 +266,11 @@ if (values.json || command === 'agent') {
     );
   };
 }
-if (values.help || !command) {
+if (command === undefined) {
   if (values.json || command === 'agent')
-    console.log(
-      JSON.stringify({ schemaVersion: 1, command: 'help', ok: Boolean(command || values.help), usage: HELP }),
-    );
+    console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage: HELP }));
   else console.log(HELP);
-  process.exit(command || values.help ? 0 : 1);
+  process.exit(0);
 }
 
 // `needsSite: false` commands work on the catalogue and must run even when nothing is selectable yet
@@ -302,6 +303,13 @@ if (!Object.hasOwn(commands, command)) {
   process.exit(1);
 }
 
+if (values.help) {
+  if (values.json || command === 'agent')
+    console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage: HELP }));
+  else console.log(HELP);
+  process.exit(0);
+}
+
 let phase = 'arguments';
 let startup;
 try {
@@ -310,7 +318,6 @@ try {
   if (command === 'model-driven' && positionals.length > 2)
     throw new Error('model-driven accepts one action: inspect or dev');
   if (command === 'use' && positionals.length > 3) throw new Error('use accepts only a site and an environment');
-  if (command === 'mirage') (await import('./commands/mirage.mjs')).validateMirageAction(positionals[1] ?? 'status');
   if (command === 'agent' && positionals.length > 2) throw new Error('agent accepts only one action');
   if (command === 'mirage' && positionals.length > 2)
     throw new Error('mirage accepts one action: init, start, dev, status, inspect or stop');
@@ -414,11 +421,46 @@ try {
   for (const option of Object.keys(values))
     if (!allowed[command].includes(option))
       throw Object.assign(new Error(`--${option} is not supported by ${command}`), { code: 'unsupported_option' });
+  for (const [option, value] of Object.entries(values)) {
+    if (
+      !['search', 'port'].includes(option) &&
+      (Array.isArray(value) ? value.some((item) => item === '') : value === '')
+    )
+      throw new Error(`--${option} must not be empty`);
+  }
+  if (values.portals !== undefined && !['selected', 'all'].includes(values.portals))
+    throw new Error('--portals must be selected or all');
+  if (values.scope !== undefined && !['all', 'changed'].includes(values.scope))
+    throw new Error('--scope must be all or changed');
+  if (
+    values['debug-port'] !== undefined &&
+    (!/^\d+$/.test(values['debug-port']) || Number(values['debug-port']) > 65535)
+  )
+    throw new Error('--debug-port must be an integer from 0 to 65535');
+  if (
+    values['sign-in-timeout'] !== undefined &&
+    (!/^\d+$/.test(values['sign-in-timeout']) ||
+      Number(values['sign-in-timeout']) < 1 ||
+      Number(values['sign-in-timeout']) > 900000)
+  )
+    throw new Error('--sign-in-timeout must be an integer between 1 and 900000 milliseconds');
+  if (command === 'use') {
+    if (positionals[1] !== undefined && values.site !== undefined)
+      throw new Error('use accepts the site either as a positional argument or --site, not both');
+    if (positionals[2] !== undefined && values.env !== undefined)
+      throw new Error('use accepts the environment either as a positional argument or --env, not both');
+  }
+
   if (values.pick && values.json)
     throw new Error('--pick cannot be combined with --json; provide --site and --env explicitly');
   if (values.headless && values.headed) throw new Error('--headless and --headed cannot be used together');
   if (values.all && (values.site || values.env))
     throw new Error(`${command} --all cannot be combined with --site or --env`);
+  if (command === 'resources') (await import('./commands/resources.mjs')).resourceFilters(values);
+  if (command === 'model-driven')
+    (await import('./commands/model-driven.mjs')).validateModelDrivenArguments(values, positionals[1] ?? 'dev');
+  if (command === 'mirage')
+    (await import('./commands/mirage.mjs')).validateMirageArguments(values, positionals[1] ?? 'status');
   const { load, needsSite } = commands[command];
   if (
     command === 'dev' ||

@@ -135,9 +135,11 @@ test('parity and conformance help name their real required plan options', async 
       ['liquid-conformance', '--suite', missing, '--json'],
     ].map((args) => runMirage(args, 10000)),
   );
-  for (const result of results) {
+  for (const [index, result] of results.entries()) {
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /ENOENT/);
-    assert.doesNotMatch(result.stderr, /Unknown (?:argument|option)|ERR_PARSE_ARGS/);
+    const message = index === 1 ? JSON.parse(result.stdout).error.message : result.stderr;
+    if (index === 1) assert.equal(result.stderr, '');
+    assert.match(message, /ENOENT/);
+    assert.doesNotMatch(message, /Unknown (?:argument|option)|ERR_PARSE_ARGS/);
   }
 });

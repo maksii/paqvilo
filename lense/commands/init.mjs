@@ -65,6 +65,13 @@ export async function runInit(args = process.argv.slice(2)) {
     console.log(INIT_HELP);
     return 0;
   }
+  for (const [key, value] of Object.entries(values)) {
+    const entries = Array.isArray(value) ? value : [value];
+    if (entries.some((item) => typeof item === 'string' && !item.trim()))
+      throw new Error(`--${key} must not be empty or whitespace`);
+  }
+  if (positionals.some((item) => !item.trim()))
+    throw new Error('init target directory must not be empty or whitespace');
   if (positionals.length > 1) throw new Error('init accepts at most one target directory');
   if ([values.check, values.ready, values['refresh-editor']].filter(Boolean).length > 1)
     throw new Error('--check, --ready and --refresh-editor are separate operations');
@@ -104,18 +111,24 @@ export async function runInit(args = process.argv.slice(2)) {
         ['msedge', 'chrome', 'chromium'].map((value) => ({ value })),
         'msedge',
       );
-    report = await prepareProject(directory, {
-      name: values.name,
-      sites: values.site,
-      packs: values.pack,
-      noPack: values['no-pack'],
-      defaultEnv: values['default-env'],
-      sourceRoot: values['source-root'],
-      browser: values.browser,
-      toolkit: values.toolkit,
-      noVscode: values['no-vscode'],
-      intoExisting: values['into-existing'],
-    });
+    try {
+      report = await prepareProject(directory, {
+        name: values.name,
+        sites: values.site,
+        packs: values.pack,
+        noPack: values['no-pack'],
+        defaultEnv: values['default-env'],
+        sourceRoot: values['source-root'],
+        browser: values.browser,
+        toolkit: values.toolkit,
+        noVscode: values['no-vscode'],
+        intoExisting: values['into-existing'],
+      });
+    } catch (error) {
+      if (values.name === undefined && error.message.startsWith('--name must '))
+        error.message += '; supply --name with a valid slug when the directory name is unsuitable';
+      throw error;
+    }
   }
   if (values.json) console.log(JSON.stringify(report, null, 2));
   else if (values.ready) {

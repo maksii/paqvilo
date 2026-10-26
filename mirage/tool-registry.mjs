@@ -1,17 +1,19 @@
 /** Public CLI tools, their programs and their argument contracts. */
 import { toolOptionsHelp } from './tool-options.mjs';
 export const MIRAGE_TOOLS = Object.freeze({
-  'bootstrap-report': '--config FILE --site ID [--json]',
+  'bootstrap-report':
+    '(--site ID [--config FILE --env ID --repo DIR] | --source DIR | --project FILE [--portal ID]) [--solution-root DIR ...] [--solution-order derived|explicit] [--deployment-profile NAME] [--data-model standard|enhanced] [--lcid N] [--json] [--output FILE] [--no-cache] [--all-fields]',
   'render-sweep': toolOptionsHelp('render-sweep'),
   'liquid-inventory': toolOptionsHelp('liquid-inventory'),
   'webapi-inventory': toolOptionsHelp('webapi-inventory'),
   'portal-matrix': toolOptionsHelp('portal-matrix'),
   'parity-suite':
-    '--config FILE --site ID --out DIRECTORY [--scenarios FILE] [--origin HTTPS_ORIGIN --cdp LOOPBACK_URL]',
+    '((--local LOOPBACK_ORIGIN | --source DIR | --site ID) --out DIR | --reclassify FILE) [--config FILE] [--env ID] [--repo DIR] [--state FILE] [--preset NAME] [--origin HTTPS_ORIGIN] [--cdp LOOPBACK_URL] [--local-owned] [--anonymous-browser owned|cdp] [--scenarios FILE] [--core | --no-core] [--pack ID ...] [--packs auto|all|none] [--pack-module FILE ...] [--only IDS] [--tags TAGS] [--exclude-tags TAGS] [--label NAME] [--delay-ms N] [--work-dir DIR] [--persona-contact ID] [--no-persona] [--browser NAME] [--ids FILE] [--deployment-profile NAME]',
   'baseline-suite':
-    'capture|compare --matrix FILE --out DIRECTORY [--side live|mirage] [--config FILE --site ID] [--ids FILE] [--allow-writes] [--allowlist FILE] [--second-live LABEL] [--evidence-changes FILE]',
+    'capture|compare --matrix FILE --out DIRECTORY [--side live|mirage] [--config FILE --site ID] [--ids FILE] [--allow-writes] [--allowlist FILE] [--second-live LABEL] [--evidence-changes FILE] [--label NAME] [--only IDS] [--env ID] [--source DIR] [--state FILE] [--headed] [--work-dir DIR] [--live DIR] [--mirage DIR]',
   'liquid-conformance': '--suite FILE [--rules FILE] [--json | --markdown] [--out FILE] [--timeout MS]',
-  acceptance: '--local LOOPBACK_ORIGIN --plan FILE [--origin HTTPS_ORIGIN --cdp LOOPBACK_URL] [--output DIRECTORY]',
+  acceptance:
+    '--local LOOPBACK_ORIGIN --plan FILE [--origin HTTPS_ORIGIN --cdp LOOPBACK_URL] [--output DIRECTORY] [--requires NAME ...] [--strict]',
   'enrich-reference': '--state FILE --origin HTTPS_ORIGIN --cdp LOOPBACK_URL --plan FILE',
   'reference-parity':
     '--local LOOPBACK_ORIGIN --origin HTTPS_ORIGIN --cdp LOOPBACK_URL --plan FILE --output DIRECTORY [--local-contact ID | --local-configured-persona] [--local-role NAME ...]',
