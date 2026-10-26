@@ -73,14 +73,40 @@ export async function gitDirectories(sourceDir) {
   }
 }
 
+/** The read-only command that resolves a baseline ref to its commit; throws for an unsafe ref. */
+function refArgs(ref) {
+  if (typeof ref !== 'string' || !ref.trim() || ref.startsWith('-') || /[\0\r\n]/.test(ref))
+    throw new Error('invalid baseline ref');
+  const target = ref.startsWith('merge-base:') ? ref.slice('merge-base:'.length) : null;
+  if (target !== null && (!target || target.startsWith('-'))) throw new Error('invalid merge-base ref');
+  return target === null
+    ? ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]
+    : ['merge-base', 'HEAD', target];
+}
+
 // All paths go to git relative to sourceDir (and come back that way), so it does not matter how the
 // folder is spelled (8.3 short names, symlinks, drive letter case).
 export class GitBaseline {
   /**
+   * Like the constructor, but resolves the ref without blocking the event loop, so startup can
+   * read sources meanwhile. An unresolvable ref takes the constructor's synchronous diagnosis.
+   */
+  static async create(sourceDir, ref) {
+    let commit;
+    try {
+      commit = (await gitAsync(path.resolve(sourceDir), refArgs(ref))).trim();
+    } catch {
+      commit = undefined;
+    }
+    return new GitBaseline(sourceDir, ref, commit);
+  }
+
+  /**
    * @param {string} sourceDir
    * @param {string} ref a git ref, or `merge-base:<ref>` for the commit the current branch forked from
+   * @param {string} [commit] the ref's commit, already resolved by create()
    */
-  constructor(sourceDir, ref) {
+  constructor(sourceDir, ref, commit) {
     this.sourceDir = path.resolve(sourceDir);
     this.spec = ref;
     this.ref = ref;
@@ -93,15 +119,8 @@ export class GitBaseline {
     this.changeQueue = Promise.resolve();
     this.pendingRefCheck = null;
     try {
-      if (typeof ref !== 'string' || !ref.trim() || ref.startsWith('-') || /[\0\r\n]/.test(ref))
-        throw new Error('invalid baseline ref');
-      const target = ref.startsWith('merge-base:') ? ref.slice('merge-base:'.length) : null;
-      if (target !== null && (!target || target.startsWith('-'))) throw new Error('invalid merge-base ref');
-      this.refArgs =
-        target === null
-          ? ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]
-          : ['merge-base', 'HEAD', target];
-      this.#acceptCommit(git(this.sourceDir, this.refArgs).trim());
+      this.refArgs = refArgs(ref);
+      this.#acceptCommit(commit ?? git(this.sourceDir, this.refArgs).trim());
     } catch (err) {
       this.#unavailable(err);
       // A repository without commits has no baseline yet (not a broken ref): callers skip baseline checks with a note.
