@@ -222,7 +222,7 @@ test('commits use fast quality checks before scoped pre-push validation', () => 
   assert.deepEqual(preCommitScripts(['templates/project/README.md']), ['quality', 'release:check']);
 });
 
-test('documentation CI keeps quality and required gates without scheduling runtime/security suites', () => {
+test('documentation CI retains required CodeQL configurations without scheduling runtime suites', () => {
   const read = (name) =>
     YAML.parse(fs.readFileSync(new URL(`../.github/workflows/${name}.yml`, import.meta.url), 'utf8'));
   const ci = read('ci');
@@ -232,6 +232,11 @@ test('documentation CI keeps quality and required gates without scheduling runti
   assert.equal(ci.jobs.package.if, "needs.changes.outputs.smoke == 'true'");
   assert.equal(ci.jobs.checks.steps.find((step) => step.name === 'Install locked dependencies').if, undefined);
   assert.equal(security.jobs.codeql.if, "needs.changes.outputs.codeql == 'true'");
+  const documentation = completeScope(['docs/faq.md']);
+  assert.equal(documentation.runtime, false);
+  assert.equal(documentation.quality, true);
+  assert.equal(documentation.codeql, true);
+  assert.deepEqual(JSON.parse(documentation.languages), ['actions', 'csharp', 'javascript-typescript']);
   assert.match(security.jobs['dependency-review'].if, /needs\.changes\.outputs\.dependencies == 'true'/);
   for (const workflow of [ci, security]) {
     assert.equal(workflow.jobs.gate.if, 'always()');
@@ -519,17 +524,46 @@ test('starting a validation revokes previous evidence even when the rerun fails'
   }, /suite failed/);
   assert.equal(fs.existsSync(file), false);
   assert.equal(matchingVerification(consumeVerificationReceipt(file), identity, scope), false);
-  fs.writeFileSync(file, '{incomplete receipt');
+});
+
+test('malformed validation evidence is revoked', async (t) => {
+  const { consumeVerificationReceipt } = await import('../scripts/ci.mjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-malformed-receipt-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'verification.json');
+  const malformed = fs.openSync(file, 'wx');
+  try {
+    fs.writeFileSync(malformed, '{incomplete receipt');
+  } finally {
+    fs.closeSync(malformed);
+  }
   assert.equal(consumeVerificationReceipt(file), undefined);
   assert.equal(fs.existsSync(file), false, 'malformed evidence is revoked too');
 });
 
-test('CodeQL scans only changed languages on PRs and all supported languages for full runs', () => {
-  assert.deepEqual(JSON.parse(completeScope(['lense/panel-ui.mjs']).languages), ['javascript-typescript']);
-  assert.deepEqual(JSON.parse(completeScope(['.github/workflows/ci.yml']).languages), ['actions']);
-  assert.deepEqual(JSON.parse(completeScope(['examples/project/Plugin.cs']).languages), ['csharp']);
-  assert.equal(completeScope(['site/style.css']).codeql, false);
-  assert.equal(JSON.parse(completeScope([], { full: true }).languages).length, 3);
+test('every PR retains all main CodeQL configurations regardless of changed languages or an empty diff', () => {
+  const main = completeScope([], { full: true });
+  assert.equal(main.codeql, true);
+  assert.deepEqual(JSON.parse(main.languages), ['actions', 'csharp', 'javascript-typescript']);
+  for (const files of [
+    ['lense/panel-ui.mjs'],
+    ['.github/workflows/ci.yml'],
+    ['examples/project/Plugin.cs'],
+    ['site/style.css'],
+    ['docs/faq.md', 'README.md'],
+    [],
+  ]) {
+    const scope = completeScope(files);
+    assert.equal(scope.codeql, true, JSON.stringify(files));
+    assert.equal(scope.languages, main.languages, JSON.stringify(files));
+  }
+  assert.deepEqual(suitesForScope(completeScope(['lense/panel-ui.mjs'])), ['lense']);
+  assert.deepEqual(suitesForScope(completeScope(['docs/faq.md'])), []);
+  assert.deepEqual(suitesForScope(completeScope([])), []);
+  const security = YAML.parse(fs.readFileSync(new URL('../.github/workflows/security.yml', import.meta.url), 'utf8'));
+  assert.equal(security.jobs.codeql.strategy.matrix.language, '${{ fromJSON(needs.changes.outputs.languages) }}');
+  const analysis = security.jobs.codeql.steps.find((step) => step.uses?.startsWith('github/codeql-action/analyze@'));
+  assert.equal(analysis.with.category, '/language:${{ matrix.language }}');
 });
 
 test('the pre-push hook refuses a different pushed commit and allows branch deletions without validating source', (t) => {

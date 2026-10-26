@@ -24,8 +24,9 @@
 
 - Fix native model-driven startup hangs and cancellation; honor the configured editor for source opening.
 - Guard corrective startup navigation when a tab loads before interception attaches. Preserve edited controls and
-  observed rich-text edits, keep newer documents intact, and report when a manual reload is needed. Clean popups
-  still receive a one-time GET repair; form submissions are never replayed.
+  observed rich-text edits, cancel an owned corrective load if typing begins before it commits, keep newer
+  documents intact, and report when a manual reload is needed. Clean popups still receive a one-time GET repair
+  across initial blank-page and rapid document transitions; form submissions are never replayed.
 - Preserve runtime selection and literal paths in Mirage stop commands across CMD, PowerShell and POSIX shells.
   Keep recorded ownership when project mappings change or portals are renamed or removed, so copied stop commands
   cannot select a same-source sibling runtime.
@@ -40,9 +41,13 @@
 - Keep the required `CI gate` name stable and validate the complete PR diff on every edit, including description
   edits. Check effective PR merge readiness with `npm run check:pr -- --pr <number>`; a blocked PR cannot qualify
   from historical successful jobs alone.
+- Report all CodeQL configurations present on main for every PR, including unchanged languages and documentation-only
+  changes, so a successful security workflow cannot omit analyses required for merge protection.
 - Explicit `npm run validate` and `ci:verify -- --full` always execute fresh. Starting verification revokes the previous
   receipt; a failed audit, preparation step or suite cannot leave an earlier qualifying pass. Cached pre-push reuse
   rechecks the source tree, toolchain and fixtures after dependency audits.
+- Panel regressions wait for actual intercepted-request replies, including delayed source metadata reads, while
+  retaining paused, online and local-response assertions without fixed-sleep timing assumptions.
 - Keep the original concurrent API regression and add a deterministic paused-commit test for queued writes and reads,
   preserved sibling values and stale ETag rejection. Requests share the existing bounded test deadline and identify
   the failing method/path, avoiding independent ten-second fetch timers that expire on busy hosted Windows runners.

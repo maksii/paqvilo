@@ -103,6 +103,12 @@ test(
       new URL(route.request().url()).origin === origin ? route.continue() : route.abort(),
     );
     await context.addCookies([{ name: 'fixture-session', value: 'synthetic', url: origin }]);
+    // Attach both blank tabs before navigating so this sustained-save scenario
+    // starts with each document intercepted, without an outstanding late repair.
+    const home = await context.newPage();
+    const about = await context.newPage();
+    const errors = [];
+    for (const page of [home, about]) page.on('pageerror', (error) => errors.push(error.message));
     const cfg = {
       sourceDir: fx.dir,
       origin,
@@ -121,15 +127,11 @@ test(
     runtime = await startDevSessions(context, { mode: 'selected', initial: cfg, targets: [cfg] }, { log: () => {} });
     const { session, panel } = runtime.active.get(origin);
     const pinned = session.baseline.commit;
-    const home = await context.newPage();
-    const about = await context.newPage();
-    const errors = [];
-    for (const page of [home, about]) page.on('pageerror', (error) => errors.push(error.message));
     await Promise.all([home.goto(origin), about.goto(origin + '/about-us/')]);
-    await home.locator('#draft').fill('keep my draft');
-    await about.locator('#draft').fill('another draft');
     await until(() => session.onlineState.get('/day.css') === 'same', 'comparison must use browser sign-in');
     assert.ok(signedInComparisons > 0);
+    await home.locator('#draft').fill('keep my draft');
+    await about.locator('#draft').fill('another draft');
     // Each real watcher event must finish before the next save; exercise repeated in-place swaps.
     for (let i = 1; i <= 20; i++) {
       const refreshed = once(session, 'refreshed', { signal: AbortSignal.timeout(15_000) });

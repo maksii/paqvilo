@@ -17,10 +17,13 @@ async function lateInspectionFixture(t, html, cleanup) {
     response.writeHead(200, { 'content-type': 'text/html' }).end(html),
   );
   t.after(async () => {
-    await cleanup();
-    await browser?.close();
-    server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+    try {
+      await cleanup();
+    } finally {
+      await browser?.close();
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -247,6 +250,72 @@ test('a same-address navigation supersedes a pending late-document repair', { ti
   assert.equal(await page.locator('#draft').inputValue(), 'new document draft');
 });
 
+test(
+  'editing while a corrective response is pending cancels only that repair and preserves the draft',
+  { timeout: 30000 },
+  async (t) => {
+    let detach, release, attaching;
+    const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
+      release?.();
+      if (attaching) detach = await attaching;
+      await detach?.();
+    });
+    const context = await browser.newContext({ serviceWorkers: 'block' }),
+      page = await context.newPage();
+    await page.goto(origin);
+    await page.locator('#draft').focus();
+    let requested, reported, settled, repairRequest;
+    const held = new Promise((resolve) => {
+        requested = resolve;
+      }),
+      warning = new Promise((resolve) => {
+        reported = resolve;
+      }),
+      completed = new Promise((resolve) => {
+        settled = resolve;
+      });
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    page.on('request', (request) => {
+      if (request.isNavigationRequest() && !repairRequest) repairRequest = request;
+    });
+    page.on('requestfailed', (request) => {
+      if (request === repairRequest) settled('cancelled');
+    });
+    page.on('load', () => settled('committed'));
+    attaching = interceptOrigin(
+      context,
+      origin,
+      async (route) => {
+        if (route.request().isNavigationRequest()) {
+          requested();
+          await gate;
+        }
+        await route.fulfill({
+          headers: { 'content-type': 'text/html' },
+          body: '<!doctype html><input id="draft"><script>window.localPreview=true</script>',
+        });
+      },
+      { onError: reported },
+    );
+    await held;
+    await page.keyboard.insertText('draft entered after repair started');
+    release();
+    detach = await attaching;
+    assert.equal(await completed, 'cancelled', 'the old document cannot commit a replacement after accepting an edit');
+    assert.equal(await page.locator('#draft').inputValue(), 'draft entered after repair started');
+    assert.equal((await warning).code, 'reload_required');
+    assert.equal(page.url(), origin + '/');
+    await page.goto(origin);
+    assert.equal(
+      await page.evaluate(() => window.localPreview),
+      true,
+      'explicit navigation still applies the complete overlay',
+    );
+  },
+);
+
 test('late repair distinguishes pristine native controls from edited form state', { timeout: 30000 }, async (t) => {
   let detach;
   const html =
@@ -254,6 +323,31 @@ test('late repair distinguishes pristine native controls from edited form state'
   const { browser, origin } = await lateInspectionFixture(t, html, () => detach?.());
   const edits = [
     ['pristine controls', null],
+    [
+      'missing Navigation API',
+      (page) =>
+        page.evaluate(() => Object.defineProperty(window, 'navigation', { value: undefined, configurable: true })),
+    ],
+    [
+      'overridden stop',
+      (page) =>
+        page.evaluate(() => {
+          window.appStopCalls = 0;
+          window.stop = () => {
+            window.appStopCalls++;
+          };
+        }),
+    ],
+    [
+      'bound stop override',
+      (page) =>
+        page.evaluate(() => {
+          window.appStopCalls = 0;
+          window.stop = (() => {
+            window.appStopCalls++;
+          }).bind(window);
+        }),
+    ],
     [
       'customized control',
       (page) =>
@@ -321,8 +415,156 @@ test('late repair distinguishes pristine native controls from edited form state'
         1,
         'inspection never invokes an application constructor',
       );
+    if (label.includes('stop'))
+      assert.equal(
+        await page.evaluate(() => window.appStopCalls),
+        0,
+        'inspection never invokes an application stop override',
+      );
     await detach();
     detach = null;
     await context.close();
   }
+});
+
+test('late inspection restores and cleans its current cancellation binding', { timeout: 30000 }, async (t) => {
+  for (const edited of [false, true])
+    await t.test(edited ? 'edited document' : 'pristine document', async (t) => {
+      let detach, bindingName;
+      const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', () => detach?.());
+      const context = await browser.newContext({ serviceWorkers: 'block' }),
+        page = await context.newPage();
+      await page.goto(origin);
+      const attach = context.newCDPSession.bind(context);
+      t.mock.method(context, 'newCDPSession', async (...args) => {
+        const cdp = await attach(...args),
+          send = cdp.send.bind(cdp);
+        let binding,
+          delayed = false;
+        cdp.send = async (method, params) => {
+          if (method === 'Runtime.addBinding' && !delayed) {
+            delayed = true;
+            binding = params;
+            bindingName = params.name;
+            return {};
+          }
+          const answer = await send(method, params);
+          if (
+            method === 'Runtime.evaluate' &&
+            params.expression?.includes('function installLateDraftTracker') &&
+            binding
+          ) {
+            await send('Runtime.addBinding', binding);
+            await send('Runtime.evaluate', { expression: `delete window[${JSON.stringify(binding.name)}]` });
+            if (edited) await page.locator('#draft').fill('keep early draft');
+            binding = null;
+          }
+          return answer;
+        };
+        return cdp;
+      });
+      const diagnostics = [];
+      detach = await interceptOrigin(
+        context,
+        origin,
+        (route) =>
+          route.fulfill({
+            headers: { 'content-type': 'text/html' },
+            body: '<!doctype html><input id="draft"><script>window.localPreview=true</script>',
+          }),
+        { onError: (error) => diagnostics.push(error) },
+      );
+      if (edited) {
+        assert.equal(diagnostics.length, 1);
+        assert.equal(diagnostics[0].code, 'reload_required');
+        assert.equal(await page.locator('#draft').inputValue(), 'keep early draft');
+        assert.equal(await page.evaluate(() => window.localPreview), undefined);
+      } else {
+        assert.deepEqual(diagnostics, [], 'the restored cancellation binding must admit a pristine repair');
+        await page.waitForFunction(() => window.localPreview === true);
+      }
+      await detach();
+      detach = null;
+      assert.equal(await page.evaluate((name) => typeof window[name], bindingName), 'undefined');
+    });
+});
+
+test('cancelled and superseded repairs release their navigation ownership', { timeout: 30000 }, async (t) => {
+  for (const mode of ['superseded', 'aborted'])
+    await t.test(mode, async (t) => {
+      let detach, attaching, control;
+      const held = Promise.withResolvers(),
+        repairGate = Promise.withResolvers(),
+        otherHeld = Promise.withResolvers(),
+        otherGate = Promise.withResolvers();
+      const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
+        repairGate.resolve();
+        otherGate.resolve();
+        if (attaching) detach = await attaching;
+        await detach?.();
+        await control?.detach();
+      });
+      const context = await browser.newContext({ serviceWorkers: 'block' }),
+        page = await context.newPage();
+      await page.goto(origin);
+      await page.locator('#draft').focus();
+      control = await context.newCDPSession(page);
+      const diagnostics = [];
+      let first = true;
+      attaching = interceptOrigin(
+        context,
+        origin,
+        async (route) => {
+          const pathname = new URL(route.request().url()).pathname;
+          if (route.request().isNavigationRequest() && first) {
+            first = false;
+            held.resolve();
+            await repairGate.promise;
+          } else if (pathname === '/next' || pathname === '/slow-asset') {
+            otherHeld.resolve();
+            await otherGate.promise;
+          }
+          await route.fulfill({
+            headers: { 'content-type': pathname === '/slow-asset' ? 'text/plain' : 'text/html' },
+            body: pathname === '/slow-asset' ? 'fixture asset' : '<!doctype html><input id="draft">',
+          });
+        },
+        { onError: (error) => diagnostics.push(error) },
+      );
+      await held.promise;
+      if (mode === 'superseded') {
+        const next = page.goto(origin + '/next');
+        await otherHeld.promise;
+        await page.keyboard.insertText('an explicit navigation owns this transition');
+        otherGate.resolve();
+        await next;
+        assert.equal(page.url(), origin + '/next', 'an edit cannot cancel a user-requested replacement navigation');
+      } else {
+        await control.send('Page.stopLoading');
+        await page.evaluate(() => {
+          window.fixtureAsset = fetch('/slow-asset').then((response) => response.text());
+        });
+        await otherHeld.promise;
+        await page.keyboard.insertText('draft after cancelled repair');
+        otherGate.resolve();
+        assert.equal(
+          await page.evaluate(() => window.fixtureAsset),
+          'fixture asset',
+          'editing after repair cancellation cannot stop a later request',
+        );
+        assert.equal(await page.locator('#draft').inputValue(), 'draft after cancelled repair');
+      }
+      repairGate.resolve();
+      detach = await attaching;
+      assert.deepEqual(diagnostics, [], 'an externally cancelled or superseded repair needs no draft warning');
+      await detach();
+      detach = null;
+      assert.deepEqual(
+        await page.evaluate(() =>
+          Object.getOwnPropertyNames(window).filter((name) => name.startsWith('__paqviloLateDraft_')),
+        ),
+        [],
+        'owned tracker and binding globals are removed',
+      );
+    });
 });

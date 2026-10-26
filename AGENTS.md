@@ -40,4 +40,8 @@ Runtime changes need relevant regressions. Run `npm run validate`. Do not run a 
 
 For CI fixes, reproduce the failing operation and add a regression that exercises its failure mode. Explicit full validation must execute fresh; failed validation revokes earlier receipts. Report local results separately from hosted checks, and confirm the required CI and security gates on the final pushed PR head before claiming the PR is green. Preserve every applicable lane and functional assertion.
 
+Browser document load does not establish local interception readiness. Wait for observed local application before exercising post-startup edits, and cover edits during startup separately. Use controlled protocol or event gates to reproduce ordering failures instead of increasing sleeps or retrying until a test passes.
+
 Verify the PR's effective merge state as well as job results. `gh pr checks <number> --required` and a successful historical check-run list can disagree with the PR panel when a newer workflow omits a required context. Run `npm run check:pr -- --pr <number>` and require the pushed HEAD to match, both gates to pass, no pending checks, and GitHub's merge state to be `CLEAN`. A `BLOCKED` or `UNKNOWN` PR is not a green result. Keep the required `CI gate` name stable across PR events.
+
+Every PR must report all CodeQL configurations present on main, including unchanged languages and documentation-only changes. Successful workflow jobs and zero open findings do not prove merge readiness when required analysis configurations are missing.
