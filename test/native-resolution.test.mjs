@@ -5,6 +5,7 @@ import path from 'node:path';
 import { readLocalFileSync } from '../lense/local-file.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { SITE, tempDirSync } from './fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 
 // A source folder reached through a path whose spelling differs from its canonical one: the other drive-letter
 // case on Windows (the JavaScript realpath keeps the given case, native resolution and fs.promises.realpath
@@ -34,6 +35,8 @@ test('synchronous local reads accept the canonical path the asynchronous resolve
 });
 
 test('revalidation keeps sources the startup prefetch stamped through an aliased source folder', async (t) => {
+  // The reuse assertion below concerns a file written moments ago.
+  settleFileTimes(t);
   const { alias } = aliasedFolder(t);
   const file = path.join(alias, 'header.html');
   fs.writeFileSync(file, '<p>Local header</p>');
