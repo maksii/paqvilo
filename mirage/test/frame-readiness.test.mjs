@@ -29,12 +29,18 @@ test('the blocker leaves authored closing-tag literals intact and ignores fragme
 });
 
 test('a missing ready release fails open at a bounded timeout and cleans owned requests', async (t) => {
-  const diagnostics = [],
-    readiness = createFrameReadiness({ timeoutMs: 1000, diagnostic: (item) => diagnostics.push(item) });
-  // The timeout runs from decoration; 1 s lets the image request arrive first even on a loaded runner.
-  const server = http.createServer((req, res) =>
-    readiness.handle(req, res, new URL(req.url, `http://${req.headers.host}`)),
-  );
+  // The deadline runs from decoration on a mock clock that advances only after the held image request is observed, so
+  // the request can never lose a race against the timeout on a loaded runner.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const timeoutMs = 2500, // not the 5 s default, so the configured bound is the one observed
+    diagnostics = [],
+    readiness = createFrameReadiness({ timeoutMs, diagnostic: (item) => diagnostics.push(item) });
+  let observeHeld;
+  const held = new Promise((resolve) => (observeHeld = resolve));
+  const server = http.createServer((req, res) => {
+    readiness.handle(req, res, new URL(req.url, `http://${req.headers.host}`));
+    if (req.method === 'GET' && !res.writableEnded) observeHeld();
+  });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => {
     readiness.close();
@@ -48,13 +54,18 @@ test('a missing ready release fails open at a bounded timeout and cleans owned r
     document,
     /<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready src="\/__sim\/frame-ready\/[^"]+"><script data-paqvilo-frame-ready>/,
   );
-  const response = await fetch(`http://127.0.0.1:${server.address().port}${route}`);
-  assert.equal(response.headers.get('content-type'), 'image/gif');
-  assert.ok((await response.arrayBuffer()).byteLength > 0, 'the held image is released with its GIF body');
+  const responding = fetch(`http://127.0.0.1:${server.address().port}${route}`);
+  await held;
+  t.mock.timers.tick(timeoutMs - 1);
+  assert.deepEqual(diagnostics, [], 'the image stays held until the deadline');
+  t.mock.timers.tick(1);
   assert.deepEqual(
     diagnostics.map(({ code, path }) => ({ code, path })),
     [{ code: 'FRAME_READY_TIMEOUT', path: '/synthetic' }],
   );
+  const response = await responding;
+  assert.equal(response.headers.get('content-type'), 'image/gif');
+  assert.ok((await response.arrayBuffer()).byteLength > 0, 'the held image is released with its GIF body');
   // The expired entry is forgotten: a late request for it is answered at once and adds no diagnostic.
   const late = await fetch(`http://127.0.0.1:${server.address().port}${route}`);
   assert.equal(late.status, 204);
