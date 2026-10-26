@@ -1,5 +1,5 @@
 // The enhanced data model layout (unpacked solution): powerpagecomponents/<id>/powerpagecomponent.xml
-import { test, beforeEach, afterEach } from 'node:test';
+import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -56,8 +56,10 @@ const git = (...args) =>
     windowsHide: true,
   });
 
-beforeEach(() => {
-  dir = tempDirSync('paqvilo-enh-');
+// The committed export is built once (three Git processes); every test edits its own copy, .git included.
+let template;
+before(() => {
+  dir = template = tempDirSync('paqvilo-enh-template-');
   put(HOME, component(HOME, 2, 'Home', { isroot: true, partialurl: '/' }));
   put(HOME_EN, component(HOME_EN, 2, 'Home', { isroot: false, rootwebpageid: HOME, partialurl: '/' }));
   put(NEWS, component(NEWS, 2, 'Newsfeed', { isroot: true, partialurl: 'Newsfeed', parentpageid: HOME }));
@@ -115,6 +117,11 @@ beforeEach(() => {
   git('init', '-q');
   git('add', '-A');
   git('-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '-m', 'baseline');
+});
+after(() => fs.rmSync(template, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+beforeEach(() => {
+  dir = tempDirSync('paqvilo-enh-');
+  fs.cpSync(template, dir, { recursive: true });
 });
 afterEach(() => fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
 

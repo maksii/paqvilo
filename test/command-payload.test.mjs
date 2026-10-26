@@ -6,10 +6,11 @@ import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { persistCommandPayload, pruneCommandPayloads, MAX_COMMAND_PAYLOAD_BYTES } from '../lense/command-payload.mjs';
 import { tempDirSync } from './fixture.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 function fixture(t) {
   const root = tempDirSync('paqvilo-command-payload-');
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => fs.rmSync(root, { recursive: true, force: true }));
   return { root, directory: path.join(root, '.paqvilo', 'commands') };
 }
 const payload = (name = 'invented') =>
@@ -239,7 +240,7 @@ test(
           },
         ),
     );
-    t.after(() => Promise.all(workers.map((worker) => worker.terminate())));
+    ownedFixture(t).add(() => Promise.all(workers.map((worker) => worker.terminate())));
     const ready = [],
       outcomes = [];
     for (const worker of workers) {

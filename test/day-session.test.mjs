@@ -11,7 +11,6 @@ import { GitBaseline, gitHead, gitDirectories } from '../lense/git.mjs';
 import { watchSources, logHits } from '../lense/commands/dev.mjs';
 import { createFixture, SITE, tempDirSync } from './fixture.mjs';
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const git = (cwd, ...args) =>
   execFileSync('git', args, { cwd, windowsHide: true, encoding: 'utf8', timeout: 30_000 }).trim();
 function fixture(t) {
@@ -181,21 +180,27 @@ test('Pin HEAD waits for an in-flight save, retains source pauses, and preserves
   assert.equal(s.baseline.commit, head.commit);
 });
 
-test('navigation logging groups resources and shutdown releases timers and listeners', async () => {
+test('navigation logging groups resources and shutdown releases timers and listeners', (t) => {
+  // The summary is printed once hits settle: advance the settle timer instead of sleeping past it.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const settleMs = 5;
   const s = Object.assign(new EventEmitter(), { cfg: { siteName: 'test', envName: 'loopback' } });
   const logs = [];
-  const stop = logHits(s, (line) => logs.push(line), { verbose: false, settleMs: 5 });
+  const stop = logHits(s, (line) => logs.push(line), { verbose: false, settleMs });
   const page = {};
   s.emit('hit', { page, navigation: true, url: '/', sources: [], type: 'html' });
-  for (let i = 0; i < 50; i++)
+  for (let i = 0; i < 50; i++) {
     s.emit('hit', { page, url: `/asset-${i}.js`, type: 'file', sources: [{ rel: `web-files/asset-${i}.js` }] });
-  await sleep(15);
+    t.mock.timers.tick(settleMs - 1);
+  }
+  assert.deepEqual(logs, [], 'each hit restarts the settle period');
+  t.mock.timers.tick(1);
   assert.equal(logs.length, 1);
   assert.match(logs[0], /test@loopback.*50 local files/);
   s.emit('hit', { page, type: 'file', url: '/late.js', sources: [{ rel: 'web-files/late.js' }] });
   stop();
-  await sleep(15);
-  assert.equal(logs.length, 1);
+  t.mock.timers.tick(settleMs);
+  assert.equal(logs.length, 1, 'a pending late summary is discarded at shutdown');
   assert.equal(s.listenerCount('hit') + s.listenerCount('fault'), 0);
 });
 
@@ -207,10 +212,15 @@ test("Pin HEAD waits for the watcher's browser refresh before publishing its new
     release = resolve;
   });
   const previous = s.baseline;
+  await s.refreshQueue;
+  // The pin's work starts by reading HEAD; without the refresh gate it would start within this turn of the loop.
+  const headReads = t.mock.method(s, 'refreshHead');
   const pin = s.repinBaseline();
-  await sleep(10);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(headReads.mock.callCount(), 0, 'the pin waits for the browser refresh before reading HEAD');
   assert.equal(s.baseline, previous);
   release();
   await pin;
+  assert.equal(headReads.mock.callCount(), 1);
   assert.notEqual(s.baseline, previous);
 });

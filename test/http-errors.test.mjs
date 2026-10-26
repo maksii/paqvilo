@@ -90,7 +90,38 @@ test('stalled observer attach, enable and detach cannot hold startup or shutdown
   assert.equal(detached.length, 1, 'a late connection is still released');
 });
 
-test('unfinished small JSON errors still produce an HTTP row within the body deadline', async () => {
+test('unfinished small JSON errors still produce an HTTP row within the body deadline', async (t) => {
+  const client = new EventEmitter(),
+    rows = [],
+    timeoutMs = 25;
+  client.send = async () => ({});
+  client.detach = async () => {};
+  const capture = observeHttpErrors(
+    { newCDPSession: async () => client },
+    {},
+    { origin: 'http://127.0.0.1:1234', response: (entry) => (body) => rows.push({ entry, body }), timeoutMs },
+  );
+  await capture.ready;
+  // The body deadline is a timer: advance it instead of sleeping past it.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  client.emit('Network.responseReceived', {
+    requestId: 'unfinished',
+    response: { status: 400, url: 'http://127.0.0.1:1234/_api/items', mimeType: 'application/json', headers: {} },
+  });
+  client.emit('Network.dataReceived', { requestId: 'unfinished', dataLength: 10 });
+  t.mock.timers.tick(timeoutMs - 1);
+  assert.equal(rows.length, 0, 'the row waits for the body until the deadline');
+  t.mock.timers.tick(1);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].entry.status, 400);
+  assert.equal(rows[0].body, null);
+  client.emit('Network.loadingFinished', { requestId: 'unfinished' });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(rows.length, 1, 'late completion must not duplicate an expired row');
+  await capture.close();
+});
+
+test('only target-origin error responses are observed and pending bodies are bounded', async () => {
   const client = new EventEmitter(),
     rows = [];
   client.send = async () => ({});
@@ -98,20 +129,21 @@ test('unfinished small JSON errors still produce an HTTP row within the body dea
   const capture = observeHttpErrors(
     { newCDPSession: async () => client },
     {},
-    { origin: 'http://127.0.0.1:1234', response: (entry) => (body) => rows.push({ entry, body }), timeoutMs: 25 },
+    { origin: 'http://127.0.0.1:1234', response: (entry) => (body) => rows.push({ entry, body }) },
   );
   await capture.ready;
-  client.emit('Network.responseReceived', {
-    requestId: 'unfinished',
-    response: { status: 400, url: 'http://127.0.0.1:1234/_api/items', mimeType: 'application/json', headers: {} },
-  });
-  client.emit('Network.dataReceived', { requestId: 'unfinished', dataLength: 10 });
-  await new Promise((r) => setTimeout(r, 40));
+  const respond = (requestId, status, url) =>
+    client.emit('Network.responseReceived', {
+      requestId,
+      response: { status, url, mimeType: 'application/json', headers: {} },
+    });
+  respond('other-origin', 500, 'http://127.0.0.1:4321/_api/items');
+  respond('redirect', 302, 'http://127.0.0.1:1234/_api/items');
+  respond('malformed', 500, 'not a URL');
+  assert.deepEqual(rows, [], 'other origins, non-error statuses and unparsable URLs are ignored');
+  // The 129th unfinished body is not buffered: its row is reported at once without a body.
+  for (let index = 0; index < 129; index++) respond(`pending-${index}`, 400, 'http://127.0.0.1:1234/_api/items');
   assert.equal(rows.length, 1);
-  assert.equal(rows[0].entry.status, 400);
   assert.equal(rows[0].body, null);
-  client.emit('Network.loadingFinished', { requestId: 'unfinished' });
-  await new Promise((r) => setImmediate(r));
-  assert.equal(rows.length, 1, 'late completion must not duplicate an expired row');
   await capture.close();
 });

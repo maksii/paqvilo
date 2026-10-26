@@ -87,12 +87,13 @@ async function fixture(t, options = {}) {
     options,
     runtime: { watching: true, debugPort: null },
   });
-  const discovery = await readDiscovery(server.discoveryFile);
-  assert.equal(discovery.endpoint, server.endpoint);
+  // Registered before any assertion, so a failed discovery check still closes the server and removes its state.
   t.after(async () => {
     await server.close();
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
+  const discovery = await readDiscovery(server.discoveryFile);
+  assert.equal(discovery.endpoint, server.endpoint);
   const call = (url, body, headers = {}) =>
     fetch(server.endpoint + url, {
       redirect: 'error',
@@ -378,14 +379,30 @@ test('redaction strips query values, fragments, credentials and common credentia
   }
 });
 
-test('query-heavy URL redaction stays bounded and collapses duplicate keys without retaining values', () => {
+test('query-heavy URL redaction stays bounded and collapses duplicate keys without retaining values', (t) => {
   const address =
     'https://name:private@portal.example/asset?' +
     Array.from({ length: 5000 }, (_, index) => `key${index}=private`).join('&') +
     '#private';
-  const before = performance.now();
+  // Each mutation of a URL's own searchParams reserializes the whole URL (quadratic in the parameter count).
+  // Count those mutations instead of timing them, so the bound does not depend on machine speed.
+  const attached = new WeakSet();
+  const searchParams = Object.getOwnPropertyDescriptor(URL.prototype, 'searchParams').get;
+  t.mock.getter(URL.prototype, 'searchParams', function () {
+    const params = searchParams.call(this);
+    attached.add(params);
+    return params;
+  });
+  let reserializations = 0;
+  for (const name of ['append', 'set', 'delete', 'sort']) {
+    const original = URLSearchParams.prototype[name];
+    t.mock.method(URLSearchParams.prototype, name, function (...args) {
+      if (attached.has(this)) reserializations++;
+      return original.apply(this, args);
+    });
+  }
   const result = redactUrl(address);
-  assert.ok(performance.now() - before < 1500, 'redaction must not repeatedly serialize thousands of query parameters');
+  assert.equal(reserializations, 0, 'redaction must not repeatedly serialize thousands of query parameters');
   assert.ok(result.length <= 2000);
   assert.equal(result.includes('private'), false);
   assert.deepEqual(
