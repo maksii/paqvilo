@@ -51,7 +51,14 @@ test(
     );
     await page.getByRole('button', { name: 'Apply selected preset', exact: true }).click();
     for (let index = 0; index < 2; index++) {
+      // The marked option is already shown after the first attempt, so each attempt waits for its own refusal.
+      const refused = page.waitForResponse(
+        (response) =>
+          response.request().method() === 'POST' &&
+          new URL(response.url()).pathname.endsWith('/presets/mismatch/apply'),
+      );
       await page.locator('#confirm').getByRole('button', { name: 'Apply preset', exact: true }).click();
+      assert.equal((await refused).ok(), false);
       await page.waitForFunction(() =>
         document
           .querySelector('#available-preset option[value="mismatch"]')

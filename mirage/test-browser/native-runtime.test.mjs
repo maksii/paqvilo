@@ -137,6 +137,7 @@ test('native client runtime: WebForms validators, jQuery grid events, paging and
   await page.locator('#fullname').blur();
 
   // Lookup modal: show.bs.modal, lookup grid service, row selection and footer Select.
+  const listResponses = (await page.evaluate(() => window.gridResponses)).length;
   await page.getByRole('button', { name: 'Organisation Launch lookup modal' }).click();
   const modal = page.locator('#parentcustomerid_lookupmodal section.modal-lookup');
   try {
@@ -176,7 +177,11 @@ test('native client runtime: WebForms validators, jQuery grid events, paging and
     ]),
     [ACCOUNTS[1], 'Beta', 'account'],
   );
-  assert.ok((await page.evaluate(() => window.gridResponses)).includes('1/3'));
+  assert.deepEqual(
+    (await page.evaluate(() => window.gridResponses)).slice(listResponses),
+    ['1/3'],
+    'the lookup grid service answered one page of the three accounts',
+  );
   // Native postback: success message after the page re-renders.
   await page.locator('#UpdateButton').click();
   await page.locator('#MessageLabel').filter({ hasText: 'Submission completed successfully.' }).waitFor();
