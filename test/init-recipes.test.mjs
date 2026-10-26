@@ -5,7 +5,7 @@ import path from 'node:path';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { loadCatalogue, loadConfig, resolveMirageConfig } from '../lense/config.mjs';
 import { createMirageContext } from '../mirage/api.mjs';
-import { tempDir } from './fixture.mjs';
+import { tempDir, withoutToolkitEnvironment } from './fixture.mjs';
 
 const write = async (directory, file, text) => {
   await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
@@ -113,6 +113,7 @@ test('recipe relocation and personal worktree overrides retain documented path b
 
 test('site-owned and shared pack matching keep positive/negative identity boundaries while source-free binding remains usable', async (t) => {
   const { base, directory, config } = await project(t);
+  withoutToolkitEnvironment(t);
   await write(
     directory,
     'pack/pack.mjs',

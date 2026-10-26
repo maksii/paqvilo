@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
+// Git exports GIT_DIR, GIT_INDEX_FILE and similar variables to hooks, and the pre-push hook runs these suites. Git
+// commands that tests or the toolkit run in fixture repositories would otherwise read and write the toolkit repository.
+for (const key of Object.keys(process.env)) if (/^GIT_/i.test(key)) delete process.env[key];
+
 export const HOME_ID = '00000000-0000-0000-0000-000000000001';
 export const SCRIPTS_ID = '00000000-0000-0000-0000-000000000002';
 export const ABOUT_ID = '00000000-0000-0000-0000-000000000003';
@@ -111,11 +115,28 @@ export async function tempDir(prefix) {
   return fs.promises.realpath(await fs.promises.mkdtemp(path.join(os.tmpdir(), prefix)));
 }
 
-export function createFixture() {
-  // The repository gets a parent folder of its own: Solution root discovery scans the repository's siblings,
-  // which would otherwise be every other folder in the temp folder.
-  const container = tempDirSync('paqvilo-test-');
-  const dir = path.join(container, path.basename(container));
+/**
+ * Removes the developer's or runner's PAQVILO_* variables for one test. In-process APIs such as
+ * createMirageContext read the process environment as the CLI does, so a shell's PAQVILO_REPO or
+ * PAQVILO_PORTALS would otherwise change what a test resolves.
+ */
+export function withoutToolkitEnvironment(t) {
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!key.startsWith('PAQVILO_')) continue;
+    delete process.env[key];
+    t.after(() => {
+      process.env[key] = value;
+    });
+  }
+}
+
+let template;
+/** The committed fixture repository, built once per test process: creating it takes three Git processes. */
+function templateRepository() {
+  if (template) return template;
+  const container = tempDirSync('paqvilo-test-template-');
+  process.once('exit', () => fs.rmSync(container, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }));
+  const dir = path.join(container, 'repository');
   for (const [rel, content] of Object.entries(FILES)) {
     const file = path.join(dir, rel);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -124,6 +145,16 @@ export function createFixture() {
   git(dir, 'init', '-q');
   git(dir, 'add', '-A');
   git(dir, '-c', 'user.name=test', '-c', 'user.email=test@localhost', 'commit', '-q', '-m', 'baseline');
+  return (template = dir);
+}
+
+export function createFixture() {
+  // The repository gets a parent folder of its own: Solution root discovery scans the repository's siblings,
+  // which would otherwise be every other folder in the temp folder. Each fixture is an independent copy of the
+  // committed template, including its .git directory.
+  const container = tempDirSync('paqvilo-test-');
+  const dir = path.join(container, path.basename(container));
+  fs.cpSync(templateRepository(), dir, { recursive: true });
   return {
     dir,
     file: (rel) => path.join(dir, rel),

@@ -264,9 +264,12 @@ function fixture(t) {
     return result.stdout.trim();
   };
   git('init', '-q');
-  git('config', 'user.name', 'Fixture');
-  git('config', 'user.email', 'fixture@example.test');
-  git('config', 'core.hooksPath', '.no-hooks');
+  // A runner's global identity, hooks, signing or line-ending configuration must not change the fixture's commits.
+  // One file append instead of a Git process per setting.
+  fs.appendFileSync(
+    path.join(root, '.git', 'config'),
+    '[user]\n\tname = Fixture\n\temail = fixture@example.test\n[core]\n\thooksPath = .no-hooks\n\tautocrlf = false\n[commit]\n\tgpgsign = false\n',
+  );
   const write = (name, contents) => {
     const file = path.join(root, name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -674,7 +677,12 @@ test('CI command rejects conflicting, incomplete and unknown options before runn
     ['verify', '--full', '--suite', 'lense'],
     ['verify', '--unknown'],
   ]) {
-    const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', windowsHide: true });
+    // Rejection precedes any validation; the guard only ends a regression that starts validating this checkout.
+    const result = spawnSync(process.execPath, [script, ...args], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 30_000,
+    });
     assert.equal(result.status, 1, args.join(' '));
     assert.doesNotMatch(result.stdout, /CI selection|completed without errors/);
   }

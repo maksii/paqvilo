@@ -73,9 +73,12 @@ test('Solution roots are layered in their dependency order, whatever the order t
   const work = tempDirSync('paqvilo-solution-derive-');
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   const { extension, core } = solutionRoots(work);
-  assert.deepEqual(await derivedSolutionOrder([extension, core]), [core, extension]);
-  assert.deepEqual(await derivedSolutionOrder([core, extension]), [core, extension]);
-  assert.deepEqual(await derivedSolutionOrder([extension]), [extension]);
+  // The default cache is the current directory's .paqvilo: keep this test's parse cache inside its own folder.
+  const options = { cacheFile: path.join(work, 'cache/solution-discovery.json') };
+  assert.deepEqual(await derivedSolutionOrder([extension, core], options), [core, extension]);
+  assert.deepEqual(await derivedSolutionOrder([core, extension], options), [core, extension]);
+  assert.deepEqual(await derivedSolutionOrder([extension], options), [extension]);
+  assert.ok(fs.existsSync(options.cacheFile), 'the ordering cache is written where the caller asked');
   assert.throws(
     () => mirageSettings({ solutionOrder: 'alphabetical' }, 'sites.site.mirage'),
     /solutionOrder must be derived .* or explicit/,

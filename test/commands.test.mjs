@@ -151,7 +151,8 @@ test('standalone CLI resolves the baseline in the portal repository and discover
   assert.equal(report.reports[0].source, fx.dir);
   assert.equal(
     report.reports[0].baseline.commit,
-    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.dir, encoding: 'utf8', windowsHide: true }).trim(),
+    // Without inherited GIT_* variables: a Git hook's GIT_DIR would name the toolkit repository instead.
+    execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.dir, env, encoding: 'utf8', windowsHide: true }).trim(),
   );
   assert.equal(listed.status, 0, listed.stdout + listed.stderr);
   assert.equal(JSON.parse(listed.stdout).sourceRoot, fx.dir);
@@ -756,7 +757,7 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
     discovery(unrelated.pid),
     JSON.stringify({ pid: unrelated.pid, url: 'http://127.0.0.1:9/', sourceDir }),
   );
-  const report = await stopOwnedSessions({ paths, sourceDir, deadline: 5000 });
+  const report = await stopOwnedSessions({ paths, sourceDir });
   assert.deepEqual(
     report.stopped.map((item) => [item.pid, item.graceful, item.wasReady]),
     [[starting.pid, false, false]],

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { createFixture, tempDirSync } from './fixture.mjs';
+import { createFixture, tempDirSync, withoutToolkitEnvironment } from './fixture.mjs';
 import { loadConfig } from '../lense/config.mjs';
 import { toolkitCommandHint, runToolkit as run } from './toolkit-cli.mjs';
 // Reads of one catalogue state run concurrently: each CLI process costs a quarter of a second to start.
@@ -54,6 +54,7 @@ function workspace(t) {
 }
 
 test('mirage.observed passes through the catalogue to list and doctor; a malformed block is reported', async (t) => {
+  withoutToolkitEnvironment(t);
   const { config, write } = workspace(t);
   write({ site: { observed: OBSERVED }, plain: {} });
   assert.deepEqual((await loadConfig({ config, site: 'site', env: 'dev' })).mirageConfig.observed, OBSERVED);
