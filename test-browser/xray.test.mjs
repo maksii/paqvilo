@@ -16,6 +16,9 @@ import { inspectionFixture, addNativeInspectionFixture } from '../test/source-in
 import { xrayUi } from '../lense/xray-ui.mjs';
 import { createSimulator } from '../mirage/server.mjs';
 
+// X-ray paints in animation frames; after two more frames every paint scheduled before the call has run.
+const painted = (page) =>
+  page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 const waitField = async (page, qualified, status = 'exact') => {
   await page.waitForFunction(
     ({ qualified, status }) => {
@@ -62,7 +65,10 @@ test(
     fs.writeFileSync(partialFile, previousSidebar);
     const hooks = path.join(fx.work, 'empty-hooks');
     fs.mkdirSync(hooks);
-    const git = (...args) => execFileSync('git', ['-C', fx.portal, ...args], { stdio: 'pipe' });
+    // Repository variables of a calling Git process and signing in the user's configuration stay out.
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^GIT_/i.test(key)));
+    const git = (...args) =>
+      execFileSync('git', ['-C', fx.portal, '-c', 'commit.gpgsign=false', ...args], { stdio: 'pipe', env });
     git('init', '--quiet');
     git('add', '.');
     git(
@@ -134,9 +140,11 @@ test(
     page.on('pageerror', (error) => errors.push(error.message));
     detach = await attachSession(context, session);
     const opened = [];
+    let arrived = () => {};
     panel = enablePanel(context, session, {
       open: async (...args) => {
         opened.push(args);
+        arrived();
         return null;
       },
     });
@@ -152,12 +160,12 @@ test(
       const p = await point(selector);
       await page.mouse.click(p.x, p.y);
     };
-    // Source opening is asynchronous; wait (bounded) for the next editor call instead of sleeping.
+    // Source opening is asynchronous; nextOpen(click) resolves at the editor call the click causes.
     let seenOpens = 0;
-    const nextOpen = async () => {
-      const deadline = Date.now() + 5000;
-      while (opened.length <= seenOpens && Date.now() < deadline)
-        await new Promise((resolve) => setTimeout(resolve, 20));
+    const nextOpen = async (click) => {
+      const next = new Promise((resolve) => (arrived = resolve));
+      await click();
+      await next;
       assert.equal(opened.length, seenOpens + 1, 'exactly one source open');
       seenOpens = opened.length;
       return opened.at(-1);
@@ -179,8 +187,7 @@ test(
       .locator('[data-evidence-source]')
       .filter({ hasText: 'Entity.xml' })
       .getByRole('button', { name: 'Open source', exact: true });
-    await fieldSource.click();
-    assert.match((await nextOpen())?.[1] ?? '', /Entities[\\/]fx_widget[\\/]Entity.xml$/);
+    assert.match((await nextOpen(() => fieldSource.click()))?.[1] ?? '', /Entities[\\/]fx_widget[\\/]Entity.xml$/);
     await pick('#save');
     assert.equal(await page.evaluate(() => window.actions), 0);
     await page.keyboard.press('Enter');
@@ -189,12 +196,13 @@ test(
     await pick('.updates h2');
     await xray.locator('.title').getByText('Partial', { exact: true }).waitFor();
     await xray.getByText('web-templates/Partial.webtemplate.source.html', { exact: false }).first().waitFor();
-    await xray
-      .locator('[data-evidence-source]')
-      .filter({ hasText: 'Partial.webtemplate.source.html' })
-      .getByRole('button', { name: 'Open source', exact: true })
-      .click();
-    const template = await nextOpen();
+    const template = await nextOpen(() =>
+      xray
+        .locator('[data-evidence-source]')
+        .filter({ hasText: 'Partial.webtemplate.source.html' })
+        .getByRole('button', { name: 'Open source', exact: true })
+        .click(),
+    );
     assert.match(template?.[1] ?? '', /Partial.webtemplate.source.html$/);
     assert.equal(template?.[2], 1);
     await evidence('02-template-source');
@@ -244,7 +252,7 @@ test(
     assert.equal(await xray.locator('.element-label').textContent(), 'button');
     await page.locator('#clipped').scrollIntoViewIfNeeded();
     await pick('#clipped');
-    await page.waitForTimeout(350);
+    await painted(page);
     const clip = await page.locator('#overflow').boundingBox(),
       rect = await xray.locator('.selected').boundingBox();
     assert.ok(rect.x >= clip.x && rect.x + rect.width <= clip.x + clip.width + 1);
@@ -254,8 +262,8 @@ test(
     await page.evaluate(() => {
       document.querySelector('#shadow-control').shadowRoot.querySelector('button').remove();
     });
-    await page.waitForTimeout(400);
-    assert.equal(await xray.locator('.title').count(), 0);
+    // The selection is released when X-ray notices the removed node.
+    await page.waitForFunction(() => !document.getElementById('paqvilo-xray').shadowRoot.querySelector('.title'));
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.setViewportSize({ width: 540, height: 900 });
     await xray.getByRole('button', { name: 'Details', exact: true }).click();
@@ -269,7 +277,7 @@ test(
     await page.locator('#save').click();
     assert.ok((await page.evaluate(() => window.actions)) > 0);
     await page.keyboard.press('Alt+Shift+L');
-    await page.waitForTimeout(300);
+    await scope.locator('.wrap.hidden').waitFor({ state: 'attached' });
     await page.keyboard.press('Alt+Shift+X');
     await xray.getByRole('toolbar').waitFor();
     await panel.draw(page);
@@ -323,8 +331,15 @@ test(
     await xray.getByRole('button', { name: 'Details', exact: true }).click();
     await page.evaluate(() => document.getElementById('later').close());
     await page.waitForFunction(() => document.getElementById('paqvilo-xray').parentElement.id === 'initial');
-    await page.evaluate(() => document.getElementById('popover').showPopover());
-    await page.waitForTimeout(100);
+    // X-ray lifts itself above a new top-layer surface from the popover's toggle event.
+    await page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const popover = document.getElementById('popover');
+          popover.addEventListener('toggle', resolve, { once: true });
+          popover.showPopover();
+        }),
+    );
     // A subsequently opened native popover must remain below the inspector controls.
     await xray.getByRole('button', { name: 'Details', exact: true }).click();
     await xray.getByRole('button', { name: 'Details', exact: true }).click();
@@ -352,19 +367,19 @@ test(
     await pick('#fx_shared');
     assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'unavailable');
     await pick('#scaled');
-    await page.waitForTimeout(350);
+    await painted(page);
     const clipped = await xray.locator('.selected').boundingBox(),
       container = await page.locator('.scaled').boundingBox();
     assert.ok(clipped.width < 100);
     assert.ok(clipped.x + clipped.width <= container.x + container.width);
     await xray.getByRole('combobox', { name: 'Highlight layer' }).selectOption('none');
-    await page.waitForTimeout(100);
+    await painted(page);
     assert.equal(await xray.locator('.marks .mark:not(.selected):not(.hover)').count(), 0);
     // Replacing the page body tears down the old listeners instead of intercepting a new document.
     await page.evaluate(() => {
       document.body.innerHTML = '<button id="fresh" onclick="window.freshClicked=true">New page tree</button>';
     });
-    await page.waitForTimeout(400);
+    // The removed host disposes itself from the mutation callback, before this evaluation returns.
     await page.locator('#fresh').click();
     assert.equal(await page.evaluate(() => window.freshClicked), true);
     assert.deepEqual(errors, []);
