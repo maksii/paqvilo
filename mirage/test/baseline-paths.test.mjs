@@ -6,6 +6,9 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validateMatrix, scenarioDir, captureMatrix } from '../baseline-suite.mjs';
+
+// The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
+const CLI_HANG_MS = 60_000;
 const scenario = (id) => ({ id, steps: [{ goto: '/invented/' }] }),
   matrix = (id) => ({ version: 1, scenarios: [scenario(id)] });
 const BAD_ID = /scenario id must contain safe nonempty relative directory segments/;
@@ -113,8 +116,9 @@ test('CLI label rejection precedes browser/runtime setup and any evidence write'
       '--label',
       '../outside',
     ],
-    { encoding: 'utf8', timeout: 5000 },
+    { encoding: 'utf8', timeout: CLI_HANG_MS, windowsHide: true },
   );
+  assert.equal(result.signal, null, 'the CLI exits on its own rather than being stopped by the hang bound');
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /capture label/);
   assert.deepEqual(await fs.readdir(root), ['matrix.json']);

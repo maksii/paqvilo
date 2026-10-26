@@ -8,6 +8,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeCapture } from '../baseline-capture.mjs';
 import { ensureCaptureDestination } from '../baseline-paths.mjs';
 
+// The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
+const CLI_HANG_MS = 60_000;
+
 async function fixture(run) {
   const base = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-hardlink-boundary-'));
   const outDir = path.join(base, 'out'),
@@ -97,8 +100,9 @@ async function cliFixture({ base, outDir, outside }, kind) {
       '--label',
       'native',
     ],
-    { encoding: 'utf8', timeout: 8000, windowsHide: true },
+    { encoding: 'utf8', timeout: CLI_HANG_MS, windowsHide: true },
   );
+  assert.equal(result.signal, null, 'the CLI exits on its own rather than being stopped by the hang bound');
   assert.notEqual(result.status, 0);
   if (kind === 'ordinary')
     assert.equal(await fs.readFile(marker, 'utf8'), 'started', 'ordinary output must reach bridge initialization');

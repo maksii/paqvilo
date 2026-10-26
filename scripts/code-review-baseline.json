@@ -3424,7 +3424,7 @@
       "reason": "Independent scenario assertions and invented protocol fixtures; behavior and failure evidence stay in each suite."
     },
     {
-      "key": "tests:clone:mirage/test/baseline-admin-cleanup.test.mjs|mirage/test/baseline-hook-uncertainty.test.mjs:093d0b75232bae6fbacbd2b54c3459e40e9bd3e43e71628addfaf8cbf7a882c3",
+      "key": "tests:clone:mirage/test/baseline-admin-cleanup.test.mjs|mirage/test/baseline-hook-uncertainty.test.mjs:690cd6528d767ebb4e6b33b4035824faca66432eb1b38b248b255301af156976",
       "files": ["mirage/test/baseline-admin-cleanup.test.mjs", "mirage/test/baseline-hook-uncertainty.test.mjs"],
       "lines": 13,
       "type": "clone",
