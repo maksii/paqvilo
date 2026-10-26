@@ -11,7 +11,8 @@
   state to initialize the live-bridge configuration.
 - Resolve explicitly table-bound custom-grid column declarations through the direct-observation adapter, including
   explicitly linked scroll-head clones. Load their exported table definitions on demand, including selected grids
-  beyond the bounded page scan. Unbound columns retain candidates; API requests and cell values supply no ownership.
+  beyond the bounded page scan, and keep those tables admitted when the sources reload, so Open source still finds
+  them after an edit. Unbound columns retain candidates; API requests and cell values supply no ownership.
 - Accept a verified native basic-form wrapper when its optional layout reports an all-zero form ID. Explicit
   unknown form declarations and generic wrappers remain unresolved.
 - Join native quick-view iframe declarations to a verified parent form and exported QuickForms target. Check
@@ -27,7 +28,8 @@
 - Reuse the complete startup implementation fingerprint for the first state request while retaining source-change
   invalidation and concurrent-file-removal handling. Defer unused runtime imports in scaffolded smoke tests and
   declaration-only helpers; preserve strict content, authentication, denial and external-asset acceptance checks.
-- Allow queued Windows directory-handle releases to finish during verification cleanup without changing its retry budget.
+- Remove verification's temporary copy asynchronously, so queued Windows directory-handle releases can finish, and retry
+  a profile file the exited browser still holds with a linear backoff of up to 11 s.
 - Extend regressions for crowded cards, frame shortcuts, dynamic modal/quick-view identities, nested editors and
   owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy,
   covering tab/popup deadlines, cancellation, retry, watcher/agent continuity and shared transport loss.
