@@ -444,7 +444,7 @@ async function guardFixture(t, top = '<iframe id="first" src="/form"></iframe>')
           ? button('')
           : path === '/slow-form'
             ? button('<img src="/slow.png">')
-            : `<script>window.actions=0;addEventListener('message',event=>{if(event.data==='act')actions++;});</script>${top}`,
+            : `<script>window.actions=0;window.flushed=0;addEventListener('message',event=>{if(event.data==='act')actions++;if(event.data==='flush')flushed++;});</script>${top}`,
     });
   });
   const data = { origin: 'http://127.0.0.1:11111', token: 'frame-guard-test' };
@@ -501,8 +501,8 @@ test('frame guards do not depend on an inspection report', async (t) => {
   await next.evaluate((node) => node.focus());
   await page.keyboard.press('Enter');
   await page.keyboard.press(' ');
+  // Same-origin activation increments top.actions synchronously, so each step is observable at once.
   await next.dispatchEvent('click');
-  await page.waitForTimeout(200);
   await next.evaluate((node) => node.focus());
   await page.keyboard.press('Enter');
   assert.equal(await actions(page), 0);
@@ -512,7 +512,8 @@ test('frame guards do not depend on an inspection report', async (t) => {
 });
 
 test('a frame navigated after activation is guarded before its load event', async (t) => {
-  // Without a report no geometry scan runs; Enter is pressed from the first sight of the next document until shortly before load.
+  // Without a report no geometry scan runs; Enter is pressed at the first sight of the next document and again after
+  // its DOMContentLoaded, while the held image still delays its load event.
   for (let run = 0; run < 10; run++) {
     const { page, data, release, close } = await guardFixture(t);
     await page.evaluate((data) => {
@@ -534,8 +535,9 @@ test('a frame navigated after activation is guarded before its load event', asyn
       null,
       { polling: 'raf' },
     );
-    for (const wait of [0, 100, 400]) {
-      if (wait) await page.waitForTimeout(wait);
+    for (const parsed of [false, true]) {
+      if (parsed)
+        await page.waitForFunction(() => document.getElementById('first').contentDocument.readyState === 'interactive');
       await page.evaluate(() => document.getElementById('first').contentDocument.getElementById('next').focus());
       await page.keyboard.press('Enter');
     }
@@ -570,7 +572,14 @@ test('frames added to a pre-existing shadow root of a large page stay guarded af
     },
     { data, report },
   );
-  await page.waitForTimeout(400);
+  // The first geometry scan replaces the legend's initial limits hint.
+  await page.waitForFunction(
+    () =>
+      !document
+        .getElementById('paqvilo-xray')
+        .shadowRoot.querySelector('.legend .hint')
+        .textContent.includes('background limits'),
+  );
   // Suspend geometry callbacks: guarding a loaded frame must not depend on a
   // later scan noticing its replacement Document (load is not shadow-composed).
   await page.evaluate(() => {
@@ -628,11 +637,17 @@ test('focus cannot stay in closed-shadow-root or cross-origin frames while inspe
   }, data);
   await page.evaluate((f) => (0, eval)(f).focus(), closedNext);
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(100);
+  // The same-origin frame counts an activation synchronously.
   assert.equal(await actions(page), 0, 'closed root frame');
   await page.frameLocator('#cross').locator('#next').focus();
   await page.keyboard.press('Enter');
-  await page.waitForTimeout(100);
+  // The cross-origin frame reports activation by message. Messages from one frame arrive in order, so once a later
+  // message from it has arrived, an activation by that Enter would have been counted.
+  await page
+    .frameLocator('#cross')
+    .locator('body')
+    .evaluate(() => top.postMessage('flush', '*'));
+  await page.waitForFunction(() => window.flushed === 1);
   assert.equal(await actions(page), 0);
   // Focus already inside a closed root's frame is invisible to the overlay; activation takes focus unconditionally.
   const boundary = await guardFixture(t, top);
