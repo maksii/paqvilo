@@ -19,26 +19,29 @@ async function newContext(t) {
 }
 
 test('startup separates delayed navigation, delayed usable application, failures and sign-in redirects', async (t) => {
+  // Each delayed step is held until the progress has reported the phase it waits in, so a waiting report is
+  // observed however fast or slow the machine is.
+  let reported = Promise.resolve(),
+    report = () => {},
+    hangReceived = () => {};
   const server = http.createServer((req, res) => {
     if (req.url === '/redirect') {
       res.writeHead(302, { location: '/signin' }).end();
       return;
     }
-    if (req.url === '/hang') return;
-    if (req.url === '/app-data') {
-      setTimeout(() => res.end('Invented data'), 150);
+    if (req.url === '/hang') return hangReceived();
+    if (req.url === '/app-data' || req.url === '/app-ready') {
+      reported.then(() => res.end('Invented data'));
       return;
     }
-    const delay = req.url === '/slow-origin' ? 100 : 0;
-    setTimeout(
-      () =>
-        res
-          .writeHead(200, { 'content-type': 'text/html' })
-          .end(
-            `<!doctype html><p id="notice">${req.url === '/main.aspx?error' ? 'Invented catalogue failure' : ''}</p>${req.url.startsWith('/main.aspx') ? `<script>setTimeout(() => document.documentElement.dataset.mirageAppState = '${req.url.includes('error') ? 'error' : 'ready'}', 150)</script>` : req.url === '/slow-app' ? '<script>fetch("/app-data")</script>' : ''}`,
-          ),
-      delay,
-    );
+    const page = () =>
+      res
+        .writeHead(200, { 'content-type': 'text/html' })
+        .end(
+          `<!doctype html><p id="notice">${req.url === '/main.aspx?error' ? 'Invented catalogue failure' : ''}</p>${req.url.startsWith('/main.aspx') ? `<script>fetch('/app-ready').then(() => document.documentElement.dataset.mirageAppState = '${req.url.includes('error') ? 'error' : 'ready'}')</script>` : req.url === '/slow-app' ? '<script>fetch("/app-data")</script>' : ''}`,
+        );
+    if (req.url === '/slow-origin') reported.then(page);
+    else page();
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
@@ -51,9 +54,19 @@ test('startup separates delayed navigation, delayed usable application, failures
   });
   const origin = `http://127.0.0.1:${server.address().port}`;
   const page = await context.newPage();
-  const run = async (pathname, settings) => {
+  // `held` names the phase whose first waiting report releases the held step of this run.
+  const run = async (pathname, settings, held) => {
+    reported = new Promise((resolve) => (report = resolve));
     const events = [],
-      progress = startupProgress({ structured: true, intervalMs: 20, write: (line) => events.push(JSON.parse(line)) });
+      progress = startupProgress({
+        structured: true,
+        intervalMs: 20,
+        write: (line) => {
+          const event = JSON.parse(line);
+          events.push(event);
+          if (event.phase === held && event.status === 'waiting') report();
+        },
+      });
     try {
       const loaded = await waitForStartupPage(page, origin + pathname, { progress, ...settings });
       return { events, loaded };
@@ -61,24 +74,29 @@ test('startup separates delayed navigation, delayed usable application, failures
       progress.close();
     }
   };
-  const slow = await run('/slow-origin');
+  const slow = await run('/slow-origin', {}, 'document navigation');
   assert.ok(slow.events.some((event) => event.phase === 'document navigation' && event.status === 'waiting'));
   assert.match(slow.events.at(-1).detail, /application readiness remain unverified/);
-  const data = await run('/slow-app');
+  const data = await run('/slow-app', {}, 'page resources');
   assert.ok(data.events.some((event) => event.phase === 'page resources' && event.status === 'waiting'));
-  const app = await run('/main.aspx', { modelDriven: true });
+  const app = await run('/main.aspx', { modelDriven: true }, 'application data');
   assert.ok(app.events.some((event) => event.phase === 'application data' && event.status === 'waiting'));
   assert.equal(app.events.at(-1).detail, 'application and initial view usable');
   assert.ok(
     app.events.every((event, index) => index === 0 || event.totalElapsedMs >= app.events[index - 1].totalElapsedMs),
   );
-  await assert.rejects(run('/main.aspx?error', { modelDriven: true }), /Invented catalogue failure/);
+  await assert.rejects(
+    run('/main.aspx?error', { modelDriven: true }, 'application data'),
+    /Invented catalogue failure/,
+  );
   const redirect = await run('/redirect', { modelDriven: true });
   assert.equal(new URL(page.url()).pathname, '/signin');
   assert.doesNotMatch(redirect.events.at(-1).detail, /usable/);
   await assert.rejects(run('/hang', { timeout: 100 }), /Timeout/);
   await page.goto(origin);
-  const cancelled = await run('/hang', { stopped: new Promise((resolve) => setTimeout(resolve, 30)), timeout: 1000 });
+  // Stopping while the request is in flight ends the wait without a load.
+  const inFlight = new Promise((resolve) => (hangReceived = resolve));
+  const cancelled = await run('/hang', { stopped: inFlight, timeout: 1000 });
   assert.equal(cancelled.loaded, false);
   const closingPage = await context.newPage();
   await closingPage.route('**/main.aspx', (route) =>
@@ -162,22 +180,26 @@ test('real browser replacement finishes after current data despite missing old t
   );
 });
 test('real browser detached frame orphan cannot hide current parent fetch', async (t) => {
-  let parentFinished = false;
+  // The child frame is removed only after its fetch is in flight, and the parent's data answers only after that
+  // fetch reached the server, so the orphan exists while the parent request is still current.
+  let parentFinished = false,
+    orphanReceived;
+  const orphan = new Promise((resolve) => (orphanReceived = resolve));
   const server = http.createServer((req, res) => {
-    if (req.url === '/orphan-child') return;
+    if (req.url === '/orphan-child') return orphanReceived();
     if (req.url === '/parent-essential') {
-      setTimeout(() => {
+      orphan.then(() => {
         parentFinished = true;
         res.end('data');
-      }, 200);
+      });
       return;
     }
     res
       .writeHead(200, { 'content-type': 'text/html' })
       .end(
         req.url === '/child'
-          ? '<script>fetch("/orphan-child")</script>'
-          : '<iframe src="/child"></iframe><script>fetch("/parent-essential");setTimeout(()=>document.querySelector("iframe").remove(),100)</script>',
+          ? '<script>fetch("/orphan-child");parent.postMessage("orphan-started","*")</script>'
+          : '<iframe src="/child"></iframe><script>fetch("/parent-essential");addEventListener("message",()=>document.querySelector("iframe").remove())</script>',
       );
   });
   server.listen(0, '127.0.0.1');
