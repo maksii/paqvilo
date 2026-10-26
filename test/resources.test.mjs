@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { PortalModel } from '../lense/portal-model.mjs';
@@ -14,7 +14,7 @@ import { OverlaySession } from '../lense/session.mjs';
 import { buildMapping } from '../lense/commands/map.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
-import { createFixture, SITE, HOME_ID } from './fixture.mjs';
+import { createFixture, SITE, HOME_ID, tempDirSync } from './fixture.mjs';
 import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 
 const cfgFor = (dir, site = SITE) => ({
@@ -139,7 +139,7 @@ test('resource IDs and pagination are stable, and changed scope exposes effectiv
 });
 
 test('enhanced discovery separates physical XML path from editable field and excludes inactive records', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-resource-enhanced-'));
+  const dir = tempDirSync('paqvilo-resource-enhanced-');
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const component = (id, type, content, inactive = false) => {
     const file = path.join(dir, 'powerpagecomponents', id, 'powerpagecomponent.xml');
@@ -180,7 +180,7 @@ test('resource query validation rejects ambiguous paths and unbounded result lim
   assert.deepEqual(resourceFilters({ kind: ['page-js', 'page-js'] }).kinds, ['page-js']);
 });
 
-test('resources CLI JSON is deterministic and does not create mapping files or personal settings', (t) => {
+test('resources CLI JSON is deterministic and does not create mapping files or personal settings', async (t) => {
   const fx = createFixture();
   t.after(() => fx.cleanup());
   const config = fx.file('catalogue.yml');
@@ -200,10 +200,9 @@ test('resources CLI JSON is deterministic and does not create mapping files or p
     'page-js',
     '--json',
   ];
-  const run = () => spawnSync(process.execPath, args, { env, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
-  const first = run();
-  const second = run();
-  assert.equal(first.status, 0, first.stderr);
+  // Two independent read-only runs overlap; a failing run rejects with its exit code and stderr.
+  const run = () => promisify(execFile)(process.execPath, args, { env, windowsHide: true, timeout: 30_000 });
+  const [first, second] = await Promise.all([run(), run()]);
   assert.equal(second.stdout, first.stdout);
   const report = JSON.parse(first.stdout);
   assert.equal(report.command, 'resources');
@@ -389,7 +388,7 @@ test('enabled metadata patches share local and baseline parses without confusing
 });
 
 test('enhanced optional fields expose presence and language-root rendering separately', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-fields-feedback-'));
+  const root = tempDirSync('paqvilo-fields-feedback-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const put = (id, type, content) => {
     const dir = path.join(root, 'powerpagecomponents', id);
