@@ -5,6 +5,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { createSourceInspector, inspectionSources, inspectRenderedPage } from '../lense/source-inspection.mjs';
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
 
 test('list action modal forms and Web API column candidates come from the selected exports', async (t) => {
@@ -166,6 +167,8 @@ test('repeated enrichment keeps unresolved diagnostics stable and rejects absent
 });
 
 test('inspection traces exported plugin steps applicable to page tables with type and assembly sources, without claiming live execution', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const fx = inspectionFixture();
   t.after(fx.cleanup);
   const assembly = path.join(fx.solution, 'PluginAssemblies/Synthetic/Synthetic.xml');

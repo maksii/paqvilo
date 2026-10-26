@@ -1,6 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+// File times advance in ticks (Linux coarse clocks, Windows timer ticks, FAT 2 s), so a second same-size write in the
+// tick of the first keeps every stat field. As in Git's racy-entry rule, a stat whose modification or change time is
+// within this window of now cannot prove that bytes read after it are still current.
+const RACY_WINDOW_MS = 2000;
+/** True while `stat` (number or bigint fields) is too recent to identify the file's content. */
+export const racyStat = (stat, now = Date.now()) =>
+  Number(stat.mtimeMs > stat.ctimeMs ? stat.mtimeMs : stat.ctimeMs) > now - RACY_WINDOW_MS;
+let racyStamps = 0;
+/**
+ * The stamp to keep beside content read after `stat`: `value`, or while the stat is racy a value
+ * no later stamp equals, so the entry is read again once instead of hiding a same-tick rewrite.
+ */
+export const recordedStamp = (stat, value) => (racyStat(stat) ? `racy:${++racyStamps}` : value);
+
 const stamp = (stat) =>
   [stat.dev, stat.ino, stat.size, stat.mtimeNs ?? stat.mtimeMs, stat.ctimeNs ?? stat.ctimeMs].join(':');
 
@@ -50,10 +64,11 @@ export class FileBodyCache {
     }
     this.#remove(key);
     const body = transform(fs.readFileSync(file));
-    // A write racing this read must not leave a stale cached version behind.
+    // A write racing this read, or landing in the same file-time tick after it, must not leave a stale cached version.
     const after = fs.statSync(file, { bigint: true });
     if (
       stamp(after) === version &&
+      !racyStat(after) &&
       body.length <= this.maxEntryBytes &&
       body.length <= this.maxBytes &&
       this.maxEntries > 0

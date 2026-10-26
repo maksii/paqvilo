@@ -18,6 +18,7 @@ import { SolutionFileCache } from '../lib/solution-cache.mjs';
 import { SCHEMA_PARSER_ID } from '../lib/solution-schema.mjs';
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 // Watchers and runtimes are owned closers so they stop before their directories are removed
 // (t.after hooks run in registration order).
@@ -79,6 +80,8 @@ test('portal restart consumes one integrity-checked restore and rejects a stale 
 });
 
 test('scan reuse validates file inventory, order and content identity before sharing parsed facts', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const root = await workspace(t),
     file = path.join(root, 'AppModules', 'x_app', 'AppModule.xml');
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -100,6 +103,8 @@ test('scan reuse validates file inventory, order and content identity before sha
 });
 
 test('bound contexts share immutable schema parses and invalidate changed Solution and portal sources', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const fixture = await modelDrivenFixture(t, { defer: true });
   const config = path.join(fixture.root, 'catalogue.json');
   const profile = path.join(fixture.root, 'profile.json');

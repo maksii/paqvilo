@@ -13,6 +13,7 @@ import {
   solutionContentPath,
   solutionLayerFiles,
 } from '../lib/solution-content-fingerprint.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 const xml = (name) =>
   `<ImportExportXml><Entities><Entity><Name>sample_item</Name><EntityInfo><entity Name="sample_item"><attributes><attribute><LogicalName>sample_itemid</LogicalName><Type>primarykey</Type></attribute><attribute><LogicalName>${name}</LogicalName><Type>nvarchar</Type></attribute></attributes><EntitySetName>sample_items</EntitySetName></entity></EntityInfo></Entity></Entities></ImportExportXml>`;
@@ -94,6 +95,8 @@ test('content identity uses relative filenames, logical layer identities and sel
 });
 
 test('a ZIP layer listing never inflates entries outside the requested folders and is memoised per archive stamp', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'fingerprint-zip-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const archive = path.join(root, 'invented.zip'),

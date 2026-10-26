@@ -15,6 +15,7 @@ import { buildMapping } from '../lense/commands/map.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { createFixture, SITE, HOME_ID } from './fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 
 const cfgFor = (dir, site = SITE) => ({
   siteName: 'test',
@@ -262,6 +263,8 @@ test('discovered YAML and localized descriptors can be edited without losing fie
 });
 
 test('map and resources share one thousand-record metadata parse, skip excluded fields and invalidate changed sources', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const fx = createFixture();
   t.after(fx.cleanup);
   const source = YAML.stringify(

@@ -1,4 +1,5 @@
 import { orderedMap } from './async-map.mjs';
+import { recordedStamp } from './file-cache.mjs';
 // Reads a `pac paportal download` extract from disk and builds an index of everything that can be
 // overridden locally: web files (URL -> file) and inline sources (page/form/list JS & CSS, templates).
 import fs from 'node:fs';
@@ -107,7 +108,9 @@ function readYaml(file, allowSequence = false) {
   }
 }
 
-const fileStamp = (stat) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+const statKey = (stat) => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+// Cached metadata is reused by stamp; a file changed within the racy window gets a stamp that matches nothing.
+const fileStamp = (stat) => recordedStamp(stat, statKey(stat));
 
 function walk(dir, out = [], real = null) {
   let entries;
@@ -842,7 +845,7 @@ export class PortalModel {
         return;
       }
       const after = await sourceFileStatAsync(realRoot, file);
-      if (!after || fileStamp(before) !== fileStamp(after)) return;
+      if (!after || statKey(before) !== statKey(after)) return;
       cache.set(
         file,
         enhanced

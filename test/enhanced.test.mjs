@@ -15,6 +15,7 @@ import {
 import { GitBaseline } from '../lense/git.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { SITE, tempDirSync } from './fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
@@ -588,6 +589,8 @@ test('enhanced deployment diagnostics distinguish previewable source fields from
 });
 
 test('async enhanced indexing matches sync sources and cached XML refreshes only changed components', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const synchronous = new PortalModel(dir);
   const model = await PortalModel.create(dir);
   assert.deepEqual(model.webFiles, synchronous.webFiles);

@@ -15,6 +15,7 @@ import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadat
 import { appCatalogue, appCatalogueAsync } from '../lib/model-driven/catalogue.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 test('unchanged isolated composition clones each business graph once and owned replacement saves zero bytes', async (t) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-copy-count-'));
@@ -663,7 +664,9 @@ for (const portal of [false, true])
   test(
     `${portal ? 'portal' : 'standalone'} fresh, unchanged and grown-journal startup retains bootstrap data and reports costs`,
     { timeout: 60000 },
-    async () => {
+    async (t) => {
+      // The reuse assertions below concern files written moments ago.
+      settleFileTimes(t);
       const report = await runtimePerformance({ ...PROBE, scales: [2], records: 32, portal });
       assertLatencyFindingsOnly(report);
       assert.deepEqual(

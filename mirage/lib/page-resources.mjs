@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { recordedStamp } from '../../lense/file-cache.mjs';
 import { normalizePortalPath, portalField, pageTemplateKind, effectiveSnippetRecords } from './importer.mjs';
 import { stripLiquidLiteralBlocks } from './liquid-source.mjs';
 
@@ -697,8 +698,9 @@ function tableDisplayName(files = []) {
     } catch {
       continue;
     }
+    const stamp = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
     const cached = displayNameCache.get(file);
-    let value = cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size ? cached.value : undefined;
+    let value = cached?.stamp === stamp ? cached.value : undefined;
     if (value === undefined) {
       try {
         const xml = fs.readFileSync(file, 'utf8');
@@ -711,7 +713,7 @@ function tableDisplayName(files = []) {
       } catch {
         value = null;
       }
-      displayNameCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, value });
+      displayNameCache.set(file, { stamp: recordedStamp(stat, stamp), value });
     }
     if (value) name = value;
   }

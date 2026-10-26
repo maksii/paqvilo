@@ -10,6 +10,7 @@ import { orderedMap } from './async-map.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { racyStat } from './file-cache.mjs';
 import { readLocalFile } from './local-file.mjs';
 import { diffLines } from './line-diff.mjs';
 import { urlKey, sourceText, createSourceReader, isSourceFile, indexingPass } from './portal-model.mjs';
@@ -32,6 +33,8 @@ const sourceCacheKey = (file) => {
 };
 const sameStamp = (a, b) =>
   a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+// A stamp recorded while racy (racyStat) never proves later that its bytes are current.
+const stampOf = (file, real, info) => ({ file, real, info, racy: racyStat(info) });
 const MAX_CONTEXT = 8;
 // the longest text a {{ value }} is expected to render to
 const MAX_VALUE_LENGTH = 50_000;
@@ -733,7 +736,7 @@ export class HtmlRewriter {
         if (!sameStamp(before, after) || current !== real) throw new Error('source changed during startup');
         raw.set(key, text.replace(/^\uFEFF/, ''));
         valid.set(key, true);
-        stamps.set(key, { file, real, info: after });
+        stamps.set(key, stampOf(file, real, after));
       } catch {
         // Retry only unstable/unreadable entries through the constructor's normal guarded
         // read. A save finishing during startup must not leave a permanently cached miss.
@@ -802,6 +805,7 @@ export class HtmlRewriter {
         try {
           if (
             stamp &&
+            !stamp.racy &&
             sameStamp(stamp.info, fs.statSync(stamp.file)) &&
             fs.realpathSync.native(stamp.file) === stamp.real
           )
@@ -985,7 +989,7 @@ export class HtmlRewriter {
           text = readText(src.file);
           const after = fs.statSync(src.file);
           if (text != null && sameStamp(before, after) && fs.realpathSync.native(src.file) === real) {
-            this.sourceStamps.set(key, { file: src.file, real, info: after });
+            this.sourceStamps.set(key, stampOf(src.file, real, after));
             break;
           }
         } catch {

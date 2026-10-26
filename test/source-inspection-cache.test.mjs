@@ -9,8 +9,11 @@ import { performance } from 'node:perf_hooks';
 import { createSourceInspector } from '../lense/source-inspection.mjs';
 import { elementSourceHintCacheStats } from '../lense/element-provenance.mjs';
 import { inspectionFixture } from './source-inspection-fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 
 test('X-ray report size follows page candidates, revisits reuse reports, and refresh parses only changed markup', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const fx = inspectionFixture();
   t.after(fx.cleanup);
   const config = { sourceDir: fx.portal };

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { SITE } from './fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 
 let dir;
 let sources;
@@ -758,7 +759,9 @@ test('async construction revalidates early files after other reads finish', asyn
   }
 });
 
-test('explicit source revalidation invalidates only stale bytes and follows the shared changed snapshot', () => {
+test('explicit source revalidation invalidates only stale bytes and follows the shared changed snapshot', (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   script('first.js', 'firstOriginal();', 'firstLocal();');
   script('second.js', 'secondOriginal();', 'secondLocal();');
   const changed = new Set([sources[0].file]);

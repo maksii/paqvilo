@@ -11,6 +11,7 @@ import { TOOL_OPTIONS, parseToolArgs } from '../tool-options.mjs';
 import { MIRAGE_TOOLS } from '../tool-registry.mjs';
 import { assertProjectOutput } from '../lib/project-output.mjs';
 import { withProcessSlot } from './process-slots.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
 
 const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
 // Resolves with the exit status instead of rejecting, so callers can assert failures too.
@@ -49,6 +50,8 @@ async function fixture(t) {
 }
 
 test('catalogue reports reuse their project cache and sweep selects the same project state', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const { root, config } = await fixture(t);
   const input = await resolveReportInputs({ config, site: 'synthetic' });
   assert.equal(input.cacheFile, path.join(root, '.paqvilo/simulator/synthetic/cache/solution-sources.json'));

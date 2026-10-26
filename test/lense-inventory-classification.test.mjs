@@ -8,15 +8,20 @@ import YAML from 'yaml';
 import { importModelDrivenProject } from '../lense/model-driven.mjs';
 import { writeSolutionAssetEntries } from '../mirage/lib/dataverse-solution-assets.mjs';
 import { tempDirSync } from './fixture.mjs';
+import { settledClockEnv } from '../mirage/test/support/file-times.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
-const run = (...args) =>
+const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
+const runIn = (env, ...args) =>
   spawnSync(process.execPath, [cli, ...args], {
     encoding: 'utf8',
     windowsHide: true,
     timeout: 60000,
-    env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_'))),
+    env,
   });
+const run = (...args) => runIn(environment, ...args);
+// A reuse assertion about fixtures written moments ago runs the CLI with its clock past the racy window.
+const runSettled = (...args) => runIn(settledClockEnv(environment), ...args);
 
 function fixture(t) {
   const root = tempDirSync('lense-inventory-');
@@ -61,8 +66,9 @@ test('lense list reuses the Solution cache, so a second run parses nothing that 
   const { root, catalogue } = fixture(t);
   const config = catalogue({ solutionRoots: ['solution'] });
   const inventoryOf = () =>
-    JSON.parse(run('lense', 'list', '--json', '--config', config).stdout).sites.find((item) => item.name === 'invented')
-      .inventory;
+    JSON.parse(runSettled('lense', 'list', '--json', '--config', config).stdout).sites.find(
+      (item) => item.name === 'invented',
+    ).inventory;
   const first = inventoryOf();
   assert.ok(first.cache.misses > 0, JSON.stringify(first));
   assert.ok(fs.existsSync(path.join(root, '.paqvilo', 'simulator', 'cache', 'solution-discovery.json')));
