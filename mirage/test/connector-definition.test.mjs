@@ -422,3 +422,32 @@ test('Swagger path extensions are ignored and malformed JSON pointer escapes fai
     (e) => e.code === 'OperationUnsupported',
   );
 });
+
+test('metadata-only bound connections report ConnectorNotSimulated without a provider', async () => {
+  const connections = { ref: { connector: 'shared_invented' }, shared_invented: { connector: 'shared_invented' } };
+  const runtime = createConnectorRuntime({ packs: [pack], connections });
+  const body = { id: 1, body: { name: 'ok' } };
+  await assert.rejects(
+    codeAppConnectors(
+      runtime,
+      connections,
+    )({ reference: { key: 'ref', apiId: 'shared_invented' }, operationId: 'UpdateWidget', body }),
+    (error) => error.status === 501 && error.code === 'ConnectorNotSimulated',
+  );
+  assert.throws(
+    () => runtime.invoke({ connectorId: 'shared_invented', operationId: 'UpdateWidget', parameters: body }),
+    (error) => error.status === 501 && error.code === 'ConnectorNotSimulated',
+  );
+  const invalid = createConnectorRuntime({
+    packs: [pack],
+    connections: { ref: { connector: 'shared_invented', provider: 'pack:missing' } },
+  });
+  assert.throws(
+    () => invalid.resolve({ connectorId: 'shared_invented', connectionId: 'ref' }),
+    (error) => error.code === 'ConnectorNotConfigured',
+  );
+  assert.throws(
+    () => invalid.resolve({ connectorId: 'shared_invented', connectionName: 'missing' }),
+    (error) => error.code === 'ConnectionNotBound',
+  );
+});

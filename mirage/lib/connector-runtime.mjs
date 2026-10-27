@@ -1524,7 +1524,10 @@ export function createConnectorRuntime({
       return result(
         connection.provider ??
           defaultProvider(connectorId)?.id ??
-          fail('ConnectorNotConfigured', 'No provider serves this connector.'),
+          fail(
+            definitions.has(connectorId) ? 'ConnectorNotSimulated' : 'ConnectorNotConfigured',
+            'No provider serves this connector.',
+          ),
         connection,
         connectionId,
       );
