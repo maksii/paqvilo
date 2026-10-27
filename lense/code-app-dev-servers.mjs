@@ -1,5 +1,6 @@
 // Supervise only explicitly configured local Code App development servers for one Mirage dev session.
 import { spawn } from 'node:child_process';
+import { stopCodeAppDevServer } from './code-app-dev-stop.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -71,29 +72,6 @@ function logOutput(app, stream, output) {
     if (buffer) emit(buffer);
   });
 }
-async function terminate(child) {
-  if (!child.pid) return;
-  if (process.platform === 'win32' && (child.exitCode !== null || child.signalCode !== null)) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  if (process.platform === 'win32') {
-    const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true, stdio: 'ignore' });
-    await new Promise((resolve) => {
-      killer.once('error', resolve);
-      killer.once('exit', resolve);
-    });
-  } else {
-    try {
-      process.kill(-child.pid, 'SIGTERM');
-    } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
-    }
-  }
-  if (child.exitCode === null && child.signalCode === null)
-    await Promise.race([exited, delay(5000, undefined, { ref: false })]);
-  if (child.exitCode === null && child.signalCode === null)
-    throw new Error(`Code app dev server pid ${child.pid} did not stop.`);
-}
-
 /** Start declared dev servers; reused listeners are never owned or stopped. */
 export async function startCodeAppDevServers(
   apps,
@@ -103,7 +81,7 @@ export async function startCodeAppDevServers(
   let closing = false;
   const close = async () => {
     closing = true;
-    const results = await Promise.allSettled(owned.map(terminate));
+    const results = await Promise.allSettled(owned.map(({ child, closed }) => stopCodeAppDevServer(child, closed)));
     const errors = results.filter((item) => item.status === 'rejected').map((item) => item.reason);
     if (errors.length) throw new AggregateError(errors, 'Could not stop Code App dev servers.');
   };
@@ -136,8 +114,9 @@ export async function startCodeAppDevServers(
           stdio: wrapped ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'],
         },
       );
+      const closed = new Promise((resolve) => child.once('close', resolve));
+      owned.push({ child, closed });
       if (wrapped) child.send({ command, cwd });
-      owned.push(child);
       logOutput(app, child.stdout, output);
       logOutput(app, child.stderr, output);
       let failure;

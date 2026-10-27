@@ -11,6 +11,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
+import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { startGate, clientCredentialsToken } from '../harness.mjs';
 
@@ -126,6 +127,55 @@ test('SDK gate binds an alternate loopback address while the default address is 
   });
   assert.equal(received, 'default-listener');
 });
+
+test(
+  'an exclusive Windows wildcard listener blocks SDK loopback until its owner releases it',
+  { skip: process.platform !== 'win32', timeout: 30_000 },
+  async (t) => {
+    // Node's Windows sockets use SO_REUSEADDR; use an owned .NET exclusive socket
+    // to reproduce HTTP.sys-style ownership without changing services or occupying :80.
+    const blocker = spawn(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        '$listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Any, 0); $listener.ExclusiveAddressUse = $true; $listener.Start(); try { [Console]::WriteLine($listener.LocalEndpoint.Port); [Console]::ReadLine() | Out-Null } finally { $listener.Stop() }',
+      ],
+      { windowsHide: true },
+    );
+    let launchError;
+    blocker.once('error', (error) => {
+      launchError = error;
+    });
+    const closed = new Promise((resolve) => blocker.once('close', resolve));
+    t.after(() => {
+      blocker.kill();
+      return closed;
+    });
+    const lines = createInterface({ input: blocker.stdout });
+    t.after(() => lines.close());
+    const { value } = await lines[Symbol.asyncIterator]().next();
+    assert.ifError(launchError);
+    const port = Number(value);
+    assert.ok(Number.isInteger(port) && port > 0, 'exclusive listener must report its bound port');
+    const host = '127.0.0.2';
+    // Register unexpected success for cleanup before asserting, so a regression cannot leak a server.
+    await assert.rejects(
+      async () => {
+        const unexpected = await startGate({ host, port });
+        t.after(() => unexpected.close());
+      },
+      { code: 'EACCES' },
+    );
+    blocker.stdin.end('\n');
+    assert.equal(await closed, 0);
+    const gate = await startGate({ host, port });
+    t.after(() => gate.close());
+    const response = await fetch(`${gate.origin}/${gate.tenantId}/.well-known/openid-configuration`);
+    assert.equal(response.status, 200);
+  },
+);
 
 test(
   'Microsoft.PowerPlatform.Dataverse.Client (ServiceClient) gate against the simulator',
