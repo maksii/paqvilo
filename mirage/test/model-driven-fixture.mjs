@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 /**
  * Writes the invented model-driven project and starts its simulator. `defer: true` only writes the project, for
@@ -13,7 +13,7 @@ export async function modelDrivenFixture(t, { defer = false, ...options } = {}) 
   // Persistence refuses declared files below a symbolic link (lib/transactional-files.mjs), and a runner's temporary
   // directory may be one (a symlinked TMPDIR, macOS /var): start from its real path.
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-app-')));
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const sourceDir = path.join(root, 'portal'),
     solutionDir = path.join(root, 'solution');
   const files = {

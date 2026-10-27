@@ -1,12 +1,12 @@
 // SDK verification gate: Microsoft.PowerPlatform.Dataverse.Client 1.2.27 (ServiceClient) against the simulated
-// Dataverse API. ServiceClient drops the port from the URL, so the simulator listens on loopback :80.
+// Dataverse API. ServiceClient drops the port from the URL, so the simulator listens on a per-run loopback address at :80.
 // Two passes over one simulator: "soap" (UseWebApi=false, CRUD and messages on /XRMServices/2011/Organization.svc/web)
 // and "webapi" (UseWebApi=true, CRUD on the Web API, RetrieveEntityRequest still on SOAP).
 // Runs in the full Windows verification gate (`node scripts/ci.mjs sdk`), or alone with
 // `node --test --test-timeout=600000 mirage/test-sdk/serviceclient/gate.test.mjs`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -54,14 +54,20 @@ const PASSES = [
 const dotnet = spawnSync('dotnet', ['--version'], { encoding: 'utf8' });
 const dotnetSkip = dotnet.status === 0 ? false : 'dotnet is not installed: ServiceClient gate skipped';
 
-/** Resolves { free: true } when loopback port 80 can be bound, otherwise the bind error code. */
-function probePort80() {
-  return new Promise((resolve) => {
-    const probe = net.createServer();
-    probe.once('error', (error) => resolve({ free: false, reason: error.code ?? error.message }));
-    probe.listen(80, () => probe.close(() => resolve({ free: true })));
-  });
-}
+// A random loopback address separates concurrent worktrees while preserving the SDK's default HTTP port.
+const gateHost = () => {
+  return `127.${randomInt(16, 240)}.${randomInt(1, 255)}.${randomInt(1, 255)}`;
+};
+
+test('isolated gate binds beside a listener on the default loopback address', async (t) => {
+  const occupied = net.createServer();
+  await new Promise((resolve, reject) => occupied.once('error', reject).listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve, reject) => occupied.close((error) => (error ? reject(error) : resolve()))));
+  const gate = await startGate({ host: '127.0.0.2', port: occupied.address().port });
+  t.after(() => gate.close());
+  assert.equal(new URL(gate.origin).hostname, '127.0.0.2');
+  assert.equal(typeof (await clientCredentialsToken(gate)), 'string');
+});
 
 /** Runs the built gate executable with the given env; async spawn, since spawnSync would starve the in-process simulator. */
 function runGate(env) {
@@ -88,14 +94,23 @@ test(
   'Microsoft.PowerPlatform.Dataverse.Client (ServiceClient) gate against the simulator',
   { timeout: 600_000, skip: dotnetSkip },
   async (t) => {
-    const port = await probePort80();
-    if (!port.free) {
-      // The CI SDK gate (scripts/ci.mjs sdk) requires this client, so an occupied port fails there instead of skipping.
+    const host = gateHost();
+    let gate;
+    try {
+      gate = await startGate({ host, port: 80 });
+    } catch (error) {
+      if (!['EADDRINUSE', 'EACCES'].includes(error.code)) throw error;
+      // The required CI gate fails instead of skipping if this actual bind is unavailable.
       if (process.env.PAQ_TEST_REQUIRE_SDK_GATES === '1')
-        throw new Error(`port 80 is unavailable (${port.reason}); the required ServiceClient gate cannot run`);
-      t.skip(`port 80 is unavailable (${port.reason}): ServiceClient drops the port, so the simulator must bind :80`);
+        throw new Error(
+          `port 80 on ${host} is unavailable (${error.code}); the required ServiceClient gate cannot run`,
+          { cause: error },
+        );
+      t.skip(`port 80 on ${host} is unavailable (${error.code}): ServiceClient drops the port`);
       return;
     }
+    t.after(() => gate.close());
+    assert.equal(gate.origin, `http://${host}`, `simulator origin must carry no port, got ${gate.origin}`);
 
     const buildStarted = Date.now();
     const build = spawnSync('dotnet', ['build', project, '-c', 'Release', '-nologo'], {
@@ -107,9 +122,6 @@ test(
     assert.ok(fs.existsSync(exe), `built executable not found: ${exe}`);
     t.diagnostic(`dotnet build: ${buildMs} ms`);
 
-    const gate = await startGate({ port: 80 });
-    t.after(() => gate.close());
-    assert.equal(gate.origin, 'http://127.0.0.1', `simulator origin must carry no port, got ${gate.origin}`);
     const token = await clientCredentialsToken(gate);
 
     // CallerId target: an extra systemuser beside the application user the simulator already holds, so impersonation resolves a real principal.
@@ -127,7 +139,10 @@ test(
     for (const pass of PASSES) {
       const before = gate.requests().length;
       const runStarted = Date.now();
+      const noProxy = [process.env.no_proxy ?? process.env.NO_PROXY, host].filter(Boolean).join(',');
       const run = await runGate({
+        no_proxy: noProxy,
+        NO_PROXY: noProxy,
         SIM_ORG: gate.origin,
         SIM_ORG_ID: gate.organizationId,
         SIM_TOKEN: token,
