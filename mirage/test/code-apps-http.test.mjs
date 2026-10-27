@@ -141,6 +141,80 @@ test('context answers 401 without a staff persona or with an unavailable one', a
   );
 });
 
+test('per-load session IDs and app settings refresh without exposing settings in public inventory', async (t) => {
+  const app = { name: 'invented', appSettings: { theme: 'first' }, entitySets: { Items: 'x_items' } };
+  const { request } = await fixture(t, { apps: [app] });
+  const session = '11111111-1111-4111-8111-111111111111';
+  const context = await json(
+    await request('/_apps/code/invented/context', {
+      headers: { 'x-paqvilo-code-app-session': session },
+    }),
+    200,
+  );
+  assert.equal(context.host.sessionId, session);
+  assert.deepEqual(context.app.appSettings, { theme: 'first' });
+  app.appSettings.theme = 'changed-private-value';
+  const updated = await json(
+    await request('/_apps/code/invented/context', {
+      headers: { 'x-paqvilo-code-app-session': 'invalid' },
+    }),
+    200,
+  );
+  assert.notEqual(updated.host.sessionId, 'invalid');
+  assert.equal(updated.app.appSettings.theme, 'changed-private-value');
+  const inventory = await json(await request('/_apps/code/_api/apps', { staff: null }), 200);
+  assert.deepEqual(inventory.apps[0].appSettingNames, ['theme']);
+  assert.deepEqual(inventory.apps[0].entitySets, { Items: 'x_items' });
+  assert.doesNotMatch(JSON.stringify(inventory), /changed-private-value/);
+});
+
+test('workbench serves bounded assets, sanitized inventory and redirect-free reachability probes', async (t) => {
+  let probes = 0;
+  const target = http.createServer((req, res) => {
+    assert.equal(req.method, 'HEAD');
+    probes++;
+    res.writeHead(302, { location: 'https://outside.example.test/' });
+    res.end();
+  });
+  await new Promise((resolve) => target.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => target.close(resolve)));
+  const origin = `http://127.0.0.1:${target.address().port}`;
+  const { request } = await fixture(t, {
+    apps: [
+      {
+        name: 'invented',
+        localAppUrl: origin,
+        raw: { secret: 'private-value' },
+        devServer: { env: { SECRET: 'private-value' } },
+        connectionReferences: [
+          { key: 'ref', apiId: 'shared_invented', dataSources: ['Invented'], connectionId: 'private-value' },
+        ],
+      },
+    ],
+  });
+  assert.equal((await request('/_apps/code')).headers.get('location'), '/_apps/code/');
+  const shell = await request('/_apps/code/', { staff: null });
+  assert.equal(shell.status, 200);
+  assert.ok(shell.headers.get('content-security-policy').endsWith('frame-src ' + origin));
+  assert.match(await shell.text(), /_assets\/workbench.js/);
+  for (const asset of ['workbench.js', 'workbench.css']) {
+    const response = await request('/_apps/code/_assets/' + asset);
+    assert.equal(response.status, 200);
+    assert.ok((await response.text()).length > 0);
+    const head = await request('/_apps/code/_assets/' + asset, { method: 'HEAD' });
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), '');
+  }
+  assert.equal((await request('/_apps/code/_assets/__proto__')).status, 404);
+  assert.equal((await request('/_apps/code/_api/apps', { method: 'POST' })).status, 405);
+  const inventory = await json(await request('/_apps/code/_api/apps', { staff: null }), 200);
+  assert.equal(probes, 0, 'plain inventory never contacts app servers');
+  assert.doesNotMatch(JSON.stringify(inventory), /private-value/);
+  const probed = await json(await request('/_apps/code/_api/apps?probe=1'), 200);
+  assert.deepEqual(probed.apps[0].server, { state: 'reachable', status: 302 });
+  assert.equal(probes, 1, 'a redirect response is reported without following it');
+});
+
 test('token audience is the local Dataverse origin only, with CSRF, and carries expiry', async (t) => {
   const { request, calls } = await fixture(t);
   assert.equal(
@@ -381,6 +455,8 @@ test('status reports simulation boundaries and actionable config diagnostics wit
         name: 'broken',
         localAppUrl: null,
         raw: { secret: 'must-not-be-served' },
+        appSettings: { hidden: 'must-not-be-served' },
+        devServer: { env: { PRIVATE: 'must-not-be-served' } },
         diagnostics: [
           { code: 'CODEAPP_CONFIG_INVALID', message: 'Invalid <script> reference.', source: 'private-file' },
         ],
@@ -396,10 +472,22 @@ test('status reports simulation boundaries and actionable config diagnostics wit
     level: 'contract',
     nativeSdk: false,
     localAppUrl: null,
+    entitySets: {},
+    appSettingNames: ['hidden'],
+    features: {
+      context: 'local staff identity and app settings',
+      data: 'organization CRUD, queries, metadata, files and images',
+      actions: 'registered unbound actions and functions, plus WhoAmI',
+      connectors: 'explicit local providers',
+      nativeHost: false,
+      onlineConnections: false,
+      maxRequestBytes: 16 * 1024 * 1024,
+    },
     diagnostics: [{ code: 'CODEAPP_CONFIG_INVALID', message: 'Invalid <script> reference.' }],
     connections: [{ key: 'invented', apiId: 'shared_invented', dataSources: ['Invented'] }],
   });
   assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.doesNotMatch(JSON.stringify(status), /must-not-be-served/);
   assert.equal((await request('/_apps/code/broken/status', { method: 'POST' })).status, 405);
   const loader = await (await request('/_apps/code/broken/', { staff: null })).text();
   assert.match(loader, /Mirage simulation/);

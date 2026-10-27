@@ -8,7 +8,7 @@ import { registerSettingParser } from './config-keys.mjs';
  * The file is owned by the Power Apps CLI. Mirage reads it and never writes it back.
  */
 
-const CODE_APP_KEYS = ['name', 'dir', 'localAppUrl', 'config'];
+const CODE_APP_KEYS = ['name', 'dir', 'localAppUrl', 'config', 'devServer'];
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/i;
 
 /** Validate the project `codeApps` array: `[{ name, dir, localAppUrl?, config? = 'power.config.json' }]`. */
@@ -43,6 +43,39 @@ export function codeAppSettings(value, label = 'codeApps') {
       dir: relative('dir', entry.dir),
       config: entry.config == null ? 'power.config.json' : relative('config', entry.config),
     };
+    if (entry.devServer != null) {
+      const dev = entry.devServer;
+      if (!dev || typeof dev !== 'object' || Array.isArray(dev)) throw new Error(`${at}.devServer must be an object`);
+      for (const key of Object.keys(dev))
+        if (!['command', 'cwd', 'env', 'timeoutMs'].includes(key))
+          throw new Error(`${at}.devServer.${key} is not a supported setting`);
+      if (
+        !Array.isArray(dev.command) ||
+        !dev.command.length ||
+        typeof dev.command[0] !== 'string' ||
+        !dev.command[0].trim() ||
+        dev.command.some((value) => typeof value !== 'string' || value.includes('\0'))
+      )
+        throw new Error(`${at}.devServer.command must be a nonempty array of nonempty strings`);
+      app.devServer = { command: [...dev.command] };
+      if (dev.cwd != null) app.devServer.cwd = relative('devServer.cwd', dev.cwd);
+      if (dev.env != null) {
+        if (
+          !isObject(dev.env) ||
+          Object.entries(dev.env).some(
+            ([key, value]) =>
+              !key || key.includes('=') || key.includes('\0') || typeof value !== 'string' || value.includes('\0'),
+          )
+        )
+          throw new Error(`${at}.devServer.env must map environment names to strings`);
+        app.devServer.env = { ...dev.env };
+      }
+      if (dev.timeoutMs != null) {
+        if (!Number.isInteger(dev.timeoutMs) || dev.timeoutMs < 1000 || dev.timeoutMs > 300000)
+          throw new Error(`${at}.devServer.timeoutMs must be an integer from 1000 to 300000`);
+        app.devServer.timeoutMs = dev.timeoutMs;
+      }
+    }
     if (entry.localAppUrl != null) {
       if (!isLoopbackUrl(entry.localAppUrl)) throw new Error(`${at}.localAppUrl must be a loopback http(s) URL`);
       app.localAppUrl = entry.localAppUrl;
@@ -69,6 +102,8 @@ export function readCodeAppConfig(dir, file = 'power.config.json', { bindings = 
     localAppUrl: null,
     connectionReferences: [],
     databaseReferences: {},
+    entitySets: {},
+    appSettings: {},
     raw: null,
     diagnostics: [],
   };
@@ -105,6 +140,10 @@ export function readCodeAppConfig(dir, file = 'power.config.json', { bindings = 
       `${file} localAppUrl is not a loopback http(s) URL; Mirage will not frame it.`,
     );
     result.localAppUrl = null;
+  }
+  if (raw.appSettings != null) {
+    if (isObject(raw.appSettings)) result.appSettings = raw.appSettings;
+    else diagnostic('CODEAPP_CONFIG_INVALID', `${file} appSettings must be an object.`);
   }
   const invalid = (field, expected) => diagnostic('CODEAPP_CONFIG_INVALID', `${file} ${field} must be ${expected}.`);
   if (raw.connectionReferences != null) {
@@ -177,6 +216,23 @@ export function readCodeAppConfig(dir, file = 'power.config.json', { bindings = 
       }
     }
   }
+  const mappings = new Map(),
+    ambiguous = new Set();
+  for (const database of Object.values(result.databaseReferences)) {
+    if (!isObject(database) || !isObject(database.dataSources)) continue;
+    for (const [alias, table] of Object.entries(database.dataSources)) {
+      if (!isObject(table) || typeof table.entitySetName !== 'string' || !table.entitySetName.trim()) continue;
+      for (const name of [alias, table.logicalName].filter((value) => typeof value === 'string' && value.trim())) {
+        if (mappings.has(name) && mappings.get(name) !== table.entitySetName) ambiguous.add(name);
+        else mappings.set(name, table.entitySetName);
+      }
+    }
+  }
+  for (const name of ambiguous) {
+    mappings.delete(name);
+    diagnostic('CODEAPP_DATASOURCE_AMBIGUOUS', `Data source '${name}' maps to multiple entity sets.`);
+  }
+  result.entitySets = Object.fromEntries(mappings);
   return result;
 }
 
@@ -192,7 +248,13 @@ export function loadCodeApps(entries, projectRoot, { bindings = {} } = {}) {
         message: 'No loopback localAppUrl is configured for this code app.',
         source: config.source,
       });
-    return { ...config, name: entry.name, dir, localAppUrl };
+    return {
+      ...config,
+      name: entry.name,
+      dir,
+      localAppUrl,
+      ...(entry.devServer ? { devServer: entry.devServer } : {}),
+    };
   });
 }
 

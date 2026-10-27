@@ -379,6 +379,15 @@ export const REQUIRED_RELEASE_FILES = [
   'examples/project/pack/pack.mjs',
   'mirage/lib/code-apps-sdk.js',
   'mirage/lib/code-apps-sdk.d.ts',
+  'mirage/lib/code-apps-client.js',
+  'mirage/lib/code-apps-client.d.ts',
+  'mirage/lib/code-apps-vite.mjs',
+  'mirage/lib/code-apps-vite.d.ts',
+  'mirage/lib/code-apps-workbench.mjs',
+  'mirage/lib/code-apps-workbench.js',
+  'mirage/lib/code-apps-workbench.css',
+  'lense/code-app-dev-servers.mjs',
+  'lense/code-app-dev-wrapper.mjs',
   ...CODE_APP_EXAMPLE_FILES,
   'examples/project/AGENTS.md',
   'examples/project/test/portal.test.mjs',
@@ -451,6 +460,8 @@ export function validateReleaseFiles(files) {
       !designDocuments.has(name) &&
       name !== 'mirage/lib/plugin-clr-host.cs' &&
       name !== 'mirage/lib/code-apps-sdk.d.ts' &&
+      name !== 'mirage/lib/code-apps-client.d.ts' &&
+      name !== 'mirage/lib/code-apps-vite.d.ts' &&
       !demoSources.test(name.replaceAll('***', 'redacted-id')) &&
       !demoPluginSources.test(name) &&
       !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) &&

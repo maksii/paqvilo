@@ -20,34 +20,46 @@ export function createCodeAppSdkExecutor({ client = dataClient, entitySets = {} 
       return failure(error);
     }
   };
+  const invoke = (method, ...args) => {
+    if (typeof client?.[method] !== 'function') throw unsupported(`The local client does not implement ${method}.`);
+    return client[method](...args);
+  };
   const noPartition = (partitionId) => {
     if (partitionId != null) throw unsupported('Partitioned operations are not simulated.');
   };
-  const notSupported = async () => failure(unsupported('This SDK operation is not simulated.'));
   return {
-    createRecordAsync: (table, data) => result(() => client.create(entitySet(table), data)),
+    createRecordAsync: (table, data) => result(() => invoke('create', entitySet(table), data)),
     updateRecordAsync: (table, id, data, partitionId) =>
       result(() => {
         noPartition(partitionId);
-        return client.update(entitySet(table), id, data);
+        return invoke('update', entitySet(table), id, data);
       }),
     deleteRecordAsync: (table, id, partitionId) =>
       result(() => {
         noPartition(partitionId);
-        return client.delete(entitySet(table), id);
+        return invoke('delete', entitySet(table), id);
       }),
     retrieveRecordAsync: (table, id, options) =>
       result(() => {
         noPartition(options?.partitionId);
-        return client.get(entitySet(table), id, options);
+        return invoke('get', entitySet(table), id, options);
       }),
     retrieveMultipleRecordsAsync: (table, options) =>
       result(() => {
         noPartition(options?.partitionId);
-        return client.getAll(entitySet(table), options);
+        return invoke('getAll', entitySet(table), options);
       }),
     executeAsync: (operation) =>
       result(async () => {
+        const metadata = operation?.dataverseRequest;
+        if (metadata?.action === 'getEntityMetadata' && !operation?.connectorOperation)
+          return invoke('getEntityMetadata', metadata.parameters?.tableName, metadata.parameters?.options);
+        if (
+          metadata?.action === 'customapi' &&
+          !operation?.connectorOperation &&
+          typeof metadata.parameters?.operationName === 'string'
+        )
+          return invoke('executeDataverseAction', metadata.parameters.operationName, metadata.parameters.body);
         const connector = operation?.connectorOperation;
         if (
           operation?.dataverseRequest ||
@@ -56,7 +68,7 @@ export function createCodeAppSdkExecutor({ client = dataClient, entitySets = {} 
           typeof connector.operationName !== 'string'
         )
           throw unsupported('This SDK data operation is not simulated.');
-        const answer = await client.execute(connector.tableName, connector.operationName, connector.parameters);
+        const answer = await invoke('execute', connector.tableName, connector.operationName, connector.parameters);
         // The local connector endpoint returns a provider HTTP envelope, not the connector response itself.
         const response = answer.data;
         if (!response || !Number.isInteger(response.statusCode))
@@ -68,9 +80,22 @@ export function createCodeAppSdkExecutor({ client = dataClient, entitySets = {} 
           });
         return { data: response.body };
       }),
-    uploadFileToRecord: notSupported,
-    downloadFileFromRecord: notSupported,
-    downloadImageFromRecord: notSupported,
-    deleteFileOrImageFromRecord: notSupported,
+    uploadFileToRecord: (table, id, column, fileName, data, partitionId) =>
+      result(() => {
+        noPartition(partitionId);
+        return invoke('uploadFile', entitySet(table), id, column, fileName, data);
+      }),
+    downloadFileFromRecord: (table, id, column, partitionId) =>
+      result(() => {
+        noPartition(partitionId);
+        return invoke('downloadFile', entitySet(table), id, column);
+      }),
+    downloadImageFromRecord: (table, id, column, fullSize) =>
+      result(() => invoke('downloadFile', entitySet(table), id, column, fullSize)),
+    deleteFileOrImageFromRecord: (table, id, column, partitionId) =>
+      result(() => {
+        noPartition(partitionId);
+        return invoke('deleteFile', entitySet(table), id, column);
+      }),
   };
 }

@@ -14,7 +14,7 @@ import { addonHandlers } from './dataverse-addon-common.mjs';
 import { sourceOrganizationExtensions } from './source-organization-extensions.mjs';
 import { createOrganizationRuntime } from './dataverse-organization.mjs';
 import { createOrganizationBackend } from './organization-backend.mjs';
-import { startDataverseApi } from './dataverse-api.mjs';
+import { startDataverseApi, metadataRead, operationCall, unboundFunction } from './dataverse-api.mjs';
 import { createManagedIdentityEndpoints } from './dataverse-managed-identity.mjs';
 import { createConnectorRuntime } from './connector-runtime.mjs';
 import { createHostFlowRuns } from './flow-runs.mjs';
@@ -708,8 +708,11 @@ export function codeAppDataverse({ organization, change, origin }) {
     const route = parseDataverseRoute(url.pathname);
     if (!route) throw new DataError('Resource not found.', 404, 'NotFound');
     const user = organization.principals.byId(principal.principalId);
-    const call = () =>
-      organization.records.handle({
+    const principalContext = organizationPrincipalContext(organization.store, user);
+    const call = async () => {
+      if (route.kind === 'metadataEntity' && method === 'GET')
+        return metadataRead({ url, origin: url.origin }, organization.metadata, route);
+      const context = {
         method,
         url,
         origin: url.origin,
@@ -717,10 +720,49 @@ export function codeAppDataverse({ organization, change, origin }) {
         route,
         prefer: parsePrefer(headers.prefer),
         headers,
-        body,
-        ...organizationPrincipalContext(organization.store, user),
+        body: Buffer.isBuffer(body) ? undefined : body,
+        bodyBuffer: Buffer.isBuffer(body) ? body : Buffer.alloc(0),
+        ...principalContext,
         requestId: currentRequest()?.correlationId ?? organization.ids.uuid(),
-      });
+      };
+      // The SDK customapi request does not carry a verb. Use the registry only for an unambiguous,
+      // unbound function. Bound operations need source binding metadata and target identification.
+      const candidate = route.candidate?.name ?? (route.kind === 'function' ? route.name : null);
+      const noParameters =
+        body == null || (typeof body === 'object' && !Array.isArray(body) && !Object.keys(body).length);
+      if (
+        method === 'POST' &&
+        headers['x-sim-code-app-operation'] === 'customapi' &&
+        candidate &&
+        (noParameters || (body && typeof body === 'object' && !Array.isArray(body) && !Buffer.isBuffer(body)))
+      ) {
+        if (candidate === 'WhoAmI' && noParameters)
+          return unboundFunction(
+            { organizationId: organization.organizationId },
+            { method: 'GET', origin: url.origin, url },
+            { kind: 'function', name: candidate, version: route.version ?? 'v9.2' },
+            context,
+          );
+        const fn = organization.registry.find({ name: candidate, kind: 'function', binding: 'unbound' });
+        const action = organization.registry.find({ name: candidate, kind: 'action', binding: 'unbound' });
+        if (fn && !action) {
+          const functionRoute = { kind: 'function', name: candidate, params: '', version: route.version ?? 'v9.2' };
+          return operationCall(
+            { operations: organization.registry, store: organization.store, api: organization.api },
+            functionRoute,
+            { ...context, method: 'GET', route: functionRoute, functionParameters: body ?? {}, req: { headers } },
+          );
+        }
+      }
+      const extension = organization.routes.find((entry) => !entry.anonymous && entry.match(url.pathname, method));
+      if (extension) return extension.handler({ ...context, req: { headers } });
+      const operated = await operationCall(
+        { operations: organization.registry, store: organization.store, api: organization.api },
+        route,
+        { ...context, req: { headers } },
+      );
+      return operated ?? organization.records.handle(context);
+    };
     return method === 'GET'
       ? organization.read(call)
       : change(() => organization.runOwned(() => organization.runAtomic(call)));

@@ -600,6 +600,8 @@ async function develop(cfg, args, setup) {
   browser?.once('disconnected', stop);
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
+  args.codeAppSignal?.addEventListener('abort', stop, { once: true });
+  if (args.codeAppSignal?.aborted) stop();
   let runtime;
   try {
     if (debugPort)
@@ -639,11 +641,12 @@ async function develop(cfg, args, setup) {
     browser?.off('disconnected', stop);
     process.off('SIGINT', stop);
     process.off('SIGTERM', stop);
+    args.codeAppSignal?.removeEventListener('abort', stop);
     try {
       await runtime?.close();
     } finally {
       await close().catch(() => {});
     }
   }
-  return runtime?.failure ? 1 : 0;
+  return runtime?.failure || args.codeAppSignal?.aborted ? 1 : 0;
 }

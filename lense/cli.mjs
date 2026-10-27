@@ -392,6 +392,7 @@ try {
       'portals',
       'project',
       'portal',
+      'path',
       'port',
       'state',
       'preset',
@@ -414,6 +415,16 @@ try {
   for (const option of Object.keys(values))
     if (!allowed[command].includes(option))
       throw Object.assign(new Error(`--${option} is not supported by ${command}`), { code: 'unsupported_option' });
+  if (command === 'mirage' && values.path !== undefined) {
+    if (positionals[1] !== 'dev') throw new Error('--path is supported only by mirage dev');
+    if (
+      !values.path.startsWith('/') ||
+      values.path.startsWith('//') ||
+      values.path.includes('\\') ||
+      [...values.path].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+    )
+      throw new Error('--path must be an origin-relative path');
+  }
   if (values.pick && values.json)
     throw new Error('--pick cannot be combined with --json; provide --site and --env explicitly');
   if (values.headless && values.headed) throw new Error('--headless and --headed cannot be used together');

@@ -2,7 +2,7 @@
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-let target = new URL(process.env.MIRAGE_URL || 'http://127.0.0.1:8787');
+let target = new URL(process.env.PAQVILO_MIRAGE_URL || process.env.MIRAGE_URL || 'http://127.0.0.1:8787');
 if (target.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(target.hostname))
   throw new Error('MIRAGE_URL must be loopback HTTP');
 if (process.send)

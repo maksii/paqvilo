@@ -252,3 +252,53 @@ test('invalid JSON diagnostics do not expose source contents', async (t) => {
   assert.equal(config.diagnostics[0].code, 'CODEAPP_CONFIG_INVALID');
   assert.doesNotMatch(JSON.stringify(config.diagnostics), /invented-sensitive-marker/);
 });
+
+test('dev server settings validate explicit argv, cwd, environment and bounded timeout', () => {
+  const entry = {
+    name: 'local',
+    dir: 'apps/one',
+    localAppUrl: 'http://localhost:3000',
+    devServer: { command: ['node', 'server.js', ''], cwd: 'web', env: { MODE: 'local' }, timeoutMs: 5000 },
+  };
+  assert.deepEqual(codeAppSettings([entry])[0].devServer, entry.devServer);
+  for (const devServer of [
+    { command: [] },
+    { command: [''] },
+    { command: ['node'], cwd: '../other' },
+    { command: ['node'], env: { MODE: 1 } },
+    { command: ['node'], timeoutMs: 999 },
+    { command: ['node'], timeoutMs: 300001 },
+  ])
+    assert.throws(() => codeAppSettings([{ name: 'local', dir: 'a', devServer }]));
+});
+
+test('config reads app settings and derives unambiguous entity sets from data sources', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(
+    path.join(root, 'power.config.json'),
+    JSON.stringify({
+      appSettings: { showHeader: true },
+      databaseReferences: {
+        one: {
+          dataSources: {
+            Items: { logicalName: 'x_item', entitySetName: 'x_items' },
+            Shared: { logicalName: 'x_a', entitySetName: 'x_as' },
+          },
+        },
+        two: { dataSources: { Shared: { logicalName: 'x_b', entitySetName: 'x_bs' } } },
+      },
+    }),
+  );
+  const config = readCodeAppConfig(root);
+  assert.deepEqual(config.appSettings, { showHeader: true });
+  assert.deepEqual(config.entitySets, { Items: 'x_items', x_item: 'x_items', x_a: 'x_as', x_b: 'x_bs' });
+  assert.deepEqual(
+    config.diagnostics.map((d) => d.code),
+    ['CODEAPP_DATASOURCE_AMBIGUOUS'],
+  );
+  const [app] = loadCodeApps(
+    codeAppSettings([{ name: 'a', dir: '.', devServer: { command: ['node', 'app.js'] } }]),
+    root,
+  );
+  assert.deepEqual(app.devServer, { command: ['node', 'app.js'] });
+});

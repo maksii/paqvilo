@@ -1,6 +1,41 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { configure, dataClient } from '../lib/code-apps-client.js';
+import { configure, dataClient, getStatus } from '../lib/code-apps-client.js';
+
+test('debug events omit payloads and query values, preserve failures and isolate per-load sessions', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  const events = [],
+    requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    if (url.endsWith('/status')) return new Response('{}');
+    if (url.endsWith('/context')) return new Response('{}', { headers: { 'x-sim-csrf': 'private-token' } });
+    if (init.method === 'PATCH') return new Response('{"error":{"message":"private-message"}}', { status: 403 });
+    return new Response('{"value":[]}');
+  };
+  configure({ app: 'first', onEvent: (event) => events.push(event) });
+  await getStatus();
+  assert.equal(requests.length, 1, 'public diagnostics do not require a context request');
+  await dataClient.getAll('x_items', { filter: "x_name eq 'private-filter'" });
+  await assert.rejects(dataClient.update('x_items', 'private-record', { x_name: 'private-body' }), /private-message/);
+  assert.equal(events.at(-1).kind, 'request-error');
+  assert.equal(events.at(-1).status, 403);
+  assert.equal(events.at(-1).path, '/_apps/code/first/dataverse/x_items(...)');
+  assert.doesNotMatch(JSON.stringify(events), /private-/);
+  const session = requests[0].init.headers['x-paqvilo-code-app-session'];
+  assert.ok(requests.every((r) => r.init.headers['x-paqvilo-code-app-session'] === session));
+  configure({
+    app: 'second',
+    onEvent: () => {
+      throw new Error('observer failure');
+    },
+  });
+  await getStatus();
+  assert.notEqual(requests.at(-1).init.headers['x-paqvilo-code-app-session'], session);
+});
 
 test('client sends context token and documented query options with paging', async (t) => {
   const original = globalThis.fetch;
@@ -190,4 +225,30 @@ test('explicit origins are canonicalized and invalid origin prefixes are rejecte
   ])
     assert.throws(() => configure({ app: 'sample', origin }), /Origin must be/);
   assert.equal(urls.length, 2);
+});
+
+test('metadata requests select local entity metadata and filter requested columns', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(url);
+    if (url.endsWith('/context')) return new Response('{}', { headers: { 'x-sim-csrf': 'token' } });
+    return new Response(
+      JSON.stringify({ LogicalName: 'x_item', Attributes: [{ LogicalName: 'x_a' }, { LogicalName: 'x_b' }] }),
+    );
+  };
+  configure({ app: 'sample' });
+  const result = await dataClient.getEntityMetadata('x_item', {
+    metadata: ['LogicalName'],
+    schema: { columns: ['x_b'], oneToMany: true },
+  });
+  assert.deepEqual(result.data.Attributes, [{ LogicalName: 'x_b' }]);
+  const url = new URL(urls[1], 'http://localhost');
+  assert.equal(url.pathname, "/_apps/code/sample/dataverse/EntityDefinitions(LogicalName='x_item')");
+  assert.equal(url.searchParams.get('$select'), 'LogicalName');
+  assert.equal(url.searchParams.get('$expand'), 'Attributes,OneToManyRelationships');
+  await assert.rejects(dataClient.getEntityMetadata('x_item', { schema: { columns: ['bad/name'] } }), /identifiers/);
 });

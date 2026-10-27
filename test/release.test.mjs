@@ -213,6 +213,30 @@ test('release includes only the named Code Apps example assets', () => {
   }
 });
 
+test('release requires the public Code Apps integration and workbench assets', () => {
+  const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
+  for (const path of [
+    'mirage/lib/code-apps-client.js',
+    'mirage/lib/code-apps-client.d.ts',
+    'mirage/lib/code-apps-sdk.js',
+    'mirage/lib/code-apps-sdk.d.ts',
+    'mirage/lib/code-apps-vite.mjs',
+    'mirage/lib/code-apps-vite.d.ts',
+    'mirage/lib/code-apps-workbench.mjs',
+    'mirage/lib/code-apps-workbench.js',
+    'mirage/lib/code-apps-workbench.css',
+    'lense/code-app-dev-servers.mjs',
+    'lense/code-app-dev-wrapper.mjs',
+  ]) {
+    assert.ok(REQUIRED_RELEASE_FILES.includes(path));
+    assert.throws(() => validateReleaseFiles(required.filter((file) => file.path !== path)), /Required release file/);
+  }
+  assert.throws(
+    () => validateReleaseFiles([...required, { path: 'mirage/lib/unreviewed.d.ts' }]),
+    /Unexpected release file/,
+  );
+});
+
 test('the package names its GitHub repository, which npm provenance requires', () => {
   const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.doesNotThrow(() => checkPackageMetadata(pkg));

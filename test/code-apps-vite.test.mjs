@@ -1,0 +1,146 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { codeApps } from '../mirage/lib/code-apps-vite.mjs';
+
+test('Vite integration only activates for configured local development and validates its origin and app', () => {
+  const plugin = codeApps({ app: 'invented', mirageUrl: 'http://127.0.0.1:8787' });
+  assert.equal(plugin.apply({}, { command: 'build', mode: 'mirage' }), false);
+  assert.equal(plugin.apply({}, { command: 'serve', mode: 'mirage' }), true);
+  const config = plugin.config();
+  assert.equal(config.server.host, '127.0.0.1');
+  assert.equal(config.server.strictPort, true);
+  assert.equal(config.server.proxy['/_apps/code/'].target, 'http://127.0.0.1:8787');
+  for (const mirageUrl of [
+    'https://outside.example.test',
+    'http://localhost:8787/path',
+    'http://name:secret@localhost:8787',
+    'http://localhost:8787/?token=secret',
+  ])
+    assert.throws(() => codeApps({ app: 'invented', mirageUrl }).config(), /loopback/);
+  assert.throws(() => codeApps({ app: '../bad', mirageUrl: 'http://localhost:8787' }).config(), /app option/);
+  assert.throws(() => plugin.configResolved({ root: '.', plugins: [{ name: 'powerApps' }] }), /do not enable both/);
+});
+
+test('Vite proxy guards Host, Origin and origin-form paths and rewrites approved Origin', () => {
+  const plugin = codeApps({ app: 'invented', mirageUrl: 'http://127.0.0.1:8787' });
+  plugin.config();
+  let middleware;
+  const watcher = new EventEmitter();
+  watcher.add = () => {};
+  plugin.configureServer({
+    middlewares: {
+      use: (fn) => {
+        middleware = fn;
+      },
+    },
+    httpServer: Object.assign(new EventEmitter(), { address: () => ({ port: 5173 }) }),
+    config: { root: '.', server: {} },
+    watcher,
+    ws: { send() {} },
+  });
+  const request = (url, host, origin) => {
+    const req = { url, headers: { host, ...(origin ? { origin } : {}) } };
+    const res = {
+      code: null,
+      writeHead(code) {
+        this.code = code;
+      },
+      end() {},
+    };
+    let next = false;
+    middleware(req, res, () => {
+      next = true;
+    });
+    return { req, res, next };
+  };
+  for (const url of [
+    'http://outside.example/_apps/code/invented/context',
+    '//outside.example/_apps/code/invented/context',
+    '/\\outside',
+  ])
+    assert.equal(request(url, '127.0.0.1:5173').res.code, 400);
+  assert.equal(request('/_apps/code/invented/context', 'outside.example:5173').res.code, 403);
+  assert.equal(request('/_apps/code/invented/context', '127.0.0.1:5173', 'https://outside.example').res.code, 403);
+  const allowed = request('/_apps/code/invented/context', '127.0.0.1:5173', 'http://127.0.0.1:5173');
+  assert.equal(allowed.next, true);
+  assert.equal(allowed.req.headers.origin, 'http://127.0.0.1:8787');
+  assert.equal(request('/src/app.js', 'outside.example:5173').next, true);
+});
+
+test('Vite module entry wrappers install bootstrap before the application entry', () => {
+  const plugin = codeApps({ app: 'invented', mirageUrl: 'http://localhost:8787' });
+  plugin.config();
+  const html = plugin.transformIndexHtml.handler('<script type="module" src="./src/main.js"></script>', {
+    path: '/index.html',
+  });
+  const encoded = html.match(/src="\/@id\/__x00__(.*?)"/)[1];
+  const module = plugin.load('\0' + encoded);
+  assert.match(module, /^await import\("virtual:paqvilo-code-app-bootstrap"\); await import\("\/src\/main.js"\);/);
+});
+
+test('published Vite and browser client declarations typecheck a consumer', async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { fileURLToPath } = await import('node:url');
+  const compiler = fileURLToPath(import.meta.resolve('typescript/bin/tsc'));
+  const fixture = fileURLToPath(new URL('./fixtures/code-apps-consumer.mts', import.meta.url));
+  await promisify(execFile)(process.execPath, [
+    compiler,
+    '--noEmit',
+    '--strict',
+    '--skipLibCheck',
+    '--module',
+    'nodenext',
+    '--moduleResolution',
+    'nodenext',
+    '--target',
+    'es2022',
+    fixture,
+  ]);
+});
+
+test('inline module scripts are gated separately and relative imports resolve from their HTML file', async () => {
+  const plugin = codeApps({ app: 'invented', mirageUrl: 'http://localhost:8787' });
+  plugin.config();
+  const input =
+    '<script type="module">import "./local.js"; globalThis.count++;</script><script type="module">import "./local.js"; globalThis.count++;</script>';
+  const transformed = plugin.transformIndexHtml.handler(input, {
+    path: '/pages/index.html',
+    filename: '/project/pages/index.html',
+  });
+  const ids = [...transformed.matchAll(/src="\/@id\/__x00__(.*?)"/g)].map((match) => match[1]);
+  assert.equal(ids.length, 2);
+  assert.notEqual(ids[0], ids[1], 'distinct inline tags must execute independently');
+  const targets = ids.map(
+    (id) => plugin.load('\0' + id).match(/await import\("(virtual:paqvilo-code-app-inline\/[^"]+)"\)/)[1],
+  );
+  assert.notEqual(targets[0], targets[1]);
+  assert.match(plugin.load('\0' + targets[0]), /import "\.\/local\.js"/);
+  const calls = [];
+  await plugin.resolveId.call(
+    {
+      resolve: (...args) => {
+        calls.push(args);
+        return { id: '/project/pages/local.js' };
+      },
+    },
+    './local.js',
+    '\0' + targets[0],
+  );
+  assert.deepEqual(calls, [['./local.js', '/project/pages/index.html', { skipSelf: true }]]);
+});
+
+test('external module scripts remain external but run after bootstrap', () => {
+  const plugin = codeApps({ app: 'invented', mirageUrl: 'http://localhost:8787' });
+  plugin.config();
+  const transformed = plugin.transformIndexHtml.handler(
+    '<script type="module" src="https://cdn.example.test/app.js"></script>',
+    { path: '/index.html', filename: '/project/index.html' },
+  );
+  const id = transformed.match(/src="\/@id\/__x00__(.*?)"/)[1];
+  assert.match(
+    plugin.load('\0' + id),
+    /^await import\("virtual:paqvilo-code-app-bootstrap"\); await import\("https:\/\/cdn\.example\.test\/app\.js"\);/,
+  );
+});

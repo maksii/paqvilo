@@ -436,7 +436,7 @@ function listParamTotals(d, c, route, common) {
   };
 }
 
-function unboundFunction(d, c, route, common) {
+export function unboundFunction(d, c, route, common) {
   if (c.method !== 'GET') return notFound(c);
   switch (route.name) {
     case 'WhoAmI':
@@ -624,7 +624,7 @@ function expandNames(text) {
 }
 
 // Read-only metadata: EntityDefinitions, RelationshipDefinitions and GlobalOptionSetDefinitions.
-function metadataRead(c, metadata, route) {
+export function metadataRead(c, metadata, route) {
   const select = c.url.searchParams.get('$select') ?? '';
   const filter = c.url.searchParams.get('$filter') ?? '';
   const expand = expandNames(c.url.searchParams.get('$expand'));
@@ -1075,7 +1075,7 @@ const entitySetNamed = (store, name) =>
   Object.values(store.state.mappings ?? {}).some((mapping) => mapping?.entitySet === name) ||
   store.virtualTable?.(name)?.mapping?.entitySet === name;
 
-async function operationCall(d, route, common) {
+export async function operationCall(d, route, common) {
   const ops = d.operations;
   // A bound operation written without the Microsoft.Dynamics.CRM. prefix parses as a property of the entity row.
   if ((route.kind === 'property' || route.kind === 'member') && ops.has(route.segment)) {
@@ -1144,7 +1144,7 @@ async function runOperation(d, op, route, paramsText, common, target) {
       headers,
       bodyBuffer: common.bodyBuffer,
     }),
-    params: parseFunctionParameters(paramsText, common.url.searchParams),
+    params: common.functionParameters ?? parseFunctionParameters(paramsText, common.url.searchParams),
     user: common.user,
     caller: common.caller,
     identity: common.identity,

@@ -598,7 +598,7 @@ export async function createStandaloneRuntime(options = {}) {
     codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: options.connections ?? {} });
     for (const app of codeAppRecords) for (const entry of app.diagnostics) diagnostic({ ...entry, app: app.name });
     const code = createCodeAppsHandler({
-      apps: () => codeAppRecords,
+      apps: () => (codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: options.connections ?? {} })),
       sessions,
       user: (id) => organization.principals.byId(id),
       organization: {
