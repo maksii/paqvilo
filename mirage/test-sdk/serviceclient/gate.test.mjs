@@ -6,7 +6,7 @@
 // `node --test --test-timeout=600000 mirage/test-sdk/serviceclient/gate.test.mjs`.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -56,8 +56,7 @@ const dotnetSkip = dotnet.status === 0 ? false : 'dotnet is not installed: Servi
 
 // A random loopback address separates concurrent worktrees while preserving the SDK's default HTTP port.
 const gateHost = () => {
-  const bytes = randomBytes(3);
-  return `127.${16 + (bytes[0] % 224)}.${1 + (bytes[1] % 254)}.${1 + (bytes[2] % 254)}`;
+  return `127.${randomInt(16, 240)}.${randomInt(1, 255)}.${randomInt(1, 255)}`;
 };
 
 test('isolated gate binds beside a listener on the default loopback address', async (t) => {
