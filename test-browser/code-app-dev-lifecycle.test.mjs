@@ -11,6 +11,7 @@ import { chromium } from 'playwright-core';
 import { freeDebugPort } from './helpers/debug-port.mjs';
 import { childOutput } from './helpers/child-output.mjs';
 import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -22,17 +23,16 @@ test(
   async (t) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-dev-cli-'));
     const owner = ownedFixture(t);
-    owner.remove(() => fs.rm(dir, { recursive: true, force: true }));
+    // The development browser's profile and the app's server processes release this directory after they exit.
+    owner.remove(() => fs.rm(dir, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
     const external = http.createServer((_req, res) => res.end('external'));
     await listen(external);
     owner.add(() => {
       external.closeAllConnections();
       return close(external);
     });
-    const reserve = http.createServer();
-    await listen(reserve);
-    const port = reserve.address().port;
-    await close(reserve);
+    // Vite binds this port with --strictPort after startup; a released listen(0) port is in the ephemeral range.
+    const port = await freeDebugPort();
     await fs.mkdir(path.join(dir, 'app'));
     await fs.symlink(
       fileURLToPath(new URL('../node_modules/', import.meta.url)),
