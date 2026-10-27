@@ -92,6 +92,7 @@ Notes for specific clients:
 
 - **MSAL libraries** need an https authority: set `tls: true` and point the authority at `<tlsOrigin>/<tenantId>` with instance discovery disabled. `@azure/msal-node`: `knownAuthorities` containing the tlsOrigin host. MSAL Python: `validate_authority=False, instance_discovery=False`. .NET: `WithInstanceDiscovery(false)`. Trust the CA as described above; .NET clients that read only the OS store need their own trust configuration. Microsoft's Python Dataverse SDK takes `tlsOrigin` as `base_url`.
 - **`Microsoft.PowerPlatform.Dataverse.Client`** drops the port from the org URL. Set `port: 80`, and use the constructor that takes a token provider. Port 80 must be free on the machine. `IOrganizationService` calls go to the SOAP endpoint, which is simulated for the messages listed under [SOAP Organization service](#soap-organization-service).
+- **`Microsoft.CrmSdk.XrmTooling.CoreAssembly`** (`CrmServiceClient`, .NET Framework, used by XrmToolBox) has Microsoft Entra ID validate the authority of its own authentication types, so it cannot use the local authority. Set `port: 80`, register an `IOverrideAuthHookWrapper` that returns a client-credentials token in `CrmServiceClient.AuthOverrideHook`, and construct `CrmServiceClient(new Uri(origin), true)`. Its SOAP responses deserialize with `Microsoft.Xrm.Sdk` 9.0.
 
 ## Token behaviour
 
@@ -268,7 +269,7 @@ Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets a
 - Body operations: `Create`, `Retrieve`, `RetrieveMultiple`, `Update`, `Delete`, `Associate` and `Disassociate`.
 - Execute messages: `Upsert`, `Assign`, `SetState`, `WhoAmI`, `RetrieveVersion`, `RetrieveCurrentOrganization`, `ExecuteMultiple` and `ExecuteTransaction`.
 - Queries: `QueryExpression`, `QueryByAttribute` and `FetchExpression`, run as FetchXML.
-- Metadata: `RetrieveEntity`, `RetrieveAttribute`, `RetrieveAllEntities`, `RetrieveOptionSet`, `RetrieveRelationship` and `RetrieveMetadataChanges`, including typed nested metadata queries and deletion stamps.
+- Metadata: `RetrieveEntity`, `RetrieveAttribute`, `RetrieveAllEntities`, `RetrieveOptionSet`, `RetrieveAllOptionSets`, `RetrieveRelationship` and `RetrieveMetadataChanges`, including typed nested metadata queries and deletion stamps.
 - A registered Web API action or function, named by `RequestName` on the generic `OrganizationRequest`.
 
 Any other message answers a SOAP fault (HTTP 500).

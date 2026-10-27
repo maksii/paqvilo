@@ -632,23 +632,30 @@ async function runRequest(base, { name, params }) {
     case 'RetrieveVersion':
       return reply(name, new Map([['Version', { type: 'string', value: s.api.settings?.version ?? '' }]]), NS.g);
     case 'RetrieveCurrentOrganization': {
-      // OrganizationDetail (xrm/2014) members in DataContract order (alphabetical). Members the simulator
-      // does not model are nil, not invented.
+      // OrganizationDetail (xrm/2014) members in DataContract order (alphabetical). Unmodelled string members are
+      // nil; value-type members (Guid, enums) and Endpoints carry the Web API's values, since SDK clients cannot
+      // deserialize a nil value type and read the published endpoints after connecting.
       const dv = s.api.store.state.dataverse ?? {};
       const settings = s.api.settings ?? {};
       const member = (name, text) => (text == null ? `<x14:${name} i:nil="true"/>` : plain(`x14:${name}`, text));
+      const endpoint = (type, url) =>
+        `<x14:KeyValuePairOfEndpointTypestringyDL0RVHi>${plain('b:key', type)}${plain('b:value', url)}</x14:KeyValuePairOfEndpointTypestringyDL0RVHi>`;
       const detail =
         `<b:value i:type="x14:OrganizationDetail">` +
-        member('DatacenterId', settings.datacenterId) +
-        `<x14:Endpoints i:nil="true"/>` +
+        member('DatacenterId', settings.datacenterId ?? '00000000-0000-0000-0000-000000000000') +
+        `<x14:Endpoints>` +
+        endpoint('OrganizationService', `${s.origin}/XRMServices/2011/Organization.svc`) +
+        endpoint('OrganizationDataService', `${s.origin}/XRMServices/2011/OrganizationData.svc`) +
+        endpoint('WebApplication', `${s.origin}/`) +
+        `</x14:Endpoints>` +
         member('EnvironmentId', dv.environmentId ?? settings.environmentId) +
         member('FriendlyName', dv.friendlyName ?? settings.friendlyName ?? '') +
         member('Geo', settings.geo) +
         member('OrganizationId', dv.organizationId ?? settings.organizationId ?? refOf(s.user.organizationid) ?? '') +
-        `<x14:OrganizationType i:nil="true"/>` +
+        plain('x14:OrganizationType', 'Default') +
         member('OrganizationVersion', dv.version ?? settings.version ?? '') +
         member('SchemaType', settings.schemaType) +
-        `<x14:State i:nil="true"/>` +
+        plain('x14:State', 'Enabled') +
         member('TenantId', dv.tenantId ?? settings.tenantId) +
         member('UniqueName', dv.uniqueName ?? settings.uniqueName ?? '') +
         member('UrlName', settings.urlName) +
