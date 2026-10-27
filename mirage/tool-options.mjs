@@ -100,5 +100,5 @@ export async function inventoryInputs(options) {
     catalogue: cfg.mirageConfig,
     explicitRoots: options['solution-root'],
   });
-  return { sourceDir: cfg.sourceDir, solutionRoots: roots.roots };
+  return { sourceDir: cfg.sourceDir, solutionRoots: roots.roots, configFile: cfg.configFile };
 }

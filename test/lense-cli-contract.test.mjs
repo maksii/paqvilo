@@ -315,3 +315,24 @@ test('parse failures identify interleaved commands and actions without treating 
     assert.equal(report.error.code, 'unsupported_option');
   }
 });
+
+test('command-specific options without a command fail instead of silently printing help', async (t) => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli no-command '));
+  t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
+  const text = await run(cwd, '--config', 'missing.json');
+  assert.equal(text.status, 1);
+  assert.equal(text.stdout, '');
+  assert.match(text.stderr, /command is required.*--config/);
+  const json = await run(cwd, '--site', 'sample', '--json');
+  assert.equal(json.status, 1);
+  assert.equal(json.stderr, '');
+  const report = JSON.parse(json.stdout);
+  assert.equal(report.command, null);
+  assert.equal(report.error.code, 'invalid_argument');
+  assert.match(report.error.message, /command is required.*--site/);
+  for (const args of [[], ['--json'], ['--site', 'sample', '--help']]) {
+    const help = await run(cwd, ...args);
+    assert.equal(help.status, 0, args.join(' '));
+    assert.match(help.stdout, /Usage:/);
+  }
+});

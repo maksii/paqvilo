@@ -112,7 +112,16 @@ if (['--version', '-v', '--help', '-h'].includes(product)) {
     failure(error, 'SETUP_CHECK_FAILED', 'paqvilo doctor');
   }
 } else if (product === 'mirage' && Object.hasOwn(MIRAGE_TOOLS, args[0]) && hasFlag(args, '--help', '-h')) {
-  console.log(mirageToolHelp(args[0]));
+  try {
+    // This dispatcher serves standalone tool help; operational arguments belong to the tool's parser.
+    parseArgs({
+      args: args.slice(1),
+      options: { help: { type: 'boolean', short: 'h' }, json: { type: 'boolean' } },
+    });
+    console.log(mirageToolHelp(args[0]));
+  } catch (error) {
+    failure(error, 'INVALID_ARGUMENT', `paqvilo mirage ${args[0]}`);
+  }
 } else if (!['lense', 'mirage', 'dataverse'].includes(product)) {
   const message = `Unknown command ${JSON.stringify(product)}. Choose lense, mirage, dataverse, init, setup or doctor. Run paqvilo --help for options.`;
   failure(new Error(message), 'UNKNOWN_PRODUCT', 'paqvilo', argv);

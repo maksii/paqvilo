@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { reportCliError } from './cli-output.mjs';
+import { assertReportOutput } from './lib/report-output.mjs';
 import { parseToolArgs, toolOptionsHelp, inventoryInputs } from './tool-options.mjs';
 /**
  * Liquid inventory for an exported Power Pages site (PAC standard YAML or enhanced data model).
@@ -770,6 +771,11 @@ async function main(argv = process.argv.slice(2)) {
   }
   if (!(options.portal || options.config || options.site)) throw new Error(usage);
   const inputs = await inventoryInputs(options);
+  if (options.out)
+    await assertReportOutput(options.out, {
+      sourceRoots: [inputs.sourceDir, ...inputs.solutionRoots],
+      inputFiles: [inputs.configFile, options.config],
+    });
   const portal = await importPortal(inputs.sourceDir);
   const report = await inventoryPortal(portal, {
     ...options,

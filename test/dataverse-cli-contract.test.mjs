@@ -254,3 +254,22 @@ test('connect refuses registration and consumable secret aliases before reading 
   }
   assert.deepEqual((await fs.readdir(directory)).sort(), ['alias.json', 'registration.json']);
 });
+
+test('export rejects invalid solution names before loading a connection', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-invalid-export-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const result = run(
+    'export',
+    '--connection',
+    path.join(root, 'missing.json'),
+    '--solution',
+    'invalid-name!',
+    '--out',
+    path.join(root, 'result.zip'),
+    '--json',
+  );
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, '');
+  assert.equal(JSON.parse(result.stdout).error.message, 'Invalid solution name.');
+  assert.deepEqual(await fs.readdir(root), []);
+});

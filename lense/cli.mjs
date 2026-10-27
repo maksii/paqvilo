@@ -274,8 +274,15 @@ if (values.json || command === 'agent') {
   };
 }
 if (command === undefined) {
-  if (values.json || command === 'agent')
-    console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage: HELP }));
+  const suppliedOptions = Object.keys(values).filter((option) => !['json', 'help'].includes(option));
+  if (suppliedOptions.length && !values.help) {
+    const message = `A lense command is required when using --${suppliedOptions[0]}`;
+    if (values.json)
+      console.log(JSON.stringify({ command: null, ok: false, error: { code: 'invalid_argument', message } }));
+    else console.error(`paqvilo: ${message}. Run with --help to see supported commands.`);
+    process.exit(1);
+  }
+  if (values.json) console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: true, usage: HELP }));
   else console.log(HELP);
   process.exit(0);
 }

@@ -6,6 +6,10 @@ the command you need. Help and version output require no configuration. Running
 prints help and exits successfully. An unknown command fails, including when
 combined with `--help`.
 
+Request public Mirage tool help on its own, for example
+`paqvilo mirage liquid-conformance --help`. Supply operational arguments when
+running the tool; extra arguments beside the standalone help request are rejected.
+
 For scripts in a toolkit checkout, use `node bin/paqvilo.mjs` instead of `npx`.
 `npm run` adds a preamble to stdout, so avoid it when parsing JSON.
 
@@ -124,6 +128,9 @@ shell. A parseable JSON report alone does not establish success.
 - `liquid-conformance --out` must also differ from its suite and rules files.
   Dataverse `connect` requires separate registration and secret files, including
   when `--consume-secret-file` is used. Existing links are checked by file identity.
+- Bootstrap reports, Liquid inventories and rendered HTML must be written outside
+  portal and Solution source directories and must not replace selected configuration
+  or state inputs. Keep generated evidence in a separate project directory.
 - Data `--rows` and `--count` values are validated before source resolution, so
   invalid counts are reported even when a selected catalogue or project is missing.
   `data scaffold --rows 0` creates no ordinary table rows; required persona rows

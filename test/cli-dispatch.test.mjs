@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { MIRAGE_COMMANDS } from '../mirage/tool-registry.mjs';
+import { MIRAGE_COMMANDS, MIRAGE_TOOLS } from '../mirage/tool-registry.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 import { tempDirSync } from './fixture.mjs';
 
@@ -79,6 +79,20 @@ test('all public command help is successful without configuration or local state
     assert.equal(results[index].stderr, '', args.join(' '));
   }
   assert.deepEqual(fs.readdirSync(cwd), []);
+});
+
+test('public Mirage tool help rejects malformed requests without running the tool', async () => {
+  const commands = Object.keys(MIRAGE_TOOLS);
+  const results = await Promise.all(commands.map((name) => run(['mirage', name, '--help', '--unknown', '--json'])));
+  for (const [index, result] of results.entries()) {
+    assert.equal(result.status, 1, commands[index]);
+    assert.equal(JSON.parse(result.stdout).ok, false, commands[index]);
+    assert.equal(result.stderr, '', commands[index]);
+  }
+  const positional = await run(['mirage', 'liquid-conformance', '--help', 'unexpected']);
+  assert.equal(positional.status, 1);
+  assert.equal(positional.stdout, '');
+  assert.match(positional.stderr, /Unexpected argument/);
 });
 
 test('option terminators keep literal help and JSON values out of dispatcher control flow', async (t) => {

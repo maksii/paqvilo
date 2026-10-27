@@ -140,6 +140,8 @@ async function main() {
   for (const key of contract.allowed) {
     if (typeof values[key] === 'string' && !values[key].trim()) throw new Error(`--${key} must not be empty`);
   }
+  // Match exportSolution's identifier contract before loading credentials or contacting Dataverse.
+  if (command === 'export' && !/^[a-z][a-z0-9_]*$/i.test(values.solution)) throw new Error('Invalid solution name.');
   if (command === 'register' && values.environment !== undefined) {
     try {
       environmentOrigin(values.environment);

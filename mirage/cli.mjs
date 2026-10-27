@@ -763,6 +763,7 @@ try {
         origin = args.origin;
       let configuredPortal = null;
       let siteMirage = null;
+      let sourceConfigFile = args.config;
       if (project) {
         configuredPortal = project.portals.find((p) => p.id === (args.portal ?? project.defaultPortal));
         sourceDir = configuredPortal.sourceDir;
@@ -780,6 +781,7 @@ try {
           ...(args.config ? { config: args.config } : {}),
         });
         sourceDir = cfg.sourceDir;
+        sourceConfigFile = cfg.configFile;
         origin ??= /^https:\/\//i.test(cfg.origin ?? '') ? cfg.origin : null;
         args.site ??= cfg.siteName;
         siteMirage = cfg.mirageConfig ?? null;
@@ -787,15 +789,14 @@ try {
         // --source with a catalogued --site (as `mirage dev` launches serve): the site's
         // mirage settings (observed behaviour, catalogued roots) still apply.
         const { loadConfig } = await import('../lense/config.mjs');
-        siteMirage =
-          (
-            await loadConfig({
-              site: args.site,
-              env: args.env,
-              ...(args.repo ? { repo: args.repo } : {}),
-              ...(args.config ? { config: args.config } : {}),
-            })
-          ).mirageConfig ?? null;
+        const cfg = await loadConfig({
+          site: args.site,
+          env: args.env,
+          ...(args.repo ? { repo: args.repo } : {}),
+          ...(args.config ? { config: args.config } : {}),
+        });
+        sourceConfigFile = cfg.configFile;
+        siteMirage = cfg.mirageConfig ?? null;
       }
       if (command === 'serve') {
         args.preset ??= siteMirage?.preset;
@@ -893,6 +894,13 @@ try {
               cacheFile: path.join(path.dirname(stateFile), 'cache', 'solution-sources.json'),
             });
         const solutionRoots = resolvedRoots.roots;
+        if (command === 'render' && args.output) {
+          const { assertReportOutput } = await import('./lib/report-output.mjs');
+          await assertReportOutput(args.output, {
+            sourceRoots: [sourceDir, ...solutionRoots],
+            inputFiles: [sourceConfigFile, project?.configFile, stateFile],
+          });
+        }
         let stop;
         const simulator = await createSimulator({
           // Settings of every registered key (config-keys.mjs: project portal, project, catalogue site).

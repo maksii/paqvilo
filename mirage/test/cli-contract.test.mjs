@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MIRAGE_TOOLS } from '../tool-registry.mjs';
+import { assertReportOutput } from '../lib/report-output.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const run = (program, ...args) =>
@@ -270,6 +271,114 @@ test('conformance output cannot replace suite or rules through direct or hard-li
       assert.equal(await fs.readFile(suite, 'utf8'), suiteData);
       assert.equal(await fs.readFile(rules, 'utf8'), rulesData);
     }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('bootstrap and Liquid report outputs preserve portal sources and catalogue aliases', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-report-boundary-'));
+  try {
+    const source = path.join(dir, 'portal');
+    await fs.cp(fixture, source, { recursive: true });
+    const sourceFile = path.join(source, 'website.yml');
+    const sourceBytes = await fs.readFile(sourceFile);
+    const sourceLink = path.join(dir, 'source-link.yml');
+    await fs.link(sourceFile, sourceLink);
+    const config = path.join(dir, 'catalogue.yml');
+    await fs.writeFile(
+      config,
+      JSON.stringify({
+        sourceRoot: dir,
+        defaultSite: 'sample',
+        sites: { sample: { source: 'portal', environments: { dev: 'https://invented.example.invalid' } } },
+      }),
+    );
+    const configBytes = await fs.readFile(config);
+    const configLink = path.join(dir, 'config-link.yml');
+    await fs.link(config, configLink);
+    for (const [tool, selector, outputFlag] of [
+      ['bootstrap-report', ['--config', config, '--site', 'sample'], '--output'],
+      ['liquid-inventory', ['--config', config, '--site', 'sample'], '--out'],
+    ]) {
+      for (const output of [sourceFile, sourceLink, config, configLink]) {
+        const result = run(`mirage/${tool}.mjs`, ...selector, outputFlag, output, '--json');
+        assert.ok(result.status > 0, `${tool}: ${output}`);
+        assert.match(JSON.parse(result.stdout).error.message, /Report output must/);
+        assert.equal(result.stderr, '');
+        assert.deepEqual(await fs.readFile(sourceFile), sourceBytes);
+        assert.deepEqual(await fs.readFile(config), configBytes);
+      }
+      const output = path.join(dir, `${tool}.json`);
+      const good = run(`mirage/${tool}.mjs`, ...selector, outputFlag, output, '--json');
+      assert.equal(good.status, 0, good.stderr || good.stdout);
+      assert.doesNotThrow(() => JSON.parse(good.stdout));
+      const written = await fs.readFile(output, 'utf8');
+      assert.doesNotThrow(() => JSON.parse(written));
+    }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('render refuses to overwrite a portal source or linked workspace state before startup', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-render-boundary-'));
+  try {
+    const source = path.join(dir, 'portal');
+    await fs.cp(fixture, source, { recursive: true });
+    const sourceFile = path.join(source, 'website.yml');
+    const original = await fs.readFile(sourceFile);
+    const linked = path.join(dir, 'linked.yml');
+    await fs.link(sourceFile, linked);
+    const state = path.join(dir, 'state.json');
+    await fs.writeFile(state, '{"invented":true}');
+    const stateLink = path.join(dir, 'state-link.json');
+    await fs.link(state, stateLink);
+    for (const output of [sourceFile, linked, stateLink]) {
+      const result = run('mirage/cli.mjs', 'render', '--source', source, '--state', state, '--output', output);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /Report output must/);
+      assert.doesNotMatch(result.stderr, /runtime-startup/);
+      assert.deepEqual(await fs.readFile(sourceFile), original);
+      assert.equal(await fs.readFile(state, 'utf8'), '{"invented":true}');
+    }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('missing optional source roots do not prevent external report output', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-missing-root-'));
+  try {
+    const missing = path.join(dir, 'missing-solution');
+    await assert.doesNotReject(assertReportOutput(path.join(dir, 'report.json'), { sourceRoots: [missing] }));
+    await assert.rejects(
+      assertReportOutput(path.join(missing, 'report.json'), { sourceRoots: [missing] }),
+      /outside portal and solution sources/,
+    );
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('report output rejects dangling symbolic links instead of writing through them', async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-dangling-output-'));
+  try {
+    const source = path.join(dir, 'portal');
+    await fs.cp(fixture, source, { recursive: true });
+    const link = path.join(dir, 'report-link');
+    const target = path.join(source, process.platform === 'win32' ? 'new-dir' : 'new-report.json');
+    const output = process.platform === 'win32' ? path.join(link, 'report.json') : link;
+    try {
+      await fs.symlink(target, link, process.platform === 'win32' ? 'junction' : 'file');
+    } catch (error) {
+      if (['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) return t.skip('symbolic links unavailable');
+      throw error;
+    }
+    const result = run('mirage/liquid-inventory.mjs', '--portal', source, '--out', output, '--json');
+    assert.notEqual(result.status, 0);
+    assert.match(JSON.parse(result.stdout).error.message, /dangling symbolic link/);
+    await assert.rejects(fs.stat(target), { code: 'ENOENT' });
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
