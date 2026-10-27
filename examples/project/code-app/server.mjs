@@ -47,12 +47,21 @@ const server = http.createServer(async (req, res) => {
       },
       (response) => {
         res.writeHead(response.statusCode, response.headers);
+        // A truncated upstream response must not leave the browser waiting indefinitely.
+        response.on('error', () => res.destroy());
         response.pipe(res);
       },
     );
     upstream.on('error', () => {
-      res.writeHead(502);
-      res.end('Mirage bridge unavailable');
+      if (res.destroyed) return;
+      if (res.headersSent) res.destroy();
+      else {
+        res.writeHead(502);
+        res.end('Mirage bridge unavailable');
+      }
+    });
+    res.on('close', () => {
+      if (!res.writableFinished) upstream.destroy();
     });
     req.pipe(upstream);
     return;

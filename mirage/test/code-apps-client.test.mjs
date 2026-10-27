@@ -63,7 +63,7 @@ test('configuration rejects missing app names and cross-origin browser targets',
     if (original === undefined) delete globalThis.location;
     else globalThis.location = original;
   });
-  globalThis.location = { href: 'http://localhost:3000/app', origin: 'http://localhost:3000' };
+  globalThis.location = { href: 'http://localhost:3000/app', origin: 'http://localhost:3000', search: '' };
   assert.throws(() => configure({ app: '' }), /non-empty app name/);
   assert.throws(() => configure({ app: 'sample', origin: 'https://example.invalid' }), /current origin/);
   assert.doesNotThrow(() => configure({ app: 'sample', origin: 'http://localhost:3000' }));
@@ -118,4 +118,76 @@ test('optional SDK query fields set to undefined do not reject a valid read', as
       : new Response('{"value":[]}');
   configure({ app: 'sample' });
   assert.deepEqual(await dataClient.getAll('items', { partitionId: undefined, skip: undefined }), { data: [] });
+});
+
+test('reconfiguration rejects an old app data response already in flight', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  let release, started;
+  const pending = new Promise((resolve) => {
+    release = resolve;
+  });
+  const arrived = new Promise((resolve) => {
+    started = resolve;
+  });
+  globalThis.fetch = async (url) => {
+    if (url.endsWith('/context')) return new Response('{}', { headers: { 'x-sim-csrf': 'token' } });
+    started();
+    await pending;
+    return new Response('{"value":[{"name":"old app"}]}');
+  };
+  configure({ app: 'first' });
+  const oldRequest = dataClient.getAll('items');
+  await arrived;
+  configure({ app: 'second' });
+  release();
+  await assert.rejects(oldRequest, /configuration changed/);
+});
+
+test('entity set names cannot escape the Dataverse proxy path', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  globalThis.fetch = () => assert.fail('invalid entity set must not issue a request');
+  configure({ app: 'sample' });
+  for (const name of ['../context', 'items?x=1', 'items/other', ''])
+    await assert.rejects(dataClient.getAll(name), /Entity set must be a Dataverse identifier/);
+});
+
+test('explicit origins are canonicalized and invalid origin prefixes are rejected before fetch', async (t) => {
+  const originalFetch = globalThis.fetch;
+  const originalLocation = globalThis.location;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    if (originalLocation === undefined) delete globalThis.location;
+    else globalThis.location = originalLocation;
+  });
+  globalThis.location = { href: 'http://localhost:3000/app', origin: 'http://localhost:3000', search: '' };
+  const urls = [];
+  globalThis.fetch = async (url) => {
+    urls.push(url);
+    return url.endsWith('/context')
+      ? new Response('{}', { headers: { 'x-sim-csrf': 'token' } })
+      : new Response('{"value":[]}');
+  };
+  configure({ app: 'sample', origin: 'http://localhost:3000/' });
+  await dataClient.getAll('items');
+  assert.deepEqual(urls, [
+    'http://localhost:3000/_apps/code/sample/context',
+    'http://localhost:3000/_apps/code/sample/dataverse/items',
+  ]);
+  for (const origin of [
+    null,
+    1,
+    'http://localhost:3000/path',
+    'http://localhost:3000/?q=1',
+    'http://localhost:3000/#x',
+    'http://user:pass@localhost:3000/',
+    'ftp://localhost/',
+  ])
+    assert.throws(() => configure({ app: 'sample', origin }), /Origin must be/);
+  assert.equal(urls.length, 2);
 });

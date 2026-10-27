@@ -16,9 +16,30 @@ let generation = 0;
 
 export function configure({ app, origin = '' }) {
   if (typeof app !== 'string' || !app.trim()) throw new Error('A non-empty app name is required.');
-  if (origin && typeof location !== 'undefined' && new URL(origin, location.href).origin !== location.origin)
-    throw new Error('Mirage code app requests must use the current origin.');
-  base = `${origin}/_apps/code/${encodeURIComponent(app)}/`;
+  if (typeof origin !== 'string')
+    throw new Error('Origin must be an HTTP(S) origin without a path, query, or fragment.');
+  let normalizedOrigin = '';
+  if (origin) {
+    let url;
+    try {
+      url = typeof location === 'undefined' ? new URL(origin) : new URL(origin, location.href);
+    } catch {
+      throw new Error('Origin must be an HTTP(S) origin without a path, query, or fragment.');
+    }
+    if (
+      !['http:', 'https:'].includes(url.protocol) ||
+      url.username ||
+      url.password ||
+      url.pathname !== '/' ||
+      url.href.includes('?') ||
+      url.href.includes('#')
+    )
+      throw new Error('Origin must be an HTTP(S) origin without credentials, a path, query, or fragment.');
+    if (typeof location !== 'undefined' && url.origin !== location.origin)
+      throw new Error('Mirage code app requests must use the current origin.');
+    normalizedOrigin = url.origin;
+  }
+  base = `${normalizedOrigin}/_apps/code/${encodeURIComponent(app)}/`;
   csrf = null;
   generation++;
 }
@@ -41,6 +62,8 @@ async function call(path, { method = 'GET', body, headers = {} } = {}) {
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const text = await response.text();
+  // Reject stale results; an already-sent write cannot be rolled back by reconfiguration.
+  if (generation !== configured) throw new Error('Mirage code app configuration changed during the request.');
   let data;
   try {
     data = text ? JSON.parse(text) : undefined;
@@ -67,6 +90,11 @@ export async function getToken(resource) {
   return (await call('token', { method: 'POST', body: { resource } })).data;
 }
 
+const entityPath = (name) => {
+  if (typeof name !== 'string' || !/^[a-z][a-z0-9_]*$/i.test(name))
+    throw new Error('Entity set must be a Dataverse identifier.');
+  return name;
+};
 const key = (id) => `(${encodeURIComponent(String(id).replace(/[{}]/g, ''))})`;
 // Mirage accepts documented query options plus its own skipToken continuation. Dataverse does not support $skip.
 const query = (options = {}) => {
@@ -94,10 +122,12 @@ const representation = { prefer: 'return=representation,odata.include-annotation
 /** Minimal data-service client over the Dataverse proxy; methods resolve to `{ data }` like generated services. */
 export const dataClient = {
   create: async (entitySet, record) => ({
-    data: (await call(`dataverse/${entitySet}`, { method: 'POST', body: record, headers: representation })).data,
+    data: (await call(`dataverse/${entityPath(entitySet)}`, { method: 'POST', body: record, headers: representation }))
+      .data,
   }),
   get: async (entitySet, id, options) => ({
-    data: (await call(`dataverse/${entitySet}${key(id)}${query(options)}`, { headers: representation })).data,
+    data: (await call(`dataverse/${entityPath(entitySet)}${key(id)}${query(options)}`, { headers: representation }))
+      .data,
   }),
   getAll: async (entitySet, options) => {
     const headers = { ...representation };
@@ -106,7 +136,7 @@ export const dataClient = {
         throw new Error('maxPageSize must be a positive integer.');
       headers.prefer += `,odata.maxpagesize=${options.maxPageSize}`;
     }
-    const { data } = await call(`dataverse/${entitySet}${query(options)}`, { headers });
+    const { data } = await call(`dataverse/${entityPath(entitySet)}${query(options)}`, { headers });
     return {
       data: data?.value ?? [],
       ...(typeof data?.['@odata.count'] === 'number' ? { count: data['@odata.count'] } : {}),
@@ -116,11 +146,16 @@ export const dataClient = {
     };
   },
   update: async (entitySet, id, changes) => ({
-    data: (await call(`dataverse/${entitySet}${key(id)}`, { method: 'PATCH', body: changes, headers: representation }))
-      .data,
+    data: (
+      await call(`dataverse/${entityPath(entitySet)}${key(id)}`, {
+        method: 'PATCH',
+        body: changes,
+        headers: representation,
+      })
+    ).data,
   }),
   delete: async (entitySet, id) => {
-    await call(`dataverse/${entitySet}${key(id)}`, { method: 'DELETE' });
+    await call(`dataverse/${entityPath(entitySet)}${key(id)}`, { method: 'DELETE' });
     return { data: undefined };
   },
   // Connector operation through a power.config.json connection reference; 501 ConnectorNotSimulated unless a hook answers.

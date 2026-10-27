@@ -244,3 +244,11 @@ test('inherited binding properties do not satisfy a declared connection referenc
     ['CODEAPP_CONNECTION_UNBOUND'],
   );
 });
+
+test('invalid JSON diagnostics do not expose source contents', async (t) => {
+  const root = await tempDir(t);
+  await fs.writeFile(path.join(root, 'power.config.json'), '{"secret":"invented-sensitive-marker", bad}');
+  const config = readCodeAppConfig(root);
+  assert.equal(config.diagnostics[0].code, 'CODEAPP_CONFIG_INVALID');
+  assert.doesNotMatch(JSON.stringify(config.diagnostics), /invented-sensitive-marker/);
+});

@@ -18,7 +18,13 @@ test(
       res.end('{}');
     });
     await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => upstream.close(resolve)));
+    t.after(
+      () =>
+        new Promise((resolve) => {
+          upstream.closeAllConnections();
+          upstream.close(resolve);
+        }),
+    );
     const target = `http://127.0.0.1:${upstream.address().port}`;
     const { port } = await startCodeApp(t, { MIRAGE_URL: target, CODE_APP_PORT: '0' });
     const origin = `http://127.0.0.1:${port}`;
@@ -65,3 +71,62 @@ test(
     ]);
   },
 );
+
+test('code app proxy closes a truncated upstream response', { timeout: 15000 }, async (t) => {
+  let upstreamResponse;
+  const upstream = http.createServer((_req, res) => {
+    upstreamResponse = res;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.write('{"partial":');
+  });
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        upstream.closeAllConnections();
+        upstream.close(resolve);
+      }),
+  );
+  const target = `http://127.0.0.1:${upstream.address().port}`;
+  const { port } = await startCodeApp(t, { MIRAGE_URL: target, CODE_APP_PORT: '0' });
+  const completed = new Promise((resolve, reject) => {
+    const req = http.get(`http://127.0.0.1:${port}/_apps/code/a/context`, (res) => {
+      res.once('data', () => upstreamResponse.destroy());
+      res.once('aborted', () => resolve('aborted'));
+      res.once('end', () => resolve('ended'));
+      res.on('error', () => {});
+    });
+    req.on('error', reject);
+  });
+  assert.equal(await completed, 'aborted');
+});
+
+test('code app proxy cancels upstream when the client disconnects before headers', { timeout: 15000 }, async (t) => {
+  let arrived;
+  let closed;
+  const requestArrived = new Promise((resolve) => {
+    arrived = resolve;
+  });
+  const responseClosed = new Promise((resolve) => {
+    closed = resolve;
+  });
+  const upstream = http.createServer((_req, res) => {
+    res.once('close', closed);
+    arrived();
+  });
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        upstream.closeAllConnections();
+        upstream.close(resolve);
+      }),
+  );
+  const target = `http://127.0.0.1:${upstream.address().port}`;
+  const { port } = await startCodeApp(t, { MIRAGE_URL: target, CODE_APP_PORT: '0' });
+  const request = http.get(`http://127.0.0.1:${port}/_apps/code/a/context`);
+  request.on('error', () => {});
+  await requestArrived;
+  request.destroy();
+  await responseClosed;
+});

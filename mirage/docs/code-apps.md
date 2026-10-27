@@ -57,6 +57,10 @@ For Mirage runs only, import the Mirage adapter explicitly. Proxy `/_apps/code` 
 
 Call `configure({ app: '<name>' })` before the first call. Use the same host name (`localhost` or `127.0.0.1`) for the dev server and Mirage, so the browser sends the staff-session cookie.
 
+An explicit `origin` must be an HTTP(S) root origin on the current browser origin, without credentials, a path, query or fragment. A trailing slash is normalized. Entity-set arguments must be Dataverse identifiers (a leading letter followed by letters, digits or underscores); use the SDK executor's `entitySets` mapping for generated source aliases.
+
+Reconfiguration rejects pending results from the previous app configuration. A write already sent to the server cannot be rolled back by this check. Inspect the local records before manually repeating a write whose result was interrupted.
+
 ### Optional SDK data executor
 
 Applications that retain generated SDK data services can install an explicit executor override for Mirage. Microsoft documents [`IDataOperationExecutor`](https://learn.microsoft.com/javascript/api/@microsoft/power-apps/idataoperationexecutor?view=powerapps-js-latest) and [`setDataOperationExecutor`](https://learn.microsoft.com/javascript/api/@microsoft/power-apps/?view=powerapps-js-latest). The setter is exported from the internal-named `@microsoft/power-apps/internal/data` subpath in SDK 1.5.0; pin and validate this integration when upgrading the SDK. The SDK remains an application dependency; Paqvilo does not bundle it.
@@ -107,6 +111,8 @@ The sample's `Items` adapter calls Mirage's `dataClient`; its UI and data are de
 ### Debug and troubleshoot
 
 Use the browser developer tools on the framed app: inspect its console and the Network requests to `/_apps/code/invented-items/context` and `dataverse/...`; the latter include the CSRF header established by context. Inspect `/_sim/` diagnostics and the runtime status for missing or invalid config, an unbound connection, missing local URL, or unsupported connector. A 401 on context means an eligible staff user has not been selected; the default local administrator is not a Code Apps persona. A 502 from the sample server means its Mirage target is not running or has the wrong port. A blank frame can mean the app server is stopped, the configured URL differs, or browser local-network access is blocked. Use `127.0.0.1` consistently for both servers so the browser can send the staff cookie, and check the browser's local-network permission. Do not share tokens or session cookies while collecting diagnostics.
+
+Malformed JSON diagnostics identify the configuration file without echoing its contents; open that file in an editor for syntax details. If the Mirage connection drops after response headers arrive, the sample proxy closes the incomplete response and the browser reports a network error. A client disconnect also cancels the pending upstream request.
 
 To debug app code, select the app frame in browser developer tools and set breakpoints in `app.js`; to debug the server, launch `node --inspect=127.0.0.1:0 code-app/server.mjs` from the project directory and attach your Node debugger to the printed port. For runtime code, launch `node --inspect=127.0.0.1:0 code-app/mirage.mjs` separately. Each process gets its own debugger port. Reload the loader after restarting Mirage and select a staff user again when the runtime session changes. Browser edits require a reload; the sample server does not implement hot module replacement.
 
