@@ -31,7 +31,7 @@ example lanes install .NET SDK 10.0.114 from `global.json`; roll-forward accepts
 feature band (10.0.1xx), so a hosted image or a local SDK update never selects a different compiler band. Ordinary PRs
 select Lense, Mirage and example suites conservatively using changed paths and literal
 import consumers. Shared assets, dependency/build/workflow changes and unknown paths
-expand the selection. Full Windows runs also require the locked TDS, DynamicsWebApi and certificate/MSAL.NET client gates. Python and ServiceClient retain their explicit opt-in prerequisites.
+expand the selection. Full Windows runs also require the locked TDS, DynamicsWebApi, certificate/MSAL.NET and ServiceClient client gates. ServiceClient drops the port from its URL, so its gate binds loopback port 80: hosted runs stop the image's kernel HTTP service first, and a self-hosted Windows runner must leave port 80 free. Python retains its explicit opt-in prerequisites.
 Main pushes, manual full runs and releases run all unit/browser
 suites, Windows/CLR regressions and package smoke. Documentation-only PRs retain quality
 and release checks. Local `npm run ci:verify -- --full` prepares the same mandatory

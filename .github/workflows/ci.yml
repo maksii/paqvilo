@@ -265,6 +265,18 @@ jobs:
         run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }} ${{ matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.full == 'true' && '--sdk' || '' }}
       - name: Verify the selected suite
         run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
+      # ServiceClient drops the port from its URL, so its gate binds loopback port 80. The hosted Windows image's kernel
+      # HTTP service holds that port; stop it there only. A self-hosted runner must leave port 80 free itself.
+      - name: Release port 80 for the ServiceClient gate
+        if: matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.full == 'true' && runner.environment == 'github-hosted'
+        shell: pwsh
+        run: |
+          Get-NetTCPConnection -LocalPort 80 -State Listen -ErrorAction SilentlyContinue |
+            Select-Object LocalAddress, OwningProcess | Format-Table -AutoSize | Out-String | Write-Output
+          net stop http /y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $held = Get-NetTCPConnection -LocalPort 80 -State Listen -ErrorAction SilentlyContinue
+          if ($held) { $held | Format-Table -AutoSize | Out-String | Write-Output; throw 'Port 80 is still held.' }
       - name: Verify the full Windows SDK clients and storage volume
         if: matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.full == 'true'
         run: node scripts/ci.mjs sdk

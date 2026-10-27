@@ -60,6 +60,29 @@ const dotnetSkip =
 // The SDK drops ports but retains the host; bind the actual gate before building.
 const gateHost = () => `127.${randomInt(16, 240)}.${randomInt(1, 255)}.${randomInt(1, 255)}`;
 
+/** Who listens on TCP port 80, for a failure that must name what blocks the gate (Windows only; empty elsewhere). */
+function port80Owners() {
+  if (process.platform !== 'win32') return '';
+  const listening = spawnSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', windowsHide: true });
+  const pids = new Set(
+    (listening.stdout ?? '')
+      .split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/))
+      .filter((cols) => cols[3] === 'LISTENING' && /:80$/.test(cols[1]))
+      .map((cols) => cols[4]),
+  );
+  const owners = [...pids].map((pid) => {
+    const task = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    const name = /^"([^"]+)"/.exec(task.stdout?.trim() ?? '')?.[1] ?? 'unknown';
+    // PID 4 is the kernel HTTP service (http.sys), shared by IIS, WinRM and other URL reservations.
+    return pid === '4' ? 'PID 4 (http.sys)' : `PID ${pid} (${name})`;
+  });
+  return owners.length ? `; listening on port 80: ${owners.join(', ')}` : '; nothing listens on port 80';
+}
+
 /** Runs the built gate executable with the given env; async spawn, since spawnSync would starve the in-process simulator. */
 function runGate(env) {
   return new Promise((resolve, reject) => {
@@ -116,7 +139,7 @@ test(
       if (!['EADDRINUSE', 'EACCES', 'EADDRNOTAVAIL'].includes(error.code)) throw error;
       if (process.env.PAQ_TEST_REQUIRE_SDK_GATES === '1')
         throw new Error(
-          `port 80 on ${host} is unavailable (${error.code}); the required ServiceClient gate cannot run`,
+          `port 80 on ${host} is unavailable (${error.code})${port80Owners()}; the required ServiceClient gate cannot run`,
           {
             cause: error,
           },
