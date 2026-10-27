@@ -59,7 +59,7 @@ async function call(path, { method = 'GET', body, headers = {}, binaryBody = fal
   if (generation !== configured) throw new Error('Mirage code app configuration changed during the request.');
   const started = performance.now();
   const report = observer;
-  const eventPath = `/_apps/code/${encodeURIComponent(appName)}/${path.split('?')[0].replace(/\([^)]*\)/g, '(...)')}`;
+  const eventPath = `/_apps/code/${encodeURIComponent(appName)}/${path.split('?')[0].replace(/\([^)]*\)?/g, '(...)')}`;
   let status = 0;
   const notify = (kind) => {
     try {

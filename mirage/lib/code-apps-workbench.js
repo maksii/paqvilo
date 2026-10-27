@@ -158,7 +158,7 @@ window.addEventListener('message', (message) => {
     status.textContent = 'Staff session required; select a user in Admin';
   const parts = [event.kind];
   if (['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'HEAD'].includes(event.method)) parts.push(event.method);
-  if (path) parts.push(path.replace(/\([^)]*\)/g, '(...)').slice(0, 500));
+  if (path) parts.push(path.replace(/\([^)]*\)?/g, '(...)').slice(0, 500));
   if (Number.isInteger(event.status) && event.status >= 100 && event.status <= 599) parts.push(String(event.status));
   if (Number.isFinite(event.durationMs) && event.durationMs >= 0 && event.durationMs <= 600000)
     parts.push(`${Math.round(event.durationMs)} ms`);
