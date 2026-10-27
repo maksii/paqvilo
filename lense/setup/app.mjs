@@ -665,7 +665,7 @@ function siteEditor(site) {
     `<div data-profiles data-key="${esc(key)}" data-source-dir="${esc(site.sourceStatus?.path ?? '')}">${profiles.map(([id, sources]) => profileRow(key, id, sources, id === current)).join('')}</div>` +
     `<div class="row"><button type="button" class="button" data-add-profile>Add profile</button><label class="checkbox-line"><input type="radio" name="profile-default" value="" ${current ? '' : 'checked'}>No default profile</label></div>` +
     (project
-      ? `<fieldset class="quick-group"><legend>Code apps</legend><p>Register each local app. Changes apply after restarting the preview.</p><div data-code-apps>${(state.layers.shared.values.codeApps ?? []).map((app, index) => codeAppRow(app, index)).join('')}</div><button type="button" class="button" data-add-code-app>Add code app</button></fieldset>`
+      ? `<fieldset class="quick-group"><legend>Code apps</legend><p>Register each local app. Changes apply after restarting the preview.</p><div data-code-apps>${(state.layers.shared.values?.codeApps ?? []).map((app, index) => codeAppRow(app, index)).join('')}</div><button type="button" class="button" data-add-code-app>Add code app</button></fieldset>`
       : '<p class="muted small">Code apps run from a standalone project file (paqvilo setup --project), not from this settings file.</p>') +
     `<div class="toolbar"><button type="submit" class="button primary">Save</button><span class="muted">Writes the ${layer} settings file. Applies when the preview restarts.</span></div></form>`
   );
@@ -3039,7 +3039,7 @@ const SUBMIT = {
       before.modelDriven?.clientSources?.length ? before.modelDriven.clientSources : undefined,
     );
     if (project) {
-      const originals = state.layers.shared.values.codeApps ?? [];
+      const originals = state.layers.shared.values?.codeApps ?? [];
       const apps = codeAppsOf(form, originals);
       update(edits, ['codeApps'], apps.length ? apps : undefined, originals.length ? originals : undefined);
     }
