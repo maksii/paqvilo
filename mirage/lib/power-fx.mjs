@@ -31,6 +31,7 @@
 //   "UTC"); host.now() (ms, default Date.now); host.guid() (GUID() text, default crypto.randomUUID); host.dataRowLimit (non-delegated reads, default 500); host.diagnostic(entry)
 //   (delegation warnings); host.self / host.parent records; host.app ('canvas' makes IsMatch default to Complete).
 import { DataError } from './data-error.mjs';
+import { canvasColorNames } from './power-fx-colors.mjs';
 import {
   compareNumeric,
   decimalParts,
@@ -98,6 +99,24 @@ export class FxDate {
     this.tzi = tzi;
   }
 }
+// A source-declared option enum: labels are case-insensitive and unknown members are errors.
+export class FxEnum {
+  constructor(name, entries) {
+    this.name = name;
+    this.entries = new Map(
+      Object.entries(entries).map(([label, value]) => [label.toLowerCase(), new FxChoice(name, label, value)]),
+    );
+  }
+}
+class FxChoice {
+  constructor(enumName, label, value) {
+    this.enumName = enumName;
+    this.label = label;
+    this.value = value;
+  }
+}
+// Text-valued Canvas control properties implicitly display a choice's localized label.
+export const choiceDisplayValue = (value) => (value instanceof FxChoice ? value.label : value);
 export class FxGuid {
   constructor(text) {
     this.value = String(text).toLowerCase();
@@ -170,6 +189,7 @@ export function fromFx(value, fx = null) {
   if (value instanceof FxError) throw runtimeError(value);
   if (value instanceof FxDate) return isoOf(value);
   if (value instanceof FxFloat) return value.value;
+  if (value instanceof FxChoice) return value.value;
   if (value instanceof FxGuid) return value.value;
   if (value instanceof FxUntyped) return value.raw;
   if (value instanceof FxRecordRef) return { id: value.id, logical_name: value.table };
@@ -463,6 +483,7 @@ export function toBoolean(v) {
 // General number format: up to 15 significant digits, no grouping.
 const numberText = (n) => (Number.isInteger(n) ? String(n) : String(round15(n)));
 export function toText(v, fx = null) {
+  if (v instanceof FxChoice) return v.label;
   if (v === null || v === undefined) return '';
   if (typeof v === 'string') return v;
   if (typeof v === 'number') return numberText(v);
@@ -588,6 +609,10 @@ export function formatDate(date, format, timeZone, language = 'en-US') {
 // by their fields (a related record by its id), blank equals only blank.
 // Not checked against native: Blank() = "" reads false here (IsBlank("") is true by Learn).
 export function equals(a, b, fx = null) {
+  if (a instanceof FxChoice && b instanceof FxChoice && a.enumName.toLowerCase() !== b.enumName.toLowerCase())
+    return false;
+  if (a instanceof FxChoice) a = a.value;
+  if (b instanceof FxChoice) b = b.value;
   if (a instanceof FxRecordRef) a = a.id;
   if (b instanceof FxRecordRef) b = b.id;
   if (isBlank(a) || isBlank(b)) return isBlank(a) && isBlank(b);
@@ -610,6 +635,10 @@ function compareDates(a, b, fx) {
 }
 // Ordering for < > and Sort: numbers (blank as 0), text, dates, Booleans. An incomparable pair is an error.
 export function compare(a, b, fx = null) {
+  if (a instanceof FxChoice && b instanceof FxChoice && a.enumName.toLowerCase() !== b.enumName.toLowerCase())
+    return fxError(ErrorKind.InvalidArgument, 'Choices from different option sets cannot be compared.');
+  if (a instanceof FxChoice) a = a.value;
+  if (b instanceof FxChoice) b = b.value;
   if (a instanceof FxUntyped) a = a.raw;
   if (b instanceof FxUntyped) b = b.raw;
   if (a instanceof FxDate || b instanceof FxDate) {
@@ -1043,6 +1072,21 @@ export function parse(text) {
 // Guessed: the underlying values of the text-valued enumerations; they are the option and pattern strings each one stands
 //   for here, and the DateTimeFormat members are the en-US patterns Learn's Text examples print.
 const ENUMS = {
+  Color: canvasColorNames,
+  DataSourceInfo: Object.fromEntries(
+    [
+      'DisplayName',
+      'MaxLength',
+      'MaxValue',
+      'MinValue',
+      'Required',
+      'AllowedValues',
+      'CreatePermission',
+      'DeletePermission',
+      'EditPermission',
+      'ReadPermission',
+    ].map((name) => [name, name]),
+  ),
   ErrorKind,
   TimeUnit: {
     Milliseconds: 'Milliseconds',
@@ -1122,6 +1166,8 @@ const ENUMS = {
   },
   RemoveFlags: { First: 'First', All: 'All' },
 };
+
+export const powerFxBuiltinEnums = () => Object.keys(ENUMS);
 
 class FxNameError extends DataError {
   constructor(name) {
@@ -1203,7 +1249,7 @@ function field(record, name) {
   if (!isRecord(record)) return MISSING;
   if (Object.hasOwn(record, name)) return record[name];
   const alias = record[ALIASES]?.get(name) ?? record[ALIASES]?.get(name.toLowerCase());
-  if (alias && Object.hasOwn(record, alias)) return record[alias];
+  if (alias) return Object.hasOwn(record, alias) ? record[alias] : null;
   return MISSING;
 }
 export const fieldName = (record, name) => {
@@ -1214,6 +1260,11 @@ export const fieldName = (record, name) => {
 // Property selection on a value: a record field (blank when absent), a related record's field, an untyped object's
 // property, a table column (a single-column table of that name).
 export function member(fx, value, name) {
+  if (value instanceof FxEnum) {
+    const key = name.toLowerCase();
+    if (!value.entries.has(key)) throw new FxNameError(`${value.name}.${name}`);
+    return value.entries.get(key);
+  }
   if (value instanceof FxError || isBlank(value)) return value ?? null;
   if (value instanceof FxRecordRef) return member(fx, value.record, name);
   if (value instanceof FxUntyped) {
@@ -1286,6 +1337,11 @@ function evaluateNode(fx, node) {
       const base = fx.ev(node.obj);
       // An unknown member of a built-in enumeration is a name error, not a blank.
       const isEnum = node.obj.t === 'id' && Object.hasOwn(ENUMS, node.obj.name) && base === ENUMS[node.obj.name];
+      if (isEnum && node.obj.name === 'Color') {
+        const key = Object.keys(base).find((item) => item.toLowerCase() === node.name.toLowerCase());
+        if (!key) throw new FxNameError(`${node.obj.name}.${node.name}`);
+        return base[key];
+      }
       if (isEnum && !Object.hasOwn(base, node.name)) throw new FxNameError(`${node.obj.name}.${node.name}`);
       return member(fx, base, node.name);
     }
@@ -1347,6 +1403,13 @@ function binary(fx, node) {
   if (l instanceof FxError) return l;
   const r = fx.ev(node.r);
   if (r instanceof FxError) return r;
+  if (
+    ['=', '<>', '<', '<=', '>', '>='].includes(op) &&
+    l instanceof FxChoice &&
+    r instanceof FxChoice &&
+    l.enumName.toLowerCase() !== r.enumName.toLowerCase()
+  )
+    return fxError(ErrorKind.InvalidArgument, 'Choices from different option sets cannot be compared.');
   switch (op) {
     case '&': {
       const a = toText(l, fx),
@@ -1429,11 +1492,46 @@ class FxFunctionError extends DataError {
   }
 }
 
+// Trusted hosts can opt into Power Fx values without the lossy JSON conversion used by connectors.
+const TYPED_HOST_FUNCTION = Symbol('power-fx.typed-host-function');
+export function typedPowerFxFunction(fn) {
+  if (typeof fn !== 'function') throw new TypeError('typedPowerFxFunction needs a function.');
+  Object.defineProperty(fn, TYPED_HOST_FUNCTION, { value: true });
+  return fn;
+}
+const PURE_COMPONENT_DENIED = new Set([
+  'Set',
+  'UpdateContext',
+  'Collect',
+  'ClearCollect',
+  'Clear',
+  'Patch',
+  'Remove',
+  'RemoveIf',
+  'UpdateIf',
+  'Navigate',
+  'Back',
+  'Notify',
+  'Trace',
+]);
 function callFunction(fx, node) {
+  if (fx.host.pureComponent && PURE_COMPONENT_DENIED.has(node.name))
+    return fxError(ErrorKind.NotSupported, `${node.name} is not available in a pure component function.`);
   const definition = Object.hasOwn(FUNCTIONS, node.name) ? FUNCTIONS[node.name] : null;
   if (!definition) {
     const hosted = fx.host.functions?.[node.name];
-    if (typeof hosted === 'function') return toFx(hosted(...node.args.map((arg) => fromFx(fx.ev(arg), fx))));
+    if (typeof hosted === 'function') {
+      if (hosted[TYPED_HOST_FUNCTION]) {
+        const args = node.args.map((arg) => fx.ev(arg));
+        const error = args.find((arg) => arg instanceof FxError);
+        if (error) return error;
+        const result = hosted(...args);
+        if (result && typeof result.then === 'function')
+          throw new FxFunctionError('Typed host functions must complete synchronously.', { function: node.name });
+        return toFx(result);
+      }
+      return toFx(hosted(...node.args.map((arg) => fromFx(fx.ev(arg), fx))));
+    }
     throw new FxFunctionError(`'${node.name}' is an unknown or unsupported function.`, { function: node.name });
   }
   const { min = 0, max = Infinity } = definition;

@@ -11,6 +11,12 @@ const LEARN = 'https://learn.microsoft.com/power-apps/maker/canvas-apps/controls
  * (controls are visible unless Visible is false).
  */
 export const CONTROL_CATALOGUE = Object.freeze({
+  addmedia: { title: 'Add picture', doc: `${LEARN}control-add-picture`, defaults: {} },
+  icon: { title: 'Icon', doc: `${LEARN}control-shapes-icons`, defaults: {} },
+  rectangle: { title: 'Rectangle', doc: `${LEARN}control-shapes-icons`, defaults: {} },
+  circle: { title: 'Circle', doc: `${LEARN}control-shapes-icons`, defaults: {} },
+  htmlviewer: { title: 'HTML text', doc: `${LEARN}control-html-text`, defaults: { HtmlText: '' } },
+  codecomponent: { title: 'Code component', doc: `${LEARN}../code-components/`, defaults: {} },
   screen: { title: 'Screen', doc: `${LEARN}control-screen`, defaults: {} },
   label: { title: 'Label', doc: `${LEARN}control-text-box`, defaults: { Text: '' } },
   textinput: { title: 'Text input', doc: `${LEARN}control-text-input`, defaults: { Default: '' } },
@@ -25,14 +31,50 @@ export const CONTROL_CATALOGUE = Object.freeze({
   toggle: { title: 'Toggle', doc: `${LEARN}control-toggle`, defaults: { Default: false } },
   datepicker: { title: 'Date picker', doc: `${LEARN}control-date-picker`, defaults: {} },
   image: { title: 'Image', doc: `${LEARN}control-image`, defaults: { Image: '' } },
-  container: { title: 'Container', doc: `${LEARN}control-container`, defaults: {} },
+  container: {
+    title: 'Container',
+    doc: `${LEARN}control-container`,
+    defaults: { PaddingLeft: 0, PaddingRight: 0, PaddingTop: 0, PaddingBottom: 0 },
+  },
+  slider: { title: 'Slider', doc: `${LEARN}control-slider`, defaults: { Default: 50, Min: 0, Max: 100 } },
+  numberinput: {
+    title: 'Number input',
+    doc: `${LEARN}modern-controls/modern-control-number-input`,
+    defaults: { Default: 0 },
+  },
+  radio: { title: 'Radio', doc: `${LEARN}control-radio`, defaults: {} },
+  progress: { title: 'Progress bar', doc: `${LEARN}modern-controls/modern-control-progress-bar`, defaults: {} },
+  spinner: { title: 'Spinner', doc: `${LEARN}modern-controls/modern-control-spinner`, defaults: {} },
+  timer: {
+    title: 'Timer',
+    doc: `${LEARN}control-timer`,
+    defaults: { Duration: 60000, Repeat: false, AutoStart: false, AutoPause: true, Start: false },
+  },
+  audio: { title: 'Audio', doc: `${LEARN}control-audio-video`, defaults: {} },
+  video: { title: 'Video', doc: `${LEARN}control-audio-video`, defaults: {} },
 });
 /** Defaults every hosted control shares; DisplayMode.Edit for every control is a guess. */
-export const COMMON_DEFAULTS = Object.freeze({ Visible: true, DisplayMode: 'Edit' });
+export const COMMON_DEFAULTS = Object.freeze({
+  Visible: true,
+  DisplayMode: 'Edit',
+  X: 0,
+  Y: 0,
+  Width: 100,
+  Height: 40,
+});
 
 // pa.yaml `Control: [Classic/]Type@version` (the Classic/ prefix names the classic variant of a control that also has a modern one).
 // Type ids beyond Label, Gallery and Button are guessed from the control names.
 const PA_TYPES = {
+  addmedia: 'addmedia',
+  addmediabutton: 'addmedia',
+  addpicture: 'addmedia',
+  icon: 'icon',
+  rectangle: 'rectangle',
+  circle: 'circle',
+  htmltext: 'htmlviewer',
+  htmlviewer: 'htmlviewer',
+  codecomponent: 'codecomponent',
   screen: 'screen',
   label: 'label',
   text: 'label',
@@ -51,10 +93,24 @@ const PA_TYPES = {
   image: 'image',
   groupcontainer: 'container',
   container: 'container',
+  slider: 'slider',
+  numberinput: 'numberinput',
+  radio: 'radio',
+  radiogroup: 'radio',
+  progress: 'progress',
+  progressbar: 'progress',
+  spinner: 'spinner',
+  timer: 'timer',
+  audio: 'audio',
+  video: 'video',
 };
 // .fx.yaml `Name As type[.variant]`; `text` is the text input there (a retired format with no published type list).
 const FX_TYPES = {
   screen: 'screen',
+  icon: 'icon',
+  rectangle: 'rectangle',
+  circle: 'circle',
+  htmltext: 'htmlviewer',
   label: 'label',
   text: 'textinput',
   button: 'button',
@@ -69,7 +125,15 @@ const FX_TYPES = {
   toggleswitch: 'toggle',
   datepicker: 'datepicker',
   image: 'image',
+  addmedia: 'addmedia',
+  addpicture: 'addmedia',
   groupcontainer: 'container',
+  slider: 'slider',
+  numberinput: 'numberinput',
+  radio: 'radio',
+  timer: 'timer',
+  audio: 'audio',
+  video: 'video',
 };
 
 /** The hosted kind of a source control type, or null when the runtime does not host it. */
@@ -77,6 +141,7 @@ export function controlKind(control, format = 'pa.yaml') {
   if (!control) return null;
   const bare = String(control)
     .replace(/^classic\//i, '')
+    .replace(/^modern/i, '')
     .replace(/@.*$/, '');
   const base = (format === 'fx.yaml' ? bare.split('.')[0] : bare).toLowerCase();
   return (format === 'fx.yaml' ? FX_TYPES : PA_TYPES)[base] ?? null;
@@ -88,7 +153,10 @@ export function unsupportedControls(source) {
   const rows = [];
   for (const screen of source.tree?.screens ?? source.screens ?? [])
     for (const control of screen.controls ?? [])
-      if (control.componentName || !controlKind(control.control, format))
+      if (
+        (control.componentName && controlKind(control.control, format) !== 'codecomponent') ||
+        !controlKind(control.control, format)
+      )
         rows.push({
           screen: screen.name,
           name: control.name,
