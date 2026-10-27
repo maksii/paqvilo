@@ -100,7 +100,7 @@ test(
         ...(startPath ? ['--path', startPath] : []),
       ];
       const child = spawn(process.execPath, args, { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-      const exited = once(child, 'exit');
+      const closed = once(child, 'close');
       let browser;
       owner.add(async () => {
         if (browser?.isConnected()) {
@@ -116,7 +116,7 @@ test(
             await once(kill, 'exit');
           } else child.kill('SIGTERM');
         }
-        if (child.exitCode === null) await exited;
+        await closed;
       });
       const output = childOutput(child);
       const match = await output.waitFor(/[Oo]pening (http:\/\/127\.0\.0\.1:\d+)(\/[^\s]*)/, {
@@ -157,7 +157,7 @@ test(
       assert.equal(await (await fetch(`http://127.0.0.1:${external.address().port}/`)).text(), 'external');
       const cdp = await browser.newBrowserCDPSession();
       await cdp.send('Browser.close').catch(() => {});
-      const [code] = await exited;
+      const [code] = await closed;
       assert.equal(code, 0, output.text);
       await assert.rejects(fetch(`http://127.0.0.1:${port}/`));
       await assert.rejects(fetch(`${match[1]}/_sim/api/status`));

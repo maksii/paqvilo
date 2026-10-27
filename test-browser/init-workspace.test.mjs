@@ -4,13 +4,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { runWorkspaceTask, stopOwnedChild } from './helpers/workspace-task.mjs';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { createFixture } from '../test/fixture.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
+import { childStdioGate, assertChildStdioDrain } from './helpers/child-stdio-gate.mjs';
 
 test('owned task shutdown drains pending stdio after the direct child exit', { timeout: 15000 }, async (t) => {
   const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-init-drain-'));
@@ -19,38 +19,12 @@ test('owned task shutdown drains pending stdio after the direct child exit', { t
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const closed = once(child, 'close'),
-    exited = once(child, 'exit');
-  const release = Promise.withResolvers(),
-    destroying = Promise.withResolvers();
-  const destroy = child.stdout._destroy.bind(child.stdout);
-  // Hold the actual pipe's destruction callback: process exit must not let
-  // cleanup skip an outstanding stdio close, even when that close is delayed.
-  child.stdout._destroy = (error, callback) => {
-    destroying.resolve();
-    release.promise.then(() => destroy(error, callback));
-  };
-  let output = '';
-  child.stdout.on('data', (chunk) => {
-    output += chunk;
-  });
+  const gate = childStdioGate(t, child);
   t.after(async () => {
-    release.resolve();
-    await stopOwnedChild(child, closed);
+    await stopOwnedChild(child, gate.closed);
     await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
-  assert.deepEqual(await exited, [0, null]);
-  await destroying.promise;
-  let drained = false;
-  const stopping = stopOwnedChild(child, closed).then((result) => {
-    drained = true;
-    return result;
-  });
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(drained, false, 'exit alone cannot establish that stdio has closed');
-  release.resolve();
-  assert.deepEqual(await stopping, [0, null]);
-  assert.equal(output, 'owned-output');
+  assert.deepEqual(await assertChildStdioDrain(gate, stopOwnedChild), [0, null]);
   await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   await assert.rejects(fs.stat(work), { code: 'ENOENT' });
 });

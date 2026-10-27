@@ -872,6 +872,12 @@ test('full Windows runs require locked SDK client gates without expanding ordina
   const once = "matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/'))";
   const step = ci.jobs.windows.steps.find((step) => step.run === 'node scripts/ci.mjs sdk');
   assert.equal(step?.if, `${once} && needs.changes.outputs.full == 'true'`);
+  const prepare = ci.jobs.windows.steps.find((step) => step.name === 'Release port 80 for the ServiceClient gate');
+  assert.equal(prepare?.if, `${step.if} && runner.environment == 'github-hosted'`);
+  assert.equal(prepare.shell, 'pwsh');
+  assert.ok(ci.jobs.windows.steps.indexOf(prepare) < ci.jobs.windows.steps.indexOf(step));
+  assert.match(prepare.run, /net stop http \/y/);
+  assert.match(prepare.run, /Port 80 is still held/);
   assert.ok(
     ci.jobs.windows.steps.some((step) =>
       step.run?.includes(`${once} && needs.changes.outputs.full == 'true' && '--sdk'`),

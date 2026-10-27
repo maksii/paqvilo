@@ -2,14 +2,26 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import http from 'node:http';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startCodeAppDevServers } from '../lense/code-app-dev-servers.mjs';
+import { stopCodeAppDevServer } from '../lense/code-app-dev-stop.mjs';
+import { childStdioGate, assertChildStdioDrain } from '../test-browser/helpers/child-stdio-gate.mjs';
 
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const close = (server) => new Promise((resolve) => server.close(resolve));
+
+test('Code App shutdown waits for actual stdio closure after its owner exits', { timeout: 15000 }, async (t) => {
+  const child = spawn(process.execPath, ['-e', 'process.stdout.write("owned-output")'], {
+    detached: process.platform !== 'win32',
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const gate = childStdioGate(t, child);
+  await assertChildStdioDrain(gate, stopCodeAppDevServer);
+});
 
 test('readiness refuses external, non-HTTP and credential-bearing URLs before any request', async (t) => {
   const original = globalThis.fetch;
