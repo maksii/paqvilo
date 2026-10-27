@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { reportCliError } from './cli-output.mjs';
 // Static inventory of portal Web API (/_api) request shapes and FetchXML
 // features, compared with what the local Dataverse implementation supports.
 // Reads exported sources only; never contacts a portal.
@@ -881,7 +882,7 @@ async function main(args) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main(process.argv.slice(2)).catch((error) => {
-    console.error(error.message);
+    reportCliError(error);
     process.exitCode = 1;
   });
 }

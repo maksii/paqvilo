@@ -238,7 +238,7 @@ test('project serve CLI starts isolated loopback servers for every portal', asyn
   const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
   const server = jsonServer(
     cli,
-    ['serve', '--project', configPath, '--state', path.join(root, 'state.json'), '--port', '0', '--no-watch'],
+    ['serve', '--project', configPath, '--state', path.join(root, 'state.json'), '--port', '0', '--no-watch', '--json'],
     { signal: t.signal },
   );
   try {

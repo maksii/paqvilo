@@ -462,8 +462,9 @@ test('late inspection restores and cleans its current cancellation binding', { t
           }
           const answer = await send(method, params);
           if (
-            method === 'Runtime.evaluate' &&
-            params.expression?.includes('function installLateDraftTracker') &&
+            method === 'Page.addScriptToEvaluateOnNewDocument' &&
+            params.runImmediately &&
+            params.source?.includes('function installLateDraftTracker') &&
             binding
           ) {
             await send('Runtime.addBinding', binding);

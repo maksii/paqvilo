@@ -10,7 +10,7 @@ import { once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isAlive } from '../lense/commands/mirage.mjs';
 import { workspace, cli, stopped } from './mirage-stop-workspace.mjs';
-import { processesNaming } from './mirage-reaper.mjs';
+import { processesNaming, trackedCliEnded } from './mirage-reaper.mjs';
 
 const standalone = (directory) => [
   'mirage',
@@ -25,6 +25,16 @@ const standalone = (directory) => [
   'dry-run',
   '--json',
 ];
+
+test('a closed CLI stays ended when its PID is reused', () => {
+  const occupied = () => true;
+  assert.equal(trackedCliEnded(1234, true, occupied), true);
+  assert.equal(trackedCliEnded(1234, false, occupied), false);
+  assert.equal(
+    trackedCliEnded(1234, false, () => false),
+    true,
+  );
+});
 
 test('workspace cleanup on a failed or timed-out test ends a CLI still starting and the runtime it launched', async (t) => {
   const work = await workspace(t);
@@ -62,7 +72,7 @@ for (const moment of ['after start', 'during start'])
     const reaper = new URL('./mirage-reaper.mjs', import.meta.url).href;
     // A stand-in test process: it starts the reaper and a tracked CLI that launches a runtime, and is
     // then killed. The reaper inherits its stdout, so the stream ends only once the reaper finished.
-    const script = `import {startReaper} from ${JSON.stringify(reaper)};import {execFile} from 'node:child_process';import {once} from 'node:events';import fs from 'node:fs';const [directory,cli,args,moment]=process.argv.slice(1);const reaper=startReaper(directory);let output='';const child=execFile(process.execPath,[cli,...JSON.parse(args)],{cwd:directory,windowsHide:true},(error,stdout)=>{output=stdout});await reaper.track(child);if(moment==='after start'){await once(child,'close');output=JSON.parse(output).pid}fs.writeSync(1,JSON.stringify({cli:child.pid,runtime:output||null})+'\\n');process.kill(process.pid,'SIGKILL');`;
+    const script = `import {startReaper} from ${JSON.stringify(reaper)};import {execFile} from 'node:child_process';import {once} from 'node:events';import fs from 'node:fs';const [directory,cli,args,moment]=process.argv.slice(1);const reaper=startReaper(directory);let output='';const child=execFile(process.execPath,[cli,...JSON.parse(args)],{cwd:directory,windowsHide:true},(error,stdout)=>{output=stdout});await reaper.track(child);let cliClosed=false;if(moment==='after start'){await once(child,'close');cliClosed=true;output=JSON.parse(output).pid}fs.writeSync(1,JSON.stringify({cli:child.pid,cliClosed,runtime:output||null})+'\\n');process.kill(process.pid,'SIGKILL');`;
     const stand = spawn(
       process.execPath,
       ['--input-type=module', '-e', script, directory, cli, JSON.stringify(standalone(directory)), moment],
@@ -73,7 +83,8 @@ for (const moment of ['after start', 'during start'])
     await once(stand.stdout, 'end');
     const [started, report] = written.trim().split('\n').map(JSON.parse);
     t.diagnostic(JSON.stringify(report));
-    assert.equal(isAlive(started.cli), false, 'the reaper waited for the CLI');
+    if (moment === 'after start') assert.equal(started.cliClosed, true, 'the CLI was observed to close');
+    assert.equal(trackedCliEnded(started.cli, started.cliClosed), true, 'the tracked CLI ended');
     if (moment === 'after start') {
       assert.equal(typeof started.runtime, 'number', 'the CLI started a runtime');
       assert.deepEqual(report.reaped, [started.runtime], 'the reaper stopped the recorded runtime');

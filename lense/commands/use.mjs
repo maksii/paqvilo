@@ -50,11 +50,16 @@ export default async function use(_cfg, args, positionals = []) {
 
   const e = catalogue.sites[site].environments[env];
   console.log(`\n${created ? 'created' : 'updated'} ${file}`);
-  console.log(`now working on ${site} @ ${env}  ${e.url}`);
+  const url = new URL(e.url);
+  console.log(`now working on ${site} @ ${env}  ${url.origin}${url.pathname}${url.search ? '?[redacted]' : ''}`);
   if (e.caution) console.log('CAUTION: this environment holds real data; what you do in the browser there is real.');
   for (const key of ['PAQVILO_SITE', 'PAQVILO_ENV', 'PAQVILO_URL', 'PAQVILO_SOURCE']) {
     if (process.env[key])
-      console.log(`note: ${key} is also set in your shell (${process.env[key]}) and wins over .env`);
+      console.log(
+        key === 'PAQVILO_URL'
+          ? `note: ${key} is also set in your shell and wins over .env`
+          : `note: ${key} is also set in your shell (${process.env[key]}) and wins over .env`,
+      );
   }
   console.log('start with: npm run dev');
   return 0;

@@ -730,7 +730,7 @@ async function main() {
     },
   });
   const action = positionals[0];
-  if (!['capture', 'compare'].includes(action) || !values.matrix || !values.out)
+  if (positionals.length !== 1 || !['capture', 'compare'].includes(action) || !values.matrix || !values.out)
     throw new Error('Usage: suite.mjs capture|compare --matrix FILE --out DIR ...');
   const matrixFile = path.resolve(values.matrix);
   const matrix = validateMatrix(JSON.parse(await fs.readFile(matrixFile, 'utf8')));

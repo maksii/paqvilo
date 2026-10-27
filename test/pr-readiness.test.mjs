@@ -52,3 +52,24 @@ test('readiness requires the pushed head, effective merge state and completed ga
     assert.equal(qualifyPullRequest(state, head).ok, false, JSON.stringify(state));
   assert.equal(qualifyPullRequest(ready, null).ok, false);
 });
+
+test('a failed result for a required gate cannot be hidden by a successful result with the same name', () => {
+  const conflict = {
+    ...ready,
+    statusCheckRollup: [
+      ...ready.statusCheckRollup,
+      { __typename: 'CheckRun', name: 'CI gate', status: 'COMPLETED', conclusion: 'FAILURE' },
+    ],
+  };
+  const result = qualifyPullRequest(conflict, head);
+  assert.equal(result.ok, false);
+  assert.ok(result.reasons.some((reason) => reason.includes('CI gate')));
+});
+
+test('an expected commit status is still pending', () => {
+  const pending = {
+    ...ready,
+    statusCheckRollup: [...ready.statusCheckRollup, { __typename: 'StatusContext', state: 'EXPECTED' }],
+  };
+  assert.equal(qualifyPullRequest(pending, head).ok, false);
+});

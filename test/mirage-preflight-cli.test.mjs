@@ -59,7 +59,7 @@ const runIn = ({ root, stateDir }, command, ...args) =>
       new Promise((resolve) => {
         execFile(
           process.execPath,
-          [cli, command, ...args, '--state-dir', stateDir],
+          [cli, command, ...args, ...(command === 'preflight' ? [] : ['--state-dir', stateDir])],
           { cwd: root, encoding: 'utf8', windowsHide: true, env: env(), timeout: 60000 },
           (error, stdout, stderr) =>
             resolve({
@@ -131,7 +131,8 @@ test('mirage preflight exits 2 on an invocation error', async (t) => {
     runIn({ root, stateDir }, 'serve', '--source', 'preflight', '--invented-flag'),
   ]);
   assert.equal(result.status, 2, result.stdout + result.stderr);
-  assert.match(result.stderr, /scenario\.id/);
+  assert.match(JSON.parse(result.stdout).error.message, /scenario\.id/);
+  assert.equal(result.stderr, '');
   assert.equal(sourceForApi.status, 2, sourceForApi.stdout + sourceForApi.stderr);
   // Only the preflight command answers 2; the word as another command's option value does not.
   assert.equal(serve.status, 1, serve.stdout + serve.stderr);

@@ -614,6 +614,21 @@ test('RetrieveCurrentOrganization returns the organization detail', async () => 
     'UniqueName',
     'UrlName',
   ]);
+  // Value-type members (Guid, OrganizationType, OrganizationState) cannot be nil for the SDK's DataContract reader, and
+  // CrmServiceClient reads the published endpoints right after connecting.
+  assert.match(res.body, /<x14:DatacenterId>00000000-0000-0000-0000-000000000000<\/x14:DatacenterId>/);
+  assert.match(res.body, /<x14:OrganizationType>Default<\/x14:OrganizationType>/);
+  assert.match(res.body, /<x14:State>Enabled<\/x14:State>/);
+  const endpoints = [
+    ...res.body.matchAll(
+      /<x14:KeyValuePairOfEndpointTypestringyDL0RVHi><b:key>(\w+)<\/b:key><b:value>([^<]+)<\/b:value><\/x14:KeyValuePairOfEndpointTypestringyDL0RVHi>/g,
+    ),
+  ].map((m) => [m[1], m[2]]);
+  assert.deepEqual(endpoints, [
+    ['OrganizationService', `${ORIGIN}/XRMServices/2011/Organization.svc`],
+    ['OrganizationDataService', `${ORIGIN}/XRMServices/2011/OrganizationData.svc`],
+    ['WebApplication', `${ORIGIN}/`],
+  ]);
 });
 
 test('a body operation (Create without Execute) answers its named result', async () => {

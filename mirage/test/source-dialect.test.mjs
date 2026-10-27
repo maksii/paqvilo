@@ -154,7 +154,8 @@ test('an mspp_ YAML source is refused by import, serve, inspect, bootstrap-repor
   );
   assert.ok(inspected, 'inspect fails');
   assert.notEqual(inspected.code, 0);
-  assert.match(inspected.stderr, MSPP_MESSAGE);
+  assert.match(JSON.parse(inspected.stdout).error.message, MSPP_MESSAGE);
+  assert.equal(inspected.stderr, '');
   // bootstrap-report and project bootstrap
   await assert.rejects(
     bootstrapReport(await resolveReportInputs({ source: site, 'solution-root': [] }), { noCache: true }),

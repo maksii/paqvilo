@@ -249,8 +249,20 @@ const parseCount = (value, option) => {
   return count;
 };
 
-/** CLI adapter: `node mirage/cli.mjs data generate --pack ID ...` (parsed args). */
-export async function runDataCommand(subcommands, args) {
+const parseCounts = (entries = []) => {
+  const counts = {};
+  for (const entry of entries) {
+    const match = /^([A-Za-z][A-Za-z0-9_]*)=(.+)$/.exec(entry);
+    if (!match || ['__proto__', 'constructor', 'prototype'].includes(match[1]))
+      throw new Error('--count must be NAME=N with a valid generator-defined name');
+    if (Object.hasOwn(counts, match[1])) throw new Error(`Duplicate --count ${match[1]}`);
+    counts[match[1]] = parseCount(match[2], `count ${match[1]}`);
+  }
+  return counts;
+};
+
+/** Validate data actions without resolving sources or opening state. */
+export function validateDataCommand(subcommands, args) {
   if (subcommands.length !== 1)
     throw new Error(
       'Data commands require exactly one action: generate or scaffold; unexpected positional arguments are not accepted.',
@@ -261,6 +273,19 @@ export async function runDataCommand(subcommands, args) {
       if (args[name] !== undefined) throw new Error(`--${name} is supported only by data generate`);
   if (action === 'generate' && args.rows !== undefined)
     throw new Error('--rows is supported only by data scaffold; use --count NAME=N for pack-defined generation counts');
+  if (action !== 'generate' && action !== 'scaffold')
+    throw new Error(
+      'Usage: node mirage/cli.mjs data generate --pack ID --profile NAME --state FILE [--out FILE] [--seed S]\n' +
+        '       node mirage/cli.mjs data scaffold --source PORTAL_DIR --profile smoke|dev --state FILE [--solution-root DIR ...] [--rows N] [--out FILE] [--seed S]',
+    );
+  if (action === 'scaffold') parseCount(args.rows, 'rows');
+  else parseCounts(args.count);
+  return action;
+}
+
+/** CLI adapter: `node mirage/cli.mjs data generate --pack ID ...` (parsed args). */
+export async function runDataCommand(subcommands, args) {
+  const action = validateDataCommand(subcommands, args);
   if (action === 'scaffold')
     return scaffoldDataCommand({
       profile: args.profile ?? 'smoke',
@@ -273,24 +298,12 @@ export async function runDataCommand(subcommands, args) {
       resolution: args.resolution,
       dataModel: args.dataModel ?? args['data-model'],
     });
-  if (action !== 'generate')
-    throw new Error(
-      'Usage: node mirage/cli.mjs data generate --pack ID --profile NAME --state FILE [--out FILE] [--seed S]\n' +
-        '       node mirage/cli.mjs data scaffold --source PORTAL_DIR --profile smoke|dev --state FILE [--solution-root DIR ...] [--rows N] [--out FILE] [--seed S]',
-    );
   let project;
   if (args.project) {
     const { loadProjectConfig } = await import('./project-config.mjs');
     project = await loadProjectConfig(args.project);
   }
-  const counts = {};
-  for (const entry of args.count ?? []) {
-    const match = /^([A-Za-z][A-Za-z0-9_]*)=(.+)$/.exec(entry);
-    if (!match || ['__proto__', 'constructor', 'prototype'].includes(match[1]))
-      throw new Error('--count must be NAME=N with a valid generator-defined name');
-    if (Object.hasOwn(counts, match[1])) throw new Error(`Duplicate --count ${match[1]}`);
-    counts[match[1]] = parseCount(match[2], `count ${match[1]}`);
-  }
+  const counts = parseCounts(args.count);
   return generateDataCommand({
     pack: args.pack,
     profile: args.profile ?? 'deep',
@@ -428,7 +441,7 @@ export async function scaffoldDataCommand({
     schema: metadata.schema,
     profile,
     ...(seed ? { seed } : {}),
-    ...(rowsPerTable ? { rowsPerTable } : {}),
+    ...(rowsPerTable !== undefined ? { rowsPerTable } : {}),
   });
   let input;
   let bootstrapped = false;

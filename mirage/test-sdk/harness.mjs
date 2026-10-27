@@ -87,10 +87,15 @@ export function gateState() {
 }
 
 /** Start the simulator; returns connection facts plus the one-time client secret. */
-export async function startGate({ port = 0, tls = false, state = gateState(), serviceProtection = null } = {}) {
+export async function startGate({
+  port = 0,
+  host = '127.0.0.1',
+  tls = false,
+  state = gateState(),
+  serviceProtection = null,
+} = {}) {
   const certificate = tls ? await ensureCertificate(CA_FILE) : null;
   const secret = newClientSecret();
-  process.env[SECRET_VARIABLE] = secret;
   const store = new DataStore({ state });
   await store.init?.();
   const settings = dataverseSettings({
@@ -109,12 +114,20 @@ export async function startGate({ port = 0, tls = false, state = gateState(), se
     ],
     ...(serviceProtection ? { serviceProtection } : {}),
   });
-  const api = await startDataverseApi({
-    store,
-    settings,
-    tls: certificate ? { key: certificate.key, cert: certificate.cert } : null,
-  });
-  delete process.env[SECRET_VARIABLE];
+  const previousSecret = process.env[SECRET_VARIABLE];
+  process.env[SECRET_VARIABLE] = secret;
+  let api;
+  try {
+    api = await startDataverseApi({
+      store,
+      settings,
+      host,
+      tls: certificate ? { key: certificate.key, cert: certificate.cert } : null,
+    });
+  } finally {
+    if (previousSecret === undefined) delete process.env[SECRET_VARIABLE];
+    else process.env[SECRET_VARIABLE] = previousSecret;
+  }
   return {
     api,
     store,

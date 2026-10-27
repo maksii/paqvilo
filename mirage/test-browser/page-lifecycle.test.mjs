@@ -236,21 +236,43 @@ test('a streaming HTTP error stays failed when its document is replaced', { time
 });
 
 test('a page created during context settling joins the same bounded observation', { timeout: 30000 }, async (t) => {
-  const { origin, context } = await fixture(t);
+  const { origin, context, page } = await fixture(t);
   const observer = await observeContextLifecycle(context, { origin });
   t.after(() => observer.dispose());
-  const pending = observer.settle({ timeout: 700, quietMs: 300 });
+  t.after(releaseHeldReads);
+  await page.goto(origin);
+  const held = page.waitForRequest((request) => request.url().endsWith('/held-read'));
+  await page.evaluate(() => {
+    fetch('/held-read').catch(() => {});
+  });
+  await held;
+  // Hold the first page busy and freeze the observer clock. Advancing past the
+  // quiet window before creating the real second page reproduces the ordering
+  // that previously allowed settlement to finish before page admission.
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  let finished = false;
+  const pending = observer.settle({ timeout: 700, quietMs: 300 }).then((result) => {
+    finished = true;
+    return result;
+  });
+  t.mock.timers.tick(350);
+  await Promise.resolve();
+  assert.equal(finished, false, 'the held request prevents quiet settlement');
   const late = await context.newPage();
   await observer.ready();
   await late.goto(origin);
+  const lateRequest = late.waitForRequest((request) => request.url().endsWith('/pending-late'));
   await late.evaluate(() => {
     fetch('/pending-late').catch(() => {});
   });
+  await lateRequest;
+  t.mock.timers.tick(350);
   const result = await pending;
   assert.equal(result.settled, false);
   assert.equal(result.passed, false);
   assert.equal(result.pages.length, 2, JSON.stringify(result));
   assert.ok(result.pages.some((page) => page.pendingRequests.some((request) => request.url.endsWith('/pending-late'))));
+  assert.equal(result.waitedMs, 700, 'new pages share the original deadline');
   assert.ok(result.waitedMs < 1200, 'new pages share the original timeout');
 });
 
