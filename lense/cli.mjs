@@ -413,6 +413,7 @@ try {
       'portals',
       'project',
       'portal',
+      'path',
       'port',
       'state',
       'preset',
@@ -463,6 +464,16 @@ try {
       throw new Error('use accepts the site either as a positional argument or --site, not both');
     if (positionals[2] !== undefined && values.env !== undefined)
       throw new Error('use accepts the environment either as a positional argument or --env, not both');
+  }
+  if (command === 'mirage' && values.path !== undefined) {
+    if (positionals[1] !== 'dev') throw new Error('--path is supported only by mirage dev');
+    if (
+      !values.path.startsWith('/') ||
+      values.path.startsWith('//') ||
+      values.path.includes('\\') ||
+      [...values.path].some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)
+    )
+      throw new Error('--path must be an origin-relative path');
   }
 
   if (values.pick && values.json)

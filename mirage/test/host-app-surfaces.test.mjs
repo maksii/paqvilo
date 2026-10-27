@@ -57,7 +57,10 @@ async function startHosts(owner) {
     projectRoot: root,
     port: 0,
     watch: false,
-    codeApps: [{ name: 'invented-app', dir: 'app' }],
+    codeApps: [
+      { name: 'invented-app', dir: 'app' },
+      { name: 'unconfigured-app', dir: 'missing-app' },
+    ],
   };
   const standalone = await createSimulator({
     ...common,
@@ -142,5 +145,11 @@ test('runtime state reports inventory counts, provider descriptors and service f
     assert.equal(state.services.find((service) => service.name === 'service:aiBuilder')?.level, 'disabled', name);
     assert.equal(state.capabilities.canvas, 'behaviour', name);
     assert.equal(state.capabilities.codeApps, 'contract', name);
+    for (const code of ['CODEAPP_CONFIG_MISSING', 'CODEAPP_LOCAL_URL_MISSING']) {
+      const count = Array.isArray(state.diagnostics)
+        ? state.diagnostics.filter((entry) => entry.code === code).length
+        : state.diagnostics.byCode[code];
+      assert.equal(count, 1, `${name}: ${code}`);
+    }
   }
 });

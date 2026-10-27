@@ -677,6 +677,21 @@ async function loadProject(file) {
   return loadProjectConfig(path.resolve(file));
 }
 
+async function startProjectCodeApps(cfg, launch, session, controller) {
+  const project = launch.project ? await loadProject(launch.project) : null;
+  const entries = project?.codeApps ?? cfg.mirageConfig?.codeApps ?? [];
+  const root = project ? path.dirname(project.configFile) : cfg.configDir;
+  const { loadCodeApps } = await import('../../mirage/lib/code-apps-config.mjs');
+  const apps = loadCodeApps(entries, root);
+  const { startCodeAppDevServers } = await import('../code-app-dev-servers.mjs');
+  const servers = await startCodeAppDevServers(apps, {
+    signal: controller.signal,
+    mirageUrl: session.url,
+    onFailure: (error) => controller.abort(error),
+  });
+  return { apps, servers };
+}
+
 /**
  * Applies catalogue Mirage settings (`cfg.mirageConfig`) to the command-line options: a
  * catalogued project, then catalogued Solution roots, port and preset. Explicit options always win.
@@ -2666,13 +2681,50 @@ export default async function mirage(cfg, args, positionals = []) {
   const stop = await sessionStopHint([{ cfg, args: effective, session }], paths);
   if (action === 'dev') {
     if (launch.runtime?.kind && launch.runtime.kind !== 'power-pages') {
+      const controller = new AbortController();
+      const interrupt = () => controller.abort(new Error('Code App development stopped.'));
+      process.once('SIGINT', interrupt);
+      process.once('SIGTERM', interrupt);
+      let servers;
       try {
+        const started = await startProjectCodeApps(cfg, launch, session, controller);
+        const { apps } = started;
+        servers = started.servers;
         return await (
           await import('../standalone-mirage.mjs')
-        ).developStandalone({ ...cfg, runtime: launch.runtime }, effective, session);
+        ).developStandalone(
+          { ...cfg, runtime: launch.runtime },
+          { ...effective, path: effective.path ?? (apps.length ? '/_apps/code/' : undefined) },
+          session,
+          { signal: controller.signal },
+        );
+      } catch (error) {
+        if (controller.signal.aborted && controller.signal.reason?.message === 'Code App development stopped.')
+          return 0;
+        throw error;
       } finally {
-        if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+        process.off('SIGINT', interrupt);
+        process.off('SIGTERM', interrupt);
+        try {
+          await servers?.close();
+        } finally {
+          if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+        }
       }
+    }
+    const controller = new AbortController();
+    const interrupt = () => controller.abort(new Error('Code App development stopped.'));
+    process.once('SIGINT', interrupt);
+    process.once('SIGTERM', interrupt);
+    let codeAppServers;
+    let codeApps;
+    try {
+      ({ apps: codeApps, servers: codeAppServers } = await startProjectCodeApps(cfg, launch, session, controller));
+    } catch (error) {
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', interrupt);
+      if (session.started) await stopOwnedSessions({ paths, pids: [session.pid] });
+      throw error;
     }
     const mirageSourceRoots = [
       ...new Set([session.sourceDir ?? launch.sourceDir, ...launch.solutionRoots].filter(Boolean).map(realpath)),
@@ -2705,6 +2757,7 @@ export default async function mirage(cfg, args, positionals = []) {
     );
     const localCfg = {
       ...cfg,
+      ...(codeApps.length && !effective.path ? { site: { ...cfg.site, startPath: '/_apps/code/' } } : {}),
       sourceDir: session.sourceDir,
       origin: session.url,
       envName: 'local',
@@ -2716,19 +2769,28 @@ export default async function mirage(cfg, args, positionals = []) {
     };
     const { default: runDev } = await import('./dev.mjs');
     try {
-      return await runDev(localCfg, { ...effective, mirageTarget: localCfg });
+      const result = await runDev(localCfg, { ...effective, mirageTarget: localCfg, codeAppSignal: controller.signal });
+      if (controller.signal.aborted && controller.signal.reason?.message !== 'Code App development stopped.')
+        throw controller.signal.reason;
+      return controller.signal.aborted ? 0 : result;
     } finally {
-      if (session.started) {
-        const report = await stopOwnedSessions({ paths, pids: [session.pid] }).catch((error) => ({
-          stopped: [],
-          remaining: [{ pid: session.pid }],
-          error,
-        }));
-        console.log(
-          report.stopped.length
-            ? `mirage   stopped ${session.url} (pid ${session.pid})`
-            : `mirage   could not stop pid ${session.pid}${report.error ? `: ${report.error.message}` : ''}; run: ${stop}`,
-        );
+      process.off('SIGINT', interrupt);
+      process.off('SIGTERM', interrupt);
+      try {
+        await codeAppServers.close();
+      } finally {
+        if (session.started) {
+          const report = await stopOwnedSessions({ paths, pids: [session.pid] }).catch((error) => ({
+            stopped: [],
+            remaining: [{ pid: session.pid }],
+            error,
+          }));
+          console.log(
+            report.stopped.length
+              ? `mirage   stopped ${session.url} (pid ${session.pid})`
+              : `mirage   could not stop pid ${session.pid}${report.error ? `: ${report.error.message}` : ''}; run: ${stop}`,
+          );
+        }
       }
     }
   }

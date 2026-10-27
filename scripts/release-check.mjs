@@ -14,6 +14,15 @@ const DOCUMENTATION_ASSETS = new Set([
 
 const SAMPLE_COMPONENT_LICENSE =
   'examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js.LICENSE.txt';
+const CODE_APP_EXAMPLE_FILES = [
+  'examples/project/code-app/app.js',
+  'examples/project/code-app/index.html',
+  'examples/project/code-app/mirage.mjs',
+  'examples/project/code-app/power.config.json',
+  'examples/project/code-app/server.mjs',
+  'examples/project/code-app/solution/Other/Solution.xml',
+  'examples/project/code-app/solution/Entities/x_item/Entity.xml',
+];
 const MODEL_DRIVEN_FILES = new Set(
   [
     'app.mjs',
@@ -368,6 +377,18 @@ export const REQUIRED_RELEASE_FILES = [
   'docs/faq.md',
   ...DOCUMENTATION_ASSETS,
   'examples/project/pack/pack.mjs',
+  'mirage/lib/code-apps-sdk.js',
+  'mirage/lib/code-apps-sdk.d.ts',
+  'mirage/lib/code-apps-client.js',
+  'mirage/lib/code-apps-client.d.ts',
+  'mirage/lib/code-apps-vite.mjs',
+  'mirage/lib/code-apps-vite.d.ts',
+  'mirage/lib/code-apps-workbench.mjs',
+  'mirage/lib/code-apps-workbench.js',
+  'mirage/lib/code-apps-workbench.css',
+  'lense/code-app-dev-servers.mjs',
+  'lense/code-app-dev-wrapper.mjs',
+  ...CODE_APP_EXAMPLE_FILES,
   'examples/project/AGENTS.md',
   'examples/project/test/portal.test.mjs',
   'examples/project/gitignore.template',
@@ -438,11 +459,15 @@ export function validateReleaseFiles(files) {
       !COMPANY_QUALIFICATION_SOURCES.has(name) &&
       !designDocuments.has(name) &&
       name !== 'mirage/lib/plugin-clr-host.cs' &&
+      name !== 'mirage/lib/code-apps-sdk.d.ts' &&
+      name !== 'mirage/lib/code-apps-client.d.ts' &&
+      name !== 'mirage/lib/code-apps-vite.d.ts' &&
       !demoSources.test(name.replaceAll('***', 'redacted-id')) &&
       !demoPluginSources.test(name) &&
       !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) &&
       !demoArtifacts.has(name) &&
       !demoEditorFiles.has(name) &&
+      !CODE_APP_EXAMPLE_FILES.includes(name) &&
       name !== 'examples/project/pack/fixtures.json' &&
       name !== SAMPLE_COMPONENT_LICENSE &&
       !DOCUMENTATION_ASSETS.has(name)

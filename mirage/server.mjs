@@ -4873,9 +4873,11 @@ async function createPowerPagesSimulator({
     principal: canvasPrincipal,
     csrf: () => csrf,
   });
-  const codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: settingOptionsRest.connections ?? {} });
+  let codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: settingOptionsRest.connections ?? {} });
+  for (const app of codeAppRecords) for (const entry of app.diagnostics) recordDiagnostic({ ...entry, app: app.name });
   const codeAppsHandler = createCodeAppsHandler({
-    apps: () => codeAppRecords,
+    apps: () =>
+      (codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: settingOptionsRest.connections ?? {} })),
     sessions: staffSessions,
     user: (id) => {
       if (!organization) throw error('Code apps need the organization runtime.', 503, 'OrganizationUnavailable');

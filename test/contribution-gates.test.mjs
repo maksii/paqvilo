@@ -640,6 +640,14 @@ test('every PR retains all main CodeQL configurations regardless of changed lang
   assert.equal(analysis.with.category, '/language:${{ matrix.language }}');
 });
 
+test('CI and security run required gates for baseline PRs targeting 0.9.8', () => {
+  for (const file of ['ci', 'security']) {
+    const workflow = YAML.parse(fs.readFileSync(new URL(`../.github/workflows/${file}.yml`, import.meta.url), 'utf8'));
+    assert.ok(workflow.on.pull_request.branches.includes('0.9.8'), file);
+    assert.ok(workflow.on.pull_request.branches.includes('main'), file);
+  }
+});
+
 test('the pre-push hook refuses a different pushed commit and allows branch deletions without validating source', (t) => {
   const { root, env, git, write } = hookFixture(t, { readyDependencies: true });
   const resultFile = path.join(root, 'push.json');

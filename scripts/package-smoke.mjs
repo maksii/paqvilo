@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { validateReleaseFiles } from './release-check.mjs';
 import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
 import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
+import { assertSmokeProcess } from './smoke-process.mjs';
 import { offlineSmokeEnv, runSmokeNpm } from './smoke-npm.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -83,19 +84,23 @@ for (const options of [
   );
   if (init.status !== 0 || !JSON.parse(init.stdout).ok)
     throw new Error(`Installed init failed: ${init.stdout}\n${init.stderr}`);
+  const npmLogs = path.join(consumer, '.paqvilo', 'npm-logs');
+  fs.mkdirSync(npmLogs, { recursive: true });
   const bootstrapConsumer = () => {
     const result = spawnSync(process.execPath, [path.join(consumer, 'tools/bootstrap.mjs')], {
       cwd: consumer,
       env: {
         ...offlineSmokeEnv(),
         npm_execpath: npm,
+        npm_config_logs_dir: npmLogs,
+        npm_config_timing: 'true',
       },
       encoding: 'utf8',
       windowsHide: true,
       timeout: 120000,
       maxBuffer: 4 * 1024 * 1024,
     });
-    if (result.status !== 0) throw new Error(`Installed consumer bootstrap failed: ${result.stdout}\n${result.stderr}`);
+    assertSmokeProcess(result, `Installed consumer bootstrap failed (npm logs: ${npmLogs})`);
   };
   bootstrapConsumer();
   const lockFile = path.join(consumer, 'package-lock.json'),

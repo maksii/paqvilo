@@ -85,12 +85,41 @@ for (const moment of ['after start', 'during start'])
     t.diagnostic(JSON.stringify(report));
     if (moment === 'after start') assert.equal(started.cliClosed, true, 'the CLI was observed to close');
     assert.equal(trackedCliEnded(started.cli, started.cliClosed), true, 'the tracked CLI ended');
+    // Once a child closes, Windows can reuse its PID for an unrelated process. Match the unique workspace instead.
+    const named = await processesNaming(directory);
+    assert.equal(named.includes(started.cli), false, 'the reaper waited for the CLI belonging to this workspace');
     if (moment === 'after start') {
       assert.equal(typeof started.runtime, 'number', 'the CLI started a runtime');
       assert.deepEqual(report.reaped, [started.runtime], 'the reaper stopped the recorded runtime');
     }
     assert.deepEqual(report.left, []);
-    for (const pid of [...report.reaped, ...report.strays]) assert.equal(isAlive(pid), false);
-    assert.deepEqual(await processesNaming(directory), [], 'no process names the workspace any longer');
+    for (const pid of [...report.reaped, ...report.strays])
+      assert.equal(named.includes(pid), false, 'the stopped workspace process is no longer present');
+    assert.deepEqual(named, [], 'no process names the workspace any longer');
     assert.equal(fs.existsSync(directory), false, 'the reaper removed the workspace');
   });
+
+test('a live unrelated process does not count as a workspace CLI when a PID is reused', async (t) => {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-reaper-identity-')));
+  const script = "process.stdout.write('ready\\n');process.stdin.resume()";
+  const start = (args) =>
+    spawn(process.execPath, ['-e', script, ...args], {
+      stdio: ['pipe', 'pipe', 'inherit'],
+      windowsHide: true,
+    });
+  const child = start([]),
+    matching = start([directory]);
+  const closed = [once(child, 'close'), once(matching, 'close')];
+  t.after(async () => {
+    child.stdin.end();
+    matching.stdin.end();
+    await Promise.all(closed);
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  await Promise.all([once(child.stdout, 'data'), once(matching.stdout, 'data')]);
+  assert.equal(isAlive(child.pid), true);
+  assert.equal(isAlive(matching.pid), true);
+  const named = await processesNaming(directory);
+  assert.equal(named.includes(matching.pid), true, 'a live process naming the workspace is found');
+  assert.equal(named.includes(child.pid), false, 'a live unrelated process is excluded');
+});

@@ -139,10 +139,12 @@ const FX_TYPES = {
 /** The hosted kind of a source control type, or null when the runtime does not host it. */
 export function controlKind(control, format = 'pa.yaml') {
   if (!control) return null;
-  const bare = String(control)
+  const name = String(control);
+  if (/[\r\n\u2028\u2029]/.test(name)) return null;
+  const bare = name
+    .split('@', 1)[0]
     .replace(/^classic\//i, '')
-    .replace(/^modern/i, '')
-    .replace(/@.*$/, '');
+    .replace(/^modern/i, '');
   const base = (format === 'fx.yaml' ? bare.split('.')[0] : bare).toLowerCase();
   return (format === 'fx.yaml' ? FX_TYPES : PA_TYPES)[base] ?? null;
 }

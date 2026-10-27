@@ -328,3 +328,9 @@ available lifecycle evidence; they omit query values, headers, cookies and bodie
 `maxRecords` sets `overflow` and prevents a successful settle rather than silently dropping
 coverage. This is a bounded observation report, not proof of Power Pages behavior or a saved
 record. Keep project-specific assertions and acceptance fixtures in the project package.
+
+## Code Apps development integration
+
+`paqvilo/mirage/code-apps/vite` exports `codeApps(options?)`, the development-only Vite plugin for a local Mirage workbench. `paqvilo/mirage/code-apps` exports `createCodeAppSdkExecutor(options?)` for applications that explicitly register the SDK data executor. Both ship TypeScript declarations. See [Code Apps](../mirage/docs/code-apps.md#develop-sdk-apps-with-vite-and-the-workbench) for project configuration, lifecycle and the boundary with Microsoft's native host.
+
+`paqvilo/mirage/code-apps/client` exports the typed lower-level `configure`, `getStatus`, `getContext`, `getToken` and `dataClient` APIs for application-owned service adapters.

@@ -764,3 +764,66 @@ test(
     assert.deepEqual(errors, []);
   },
 );
+
+test('setup edits several code apps without renaming existing entries', { timeout: 30000 }, async (t) => {
+  const { root, page, errors, resources } = await work(t),
+    project = path.join(root, 'mirage.project.json');
+  await fs.mkdir(path.join(root, 'portal'));
+  await fs.writeFile(path.join(root, 'portal/website.yml'), 'adx_websiteid: invented\nadx_name: Invented portal\n');
+  await fs.writeFile(
+    project,
+    JSON.stringify({
+      version: 2,
+      portals: [{ id: 'portal', path: './portal' }],
+      codeApps: [
+        {
+          name: 'custom-name',
+          dir: 'apps/one',
+          config: 'other.json',
+          localAppUrl: 'http://localhost:3000/',
+          devServer: { command: ['node', 'dev.js'], env: { MODE: 'local' } },
+        },
+      ],
+    }),
+  );
+  const setup = await startSetupServer({ directory: root, project, processEnv: {} });
+  resources.push(() => setup.close());
+  await page.goto(setup.url);
+  await page.evaluate(() => {
+    location.hash = '#portals';
+  });
+  const form = page.locator('form[data-form="files"]');
+  const first = form.locator('[data-code-app]').first();
+  await first.waitFor();
+  assert.equal(await first.locator('[name=code-name]').inputValue(), 'custom-name');
+  await form.getByRole('button', { name: 'Add code app' }).click();
+  const second = form.locator('[data-code-app]').nth(1);
+  await second.locator('[name=code-name]').fill('second');
+  await second.locator('[name=code-dir]').fill('apps/two');
+  await second.locator('[name=code-url]').fill('http://127.0.0.1:5173/');
+  await second.locator('summary').click();
+  await second.locator('[name=code-command]').fill('{bad');
+  await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('#notice').filter({ hasText: 'valid JSON' }).waitFor();
+  await second.locator('[name=code-command]').fill('');
+  await form.getByRole('button', { name: 'Save', exact: true }).click();
+  await page
+    .locator('#notice')
+    .filter({ hasText: /^Saved\./ })
+    .waitFor()
+    .catch(async (error) => {
+      throw new Error(await page.locator('#notice').innerText(), { cause: error });
+    });
+  const saved = JSON.parse(await fs.readFile(project, 'utf8'));
+  assert.deepEqual(saved.codeApps, [
+    {
+      name: 'custom-name',
+      dir: 'apps/one',
+      config: 'other.json',
+      localAppUrl: 'http://localhost:3000/',
+      devServer: { command: ['node', 'dev.js'], env: { MODE: 'local' } },
+    },
+    { name: 'second', dir: 'apps/two', localAppUrl: 'http://127.0.0.1:5173/' },
+  ]);
+  assert.deepEqual(errors, []);
+});

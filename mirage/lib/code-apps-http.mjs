@@ -1,4 +1,6 @@
 import { systemIds } from './runtime-clock.mjs';
+import { readFile } from 'node:fs/promises';
+import { codeAppsWorkbenchHtml } from './code-apps-workbench.mjs';
 
 /*
  * Local bridge for Power Apps code apps under /_apps/code/<name>/.
@@ -31,9 +33,56 @@ const FORWARDED = [
   'if-none-match',
   'odata-version',
   'odata-maxversion',
+  'x-ms-file-name',
+  'range',
+  'if-range',
+  'x-sim-code-app-operation',
 ];
 const BASE_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'";
+const WORKBENCH_ASSETS = {
+  'workbench.js': ['text/javascript; charset=utf-8', new URL('./code-apps-workbench.js', import.meta.url)],
+  'workbench.css': ['text/css; charset=utf-8', new URL('./code-apps-workbench.css', import.meta.url)],
+};
+const FEATURES = Object.freeze({
+  context: 'local staff identity and app settings',
+  data: 'organization CRUD, queries, metadata, files and images',
+  actions: 'registered unbound actions and functions, plus WhoAmI',
+  connectors: 'explicit local providers',
+  nativeHost: false,
+  onlineConnections: false,
+  maxRequestBytes: MAX_BODY,
+});
+const publicApp = (app) => ({
+  name: app.name,
+  appId: app.appId ?? null,
+  environmentId: app.environmentId ?? null,
+  localAppUrl: app.localAppUrl ?? null,
+  launchUrl: `/_apps/code/${encodeURIComponent(app.name)}/`,
+  diagnostics: (app.diagnostics ?? []).map(({ code, message }) => ({ code, message })),
+  connectionReferences: (app.connectionReferences ?? []).map(({ key, apiId, dataSources }) => ({
+    key,
+    apiId,
+    dataSources,
+  })),
+  entitySets: app.entitySets ?? {},
+  appSettingNames: Object.keys(app.appSettings ?? {}),
+  features: FEATURES,
+});
+async function serverStatus(app) {
+  if (!app.localAppUrl) return { state: 'unavailable' };
+  try {
+    const response = await fetch(app.localAppUrl, {
+      method: 'HEAD',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(1500),
+    });
+    await response.body?.cancel();
+    return { state: 'reachable', status: response.status };
+  } catch {
+    return { state: 'unavailable' };
+  }
+}
 const fail = (status, code, message) => Object.assign(new Error(message), { status, code });
 const escapeHtml = (text) =>
   String(text).replace(
@@ -46,7 +95,7 @@ const json = (res, status, body, headers = {}) => {
   res.end(JSON.stringify(body));
 };
 
-async function readText(req) {
+async function readBytes(req) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
@@ -54,8 +103,10 @@ async function readText(req) {
     if (size > MAX_BODY) throw fail(413, 'RequestTooLarge', 'The request body is too large.');
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }
+
+const readText = async (req) => (await readBytes(req)).toString('utf8');
 
 const readJson = async (req) => {
   const text = await readText(req);
@@ -100,7 +151,7 @@ export function createCodeAppsHandler({
   diagnostic = () => {},
   ids = systemIds,
 }) {
-  // ponytail: one host sessionId per Mirage process; the player renews it on every app open. Per-load ids need a loader-issued cookie.
+  // Adapters supply a fresh per-load session ID; direct HTTP consumers share the deterministic host fallback.
   const sessionId = ids.uuid();
   const principalOf = (req) => {
     const principal = sessions.resolve(req);
@@ -118,6 +169,57 @@ export function createCodeAppsHandler({
   };
 
   return async (req, res, url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`)) => {
+    if (url.pathname === '/_apps/code') {
+      res.writeHead(308, { location: '/_apps/code/' + url.search });
+      res.end();
+      return true;
+    }
+    if (
+      url.pathname === '/_apps/code/' ||
+      url.pathname === '/_apps/code/_api/apps' ||
+      url.pathname.startsWith('/_apps/code/_assets/')
+    ) {
+      res.setHeader('cache-control', 'no-store');
+      res.setHeader('x-content-type-options', 'nosniff');
+      if (!['GET', 'HEAD'].includes(req.method)) {
+        json(res, 405, { error: { code: 'MethodNotAllowed', message: 'This resource requires GET.' } });
+        return true;
+      }
+      if (url.pathname === '/_apps/code/_api/apps') {
+        const records = apps();
+        const inventory = await Promise.all(
+          records.map(async (app) => ({
+            ...publicApp(app),
+            ...(url.searchParams.get('probe') === '1' ? { server: await serverStatus(app) } : {}),
+          })),
+        );
+        json(res, 200, { mode: 'simulation', features: FEATURES, apps: inventory });
+        return true;
+      }
+      const assetName = url.pathname.replace('/_apps/code/_assets/', '');
+      const asset = Object.hasOwn(WORKBENCH_ASSETS, assetName) ? WORKBENCH_ASSETS[assetName] : null;
+      if (url.pathname.startsWith('/_apps/code/_assets/') && asset) {
+        res.writeHead(200, { 'content-type': asset[0] });
+        res.end(req.method === 'HEAD' ? undefined : await readFile(asset[1]));
+        return true;
+      }
+      if (url.pathname === '/_apps/code/') {
+        const origins = [
+          ...new Set(
+            apps()
+              .filter((app) => app.localAppUrl)
+              .map((app) => new URL(app.localAppUrl).origin),
+          ),
+        ];
+        res.setHeader('content-security-policy', BASE_CSP + `; frame-src ${origins.join(' ') || "'none'"}`);
+        res.setHeader('x-frame-options', 'SAMEORIGIN');
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(req.method === 'HEAD' ? undefined : codeAppsWorkbenchHtml());
+        return true;
+      }
+      json(res, 404, { error: { code: 'CodeAppResourceNotFound', message: 'Code app resource not found.' } });
+      return true;
+    }
     const match = /^\/_apps\/code\/([^/]+)(\/(.*))?$/.exec(url.pathname);
     if (!match) return false;
     res.setHeader('cache-control', 'no-store');
@@ -139,6 +241,26 @@ export function createCodeAppsHandler({
       }
       const rest = match[3];
       if (rest === '') return (loader(req, res, url, app, base), true);
+      if (rest === 'status') {
+        requireMethod(req, 'GET');
+        json(res, 200, {
+          name: app.name,
+          mode: 'simulation',
+          level: 'contract',
+          nativeSdk: false,
+          localAppUrl: app.localAppUrl ?? null,
+          entitySets: app.entitySets ?? {},
+          appSettingNames: Object.keys(app.appSettings ?? {}),
+          features: FEATURES,
+          diagnostics: (app.diagnostics ?? []).map(({ code, message }) => ({ code, message })),
+          connections: (app.connectionReferences ?? []).map(({ key, apiId, dataSources }) => ({
+            key,
+            apiId,
+            dataSources,
+          })),
+        });
+        return true;
+      }
       if (rest === 'context') {
         requireMethod(req, 'GET');
         const { row } = principalOf(req);
@@ -148,6 +270,7 @@ export function createCodeAppsHandler({
           {
             app: {
               appId: app.appId ?? '',
+              appSettings: app.appSettings ?? {},
               environmentId: app.environmentId ?? organization.environmentId ?? organization.organizationId,
               queryParams: Object.fromEntries(url.searchParams),
               dataverseOrgUrl: organization.origin,
@@ -156,11 +279,17 @@ export function createCodeAppsHandler({
             user: {
               fullName: row.fullname ?? '',
               objectId: row.azureactivedirectoryobjectid ?? '',
-              systemUserId: row.systemuserid,
+              systemUserId: row.systemuserid ?? '',
               tenantId: organization.tenantId ?? '',
               userPrincipalName: row.domainname ?? '',
             },
-            host: { sessionId },
+            host: {
+              sessionId: /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(
+                req.headers['x-paqvilo-code-app-session'] ?? '',
+              )
+                ? req.headers['x-paqvilo-code-app-session']
+                : sessionId,
+            },
           },
           { 'x-sim-csrf': csrf() },
         );
@@ -204,14 +333,14 @@ export function createCodeAppsHandler({
         );
         let body;
         if (req.method !== 'GET') {
-          const text = await readText(req);
-          if (text && /json/i.test(headers['content-type'] ?? '')) {
+          const bytes = await readBytes(req);
+          if (bytes.length && /json/i.test(headers['content-type'] ?? '')) {
             try {
-              body = JSON.parse(text);
+              body = JSON.parse(bytes.toString('utf8'));
             } catch {
               throw fail(400, 'InvalidJson', 'The request body is not valid JSON.');
             }
-          } else body = text || undefined;
+          } else body = bytes.length ? bytes : undefined;
         }
         const result = await dataverse({
           method: req.method,
@@ -221,7 +350,7 @@ export function createCodeAppsHandler({
           body,
           principal: { principalId, kind },
         });
-        const out = { ...(result.headers ?? {}) };
+        const out = Object.fromEntries(Object.entries(result.headers ?? {}).filter(([, value]) => value != null));
         if (result.body === undefined || result.body === null) {
           res.writeHead(result.status ?? 204, out);
           res.end();
@@ -247,9 +376,18 @@ export function createCodeAppsHandler({
         } catch {
           throw fail(404, 'ConnectionReferenceNotFound', 'Connection reference path is malformed.');
         }
-        const reference = (app.connectionReferences ?? []).find(
-          (item) => item.key === key || item.dataSources?.includes(key),
-        );
+        const references = app.connectionReferences ?? [];
+        let reference = references.find((item) => item.key === key);
+        if (!reference) {
+          const matches = references.filter((item) => item.dataSources?.includes(key));
+          if (matches.length > 1)
+            throw fail(
+              409,
+              'ConnectionReferenceAmbiguous',
+              `Data source '${key}' maps to multiple connection references.`,
+            );
+          reference = matches[0];
+        }
         if (!reference)
           throw fail(
             404,
@@ -300,12 +438,16 @@ function loader(req, res, url, app, base) {
   } else {
     body = `<h1>${escapeHtml(app.name)}</h1><p>No localAppUrl is configured. Set <code>localAppUrl</code> in the project <code>codeApps</code> entry or in power.config.json, start the app's dev server and reload ${escapeHtml(base)}.</p>`;
   }
+  const diagnostics = (app.diagnostics ?? [])
+    .map(({ code, message }) => `<li><code>${escapeHtml(code)}</code>: ${escapeHtml(message)}</li>`)
+    .join('');
+  const notice = `<h1>${escapeHtml(app.name)} — Mirage simulation</h1><p>This local bridge uses the Paqvilo adapter. Native Power Apps SDK services require Microsoft's host and online connections. <a href="/_sim/">Select a staff user</a> before using the app. <a href="${escapeHtml(base)}status">Bridge diagnostics</a></p>${diagnostics ? `<ul>${diagnostics}</ul>` : ''}`;
   res.setHeader('content-security-policy', csp);
   res.setHeader('x-frame-options', 'SAMEORIGIN');
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
   res.end(
     req.method === 'HEAD'
       ? undefined
-      : `<!doctype html><html><head><meta charset="utf-8">${title}</head><body>${body}</body></html>`,
+      : `<!doctype html><html><head><meta charset="utf-8">${title}</head><body>${notice}${body}</body></html>`,
   );
 }

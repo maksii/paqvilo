@@ -28,6 +28,10 @@
       "presetLibrary",
       "resolveSolutionRoots"
     ],
+    "paqvilo/mirage/code-apps": ["createCodeAppSdkExecutor"],
+    "paqvilo/mirage/code-apps/vite": ["codeApps"],
+    "paqvilo/mirage/code-apps/client": ["configure", "getStatus", "getContext", "getToken", "dataClient"],
+    "paqvilo/mirage/lib/code-apps-client.js": ["configure", "getStatus", "getContext", "getToken", "dataClient"],
     "paqvilo/mirage/acceptance": [
       "browserChannel",
       "browserLaunchOptions",

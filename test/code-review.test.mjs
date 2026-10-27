@@ -183,7 +183,11 @@ test('public API origins follow named aliases and wildcard reexports without exe
       path.join(root, 'package.json'),
       JSON.stringify({
         type: 'module',
-        exports: { './api': './api.mjs', './internal/*': './*' },
+        exports: {
+          './api': './api.mjs',
+          './typed': { types: './typed.d.ts', import: { default: './typed.mjs' } },
+          './internal/*': './*',
+        },
       }),
     );
     await fs.writeFile(
@@ -195,10 +199,14 @@ test('public API origins follow named aliases and wildcard reexports without exe
       "throw new Error('analysis must not execute'); export function original() {} export const privateName = 1;",
     );
     await fs.writeFile(path.join(root, 'more.mjs'), 'export const otherPublicName = 2;');
+    await fs.writeFile(path.join(root, 'typed.d.ts'), 'export declare function typed(): void;');
+    await fs.writeFile(path.join(root, 'typed.mjs'), "throw new Error('must not execute'); export function typed() {}");
     const origins = publicApiOrigins(root);
     assert.ok(origins.has('api.mjs:publicName'));
     assert.ok(origins.has('logic.mjs:original'));
     assert.ok(origins.has('more.mjs:otherPublicName'));
+    assert.ok(origins.has('typed.d.ts:typed'));
+    assert.ok(origins.has('typed.mjs:typed'));
     assert.ok(!origins.has('logic.mjs:privateName'));
   } finally {
     await fs.rm(root, { recursive: true, force: true });

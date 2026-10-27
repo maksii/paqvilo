@@ -122,10 +122,17 @@ export function publicApiOrigins(directory) {
     return result;
   }
   const origins = new Set();
+  const targets = (value) =>
+    typeof value === 'string'
+      ? [value]
+      : value && typeof value === 'object'
+        ? Object.values(value).flatMap(targets)
+        : [];
   for (const [entry, target] of Object.entries(manifest.exports ?? {})) {
-    if (entry.includes('*') || typeof target !== 'string' || !/\.[cm]?js$/.test(target)) continue;
-    for (const values of exportsOf(path.resolve(directory, target)).values())
-      for (const value of values) origins.add(value);
+    if (entry.includes('*')) continue;
+    for (const file of targets(target).filter((file) => /\.(?:[cm]?js|d\.[cm]?ts)$/.test(file)))
+      for (const values of exportsOf(path.resolve(directory, file)).values())
+        for (const value of values) origins.add(value);
   }
   return origins;
 }
