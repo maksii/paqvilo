@@ -462,8 +462,9 @@ export const DATA_CONTRACTS = {
 // Members typed as ManagedProperty<T> in the SDK (BooleanManagedProperty, AttributeRequiredLevelManagedProperty), by contract.
 // The SDK reads them only as Value/CanBeChanged/ManagedPropertyLogicalName child elements, so a plain value there is a
 // DataContract error ("Expecting state 'Element' ... Text"). The name is the one attribute-metadata.mjs reports.
-// Only iscustomizable has been observed; the other logical names are guesses (the docs give only the member types).
-// Shared with attribute-metadata.mjs and dataverse-metadata.mjs.
+// The member list is the SDK's (Microsoft.Xrm.Sdk 9.0.0.0). The AttributeMetadata and EntityMetadata logical names are the
+// ones in Learn's Web API metadata samples (web-api-metadata-operations-sample, create-update-entity-definitions-using-web-api);
+// canmodifydatetimebehavior is a guess. Shared with attribute-metadata.mjs and dataverse-metadata.mjs.
 export const MANAGED_MEMBERS = {
   AttributeMetadata: {
     CanModifyAdditionalSettings: 'canmodifyadditionalsettings',
@@ -476,6 +477,34 @@ export const MANAGED_MEMBERS = {
     RequiredLevel: 'canmodifyrequirementlevelsettings',
   },
   DateTimeAttributeMetadata: { CanChangeDateTimeBehavior: 'canmodifydatetimebehavior' },
+  EntityKeyMetadata: { IsCustomizable: 'iscustomizable' },
+  EntityMetadata: {
+    CanBeInCustomEntityAssociation: 'canbeincustomentityassociation',
+    CanBeInManyToMany: 'canbeinmanytomany',
+    CanBePrimaryEntityInRelationship: 'canbeprimaryentityinrelationship',
+    CanBeRelatedEntityInRelationship: 'canberelatedentityinrelationship',
+    CanChangeHierarchicalRelationship: 'canchangehierarchicalrelationship',
+    CanChangeTrackingBeEnabled: 'canchangetrackingbeenabled',
+    CanCreateAttributes: 'cancreateattributes',
+    CanCreateCharts: 'cancreatecharts',
+    CanCreateForms: 'cancreateforms',
+    CanCreateViews: 'cancreateviews',
+    CanEnableSyncToExternalSearchIndex: 'canenablesynctoexternalsearchindex',
+    CanModifyAdditionalSettings: 'canmodifyadditionalsettings',
+    IsAuditEnabled: 'canmodifyauditsettings',
+    IsConnectionsEnabled: 'canmodifyconnectionsettings',
+    IsCustomizable: 'iscustomizable',
+    IsDuplicateDetectionEnabled: 'canmodifyduplicatedetectionsettings',
+    IsMailMergeEnabled: 'canmodifymailmergesettings',
+    IsMappable: 'ismappable',
+    IsOfflineInMobileClient: 'canmodifymobileclientoffline',
+    IsReadOnlyInMobileClient: 'canmodifymobileclientreadonly',
+    IsRenameable: 'isrenameable',
+    IsValidForQueue: 'canmodifyqueuesettings',
+    IsVisibleInMobile: 'canmodifymobilevisibility',
+    IsVisibleInMobileClient: 'canmodifymobileclientvisibility',
+  },
+  OptionSetMetadataBase: { IsCustomizable: 'iscustomizable' },
   RelationshipMetadataBase: { IsCustomizable: 'iscustomizable' },
 };
 
