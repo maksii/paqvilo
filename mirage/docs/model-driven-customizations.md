@@ -28,6 +28,8 @@ app picker, open a view and a record, and use the staff profile to select the
 identity under test. Dry run lets you exercise records without persisting them.
 Keep fixture records, script sources and their acceptance tests in the project.
 
+For an optional static check of authored model-driven JavaScript, see [web-resource lint](model-driven-web-resource-lint.md). The project owns its lint dependencies and rules.
+
 ## Supported baseline
 
 | Exported component                                     | Local behavior                                                                                                                                               |

@@ -7,6 +7,7 @@ import { createRequire } from 'node:module';
 import { validateReleaseFiles } from './release-check.mjs';
 import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
 import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
+import { offlineSmokeEnv, runSmokeNpm } from './smoke-npm.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npm = process.env.npm_execpath;
@@ -14,20 +15,7 @@ if (!npm || !fs.existsSync(npm)) throw new Error('Run npm run release:smoke to u
 const directory = path.join(root, '.paqvilo', 'distribution');
 fs.mkdirSync(directory, { recursive: true });
 const work = fs.mkdtempSync(path.join(directory, 'smoke-'));
-const run = (args, cwd, timeout = 120_000) => {
-  const result = spawnSync(process.execPath, [npm, ...args], {
-    cwd,
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout,
-    maxBuffer: 4 * 1024 * 1024,
-  });
-  if (result.status !== 0)
-    throw new Error(`npm ${args[0]} failed: ${result.error?.message ?? `${result.stdout}\n${result.stderr}`}`, {
-      cause: result.error,
-    });
-  return result.stdout;
-};
+const run = (args, cwd, timeout) => runSmokeNpm(npm, args, cwd, timeout);
 
 const packed = JSON.parse(run(['pack', '--json', '--ignore-scripts', '--pack-destination', work], root))[0];
 validateReleaseFiles(packed.files);
@@ -99,12 +87,8 @@ for (const options of [
     const result = spawnSync(process.execPath, [path.join(consumer, 'tools/bootstrap.mjs')], {
       cwd: consumer,
       env: {
-        ...process.env,
+        ...offlineSmokeEnv(),
         npm_execpath: npm,
-        npm_config_offline: 'true',
-        npm_config_audit: 'false',
-        npm_config_fund: 'false',
-        npm_config_update_notifier: 'false',
       },
       encoding: 'utf8',
       windowsHide: true,

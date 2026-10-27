@@ -65,6 +65,8 @@ Project scripts can run `node --test test/*.test.mjs` and `node --test test-brow
 
 Project management scripts can import `readPowerPagesSites`, `readPowerPagesSite` and `setPowerPagesSiteVisibility` from `paqvilo/dataverse`. These use the installed PAC `power-pages` management commands with an explicit environment and shell-free arguments. On Windows, configure the actual `pac.exe` path rather than its `pac.cmd` shim. Read APIs return site identity and visibility metadata; credentials, certificates and unknown response fields are withheld. The management site ID differs from the Dataverse website record ID, so verify both and the site URL before a change. The mutation API returns command completion only: the project must own authorization, a durable journal, propagation readback and restoration. Mirage session controls do not grant native site access.
 
+For model-driven Solution scripts, projects can also opt into [web-resource lint](../mirage/docs/model-driven-web-resource-lint.md) with their own ESLint configuration and dependencies.
+
 ## Project commands and editor workflows
 
 Own your daily npm shortcuts, `.vscode/launch.json` and `.vscode/tasks.json` in your portal project. Run tasks with that project's working directory and catalogue, invoking the installed `paqvilo` binary. This keeps portal/environment choices, scenario presets, browser profiles and project tests with their owners. The toolkit repository's launches and tasks provide generic defaults for working on Paqvilo.
