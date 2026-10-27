@@ -15,6 +15,11 @@ const CLI_WAIT_MS = 180_000;
 const CLI_POLL_MS = 250;
 const execute = promisify(execFile);
 
+/** A child close event proves that specific process ended even if its numeric PID was reused. */
+export function trackedCliEnded(pid, observedClose, alive = isAlive) {
+  return observedClose || !alive(pid);
+}
+
 /** Stops the runtimes recorded under `directory`; returns those still running (expected: none). */
 export async function stopRecordedRuntimes(directory) {
   const left = [];

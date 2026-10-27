@@ -346,9 +346,11 @@ test('inspect and project files carry the data model; --data-model is validated 
   const standard = JSON.parse(standardRun.stdout);
   assert.deepEqual([standard.format, standard.dataModelSource], ['standard', 'configured']);
   assert.notEqual(invalid.code, 0);
-  assert.match(invalid.stderr, /--data-model must be standard or enhanced/);
+  assert.match(JSON.parse(invalid.stdout).error.message, /--data-model must be standard or enhanced/);
+  assert.equal(invalid.stderr, '');
   assert.notEqual(refused.code, 0);
-  assert.match(refused.stderr, /--data-model is supplied by the project configuration/);
+  assert.match(JSON.parse(refused.stdout).error.message, /--data-model is supplied by the project configuration/);
+  assert.equal(refused.stderr, '');
   const project = await loadProjectConfig(file);
   assert.equal(project.portals[0].dataModel, 'standard');
   const bootstrapped = await bootstrapProject(project);

@@ -68,6 +68,38 @@ test(
   },
 );
 
+test(
+  'fixture removal tolerates a held Windows solution directory handle',
+  { timeout: 15000, skip: process.platform !== 'win32' && 'Windows directory handles prevent deletion' },
+  async (t) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-fixture-directory-'));
+    const solution = path.join(directory, 'solution');
+    await fs.mkdir(solution);
+    const child = spawn(process.execPath, ['-e', "console.log('holding-directory'); process.stdin.resume()"], {
+      cwd: solution,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    const closed = once(child, 'close');
+    const lines = readline.createInterface({ input: child.stdout });
+    t.after(async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill();
+      await closed;
+      lines.close();
+      await removeFixtureDirectory(directory);
+    });
+    assert.equal((await once(lines, 'line', { signal: t.signal }))[0], 'holding-directory');
+    await assert.rejects(fs.rm(directory, { recursive: true, force: true }), (error) =>
+      ['EBUSY', 'EPERM', 'EACCES'].includes(error.code),
+    );
+    const removal = removeFixtureDirectory(directory);
+    child.stdin.end('release\n');
+    assert.deepEqual(await closed, [0, null]);
+    await removal;
+    await assert.rejects(fs.stat(directory), { code: 'ENOENT' });
+  },
+);
+
 test('one context shares its owner across builders and retains the declared close order', async () => {
   const hooks = [],
     context = { after: (hook) => hooks.push(hook) },

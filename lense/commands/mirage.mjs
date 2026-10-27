@@ -723,17 +723,20 @@ export function catalogueArgs(cfg, args = {}, { requireProject = true } = {}) {
 export function cliArgs(cfg, action, args, project = null) {
   const cli = path.join(MIRAGE_ROOT, 'cli.mjs');
   const common = [
-    '--state-dir',
-    path.dirname(miragePaths(cfg, args).discoveryRoot),
-    ...(args.port !== undefined ? ['--port', String(runtimePort(args.port, DEFAULT_PORT))] : []),
-    ...(args.state ? ['--state', path.resolve(args.state)] : []),
-    ...(args.preset ? ['--preset', args.preset] : []),
-    ...(args['apply-configuration'] === true ? ['--apply-configuration'] : []),
-    ...(args['preset-mode'] ? ['--preset-mode', args['preset-mode']] : []),
+    ...(action === 'inspect'
+      ? []
+      : [
+          '--state-dir',
+          path.dirname(miragePaths(cfg, args).discoveryRoot),
+          ...(args.port !== undefined ? ['--port', String(runtimePort(args.port, DEFAULT_PORT))] : []),
+          ...(args.state ? ['--state', path.resolve(args.state)] : []),
+          ...(args.preset ? ['--preset', args.preset] : []),
+          ...(args['apply-configuration'] === true ? ['--apply-configuration'] : []),
+          ...(args['preset-mode'] ? ['--preset-mode', args['preset-mode']] : []),
+          ...(args['allow-live-writes'] === true ? ['--allow-live-writes'] : []),
+        ]),
     ...(args.runtime ? ['--runtime', args.runtime] : []),
     ...(args.simulation ? ['--simulation', args.simulation] : []),
-    // Live writes stay impossible unless this runtime is started with the flag (off by default).
-    ...(args['allow-live-writes'] === true ? ['--allow-live-writes'] : []),
   ];
   if (project) {
     const powerPages = (args.runtime ?? project.runtime?.kind ?? 'power-pages') === 'power-pages';
@@ -775,7 +778,7 @@ export function cliArgs(cfg, action, args, project = null) {
     cfg.envName,
     '--source',
     cfg.sourceDir,
-    ...(origin ? ['--origin', origin] : []),
+    ...(origin && action !== 'inspect' ? ['--origin', origin] : []),
     ...common,
   ];
   // The Mirage reads the site's mirage settings (such as observed behaviour) from the
@@ -2538,9 +2541,21 @@ function print(value, json) {
   console.log(value.message ?? JSON.stringify(value, null, 2));
 }
 
-export default async function mirage(cfg, args, positionals = []) {
-  const action = positionals[0] ?? 'status';
+export function validateMirageArguments(args, action = 'status') {
   validateMirageAction(action);
+  if (['start', 'dev'].includes(action)) {
+    runtimePort(args.port, DEFAULT_PORT);
+    if (args['startup-timeout'] !== undefined) {
+      const timeout = Number(args['startup-timeout']);
+      if (
+        !/^\d+$/.test(args['startup-timeout']) ||
+        !Number.isSafeInteger(timeout) ||
+        timeout < 1000 ||
+        timeout > 600000
+      )
+        throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
+    }
+  }
   if (action === 'dev' && args.json)
     throw new Error(
       'mirage dev is interactive; use mirage start --json and agent commands for structured session access',
@@ -2549,6 +2564,37 @@ export default async function mirage(cfg, args, positionals = []) {
     throw new Error('--out and --force apply only to mirage init');
   if (args['allow-live-writes'] && !['start', 'dev'].includes(action))
     throw new Error('--allow-live-writes applies only to mirage dev and start');
+  if (action === 'inspect') {
+    const allowed = new Set([
+      'config',
+      'repo',
+      'site',
+      'env',
+      'source',
+      'project',
+      'portal',
+      'solution-root',
+      'runtime',
+      'simulation',
+      'json',
+    ]);
+    for (const option of Object.keys(args))
+      if (!allowed.has(option))
+        throw Object.assign(new Error(`--${option} is not supported by mirage inspect`), {
+          code: 'unsupported_option',
+        });
+  }
+  if (action === 'status') {
+    const allowed = new Set(['config', 'project', 'repo', 'json']);
+    for (const option of Object.keys(args))
+      if (!allowed.has(option))
+        throw Object.assign(new Error(`--${option} is not supported by mirage status`), { code: 'unsupported_option' });
+  }
+}
+
+export default async function mirage(cfg, args, positionals = []) {
+  const action = positionals[0] ?? 'status';
+  validateMirageArguments(args, action);
   const paths = miragePaths(cfg, args);
   if (action === 'status') {
     const sessions = await mirageStatus(paths);

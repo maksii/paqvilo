@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { reportCliError } from './cli-output.mjs';
 /**
  * Render sweep: request every exported page of a portal from an isolated, local-only Mirage
  * simulator and report Liquid diagnostics.
@@ -64,6 +65,8 @@ function parseArgs(argv) {
     pathPrefix: args.path,
     limit: args.limit == null ? undefined : Number(args.limit),
   };
+  if (args.limit != null && (!/^\d+$/.test(args.limit) || !Number.isSafeInteger(options.limit) || options.limit < 1))
+    throw new Error('--limit must be a positive integer');
   const sources = [options.site, options.source, options.project].filter(Boolean).length;
   if (sources > 1) throw new Error('Use one of --site, --source or --project.');
   if (options.solutionRoots.length && !options.source) throw new Error('--solution-root applies to --source only.');
@@ -572,10 +575,12 @@ function summarize(report) {
 
 async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
-  if (options.help || (!options.site && !options.source && !options.project)) {
-    console.log(`Usage: paqvilo mirage render-sweep ${toolOptionsHelp('render-sweep')}`);
-    return options.help ? 0 : 2;
+  const usage = `Usage: paqvilo mirage render-sweep ${toolOptionsHelp('render-sweep')}`;
+  if (options.help) {
+    console.log(usage);
+    return 0;
   }
+  if (!options.site && !options.source && !options.project) throw new Error(usage);
   const report = await renderSweep(options);
   const summary = summarize(report);
   if (options.out) {
@@ -599,7 +604,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       process.exitCode = code;
     },
     (error) => {
-      console.error(error.stack ?? String(error));
+      reportCliError(error);
       process.exitCode = 2;
     },
   );

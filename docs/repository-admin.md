@@ -25,6 +25,7 @@ security checks required for administrators.
 
 ## Validation and security
 
+PRs targeting `main` or the `0.9.8` maintenance branch run the CI and Security workflows.
 CI runs the pinned Node 24 toolchain on Ubuntu 24.04 and Windows 2025. Mirage and
 example lanes install .NET SDK 10.0.114 from `global.json`; roll-forward accepts only later servicing patches of that
 feature band (10.0.1xx), so a hosted image or a local SDK update never selects a different compiler band. Ordinary PRs

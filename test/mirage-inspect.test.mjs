@@ -39,7 +39,8 @@ test('Lense Mirage inspect retains invalid-source diagnostic reports and the fai
     ),
   );
   assert.ok(report.errors.some((item) => item.code === 'invalid-yaml' && typeof item.message === 'string'));
-  assert.equal(human.status, 1);
+  assert.equal(human.status, 1, `stdout: ${human.stdout}\nstderr: ${human.stderr}`);
+  assert.ok(human.stdout, `inspect returned no report (status ${human.status}); stderr: ${human.stderr}`);
   assert.ok(JSON.parse(human.stdout).diagnostics.some((item) => item.code === 'invalid-yaml'));
   fs.unlinkSync(fixture.file('broken.sitesetting.yml'));
   const healthy = await run('--json');

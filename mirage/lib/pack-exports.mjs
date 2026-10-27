@@ -131,6 +131,7 @@ export const PACK_EXPORTS = {
 // Provider exports whose modules register their real rows when they load.
 const PENDING = {
   connectors: 'connector-runtime.mjs',
+  connectorDefinitions: 'connector-runtime.mjs',
   httpFixtures: 'connector-runtime.mjs',
   connectionPrincipals: 'connector-runtime.mjs',
   storageProviders: 'storage-provider.mjs',

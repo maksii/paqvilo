@@ -16,6 +16,14 @@ An exported unsupported server-logic endpoint answers HTTP 501 with the camelCas
 
 Use `webapi-inventory`, `bootstrap-report` and `portal-matrix` to find source calls, unresolved table identities and schema gaps. Use a project-owned parity plan for read-only comparisons against an authorized reference browser. Local correctness and live parity are reported separately.
 
+## Choosing a read-only reference
+
+An organization Dataverse CLI can supplement explicitly authorized, bounded organization API comparisons. Qualify the selected CLI version, effective identity, exact request and response shape against an independent signed-in browser capture before using its output as evidence. A scriptable JSON option alone does not establish raw OData, HTTP status, headers, annotations or continuation fidelity. Keep the original captures separately; record unavailable fields as limitations rather than normalizing them away.
+
+Organization-user results do not establish Power Pages portal-session authorization, query rewriting or portal error behavior. The [portal Web API](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview) applies its own enabled table/field settings, permissions and session rules. Keep separate portal-persona captures for those claims, including when a CLI and browser read the same records.
+
+Microsoft's preview [Dataverse CLI](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/cli/) is not a Paqvilo dependency or an automatically selected reference. Review its current authentication, tenant consent and environment prerequisites with the owner before adoption; this guide does not authorize changing them. A project experiment should select reviewed record IDs and bounded read-only cases, verify the intended organization and user, compare several fresh captures with the same Mirage query, and preserve failures and output-shape differences. Keep identities, identifiers, query values, credentials and evidence in the project; never put them in toolkit fixtures or public reports.
+
 ## Permission queries and recording
 
 Portal FetchXML reads compile effective root-table grants into outer relationship joins and an OR permission filter before RetrieveMultiple observers execute. The compiler retains separate relationship paths, shares equivalent paths, traverses imported N:N intersections, and applies the configured Dataverse link-entity budget to the expanded query. The returned `xml` is the query used for local execution. `permissionQuery` reports authored/generated join counts, diagnostics and `qualification: "modeled"`: the XML comes from the local compiler and need not equal the hosted Power Pages rewrite byte for byte. Microsoft's [Liquid FetchXML documentation](https://learn.microsoft.com/en-us/power-pages/configure/liquid/template-tags#xml-attribute) describes the resultant query exposed by Liquid.

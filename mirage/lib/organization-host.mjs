@@ -16,7 +16,7 @@ import { createOrganizationRuntime } from './dataverse-organization.mjs';
 import { createOrganizationBackend } from './organization-backend.mjs';
 import { startDataverseApi, metadataRead, operationCall, unboundFunction } from './dataverse-api.mjs';
 import { createManagedIdentityEndpoints } from './dataverse-managed-identity.mjs';
-import { createConnectorRuntime } from './connector-runtime.mjs';
+import { connectorOf, createConnectorRuntime } from './connector-runtime.mjs';
 import { createHostFlowRuns } from './flow-runs.mjs';
 import { assertProvider, createStorageRouter, preflightProvider, storageSettings } from './storage-provider.mjs';
 import { createLocalDiskStorage } from './storage-local-disk.mjs';
@@ -775,8 +775,9 @@ export function codeAppDataverse({ organization, change, origin }) {
  */
 export function codeAppConnectors(connectors, connections = {}) {
   return async ({ reference, operationId, body, principal }) => {
-    const connectorId = reference.apiId ?? reference.key;
+    const connectorId = connectorOf(reference.apiId ?? reference.key);
     const connectionId = Object.hasOwn(connections, reference.key) ? reference.key : null;
+    connectors.validateOperation?.(connectorId, { operationId, parameters: body ?? {} });
     // An undeclared connector with no default implementation is an unsupported operation, not a failed resolution.
     if (
       connectionId === null &&

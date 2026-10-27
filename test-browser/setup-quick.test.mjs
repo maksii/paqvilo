@@ -15,21 +15,26 @@ import { startSetupServer } from '../lense/setup/server.mjs';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-// Setup gives a new project the first free port from 8787 (and 8790 for the Web API) when it writes the file; every
-// concurrent run on this computer picks the same ones, so a later start can lose them. The written project moves to a
-// port the system assigns, and the Web API to a free one at every start (port 0), before it starts.
-async function ownPorts(config) {
+// Keep the nominal portal origin occupied while each preview asks the runtime to
+// bind its own ephemeral port. This exercises allocation without a probe-close race.
+async function ownPorts(config, t) {
   const document = YAML.parse(await fs.readFile(config, 'utf8'));
+  const occupied = net.createServer();
+  await new Promise((resolve, reject) => {
+    occupied.once('error', reject);
+    occupied.listen(0, '127.0.0.1', resolve);
+  });
+  ownedFixture(t).add(
+    () => new Promise((resolve, reject) => occupied.close((error) => (error ? reject(error) : resolve()))),
+  );
+  const { port } = occupied.address();
   for (const site of Object.values(document.sites)) {
-    const server = net.createServer();
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const { port } = server.address();
-    await new Promise((resolve) => server.close(resolve));
     site.environments.local = `http://127.0.0.1:${port}`;
-    site.mirage.port = port;
+    site.mirage.port = 0;
     if (site.mirage.dataverse?.port) site.mirage.dataverse.port = 0;
   }
   await fs.writeFile(config, YAML.stringify(document));
+  return { occupied, port };
 }
 // Waits for the started preview, or fails at once with the reason the page shows when it could not start.
 async function started(run) {
@@ -82,7 +87,7 @@ test(
     assert.equal(written.sites[name].mirage.simulation.level, 'dry-run');
     assert.match(await page.locator('#quick-files .quick-summary').innerText(), /Website: exports\/site/);
     assert.equal(written.sites[name].environments.local, `http://127.0.0.1:${written.sites[name].mirage.port}`);
-    await ownPorts(config);
+    const blocked = await ownPorts(config, t);
 
     await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).click();
     await started(page.locator('#quick-run'));
@@ -90,6 +95,8 @@ test(
       .locator('#quick-run')
       .getByRole('link', { name: /Open website/ })
       .getAttribute('href');
+    assert.notEqual(Number(new URL(website).port), blocked.port);
+    assert.equal(blocked.occupied.listening, true);
     assert.equal((await fetch(website)).status, 200, 'the opened website answers');
 
     await page.locator('#quick-run').getByRole('button', { name: 'Stop' }).click();
@@ -172,7 +179,7 @@ test(
     assert.equal(saved.mirage.presetMode, 'bootstrap');
     delete saved.mirage.dataPacks;
     await fs.writeFile(config, YAML.stringify({ ...plain, sites: { [name]: saved } }));
-    await ownPorts(config);
+    const blocked = await ownPorts(config, t);
     await page.getByRole('button', { name: 'Refresh status' }).click();
 
     await page
@@ -182,7 +189,10 @@ test(
     const run = page.locator('#guidance-run');
     await run.getByRole('button', { name: 'Start preview' }).click();
     await started(run);
-    assert.equal((await fetch(await run.getByRole('link', { name: /Open website/ }).getAttribute('href'))).status, 200);
+    const website = await run.getByRole('link', { name: /Open website/ }).getAttribute('href');
+    assert.notEqual(Number(new URL(website).port), blocked.port);
+    assert.equal(blocked.occupied.listening, true);
+    assert.equal((await fetch(website)).status, 200);
     assert.match(await run.innerText(), /Dataverse Web API for your scripts and tests/);
     await run.getByRole('button', { name: 'Stop' }).click();
     await run.getByRole('button', { name: 'Start preview' }).waitFor({ timeout: 60_000 });

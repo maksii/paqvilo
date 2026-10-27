@@ -397,8 +397,13 @@ export async function interceptOrigins(
       await configure('Runtime.enable');
       await configure('Runtime.addBinding', { name: record.draftBinding });
       record.draftBindingReady = true;
-      record.draftScript = await configure('Page.addScriptToEvaluateOnNewDocument', { source: draftSource });
-      await configure('Runtime.evaluate', { expression: draftSource });
+      // Register the tracker and install it in existing contexts in one CDP command.
+      // A separate Runtime.evaluate can lose its context during a new-tab navigation,
+      // falsely treating a healthy target as an interception failure.
+      record.draftScript = await configure('Page.addScriptToEvaluateOnNewDocument', {
+        source: draftSource,
+        runImmediately: true,
+      });
       // CSP remains enforced unless explicitly disabled for this development session.
       if (bypassCSP) await configure('Page.setBypassCSP', { enabled: true });
       // A file the browser has cached from the online site would not be asked for again when its

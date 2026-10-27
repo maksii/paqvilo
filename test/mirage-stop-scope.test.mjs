@@ -211,8 +211,7 @@ test(
           project,
           '--portal',
           'first',
-          '--port',
-          '0',
+          ...(action === 'inspect' ? [] : ['--port', '0']),
           ...(action === 'dev' ? [] : ['--json']),
         ]);
         assert.equal(refused.status, 1, refused.stdout + refused.stderr);

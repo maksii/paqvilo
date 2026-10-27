@@ -180,9 +180,20 @@ Close the browser or press Ctrl+C to stop. --headless and --debug-port are also 
 Use --scaffold to prepare the project and VS Code workspace without starting a browser.`);
     return;
   }
+  for (const [key, value] of Object.entries(values)) {
+    const entries = Array.isArray(value) ? value : [value];
+    if (entries.some((item) => typeof item === 'string' && !item.trim()))
+      throw new Error(`--${key} must not be empty or whitespace`);
+  }
   if (values.browser && !['msedge', 'chrome', 'chromium'].includes(values.browser))
     throw new Error('--browser must be msedge, chrome or chromium');
-  if (values['debug-port'] && !/^\d+$/.test(values['debug-port'])) throw new Error('--debug-port must be an integer');
+  if (
+    values['debug-port'] !== undefined &&
+    (!/^\d+$/.test(values['debug-port']) || Number(values['debug-port']) > 65535)
+  )
+    throw new Error('--debug-port must be an integer between 0 and 65535');
+  if (values.scaffold && (values.browser !== undefined || values.headless || values['debug-port'] !== undefined))
+    throw new Error('--scaffold cannot be combined with browser, headless or debug-port options');
   const demo = await prepareDemo(values.dir);
   if (values.scaffold) {
     console.log(
