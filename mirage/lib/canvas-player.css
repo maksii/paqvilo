@@ -34,6 +34,9 @@ main {
   max-width: calc(100vw - 370px);
   border: 1px solid #aaa;
 }
+.canvas-surface {
+  position: relative;
+}
 .stage {
   position: relative;
   background: white;
@@ -89,4 +92,71 @@ button {
   aside {
     width: auto;
   }
+}
+
+.canvas-combobox {
+  display: flex;
+  flex-direction: column;
+}
+.canvas-combobox > input,
+.canvas-combobox > select {
+  width: 100%;
+  min-height: 0;
+}
+.canvas-combobox > select {
+  flex: 1;
+}
+
+@keyframes canvas-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes canvas-cover {
+  from {
+    opacity: 0;
+    translate: 12px 0;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+@keyframes canvas-uncover {
+  from {
+    opacity: 0;
+    translate: -12px 0;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+.canvas-transition-fade {
+  animation: canvas-fade 160ms ease-out;
+}
+.canvas-transition-cover {
+  animation: canvas-cover 160ms ease-out;
+}
+.canvas-transition-uncover {
+  animation: canvas-uncover 160ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-transition-fade,
+  .canvas-transition-cover,
+  .canvas-transition-uncover {
+    animation: none;
+  }
+}
+
+.canvas-addmedia {
+  display: flex;
+  flex-direction: column;
+}
+.canvas-addmedia > input {
+  min-height: 0;
+  width: 100%;
 }

@@ -308,6 +308,7 @@ export async function importCodeComponents(layers = [], { readFile = readLocalFi
             ...property.attrs,
             types: typeGroups[property.attrs['of-type-group']],
           })),
+          events: (control.children ?? []).filter((node) => node.name === 'event').map((node) => ({ ...node.attrs })),
           features,
           libraries,
           resources: resources.sort((a, b) => a.order - b.order),

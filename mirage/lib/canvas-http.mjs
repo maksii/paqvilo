@@ -1,6 +1,7 @@
 import { canvasViewport } from './canvas-runtime.mjs';
 import { canvasRenderingGaps } from './canvas-rendering.mjs';
 import { canvasSourceCoverageGaps } from './canvas-source.mjs';
+import { CANVAS_ASSETS, canvasAssetUrls } from './canvas-assets.mjs';
 // Canvas app host under the reserved `/_apps/canvas/` prefix: the inventory page of every app and, when the host wires
 // the headless runtime (canvas-runtime.mjs), the app view: screens and controls with their current property values,
 // variables, collections, data sources, forms, notifications and errors, with HTML forms that drive it. Nothing is
@@ -19,8 +20,9 @@ const PLAYER_BANNER =
   'Canvas apps use a bounded local player; unsupported features and incomplete sources are reported';
 const INVENTORY_BANNER = 'Canvas apps are inventoried only on this host; nothing is executed';
 const CSP =
-  "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
+  "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; media-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
 const BODY_LIMIT = 64 * 1024;
+const IMAGE_BODY_LIMIT = 1_500_000;
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 const escapeHtml = (value) =>
   String(value ?? '').replace(
@@ -64,11 +66,12 @@ async function readForm(req) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > BODY_LIMIT) throw failure(413, 'PayloadTooLarge', 'The request body is too large.');
+    if (size > IMAGE_BODY_LIMIT) throw failure(413, 'PayloadTooLarge', 'The request body is too large.');
     chunks.push(chunk);
   }
   const text = Buffer.concat(chunks).toString('utf8');
   if (/^application\/x-www-form-urlencoded\b/i.test(req.headers['content-type'] ?? '')) {
+    if (size > BODY_LIMIT) throw failure(413, 'PayloadTooLarge', 'The request body is too large.');
     const fields = Object.fromEntries(new URLSearchParams(text));
     const action = {
       action: fields.action,
@@ -89,6 +92,8 @@ async function readForm(req) {
   }
   if (!action || typeof action !== 'object' || Array.isArray(action))
     throw failure(400, 'CanvasActionInvalid', 'The request body must be a JSON object with an action.');
+  if (size > BODY_LIMIT && !(action.action === 'add-media' && typeof action.data === 'string'))
+    throw failure(413, 'PayloadTooLarge', 'Only bounded image input accepts a larger request body.');
   return { form: false, csrf: req.headers['x-sim-csrf'], action };
 }
 
@@ -257,6 +262,12 @@ export function createCanvasHandler({
     }
     const { form, csrf: token, action } = await readForm(req);
     if (!csrf() || token !== csrf()) throw failure(403, 'CsrfRequired', 'Missing simulator CSRF token.');
+    if (action.sourceRevision !== undefined && action.sourceRevision !== app.source.revision)
+      throw failure(
+        409,
+        'CanvasSourceChanged',
+        'The app source changed. Reload the player and explicitly start its new revision.',
+      );
     if (action.action === 'reset' || action.action === 'start') {
       // Launch parameters (Param) of a new instance: a record of text values; a running instance keeps its own (parameter
       // values do not change until the app reloads), so a page that passes new ones resets first.
@@ -386,6 +397,24 @@ export function createCanvasHandler({
       });
     }
     const rest = pathname.slice(PREFIX.length);
+    const assetRoute = /^([^/]+)\/assets\/([^/]+)$/.exec(rest);
+    if (assetRoute) {
+      const app = find(assetRoute[1]);
+      let name;
+      try {
+        name = decodeURIComponent(assetRoute[2]);
+      } catch {
+        name = null;
+      }
+      const asset = name && app?.source?.[CANVAS_ASSETS]?.get(name);
+      if (!asset) throw failure(404, 'CanvasAssetNotFound', 'Canvas asset not found.');
+      if (asset.type === 'image/svg+xml')
+        res.setHeader(
+          'content-security-policy',
+          "sandbox; default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        );
+      return send(res, 200, asset.type, asset.data);
+    }
     if (!rest || pathname === '/_apps/canvas') {
       if (/\bapplication\/json\b/.test(req.headers.accept ?? ''))
         return json(res, 200, {
@@ -416,16 +445,23 @@ export function createCanvasHandler({
     const [, inventory, encoded] = /^(api\/)?([^/]+)$/.exec(rest) ?? [];
     const app = encoded && find(encoded);
     if (!app) throw failure(404, 'CanvasAppNotFound', 'Canvas app not found.');
+    if (inventory && url.searchParams.get('revision') === '1')
+      return json(res, 200, { revision: app.source.revision ?? null });
     if (inventory)
       return json(res, 200, {
         uniqueName: app.uniqueName,
         level: levelOf(app.source, Boolean(runtime)),
         reason: canvasSourceCoverageGaps(app.source)[0]?.code ?? reasonOf(runtime),
         ...app.source,
+        assets: canvasAssetUrls(app.uniqueName, app.source[CANVAS_ASSETS] ?? new Map()),
         rendering: { level: 'contract', gaps: canvasRenderingGaps(app.source) },
       });
-    if (runtime && app.source.screens.length && url.searchParams.get('view') !== 'inspect')
+    if (runtime && app.source.screens.length && url.searchParams.get('view') !== 'inspect') {
+      // Explicitly trusted PCF bundles commonly generate Fluent CSS at runtime. Script execution stays same-origin.
+      if (Object.values(app.source.codeComponents ?? {}).some((component) => component.admitted))
+        res.setHeader('content-security-policy', CSP.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'"));
       return send(res, 200, 'text/html; charset=utf-8', canvasPlayerPage(app, csrf() ?? ''));
+    }
     return view(req, res, app);
   };
   return (req, res, url = new URL(req.url, 'http://localhost')) => {

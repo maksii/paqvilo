@@ -50,7 +50,9 @@ import { DataError } from './data-error.mjs';
 import { dataverseSettings } from './dataverse-settings.mjs';
 import { runtimeSettings } from './runtime-config.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
-import { readCanvasSources } from './canvas-source.mjs';
+import { readCanvasSources, canvasSourceCoverageGaps } from './canvas-source.mjs';
+import { unsupportedControls } from './canvas-controls.mjs';
+import { CANVAS_ASSETS } from './canvas-assets.mjs';
 import { MODEL_DRIVEN_CAPABILITY_RECORDS } from './model-driven/catalogue.mjs';
 import { customConnectorsOf } from './custom-connector.mjs';
 import { describe as flowTriggersDescribe } from './flow-triggers.mjs';
@@ -692,8 +694,11 @@ function canvasAppsOf(records = []) {
         components: record.tree?.components ?? (record.canvas?.components ?? []).map((name) => ({ name })),
         tree: record.tree ?? null,
         dataSources: record.canvas?.dataSources ?? [],
+        ...(record.canvas?.enums ? { enums: record.canvas.enums } : {}),
         formulas: record.canvas?.formulas ?? [],
         diagnostics: record.canvas?.diagnostics ?? record.diagnostics ?? [],
+        ...(record.canvas?.assetDiagnostics?.length ? { assetDiagnostics: record.canvas.assetDiagnostics } : {}),
+        ...(record[CANVAS_ASSETS] ? { [CANVAS_ASSETS]: record[CANVAS_ASSETS] } : {}),
       },
     }));
 }
@@ -872,7 +877,12 @@ async function hostContext({
     extensions: null,
     // Project canvas configuration (canvas-source.mjs canvasSettings): enabled (default true) and the records of canvas.sources,
     // read once by loadCanvas(); a missing path is CANVAS_SOURCE_MISSING and a missing preflight requirement.
-    canvas: { enabled: config.canvas?.enabled !== false, records: [], diagnostics: [] },
+    canvas: {
+      enabled: config.canvas?.enabled !== false,
+      codeComponents: config.canvas?.codeComponents === true,
+      records: [],
+      diagnostics: [],
+    },
   };
   c.providers = await composeProviders({
     store,
@@ -1367,14 +1377,34 @@ function hostReports(c) {
       scenario = null,
       strict = false,
       diagnostics = [],
+      preparedCanvas = null,
       env = process.env,
     } = {}) {
       const localServices = c.config.localServices ? await preflightLocalServices(c.config.localServices, { env }) : [];
       // Missing project canvas sources are requirements of the source graph (kind canvas-source).
       // Project canvas apps get the canvas:app/<name> rows Solution apps get (source-graph.mjs canvasRequirementRows), once each.
-      const graphRows = graph?.requirements?.() ?? [];
+      const preparedRows = preparedCanvas
+        ? canvasRequirementRows(
+            preparedCanvas.map(({ uniqueName, source }) => ({
+              ...source,
+              component: 'canvasapp',
+              name: uniqueName,
+              level: source.screens?.length ? 'behaviour' : 'inventory',
+              sourceDiagnostics: canvasSourceCoverageGaps(source),
+              unsupported: [
+                ...unsupportedControls(source),
+                ...Object.entries(source.codeComponents ?? {})
+                  .filter(([, definition]) => !definition.admitted)
+                  .map(([name]) => ({ name, screen: '', control: 'CodeComponent' })),
+              ],
+            })),
+          )
+        : null;
+      const graphRows = (graph?.requirements?.() ?? []).map(
+        (row) => preparedRows?.find((prepared) => prepared.id === row.id) ?? row,
+      );
       const known = new Set(graphRows.map((row) => row.id));
-      const projectCanvasRows = canvasRequirementRows(canvas.records);
+      const projectCanvasRows = preparedRows ?? canvasRequirementRows(canvas.records);
       const projectRendering = projectCanvasRows.find((row) => row.id === 'canvas:rendering');
       // Rendering is a shared requirement across both Solution and project apps.
       // A satisfied Solution row must not hide an unsupported project app.
@@ -1394,7 +1424,7 @@ function hostReports(c) {
         ...projectCanvasRows.filter((row) => !known.has(row.id)),
       ];
       const sourceGraph =
-        missing.length || combinedGraphRows.some((row, index) => row !== graphRows[index])
+        preparedRows || missing.length || combinedGraphRows.some((row, index) => row !== graphRows[index])
           ? Object.create(graph ?? null, {
               requirements: { value: () => [...combinedGraphRows, ...missing] },
             })

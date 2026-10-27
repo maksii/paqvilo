@@ -436,7 +436,7 @@ function canvasNodes(records = []) {
         reason: 'CANVAS_RENDERING_BASELINE',
         level: 'contract',
         message:
-          'The local HTML player renders the hosted basic control catalogue at /_apps/canvas/<app>. Native visual fidelity, media, components and modern-control parity are not implemented; unreadable apps and unsupported controls cannot be rendered.',
+          'The local HTML player renders admitted controls at /_apps/canvas/<app>. Rendering approximations, unreadable sources and unsupported contracts remain explicit gaps; this verdict does not establish native Power Apps visual fidelity.',
       },
     });
   return nodes;

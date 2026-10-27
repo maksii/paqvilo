@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { canvasRenderingGaps } from '../lib/canvas-rendering.mjs';
 import { canvasRequirementRows } from '../lib/source-graph.mjs';
 
-test('rendering admission keeps logic-only media, modern controls and components visible as gaps', () => {
+test('rendering admission keeps modern controls and components visible as gaps', () => {
   const tree = {
     screens: [
       {
@@ -21,7 +21,7 @@ test('rendering admission keeps logic-only media, modern controls and components
   const gaps = canvasRenderingGaps({ tree });
   assert.deepEqual(
     gaps.map((gap) => gap.name),
-    ['Photo', 'ModernSave', 'Custom'],
+    ['ModernSave', 'Custom'],
   );
   const rows = canvasRequirementRows([{ component: 'canvasapp', name: 'invented', level: 'behaviour', tree }]);
   assert.equal(rows.find((row) => row.id === 'canvas:rendering').status, 'unsupported');

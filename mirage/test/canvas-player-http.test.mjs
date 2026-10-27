@@ -73,6 +73,22 @@ test('player GET is inert, assets are same-origin and start requires CSRF', asyn
   });
   assert.equal(invalid.status, 400, 'invalid reset is refused before changing the instance');
   assert.equal(starts, 2);
+  app.source.revision = 'new-source';
+  const stale = await fetch(`${url}/_apps/api/canvas/test`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': 'token' },
+    body: JSON.stringify({ action: 'select', control: 'OldButton', sourceRevision: 'old-source' }),
+  });
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).error.code, 'CanvasSourceChanged');
+  assert.equal(starts, 2, 'a stale browser action cannot start a new source revision');
+  const oversized = await fetch(`${url}/_apps/api/canvas/test`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': 'token' },
+    body: JSON.stringify({ action: 'run', formula: 'x'.repeat(65536) }),
+  });
+  assert.equal(oversized.status, 413);
+  assert.equal(starts, 2);
   const inspect = await (await fetch(`${url}/_apps/canvas/test?view=inspect`)).text();
   assert.match(inspect, /Headless app/);
 });
@@ -156,4 +172,36 @@ test('collision source is inventoried without starting, and real runtime refuses
   assert.equal((await result.json()).error.code, 'CanvasSourceNameCollision');
   assert.equal(runtime.size, 0);
   assert.equal(evaluations, 0);
+});
+
+test('canvas archive media is served only through bounded same-origin asset routes', async (t) => {
+  const archive = writeSolutionAssetEntries([
+    { name: 'Src/Home.pa.yaml', data: Buffer.from('Screens:\n  Home: {}\n') },
+    { name: 'Assets/icon.png', data: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]) },
+    { name: 'Assets/Images/nested.jpg', data: Buffer.from([255, 216, 255, 217]) },
+    { name: 'Assets/script.html', data: Buffer.from('<script>bad()</script>') },
+  ]);
+  const source = await readCanvasSource({ msapp: archive, name: 'Media' });
+  const app = { uniqueName: 'media', source };
+  const handler = createCanvasHandler({ apps: () => [app], runtime: { existing: () => null } });
+  const server = http.createServer((req, res) => {
+    if (!handler(req, res)) res.writeHead(404).end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const inventory = await (await fetch(`${url}/_apps/canvas/api/media`)).json();
+  assert.deepEqual(inventory.assets, {
+    'icon.png': '/_apps/canvas/media/assets/icon.png',
+    'Images/nested.jpg': '/_apps/canvas/media/assets/Images%2Fnested.jpg',
+  });
+  assert.doesNotMatch(JSON.stringify(inventory), /137,80,78,71/);
+  const image = await fetch(url + inventory.assets['icon.png']);
+  assert.equal(image.headers.get('content-type'), 'image/png');
+  assert.match(image.headers.get('content-security-policy'), /img-src 'self'/);
+  assert.deepEqual([...new Uint8Array(await image.arrayBuffer())], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal((await fetch(url + inventory.assets['Images/nested.jpg'])).status, 200);
+  assert.equal((await fetch(`${url}/_apps/canvas/media/assets/script.html`)).status, 404);
+  assert.equal((await fetch(`${url}/_apps/canvas/media/assets/%2e%2e%2fscript.html`)).status, 404);
+  assert.equal((await fetch(`${url}/_apps/canvas/media/assets/icon.png`, { method: 'POST' })).status, 405);
 });

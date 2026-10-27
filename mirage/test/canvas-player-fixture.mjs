@@ -174,8 +174,24 @@ export const files = {
   }),
 };
 
+export function canvasLocalIdentity() {
+  return {
+    version: 1,
+    mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' } },
+    tables: { contact: [{ contactid: 'alex', fullname: 'Alex Local', statecode: 0 }] },
+    permissions: [],
+    simulator: {
+      mode: 'local',
+      pageMode: 'local',
+      permissionSource: 'configured',
+      live: { allowWrites: false },
+      endpoints: [],
+    },
+  };
+}
+
 /** Invented app through the same configured source path as project exports. */
-export async function canvasPlayerFixture(t, format, { gaps = false } = {}) {
+export async function canvasPlayerFixture(t, format, { gaps = false, watch = false } = {}) {
   const sources = { ...files };
   if (gaps) {
     sources['Src/Broken.pa.yaml'] = 'Screens: [';
@@ -208,25 +224,13 @@ export async function canvasPlayerFixture(t, format, { gaps = false } = {}) {
   }
   const sim = await createSimulator({
     sourceDir: path.join(root, 'portal'),
-    stateFile: path.join(root, 'state.json'),
+    stateFile: path.join(root, watch ? '.paqvilo/state.json' : 'state.json'),
     projectRoot: root,
     port: 0,
-    watch: false,
+    watch,
     canvas: { sources: [format === 'archive' ? 'Invented.msapp' : 'apps/invented'] },
-    initial: {
-      version: 1,
-      mappings: { contact: { entitySet: 'contacts', idColumn: 'contactid', nameColumn: 'fullname' } },
-      tables: { contact: [{ contactid: 'alex', fullname: 'Alex Local', statecode: 0 }] },
-      permissions: [],
-      simulator: {
-        mode: 'local',
-        pageMode: 'local',
-        permissionSource: 'configured',
-        live: { allowWrites: false },
-        endpoints: [],
-      },
-    },
+    initial: canvasLocalIdentity(),
   });
   cleanup.add(() => sim.close());
-  return sim;
+  return Object.assign(sim, { fixtureRoot: root });
 }

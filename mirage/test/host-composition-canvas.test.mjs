@@ -256,3 +256,100 @@ test('Solution and project canvas rendering preflight includes incomplete projec
     assert.equal(rows['canvas:rendering'].status, 'unsupported');
   }
 });
+
+test('configured extracted canvas media survives inventory and host composition', async (t) => {
+  const sim = await start(
+    ownedFixture(t),
+    { sources: ['apps/fx_invented'] },
+    {
+      files: { 'apps/fx_invented/Assets/icon.png': Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]) },
+    },
+  );
+  const inventory = await (await fetch(`${sim.url}/_apps/canvas/api/fx_invented`)).json();
+  assert.equal(inventory.assets['icon.png'], '/_apps/canvas/fx_invented/assets/icon.png');
+  const response = await fetch(sim.url + inventory.assets['icon.png']);
+  assert.equal(response.status, 200);
+  assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], [137, 80, 78, 71, 13, 10, 26, 10]);
+});
+
+async function solutionWithCanvasMedia(t, assets) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-solution-media-'));
+  const owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const payload = writeSolutionAssetEntries([{ name: 'Src/Home.pa.yaml', data: Buffer.from(HOME) }, ...assets]);
+  for (const [name, body] of Object.entries({
+    'solution/Other/Solution.xml':
+      '<ImportExportXml><SolutionManifest><UniqueName>Invented</UniqueName></SolutionManifest></ImportExportXml>',
+    'solution/CanvasApps/x_app.meta.xml': '<CanvasApp><Name>x_app</Name></CanvasApp>',
+    'solution/CanvasApps/x_app_DocumentUri.msapp': payload,
+  })) {
+    const file = path.join(root, name);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, body);
+  }
+  const sim = await createSimulator({
+    runtime: { kind: 'dataverse-api' },
+    solutionRoots: [path.join(root, 'solution')],
+    projectRoot: root,
+    port: 0,
+    watch: false,
+    simulation: { level: 'dry-run' },
+    dataverse: { enabled: true, tls: false, tds: { enabled: false } },
+  });
+  owner.add(() => sim.close());
+  return sim;
+}
+
+test('Solution canvas media survives payload layering and host composition', async (t) => {
+  const bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const sim = await solutionWithCanvasMedia(t, [{ name: 'Assets/icon.png', data: bytes }]);
+  const inventory = await (await fetch(`${sim.url}/_apps/canvas/api/x_app`)).json();
+  assert.equal(inventory.assets['icon.png'], '/_apps/canvas/x_app/assets/icon.png');
+  const response = await fetch(sim.url + inventory.assets['icon.png']);
+  assert.equal(response.status, 200);
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), bytes);
+});
+
+test('legacy exported option names survive configured source host composition', async (t) => {
+  const sim = await start(
+    ownedFixture(t),
+    { sources: ['apps/legacy'] },
+    {
+      files: {
+        'apps/legacy/Src/Home.fx.yaml': 'Home As screen:\n  Label1 As label:\n    Text: ="x"\n',
+        'apps/legacy/DataSources/item.json': JSON.stringify([
+          {
+            Name: 'x_state',
+            Type: 'OptionSetInfo',
+            DisplayName: 'Status (Items)',
+            OptionSetInfoNameMapping: { 0: 'Active', 1: 'Inactive' },
+          },
+        ]),
+      },
+    },
+  );
+  const inventory = await (await fetch(`${sim.url}/_apps/canvas/api/legacy`)).json();
+  assert.deepEqual(inventory.enums, { 'Status (Items)': { Active: 0, Inactive: 1 } });
+});
+
+test('unavailable project media diagnostics survive into host inventory', async (t) => {
+  const sim = await start(
+    ownedFixture(t),
+    { sources: ['apps/fx_invented'] },
+    {
+      files: { 'apps/fx_invented/Assets/too-large.png': Buffer.alloc(8 * 1024 * 1024 + 1) },
+    },
+  );
+  const inventory = await (await fetch(`${sim.url}/_apps/canvas/api/fx_invented`)).json();
+  assert.equal(inventory.assetDiagnostics[0].code, 'CANVAS_ASSET_UNAVAILABLE');
+  assert.equal(Object.keys(inventory.assets).length, 0);
+});
+
+test('unavailable Solution media diagnostics survive into host inventory', async (t) => {
+  const sim = await solutionWithCanvasMedia(t, [
+    { name: 'Assets/Images/large.png', data: Buffer.alloc(8 * 1024 * 1024 + 1) },
+  ]);
+  const inventory = await (await fetch(`${sim.url}/_apps/canvas/api/x_app`)).json();
+  assert.equal(inventory.assetDiagnostics[0].code, 'CANVAS_ASSET_UNAVAILABLE');
+  assert.equal(Object.keys(inventory.assets).length, 0);
+});
