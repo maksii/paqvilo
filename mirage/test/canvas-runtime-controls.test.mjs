@@ -684,17 +684,24 @@ test('comment-only saved formulas are blank while invalid expressions remain err
       { name: 'Line', control: 'Label@1' },
       { name: 'Block', control: 'Label@1' },
       { name: 'Bad', control: 'Label@1' },
+      { name: 'Adjacent', control: 'Label@1' },
+      { name: 'Open', control: 'Label@1' },
     ],
     [
       { owner: 'Line', property: 'Text', text: '= // disabled\n' },
       { owner: 'Block', property: 'Text', text: '= /* disabled */ // again' },
       { owner: 'Bad', property: 'Text', text: '=1+' },
+      { owner: 'Adjacent', property: 'Text', text: '=/**//**//* a **/' },
+      // Adjacent comments before an unterminated one backtracked exponentially in an ambiguous comment pattern.
+      { owner: 'Open', property: 'Text', text: `=/*${'*//*'.repeat(40)}` },
     ],
   );
   const snapshot = await runtime.start();
   assert.equal(snapshot.screens[0].controls[0].properties.Text, null);
   assert.equal(snapshot.screens[0].controls[1].properties.Text, null);
+  assert.equal(snapshot.screens[0].controls[3].properties.Text, null);
   assert.ok(snapshot.errors.some((error) => error.source === 'Bad.Text'));
+  assert.ok(snapshot.errors.some((error) => error.source === 'Open.Text'));
   assert.equal(
     snapshot.errors.some((error) => error.source === 'Line.Text' || error.source === 'Block.Text'),
     false,

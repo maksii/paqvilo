@@ -288,7 +288,7 @@ export function createCanvasApp({
     const owner = row.owner.includes('.') ? row.owner.slice(row.owner.indexOf('.') + 1) : row.owner;
     if (!formulas.has(owner)) formulas.set(owner, new Map());
     const raw = String(row.text ?? '').trimStart();
-    const blankFormula = /^=(?:\s|\/\/[^\r\n]*(?:\r?\n|$)|\/\*[\s\S]*?\*\/)*$/.test(raw);
+    const blankFormula = /^=(?:\s|\/\/[^\r\n]*(?:\r?\n|$)|\/\*(?:[^*]|\*+[^*/])*\*+\/)*$/.test(raw);
     // A formula starts with `=`; any other scalar is a literal value.
     formulas.get(owner).set(
       row.property,
