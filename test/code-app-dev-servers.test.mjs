@@ -11,6 +11,68 @@ import { startCodeAppDevServers } from '../lense/code-app-dev-servers.mjs';
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const close = (server) => new Promise((resolve) => server.close(resolve));
 
+test('readiness refuses external, non-HTTP and credential-bearing URLs before any request', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  globalThis.fetch = () => assert.fail('refused destinations must never be requested');
+  for (const localAppUrl of [
+    'https://outside.example.test/',
+    'http://127.0.0.1@outside.example.test/',
+    'http://name:invented@localhost:5199/',
+    'file:///invented/app',
+  ])
+    await assert.rejects(
+      startCodeAppDevServers(
+        [
+          {
+            name: 'refused',
+            dir: '.',
+            localAppUrl,
+            devServer: { command: ['must-not-start'] },
+          },
+        ],
+        { output: () => {} },
+      ),
+      /loopback/,
+    );
+});
+
+test('readiness does not follow a configured loopback listener redirect', { timeout: 15000 }, async (t) => {
+  let redirected = 0;
+  const destination = http.createServer((_req, res) => {
+    redirected++;
+    res.end('unexpected');
+  });
+  await listen(destination);
+  const listener = http.createServer((_req, res) => {
+    res.writeHead(302, { location: `http://127.0.0.1:${destination.address().port}/private` });
+    res.end();
+  });
+  await listen(listener);
+  t.after(async () => {
+    listener.closeAllConnections();
+    destination.closeAllConnections();
+    await Promise.all([close(listener), close(destination)]);
+  });
+  await assert.rejects(
+    startCodeAppDevServers(
+      [
+        {
+          name: 'redirected',
+          dir: '.',
+          localAppUrl: `http://127.0.0.1:${listener.address().port}/mounted`,
+          devServer: { command: ['definitely-missing-code-app-command'], timeoutMs: 1000 },
+        },
+      ],
+      { output: () => {} },
+    ),
+    /could not start/,
+  );
+  assert.equal(redirected, 0);
+});
+
 test('readiness probing releases a response whose body does not finish', { timeout: 15000 }, async (t) => {
   let observedClose;
   const closed = new Promise((resolve) => {

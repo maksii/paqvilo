@@ -2,6 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { configure, dataClient, getStatus } from '../lib/code-apps-client.js';
 
+test('debug events mask long unclosed keys from connector operation paths', async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  const events = [];
+  globalThis.fetch = async (url) =>
+    url.endsWith('/context') ? new Response('{}', { headers: { 'x-sim-csrf': 'local-token' } }) : new Response('{}');
+  configure({ app: 'sample', onEvent: (event) => events.push(event) });
+  await dataClient.execute('reference', '('.repeat(20000) + 'private-unclosed-key', {});
+  const path = events.at(-1).path;
+  assert.equal(path.length, '/_apps/code/sample/connectors/reference/(...)'.length);
+  assert.equal(path, '/_apps/code/sample/connectors/reference/(...)');
+});
+
 test('debug events omit payloads and query values, preserve failures and isolate per-load sessions', async (t) => {
   const original = globalThis.fetch;
   t.after(() => {

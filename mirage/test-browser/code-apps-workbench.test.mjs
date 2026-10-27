@@ -100,6 +100,24 @@ test('workbench switches local apps, keeps parameters separate and accepts only 
   await page.getByText('Bridge connected').waitFor();
   assert.match(await page.locator('#events').innerText(), /items\(\.\.\.\)/);
   assert.doesNotMatch(await page.locator('#events').innerText(), /not-visible|private-value|secret-id/);
+  await frame1.evaluate(() =>
+    parent.postMessage(
+      {
+        type: 'paqvilo:code-app',
+        app: 'first',
+        event: {
+          kind: 'request',
+          method: 'POST',
+          status: 501,
+          path: '/_apps/code/first/connectors/reference/' + '('.repeat(20000) + 'private-unclosed-key',
+        },
+      },
+      '*',
+    ),
+  );
+  await page.locator('#events li').last().filter({ hasText: 'POST' }).waitFor();
+  const malformed = await page.locator('#events li').last().innerText();
+  assert.equal(malformed, 'request · POST · /_apps/code/first/connectors/reference/(...) · 501');
   await frame1.evaluate(() => {
     parent.postMessage({ type: 'paqvilo:code-app', app: 'first', event: { kind: 'private-kind' } }, '*');
     parent.postMessage({ type: 'paqvilo:code-app', app: 'first', event: { kind: 'request', path: '/outside' } }, '*');
