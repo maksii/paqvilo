@@ -62,8 +62,16 @@ test(
   async (t) => {
     const root = await project(t);
     const guide = await fs.readFile(path.join(root, 'docs/acceptance.md'), 'utf8');
-    const recipe = /```js\r?\n([\s\S]*?)\r?\n```/.exec(guide)?.[1];
-    assert.ok(recipe, 'runnable public-API example exists');
+    const example = /```js\r?\n([\s\S]*?)\r?\n```/.exec(guide)?.[1];
+    assert.ok(example, 'runnable public-API example exists');
+    // These invented fixtures are deleted on exit. Include the flow failure and
+    // request counts in the nested test output so a failed run remains diagnosable.
+    const assertion = "'rendered content and browser requests must pass'";
+    const recipe = example.replace(
+      assertion,
+      `${assertion} + ': ' + JSON.stringify(result.flows.map(({ name, passed, error, steps, failedRequests, failedResponses, blockedRequests, pageErrors, consoleErrors }) => ({ name, passed, error, steps: steps.map(({ action, passed }) => ({ action, passed })), failedRequests: failedRequests.length, failedResponses: failedResponses.length, blockedRequests: blockedRequests.length, pageErrors: pageErrors.length, consoleErrors: consoleErrors.length })))`,
+    );
+    assert.notEqual(recipe, example, 'the acceptance assertion receives diagnostic context');
     const file = path.join(root, 'test-browser/local.acceptance.test.mjs');
     await fs.writeFile(file, recipe);
     const started = Date.now();
