@@ -194,6 +194,7 @@ import {
 } from './lib/organization-host.mjs';
 import { createCanvasHandler } from './lib/canvas-http.mjs';
 import { createCanvasRuntime } from './lib/canvas-runtime.mjs';
+import { canvasPcfApps } from './lib/canvas-pcf.mjs';
 import { createCodeAppsHandler, authorityTokenIssuer } from './lib/code-apps-http.mjs';
 import { codeAppSettings, loadCodeApps } from './lib/code-apps-config.mjs';
 import { createRequestContext, currentRequest, runWithRequest, correlationOf } from './lib/request-context.mjs';
@@ -3337,6 +3338,7 @@ async function createPowerPagesSimulator({
   // GET /_sim/api/preflight: the live preflight report; the source graph is rebuilt with the active profile bindings.
   const preflight = ({ scenario = null, strict = false } = {}) =>
     organizationHost.preflight({
+      preparedCanvas: canvasApps(),
       simulation,
       scenario,
       strict,
@@ -4831,8 +4833,16 @@ async function createPowerPagesSimulator({
   // Reserved app surfaces: canvas inventory pages and code apps answer before the model-driven handler.
   // Canvas apps run headlessly (canvas-runtime.mjs) as the staff session's user or, for a signed-in portal visitor, the
   // Dataverse user enhanced authorization maps the contact to (portal-authorization.mjs principal); never SYSTEM.
+  const canvasApps = () =>
+    canvasPcfApps(organizationHost.canvasApps(), codeComponents, {
+      enabled: organizationHost.canvas.codeComponents,
+      platformLibraries: clientResources.pcf?.platformLibraries,
+      display: config().observed?.canvasDisplay,
+      displayEvidence: config().observed?.evidence,
+      watch,
+    });
   const canvasRuntime = createCanvasRuntime({
-    apps: organizationHost.canvasApps,
+    apps: canvasApps,
     evaluator: () => organizationHost.providers.powerFx,
     api: () => organization?.api ?? null,
     caller: (principal) => {
@@ -4856,7 +4866,7 @@ async function createPowerPagesSimulator({
     } // a visitor enhanced authorization does not map runs nothing
   };
   const canvasHandler = createCanvasHandler({
-    apps: organizationHost.canvasApps,
+    apps: canvasApps,
     enabled: () => organizationHost.canvas.enabled,
     diagnostic: recordDiagnostic,
     runtime: canvasRuntime,
@@ -6632,6 +6642,8 @@ async function createPowerPagesSimulator({
           solutionScan,
           solutionInventory,
           clientResources,
+          canvasRecords: organizationHost.canvas.records,
+          canvasDiagnostics: organizationHost.canvas.diagnostics,
         };
         try {
           const started = performance.now();
@@ -6654,6 +6666,7 @@ async function createPowerPagesSimulator({
           const publish = async () => {
             await replaceCompiledState(store.snapshot());
             await organizationHost.refreshSources();
+            await organizationHost.loadCanvas();
           };
           await change(() => (storageAdapter ? storageAdapter.bootstrap(publish, () => store.state) : publish()));
           diagnostics.length = 0;
@@ -6688,6 +6701,8 @@ async function createPowerPagesSimulator({
           renderer = previous.renderer;
           activeProfiles = previous.activeProfiles;
           ({ solutionScan, solutionInventory, clientResources } = previous);
+          organizationHost.canvas.records = previous.canvasRecords;
+          organizationHost.canvas.diagnostics = previous.canvasDiagnostics;
           recordDiagnostic({ code: 'RELOAD_FAILED', message: err.message });
           throw err;
         }
@@ -6712,6 +6727,19 @@ async function createPowerPagesSimulator({
     ];
     const pluginSourceKeys = new Set(pluginSources.map((file) => path.resolve(file).toLowerCase()));
     const clientSources = modelDrivenSettingsValue.clientSources ?? [];
+    const canvasSources = (settingOptionsRest.canvas?.sources ?? []).map((source) => path.resolve(projectRoot, source));
+    const canvasKeys = canvasSources.map((source) => source.toLowerCase());
+    const isCanvasSource = (file) => {
+      const full = path.resolve(file).toLowerCase();
+      const base = canvasKeys.find((root) => full === root || full.startsWith(root + path.sep));
+      return (
+        Boolean(base) &&
+        !full
+          .slice(base.length)
+          .split(path.sep)
+          .some((part) => /^(?:\.git|node_modules|\.paqvilo|bin|obj)$/i.test(part))
+      );
+    };
     // A <Library>@<version>.js clientSources entry is a file root (watched as that file), never a directory layer.
     const ignoreSource = solutionWatchFilter({
       sourceDir,
@@ -6722,10 +6750,12 @@ async function createPowerPagesSimulator({
       ],
       exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [],
     });
-    watcher = watchSources([sourceDir, ...solutionRoots, ...clientSources, ...pluginSources], {
+    watcher = watchSources([sourceDir, ...solutionRoots, ...clientSources, ...pluginSources, ...canvasSources], {
       ignoreInitial: true,
       ignored: (file, stats) =>
-        pluginSourceKeys.has(path.resolve(file).toLowerCase()) ? false : ignoreSource(file, stats),
+        pluginSourceKeys.has(path.resolve(file).toLowerCase()) || isCanvasSource(file)
+          ? false
+          : ignoreSource(file, stats),
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
     });
     const watched = watcher;

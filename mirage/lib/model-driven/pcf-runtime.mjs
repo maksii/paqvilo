@@ -707,6 +707,202 @@ const linkName = /^[a-z_][a-z\d_]*$/i;
 /** A PCF DataSet over the model-driven view query engine.
  * query(input) runs the view query ({ view, page, pageSize, sort, direction, filters, columns, links }) and answers
  * { rows, total, more }. baseFilters narrow it (a related subgrid's parent); openRecord(entity, id) navigates. */
+/** Canvas scalar PCF lifecycle: every manifest property binds to an app value, without a Dataverse field facade. */
+export function renderCanvasPcfControl(definition, initialProperties, options = {}) {
+  const element = document.createElement('div');
+  element.className = 'canvas-pcf';
+  const status = document.createElement('span');
+  const history = [];
+  let values = { ...initialProperties },
+    instance,
+    observer,
+    view,
+    destroyed = false,
+    failed = false,
+    queued = false;
+  let state = {};
+  const trace = (stage) => {
+    history.push(stage);
+    if (history.length > 100) history.shift();
+  };
+  const admission = pcfAdmission(definition, { platformLibraries: definition.platformLibraries });
+  const properties = definition.properties ?? [];
+  const clean = () => {
+    observer?.disconnect();
+    observer = undefined;
+    const old = instance,
+      oldView = view;
+    instance = undefined;
+    view = undefined;
+    releasePcf(old, oldView);
+  };
+  const fail = (error) => {
+    failed = true;
+    clean();
+    trace('failed');
+    pcfError(element, status, error);
+  };
+  const services = pcfServices(definition, options, staffOf(options), () => !destroyed && !failed);
+  // These APIs are unavailable to native Canvas code components, even when other local hosts supply them.
+  delete services.webAPI;
+  const context = {
+    ...services,
+    events: Object.fromEntries(
+      (definition.events ?? []).map((name) => [
+        name,
+        () => {
+          if (!destroyed && !failed && !context.mode.isControlDisabled) {
+            trace(`event:${name}`);
+            options.onEvent?.(name);
+          }
+        },
+      ]),
+    ),
+    parameters: Object.create(null),
+    updatedProperties: [],
+    mode: {
+      allocatedWidth: 0,
+      allocatedHeight: 0,
+      isControlDisabled: false,
+      isVisible: true,
+      trackContainerResize(track) {
+        observer?.disconnect();
+        observer = undefined;
+        if (track && !destroyed && typeof ResizeObserver !== 'undefined') {
+          observer = new ResizeObserver(() => schedule(['layout']));
+          observer.observe(element);
+        }
+      },
+      setControlState(next) {
+        state = structuredClone(next);
+      },
+      setFullScreen() {
+        unsupported('canvas fullscreen');
+      },
+    },
+  };
+  const fieldFor = (property) => ({
+    type: /^(Whole|Decimal|FP|Currency|Enum|OptionSet)/i.test(property.ofType)
+      ? 'number'
+      : /^TwoOptions/i.test(property.ofType)
+        ? 'boolean'
+        : /^DateAndTime/i.test(property.ofType)
+          ? 'date'
+          : 'text',
+    format: /DateOnly/i.test(property.ofType) ? 'DateOnly' : undefined,
+  });
+  function refresh(changed) {
+    const disabled = /disabled|view/i.test(String(values.DisplayMode ?? ''));
+    element.inert = disabled;
+    element.setAttribute('aria-disabled', String(disabled));
+    context.mode.isControlDisabled = disabled;
+    context.mode.isVisible = values.Visible !== false;
+    context.mode.allocatedWidth = element.clientWidth;
+    context.mode.allocatedHeight = element.clientHeight;
+    context.updatedProperties = changed;
+    const next = Object.create(null);
+    for (const property of properties) {
+      const field = fieldFor(property);
+      let value = values[property.name] ?? property.defaultValue ?? null;
+      if (value != null && field.type === 'number' && typeof value === 'string' && value.trim() !== '')
+        value = Number(value);
+      if (field.type === 'boolean' && ['true', 'false', '0', '1'].includes(value))
+        value = value === 'true' || value === '1';
+      value = typed(value, property, field);
+      const raw = value != null && field.type === 'date' ? rawDate(value, field) : value;
+      next[property.name] = {
+        raw,
+        formatted: value == null ? '' : String(value),
+        type: property.ofType,
+        error: false,
+        errorMessage: '',
+        attributes: {
+          LogicalName: property.name,
+          DisplayName: property.name,
+          RequiredLevel: property.required ? 1 : 0,
+        },
+        security: { editable: !disabled && property.usage !== 'input', readable: true, secured: false },
+      };
+    }
+    context.parameters = next;
+  }
+  function schedule(changed) {
+    if (queued || destroyed || failed) return;
+    queued = true;
+    queueMicrotask(() => {
+      queued = false;
+      if (!instance || destroyed || failed) return;
+      try {
+        refresh(changed);
+        trace('updateView');
+        const result = instance.updateView(context);
+        view?.render(result);
+      } catch (error) {
+        fail(error);
+      }
+    });
+  }
+  const notify = () => {
+    if (!instance || destroyed || failed || context.mode.isControlDisabled) return;
+    try {
+      const outputs = instance.getOutputs?.() ?? {};
+      if (!outputs || typeof outputs !== 'object' || Array.isArray(outputs))
+        throw new Error('Canvas PCF outputs must be a record.');
+      const next = Object.create(null);
+      for (const property of properties)
+        if (['bound', 'output'].includes(property.usage) && Object.hasOwn(outputs, property.name))
+          next[property.name] = typed(outputs[property.name], property, fieldFor(property));
+      if (Object.keys(next).length) {
+        trace('getOutputs');
+        options.onOutputs?.(next);
+      }
+    } catch (error) {
+      fail(error);
+    }
+  };
+  const ready = Promise.resolve().then(async () => {
+    try {
+      if (!definition.admitted || !admission.admitted || admission.dataset)
+        throw new Error(definition.reason ?? admission.reason ?? 'Canvas PCF requires an admitted scalar manifest.');
+      if (properties.some((property) => !scalarType(property.ofType)))
+        throw new Error('Canvas PCF property type is not supported.');
+      const loaded = await loadComponent(definition, admission, () => destroyed);
+      if (!loaded || destroyed) return;
+      const virtual = admission.kind === 'virtual';
+      if (virtual) view = virtualView(element);
+      instance = new loaded.Constructor();
+      refresh(properties.map((property) => property.name));
+      trace('init');
+      instance.init(context, notify, state, ...(virtual ? [] : [element]));
+      trace('updateView');
+      const result = instance.updateView(context);
+      view?.render(result);
+      element.dataset.pcfState = 'ready';
+    } catch (error) {
+      if (!destroyed) fail(error);
+    }
+  });
+  return {
+    element,
+    ready,
+    update(next) {
+      const changed = Object.keys(next).filter((key) => !Object.is(values[key], next[key]));
+      values = { ...next };
+      if (changed.length) schedule(changed);
+    },
+    inspect: () => ({
+      state: destroyed ? 'destroyed' : failed ? 'failed' : (element.dataset.pcfState ?? 'loading'),
+      lifecycle: [...history],
+    }),
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      trace('destroy');
+      clean();
+    },
+  };
+}
+
 export function createDatasetHost({
   table,
   tables = {},

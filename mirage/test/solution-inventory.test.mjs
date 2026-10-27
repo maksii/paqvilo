@@ -47,6 +47,26 @@ const msapp = () =>
     { name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(SCREEN) },
   ]);
 
+test('canvas payload layers replace source coverage diagnostics, while metadata preserves them', async () => {
+  const partialBytes = writeSolutionAssetEntries([
+    { name: 'Src/App.pa.yaml', data: Buffer.from('App: [') },
+    { name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(SCREEN) },
+  ]);
+  const partial = await canvasMsappRecord(partialBytes, { name: 'x_app' });
+  const valid = await canvasMsappRecord(msapp(), { name: 'x_app' });
+  const metadata = { component: 'canvasapp', name: 'x_app', level: 'inventory', dependencies: [] };
+  for (const [first, latest, status] of [
+    [partial, valid, 'satisfied'],
+    [valid, partial, 'unsupported'],
+  ]) {
+    const [record] = mergeCanvasLayers([first, latest, metadata]);
+    assert.deepEqual(record.sourceDiagnostics, latest.sourceDiagnostics);
+    const graph = buildSourceGraph({ scan: { inventory: [record] } });
+    for (const id of ['canvas:app/x_app', 'canvas:rendering'])
+      assert.equal(graph.requirements().find((row) => row.id === id).status, status);
+  }
+});
+
 test('canvas metadata and payload fidelity agree through either order and metadata-only layers', async () => {
   const payload = await canvasMsappRecord(msapp(), { name: 'x_app' });
   const metadata = {
@@ -89,7 +109,7 @@ test('canvas metadata and payload fidelity agree through either order and metada
     assert.deepEqual(app.sources, ['base/app.msapp', 'extension/app.meta.xml']);
     assert.ok(graph.requirements().some((row) => row.id === 'canvas:app/x_app' && row.status === 'satisfied'));
     assert.ok(!graph.requirements().some((row) => row.reason === 'CANVAS_HOST_NOT_IMPLEMENTED'));
-    assert.ok(graph.requirements().some((row) => row.reason === 'CANVAS_NOT_RENDERED'));
+    assert.ok(graph.requirements().some((row) => row.reason === 'CANVAS_RENDERING_BASELINE'));
   }
   const broken = await canvasMsappRecord(Buffer.from('invalid'), { name: 'x_app' });
   const [failed] = mergeInventory([payload, broken, metadata]);

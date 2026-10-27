@@ -15,7 +15,23 @@
 // Connector operations (`Source.Operation(...)`) are asynchronous: a formula suspends at a call that has no answer yet and
 // runs again once it has one (see the behaviour section).
 import { COMMON_DEFAULTS, CONTROL_CATALOGUE, controlKind, unsupportedControls } from './canvas-controls.mjs';
-import { ErrorKind, FxDataSource, FxError, FxRecordRef, evaluateFx, fromFx } from './power-fx.mjs';
+import { prepareCanvasSource } from './canvas-components.mjs';
+import { CANVAS_ASSETS, canvasAssetUrls } from './canvas-assets.mjs';
+import {
+  ErrorKind,
+  FxDataSource,
+  FxDate,
+  FxError,
+  FxEnum,
+  FxRecordRef,
+  choiceDisplayValue,
+  evaluateFx,
+  fromFx,
+  isNumeric,
+  powerFxBuiltinEnums,
+  parse as parsePowerFx,
+  typedPowerFxFunction,
+} from './power-fx.mjs';
 import { dataverseHost } from './power-fx-dataverse.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
 
@@ -25,6 +41,64 @@ const ENUMS = Object.freeze({
   FormMode: enumOf('Edit', 'New', 'View'),
   DisplayMode: enumOf('Edit', 'View', 'Disabled'),
   ScreenTransition: enumOf('None', 'Fade', 'Cover', 'CoverRight', 'UnCover', 'UnCoverRight'),
+  ScreenSize: Object.freeze({ Small: 1, Medium: 2, Large: 3, ExtraLarge: 4 }),
+  Layout: enumOf('Horizontal', 'Vertical'),
+  LayoutDirection: enumOf('Horizontal', 'Vertical'),
+  LayoutAlignItems: enumOf('Start', 'Center', 'End', 'Stretch'),
+  LayoutJustifyContent: enumOf('Start', 'Center', 'End', 'SpaceBetween', 'SpaceAround', 'SpaceEvenly'),
+  LayoutAlign: enumOf('SetByContainer', 'Start', 'Center', 'End', 'Stretch'),
+  LayoutOverflow: enumOf('Hide', 'Scroll'),
+  Font: enumOf(
+    'Arial',
+    'Arial Black',
+    'ArialBlack',
+    'Courier New',
+    'CourierNew',
+    'Georgia',
+    'Lato',
+    'Open Sans',
+    'OpenSans',
+    'Segoe UI',
+    'SegoeUI',
+    'Verdana',
+  ),
+  LayoutMode: enumOf('Auto', 'Manual'),
+  Align: enumOf('Left', 'Center', 'Right', 'Justify'),
+  TextFormat: enumOf('Text', 'Number'),
+  FontWeight: enumOf('Normal', 'Lighter', 'Semibold', 'Bold'),
+  DropShadow: enumOf('None', 'Light', 'Regular', 'Bold', 'ExtraBold'),
+  LoadingSpinner: enumOf('None', 'Controls', 'Data'),
+  TextMode: enumOf('SingleLine', 'MultiLine', 'Password'),
+  BorderStyle: enumOf('None', 'Solid', 'Dashed', 'Dotted'),
+  TextRole: enumOf('Default', 'Heading1', 'Heading2', 'Heading3', 'Heading4'),
+  VerticalAlign: enumOf('Top', 'Middle', 'Bottom'),
+  AlignInContainer: enumOf('SetByContainer', 'Start', 'Center', 'End', 'Stretch'),
+  Icon: enumOf(
+    'Add',
+    'BackArrow',
+    'Cancel',
+    'Check',
+    'ChevronDown',
+    'ChevronLeft',
+    'ChevronRight',
+    'ChevronUp',
+    'Close',
+    'Delete',
+    'Edit',
+    'Filter',
+    'Home',
+    'Information',
+    'Menu',
+    'More',
+    'NextArrow',
+    'Refresh',
+    'Save',
+    'Search',
+    'Settings',
+    'Sort',
+    'Trash',
+    'View',
+  ),
 });
 const CANVAS_DATA_ROW_LIMIT = 500;
 const BEHAVIOUR_PROPERTY = /^On[A-Z]/;
@@ -107,7 +181,14 @@ const closing = (text, open) => {
   return found;
 };
 const unquote = (name) => (/^'.*'$/s.test(name) ? name.slice(1, -1).replaceAll("''", "'") : name);
-const IDENT = /^(?:[A-Za-z_][\w]*|'(?:[^']|'')+')$/;
+const staticIdentifier = (text) => {
+  try {
+    const node = parsePowerFx(text ?? '');
+    return node.t === 'id' && !node.global ? node.name : null;
+  } catch {
+    return null;
+  }
+};
 /** Every call `Name(` (or `Source.Op(`) outside strings, outermost first: [{ start, open, end, name, member }]. */
 function callsIn(text, accept) {
   const calls = [];
@@ -132,6 +213,14 @@ const blank = (value) => value === undefined || value === null || value === '';
 const literal = (raw) =>
   raw === 'true' ? true : raw === 'false' ? false : raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : raw;
 const fail = (message, code, status = 400) => Object.assign(new Error(message), { code, status });
+
+/** Validate and copy a player viewport before any app behavior runs. */
+export function canvasViewport(viewport) {
+  const { width, height } = viewport ?? {};
+  if (![width, height].every((value) => Number.isInteger(value) && value >= 1 && value <= 8192))
+    throw fail('viewport needs integer width and height between 1 and 8192.', 'CanvasActionInvalid');
+  return { width, height };
+}
 
 /** A JSON-safe copy of a formula value for snapshots and API answers. */
 function observable(value, depth = 0) {
@@ -169,21 +258,28 @@ export function createCanvasApp({
   launch = () => {},
   diagnostic = () => {},
   parameters = {},
+  viewport = { width: 1366, height: 768 },
 }) {
   if (!evaluator) throw new TypeError('createCanvasApp needs the Power Fx evaluator (createPowerFxEvaluator).');
+  if (app.source?.diagnostics?.some((entry) => entry.code === 'CANVAS_SOURCE_NAME_COLLISION'))
+    throw fail('Canvas source has colliding names and cannot be hosted safely.', 'CanvasSourceNameCollision', 501);
   const core = evaluator.describe?.().source === 'core';
   const context = api && caller ? caller(principal) : null;
   if (api && caller && !context?.user)
     throw fail('The principal running the canvas app is not a Dataverse user.', 'CanvasPrincipalUnavailable', 401);
+  const source = prepareCanvasSource(app.source);
   const records = context
-    ? dataverseHost(api, { c: context, diagnostic: (entry) => hostDiagnostic(entry, 'Dataverse') })
+    ? dataverseHost(api, {
+        c: context,
+        fieldAliases: source.dataSources,
+        diagnostic: (entry) => hostDiagnostic(entry, 'Dataverse'),
+      })
     : null;
-  const source = app.source,
-    tree = source.tree ?? {
-      format: source.app?.format ?? 'pa.yaml',
-      screens: source.screens ?? [],
-      components: source.components ?? [],
-    };
+  const tree = source.tree ?? {
+    format: source.app?.format ?? 'pa.yaml',
+    screens: source.screens ?? [],
+    components: source.components ?? [],
+  };
   const format = tree.format ?? 'pa.yaml';
 
   // ---- static model ----
@@ -192,22 +288,43 @@ export function createCanvasApp({
     const owner = row.owner.includes('.') ? row.owner.slice(row.owner.indexOf('.') + 1) : row.owner;
     if (!formulas.has(owner)) formulas.set(owner, new Map());
     const raw = String(row.text ?? '').trimStart();
+    const blankFormula = /^=(?:\s|\/\/[^\r\n]*(?:\r?\n|$)|\/\*(?:[^*]|\*+[^*/])*\*+\/)*$/.test(raw);
     // A formula starts with `=`; any other scalar is a literal value.
-    formulas
-      .get(owner)
-      .set(row.property, raw.startsWith('=') ? { formula: raw.slice(1).trim() } : { value: literal(raw) });
+    formulas.get(owner).set(
+      row.property,
+      raw.startsWith('=') && !blankFormula
+        ? {
+            formula: raw.slice(1).trim(),
+            source: row.source,
+            line: row.line,
+            componentDefinition: row.componentDefinition,
+          }
+        : {
+            value: blankFormula ? null : literal(raw),
+            source: row.source,
+            line: row.line,
+            componentDefinition: row.componentDefinition,
+          },
+    );
   }
   const screens = new Map(),
     controls = new Map(),
     lower = new Map();
   for (const screen of tree.screens) {
+    if (lower.has(screen.name.toLowerCase()))
+      throw fail('Canvas source has colliding names and cannot be hosted safely.', 'CanvasSourceNameCollision', 501);
     screens.set(screen.name, { name: screen.name });
     lower.set(screen.name.toLowerCase(), screen.name);
     for (const control of screen.controls ?? []) {
-      const kind = control.componentName ? null : controlKind(control.control, format);
+      if (lower.has(control.name.toLowerCase()))
+        throw fail('Canvas source has colliding names and cannot be hosted safely.', 'CanvasSourceNameCollision', 501);
+      const sourceKind = controlKind(control.control, format);
+      const kind = control.componentName && sourceKind !== 'codecomponent' ? null : sourceKind;
       controls.set(control.name, {
         name: control.name,
         type: control.control ?? null,
+        modern: /^modern/i.test(control.control ?? ''),
+        variant: control.variant ?? null,
         kind,
         supported: Boolean(kind),
         screen: screen.name,
@@ -242,13 +359,29 @@ export function createCanvasApp({
   const galleryOf = (name) => ancestors(name).find((at) => kindOf(at) === 'gallery') ?? null;
   const descendants = (name) => (controls.get(name)?.children ?? []).flatMap((child) => [child, ...descendants(child)]);
 
+  const formulaComponent = (name, entry) => {
+    let component = source.componentScopes?.[name];
+    if (!entry.componentDefinition) return source.componentScopes?.[component?.parent];
+    while (component && component.definition !== entry.componentDefinition)
+      component = source.componentScopes?.[component.parent];
+    return component;
+  };
+
   // ---- state ----
   // Set, UpdateContext, Navigate's context record, Collect and ClearCollect establish a name, which reads
   // blank (a collection: empty) until a formula fills it.
+  const componentVariables = new Map();
   const variables = {},
     globals = new Set(),
     collections = new Set(),
     contexts = new Map(screenNames.map((name) => [name, {}]));
+  // Legacy exports can declare local collections as data sources. They are local state, not table providers.
+  for (const entry of dataSources.values()) {
+    if (String(entry.kind).toLowerCase() === 'collectiondatasourceinfo') {
+      variables[entry.name] = [];
+      collections.add(entry.name);
+    }
+  }
   const recordKeys = (text) =>
     /^\{[\s\S]*\}$/.test(text?.trim() ?? '')
       ? splitTop(text.trim().slice(1, -1), ',')
@@ -259,21 +392,28 @@ export function createCanvasApp({
     for (const entry of properties.values()) {
       if (!entry.formula) continue;
       const home = screens.has(owner) ? owner : controls.get(owner)?.screen;
+      const component = formulaComponent(owner, entry);
+      let target = variables;
+      if (component && !component.accessAppScope) {
+        if (!componentVariables.has(component.root)) componentVariables.set(component.root, {});
+        target = componentVariables.get(component.root);
+      }
       for (const call of callsIn(
         entry.formula,
         (item) => !item.member && ['Set', 'UpdateContext', 'Navigate', 'Collect', 'ClearCollect'].includes(item.name),
       )) {
         const args = splitTop(entry.formula.slice(call.open + 1, call.end), ',');
-        if (call.name === 'Set' && IDENT.test(args[0])) {
-          variables[unquote(args[0])] ??= null;
-          globals.add(unquote(args[0]));
-        } else if (call.name.endsWith('Collect') && IDENT.test(args[0]) && !dataSources.has(unquote(args[0]))) {
-          collections.add(unquote(args[0]));
-          variables[unquote(args[0])] = [];
+        const first = staticIdentifier(args[0]);
+        if (call.name === 'Set' && first) {
+          target[first] ??= null;
+          if (target === variables) globals.add(first);
+        } else if (call.name.endsWith('Collect') && first && !dataSources.has(first)) {
+          if (target === variables) collections.add(first);
+          target[first] = [];
         } else if (call.name === 'UpdateContext') {
           for (const key of recordKeys(args[0])) if (contexts.has(home)) contexts.get(home)[key] ??= null;
         } else if (call.name === 'Navigate') {
-          const target = IDENT.test(args[0]) ? unquote(args[0]) : null,
+          const target = first,
             screen = screens.has(target) ? target : controls.get(target)?.screen;
           for (const key of recordKeys(args[2])) if (contexts.has(screen)) contexts.get(screen)[key] ??= null;
         }
@@ -281,9 +421,15 @@ export function createCanvasApp({
     }
   const state = {
     current: null,
+    transition: 'None',
+    clockKey: crypto.randomUUID(),
+    viewport: canvasViewport(viewport),
     history: [],
     inputs: new Map(),
     selected: new Map(),
+    windows: new Map(),
+    timers: new Map(),
+    media: new Map(),
     forms: new Map(),
     notifications: [],
     launches: [],
@@ -305,6 +451,80 @@ export function createCanvasApp({
     state.diagnostics.push(entry);
     diagnostic({ ...entry, app: app.uniqueName });
   };
+  const assetSymbols = new Map();
+  const ambiguousAssets = new Set();
+  const assets = source[CANVAS_ASSETS];
+  if (assets instanceof Map) {
+    for (const [filename, url] of Object.entries(canvasAssetUrls(app.uniqueName, assets))) {
+      const basename = filename.split('/').at(-1);
+      const stem = basename.slice(0, basename.lastIndexOf('.'));
+      if (!/^[A-Za-z_][\w]*$/.test(stem)) continue;
+      const key = stem.toLowerCase();
+      if (assetSymbols.has(key)) ambiguousAssets.add(key);
+      else assetSymbols.set(key, { stem, url });
+    }
+    for (const key of ambiguousAssets) {
+      assetSymbols.delete(key);
+      report({
+        code: 'CANVAS_ASSET_NAME_AMBIGUOUS',
+        source: key,
+        message: 'Multiple assets share this formula identifier.',
+      });
+    }
+  }
+  const sourceEnums = new Map();
+  const conflictingEnums = new Set();
+  const reservedEnumNames = new Set(
+    [
+      'app',
+      ...Object.keys(ENUMS),
+      ...powerFxBuiltinEnums(),
+      ...lower.keys(),
+      ...dataSources.keys(),
+      ...namedFormulas.keys(),
+      ...Object.keys(variables),
+      ...[...contexts.values()].flatMap((entry) => Object.keys(entry)),
+      ...[...componentVariables.values()].flatMap((entry) => Object.keys(entry)),
+      ...Object.values(source.componentScopes ?? {}).flatMap((entry) => [
+        entry.definition,
+        ...Object.keys(entry.locals ?? {}),
+      ]),
+      ...[...assetSymbols.values()].map((entry) => entry.stem),
+    ].map((name) => name.toLowerCase()),
+  );
+  for (const [name, entries] of Object.entries(source.enums ?? {})) {
+    const key = name.toLowerCase();
+    if (reservedEnumNames.has(key) || sourceEnums.has(key)) {
+      conflictingEnums.add(key);
+      continue;
+    }
+    if (!name || ['__proto__', 'constructor', 'prototype'].includes(key) || !isPlain(entries)) {
+      conflictingEnums.add(key);
+      continue;
+    }
+    const labels = Object.entries(entries),
+      seen = new Set();
+    if (
+      labels.some(([label, value]) => {
+        const normalized = label.toLowerCase();
+        if (!label || seen.has(normalized) || !Number.isSafeInteger(value)) return true;
+        seen.add(normalized);
+        return false;
+      })
+    ) {
+      conflictingEnums.add(key);
+      continue;
+    }
+    sourceEnums.set(key, { name, value: new FxEnum(name, entries) });
+  }
+  for (const key of conflictingEnums) {
+    sourceEnums.delete(key);
+    report({
+      code: 'CANVAS_ENUM_NAME_AMBIGUOUS',
+      source: key,
+      message: 'The source option enum name or labels are ambiguous.',
+    });
+  }
   // The engine's warnings (delegation): fromFx of a data source passed to a canvas function is not a query, so it is not reported.
   function hostDiagnostic(entry, where) {
     if (entry?.operation !== 'fromFx') report({ ...entry, source: where });
@@ -321,6 +541,10 @@ export function createCanvasApp({
       const next = queue.pop();
       for (const dependent of dependents.get(next) ?? []) {
         cache.delete(dependent);
+        if (dependent.startsWith('prop:')) {
+          const property = dependent.slice(5);
+          propertyAnswers.delete(property.includes('#') ? property : `${property}#`);
+        }
         queue.push(dependent);
       }
       dependents.delete(next);
@@ -337,7 +561,19 @@ export function createCanvasApp({
     if (state.errors.length > MAX_LOG) state.errors.shift();
     return entry;
   };
+  const location = (where) => {
+    let entry;
+    for (const [owner, properties] of formulas) {
+      if (where.startsWith(`${owner}.`)) {
+        entry = properties.get(where.slice(owner.length + 1));
+        if (entry) break;
+      }
+    }
+    if (!entry && where.startsWith('App.Formulas.')) entry = formulas.get('App')?.get('Formulas');
+    return entry?.source ? { file: entry.source, ...(entry.line ? { line: entry.line } : {}) } : {};
+  };
   const fromError = (error, where) => ({
+    ...location(where),
     code: error.code ?? 'CanvasFormulaError',
     kind: error.details?.kind ?? error.kind ?? 'Unknown',
     message: error.message,
@@ -346,12 +582,18 @@ export function createCanvasApp({
   });
   const fromFxError = (value, where) =>
     value.errors.map((item) => ({
+      ...location(where),
       code: 'PowerFxError',
       kind: kindName(item.Kind),
       message: item.Message ?? '',
       source: where,
       ...(item.Details?.HttpStatusCode ? { status: item.Details.HttpStatusCode } : {}),
     }));
+
+  const isBehaviour = (name, property) =>
+    BEHAVIOUR_PROPERTY.test(property) ||
+    (source.codeComponents?.[name]?.events ?? []).includes(property) ||
+    Boolean(source.componentFunctions?.[name]?.[property]);
 
   // ---- formula scope ----
   // A screen or control as a lazy record: the engine reads one property at a time through the getters.
@@ -364,10 +606,11 @@ export function createCanvasApp({
         ...Object.keys(COMMON_DEFAULTS),
         ...Object.keys(CONTROL_CATALOGUE[isScreen ? 'screen' : kindOf(name)]?.defaults ?? {}),
         ...(OUTPUTS[isScreen ? 'screen' : kindOf(name)] ?? []),
+        ...(source.codeComponents?.[name]?.properties?.map((property) => property.name) ?? []),
       ]);
       // Behaviour properties (On…) run only as behaviour; they are not values of the record.
       for (const property of names)
-        if (!BEHAVIOUR_PROPERTY.test(property))
+        if (!isBehaviour(name, property))
           Object.defineProperty(target, property, { enumerable: true, get: () => read(name, property, scope) });
       if (isScreen) target.Name = name;
       return target;
@@ -387,17 +630,44 @@ export function createCanvasApp({
   const screenOf = (scope) => scope.screen ?? (scope.control ? controls.get(scope.control)?.screen : null);
   const values = (scope = {}) => {
     const out = { ...ENUMS };
+    for (const { name, value } of sourceEnums.values())
+      Object.defineProperty(out, name, { value, enumerable: true, configurable: true, writable: true });
+    if (scope.pureComponent) return Object.assign(out, scope.extra ?? {});
     const define = (name, get) => Object.defineProperty(out, name, { enumerable: true, configurable: true, get });
-    for (const name of screenNames) define(name, () => reference(name, {}));
-    for (const name of controls.keys())
-      define(name, () => reference(name, galleryOf(name) && scope.gallery === galleryOf(name) ? scope : {}));
-    for (const name of namedFormulas.keys()) define(name, () => read('App', `#formula:${name}`, {}));
-    define('App', () => ({
-      get ActiveScreen() {
-        track('screen:current');
-        return state.current ? reference(state.current, {}) : null;
-      },
-    }));
+    const component = scope.component;
+    for (const { stem, url } of assetSymbols.values())
+      if ((component && !component.accessAppScope) || !lower.has(stem.toLowerCase())) define(stem, () => url);
+    if (!component || component.accessAppScope) {
+      for (const name of screenNames) define(name, () => reference(name, {}));
+      for (const name of controls.keys())
+        define(name, () => reference(name, galleryOf(name) && scope.gallery === galleryOf(name) ? scope : {}));
+      for (const name of namedFormulas.keys()) define(name, () => read('App', `#formula:${name}`, {}));
+      define('App', () => ({
+        get Width() {
+          return read('App', 'Width');
+        },
+        get Height() {
+          return read('App', 'Height');
+        },
+        get MinScreenWidth() {
+          return read('App', 'MinScreenWidth');
+        },
+        get MinScreenHeight() {
+          return read('App', 'MinScreenHeight');
+        },
+        get SizeBreakpoints() {
+          return read('App', 'SizeBreakpoints');
+        },
+        get ActiveScreen() {
+          track('screen:current');
+          return state.current ? reference(state.current, {}) : null;
+        },
+      }));
+    }
+    if (component) {
+      define(component.definition, () => reference(component.root, scope));
+      for (const [name, internal] of Object.entries(component.locals)) define(name, () => reference(internal, scope));
+    }
     if (scope.control) {
       out.Self = reference(scope.control, scope);
       const parent = controls.get(scope.control)?.parent ?? controls.get(scope.control)?.screen;
@@ -408,63 +678,112 @@ export function createCanvasApp({
     }
     return Object.assign(out, scope.extra ?? {});
   };
-  const hostFor = (scope, where) => ({
-    variables,
-    context: contexts.get(screenOf(scope)),
-    app: 'canvas',
-    dataRowLimit: CANVAS_DATA_ROW_LIMIT,
-    dataSource: (name) => {
-      const entry = dataSources.get(name),
-        table = entry?.table ?? name;
-      // By entity set: a store mapping keyed by logical name need not repeat its logicalName.
-      const found = records?.dataSource(api.store?.state?.mappings?.[table]?.entitySet ?? table);
-      return found ? new FxDataSource(name, journaledAdapter(found.adapter)) : undefined;
-    },
-    diagnostic: (entry) => hostDiagnostic(entry, where),
-    ...(records ? { user: records.user, timeZone: records.timeZone, language: records.language } : {}),
-    // Now() and GUID() answer from the replay journal when a behaviour formula runs again after a connector answer.
-    now: () => journaled('now', records ? records.now : Date.now),
-    guid: () => journaled('guid', () => crypto.randomUUID()),
-    // Navigation is applied when the behaviour formula completes; the docs state that queueing for Select only, so it is a guess here.
-    navigate: (target, transition, update) => {
-      const named = nameOf(target),
-        screen = screens.has(named) ? named : controls.get(named)?.screen;
-      if (!screen) throw fail(`Navigate target is not a screen of this app.`, 'CanvasScreenNotFound', 404);
-      pending.push(
-        Object.assign(
-          () => show(screen, { transition: transition ?? 'None', update: isPlain(update) ? update : null, push: true }),
-          { navigation: 'navigate' },
-        ),
-      );
-    },
-    // Back answers whether there is an earlier screen, counting the navigations this formula has queued.
-    back: (transition) => {
-      const depth =
-        state.history.length +
-        pending.filter((task) => task.navigation === 'navigate').length -
-        pending.filter((task) => task.navigation === 'back').length;
-      if (depth < 2) return false;
-      pending.push(Object.assign(() => goBack(transition), { navigation: 'back' }));
-      return true;
-    },
-    notify: (message, type, timeout) => {
-      state.notifications.push({
-        message: String(message ?? ''),
-        type: type || 'Information',
-        timeout: timeout || 10000,
-      });
-      log({ event: 'notify', type });
-    },
-    trace: (message) => log({ event: 'trace', message: String(message) }),
-    functions: new Proxy(canvasFunctions(scope, where), {
-      get: (target, name) =>
-        typeof name !== 'string'
-          ? undefined
-          : Object.hasOwn(target, name)
-            ? target[name]
-            : connectorFunction(name, scope.connectors ?? { list: [], next: 0 }),
-    }),
-  });
+  // Track scalar variable and context reads so a Set/UpdateContext invalidates only affected property answers.
+  const trackedState = (target, prefix) =>
+    target &&
+    new Proxy(target, {
+      get(object, key, receiver) {
+        if (typeof key === 'string') track(`${prefix}:${key}`);
+        return Reflect.get(object, key, receiver);
+      },
+      set(object, key, value, receiver) {
+        const before = object[key];
+        const ok = Reflect.set(object, key, value, receiver);
+        if (ok && typeof key === 'string' && !Object.is(before, value)) changed(`${prefix}:${key}`);
+        return ok;
+      },
+    });
+  const localVariables = (root) => {
+    if (!componentVariables.has(root)) componentVariables.set(root, {});
+    return componentVariables.get(root);
+  };
+  const hostFor = (scope, where) =>
+    scope.pureComponent
+      ? {
+          pureComponent: true,
+          ...(scope.componentArguments ? { scope: scope.extra } : {}),
+          functions: {},
+          random: () => journaled('random', Math.random),
+          now: () => journaled('now', records ? records.now : Date.now),
+        }
+      : {
+          ...(scope.componentArguments ? { scope: scope.extra } : {}),
+          variables:
+            scope.component && !scope.component.accessAppScope
+              ? trackedState(localVariables(scope.component.root), `component:${scope.component.root}`)
+              : trackedState(variables, 'variable'),
+          context:
+            scope.component && !scope.component.accessAppScope
+              ? undefined
+              : trackedState(contexts.get(screenOf(scope)), `context:${screenOf(scope)}`),
+          app: 'canvas',
+          dataRowLimit: CANVAS_DATA_ROW_LIMIT,
+          dataSource: (name) => {
+            if (scope.component && !scope.component.accessAppScope) return undefined;
+            const entry = dataSources.get(name),
+              table = entry?.table ?? name;
+            // By entity set: a store mapping keyed by logical name need not repeat its logicalName.
+            const found = records?.dataSource(api.store?.state?.mappings?.[table]?.entitySet ?? table);
+            if (found) return new FxDataSource(name, journaledAdapter(found.adapter, name));
+            if (entry && String(entry.kind).toLowerCase() === 'table') {
+              const message = `Canvas data source ${name} is declared but has no configured local table.`;
+              report({ code: 'CANVAS_DATASOURCE_UNAVAILABLE', source: name, message });
+              return new FxError([{ Kind: ErrorKind.NotSupported, Message: message }]);
+            }
+            return undefined;
+          },
+          diagnostic: (entry) => hostDiagnostic(entry, where),
+          ...(records ? { user: records.user, timeZone: records.timeZone, language: records.language } : {}),
+          // Now() and GUID() answer from the replay journal when a behaviour formula runs again after a connector answer.
+          now: () => journaled('now', records ? records.now : Date.now),
+          guid: () => journaled('guid', () => crypto.randomUUID()),
+          random: () => journaled('random', Math.random),
+          // Navigation is applied when the behaviour formula completes; the docs state that queueing for Select only, so it is a guess here.
+          navigate: (target, transition, update) => {
+            const named = nameOf(target),
+              screen = screens.has(named) ? named : controls.get(named)?.screen;
+            if (!screen) throw fail(`Navigate target is not a screen of this app.`, 'CanvasScreenNotFound', 404);
+            pending.push(
+              Object.assign(
+                () =>
+                  show(screen, {
+                    transition: transition ?? 'None',
+                    update: isPlain(update) ? update : null,
+                    push: true,
+                  }),
+                { navigation: 'navigate' },
+              ),
+            );
+          },
+          // Back answers whether there is an earlier screen, counting the navigations this formula has queued.
+          back: (transition) => {
+            const depth =
+              state.history.length +
+              pending.filter((task) => task.navigation === 'navigate').length -
+              pending.filter((task) => task.navigation === 'back').length;
+            if (depth < 2) return false;
+            pending.push(Object.assign(() => goBack(transition), { navigation: 'back' }));
+            return true;
+          },
+          notify: (message, type, timeout) => {
+            state.notifications.push({
+              message: String(message ?? ''),
+              type: type || 'Information',
+              timeout: timeout || 10000,
+            });
+            log({ event: 'notify', type });
+          },
+          trace: (message) => log({ event: 'trace', message: String(message) }),
+          functions: new Proxy(canvasFunctions(scope, where), {
+            get: (target, name) =>
+              typeof name !== 'string'
+                ? undefined
+                : Object.hasOwn(target, name)
+                  ? target[name]
+                  : (componentFunction(name, scope) ??
+                    connectorFunction(name, scope.connectors ?? { list: [], next: 0 })),
+          }),
+        };
   const evaluate = (text, scope, where) =>
     core
       ? evaluateFx(text, { values: values(scope), host: hostFor(scope, where) }).value
@@ -491,9 +810,12 @@ export function createCanvasApp({
     stack.push(key);
     // A gallery row's property depends on the row: it is dirtied with the gallery's Items.
     if (scope.gallery && scope.itemIndex !== undefined) track(`prop:${scope.gallery}.Items`);
+    if (scope.option && scope.itemIndex !== undefined) track(`prop:${name}.Items`);
     let value;
     try {
       value = compute(name, property, scope);
+      if (property === 'Text' && ['label', 'button', 'textinput'].includes(kindOf(name)))
+        value = choiceDisplayValue(value);
     } finally {
       stack.pop();
     }
@@ -536,6 +858,7 @@ export function createCanvasApp({
               entry.formula,
               {
                 ...scope,
+                component: formulaComponent(name, entry),
                 control: controls.has(name) ? name : undefined,
                 screen: screens.has(name) && !controls.has(name) ? name : scope.screen,
               },
@@ -592,7 +915,123 @@ export function createCanvasApp({
   const sameRow = (left, right) =>
     left === right ||
     (isPlain(left) && isPlain(right) && JSON.stringify(observable(left)) === JSON.stringify(observable(right)));
+  // Compute the straightforward single-line flex allocation from source properties. Wrapping and complex
+  // native layout remain renderer approximations; explicit sizes stay authoritative on the cross axis.
+  function autoLayoutDimension(name, property, scope) {
+    if (!['Width', 'Height'].includes(property)) return undefined;
+    const child = controls.get(name),
+      parent = controls.get(child?.parent);
+    if (!parent || parent.kind !== 'container' || read(parent.name, 'LayoutWrap', scope) === true) return undefined;
+    const explicitDirection = read(parent.name, 'LayoutDirection', scope);
+    const variant = String(parent.variant ?? '');
+    const direction =
+      explicitDirection ?? (/horizontal/i.test(variant) ? 'Horizontal' : /vertical/i.test(variant) ? 'Vertical' : null);
+    if (!['Horizontal', 'Vertical'].includes(direction)) return undefined;
+    const vertical = direction === 'Vertical';
+    const main = vertical ? 'Height' : 'Width';
+    const cross = vertical ? 'Width' : 'Height';
+    const start = property === 'Width' ? 'PaddingLeft' : 'PaddingTop';
+    const end = property === 'Width' ? 'PaddingRight' : 'PaddingBottom';
+    const dimension = () => {
+      const size = read(parent.name, property, scope);
+      if (typeof size !== 'number' || !Number.isFinite(size)) return null;
+      const pad = (key) => Math.max(0, Number(read(parent.name, key, scope)) || 0);
+      return Math.max(0, size - pad(start) - pad(end));
+    };
+    if (property === cross && !formulas.get(name)?.has(property)) {
+      const align = read(name, 'AlignInContainer', scope) ?? 'SetByContainer';
+      const effective = align === 'SetByContainer' ? read(parent.name, 'LayoutAlignItems', scope) : align;
+      if (effective !== 'Stretch') return undefined;
+      return dimension() ?? undefined;
+    }
+    if (property !== main) return undefined;
+    const portion = Number(read(name, 'FillPortions', scope)) || 0;
+    if (!(portion > 0)) return undefined;
+    const available = dimension();
+    if (available === null) return undefined;
+    const siblings = parent.children.filter((sibling) => read(sibling, 'Visible', scope) !== false);
+    const minimum = vertical ? 'LayoutMinHeight' : 'LayoutMinWidth';
+    let fixed = 0,
+      weights = 0,
+      minima = 0,
+      ownMinimum = 0;
+    for (const sibling of siblings) {
+      const weight = Math.max(0, Number(read(sibling, 'FillPortions', scope)) || 0);
+      if (weight > 0) {
+        const min = Math.max(0, Number(read(sibling, minimum, scope)) || 0);
+        weights += weight;
+        minima += min;
+        if (sibling === name) ownMinimum = min;
+      } else {
+        const size = read(sibling, property, scope);
+        if (typeof size !== 'number' || !Number.isFinite(size)) return undefined;
+        fixed += Math.max(0, size);
+      }
+    }
+    if (!weights || !siblings.includes(name)) return undefined;
+    const gap = Math.max(0, Number(read(parent.name, 'LayoutGap', scope)) || 0);
+    const free = Math.max(0, available - fixed - minima - gap * Math.max(0, siblings.length - 1));
+    return ownMinimum + (free * portion) / weights;
+  }
   function compute(name, property, scope) {
+    const layout = autoLayoutDimension(name, property, scope);
+    if (layout !== undefined) return layout;
+    if (kindOf(name) === 'codecomponent') {
+      const definition = source.codeComponents?.[name];
+      const descriptor = definition?.properties?.find((entry) => entry.name === property);
+      if (descriptor) {
+        const key = `pcf:${name}.${property}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
+        track(key);
+        if (state.inputs.has(key)) return state.inputs.get(key);
+        const value = declared(name, property, scope);
+        if (value.found) return value.value;
+        if (typeof descriptor.defaultFormula === 'string') {
+          const formula = descriptor.defaultFormula.replace(/^\s*=/, '').trim();
+          if (/%[^%]+%/.test(formula)) {
+            const message = 'The code component default uses an unsupported reserved placeholder.';
+            report({ code: 'CANVAS_PCF_DEFAULT_UNSUPPORTED', source: `${name}.${property}`, message });
+            return new FxError([{ Kind: ErrorKind.NotSupported, Message: message }]);
+          }
+          return formula
+            ? pure(
+                formula,
+                {
+                  ...scope,
+                  control: name,
+                  screen: controls.get(name)?.screen,
+                  component: source.componentScopes?.[name],
+                },
+                `${name}.${property}`,
+              )
+            : null;
+        }
+        return descriptor.defaultValue ?? null;
+      }
+    }
+
+    if (name === 'App' && (property === 'Width' || property === 'Height')) {
+      track('viewport');
+      return state.viewport[property.toLowerCase()];
+    }
+    if (name === 'App' && ['MinScreenWidth', 'MinScreenHeight', 'SizeBreakpoints'].includes(property)) {
+      const result = declared(name, property, scope);
+      return result.found ? result.value : property === 'SizeBreakpoints' ? [600, 900, 1200] : 0;
+    }
+    if (screens.has(name) && !controls.has(name)) {
+      const result = declared(name, property, scope);
+      if (result.found) return result.value;
+      if (property === 'Width' || property === 'Height')
+        return Math.max(read('App', property), Number(read('App', `MinScreen${property}`)) || 0);
+      if (property === 'Size') {
+        const breakpoints = read('App', 'SizeBreakpoints');
+        const width = read(name, 'Width');
+        return (
+          1 +
+          (Array.isArray(breakpoints) ? breakpoints : []).filter((item) => width >= Number(item?.Value ?? item)).length
+        );
+      }
+      if (property === 'Orientation') return read(name, 'Width') > read(name, 'Height') ? 'Horizontal' : 'Vertical';
+    }
     if (name === 'App' && property.startsWith('#formula:'))
       return pure(namedFormulas.get(property.slice(9)), {}, `App.Formulas.${property.slice(9)}`);
     switch (`${kindOf(name)}.${property}`) {
@@ -600,15 +1039,49 @@ export function createCanvasApp({
         const typed = input(name, scope);
         return typed !== undefined ? typed : (fallback(name, 'Default', scope) ?? '');
       }
+      case 'addmedia.Media':
+      case 'addmedia.FileName': {
+        const media = input(name, scope);
+        return property === 'Media' ? (media?.uri ?? null) : (media?.name ?? '');
+      }
+      case 'slider.Value':
+      case 'numberinput.Value': {
+        const set = input(name, scope);
+        return set !== undefined ? set : fallback(name, 'Default', scope);
+      }
+      case 'combobox.SearchText': {
+        const key = `search:${name}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
+        track(key);
+        return state.inputs.get(key) ?? '';
+      }
+      case 'audio.Paused':
+      case 'video.Paused':
+      case 'audio.Time':
+      case 'video.Time': {
+        track(`media:${name}`);
+        const media = state.media.get(name);
+        return property === 'Paused' ? (media?.paused ?? true) : (media?.time ?? 0);
+      }
+      case 'timer.Value':
+      case 'timer.Running': {
+        track(`timer:${name}`);
+        const timer = state.timers.get(name);
+        return property === 'Value' ? (timer?.value ?? 0) : (timer?.running ?? false);
+      }
+      case 'checkbox.Checked':
+      case 'toggle.Checked':
       case 'checkbox.Value':
       case 'toggle.Value': {
         const set = input(name, scope);
-        return set !== undefined ? set : fallback(name, 'Default', scope) === true;
+        if (set !== undefined) return set;
+        const modern = controls.get(name)?.modern;
+        return fallback(name, modern ? 'Checked' : 'Default', scope) === true;
       }
       case 'datepicker.SelectedDate': {
         const set = input(name, scope);
         return set !== undefined ? set : fallback(name, 'DefaultDate', scope);
       }
+      case 'radio.Selected':
       case 'dropdown.Selected': {
         const list = items(name),
           chosen = input(name, scope);
@@ -631,6 +1104,8 @@ export function createCanvasApp({
         return read(name, 'SelectedItems', scope)?.at(-1) ?? null;
       case 'gallery.AllItems':
         return items(name);
+      case 'gallery.AllItemsCount':
+        return read(name, 'AllItems', scope).length;
       case 'gallery.Selected': {
         track(`sel:${name}`);
         const list = items(name),
@@ -732,7 +1207,9 @@ export function createCanvasApp({
         return true;
       },
       Reset: (target) => {
-        clearInputs(controlArg(target, null, 'Reset'), true);
+        const control = controlArg(target, null, 'Reset');
+        clearInputs(control, true);
+        if (source.componentScopes?.[control]?.root === control) pending.push(() => behaviour(control, 'OnReset', {}));
         return true;
       },
       // The target's OnSelect is queued and runs after the current formula.
@@ -741,10 +1218,11 @@ export function createCanvasApp({
         pending.push(() => select(control, scope.gallery && scope.gallery === galleryOf(control) ? scope : {}));
         return true;
       },
-      Refresh: () => {
+      Refresh: typedPowerFxFunction((target) => {
+        if (target instanceof FxDataSource) writeErrors.delete(target.name);
         pending.push(() => forget());
         return true;
-      },
+      }),
       Launch: (address, ...parameters) => {
         const entry = { address: String(address ?? ''), parameters };
         state.launches.push(entry);
@@ -792,6 +1270,20 @@ export function createCanvasApp({
     changed(`form:${form}`);
   };
   const clearInputs = (name, self = false) => {
+    if (self && kindOf(name) === 'codecomponent') {
+      for (const key of [...state.inputs.keys()].filter((key) => key.startsWith(`pcf:${name}.`))) {
+        state.inputs.delete(key);
+        changed(key);
+      }
+    }
+    if (self && ['audio', 'video'].includes(kindOf(name))) {
+      state.media.delete(name);
+      changed(`media:${name}`);
+    }
+    if (self && kindOf(name) === 'timer') {
+      state.timers.delete(name);
+      changed(`timer:${name}`);
+    }
     for (const control of [...(self ? [name] : []), ...descendants(name)])
       for (const key of [...state.inputs.keys()].filter(
         (key) => key === `input:${control}` || key.startsWith(`input:${control}#`),
@@ -813,6 +1305,99 @@ export function createCanvasApp({
   // call of an attempt takes the nth recorded answer.
   // `tape` = { list: answers in call order, next: the next call's position (reset per attempt), journal }.
   // `Source.Operation` of any connector data source (the operations are the connector's, not listed in the app source).
+  const componentTypeMatches = (type, value) =>
+    value == null ||
+    (type === 'Text' && typeof value === 'string') ||
+    (type === 'Boolean' && typeof value === 'boolean') ||
+    (['Number', 'Currency'].includes(type) && isNumeric(value)) ||
+    (type === 'DateAndTime' && value instanceof FxDate) ||
+    (type === 'Record' && (isPlain(value) || value instanceof FxRecordRef)) ||
+    (type === 'Table' && (Array.isArray(value) || value instanceof FxDataSource)) ||
+    (type === 'Screen' && value instanceof FxRecordRef && value.table === SCREEN);
+  const componentCallStack = [];
+  const componentFunction = (name, scope) => {
+    const dot = name.indexOf('.');
+    if (dot <= 0) return undefined;
+    const owner = name.slice(0, dot),
+      property = name.slice(dot + 1);
+    const local = scope.component;
+    const root = local?.definition === owner ? local.root : (local?.locals?.[owner] ?? owner);
+    const descriptor = source.componentFunctions?.[root]?.[property];
+    if (!descriptor) return undefined;
+    return typedPowerFxFunction((...args) => {
+      const pureCall = descriptor.kind === 'InputFunction' || descriptor.kind === 'OutputFunction';
+      if (['InputFunction', 'Event'].includes(descriptor.kind) && scope.component?.root !== root)
+        throw fail(
+          'Component input functions and events can only be invoked by their component.',
+          'CanvasComponentActionInvalid',
+        );
+      if (!pureCall && !scope.behaviour)
+        throw fail('Component behavior properties require a behavior formula.', 'CanvasComponentActionInvalid');
+      const allowed = new Set(['Text', 'Number', 'Boolean', 'DateAndTime', 'Record', 'Table', 'Screen', 'Currency']);
+      const parameters = descriptor.parameters ?? [];
+      if (
+        parameters.length > 32 ||
+        parameters.some((parameter) => !allowed.has(parameter.dataType)) ||
+        (descriptor.returnType && ![...allowed, 'None'].includes(descriptor.returnType))
+      )
+        throw fail(
+          'This component function uses an unsupported parameter or return type.',
+          'CanvasComponentFunctionUnsupported',
+          501,
+        );
+      if (args.length > parameters.length || parameters.slice(args.length).some((parameter) => !parameter.optional))
+        throw fail('Component function argument count is invalid.', 'CanvasComponentArgumentInvalid');
+      const entry = formulas.get(root)?.get(property);
+      if (!entry?.formula) throw fail('Component function has no formula.', 'CanvasComponentFunctionUnsupported', 501);
+      const key = `${root}.${property}`;
+      if (componentCallStack.includes(key) || componentCallStack.length >= 32)
+        throw fail('Recursive component function calls are unsupported.', 'CanvasComponentRecursion', 501);
+      componentCallStack.push(key);
+      try {
+        const component = formulaComponent(root, entry);
+        const extra = {};
+        for (let index = 0; index < parameters.length; index++) {
+          const parameter = parameters[index];
+          let value = args[index];
+          if (value === undefined && parameter.default != null) {
+            const text = String(parameter.default).replace(/^\s*=/, '');
+            value = evaluate(
+              text,
+              { ...scope, component, pureComponent: pureCall, componentArguments: true, extra },
+              `${key}.${parameter.name}`,
+            );
+          }
+          if (value instanceof FxError) return value;
+          if (!componentTypeMatches(parameter.dataType, value))
+            throw fail('Component function argument has an unsupported type.', 'CanvasComponentArgumentInvalid');
+          extra[parameter.name] = value ?? null;
+        }
+        const result = evaluate(
+          entry.formula,
+          {
+            ...scope,
+            control: root,
+            screen: controls.get(root)?.screen,
+            component,
+            pureComponent: pureCall,
+            componentArguments: true,
+            extra,
+          },
+          key,
+        );
+        if (
+          !(result instanceof FxError) &&
+          descriptor.returnType &&
+          descriptor.returnType !== 'None' &&
+          !componentTypeMatches(descriptor.returnType, result)
+        )
+          throw fail('Component function returned a value of the wrong type.', 'CanvasComponentArgumentInvalid');
+        return result;
+      } finally {
+        componentCallStack.pop();
+      }
+    });
+  };
   const connectorFunction = (name, tape) => {
     const dot = name.indexOf('.'),
       entry = dot > 0 ? dataSources.get(name.slice(0, dot)) : null;
@@ -854,14 +1439,35 @@ export function createCanvasApp({
       throw error;
     }
   };
-  const journaledAdapter = (adapter) => ({
-    ...adapter,
-    read: (query) => journaled('read', () => adapter.read(query)),
-    count: (query) => journaled('count', () => adapter.count(query)),
-    create: (record) => journaled('create', () => adapter.create(record)),
-    update: (base, changes) => journaled('update', () => adapter.update(base, changes)),
-    remove: (record) => journaled('remove', () => adapter.remove(record)),
-  });
+  const writeErrors = new Map();
+  const journaledAdapter = (adapter, sourceName) => {
+    const trackWrite = (operation, record, run) => {
+      writeErrors.delete(sourceName);
+      try {
+        return journaled(operation, run);
+      } catch (error) {
+        if (error?.status)
+          writeErrors.set(sourceName, [
+            {
+              Record: record,
+              Column: error.column ?? null,
+              Message: error.message,
+              Error: ErrorKind[error.powerFxKind] ?? (error.status === 404 ? ErrorKind.NotFound : ErrorKind.Sync),
+            },
+          ]);
+        throw error;
+      }
+    };
+    return {
+      ...adapter,
+      read: (query) => journaled('read', () => adapter.read(query)),
+      count: (query) => journaled('count', () => adapter.count(query)),
+      errors: () => writeErrors.get(sourceName) ?? [],
+      create: (record) => trackWrite('create', null, () => adapter.create(record)),
+      update: (base, changes) => trackWrite('update', base, () => adapter.update(base, changes)),
+      remove: (record) => trackWrite('remove', record, () => adapter.remove(record)),
+    };
+  };
   // A connector failure is a Power Fx error value, so IfError/IsError handle it and the chain's later statements run.
   // Only network errors carry details: HttpStatusCode and HttpResponse (the connector's response body).
   // Power Apps' own message text for a failed connector call is not known.
@@ -931,9 +1537,17 @@ export function createCanvasApp({
       Object.entries(variables).map(([key, item]) => [key, Array.isArray(item) ? [...item] : item]),
     ),
     contexts: new Map([...contexts].map(([screen, values]) => [screen, { ...values }])),
+    componentVariables: new Map(
+      [...componentVariables].map(([root, values]) => [
+        root,
+        Object.fromEntries(Object.entries(values).map(([key, item]) => [key, Array.isArray(item) ? [...item] : item])),
+      ]),
+    ),
     forms: new Map(state.forms),
     inputs: new Map(state.inputs),
     selected: new Map(state.selected),
+    timers: new Map([...state.timers].map(([name, timer]) => [name, { ...timer }])),
+    media: new Map([...state.media].map(([name, value]) => [name, { ...value }])),
     notifications: state.notifications.length,
     launches: state.launches.length,
     pending: pending.length,
@@ -946,6 +1560,8 @@ export function createCanvasApp({
         Object.entries(saved.variables).map(([key, item]) => [key, Array.isArray(item) ? [...item] : item]),
       ),
     );
+    componentVariables.clear();
+    for (const [root, values] of saved.componentVariables) componentVariables.set(root, values);
     for (const [screen, values] of saved.contexts) {
       const target = contexts.get(screen);
       for (const key of Object.keys(target)) delete target[key];
@@ -954,12 +1570,14 @@ export function createCanvasApp({
     state.forms = saved.forms;
     state.inputs = saved.inputs;
     state.selected = saved.selected;
+    state.timers = saved.timers;
+    state.media = saved.media;
     state.notifications.length = saved.notifications;
     state.launches.length = saved.launches;
     pending.length = saved.pending;
     forget();
   };
-  // Connector answers of property formulas, kept until 'refresh'; settle() calls what the last computation waited for.
+  // Connector answers persist until a tracked dependency changes or refresh; settle() resumes waiting properties.
   const propertyAnswers = new Map(),
     propertyWaits = new Map();
   async function settle() {
@@ -970,6 +1588,40 @@ export function createCanvasApp({
       for (const [key, wait] of [...propertyWaits]) propertyAnswers.get(key).push(await callConnector(wait));
       forget();
     }
+  }
+  // Input changes are checked only after explicit actions settle; reads remain inert.
+  const componentInputBaseline = new Map();
+  const resetInputs = Object.entries(source.componentScopes ?? {})
+    .filter(([name, component]) => component.root === name && component.resetInputs?.length)
+    .flatMap(([name, component]) =>
+      component.resetInputs.map((property) => ({ name, property, key: `${name}.${property}` })),
+    );
+  function captureResetInputs() {
+    return resetInputs.map((input) => ({
+      ...input,
+      value: JSON.stringify(observable(read(input.name, input.property))),
+    }));
+  }
+  function initializeResetInputs() {
+    for (const input of captureResetInputs()) componentInputBaseline.set(input.key, input.value);
+  }
+  async function synchronizeResetInputs() {
+    for (let round = 0; round < 32; round++) {
+      const changedRoots = new Set();
+      for (const input of captureResetInputs()) {
+        if (componentInputBaseline.has(input.key) && componentInputBaseline.get(input.key) !== input.value)
+          changedRoots.add(input.name);
+        componentInputBaseline.set(input.key, input.value);
+      }
+      if (!changedRoots.size) return;
+      for (const root of changedRoots) await behaviour(root, 'OnReset', {});
+      await settle();
+    }
+    report({
+      code: 'CANVAS_COMPONENT_RESET_LIMIT',
+      source: 'components',
+      message: 'Component input changes exceeded the bounded reset limit.',
+    });
   }
   /** Runs one behaviour formula; its errors are recorded (the chain itself continues). */
   async function run(text, scope, where) {
@@ -990,7 +1642,7 @@ export function createCanvasApp({
         const outcome = await transact(() => {
           journal = tape.journal;
           try {
-            return { result: evaluate(text, { ...scope, connectors: tape }, where) };
+            return { result: evaluate(text, { ...scope, behaviour: true, connectors: tape }, where) };
           } catch (error) {
             if (error?.[SUSPEND]) return { suspended: error[SUSPEND] };
             throw error;
@@ -1041,16 +1693,45 @@ export function createCanvasApp({
   }
   async function show(screen, { transition, update, push }) {
     const previous = state.current;
-    if (previous) await behaviour(previous, 'OnHidden', { screen: previous });
+    if (previous) {
+      await behaviour(previous, 'OnHidden', { screen: previous });
+      for (const entry of controls.values()) {
+        if (
+          entry.screen !== previous ||
+          !['audio', 'video'].includes(entry.kind) ||
+          read(entry.name, 'AutoPause') === false
+        )
+          continue;
+        const media = state.media.get(entry.name);
+        if (media && !media.paused) {
+          state.media.set(entry.name, { ...media, paused: true });
+          changed(`media:${entry.name}`);
+        }
+      }
+    }
     if (update) {
-      Object.assign(contexts.get(screen), update);
+      Object.assign(trackedState(contexts.get(screen), `context:${screen}`), update);
       forget();
     }
     state.current = screen;
+    state.transition = transition;
     if (push) state.history.push({ screen, transition });
     changed('screen:current');
     log({ event: 'navigate', from: previous, to: screen, transition });
     await behaviour(screen, 'OnVisible', { screen });
+    for (const control of controls.values()) {
+      if (control.screen === screen && control.kind === 'timer' && read(control.name, 'AutoStart') === true)
+        await startTimer(control.name);
+      if (
+        control.screen === screen &&
+        ['audio', 'video'].includes(control.kind) &&
+        read(control.name, 'AutoStart') === true
+      ) {
+        state.media.set(control.name, { ...(state.media.get(control.name) ?? { time: 0 }), paused: false });
+        changed(`media:${control.name}`);
+        await behaviour(control.name, 'OnStart', {});
+      }
+    }
   }
   async function goBack(transition) {
     if (state.history.length < 2) return false; // Back returns false when the user has not navigated since the app started
@@ -1065,13 +1746,89 @@ export function createCanvasApp({
       entry.formula,
       {
         ...scope,
+        component: formulaComponent(owner, entry),
         control: controls.has(owner) ? owner : scope.control,
         screen: screens.has(owner) && !controls.has(owner) ? owner : scope.screen,
       },
       `${owner}.${property}`,
     );
   }
+  async function startTimer(name) {
+    const previous = state.timers.get(name) ?? { value: 0, running: false };
+    if (previous.running) return;
+    state.timers.set(name, {
+      ...previous,
+      value: previous.completed ? 0 : previous.value,
+      running: true,
+      manualPause: false,
+      completed: false,
+    });
+    changed(`timer:${name}`);
+    await behaviour(name, 'OnTimerStart', {});
+  }
+  async function syncTimer(entry) {
+    const name = entry.name;
+    if (entry.screen !== state.current && read(name, 'AutoPause') !== false) return;
+    const start = read(name, 'Start') === true;
+    const current = state.timers.get(name);
+    if (start && !current?.running && !current?.manualPause && !current?.completed) {
+      await startTimer(name);
+      state.timers.set(name, { ...state.timers.get(name), startDriven: true });
+    } else if (!start && current?.startDriven) {
+      state.timers.set(name, { ...current, running: false, startDriven: false, completed: false, manualPause: false });
+      changed(`timer:${name}`);
+    }
+  }
+  async function syncTimers() {
+    for (const entry of controls.values()) if (entry.kind === 'timer') await syncTimer(entry);
+  }
+  async function tickTimers(milliseconds) {
+    for (const entry of controls.values()) {
+      if (entry.kind !== 'timer') continue;
+      const name = entry.name;
+      if (entry.screen !== state.current && read(name, 'AutoPause') !== false) continue;
+      await syncTimer(entry);
+      let remaining = milliseconds,
+        iterations = 0;
+      while (remaining > 0 && state.timers.get(name)?.running) {
+        if (entry.screen !== state.current && read(name, 'AutoPause') !== false) break;
+        const timer = state.timers.get(name);
+        const duration = Math.min(86400000, Math.max(1, Number(read(name, 'Duration')) || 60000));
+        const step = Math.min(remaining, Math.max(0, duration - timer.value));
+        const value = timer.value + step;
+        state.timers.set(name, { ...timer, value });
+        changed(`timer:${name}`);
+        remaining -= step;
+        if (value < duration) break;
+        const repeat = read(name, 'Repeat') === true;
+        state.timers.set(name, { ...timer, value: repeat ? 0 : duration, running: repeat, completed: !repeat });
+        changed(`timer:${name}`);
+        await behaviour(name, 'OnTimerEnd', {});
+        if (
+          repeat &&
+          state.timers.get(name)?.running &&
+          (entry.screen === state.current || read(name, 'AutoPause') === false)
+        )
+          await behaviour(name, 'OnTimerStart', {});
+        if (++iterations >= 100 && remaining > 0) {
+          report({
+            code: 'CANVAS_TIMER_TICK_LIMIT',
+            source: name,
+            message: 'Timer tick exceeded 100 transitions; remaining time was not applied.',
+          });
+          break;
+        }
+      }
+    }
+  }
   async function select(control, scope) {
+    if (kindOf(control) === 'timer') {
+      const timer = state.timers.get(control);
+      if (timer?.running) {
+        state.timers.set(control, { ...timer, running: false });
+        changed(`timer:${control}`);
+      } else await startTimer(control);
+    }
     const gallery = kindOf(control) === 'gallery' ? control : galleryOf(control);
     if (gallery && scope.itemIndex !== undefined) {
       state.selected.set(gallery, scope.itemIndex);
@@ -1117,20 +1874,33 @@ export function createCanvasApp({
     else if (entry.kind === 'datepicker') {
       next = given ? new Date(given) : null;
       if (next && Number.isNaN(next.getTime())) throw fail('The date is not valid.', 'CanvasInputInvalid');
-    } else if (entry.kind === 'dropdown') {
+    } else if (entry.kind === 'slider' || entry.kind === 'numberinput') {
+      next = Number(given);
+      if (!Number.isFinite(next)) throw fail('The number is not valid.', 'CanvasInputInvalid');
+      const min = read(name, 'Min', scope),
+        max = read(name, 'Max', scope);
+      if ((min !== null && next < Number(min)) || (max !== null && next > Number(max)))
+        throw fail('The number is outside the control bounds.', 'CanvasInputInvalid');
+    } else if (entry.kind === 'dropdown' || entry.kind === 'radio') {
       const list = items(name);
       next = indexOf(list, given);
       if (next < 0 || next >= list.length) throw fail(`${name} has no item ${given}.`, 'CanvasItemNotFound', 404);
     } else if (entry.kind === 'combobox') {
       const list = items(name);
       next = [given].flat().map((choice) => indexOf(list, choice));
+      if (next.length > 1 && read(name, 'SelectMultiple', scope) === false)
+        throw fail(`${name} allows only one selection.`, 'CanvasInputInvalid');
       if (next.some((index) => index < 0 || index >= list.length))
         throw fail(`${name} has no such item.`, 'CanvasItemNotFound', 404);
     } else throw fail(`${name} (${entry.type}) takes no input.`, 'CanvasActionInvalid');
+    const checked = entry.kind === 'checkbox' || entry.kind === 'toggle';
+    if (checked && read(name, 'Value', scope) === next) return;
     state.inputs.set(key, next);
     changed(key);
     log({ event: 'input', control: name, ...(scope.itemIndex !== undefined ? { item: scope.itemIndex } : {}) });
-    return behaviour(name, 'OnChange', scope);
+    const result = await behaviour(name, 'OnChange', scope);
+    if (checked) await behaviour(name, next ? 'OnCheck' : 'OnUncheck', scope);
+    return result;
   }
   let queue = Promise.resolve();
   const serial = (task) => {
@@ -1153,13 +1923,16 @@ export function createCanvasApp({
         const start = formulas.get('App')?.has('StartScreen') ? nameOf(read('App', 'StartScreen', {})) : null;
         const first = screens.has(start) ? start : screenNames[0];
         if (first && !state.current) await show(first, { transition: 'None', push: true });
+        await syncTimers();
         await settle();
+        initializeResetInputs();
         return instance.snapshot();
       }),
     /**
      * One driver action: { action: 'select', control, item? } runs OnSelect (item = gallery row index); 'input' sets a
      * control's user value ({ control, value, item? }) and runs OnChange; 'navigate' { screen }; 'back'; 'run' { formula }
-     * runs a behaviour formula on the current screen; 'evaluate' { formula } answers its value; 'refresh' rereads data.
+     * runs a behaviour formula on the current screen; 'evaluate' { formula } answers its value; 'resize' { width, height }
+     * changes the bounded viewport; 'refresh' rereads data.
      */
     act: (request) =>
       serial(async () => {
@@ -1173,6 +1946,185 @@ export function createCanvasApp({
           case 'input':
             await setInput(request.control, request.value, request.item);
             break;
+          case 'add-media': {
+            const entry = hosted(request.control);
+            if (entry.kind !== 'addmedia') throw fail('add-media needs an add picture control.', 'CanvasActionInvalid');
+            const scope = itemScope(entry.name, request.item);
+            if (read(entry.name, 'DisplayMode', scope) !== 'Edit')
+              throw fail('The control is not editable.', 'CanvasActionInvalid');
+            const { name, mime, data } = request;
+            if (
+              typeof name !== 'string' ||
+              !name ||
+              name.length > 255 ||
+              [...name].some(
+                (character) =>
+                  character.charCodeAt(0) < 32 ||
+                  character.charCodeAt(0) === 127 ||
+                  character === '/' ||
+                  character === '\\',
+              ) ||
+              !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mime) ||
+              typeof data !== 'string' ||
+              data.length > Math.ceil((1024 * 1024) / 3) * 4 ||
+              !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data)
+            )
+              throw fail('The picture is invalid or exceeds the local size limit.', 'CanvasInputInvalid');
+            const bytes = Buffer.from(data, 'base64');
+            if (!bytes.length || bytes.length > 1024 * 1024 || bytes.toString('base64') !== data)
+              throw fail('The picture is invalid or exceeds the local size limit.', 'CanvasInputInvalid');
+            const valid =
+              mime === 'image/png'
+                ? bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+                : mime === 'image/jpeg'
+                  ? bytes.length >= 3 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
+                  : mime === 'image/gif'
+                    ? ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))
+                    : bytes.length >= 12 &&
+                      bytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+                      bytes.subarray(8, 12).toString('ascii') === 'WEBP';
+            if (!valid) throw fail('The picture does not match its declared image type.', 'CanvasInputInvalid');
+            const key = `input:${entry.name}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
+            state.inputs.set(key, { name, uri: `data:${mime};base64,${data}` });
+            changed(key);
+            await behaviour(entry.name, 'OnChange', scope);
+            break;
+          }
+          case 'codecomponent-event': {
+            const entry = hosted(request.control);
+            const definition = source.codeComponents?.[entry.name];
+            if (entry.kind !== 'codecomponent' || !definition?.admitted)
+              throw fail('Code component is not admitted by its manifest.', 'CanvasControlUnsupported', 501);
+            if (typeof request.event !== 'string' || !(definition.events ?? []).includes(request.event))
+              throw fail('Code component event is not declared by its manifest.', 'CanvasActionInvalid');
+            const scope = itemScope(entry.name, request.item);
+            if (read(entry.name, 'DisplayMode', scope) !== 'Edit')
+              throw fail('Code component is not editable.', 'CanvasActionInvalid');
+            await behaviour(entry.name, request.event, scope);
+            break;
+          }
+          case 'codecomponent': {
+            const entry = hosted(request.control);
+            const definition = source.codeComponents?.[entry.name];
+            if (entry.kind !== 'codecomponent' || !definition?.admitted)
+              throw fail('Code component is not admitted by its manifest.', 'CanvasControlUnsupported', 501);
+            const scope = itemScope(entry.name, request.item);
+            if (read(entry.name, 'DisplayMode', scope) !== 'Edit')
+              throw fail('Code component is not editable.', 'CanvasActionInvalid');
+            if (!isPlain(request.values) || Object.keys(request.values).length > 128)
+              throw fail('Code component values must be a bounded property object.', 'CanvasActionInvalid');
+            const changes = [];
+            for (const [property, value] of Object.entries(request.values)) {
+              const descriptor = definition.properties.find((item) => item.name === property);
+              if (!descriptor || !['output', 'bound'].includes(descriptor.usage))
+                throw fail(`Code component property ${property} is not writable.`, 'CanvasActionInvalid');
+              const type = descriptor.ofType.toLowerCase();
+              const integer = [
+                'whole.none',
+                'whole.duration',
+                'whole.timezone',
+                'whole.language',
+                'optionset',
+              ].includes(type);
+              const numeric = integer || ['decimal', 'fp', 'currency'].includes(type);
+              const text = [
+                'singleline.text',
+                'singleline.textarea',
+                'singleline.email',
+                'singleline.phone',
+                'singleline.url',
+                'singleline.ticker',
+                'multiple',
+              ].includes(type);
+              const enumeration = type === 'enum';
+              const date = ['datetime.dateonly', 'datetime.datetime'].includes(type);
+              const valid =
+                value === null ||
+                (numeric &&
+                  typeof value === 'number' &&
+                  Number.isFinite(value) &&
+                  (!integer || Number.isSafeInteger(value))) ||
+                (text && typeof value === 'string' && value.length <= 65536) ||
+                (type === 'twooptions' && typeof value === 'boolean') ||
+                (enumeration &&
+                  ((typeof value === 'string' && value.length <= 65536) || Number.isSafeInteger(value))) ||
+                (date &&
+                  typeof value === 'string' &&
+                  (type === 'datetime.dateonly'
+                    ? /^\d{4}-\d{2}-\d{2}$/.test(value)
+                    : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) &&
+                  !Number.isNaN(Date.parse(value)) &&
+                  new Date(value).toISOString().slice(0, 10) === value.slice(0, 10));
+              if (!valid || (!numeric && !text && !date && !enumeration && type !== 'twooptions'))
+                throw fail(`Code component property ${property} has an invalid value.`, 'CanvasInputInvalid');
+              changes.push([
+                `pcf:${entry.name}.${property}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`,
+                value,
+              ]);
+            }
+            for (const [key, value] of changes) {
+              state.inputs.set(key, value);
+              changed(key);
+            }
+            if (changes.length) await behaviour(entry.name, 'OnChange', scope);
+            break;
+          }
+          case 'media': {
+            const entry = hosted(request.control);
+            if (!['audio', 'video'].includes(entry.kind) || !['play', 'pause', 'end', 'seek'].includes(request.event))
+              throw fail('media needs an audio or video control and a valid event.', 'CanvasActionInvalid');
+            const prior = state.media.get(entry.name) ?? { paused: true, time: 0 };
+            if (
+              request.event === 'seek' &&
+              (typeof request.time !== 'number' ||
+                !Number.isFinite(request.time) ||
+                request.time < 0 ||
+                request.time > 86400)
+            )
+              throw fail('media seek needs a time from 0 to 86400 seconds.', 'CanvasActionInvalid');
+            const next =
+              request.event === 'seek'
+                ? { ...prior, time: request.time }
+                : request.event === 'play'
+                  ? { ...prior, paused: false }
+                  : request.event === 'end' && read(entry.name, 'Loop') === true
+                    ? { paused: false, time: 0 }
+                    : { ...prior, paused: true };
+            state.media.set(entry.name, next);
+            changed(`media:${entry.name}`);
+            if (request.event === 'play' && prior.paused) await behaviour(entry.name, 'OnStart', {});
+            if (request.event === 'pause' && !prior.paused) await behaviour(entry.name, 'OnPause', {});
+            if (request.event === 'end') await behaviour(entry.name, 'OnEnd', {});
+            break;
+          }
+          case 'tick': {
+            if (!Number.isInteger(request.milliseconds) || request.milliseconds < 1 || request.milliseconds > 60000)
+              throw fail('tick needs integer milliseconds from 1 to 60000.', 'CanvasActionInvalid');
+            await tickTimers(request.milliseconds);
+            break;
+          }
+          case 'search': {
+            const entry = hosted(request.control);
+            if (entry.kind !== 'combobox' || typeof request.value !== 'string' || request.value.length > 1000)
+              throw fail('search needs a combo box and text up to 1000 characters.', 'CanvasActionInvalid');
+            const scope = itemScope(request.control, request.item);
+            const key = `search:${request.control}${scope.itemIndex !== undefined ? `#${scope.itemIndex}` : ''}`;
+            state.inputs.set(key, request.value);
+            changed(key);
+            break;
+          }
+          case 'gallery-window': {
+            const entry = hosted(request.control);
+            if (
+              entry.kind !== 'gallery' ||
+              !Number.isSafeInteger(request.offset) ||
+              request.offset < 0 ||
+              request.offset > 1000000
+            )
+              throw fail('gallery-window needs a gallery and an offset from 0 to 1000000.', 'CanvasActionInvalid');
+            state.windows.set(request.control, request.offset);
+            break;
+          }
           case 'navigate':
             if (!screens.has(request.screen))
               throw fail(`Screen ${request.screen} is not part of this app.`, 'CanvasScreenNotFound', 404);
@@ -1193,17 +2145,27 @@ export function createCanvasApp({
             result = value instanceof FxDataSource ? rowsOf(value) : value;
             break;
           }
+          case 'resize': {
+            const viewport = canvasViewport(request);
+            if (viewport.width !== state.viewport.width || viewport.height !== state.viewport.height) {
+              state.viewport = viewport;
+              changed('viewport');
+            }
+            break;
+          }
           case 'refresh':
             propertyAnswers.clear();
             forget();
             break;
           default:
             throw fail(
-              `Unknown canvas action ${request?.action}; use select, input, navigate, back, run, evaluate or refresh.`,
+              `Unknown canvas action ${request?.action}; use select, input, codecomponent, media, tick, search, gallery-window, navigate, back, run, evaluate, resize or refresh.`,
               'CanvasActionInvalid',
             );
         }
+        if (request?.action !== 'evaluate') await syncTimers();
         await settle();
+        if (request?.action !== 'evaluate') await synchronizeResetInputs();
         return { result: observable(result), errors: state.errors.slice(before), snapshot: instance.snapshot() };
       }),
     /** The snapshot after the connector calls property formulas wait for have answered. */
@@ -1216,29 +2178,85 @@ export function createCanvasApp({
     snapshot() {
       const describe = (name, scope = {}) => {
         const entry = controls.get(name);
-        const names = [...new Set([...(formulas.get(name)?.keys() ?? []), ...(OUTPUTS[entry.kind] ?? [])])].filter(
-          (property) => !BEHAVIOUR_PROPERTY.test(property),
+        const names = [
+          ...new Set([
+            ...(formulas.get(name)?.keys() ?? []),
+            ...(OUTPUTS[entry.kind] ?? []),
+            ...Object.keys(COMMON_DEFAULTS),
+            ...Object.keys(CONTROL_CATALOGUE[entry.kind]?.defaults ?? {}),
+            ...(source.codeComponents?.[name]?.properties?.map((property) => property.name) ?? []),
+          ]),
+        ].filter(
+          (property) =>
+            !isBehaviour(name, property) &&
+            !(entry.kind === 'combobox' && property === 'ItemDisplayText') &&
+            !(entry.kind === 'gallery' && property === 'TemplateFill' && scope.item === undefined),
         );
         const out = {
           name,
           type: entry.type,
+          variant: entry.variant,
           kind: entry.kind,
           parent: entry.parent,
           supported: entry.supported,
           properties: Object.fromEntries(names.map((property) => [property, observable(read(name, property, scope))])),
-          behaviours: [...(formulas.get(name)?.keys() ?? [])].filter((property) => BEHAVIOUR_PROPERTY.test(property)),
+          behaviours: [...(formulas.get(name)?.keys() ?? [])].filter((property) => isBehaviour(name, property)),
         };
-        if (entry.kind === 'gallery')
-          out.items = items(name)
-            .slice(0, SNAPSHOT_ITEMS)
-            .map((item, index) => ({
+        if (entry.kind === 'codecomponent') out.codeComponent = source.codeComponents?.[name] ?? null;
+        if (['combobox', 'dropdown', 'radio'].includes(entry.kind) && !scope.gallery) {
+          const rows = items(name);
+          out.optionsTotal = rows.length;
+          out.options = rows.slice(0, CANVAS_DATA_ROW_LIMIT).map((item, index) => {
+            const label =
+              entry.kind === 'combobox' && formulas.get(name)?.has('ItemDisplayText')
+                ? read(name, 'ItemDisplayText', { item, itemIndex: index, option: true })
+                : isPlain(item)
+                  ? (item.Label ?? item.Value ?? Object.values(item)[0] ?? '')
+                  : item;
+            return { index, value: observable(item), label: observable(label) };
+          });
+        }
+        if (entry.kind === 'gallery') {
+          const rows = items(name),
+            offset = state.windows.get(name) ?? 0;
+          out.total = rows.length;
+          out.offset = offset;
+          out.hasMore = offset + SNAPSHOT_ITEMS < rows.length;
+          out.items = rows.slice(offset, offset + SNAPSHOT_ITEMS).map((item, rowIndex) => {
+            const index = offset + rowIndex;
+            const children = descendants(name).filter((child) => controls.get(child).supported);
+            return {
               index,
+              templateProperties: formulas.get(name)?.has('TemplateFill')
+                ? { TemplateFill: observable(read(name, 'TemplateFill', { gallery: name, itemIndex: index, item })) }
+                : {},
               controls: Object.fromEntries(
-                descendants(name)
-                  .filter((child) => controls.get(child).supported)
-                  .map((child) => [child, describe(child, { gallery: name, itemIndex: index, item }).properties]),
+                children.map((child) => [child, describe(child, { gallery: name, itemIndex: index, item }).properties]),
               ),
-            }));
+              controlInfo: Object.fromEntries(
+                children.map((child) => {
+                  const model = controls.get(child);
+                  return [
+                    child,
+                    {
+                      name: child,
+                      parent: model.parent,
+                      type: model.type,
+                      kind: model.kind,
+                      variant: model.variant,
+                      ...(model.kind === 'codecomponent'
+                        ? { codeComponent: source.codeComponents?.[child] ?? null }
+                        : {}),
+                      behaviours: [...(formulas.get(child)?.keys() ?? [])].filter((property) =>
+                        isBehaviour(child, property),
+                      ),
+                    },
+                  ];
+                }),
+              ),
+            };
+          });
+        }
         return out;
       };
       // A collection: established by Collect/ClearCollect, or created by one at run time (a driver formula).
@@ -1249,7 +2267,10 @@ export function createCanvasApp({
         app: app.uniqueName,
         name: source.app?.name ?? app.uniqueName,
         rendered: false,
+        clockKey: state.clockKey,
+        viewport: { ...state.viewport },
         currentScreen: state.current,
+        transition: state.transition,
         history: state.history.map((entry) => entry.screen),
         variables: Object.fromEntries(
           names
@@ -1277,7 +2298,7 @@ export function createCanvasApp({
           name: screen,
           current: screen === state.current,
           properties: Object.fromEntries(
-            [...(formulas.get(screen)?.keys() ?? [])]
+            [...new Set([...(formulas.get(screen)?.keys() ?? []), 'Width', 'Height', 'Size', 'Orientation'])]
               .filter((property) => !BEHAVIOUR_PROPERTY.test(property))
               .map((property) => [property, observable(read(screen, property))]),
           ),
@@ -1309,20 +2330,27 @@ export function createCanvasApp({
   };
   return instance;
 }
-const SNAPSHOT_ITEMS = 50; // ponytail: a snapshot lists the first 50 gallery rows; drive later rows by index through the API.
+const SNAPSHOT_ITEMS = 50; // Gallery windows bound each snapshot; gallery-window selects subsequent rows.
 // Properties the runtime maintains for each kind (beyond the declared ones).
 const OUTPUTS = Object.freeze({
   textinput: ['Text'],
-  checkbox: ['Value'],
-  toggle: ['Value'],
+  addmedia: ['Media', 'FileName'],
+  slider: ['Value'],
+  numberinput: ['Value'],
+  radio: ['Selected'],
+  timer: ['Value', 'Running'],
+  audio: ['Paused', 'Time'],
+  video: ['Paused', 'Time'],
+  checkbox: ['Value', 'Checked'],
+  toggle: ['Value', 'Checked'],
   datepicker: ['SelectedDate'],
   dropdown: ['Selected'],
-  combobox: ['SelectedItems', 'Selected'],
-  gallery: ['Selected', 'AllItems'],
+  combobox: ['SelectedItems', 'Selected', 'SearchText'],
+  gallery: ['Selected', 'AllItems', 'AllItemsCount'],
   form: ['Mode', 'DisplayMode', 'Updates', 'Valid', 'Unsaved', 'LastSubmit', 'Error', 'ErrorKind'],
   formviewer: ['Mode', 'DisplayMode'],
   card: ['Default', 'Update', 'Valid', 'DisplayMode'],
-  screen: [],
+  screen: ['Width', 'Height', 'Size', 'Orientation'],
 });
 
 /**
@@ -1346,11 +2374,23 @@ export function createCanvasRuntime({
     `${uniqueName}\u0000${principal?.kind ?? 'anonymous'}:${principal?.principalId ?? ''}`;
   const resolve = (value) => (typeof value === 'function' ? value() : value);
   return {
-    async session(uniqueName, principal, { parameters = {} } = {}) {
+    async session(uniqueName, principal, { parameters = {}, viewport } = {}) {
       const key = keyOf(uniqueName, principal);
+      const app = (apps() ?? []).find((entry) => entry.uniqueName === uniqueName);
+      if (!app) {
+        instances.delete(key);
+        throw fail('Canvas app not found.', 'CanvasAppNotFound', 404);
+      }
+      const revision = app.source?.revision;
+      const previous = instances.get(key);
+      if (
+        previous &&
+        typeof previous.revision === 'string' &&
+        typeof revision === 'string' &&
+        previous.revision !== revision
+      )
+        instances.delete(key);
       if (!instances.has(key)) {
-        const app = (apps() ?? []).find((entry) => entry.uniqueName === uniqueName);
-        if (!app) throw fail('Canvas app not found.', 'CanvasAppNotFound', 404);
         const created = createCanvasApp({
           app,
           evaluator: resolve(evaluator),
@@ -1362,18 +2402,36 @@ export function createCanvasRuntime({
           launch,
           diagnostic,
           parameters,
+          ...(viewport === undefined ? {} : { viewport }),
         });
-        instances.set(key, created);
+        const originalSnapshot = created.snapshot.bind(created);
+        created.snapshot = () => ({ ...originalSnapshot(), sourceRevision: revision ?? null });
+        const record = { instance: created, revision };
+        instances.set(key, record);
         await created.start().catch((error) => {
-          instances.delete(key);
+          if (instances.get(key) === record) instances.delete(key);
           throw error;
         });
+        if (instances.get(key) !== record)
+          throw fail('Canvas source changed while the app was starting.', 'CanvasSourceChanged', 409);
       }
-      return instances.get(key);
+      return instances.get(key).instance;
     },
-    /** The started instance, or null: reading never starts an app (no OnStart without a CSRF-checked POST). */
+    /** Reads do not start apps; a changed revision evicts the old session. */
     existing(uniqueName, principal) {
-      return instances.get(keyOf(uniqueName, principal)) ?? null;
+      const key = keyOf(uniqueName, principal),
+        record = instances.get(key);
+      if (!record) return null;
+      const app = (apps() ?? []).find((entry) => entry.uniqueName === uniqueName);
+      const revision = app?.source?.revision;
+      if (
+        !app ||
+        (typeof record.revision === 'string' && typeof revision === 'string' && record.revision !== revision)
+      ) {
+        instances.delete(key);
+        return null;
+      }
+      return record.instance;
     },
     reset(uniqueName, principal) {
       return instances.delete(keyOf(uniqueName, principal));
@@ -1385,8 +2443,8 @@ export function createCanvasRuntime({
 }
 
 /**
- * Capability record `canvas-apps`: the hosted logic is behaviour; rendering is the documented boundary (requirement row
- * `canvas:rendering`, source-graph.mjs). `evaluatorLevel` is the Power Fx evaluator's describe().level.
+ * Capability record `canvas-apps`: the hosted logic is behaviour and the local player has bounded rendering support.
+ * `evaluatorLevel` is the Power Fx evaluator's describe().level.
  */
 export function describeCanvasRuntime({ evaluatorLevel = 'contract' } = {}) {
   const level = evaluatorLevel === 'contract' || evaluatorLevel === 'inventory' ? 'contract' : 'behaviour';
@@ -1399,13 +2457,30 @@ export function describeCanvasRuntime({ evaluatorLevel = 'contract' } = {}) {
     stateOwner: 'memory',
     lifecycle: 'per-session',
     requires: ['power-fx'],
-    operations: ['open', 'select', 'input', 'navigate', 'back', 'run', 'evaluate', 'refresh'].map((name) => ({
+    operations: [
+      'open',
+      'select',
+      'input',
+      'codecomponent',
+      'codecomponent-event',
+      'add-media',
+      'media',
+      'tick',
+      'search',
+      'gallery-window',
+      'navigate',
+      'back',
+      'run',
+      'evaluate',
+      'resize',
+      'refresh',
+    ].map((name) => ({
       name,
       level,
     })),
     fidelity: {
       notes: [
-        'Canvas apps are not rendered: screens, controls and formulas run headlessly at /_apps/canvas/<app> and POST /_apps/api/canvas/<app> (requirement canvas:rendering).',
+        'A bounded local HTML player presents supported controls; the runtime snapshot remains headless and does not claim pixel-perfect Power Apps rendering.',
         `Dataverse tables are Power Fx data sources read and written as the caller; delegable queries push down, others read up to ${CANVAS_DATA_ROW_LIMIT} rows with the delegation warning.`,
         'Controls outside the hosted catalogue (canvas-controls.mjs) and component instances are listed as unsupported (requirement canvas:app/<name>).',
       ],

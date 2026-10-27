@@ -150,7 +150,7 @@ test('an unsupported control is listed, refused when driven and reported by the 
   assert.equal(rows['canvas:app/fx_inventedcanvas'].status, 'unsupported');
   assert.equal(rows['canvas:app/fx_inventedcanvas'].reason, 'CANVAS_CONTROL_UNSUPPORTED');
   assert.match(rows['canvas:app/fx_inventedcanvas'].message, /HomeScreen\.Chart1 \(PieChart@1\.0\.0\)/);
-  assert.equal(rows['canvas:rendering'].status, 'placeholder');
+  assert.equal(rows['canvas:rendering'].status, 'unsupported');
   assert.equal(rows['canvas:rendering'].surface, 'canvas');
   assert.ok(
     !graph.requirements().some((row) => row.id === 'canvasapp:fx_inventedcanvas'),
@@ -161,17 +161,17 @@ test('an unsupported control is listed, refused when driven and reported by the 
     canvasRequirementRows([app.record]).map((row) => [row.id, row.status]),
     [
       ['canvas:app/fx_inventedcanvas', 'unsupported'],
-      ['canvas:rendering', 'placeholder'],
+      ['canvas:rendering', 'unsupported'],
     ],
   );
 });
 
-test('the canvas-apps capability record is behaviour with the rendering gap in its fidelity notes', () => {
+test('the canvas-apps capability record describes the bounded player', () => {
   const record = describeCanvasRuntime({ evaluatorLevel: 'behaviour' });
   assert.equal(record.level, 'behaviour');
   assert.ok(record.operations.length > 0);
   assert.ok(record.operations.every((operation) => operation.level === 'behaviour'));
-  assert.match(record.fidelity.notes[0], /not rendered/);
+  assert.match(record.fidelity.notes[0], /bounded local HTML player/);
   const contract = describeCanvasRuntime().operations;
   assert.equal(contract.length, record.operations.length);
   assert.ok(contract.every((operation) => operation.level === 'contract'));
@@ -239,7 +239,7 @@ test('the driver API needs loopback, a principal and the CSRF token; JSON answer
     started: false,
     rendered: false,
   });
-  const idle = await (await fetch(`${base}/_apps/canvas/fx_inventedcanvas`)).text();
+  const idle = await (await fetch(`${base}/_apps/canvas/fx_inventedcanvas?view=inspect`)).text();
   assert.match(idle, /name="action" value="start"/);
   assert.doesNotMatch(idle, /Current screen/);
   assert.equal(runtime.existing('fx_inventedcanvas', org.admin), null);
@@ -250,10 +250,10 @@ test('the driver API needs loopback, a principal and the CSRF token; JSON answer
     { 'content-type': 'application/x-www-form-urlencoded' },
   );
   assert.equal(form.status, 303);
-  assert.equal(form.headers.get('location'), '/_apps/canvas/fx_inventedcanvas');
+  assert.equal(form.headers.get('location'), '/_apps/canvas/fx_inventedcanvas?view=inspect');
   const snapshot = await (await fetch(`${base}/_apps/api/canvas/fx_inventedcanvas`)).json();
   assert.equal(snapshot.currentScreen, 'DetailScreen');
-  const page = await (await fetch(`${base}/_apps/canvas/fx_inventedcanvas`)).text();
+  const page = await (await fetch(`${base}/_apps/canvas/fx_inventedcanvas?view=inspect`)).text();
   assert.match(page, /Canvas apps are not rendered/);
   assert.match(page, /Current screen: <strong>DetailScreen<\/strong>/);
   assert.match(page, /name="_csrf" value="fx-token"/);

@@ -250,6 +250,7 @@ test('documentation CI retains required CodeQL configurations without scheduling
   for (const workflow of [ci, security]) {
     assert.equal(workflow.jobs.gate.if, 'always()');
     assert.equal(workflow.on.pull_request.paths, undefined, 'required gates must report on documentation PRs');
+    assert.ok(workflow.on.pull_request.branches.includes('0.9.8'), 'release PRs must receive both gates');
   }
 });
 

@@ -3,6 +3,7 @@
 // handling": error in, error out); `errors: true` sees error arguments; `lazy: true` receives the argument nodes (If,
 // Switch, IfError, record scope functions, behaviour functions that name their target).
 // Semantics follow each function's Learn reference page (https://learn.microsoft.com/power-platform/power-fx/reference/).
+import { canvasColorCss, parseCanvasColor } from './power-fx-colors.mjs';
 import {
   decimalParts,
   decimalText,
@@ -21,6 +22,7 @@ import {
   toDecimal,
   ErrorKind,
   FxDataSource,
+  FxEnum,
   FxDate,
   FxError,
   FxGuid,
@@ -51,6 +53,67 @@ const DAY = 86_400_000;
 const fail = (kind, message) => fxError(ErrorKind[kind], message);
 const notHosted = (name) => fail('NotSupported', `${name} is not available in this host.`);
 const firstError = (...values) => values.find((value) => value instanceof FxError);
+
+// Infer only result types fixed by syntax, without evaluating an unselected formula or invoking host functions.
+// Dynamic names, connector calls and mixed-type arithmetic need a full Power Fx type checker and remain unknown.
+function knownResultType(node) {
+  if (!node) return null;
+  if (node.t === 'lit') {
+    if (node.v instanceof FxError && node.v.errors.every((error) => error.Kind === ErrorKind.Numeric)) return 'number';
+    if (isExactNumeric(node.v) || typeof node.v === 'number') return 'number';
+    if (typeof node.v === 'string') return 'text';
+    if (typeof node.v === 'boolean') return 'boolean';
+  }
+  if (node.t === 'interp') return 'text';
+  if (node.t === 'pct' || (node.t === 'unary' && node.op !== '!')) {
+    const operand = knownResultType(node.e);
+    return operand === 'number' || operand === 'float' ? operand : null;
+  }
+  if (node.t === 'unary') return 'boolean';
+  if (node.t === 'bin') {
+    if (node.op === '^') return 'float';
+    if (['/', '*'].includes(node.op)) {
+      const left = knownResultType(node.l),
+        right = knownResultType(node.r);
+      if (left === 'float' || right === 'float') return 'float';
+      if (left === 'number' && right === 'number') return 'number';
+      return null;
+    }
+    if (node.op === '&') return 'text';
+    if (['=', '<>', '<', '<=', '>', '>=', 'in', 'exactin', '&&', '||'].includes(node.op)) return 'boolean';
+    if (['+', '-'].includes(node.op) && knownResultType(node.l) === 'number' && knownResultType(node.r) === 'number')
+      return 'number';
+  }
+  if (node.t === 'call') {
+    return (
+      {
+        Text: 'text',
+        Value: 'number',
+        Decimal: 'number',
+        Float: 'float',
+        Boolean: 'boolean',
+        DateValue: 'date',
+        Date: 'date',
+        DateTimeValue: 'datetime',
+        TimeValue: 'time',
+      }[node.name] ?? null
+    );
+  }
+  return null;
+}
+function coerceIfErrorReplacement(fx, value, type) {
+  if (value instanceof FxError || isBlank(value)) return value;
+  if (type === 'number') return typeof value === 'string' ? parseNumber(value, fx.language) : toDecimal(value);
+  if (type === 'float') return FUNCTIONS.Float.fn(fx, value);
+  if (type === 'text') return toText(value, fx);
+  if (type === 'boolean') return toBoolean(value);
+  if (['date', 'datetime', 'time'].includes(type)) return toDate(value, type, fx);
+  fx.warn({
+    code: 'POWER_FX_IFERROR_TYPE_UNKNOWN',
+    message: 'IfError replacement type could not be determined; coercion was not applied.',
+  });
+  return value;
+}
 
 // ---- Shared helpers
 
@@ -129,40 +192,76 @@ const rounding = (mode) => ({
 
 // ---- Number formatting (Learn "Text function": 0 # , . % placeholders, literal text)
 
-function formatNumber(value, format) {
+function formatNumber(value, format, language) {
+  let separators;
+  try {
+    if (!Intl.NumberFormat.supportedLocalesOf([language]).length) throw new RangeError();
+    separators = new Intl.NumberFormat(language).formatToParts(1234.5);
+  } catch {
+    return fail('BadLanguageCode', `Language code '${language}' not supported.`);
+  }
+  const group = separators.find((part) => part.type === 'group')?.value ?? ',';
+  const decimal = separators.find((part) => part.type === 'decimal')?.value ?? '.';
   const fmt = String(format).replace(/^\[\$-[^\]]*\]/, '');
-  const parts = [...fmt.matchAll(/"([^"]*)"|\\(.)|([0#,.])|(.)/gs)].map((m) =>
+  const parts = [...fmt.matchAll(/"([^"]*)"|\\(.)|([0#,.%])|(.)/gs)].map((m) =>
     m[3] !== undefined ? { p: m[3] } : { t: m[1] ?? m[2] ?? m[4] },
   );
-  const first = parts.findIndex((part) => part.p && part.p !== ',' && part.p !== '.');
-  if (first < 0) return parts.map((part) => part.t ?? part.p).join('');
-  let last = parts.length - 1;
-  while (!parts[last].p || parts[last].p === ',') last--;
-  const pattern = parts
-    .slice(first, last + 1)
-    .map((part) => part.p ?? '')
-    .join('');
-  const prefix = parts
-    .slice(0, first)
-    .map((part) => part.t ?? part.p)
-    .join('');
-  const suffix = parts
-    .slice(last + 1)
-    .map((part) => part.t ?? part.p)
-    .join('');
-  const percent = (prefix + suffix).includes('%');
-  const [intPattern, decPattern = ''] = pattern.split('.');
-  const decimals = (decPattern.match(/[0#]/g) ?? []).length;
-  const minDecimals = (decPattern.match(/0/g) ?? []).length;
-  const minInt = (intPattern.match(/0/g) ?? []).length;
-  const x = scaled(percent ? value * 100 : value, decimals, 'round');
-  const [whole, fraction = ''] = Math.abs(x).toFixed(decimals).split('.');
-  let intText = whole === '0' && minInt === 0 ? '' : whole.padStart(minInt, '0');
-  if (intPattern.includes(',')) intText = intText.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const point = parts.findIndex((part) => part.p === '.');
+  const integerSlots = [],
+    fractionSlots = [];
+  for (const [index, part] of parts.entries())
+    if (part.p === '0' || part.p === '#') (point < 0 || index < point ? integerSlots : fractionSlots).push(index);
+  if (!integerSlots.length && !fractionSlots.length) return parts.map((part) => part.t ?? part.p).join('');
+  const firstZero = integerSlots.findIndex((index) => parts[index].p === '0');
+  const minInt = firstZero < 0 ? 0 : integerSlots.length - firstZero;
+  const decimals = fractionSlots.length;
+  const minDecimals = fractionSlots.findLastIndex((index) => parts[index].p === '0') + 1;
+  const lastInteger = integerSlots.at(-1);
+  let scalingCommas = 0;
+  if (lastInteger !== undefined) for (let index = lastInteger + 1; parts[index]?.p === ','; index++) scalingCommas++;
+  const grouped =
+    integerSlots.length > 1 &&
+    parts.some((part, index) => part.p === ',' && index > integerSlots[0] && index < lastInteger);
+  const percentCount = parts.filter((part) => part.p === '%').length;
+  // Power Fx formats decimal digits without converting an exact Decimal to a double.
+  // Float formatting uses the platform's 15-significant-digit decimal presentation.
+  const input = value instanceof FxFloat ? round15(value.value) : value;
+  const partsValue = decimalParts(input);
+  let coefficient = partsValue.coefficient;
+  let scale = partsValue.scale - 2 * percentCount + 3 * scalingCommas;
+  if (scale < 0) {
+    coefficient *= 10n ** BigInt(-scale);
+    scale = 0;
+  }
+  const negative = coefficient < 0n;
+  let magnitude = negative ? -coefficient : coefficient;
+  if (scale > decimals) {
+    const divisor = 10n ** BigInt(scale - decimals);
+    magnitude = magnitude / divisor + ((magnitude % divisor) * 2n >= divisor ? 1n : 0n);
+  } else magnitude *= 10n ** BigInt(decimals - scale);
+  const digits = magnitude.toString().padStart(decimals + 1, '0');
+  const whole = decimals ? digits.slice(0, -decimals) : digits;
+  const fraction = decimals ? digits.slice(-decimals) : '';
+  const intText = whole === '0' && minInt === 0 ? '' : whole.padStart(minInt, '0');
   let decText = fraction;
   while (decText.length > minDecimals && decText.endsWith('0')) decText = decText.slice(0, -1);
-  const body = intText + (decText || (pattern.includes('.') && minDecimals) ? `.${decText}` : '');
-  return `${x < 0 ? '-' : ''}${prefix}${body}${suffix}`;
+  // Assign digits to their original slots, retaining literals between slots. Overflow belongs to the first slot.
+  const rendered = new Map();
+  const integerDigits = [...intText].map((digit, index) =>
+    grouped && index > 0 && (intText.length - index) % 3 === 0 ? group + digit : digit,
+  );
+  for (const index of integerSlots.toReversed()) rendered.set(index, integerDigits.pop() ?? '');
+  if (integerSlots.length) rendered.set(integerSlots[0], integerDigits.join('') + rendered.get(integerSlots[0]));
+  fractionSlots.forEach((index, digit) => rendered.set(index, decText[digit] ?? ''));
+  const body = parts
+    .map((part, index) => {
+      if (rendered.has(index)) return rendered.get(index);
+      if (part.p === ',') return '';
+      if (index === point) return (integerSlots.length ? '' : intText) + (decText || !decimals ? decimal : '');
+      return part.t ?? part.p;
+    })
+    .join('');
+  return `${negative && magnitude !== 0n ? '-' : ''}${body}`;
 }
 
 // ---- Dates (Learn "DateAdd, DateDiff", "Day, Month, Year, Hour, Minute, Second, and Weekday", "WeekNum and ISOWeekNum") --
@@ -648,7 +747,8 @@ export const FUNCTIONS = {
             Observed: error.Observed ?? null,
             Details: error.Details ?? null,
           }));
-          return fx.inScope({ vars: { FirstError: all[0], AllErrors: all } }, () => fx.ev(args[i + 1]));
+          const replacement = fx.inScope({ vars: { FirstError: all[0], AllErrors: all } }, () => fx.ev(args[i + 1]));
+          return coerceIfErrorReplacement(fx, replacement, knownResultType(args[i]));
         }
       }
       return i < args.length ? fx.ev(args[i]) : last;
@@ -827,8 +927,8 @@ export const FUNCTIONS = {
         return formatDate(date, pattern, fx.timeZone, typeof language === 'string' ? language : fx.language);
       }
       if (typeof value === 'string') return value;
-      const x = toNumber(value);
-      return x instanceof FxError ? x : formatNumber(x, pattern);
+      const x = isExactNumeric(value) || value instanceof FxFloat ? value : toNumber(value);
+      return x instanceof FxError ? x : formatNumber(x, pattern, numberLanguage(fx, language));
     },
   },
   Concatenate: {
@@ -1212,6 +1312,95 @@ export const FUNCTIONS = {
     },
   },
 
+  Rand: {
+    min: 0,
+    max: 0,
+    fn(fx) {
+      const value = (fx.host.random ?? Math.random)();
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value < 1
+        ? value
+        : fail('InvalidArgument', 'The random source returned an invalid value.');
+    },
+  },
+  RandBetween: {
+    min: 2,
+    max: 2,
+    fn(fx, bottom, top) {
+      const low = toNumber(bottom),
+        high = toNumber(top);
+      const error = firstError(low, high);
+      if (error) return error;
+      const minimum = Math.ceil(low),
+        maximum = Math.ceil(high);
+      if (
+        !Number.isSafeInteger(minimum) ||
+        !Number.isSafeInteger(maximum) ||
+        low > high ||
+        maximum - minimum >= Number.MAX_SAFE_INTEGER
+      )
+        return fail('InvalidArgument', 'Lower value cannot be greater than upper value or exceed the supported range.');
+      const value = (fx.host.random ?? Math.random)();
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value >= 1)
+        return fail('InvalidArgument', 'The random source returned an invalid value.');
+      return Math.min(maximum, minimum + Math.floor(value * (maximum - minimum + 1)));
+    },
+  },
+  EncodeUrl: {
+    min: 1,
+    max: 1,
+    fn(fx, value) {
+      const text = toText(value, fx);
+      if (text instanceof FxError) return text;
+      try {
+        return encodeURIComponent(text).replace(
+          /[!'()*]/g,
+          (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+        );
+      } catch {
+        return fail('InvalidArgument', 'The text cannot be URL encoded.');
+      }
+    },
+  },
+
+  // Canvas Color values are approximated as CSS strings for the local renderer.
+  RGBA: {
+    min: 4,
+    max: 4,
+    fn(fx, red, green, blue, alpha) {
+      const values = [red, green, blue, alpha].map(toNumber);
+      const error = firstError(...values);
+      if (error) return error;
+      if (values.some((value, i) => !Number.isFinite(value) || value < 0 || value > (i === 3 ? 1 : 255)))
+        return fail('InvalidArgument', 'Argument out of range.');
+      return canvasColorCss([...values.slice(0, 3).map(Math.floor), Math.round(values[3] * 255)]);
+    },
+  },
+  ColorValue: {
+    min: 1,
+    max: 1,
+    fn(fx, value) {
+      if (isBlank(value) || value === '') return null;
+      const color = parseCanvasColor(value);
+      return color ? canvasColorCss(color) : fail('InvalidArgument', 'The color is not supported.');
+    },
+  },
+  ColorFade: {
+    min: 2,
+    max: 2,
+    fn(fx, value, amount) {
+      const color = parseCanvasColor(value),
+        fade = toNumber(amount);
+      if (fade instanceof FxError) return fade;
+      if (!color || !Number.isFinite(fade) || fade < -1 || fade > 1)
+        return fail('InvalidArgument', 'The color or fade amount is invalid.');
+      return canvasColorCss(
+        color.map((channel, index) =>
+          index === 3 ? channel : Math.floor(channel + (fade < 0 ? channel : 255 - channel) * fade),
+        ),
+      );
+    },
+  },
+
   // Tables (Learn "Filter, Search, and LookUp", "Sort and SortByColumns", "First, FirstN, Index, Last, and LastN",
   // "CountRows, CountIf", "Distinct", "AddColumns, DropColumns, RenameColumns, and ShowColumns", "ForAll", "Table", "With")
   Filter: {
@@ -1226,6 +1415,131 @@ export const FUNCTIONS = {
       }
       const rows = rowsOf(fx, table.value, 'Filter');
       return rows instanceof FxError ? rows : filterRows(fx, table, rows, args.slice(1));
+    },
+  },
+  Choices: {
+    min: 1,
+    max: 2,
+    lazy: true,
+    fn(fx, args) {
+      const column = args[0];
+      if (column.t === 'id') {
+        const value = fx.ev(column);
+        if (value instanceof FxError) return value;
+        if (value instanceof FxEnum) {
+          const filter = args[1] ? toText(fx.ev(args[1]), fx) : '';
+          if (filter instanceof FxError) return filter;
+          const prefix = filter.toLocaleLowerCase(fx.language);
+          return [...value.entries.values()]
+            .filter((choice) => choice.label.toLocaleLowerCase(fx.language).startsWith(prefix))
+            .map((choice) => ({ Value: choice, Label: choice.label }));
+        }
+      }
+      if (column.t !== 'dot' || column.obj?.t !== 'id')
+        return fail('NotSupported', 'Choices requires a direct data source column reference.');
+      const source = fx.ev(column.obj);
+      if (source instanceof FxError) return source;
+      if (
+        !(source instanceof FxDataSource) ||
+        source.name !== column.obj.name ||
+        source.adapter[Symbol.for('paqvilo.power-fx.dataverse-choices')] !== true ||
+        typeof source.adapter.choices !== 'function'
+      ) {
+        fx.warn({
+          code: 'POWER_FX_CHOICES_UNAVAILABLE',
+          operation: 'Choices',
+          message: 'The data source does not provide choice metadata.',
+        });
+        return fail('NotSupported', 'Choices metadata is unavailable for this data source.');
+      }
+      const filter = args[1] ? toText(fx.ev(args[1]), fx) : '';
+      if (filter instanceof FxError) return filter;
+      const info = source.adapter.choices(column.name);
+      if (!info) {
+        fx.warn({
+          code: 'POWER_FX_CHOICES_UNAVAILABLE',
+          operation: 'Choices',
+          message: 'The column choice or lookup metadata is unavailable.',
+        });
+        return fail('NotSupported', 'Choices metadata is unavailable for this column.');
+      }
+      if (info.kind === 'choice') {
+        fx.warn({
+          code: 'POWER_FX_CHOICE_APPROXIMATION',
+          operation: 'Choices',
+          message:
+            'Choice values are represented as label and numeric Id records; native opaque choice types are not modeled.',
+        });
+        const prefix = filter.toLocaleLowerCase(fx.language);
+        return info.values.filter((row) => row.Value.toLocaleLowerCase(fx.language).startsWith(prefix));
+      }
+      if (info.kind !== 'lookup' || !(info.source instanceof FxDataSource))
+        return fail('NotSupported', 'Choices lookup metadata is invalid.');
+      const rows = rowsOf(fx, info.source, 'Choices');
+      if (rows instanceof FxError) return rows;
+      const prefix = filter.toLocaleLowerCase(fx.language);
+      return prefix
+        ? rows.filter((row) => {
+            const value = member(fx, row, info.nameColumn);
+            return typeof value === 'string' && value.toLocaleLowerCase(fx.language).startsWith(prefix);
+          })
+        : rows;
+    },
+  },
+  DataSourceInfo: {
+    min: 2,
+    max: 3,
+    lazy: true,
+    fn(fx, args) {
+      const source = fx.ev(args[0]);
+      if (source instanceof FxError) return source;
+      const info = fx.ev(args[1]);
+      if (info instanceof FxError) return info;
+      const column = args[2] ? columnName(fx, args[2]) : null;
+      if (column instanceof FxError) return column;
+      const permissions = ['CreatePermission', 'DeletePermission', 'EditPermission', 'ReadPermission'];
+      const columns = ['DisplayName', 'MaxLength', 'MaxValue', 'MinValue', 'Required'];
+      if (
+        ![...permissions, ...columns, 'AllowedValues'].includes(info) ||
+        (columns.includes(info) && !column) ||
+        (permissions.includes(info) && column)
+      )
+        return fail('InvalidArgument', 'DataSourceInfo arguments are invalid.');
+      if (source instanceof FxDataSource && source.adapter.dataSourceInfo) {
+        const value = source.adapter.dataSourceInfo(info, column);
+        if (value !== undefined) return value;
+      }
+      fx.warn({
+        code: 'POWER_FX_DATASOURCE_INFO_UNAVAILABLE',
+        operation: 'DataSourceInfo',
+        message: `Data source information ${info} is unavailable.`,
+      });
+      return info === 'Required' || permissions.includes(info) ? false : null;
+    },
+  },
+  Search: {
+    min: 3,
+    lazy: true,
+    fn(fx, args) {
+      const table = tableArg(fx, args[0]);
+      if (table.value instanceof FxError) return table.value;
+      const raw = fx.ev(args[1]);
+      if (raw instanceof FxError) return raw;
+      const needle = toText(raw, fx);
+      if (needle instanceof FxError) return needle;
+      const columns = args.slice(2).map((node) => columnName(fx, node));
+      const error = firstError(...columns);
+      if (error) return error;
+      const rows = rowsOf(fx, table.value, 'Search');
+      if (rows instanceof FxError) return rows;
+      const term = needle.toLocaleLowerCase(fx.language);
+      if (!term) return rows;
+      return rows.filter((row) =>
+        columns.some((column) => {
+          const value = member(fx, row, column);
+          return typeof value === 'string' && value.toLocaleLowerCase(fx.language).includes(term);
+        }),
+      );
     },
   },
   LookUp: {
@@ -1640,7 +1954,48 @@ export const FUNCTIONS = {
       return null;
     },
   },
+  UpdateIf: {
+    min: 3,
+    lazy: true,
+    fn(fx, args) {
+      if (args.length % 2 !== 1) return fail('InvalidArgument', 'UpdateIf needs condition and change-record pairs.');
+      const target = collectionTarget(fx, args[0], false);
+      if (target.error) return target.error;
+      const table = { name: args[0].t === 'as' ? args[0].name : null, source: target.name ?? null };
+      const rows = rowsOf(fx, target.value, 'UpdateIf');
+      if (rows instanceof FxError) return rows;
+      for (const row of rows) {
+        for (let i = 1; i < args.length; i += 2) {
+          const condition = inRow(fx, row, table, () => toBoolean(fx.ev(args[i])));
+          if (condition instanceof FxError) return condition;
+          if (!condition) continue;
+          const change = inRow(fx, row, table, () => fx.ev(args[i + 1]));
+          if (change instanceof FxError) return change;
+          if (!isRecord(change)) return fail('InvalidArgument', 'UpdateIf needs a change record.');
+          if (target.value instanceof FxDataSource) {
+            const updated = guarded(() => target.value.adapter.update(row, change));
+            if (updated instanceof FxError) return updated;
+          } else {
+            const index = target.value.indexOf(row);
+            if (index >= 0) target.value[index] = merged([row, change]);
+          }
+          break;
+        }
+      }
+      return target.value instanceof FxDataSource ? rowsOf(fx, target.value, 'UpdateIf') : target.value;
+    },
+  },
   Defaults: { min: 1, max: 1, fn: (fx, value) => (value instanceof FxDataSource ? value.adapter.defaults() : {}) },
+  Errors: {
+    min: 1,
+    max: 2,
+    fn(fx, source, record) {
+      if (!(source instanceof FxDataSource) || typeof source.adapter.errors !== 'function')
+        return fail('NotSupported', 'This data source does not expose write errors.');
+      const errors = source.adapter.errors();
+      return record === undefined ? errors : errors.filter((entry) => sameRow(entry.Record, record));
+    },
+  },
   Navigate: {
     min: 1,
     max: 3,
@@ -1725,7 +2080,13 @@ function collect(fx, args, clear) {
   const values = args.slice(1).map((arg) => fx.ev(arg));
   const error = firstError(...values);
   if (error) return error;
-  const records = recordsOf(values);
+  // A lazy data source is a table argument, not a scalar record. Materialize it under the nondelegable row limit before mutating the destination.
+  const materialized = values.map((value) =>
+    value instanceof FxDataSource ? rowsOf(fx, value, clear ? 'ClearCollect' : 'Collect') : value,
+  );
+  const readError = firstError(...materialized);
+  if (readError) return readError;
+  const records = recordsOf(materialized);
   if (target.value instanceof FxDataSource) {
     if (clear) return fail('NotSupported', 'ClearCollect works on collections, not data sources.');
     const created = [];

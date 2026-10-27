@@ -37,7 +37,7 @@ const TEXT = new Set(['nvarchar', 'string', 'memo', 'ntext', 'text', 'varchar', 
 const NUMBER = new Set(['int', 'integer', 'bigint', 'decimal', 'money', 'float', 'double']);
 const FLOAT = new Set(['float', 'double']);
 const LOOKUP = new Set(['lookup', 'customer', 'owner']);
-const CHOICE = new Set(['picklist', 'state', 'status', 'optionset']);
+const CHOICE = new Set(['picklist', 'state', 'status', 'choice', 'optionset']);
 // The stored row a record came from: { table, id }. Lets a record from one table be a lookup value in another.
 const ROW = Symbol('power-fx.row');
 
@@ -53,7 +53,7 @@ const behaviourOf = (definition) =>
   ).toLowerCase();
 const labelOf = (value) => (typeof value === 'string' ? value : null);
 
-export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UTC' } = {}) {
+export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UTC', fieldAliases = [] } = {}) {
   const { store } = api;
   const definitions = (logical) => store.fieldDefinitions(logical, api.metadataFields) ?? {};
   // The store mapping of a table name; a mapping keyed by its logical name may omit logicalName, so the key names it.
@@ -63,6 +63,12 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
     const key =
       Object.keys(store.state.mappings ?? {}).find((candidate) => store.state.mappings[candidate] === mapping) ?? name;
     return { ...mapping, logicalName: key };
+  };
+  const exportedAliases = (logical) => {
+    const matching = fieldAliases.filter(
+      (entry) => typeof entry.table === 'string' && entry.table.toLowerCase() === logical.toLowerCase(),
+    );
+    return matching.length === 1 ? (matching[0].fieldAliases ?? {}) : {};
   };
   // The caller (never SYSTEM): the request's user, else the acting systemuser an SDK context names.
   const caller = (() => {
@@ -83,6 +89,10 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
         Object.entries(fields).find(
           ([, definition]) => labelOf(definition.displayName ?? definition.label) === name,
         )?.[0] ?? null;
+    if (!key)
+      key =
+        Object.entries(exportedAliases(logical)).find(([, label]) => label.toLowerCase() === name.toLowerCase())?.[0] ??
+        null;
     if (!key) return null;
     const definition = fields[key] ?? {};
     const type = typeName(definition);
@@ -113,6 +123,11 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
     for (const [column, definition] of Object.entries(definitions(logical))) {
       const label = labelOf(definition.displayName ?? definition.label);
       if (label) map.set(label, column);
+      map.set(column.toLowerCase(), column);
+    }
+    for (const [column, label] of Object.entries(exportedAliases(logical))) {
+      map.set(label, column);
+      map.set(label.toLowerCase(), column);
       map.set(column.toLowerCase(), column);
     }
     return map;
@@ -255,9 +270,70 @@ export function dataverseHost(api, { c = null, diagnostic = null, timeZone = 'UT
       return query(logical, params, extended);
     };
     return {
+      [Symbol.for('paqvilo.power-fx.dataverse-choices')]: true,
       read,
       count: (q) => read(q).length,
       column: (name) => columnInfo(logical, name),
+      choices(name) {
+        api.principals.authorize({ user: caller.user, entity: logical, operation: 'read', mapping });
+        const column = columnInfo(logical, name);
+        if (!column) return undefined;
+        if (column.type === 'choice') {
+          const options = column.definition.options;
+          if (
+            !Array.isArray(options) ||
+            options.some((option) => !Number.isFinite(option.value) || typeof option.label !== 'string')
+          )
+            return undefined;
+          return { kind: 'choice', values: options.map((option) => ({ Value: option.label, Id: option.value })) };
+        }
+        if (column.type === 'lookup') {
+          const targets = column.definition.targets;
+          if (!Array.isArray(targets) || targets.length !== 1 || typeof targets[0] !== 'string') return undefined;
+          let target;
+          try {
+            target = mappingOf(targets[0]);
+          } catch {
+            return undefined;
+          }
+          if (!target?.logicalName || !target?.nameColumn) return undefined;
+          return {
+            kind: 'lookup',
+            source: new FxDataSource(target.logicalName, adapterFor(target)),
+            nameColumn: target.nameColumn,
+          };
+        }
+        return undefined;
+      },
+      dataSourceInfo(info, name) {
+        const operations = {
+          ReadPermission: 'read',
+          CreatePermission: 'create',
+          EditPermission: 'write',
+          DeletePermission: 'delete',
+        };
+        if (Object.hasOwn(operations, info)) {
+          try {
+            api.principals.authorize({ user: caller.user, entity: logical, operation: operations[info], mapping });
+            return true;
+          } catch (error) {
+            if (error?.status === 403) return false;
+            return undefined;
+          }
+        }
+        if (info === 'AllowedValues') return undefined;
+        const column = columnInfo(logical, name);
+        if (!column) return undefined;
+        const definition = column.definition;
+        if (info === 'DisplayName') return labelOf(definition.displayName ?? definition.label) ?? column.logical;
+        if (info === 'Required') {
+          if (definition.requiredLevel == null) return undefined;
+          return ['systemrequired', 'applicationrequired'].includes(String(definition.requiredLevel).toLowerCase());
+        }
+        const field = { MaxLength: 'maxLength', MaxValue: 'maxValue', MinValue: 'minValue' }[info];
+        return field ? definition[field] : undefined;
+      },
+
       literal(column, value) {
         if (isBlank(value)) return 'null';
         if (value instanceof FxUntyped) value = value.raw;
