@@ -177,8 +177,9 @@ export function persistCommandPayload(directory, bytes) {
     throw failure('Cannot persist command payload.', 'COMMAND_PAYLOAD_WRITE');
   } finally {
     if (handle !== undefined) fs.closeSync(handle);
-    // Delete only our random temporary regular file while the original directory
-    // still has the same identity. A replaced directory is never followed.
+    // Revalidate the temporary inode and directory before pathname cleanup.
+    // Their continued integrity is a trusted-storage requirement: portable
+    // unlink cannot atomically compare a previously checked inode (SECURITY.md).
     try {
       checkDirectory(storage);
       const info = fs.lstatSync(temporary, { throwIfNoEntry: false });

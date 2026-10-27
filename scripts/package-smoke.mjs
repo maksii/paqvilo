@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { validateReleaseFiles } from './release-check.mjs';
 import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
 import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
-import { runSmokeNpm } from './smoke-npm.mjs';
+import { offlineSmokeEnv, runSmokeNpm } from './smoke-npm.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npm = process.env.npm_execpath;
@@ -87,12 +87,8 @@ for (const options of [
     const result = spawnSync(process.execPath, [path.join(consumer, 'tools/bootstrap.mjs')], {
       cwd: consumer,
       env: {
-        ...process.env,
+        ...offlineSmokeEnv(),
         npm_execpath: npm,
-        npm_config_offline: 'true',
-        npm_config_audit: 'false',
-        npm_config_fund: 'false',
-        npm_config_update_notifier: 'false',
       },
       encoding: 'utf8',
       windowsHide: true,

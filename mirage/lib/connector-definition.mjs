@@ -10,12 +10,20 @@ const error = (message, status = 400, code = 'ConnectorParameterInvalid') => {
 function dereference(doc, node, depth = 0) {
   if (!map(node) || !Object.hasOwn(node, '$ref')) return node;
   if (typeof node.$ref !== 'string') error('Connector schema reference is invalid.', 501, 'OperationUnsupported');
-  if (depth > 32 || !node.$ref.startsWith('#/'))
+  if (depth > 32 || !node.$ref.startsWith('#'))
     error('Connector schema has an unsupported reference.', 501, 'OperationUnsupported');
-  const target = node.$ref
-    .slice(2)
+  let pointer;
+  try {
+    pointer = decodeURIComponent(node.$ref.slice(1));
+  } catch {
+    error('Connector schema reference is invalid.', 501, 'OperationUnsupported');
+  }
+  if (!pointer.startsWith('/')) error('Connector schema has an unsupported reference.', 501, 'OperationUnsupported');
+  const target = pointer
+    .slice(1)
     .split('/')
     .reduce((v, key) => {
+      if (/~(?![01])/.test(key)) error('Connector schema reference is invalid.', 501, 'OperationUnsupported');
       const member = key.replaceAll('~1', '/').replaceAll('~0', '~');
       return v !== null && typeof v === 'object' && Object.hasOwn(v, member) ? v[member] : undefined;
     }, doc);
@@ -39,14 +47,26 @@ function jsonEqual(a, b, depth = 0) {
   );
 }
 
+// A captured definition is data, not a live view of a mutable pack module.
+function freezeTree(value, seen = new WeakSet()) {
+  if (!value || typeof value !== 'object' || seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value)) freezeTree(child, seen);
+  return Object.freeze(value);
+}
+
 /** Index an explicitly registered Swagger 2.0 definition; operation ids and method/path pairs must be unique. */
 export function compileDefinition(doc) {
   if (!map(doc) || doc.swagger !== '2.0' || !map(doc.paths))
     throw new Error('connector definition must be a Swagger 2.0 document with paths');
+  doc = freezeTree(structuredClone(doc));
   const operations = new Map(),
     paths = new Map();
-  for (const [path, item] of Object.entries(doc.paths)) {
-    if (!map(item)) continue;
+  for (const [path, rawItem] of Object.entries(doc.paths)) {
+    if (path.startsWith('x-')) continue;
+    if (!path.startsWith('/')) throw new Error(`invalid connector path ${path}`);
+    const item = dereference(doc, rawItem);
+    if (!map(item)) throw new Error(`invalid connector path item ${path}`);
     for (const method of methods) {
       const operation = item[method];
       if (!map(operation) || typeof operation.operationId !== 'string' || !operation.operationId.trim()) continue;
@@ -59,12 +79,18 @@ export function compileDefinition(doc) {
           throw new Error('invalid connector parameter');
         parameters.set(`${p.in}:${p.name}`, p);
       }
-      const entry = {
+      const locations = new Map();
+      for (const p of parameters.values()) {
+        if (locations.has(p.name) && locations.get(p.name) !== p.in)
+          throw new Error(`connector parameter ${p.name} occurs in multiple locations`);
+        locations.set(p.name, p.in);
+      }
+      const entry = Object.freeze({
         operationId: operation.operationId,
         method: method.toUpperCase(),
         path,
-        parameters: [...parameters.values()],
-      };
+        parameters: Object.freeze([...parameters.values()]),
+      });
       operations.set(entry.operationId, entry);
       paths.set(`${entry.method} ${path}`, entry);
     }
@@ -195,7 +221,8 @@ export function validateDefinition(definition, { operationId, method, path, para
           let target = value;
           for (const part of parts.slice(0, -1)) {
             if (!map(target)) error('Connector body property path conflicts with another value.');
-            target = target[part] ??= {};
+            if (!Object.hasOwn(target, part)) target[part] = {};
+            target = target[part];
           }
           if (!map(target)) error('Connector body property path conflicts with another value.');
           target[parts.at(-1)] = v;
@@ -208,5 +235,5 @@ export function validateDefinition(definition, { operationId, method, path, para
     }
     validateValue(definition.doc, p.schema ?? p, value, p.name);
   }
-  return op;
+  return structuredClone(op);
 }

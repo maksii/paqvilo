@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createCodeAppsHandler } from '../lib/code-apps-http.mjs';
 import { createConnectorRuntime, CONNECTOR_PACK_EXPORTS } from '../lib/connector-runtime.mjs';
+import { compileDefinition, validateDefinition } from '../lib/connector-definition.mjs';
 import { codeAppConnectors } from '../lib/organization-host.mjs';
 import { inspectFlowDefinition } from '../lib/flow-runtime.mjs';
 import { validatePackExports } from '../lib/pack-exports.mjs';
@@ -271,4 +272,153 @@ test('code-app connector honors a connection keyed by connector id when selectin
     parameters: { id: 1, body: { name: 'ok' } },
   });
   assert.deepEqual(direct.body, { name: 'second' });
+});
+
+test('compiled definitions and returned operation metadata cannot mutate runtime validation', async () => {
+  const doc = structuredClone(definition);
+  const runtime = createConnectorRuntime({
+    packs: [
+      {
+        id: 'x',
+        connectorDefinitions: { shared_invented: doc },
+        connectors: { shared_invented: { operations: { UpdateWidget: () => ({ statusCode: 200 }) } } },
+      },
+    ],
+  });
+  const operation = runtime.validateOperation('shared_invented', {
+    operationId: 'UpdateWidget',
+    parameters: { id: 1, body: { name: 'ok' } },
+  });
+  operation.parameters.length = 0;
+  assert.throws(
+    () =>
+      runtime.invoke({ connectorId: 'shared_invented', operationId: 'UpdateWidget', parameters: { id: 1, body: {} } }),
+    (e) => e.code === 'ConnectorParameterInvalid',
+  );
+  doc.definitions.Widget.required = [];
+  assert.throws(
+    () =>
+      runtime.invoke({ connectorId: 'shared_invented', operationId: 'UpdateWidget', parameters: { id: 1, body: {} } }),
+    (e) => e.code === 'ConnectorParameterInvalid',
+  );
+});
+
+test('local path item references and percent-encoded schema pointers resolve', () => {
+  const doc = {
+    swagger: '2.0',
+    'x-path-items': {
+      Item: {
+        post: {
+          operationId: 'Create',
+          parameters: [{ name: 'body', in: 'body', required: true, schema: { $ref: '#/definitions/A%20B' } }],
+          responses: {},
+        },
+      },
+    },
+    paths: { '/create': { $ref: '#/x-path-items/Item' } },
+    definitions: { 'A B': { type: 'string' } },
+  };
+  const compiled = compileDefinition(doc);
+  assert.equal(
+    validateDefinition(compiled, { method: 'POST', path: '/create', parameters: { body: 'ok' } }).operationId,
+    'Create',
+  );
+  assert.throws(
+    () => validateDefinition(compiled, { operationId: 'Create', parameters: { body: 1 } }),
+    (e) => e.code === 'ConnectorParameterInvalid',
+  );
+  doc['x-path-items'].Item.post.parameters[0].schema.$ref = '#/definitions/A%ZZ';
+  const duplicate = structuredClone(doc);
+  duplicate.paths['/other'] = { $ref: '#/x-path-items/Item' };
+  assert.throws(() => compileDefinition(duplicate), /duplicate connector operationId/);
+  const unsupported = structuredClone(doc);
+  unsupported.paths['/create'] = { $ref: 'https://example.test/path' };
+  assert.throws(
+    () => compileDefinition(unsupported),
+    (e) => e.code === 'OperationUnsupported',
+  );
+  const invalid = compileDefinition(doc);
+  assert.throws(
+    () => validateDefinition(invalid, { operationId: 'Create', parameters: { body: 'ok' } }),
+    (e) => e.code === 'OperationUnsupported',
+  );
+});
+
+test('flat body ordinary prototype names are allowed and parameter location collisions fail closed', () => {
+  const doc = {
+    swagger: '2.0',
+    paths: {
+      '/x': {
+        post: {
+          operationId: 'X',
+          parameters: [
+            {
+              name: 'body',
+              in: 'body',
+              required: true,
+              schema: {
+                type: 'object',
+                properties: { toString: { type: 'object', properties: { value: { type: 'integer' } } } },
+              },
+            },
+          ],
+          responses: {},
+        },
+      },
+    },
+  };
+  assert.doesNotThrow(() =>
+    validateDefinition(compileDefinition(doc), { operationId: 'X', parameters: { 'body/toString/value': 1 } }),
+  );
+  assert.throws(
+    () => validateDefinition(compileDefinition(doc), { operationId: 'X', parameters: { 'body/constructor/value': 1 } }),
+    (e) => e.code === 'ConnectorParameterInvalid',
+  );
+  const collision = {
+    swagger: '2.0',
+    paths: {
+      '/x/{id}': {
+        get: {
+          operationId: 'X',
+          parameters: [
+            { name: 'id', in: 'path', type: 'string' },
+            { name: 'id', in: 'query', type: 'integer' },
+          ],
+          responses: {},
+        },
+      },
+    },
+  };
+  assert.throws(() => compileDefinition(collision), /parameter.*locations/i);
+});
+
+test('Swagger path extensions are ignored and malformed JSON pointer escapes fail', () => {
+  const doc = {
+    swagger: '2.0',
+    paths: {
+      'x-note': 'annotation',
+      '/x': {
+        post: {
+          operationId: 'X',
+          parameters: [{ name: 'body', in: 'body', required: true, schema: { $ref: '#/definitions/A~2B' } }],
+          responses: {},
+        },
+      },
+    },
+    definitions: { 'A~2B': { type: 'string' } },
+  };
+  const invalidPath = structuredClone(doc);
+  invalidPath.paths.bad = {};
+  assert.throws(() => compileDefinition(invalidPath), /invalid connector path/);
+  const compiled = compileDefinition(doc);
+  assert.throws(
+    () => validateDefinition(compiled, { operationId: 'X', parameters: { body: 'ok' } }),
+    (e) => e.code === 'OperationUnsupported',
+  );
+  doc.paths['/x'].post.parameters[0].schema.$ref = '#/definitions/A~';
+  doc.definitions['A~'] = { type: 'string' };
+  assert.throws(
+    () => validateDefinition(compileDefinition(doc), { operationId: 'X', parameters: { body: 'ok' } }),
+    (e) => e.code === 'OperationUnsupported',
+  );
 });
