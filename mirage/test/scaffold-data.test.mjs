@@ -247,6 +247,17 @@ async function workspace(t) {
 
 // Each case spawns the CLI in its own workspace; the process start dominates, so the cases run side by side.
 describe('data scaffold CLI portal resolution', { concurrency: true }, () => {
+  test('data scaffold preserves an explicit zero row count', async (t) => {
+    const dir = await workspace(t);
+    const source = await writePortal(path.join(dir, 'portal'));
+    const solution = await writeSolution(path.join(dir, 'solution'));
+    const state = path.join(dir, 'state.json');
+    await scaffoldCli(['--source', source, '--solution-root', solution, '--state', state, '--rows', '0']);
+    const saved = JSON.parse(await fs.readFile(state, 'utf8'));
+    assert.deepEqual(saved.tables.x_case, []);
+    assert.equal(saved.provenance.scaffold.rowsPerTable, 0);
+  });
+
   test('data scaffold with --source and explicit --solution-root bootstraps a state, then merges additively, preserving edited decorated GUID rows and memberships', async (t) => {
     const dir = await workspace(t);
     const source = await writePortal(path.join(dir, 'portal'));

@@ -25,6 +25,8 @@ export function runSmokeNpm(npm, args, cwd, timeout = 120_000) {
     maxBuffer: 4 * 1024 * 1024,
   });
   if (result.status !== 0)
-    throw new Error(result.error?.message ?? `${args[0]} failed:\n${result.stdout}\n${result.stderr}`);
+    throw new Error(`npm ${args[0]} failed: ${result.error?.message ?? `${result.stdout}\n${result.stderr}`}`, {
+      cause: result.error,
+    });
   return result.stdout;
 }

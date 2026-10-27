@@ -96,8 +96,6 @@ export async function startGate({
 } = {}) {
   const certificate = tls ? await ensureCertificate(CA_FILE) : null;
   const secret = newClientSecret();
-  const previousSecret = process.env[SECRET_VARIABLE];
-  process.env[SECRET_VARIABLE] = secret;
   const store = new DataStore({ state });
   await store.init?.();
   const settings = dataverseSettings({
@@ -116,6 +114,8 @@ export async function startGate({
     ],
     ...(serviceProtection ? { serviceProtection } : {}),
   });
+  const previousSecret = process.env[SECRET_VARIABLE];
+  process.env[SECRET_VARIABLE] = secret;
   let api;
   try {
     api = await startDataverseApi({

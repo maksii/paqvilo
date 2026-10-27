@@ -346,6 +346,7 @@ test(
         '--port',
         '0',
         '--no-watch',
+        '--json',
       ],
       { cwd: directory, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, signal: t.signal, killSignal: 'SIGKILL' },
     );
@@ -384,6 +385,7 @@ test(
     );
     if (error) throw error;
     assert.equal(code, 0, stderr);
+    assert.equal(JSON.parse(stdout).url, discovery.url);
     await assert.rejects(fs.stat(discovery.discovery), (error) => error.code === 'ENOENT');
     await assert.rejects(fetch(discovery.url));
   },

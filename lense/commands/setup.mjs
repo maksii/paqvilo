@@ -29,8 +29,14 @@ export async function runSetup(args) {
     console.log(SETUP_HELP);
     return 0;
   }
+  for (const [key, value] of Object.entries(values)) {
+    const entries = Array.isArray(value) ? value : [value];
+    if (entries.some((item) => typeof item === 'string' && !item.trim()))
+      throw new Error(`--${key} must not be empty or whitespace`);
+  }
   if (values.config && values.project) throw new Error('Select --config or --project.');
-  if (values.port && !/^\d+$/.test(values.port)) throw new Error('--port must be an integer.');
+  if (values.port !== undefined && (!/^\d+$/.test(values.port) || Number(values.port) > 65535))
+    throw new Error('--port must be an integer between 0 and 65535');
   const server = await startSetupServer({
     config: values.config,
     project: values.project,

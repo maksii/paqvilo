@@ -6,6 +6,19 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { runSmokeNpm, offlineSmokeEnv } from '../scripts/smoke-npm.mjs';
 
+test('smoke npm failures retain the operation name and timeout cause', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-smoke-error-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const cli = path.join(directory, 'npm.mjs');
+  fs.writeFileSync(cli, "process.stderr.write('invented failure'); process.exitCode = 1;");
+  assert.throws(() => runSmokeNpm(cli, ['install', '--offline'], directory), /npm install failed:.*invented failure/s);
+  fs.writeFileSync(cli, 'setInterval(() => {}, 1000);');
+  assert.throws(
+    () => runSmokeNpm(cli, ['pack'], directory, 30),
+    (error) => /^npm pack failed:/.test(error.message) && error.cause?.code === 'ETIMEDOUT',
+  );
+});
+
 test('offline smoke children override inherited npm settings irrespective of casing', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-smoke-npm-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));

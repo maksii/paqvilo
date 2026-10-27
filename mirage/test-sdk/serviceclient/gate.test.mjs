@@ -52,22 +52,13 @@ const PASSES = [
 ];
 
 const dotnet = spawnSync('dotnet', ['--version'], { encoding: 'utf8' });
-const dotnetSkip = dotnet.status === 0 ? false : 'dotnet is not installed: ServiceClient gate skipped';
+const dotnetSkip =
+  dotnet.status === 0 || process.env.PAQ_TEST_REQUIRE_SDK_GATES === '1'
+    ? false
+    : 'dotnet is not installed: ServiceClient gate skipped';
 
-// A random loopback address separates concurrent worktrees while preserving the SDK's default HTTP port.
-const gateHost = () => {
-  return `127.${randomInt(16, 240)}.${randomInt(1, 255)}.${randomInt(1, 255)}`;
-};
-
-test('isolated gate binds beside a listener on the default loopback address', async (t) => {
-  const occupied = net.createServer();
-  await new Promise((resolve, reject) => occupied.once('error', reject).listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve, reject) => occupied.close((error) => (error ? reject(error) : resolve()))));
-  const gate = await startGate({ host: '127.0.0.2', port: occupied.address().port });
-  t.after(() => gate.close());
-  assert.equal(new URL(gate.origin).hostname, '127.0.0.2');
-  assert.equal(typeof (await clientCredentialsToken(gate)), 'string');
-});
+// The SDK drops ports but retains the host; bind the actual gate before building.
+const gateHost = () => `127.${randomInt(16, 240)}.${randomInt(1, 255)}.${randomInt(1, 255)}`;
 
 /** Runs the built gate executable with the given env; async spawn, since spawnSync would starve the in-process simulator. */
 function runGate(env) {
@@ -90,6 +81,29 @@ function runGate(env) {
   });
 }
 
+test('SDK gate binds an alternate loopback address while the default address is occupied', async (t) => {
+  const listener = net.createServer((socket) => socket.end('default-listener'));
+  await new Promise((resolve, reject) => {
+    listener.once('error', reject);
+    listener.listen(0, '127.0.0.1', resolve);
+  });
+  t.after(() => new Promise((resolve) => listener.close(resolve)));
+  const host = '127.0.0.2';
+  const gate = await startGate({ host, port: listener.address().port });
+  t.after(() => gate.close());
+  assert.equal(new URL(gate.origin).hostname, host);
+  assert.equal(new URL(gate.origin).port, String(listener.address().port));
+  const response = await fetch(`${gate.origin}/${gate.tenantId}/.well-known/openid-configuration`);
+  assert.equal(response.status, 200);
+  assert.equal(typeof (await clientCredentialsToken(gate)), 'string');
+  const received = await new Promise((resolve, reject) => {
+    const socket = net.connect(listener.address().port, '127.0.0.1');
+    socket.once('data', (chunk) => resolve(chunk.toString()));
+    socket.once('error', reject);
+  });
+  assert.equal(received, 'default-listener');
+});
+
 test(
   'Microsoft.PowerPlatform.Dataverse.Client (ServiceClient) gate against the simulator',
   { timeout: 600_000, skip: dotnetSkip },
@@ -99,12 +113,13 @@ test(
     try {
       gate = await startGate({ host, port: 80 });
     } catch (error) {
-      if (!['EADDRINUSE', 'EACCES'].includes(error.code)) throw error;
-      // The required CI gate fails instead of skipping if this actual bind is unavailable.
+      if (!['EADDRINUSE', 'EACCES', 'EADDRNOTAVAIL'].includes(error.code)) throw error;
       if (process.env.PAQ_TEST_REQUIRE_SDK_GATES === '1')
         throw new Error(
           `port 80 on ${host} is unavailable (${error.code}); the required ServiceClient gate cannot run`,
-          { cause: error },
+          {
+            cause: error,
+          },
         );
       t.skip(`port 80 on ${host} is unavailable (${error.code}): ServiceClient drops the port`);
       return;
