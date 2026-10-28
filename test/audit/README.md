@@ -1,5 +1,9 @@
 # Test suite audit record (October 2026)
 
+The partition tables are snapshots of the original audit. The
+[0.9.8 follow-up](0.9.8-follow-up.md) records the rechecked leftovers, regressions in later changes,
+matched quality and performance measurements, and the remaining investigations.
+
 Every test file in the toolkit was reviewed against the behaviour it claims to cover: Lense unit (`test/`) and browser
 (`test-browser/`) suites, Mirage unit (`mirage/test/`) and browser (`mirage/test-browser/`) suites, the example
 projects, the SDK client gates (`mirage/test-sdk/`), the volume checks (`mirage/test-volume/`), CI workflows and the
