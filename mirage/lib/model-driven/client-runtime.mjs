@@ -3,7 +3,7 @@
 import { ANONYMOUS_STAFF_CONTEXT, staffFormatting } from './pcf-runtime.mjs';
 
 const loadedLibraries = new Map();
-const normalizeLibrary = (value) => String(value ?? '').replace(/^\$webresource:/i, '');
+export const normalizeClientLibrary = (value) => String(value ?? '').replace(/^\$webresource:/i, '');
 const blockedNames = new Set(['__proto__', 'prototype', 'constructor']);
 const unsupported = (name) => {
   throw new Error(`Mirage client API does not support ${name}.`);
@@ -16,7 +16,7 @@ const bounded = (value, path) =>
       return target[key];
     },
   });
-const collection = (items) =>
+const collection = (items, matches = (item, key) => item.getName() === key) =>
   bounded(
     {
       get: (key) =>
@@ -26,7 +26,7 @@ const collection = (items) =>
             ? items[key]
             : typeof key === 'function'
               ? items.filter(key)
-              : items.find((item) => item.getName() === key),
+              : items.find((item) => matches(item, key)),
       getLength: () => items.length,
       forEach: (callback) => items.forEach(callback),
     },
@@ -83,7 +83,7 @@ export function loadClientLibrary(
       ),
     );
   const resource = extensions.resources?.find(
-    (resource) => normalizeLibrary(resource.name) === normalizeLibrary(name) && resource.type === 'script',
+    (resource) => normalizeClientLibrary(resource.name) === normalizeClientLibrary(name) && resource.type === 'script',
   );
   if (!resource)
     return Promise.reject(new Error(`Exported script ${name} is not available in the imported Solution resources.`));
@@ -476,6 +476,28 @@ export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dash
     throw new Error(`navigateTo: table ${pageInput.entityName ?? ''} is not imported.`);
   if (type === 'webresource' && (typeof pageInput.webresourceName !== 'string' || !pageInput.webresourceName))
     throw new Error('navigateTo needs a webresourceName for a web resource page.');
+  if (
+    type === 'entityrecord' &&
+    pageInput.tabName !== undefined &&
+    (typeof pageInput.tabName !== 'string' || !pageInput.tabName.trim() || pageInput.tabName.length > 256)
+  )
+    throw new Error('navigateTo tabName must name an exported form tab.');
+  if (type === 'entitylist' && pageInput.viewType !== undefined && pageInput.viewType !== 'savedquery')
+    throw Object.assign(
+      new Error(
+        pageInput.viewType === 'userquery'
+          ? 'Personal views are not available in the imported model-driven view catalogue.'
+          : 'navigateTo viewType must be savedquery or userquery.',
+      ),
+      { code: pageInput.viewType === 'userquery' ? 'PersonalViewUnsupported' : 'InvalidViewType' },
+    );
+  if (
+    type === 'entitylist' &&
+    pageInput.viewId &&
+    Array.isArray(tables[pageInput.entityName]?.views) &&
+    !tables[pageInput.entityName].views.some((view) => bareId(view.id) === bareId(pageInput.viewId))
+  )
+    throw Object.assign(new Error('The selected saved view is not imported.'), { code: 'ViewUnavailable' });
   const options = navigationOptions ?? {};
   if (![undefined, 1, 2].includes(options.target) || ![undefined, 1, 2].includes(options.position))
     throw new Error('navigateTo target must be 1 (inline) or 2 (dialog) and position 1 (center) or 2 (side).');
@@ -486,6 +508,7 @@ export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dash
           entityName: pageInput.entityName,
           ...(pageInput.entityId ? { entityId: bareId(pageInput.entityId) } : {}),
           ...(pageInput.formId ? { formId: bareId(pageInput.formId) } : {}),
+          ...(pageInput.tabName !== undefined ? { tabName: pageInput.tabName } : {}),
           ...(pageInput.data ? { data: pageInput.data } : {}),
         }
       : type === 'entitylist'
@@ -493,6 +516,7 @@ export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dash
             pageType: type,
             entityName: pageInput.entityName,
             ...(pageInput.viewId ? { viewId: bareId(pageInput.viewId) } : {}),
+            ...(pageInput.viewType !== undefined ? { viewType: pageInput.viewType } : {}),
           }
         : type === 'dashboard'
           ? { pageType: type, dashboardId: dashboard.id }
@@ -565,6 +589,10 @@ export function createFormClientRuntime(host) {
       );
     return host.save(close);
   };
+  const formIsValid = (report) => {
+    if (typeof host.isValid !== 'function') unsupported('form validity without a host validator');
+    return Boolean(host.isValid(report));
+  };
   const fieldValue = (name) => {
     assertLive();
     return host.read(name);
@@ -605,6 +633,12 @@ export function createFormClientRuntime(host) {
     .filter(Boolean)
     .map((field) => {
       const name = field.name;
+      const metadataNumber = (property, method) => {
+        const value = field[property];
+        if (typeof value !== 'number' || !Number.isFinite(value))
+          unsupported(`attribute(${name}).${method} without imported numeric ${property} metadata`);
+        return value;
+      };
       return client(
         {
           getName: () => name,
@@ -623,11 +657,21 @@ export function createFormClientRuntime(host) {
             host.write(name, next);
           },
           getIsDirty: () => host.isDirty(name),
+          ...(field.type === 'number' && !Array.isArray(field.options)
+            ? {
+                getMin: () => metadataNumber('minValue', 'getMin'),
+                getMax: () => metadataNumber('maxValue', 'getMax'),
+                getPrecision: () => metadataNumber('precision', 'getPrecision'),
+              }
+            : {}),
+          ...(['text', 'textarea'].includes(field.type)
+            ? { getMaxLength: () => metadataNumber('maxLength', 'getMaxLength') }
+            : {}),
           getAttributeType: () =>
             ({
               text: 'string',
               textarea: 'memo',
-              number: field.options?.length
+              number: Array.isArray(field.options)
                 ? 'optionset'
                 : ({ decimal: 'decimal', money: 'money', double: 'double', float: 'double' }[field.dataverseType] ??
                   'integer'),
@@ -668,6 +712,10 @@ export function createFormClientRuntime(host) {
       );
     });
   function makeControl(name, fieldName = host.controlField(name)) {
+    const field = host.table.fields[fieldName];
+    const options = () =>
+      host.controlState(name, 'options') ??
+      (field.options ?? []).map((option) => ({ text: option.label, value: option.value }));
     return client(
       {
         getName: () => name,
@@ -681,6 +729,31 @@ export function createFormClientRuntime(host) {
         setFocus: () => host.controlState(name, 'focus', true),
         setNotification: (message, id = 'default') => host.controlState(name, `notification:${id}`, String(message)),
         clearNotification: (id = 'default') => host.controlState(name, `notification:${id}`, null),
+        ...(field?.type === 'multiselect' || (field?.type === 'number' && Array.isArray(field.options))
+          ? {
+              addOption: (option, index) => {
+                if (!option || typeof option.text !== 'string' || !Number.isSafeInteger(option.value))
+                  throw new Error('addOption requires text and a safe integer option value.');
+                const next = options().map((entry) => ({ ...entry }));
+                if (next.some((entry) => entry.value === option.value))
+                  throw new Error(`Option value ${option.value} is already present on control ${name}.`);
+                const at = index === undefined ? next.length : index;
+                if (!Number.isInteger(at) || at < 0 || at > next.length)
+                  throw new Error('addOption index must be an integer within the control options.');
+                next.splice(at, 0, { text: option.text, value: option.value });
+                host.controlState(name, 'options', next);
+              },
+              removeOption: (value) => {
+                if (!Number.isSafeInteger(value)) throw new Error('removeOption requires a safe integer option value.');
+                host.controlState(
+                  name,
+                  'options',
+                  options().filter((option) => option.value !== value),
+                );
+              },
+              clearOptions: () => host.controlState(name, 'options', []),
+            }
+          : {}),
       },
       `control(${name})`,
     );
@@ -708,6 +781,7 @@ export function createFormClientRuntime(host) {
               getEntityName: () => host.table.entity,
               getPrimaryAttributeValue: () => host.read(host.table.nameColumn),
               getIsDirty: () => host.isDirty(),
+              isValid: () => formIsValid(false),
               attributes: collection(attributes),
               addOnSave: (callback) => add('onsave', callback),
               removeOnSave: (callback) => remove('onsave', callback),
@@ -716,6 +790,7 @@ export function createFormClientRuntime(host) {
             'formContext.data.entity',
           ),
           getIsDirty: () => host.isDirty(),
+          isValid: () => formIsValid(true),
           save: () => saveForm(false),
           refresh: (save) => (save ? saveForm(false) : host.refresh()),
           addOnLoad: (callback) => add('onload', callback),
@@ -729,7 +804,10 @@ export function createFormClientRuntime(host) {
           getFormType: () => host.getFormType?.() ?? (host.record[host.table.idColumn] ? 2 : 1),
           // formContext.ui.formSelector: the open form; switching forms from a script is not supported locally.
           formSelector: client(
-            { getCurrentItem: () => formItem, items: collection(host.form?.id ? [formItem] : []) },
+            {
+              getCurrentItem: () => formItem,
+              items: collection(host.form?.id ? [formItem] : [], (item, key) => bareId(item.getId()) === bareId(key)),
+            },
             'formContext.ui.formSelector',
           ),
           // formContext.ui.tabs and tab.sections: names, labels and visibility of the exported form layout.

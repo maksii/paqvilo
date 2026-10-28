@@ -186,6 +186,45 @@ paqvilo lense model-driven inspect --project mirage.project.yml --url https://ex
 paqvilo lense model-driven dev --project mirage.project.yml --url https://example.crm.dynamics.com --path "/main.aspx?appname=x_example" --resource-map resource-map.json --output .paqvilo/lense-model-driven.json
 ```
 
+The offline `inspect` report includes `clientEvents`, a source registration
+inventory across exported forms. Rows retain the entity, form identity/name,
+event and handler order, `handlerUniqueId`, attribute, source activation flags,
+library/function names, context flag and form-definition source references.
+Library declaration and imported-resource status are separate facts; an available
+script does not prove its function exists or ran. This uses the existing form
+compiler and the exported [FormXml event declarations](https://learn.microsoft.com/en-us/dynamics365/customerengagement/on-premises/developer/customize-dev/form-xml-schema?view=op-9-1).
+It does not inspect a connected organization's registrations or infer arbitrary
+JavaScript dependencies.
+FormXml event activation, handler enablement and execution-context flags accept
+the XML Boolean spellings `true`/`false` and `1`/`0`. Missing activation/enablement
+defaults to on; missing execution context defaults to off. Invalid tokens stay
+off instead of enabling a handler.
+
+Default pages contain at most 100 entries within 128 KiB, with explicit
+`complete`, `truncated`, diagnostics and `nextCursorToken` fields. Continue offline
+with `--event-cursor '<clientEvents.nextCursorToken>'` on the same inspect command.
+The cursor is bound to content-derived inventory revision and filters; changing
+forms, resources, source language or parameter inclusion requires restarting.
+Unavailable forms and oversized rows are diagnosed, and oversized rows are
+omitted with `truncated: true`. `complete` means the traversal finished, including
+those diagnosed gaps. Work limits can yield an empty page with a continuation.
+Follow every continuation before claiming the inventory is complete.
+
+Parameter literals are omitted by default. `parameterCount` uses the existing
+safe literal parser; unsupported syntax reports a null count. To explicitly
+include source literals, use `--include-event-parameters` on every page and keep
+that output private. The library API
+`createModelDrivenMetadataIndex(imported).eventRegistrations(request)` in
+`paqvilo/lense/model-driven-metadata.mjs` also accepts exact `library`, `entity`
+and `formId` filters, `includeParameters`, `cursor: page.nextCursor`, and
+`budget: { items, bytes }` (1–512 entries, 2048–524288 bytes). Entity/form filters
+normalize GUID braces/casing; library names retain their exported spelling.
+Library matching shares the host's case-insensitive `$webresource:` prefix
+removal; resource-name spelling remains case-sensitive. The envelope and CLI
+continuation token count toward the byte budget; an oversized revision envelope
+fails explicitly. Oversized diagnostic identity details are omitted with
+`detailsOmitted: true`, so every continuation can advance.
+
 Direct `/WebResources/<exported-name>` requests map automatically. Native cache
 prefixes and PCF bundle paths vary; bind paths actually observed in the app:
 

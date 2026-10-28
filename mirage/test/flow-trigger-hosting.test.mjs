@@ -142,6 +142,29 @@ const enable = (overrides, id) => {
   overrides['cloud-flow:' + id] = { mode: 'exported', activation: 'local-enabled' };
 };
 
+async function flowRouteClient(t, api, runs) {
+  const routes = createFlowRoutes({ api: { ...api, flowRuns: runs }, csrf: () => 'invented-csrf' });
+  const server = http.createServer(async (req, res) => {
+    if (!(await routes(req, res, new URL(req.url, 'http://127.0.0.1')))) {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const call = async (method, path, body, csrf = true) => {
+    const response = await fetch(origin + path, {
+      method,
+      headers: { 'content-type': 'application/json', ...(csrf ? { 'x-sim-csrf': 'invented-csrf' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await response.text();
+    return { status: response.status, headers: response.headers, body: text ? JSON.parse(text) : null };
+  };
+  return call;
+}
+
 test('a Recurrence flow fires on the manual scheduler only after local activation, and deactivation cancels its timer', async (t) => {
   const { scheduler, runs, runner, overrides } = await host(t);
   await runner.syncTriggers();
@@ -399,25 +422,7 @@ test('a pack flowTriggers entry is subscribed on activation, fires tracked runs 
 test('POST /_sim/api/flow-runs starts a tracked run of a Button, Http or Recurrence flow (403 without csrf); an HTTP Request trigger answers its Response', async (t) => {
   const { runs, overrides, api } = await host(t);
   for (const id of [BUTTON, HTTP_FLOW, RECURRING]) overrides['cloud-flow:' + id] = { mode: 'exported' };
-  const routes = createFlowRoutes({ api: { ...api, flowRuns: runs }, csrf: () => 'invented-csrf' });
-  const server = http.createServer(async (req, res) => {
-    if (!(await routes(req, res, new URL(req.url, 'http://127.0.0.1')))) {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  const call = async (method, path, body, csrf = true) => {
-    const response = await fetch(origin + path, {
-      method,
-      headers: { 'content-type': 'application/json', ...(csrf ? { 'x-sim-csrf': 'invented-csrf' } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
-    const text = await response.text();
-    return { status: response.status, headers: response.headers, body: text ? JSON.parse(text) : null };
-  };
+  const call = await flowRouteClient(t, api, runs);
   assert.equal((await call('POST', '/_sim/api/flow-runs', { processId: BUTTON }, false)).status, 403);
   assert.equal(runs.list().length, 0);
   const button = await call('POST', '/_sim/api/flow-runs', { processId: BUTTON, input: { x_name: 'pressed' } });
@@ -452,4 +457,59 @@ test('POST /_sim/api/flow-runs starts a tracked run of a Button, Http or Recurre
     (await call('GET', '/_sim/api/flow-triggers', null, false)).body.find((h) => h.processId === RECURRING).state,
     'inactive',
   );
+});
+
+test('recurrence and pack conditions skip before tracked-run creation and report dynamic errors explicitly', async (t) => {
+  const recurrence = structuredClone(WORKFLOWS[RECURRING]);
+  recurrence.definition.properties.definition.triggers.tick.conditions = [{ expression: '@false' }];
+  const hooked = structuredClone(WORKFLOWS[HOOKED]);
+  hooked.definition.properties.definition.triggers.hook.conditions = [
+    { expression: "@equals(triggerBody()?['enabled'],true)" },
+  ];
+  const { scheduler, runs, runner, overrides, subscriptions, notes, store } = await host(t, {
+    extra: { [RECURRING]: recurrence, [HOOKED]: hooked },
+  });
+  enable(overrides, RECURRING);
+  enable(overrides, HOOKED);
+  await runner.syncTriggers();
+  await scheduler.advance(3600000);
+  await subscriptions[0].fire({ enabled: false });
+  assert.equal(runs.list().length, 0);
+  assert.equal(store.state.tables.flowrun?.length ?? 0, 0);
+  await subscriptions[0].fire({ enabled: true });
+  assert.equal(runs.list({ processId: HOOKED }).length, 1);
+  assert.ok(notes.some((note) => note.code === 'FLOW_TRIGGER_SKIPPED'));
+  hooked.definition.properties.definition.triggers.hook.conditions = [{ expression: "@triggerBody()['missing']" }];
+  await runner.syncTriggers();
+  await subscriptions.at(-1).fire({ enabled: false });
+  assert.equal(runs.list().length, 1);
+  assert.ok(notes.some((note) => note.code === 'FLOW_TRIGGER_FAILED' && note.error.code === 'LocalFlowExpression'));
+});
+
+test('HTTP condition false answers a local skipped acknowledgement without creating phantom run history', async (t) => {
+  const workflow = structuredClone(WORKFLOWS[HTTP_FLOW]);
+  workflow.definition.properties.definition.triggers.request.conditions = [
+    { expression: "@equals(triggerBody()?['enabled'],true)" },
+  ];
+  const { runs, api, overrides } = await host(t, { extra: { [HTTP_FLOW]: workflow } });
+  overrides['cloud-flow:' + HTTP_FLOW] = { mode: 'exported' };
+  const request = await flowRouteClient(t, api, runs);
+  const call = async (suffix, body) => {
+    const { status, body: result } = await request('POST', '/_sim/api/' + suffix, body);
+    return { status, body: result };
+  };
+  assert.deepEqual(await call('flow-runs', { processId: HTTP_FLOW, input: { enabled: false } }), {
+    status: 202,
+    body: { runId: null, status: 'Skipped', reason: 'TriggerConditionFalse' },
+  });
+  const skipped = await call('flow-triggers/' + HTTP_FLOW, { enabled: false });
+  assert.deepEqual(skipped, { status: 202, body: { runId: null, status: 'Skipped' } });
+  assert.equal(runs.list().length, 0);
+  const accepted = await call('flow-triggers/' + HTTP_FLOW, { enabled: true, x_name: 'accepted' });
+  assert.deepEqual(accepted, { status: 201, body: { echo: 'accepted' } });
+  assert.equal(runs.list().length, 1);
+  workflow.definition.properties.definition.triggers.request.conditions = [{ expression: "@'not a boolean'" }];
+  const invalid = await call('flow-triggers/' + HTTP_FLOW, {});
+  assert.equal(invalid.body.error.code, 'LocalFlowExpression');
+  assert.equal(runs.list().length, 1);
 });

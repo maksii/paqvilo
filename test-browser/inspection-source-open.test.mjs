@@ -75,11 +75,25 @@ test('guarded opening reads a retained control before paint instead of trusting 
     region: ref.region,
   });
   const old = requestFor(refs[0]);
+  await page.evaluate(() => {
+    const tools = document.getElementById('paqvilo-xray').__px;
+    window.titleFeedback = tools.feedbackState();
+    tools.status('Opening title source');
+  });
   assert.equal(captured.identity.evidence.owner.component.field, 'title');
   assert.equal(captured.identity.evidence.source.status, 'exact');
   assert.equal(await selectionEvidenceCurrent(page, old), true);
 
   await page.locator('#selected').evaluate((node) => node.setAttribute('data-field', 'other'));
+  assert.equal(
+    await page.evaluate(() => {
+      const tools = document.getElementById('paqvilo-xray').__px;
+      tools.status('Opened title source', window.titleFeedback);
+      return document.getElementById('paqvilo-xray').shadowRoot.querySelector('.status').textContent;
+    }),
+    '',
+    'retained node rebinding clears pending feedback and rejects an old source completion before paint',
+  );
   const retained = await page.evaluate(() => document.getElementById('paqvilo-xray').__px.selectionState());
   assert.equal(retained.anchorGeneration, captured.anchorGeneration);
   assert.deepEqual(retained.scope, captured.scope);

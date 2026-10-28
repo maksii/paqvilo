@@ -2792,6 +2792,7 @@ function panelBrowserImpl(data) {
         case 'open': {
           if (!rel) break;
           const line = Number(t.dataset.line || row?.dataset.line) || undefined;
+          const feedbackSelection = document.getElementById('paqvilo-xray')?.__px?.feedbackState?.();
           const r = await api('open', {
             rel,
             line,
@@ -2810,7 +2811,10 @@ function panelBrowserImpl(data) {
           });
           document
             .getElementById('paqvilo-xray')
-            ?.__px?.status(r.ok ? `Opened ${baseName(rel)} in the editor` : (r.error ?? 'Could not open the editor'));
+            ?.__px?.status(
+              r.ok ? `Opened ${baseName(rel)} in the editor` : (r.error ?? 'Could not open the editor'),
+              feedbackSelection,
+            );
           if (r.ok) toast(`Opened ${baseName(rel)}${line ? ':' + line : ''} in the editor`);
           else if (r.url)
             location.href = r.url; // the editor's own link; the browser asks once

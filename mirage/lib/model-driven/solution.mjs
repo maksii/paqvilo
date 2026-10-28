@@ -4,6 +4,10 @@ const id = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
+// FormXml flags are xs:boolean: both canonical words and numeric spellings are
+// valid. Missing flags retain their source defaults; invalid tokens stay off.
+const formBoolean = (value, fallback) =>
+  value === undefined ? fallback : ['true', '1'].includes(String(value).trim());
 const nodes = (root, name) => (root.name === name ? [root] : descendants(root, name));
 const title = (node, lcid) => {
   const titles = descendants(node, 'Title');
@@ -555,12 +559,13 @@ export function compileForm(form, fields, lcid = 1033) {
     clientEvents: descendants(root, 'event').map((node) => ({
       name: String(node.attrs.name ?? '').toLowerCase(),
       attribute: node.attrs.attribute,
-      active: node.attrs.active !== 'false',
+      active: formBoolean(node.attrs.active, true),
       handlers: descendants(node, 'Handler').map((handler) => ({
+        ...(handler.attrs.handlerUniqueId !== undefined ? { handlerUniqueId: handler.attrs.handlerUniqueId } : {}),
         library: handler.attrs.libraryName,
         functionName: handler.attrs.functionName,
-        enabled: handler.attrs.enabled !== 'false',
-        passExecutionContext: handler.attrs.passExecutionContext === 'true',
+        enabled: formBoolean(handler.attrs.enabled, true),
+        passExecutionContext: formBoolean(handler.attrs.passExecutionContext, false),
         parameters: handler.attrs.parameters ?? '',
       })),
     })),
@@ -576,13 +581,13 @@ export function compileForm(form, fields, lcid = 1033) {
 }
 
 /** Exported classic ribbon commands. Unsupported actions/rules remain visible and disabled. */
-export function parseRibbonCommands(root) {
+export function parseRibbonCommands(root, { lcid = 1033 } = {}) {
   if (typeof root === 'string') root = parseSolutionXml(root);
   const definitions = new Map(nodes(root, 'CommandDefinition').map((node) => [node.attrs.Id, node]));
   const labels = new Map(
     nodes(root, 'LocLabel').map((node) => [
       node.attrs.Id,
-      descendants(node, 'Title').find((row) => row.attrs.languagecode === '1033')?.attrs.description ??
+      descendants(node, 'Title').find((row) => Number(row.attrs.languagecode) === Number(lcid))?.attrs.description ??
         descendants(node, 'Title')[0]?.attrs.description,
     ]),
   );

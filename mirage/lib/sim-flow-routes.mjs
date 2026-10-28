@@ -263,6 +263,10 @@ export function createFlowRoutes({ api, csrf, resumeRun = api?.resumeRun ?? null
           kinds: ['manual', 'http', 'recurrence', 'connector'],
           trigger: 'Manual',
         });
+        if (result?.status === 'Skipped') {
+          send(res, 202, { runId: null, status: 'Skipped', reason: result.reason });
+          return true;
+        }
         send(res, 201, {
           ...(runs.get(runId) ? { ...runs.get(runId), journal: undefined } : { runId }),
           ...(Number.isInteger(result?.status)

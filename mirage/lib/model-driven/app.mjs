@@ -2469,7 +2469,15 @@ async function loadRecord(id) {
             .toLowerCase(),
       )?.id ?? availableForms[0]?.id;
     if (formId) rememberForm(formId);
-    activeTab = null;
+    const requestedTab = new URLSearchParams(location.search).get('tabname');
+    if (
+      requestedTab &&
+      !availableForms
+        .find((form) => form.id === formId)
+        ?.tabs.some((tab) => tab.id === requestedTab && tab.visible !== false)
+    )
+      throw new Error('The requested form tab is unavailable in the selected exported form.');
+    activeTab = requestedTab;
     await renderRecord();
     if (token !== generation) return;
     if (id)
@@ -2479,6 +2487,7 @@ async function loadRecord(id) {
         app: app.uniqueName,
       });
     contentLoaded();
+    if (requestedTab) $('#content [role="tab"][aria-selected="true"]')?.focus();
   } catch (error) {
     if (token === generation)
       loadFailed(error, () => {
@@ -2941,6 +2950,8 @@ function applyControlState(name, key, value) {
   if (key === 'hidden') {
     entry.wrapper.hidden = value;
     reflowSectionFields(entry.wrapper.parentElement);
+  } else if (key === 'options') {
+    entry.control.setOptions(value.map((option) => ({ label: option.text, value: option.value })));
   } else if (key === 'label') {
     const locked = Boolean(entry.label.querySelector('.field-lock')),
       required = entry.label.querySelector('.required');
@@ -3086,6 +3097,20 @@ function createShellClient(selectedForm) {
       if ($('#save-status')) $('#save-status').textContent = ' - Unsaved changes';
     },
     isDirty: (name) => (name ? touchedFields.has(name) : dirty),
+    isValid: (report) => {
+      let firstInvalid;
+      for (const entry of controls) {
+        if (entry.disabled || !entry.control.supported || !entry.wrapper.checkVisibility()) continue;
+        const element = entry.control.element,
+          inputs = [element, ...element.querySelectorAll('input,select,textarea')].filter((node) => node.willValidate);
+        for (const input of inputs) {
+          if (report) input.setAttribute('aria-invalid', String(!input.validity.valid));
+          if (!input.validity.valid) firstInvalid ??= input;
+        }
+      }
+      if (report) firstInvalid?.reportValidity();
+      return !firstInvalid;
+    },
     required: (name, value) => {
       if (value !== undefined) {
         requiredLevels.set(name, value);
@@ -3138,6 +3163,11 @@ function createShellClient(selectedForm) {
                 : key === 'label'
                   ? (cell?.label ?? table.fields[cell?.name]?.label)
                   : undefined));
+      }
+      if (key === 'options') {
+        const cell = cells.find((cell) => controlName(cell) === name);
+        if (cell?.pcf || cell?.readOnlyText || (entry && typeof entry.control.setOptions !== 'function'))
+          throw new Error(`Mirage client API does not support changing options for control ${name}.`);
       }
       const states = clientControlState.get(name) ?? new Map();
       states.set(key, value);
@@ -3760,7 +3790,10 @@ function pageUrl(input) {
     params.set('etn', input.entityName);
     if (input.entityId) params.set('id', input.entityId);
     if (input.formId) params.set('formid', input.formId);
+    if (input.tabName !== undefined) params.set('tabname', input.tabName);
     if (input.viewId) params.set('viewid', input.viewId);
+    if (input.pageType === 'entitylist' && (input.viewId || input.viewType))
+      params.set('viewtype', input.viewType ?? 'savedquery');
     if (input.data && typeof input.data === 'object')
       params.set(
         'extraqs',
@@ -4073,6 +4106,7 @@ function renderWebResourcePage(name, data) {
 /** Xrm.App.sidePanes: panes beside the workspace that host the same page types. */
 const panes = [];
 let selectedPane;
+let nextPaneId = 0;
 const sidePanes = {
   get state() {
     const host = $('#side-panes');
@@ -4083,7 +4117,11 @@ const sidePanes = {
     if (host) host.classList.toggle('collapsed', value === 0);
   },
   createPane(options = {}) {
-    const paneId = options.paneId ?? `pane-${panes.length + 1}`;
+    let paneId = options.paneId;
+    if (paneId == null)
+      do {
+        paneId = `pane-${++nextPaneId}`;
+      } while (panes.some((pane) => pane.paneId === paneId));
     if (panes.some((pane) => pane.paneId === paneId))
       return Promise.reject(new Error(`A side pane with id ${paneId} already exists.`));
     let host = $('#side-panes');
@@ -4100,6 +4138,7 @@ const sidePanes = {
     element.setAttribute('aria-label', options.title ?? paneId);
     const heading = document.createElement('div');
     heading.className = 'page-dialog-heading';
+    heading.hidden = Boolean(options.hideHeader);
     const title = document.createElement('h2');
     title.textContent = options.title ?? '';
     heading.append(title);
@@ -4116,9 +4155,12 @@ const sidePanes = {
       },
       set title(value) {
         title.textContent = String(value ?? '');
+        element.setAttribute('aria-label', title.textContent || paneId);
+        frame.title = title.textContent || paneId;
       },
       canClose: options.canClose !== false,
       badge: options.badge ?? null,
+      keepBadgeOnSelect: Boolean(options.keepBadgeOnSelect),
       get width() {
         return element.offsetWidth;
       },
@@ -4145,14 +4187,21 @@ const sidePanes = {
         }
       },
       select() {
+        if (!panes.includes(pane)) return;
         selectedPane = pane;
         for (const entry of host.children) entry.classList.toggle('selected', entry === element);
+        host.classList.remove('collapsed');
+        if (!pane.keepBadgeOnSelect) pane.badge = null;
       },
       close() {
-        if (!pane.canClose) throw new Error(`Side pane ${paneId} cannot be closed.`);
+        const index = panes.indexOf(pane);
+        if (index < 0) return;
         element.remove();
-        panes.splice(panes.indexOf(pane), 1);
-        if (selectedPane === pane) selectedPane = panes.at(-1);
+        panes.splice(index, 1);
+        if (selectedPane === pane) {
+          selectedPane = undefined;
+          panes.findLast((entry) => !entry.hidden)?.select();
+        }
         if (!panes.length) host.hidden = true;
       },
     };
@@ -4258,6 +4307,14 @@ async function loadRoute({ identityChange = false, preserveContent = false } = {
   else {
     const availableViews = appViews(),
       requestedView = requestedViewId;
+    if (
+      params.has('viewtype') &&
+      (params.get('viewtype') !== 'savedquery' ||
+        (requestedView && !availableViews.some((view) => view.id === requestedView)))
+    ) {
+      loadFailed(new Error('The selected view is not available in the imported saved-view catalogue.'), loadRoute);
+      return;
+    }
     const view =
       availableViews.find((view) => view.id === requestedView)?.id ??
       availableViews.find((view) => view.isDefault)?.id ??

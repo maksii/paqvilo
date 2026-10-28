@@ -47,4 +47,9 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 
 These guides describe reusable contracts. Organisation-specific observations, datasets, parity results and business backlogs belong to the separate portal project. Store evidence under ignored `.paqvilo/`.
 
+[Offline fixture analysis](fixture-analysis.md) covers population and lookup
+coverage, source-derived TypeScript declarations, registration comparisons and
+named deterministic fixture recreation. [Dataset generation](dataset-generation.md)
+covers schema-directed local population and alternate-key preflight.
+
 Return to the [Paqvilo documentation index](../../docs/index.md) for Lense, shared configuration and contribution guidance.

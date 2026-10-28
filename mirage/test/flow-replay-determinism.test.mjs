@@ -120,6 +120,23 @@ test('resume replays with the parameter values captured at run start', async (t)
   assert.deepEqual(Object.keys(run.journal).sort(), ['Pause', 'Pick/CallA']);
 });
 
+test('trigger conditions bind frozen parameters for a suspended run while new events use current values', async (t) => {
+  const definition = definitionOf();
+  definition.triggers.manual.conditions = [{ expression: "@equals(parameters('mode'),'a')" }];
+  const { runs, calls, setMode, start } = await setup(t, { definition });
+  const first = await start();
+  assert.equal(first.status, 'Waiting');
+  await setMode('b');
+  assert.deepEqual(await start(), { status: 'Skipped', reason: 'TriggerConditionFalse' });
+  assert.equal(runs.list().length, 1);
+  assert.deepEqual(await runs.resumeRun(first.runId, { status: 'Succeeded', outputs: {} }), {
+    status: 200,
+    body: { mode: 'a' },
+  });
+  assert.equal(runs.get(first.runId).status, 'Succeeded');
+  assert.deepEqual(calls, ['OpA']);
+});
+
 test('a replay that reaches an unjournalled connector action before consuming its journal fails NotResumable/ReplayDiverged without invoking the provider', async (t) => {
   const { store, runs, calls, setMode, start } = await setup(t);
   const first = await start();

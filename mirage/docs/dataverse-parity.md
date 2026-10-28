@@ -2,6 +2,14 @@
 
 Mirage supports FetchXML, portal Web API and list OData contracts over local state. Queries use imported mappings, relationship metadata, column types and permission scopes. Results support platform-shaped choice/lookup values, paging, counts, expansion and error envelopes. Unsupported constructs and unresolved mappings fail with diagnostics rather than silently querying unrelated tables.
 
+The read-only SQL evaluator's `LIKE` uses the configured `CI_AI` or `CI_AS`
+text folding for literal characters and character sets. `ESCAPE` requires one
+character; a pattern ending in an unmatched escape never matches, and null
+operands retain SQL unknown semantics. These cases follow the documented
+[SQL pattern contract](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/like-transact-sql)
+and [Dataverse accent sensitivity](https://learn.microsoft.com/en-us/power-platform/admin/language-collations).
+This bounded folding model does not establish full linguistic collation parity.
+
 Local identities come from request sessions. Exported table permissions, web roles and parent/contact/account/self relationships control queries and writes when enforcement is enabled. Page access and table access are separate concerns. Metadata/scaffold discovery does not grant a persona permission to business rows.
 
 The local store simulates create/update/delete, validation, bindings, declared backend rules and atomic state-file writes. [Dataverse plugin registrations](dataverse-plugins.md) are imported from selected Solutions; supported write/read stages can execute an explicitly trusted original CLR assembly, project model or mock, or be disabled. Unconfigured steps report skipped business logic. Top-level PreValidation SDK writes and asynchronous SDK requests commit independently; nested PreValidation and stages 20/40 join their caller transaction. [Operations](operations.md) inventories exports and runs supported basic imported request or Dataverse row-trigger flows with separate backend profiles. Completed connector writes survive a later failed action. Unsupported connectors/settings require explicit local choices. New states contain no business records from references.
@@ -15,6 +23,21 @@ These internal writers write system-owned rows directly to the store, deliberate
 An exported unsupported server-logic endpoint answers HTTP 501 with the camelCase fields `requestId`, `success`, `serverLogicName`, `data` and `error`. This is an explicit unsupported result, not a successful execution.
 
 Use `webapi-inventory`, `bootstrap-report` and `portal-matrix` to find source calls, unresolved table identities and schema gaps. Use a project-owned parity plan for read-only comparisons against an authorized reference browser. Local correctness and live parity are reported separately.
+
+## Access-team membership
+
+`AddUserToRecordTeam` reuses the system-managed access team for a record/template
+while it has members. Removing its final member deletes the team and its record
+share in the same local transaction; adding a member afterward creates a fresh
+team identity from the runtime's ID source. Other members, independent user
+shares and manually managed teams keep their existing access. This follows the
+lifecycle on page 14 of Microsoft's [Access Teams whitepaper](https://www.microsoft.com/en-us/download/details.aspx?id=41190).
+
+The current `RemoveUserFromRecordTeam` adapter still returns 204 with no body.
+Microsoft's [current action contract](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/removeuserfromrecordteam?view=dataverse-latest)
+declares an `AccessTeamId` response. Qualifying that return value, including the
+case where no team exists, is a separate gap; the lifecycle model does not
+establish complete response parity.
 
 ## Choosing a read-only reference
 

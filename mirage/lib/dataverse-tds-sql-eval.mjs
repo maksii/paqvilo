@@ -1528,14 +1528,17 @@ function typeText(targetType) {
   return `${name.toLowerCase()}${size}`;
 }
 
-// Pattern to RegExp: % and _ wildcards, [set] and [^set], and an ESCAPE character. Case folds unless caseSensitive.
-function likeRegex(pattern, escape, ci) {
+// Tokenize before collation folding so an accented escape remains distinct from a literal.
+// A dangling escape produces an invalid pattern, which LIKE treats as a non-match.
+function likeRegex(pattern, escape, collation) {
+  const literal = (text) => escapeRe(foldText(text, collation));
   let out = '^';
   for (let i = 0; i < pattern.length; i += 1) {
     const c = pattern[i];
-    if (escape !== null && c === escape && i + 1 < pattern.length) {
+    if (escape !== null && c === escape) {
+      if (i + 1 === pattern.length) return null;
       i += 1;
-      out += escapeRe(pattern[i]);
+      out += literal(pattern[i]);
     } else if (c === '%') {
       out += '[\\s\\S]*';
     } else if (c === '_') {
@@ -1545,13 +1548,15 @@ function likeRegex(pattern, escape, ci) {
       const body = pattern.slice(i + 1, close);
       const negate = body[0] === '^';
       const set = negate ? body.slice(1) : body;
-      out += `[${negate ? '^' : ''}${set.replace(/[\\[\]]/g, '\\$&')}]`;
+      out += `[${negate ? '^' : ''}${foldText(set, collation).replace(/[\\[\]]/g, '\\$&')}]`;
       i = close;
     } else {
-      out += escapeRe(c);
+      out += literal(c);
     }
   }
-  return new RegExp(`${out}$`, ci ? 'si' : 's');
+  // Keep insensitive matching after accent folding: whole strings and individual
+  // pattern tokens can lowercase differently (for example Greek final sigma).
+  return new RegExp(`${out}$`, 'si');
 }
 
 const escapeRe = (text) => text.replace(/[.*+?^${}()|[\]\\/-]/g, '\\$&');
@@ -1671,8 +1676,11 @@ async function evalExpr(node, env, st) {
       const pattern = await evalExpr(node.pattern, env, st);
       const escape = node.escape ? await evalExpr(node.escape, env, st) : null;
       if (isNull(value) || isNull(pattern) || (node.escape && isNull(escape))) return null;
-      const escapeChar = node.escape ? String(escape).charAt(0) || null : null;
-      const matched = likeRegex(String(pattern), escapeChar, !st.ctx.caseSensitive).test(String(value));
+      const escapeChar = node.escape ? String(escape) : null;
+      if (escapeChar !== null && escapeChar.length !== 1)
+        fail(22019, 'The LIKE ESCAPE expression must contain exactly one character.');
+      const compiled = likeRegex(String(pattern), escapeChar, st.collation);
+      const matched = compiled?.test(foldText(value, st.collation)) ?? false;
       return node.negated ? !matched : matched;
     }
     case 'Exists':

@@ -7,6 +7,10 @@ Roles and accounts stay contact-derived. See the [catalogue contract and example
 
 All project data, personas, generators, backend rules, acceptance fixtures and tests belong to a separate portal project. Mirage contains only generic presets: `empty-local`, `open-sandbox`, `strict-permissions`, and `contact-demo`. No project pack is automatically discovered inside or beside the toolkit.
 
+For schema-directed population with explicit table counts, deterministic field rules
+and resolved local lookups, use [`generateDataset`](dataset-generation.md) from
+`paqvilo/mirage/fixtures` inside your project pack.
+
 Register trusted modules explicitly in `sites.<id>.mirage.dataPacks`, `defaults.mirage.dataPacks`, Mirage project `dataPacks`, or direct CLI `--pack-module`. Catalogue modules resolve from the catalogue directory; project modules resolve from the project file. Embedded `createSimulator({ dataPacks })` and `discoverPacks({ explicit })` accept explicit modules as well. Loading a module executes JavaScript.
 
 Packs also support solution-only app/API projects; their matching logic must tolerate an absent portal. In explicit simulation/deep levels, persistence requires declared existing `dataFiles` destinations. A preset alone does not declare file ownership, and unowned business tables remain read-only. Dry run keeps record edits in memory. See the [DATA manifest and transactional write contract](simulation-levels.md) and [standalone setup](standalone-organization.md).

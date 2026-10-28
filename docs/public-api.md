@@ -218,6 +218,16 @@ prototype properties cannot count as matching response data.
 `paqvilo/mirage/fixtures` exports `formatMockRecord`, `mergeDataset`, `findDanglingLookups`,
 `schemaViolations`, `fieldIndexFromMappings`, `schemaFieldIndex`, `formatViolations`,
 `assertOfflineState`, `stateFileFingerprint`, `importPortal` and `createPortalRenderer`.
+It also exports `generateDataset`, `summarizeDataset`, `generateSchemaDeclarations`,
+`comparePluginRegistrations` and `comparePermissionModels`. The testing entry
+exports `createFixtureRecipes`. See [offline fixture analysis](../mirage/docs/fixture-analysis.md)
+and [schema-directed generation](../mirage/docs/dataset-generation.md) for their
+project-owned inputs, bounded reports and compatibility limits.
+`buildPermissionModel`, `parsePluginDocument` and `importSolutionPlugins` expose
+the existing compilers for those offline reports. `remapDatasetIdentities`
+performs explicit metadata-backed row identity substitution. `inspectFlowExpression`
+and `evaluateFlowTriggerConditions` support project-owned preflight/scenario
+assertions without starting a flow or invoking providers.
 The acceptance entry point also exports `AssetCache`, `validateLivePath`, `decodePagingCookie`,
 `collectFetchXmlPages`, `escapeXmlAttribute`, `auditQuery`, `richTextBody`, `resolveRichTextMode`,
 `settleHostModal`, `editRichText` and `assertRichText`. These rich-text actions are the supported

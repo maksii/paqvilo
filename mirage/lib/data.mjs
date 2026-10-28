@@ -14,6 +14,14 @@ import { expressionOperator } from './extensions.mjs';
 import { createHash } from 'node:crypto';
 
 import { DataError } from './data-error.mjs';
+import {
+  activeAlternateKeys,
+  alternateKeyAttributes,
+  alternateKeyValues,
+  alternateKeyKinds,
+  alternateKeyOf,
+  duplicateAlternateKey,
+} from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
 import { StateStorage } from './state-storage.mjs';
@@ -375,47 +383,35 @@ const primaryKeyOf = (column) => {
     });
   return primaryKeyFns.get(column);
 };
-const duplicateAlternateKey = (key, attributes, values) =>
-  new DataError(
-    `A record that has the attribute values ${values.join(', ')} already exists. The entity key ${key.name ?? attributes.join('_')} requires that this set of attributes contains unique values. Select unique values and try again.`,
-    412,
-    'DuplicateRecord',
-    { innerCode: '0x80040237' },
-  );
-/** Alternate-key uniqueness index key: the store's equality per column; a row with an empty column never clashes. */
-const alternateKeyOf = (attributes) => (row) => {
-  const parts = [];
-  for (const name of attributes) {
-    const value = field(row, name);
-    if (value == null) return null;
-    parts.push(comparable(value));
-  }
-  return parts.join('\u0000');
-};
 /**
  * Key-segment lookup index key (findByKey): a bucket that every valuesEqual match shares. Only
  * plain non-date strings are bucketed (GUID key, else collation-folded text); other values are
  * `undefined` and stay in the index's always-scanned list. Candidates are verified with valuesEqual.
  */
-const keySegmentOf = (names) => (row) => {
+const keySegmentOf = (names, collation, kinds) => (row) => {
   const parts = [];
   let wild = false;
   for (const name of names) {
     const value = field(row, name);
-    const bucket = keySegmentBucket(value);
+    const bucket = keySegmentBucket(value, collation, kinds[name]);
     if (bucket === null) return null;
     if (bucket === undefined) wild = true;
     else parts.push(bucket);
   }
-  return wild ? undefined : parts.join('\u0000');
+  return wild ? undefined : JSON.stringify(parts);
 };
-const keySegmentBucket = (value) => {
+const keySegmentBucket = (value, collation, kind) => {
   if (value == null || isExactNumeric(value)) return value == null ? null : undefined;
   const raw = value && typeof value === 'object' && !Array.isArray(value) ? (value.id ?? value.value ?? value) : value;
   if (raw == null) return null;
-  if (typeof raw !== 'string' || looksLikeDate(raw)) return undefined;
+  if (
+    typeof raw !== 'string' ||
+    (kind && !['string', 'guid', 'lookup'].includes(kind)) ||
+    (kind !== 'string' && looksLikeDate(raw))
+  )
+    return undefined;
   const guid = guidKey(raw);
-  return guid ? `g${guid}` : `t${foldText(raw)}`;
+  return guid ? `g${guid}` : `t${foldText(raw, collation)}`;
 };
 /** Restore `current` to `saved` in place, keeping the identity of tables, rows and sections that callers hold. */
 const restoreInPlace = (current, saved) => {
@@ -812,6 +808,14 @@ function normalizeState(
   return reconcilePermissionDiagnostics(applyPlatformConfig(result, platform));
 }
 
+function traceRetentionError(original, persistence) {
+  const failure = new AggregateError([original, persistence], persistence.message, { cause: original });
+  failure.code = persistence.code ?? 'PluginTracePersistenceFailed';
+  failure.status = failure.statusCode = persistence.status ?? persistence.statusCode ?? 500;
+  failure.persistenceFailure = true;
+  return failure;
+}
+
 export class DataStore {
   constructor({
     file = null,
@@ -1200,6 +1204,7 @@ export class DataStore {
       try {
         if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
         const result = await fn();
+        this.restorePluginTraceLogs(boundary);
         const staged = this.stageOnCommit(this.committedEventCandidates);
         if (
           staged.length ||
@@ -1238,6 +1243,11 @@ export class DataStore {
           } catch {
             /* a note never changes the failure */
           }
+        // Trace facts are platform diagnostics, not business writes. Their own
+        // failed transaction journal must never replay aborted target changes.
+        const traceRetentionBackup = boundary.pluginTraceRows?.size ? clone(this.state) : null;
+        if (traceRetentionBackup) this.rowTransaction = null;
+        const retainedTraces = !error.persistenceFailure && this.restorePluginTraceLogs(boundary);
         // Elastic main operations commit independently, even inside a failed changeset or a failed PostOperation.
         // Restore only those rows after rollback: earlier standard-table writes remain transactional.
         if (!error.persistenceFailure && boundary.elasticWrites?.size) {
@@ -1264,21 +1274,28 @@ export class DataStore {
             this.dispatchCommittedEvents(events);
             this.afterStagedCommit(staged);
           } catch (saveError) {
-            this.state = boundary.persistenceBackup ?? retentionBackup;
+            this.state = boundary.persistenceBackup ?? traceRetentionBackup ?? retentionBackup;
             this.rowIndexes = null;
+            if (traceRetentionBackup) throw traceRetentionError(error, saveError);
             throw saveError;
           }
-        } else if (!error.persistenceFailure && boundary.independentCommit && !isolated) {
+        } else if (!error.persistenceFailure && ((boundary.independentCommit && !isolated) || retainedTraces)) {
           try {
-            const events = this.committedEventCandidates.slice(0, boundary.eventCount),
+            const events =
+                boundary.independentCommit && !isolated
+                  ? this.committedEventCandidates.slice(0, boundary.eventCount)
+                  : [],
               staged = this.stageOnCommit(events);
             await this.save();
             this.committed();
+            if (isolated) this._state = frame.working;
             this.dispatchCommittedEvents(events);
             this.afterStagedCommit(staged);
           } catch (saveError) {
             if (boundary.persistenceBackup !== null) this.state = boundary.persistenceBackup;
+            else if (traceRetentionBackup) this.state = traceRetentionBackup;
             this.rowIndexes = null;
+            if (traceRetentionBackup) throw traceRetentionError(error, saveError);
             throw saveError;
           }
         }
@@ -1330,6 +1347,28 @@ export class DataStore {
     else rows.push(row);
     const indexes = this.rowIndexes?.get(rows);
     if (indexes?.size) for (const [name, entry] of indexes) if (!entry.appended(rows, row)) indexes.delete(name);
+  }
+  /** System-owned plug-in trace facts survive a business rollback. Never retain another table this way. */
+  appendPluginTraceLog(row) {
+    this.insertRow('plugintracelog', (this.state.tables.plugintracelog ??= []), row);
+    let boundary = this.pluginRollbackBoundary;
+    while (boundary?.parent) boundary = boundary.parent;
+    if (boundary) (boundary.pluginTraceRows ??= new Map()).set(row.plugintracelogid, clone(row));
+  }
+  /** Reconcile diagnostic facts after a savepoint rollback without duplicating traces already in its snapshot. */
+  restorePluginTraceLogs(boundary) {
+    while (boundary?.parent) boundary = boundary.parent;
+    if (!boundary?.pluginTraceRows?.size || !this.state.mappings?.plugintracelog) return false;
+    const rows = (this.state.tables.plugintracelog ??= []),
+      ids = new Set(rows.map((row) => row.plugintracelogid));
+    let restored = false;
+    for (const [id, row] of boundary.pluginTraceRows) {
+      if (ids.has(id)) continue;
+      this.insertRow('plugintracelog', rows, clone(row));
+      ids.add(id);
+      restored = true;
+    }
+    return restored;
   }
   removeRow(table, rows, index) {
     validateRowIndex(rows, index);
@@ -1478,6 +1517,7 @@ export class DataStore {
         if (boundary.backup !== null) restoreInPlace(this.state, boundary.backup);
         else savepoint.rollback(this.state, restoreInPlace);
         this.rowIndexes = null;
+        this.restorePluginTraceLogs(boundary);
         if (this.committedEventCandidates) this.committedEventCandidates.length = boundary.eventCount;
         if (!joined && boundary.independentCommit && previousBoundary) {
           previousBoundary.backup = clone(this.state);
@@ -3157,19 +3197,23 @@ export class DataStore {
         'InvalidKey',
         { innerCode: '0x80040203' },
       );
+    const collation = this.querySettings().collation;
+    const kinds = Object.fromEntries(
+      names.map((name) => [name, fieldKind(this.fieldDefinition(mapping.logicalName, name))]),
+    );
     const matches = (row) =>
       names.every((name) =>
         isElastic(mapping) && name === 'partitionid'
           ? samePartition(row[name], parts[name])
-          : valuesEqual(field(row, name), parts[name]),
+          : valuesEqual(field(row, name), parts[name], { collation, kind: kinds[name] }),
       );
     // Within one transaction (UpsertMultiple, key upserts) candidates come from the key-segment index.
-    const literal = names.map((name) => keySegmentBucket(parts[name]));
+    const literal = names.map((name) => keySegmentBucket(parts[name], collation, kinds[name]));
     if (!isElastic(mapping) && literal.every((bucket) => typeof bucket === 'string')) {
-      const name = `ks\u0000${names.join('\u0000')}`;
-      const index = this.rowKeyIndex(rows, name, keySegmentOf(names), { scoped: true, wild: true });
+      const name = `ks\u0000${JSON.stringify([collation, names, kinds])}`;
+      const index = this.rowKeyIndex(rows, name, keySegmentOf(names, collation, kinds), { scoped: true, wild: true });
       if (index && !index.linear) {
-        const bucketed = index.get(literal.join('\u0000'));
+        const bucketed = index.get(JSON.stringify(literal));
         const candidates = index.wild.length
           ? [...new Set([...bucketed, ...index.wild])].sort((a, b) => a - b)
           : bucketed;
@@ -3525,14 +3569,18 @@ export class DataStore {
    * indexes in Dataverse. Keys with an empty column are not compared here.
    */
   assertAlternateKeys(mapping, row, rows, ownIndex) {
-    for (const key of (mapping.alternateKeys ?? []).filter((k) => (k.indexStatus ?? 'Active') === 'Active')) {
-      const attributes = key.attributes ?? key.keyAttributes ?? [];
+    const keys = activeAlternateKeys(mapping);
+    if (!keys.length) return;
+    const collation = this.querySettings().collation;
+    for (const key of keys) {
+      const attributes = alternateKeyAttributes(key);
       if (!attributes.length) continue;
-      const values = attributes.map((name) => scalar(field(row, name)));
+      const values = alternateKeyValues(row, attributes);
       if (values.some((value) => value == null || value === '')) continue;
       // Within one transaction the key-tuple index makes bulk creates and key upserts O(1) per row.
-      const name = `ak\u0000${attributes.join('\u0000')}`,
-        keyOf = alternateKeyOf(attributes),
+      const kinds = alternateKeyKinds(mapping, attributes);
+      const name = `ak\u0000${JSON.stringify([collation, attributes, kinds])}`,
+        keyOf = alternateKeyOf(attributes, collation, kinds),
         wanted = keyOf(row);
       const index = this.rowKeyIndex(rows, name, keyOf, { scoped: true });
       const candidates = index?.get(wanted);
@@ -3549,9 +3597,7 @@ export class DataStore {
       if (index) this.dropRowKeyIndex(rows, name);
       const clash = rows.some(
         (other, index) =>
-          index !== ownIndex &&
-          !equal(other[mapping.idColumn], row[mapping.idColumn]) &&
-          attributes.every((name, position) => equal(field(other, name), values[position])),
+          index !== ownIndex && !equal(other[mapping.idColumn], row[mapping.idColumn]) && keyOf(other) === wanted,
       );
       if (clash) throw duplicateAlternateKey(key, attributes, values);
     }
@@ -4907,7 +4953,7 @@ export function parseKeySegment(key) {
     parts[name] = raw.startsWith("'")
       ? raw.slice(1, -1).replace(/''/g, "'")
       : /^-?\d+(?:\.\d+)?$/.test(raw)
-        ? Number(raw)
+        ? parseNumericLiteral(raw)
         : raw.replace(/^\{(.*)\}$/, '$1');
   }
   return parts;
@@ -5052,7 +5098,7 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       return email ? value.trim().toLowerCase() || null : value;
     }
     case 'integer': {
-      const int64 = String(definition.dataverseType ?? '').toLowerCase() === 'bigint';
+      const int64 = String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'bigint';
       const type = int64 ? 'Edm.Int64' : 'Edm.Int32';
       if (int64 && (isExactNumeric(value) || (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())))) {
         const parts = decimalParts(typeof value === 'string' ? value.trim() : value);

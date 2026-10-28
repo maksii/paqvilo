@@ -344,6 +344,192 @@ test('Xrm.App.sidePanes hosts pages beside the workspace and closes them', async
   assert.deepEqual(errors, []);
 });
 
+test('side pane selection expands the group and clears badges unless retained', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  assert.deepEqual(
+    await page.evaluate(async () => {
+      const panes = window.Xrm.App.sidePanes;
+      const first = await panes.createPane({ paneId: 'first', title: 'First pane' });
+      first.badge = 4;
+      panes.state = 0;
+      const second = await panes.createPane({
+        paneId: 'second',
+        title: 'Second pane',
+        isSelected: false,
+        keepBadgeOnSelect: true,
+      });
+      second.badge = 2;
+      const background = [panes.getSelectedPane().paneId, panes.state, first.badge, second.badge];
+      second.select();
+      const selected = [panes.getSelectedPane().paneId, panes.state, second.badge];
+      panes.state = 0;
+      first.select();
+      return { background, selected, restored: [panes.getSelectedPane().paneId, panes.state, first.badge] };
+    }),
+    { background: ['first', 0, 4, 2], selected: ['second', 1, 2], restored: ['first', 1, null] },
+  );
+  assert.equal(await page.getByRole('region', { name: 'First pane', exact: true }).isVisible(), true);
+  assert.equal(await page.getByRole('region', { name: 'Second pane', exact: true }).isVisible(), false);
+  // Creating a foreground pane also expands a previously collapsed group.
+  await page.evaluate(async () => {
+    window.Xrm.App.sidePanes.state = 0;
+    await window.Xrm.App.sidePanes.createPane({ paneId: 'foreground', title: 'Foreground pane' });
+  });
+  assert.equal(await page.getByRole('region', { name: 'Foreground pane', exact: true }).isVisible(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('a reused record pane follows current and newly supplied record context, source form and named tab', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  await page.evaluate(async () => {
+    const form = window.Xrm.Page,
+      panes = window.Xrm.App.sidePanes;
+    const pane = await panes.createPane({ paneId: 'record-context', title: 'Record context' });
+    await pane.navigate({
+      pageType: 'entityrecord',
+      entityName: form.data.entity.getEntityName(),
+      entityId: form.data.entity.getId(),
+      formId: form.ui.formSelector.getCurrentItem().getId(),
+      tabName: 'related',
+    });
+  });
+  const frame = page.frameLocator('.side-pane[data-pane-id="record-context"] iframe');
+  await frame.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
+  await frame.getByText('Rows: Copper child', { exact: true }).waitFor();
+  await frame.locator('html[data-mirage-app-state="ready"]').waitFor();
+  assert.equal(
+    await frame.getByRole('tab', { name: 'Related items', exact: true }).getAttribute('aria-selected'),
+    'true',
+  );
+  assert.equal(
+    await frame
+      .getByRole('tab', { name: 'Related items', exact: true })
+      .evaluate((node) => node === node.ownerDocument.activeElement),
+    true,
+  );
+  await page.evaluate(async () => {
+    const pane = window.Xrm.App.sidePanes.getPane('record-context');
+    await pane.navigate({
+      pageType: 'entityrecord',
+      entityName: 'x_item',
+      entityId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      formId: 'item-form',
+      tabName: 'general',
+      data: { x_name: 'Ignored existing-row default' },
+    });
+    pane.select();
+  });
+  await frame.getByRole('heading', { name: 'Silver', exact: true }).waitFor();
+  assert.equal(await frame.getByRole('textbox', { name: 'Name', exact: true }).inputValue(), 'Silver');
+  assert.equal(await frame.getByRole('tab', { name: 'General', exact: true }).getAttribute('aria-selected'), 'true');
+  assert.equal(await page.locator('.side-pane[data-pane-id="record-context"]').count(), 1);
+  assert.equal(await page.getByRole('heading', { name: 'Copper', exact: true }).count(), 1);
+  await page.evaluate(async () => {
+    await window.Xrm.App.sidePanes.getPane('record-context').navigate({
+      pageType: 'entityrecord',
+      entityName: 'x_item',
+      formId: 'item-form',
+      tabName: 'general',
+      data: { x_name: 'Invented unsaved default' },
+    });
+  });
+  await frame.getByRole('textbox', { name: 'Name', exact: true }).waitFor();
+  assert.equal(
+    await frame.getByRole('textbox', { name: 'Name', exact: true }).inputValue(),
+    'Invented unsaved default',
+  );
+  await page.evaluate(async () => {
+    await window.Xrm.App.sidePanes
+      .getPane('record-context')
+      .navigate({ pageType: 'entitylist', entityName: 'x_item', viewId: 'items-view', viewType: 'savedquery' });
+  });
+  await frame.locator('html[data-mirage-app-state="ready"]').waitFor();
+  assert.deepEqual(
+    await frame.locator('html').evaluate(() => {
+      const context = window.Xrm.Utility.getPageContext().input;
+      return [context.pageType, context.entityName, context.viewId, context.viewType];
+    }),
+    ['entitylist', 'x_item', 'items-view', 'savedquery'],
+  );
+  const before = await page.locator('.side-pane[data-pane-id="record-context"] iframe').getAttribute('src');
+  const refused = await page.evaluate(async () => {
+    try {
+      await window.Xrm.App.sidePanes
+        .getPane('record-context')
+        .navigate({ pageType: 'entitylist', entityName: 'x_item', viewId: 'items-view', viewType: 'userquery' });
+    } catch (error) {
+      return error.code;
+    }
+  });
+  assert.equal(refused, 'PersonalViewUnsupported');
+  assert.equal(await page.locator('.side-pane[data-pane-id="record-context"] iframe').getAttribute('src'), before);
+  assert.deepEqual(errors, []);
+});
+
+test('side panes respect hidden headers and visibility, and allow programmatic close without a close button', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  await page.evaluate(async () => {
+    const panes = window.Xrm.App.sidePanes;
+    await panes.createPane({ paneId: 'retained', title: 'Retained pane', canClose: false });
+    const hidden = await panes.createPane({ paneId: 'hidden', title: 'Hidden pane', hideHeader: true, hidden: true });
+    hidden.title = 'Renamed pane';
+  });
+  const renamed = page.locator('.side-pane[data-pane-id="hidden"]');
+  assert.equal(await renamed.isVisible(), false);
+  await page.evaluate(() => {
+    window.Xrm.App.sidePanes.getPane('hidden').hidden = false;
+  });
+  assert.equal(await renamed.isVisible(), true);
+  assert.equal(await renamed.getAttribute('aria-label'), 'Renamed pane');
+  assert.equal(await renamed.locator('iframe').getAttribute('title'), 'Renamed pane');
+  assert.equal(await renamed.locator('.page-dialog-heading').isVisible(), false);
+  assert.equal(await page.locator('.side-pane[data-pane-id="retained"] button').count(), 0);
+  await page.evaluate(() => window.Xrm.App.sidePanes.getPane('hidden').close());
+  assert.equal(await page.getByRole('region', { name: 'Retained pane', exact: true }).isVisible(), true);
+  assert.equal(await page.evaluate(() => window.Xrm.App.sidePanes.getSelectedPane().paneId), 'retained');
+  await page.evaluate(() => window.Xrm.App.sidePanes.getPane('retained').close());
+  assert.equal(await page.locator('#side-panes').isVisible(), false);
+  assert.deepEqual(errors, []);
+});
+
+test('generated side pane ids survive close and explicit ids, and a repeated close cannot remove another pane', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  const result = await page.evaluate(async () => {
+    const panes = window.Xrm.App.sidePanes;
+    await panes.createPane({ paneId: 'pane-1' });
+    const first = await panes.createPane();
+    const second = await panes.createPane();
+    first.close();
+    const third = await panes.createPane();
+    first.close();
+    first.select();
+    let duplicate;
+    try {
+      await panes.createPane({ paneId: second.paneId });
+    } catch (error) {
+      duplicate = error.message;
+    }
+    return {
+      ids: panes
+        .getAllPanes()
+        .get()
+        .map((pane) => pane.paneId),
+      generated: [first.paneId, second.paneId, third.paneId],
+      selected: panes.getSelectedPane().paneId,
+      duplicate,
+    };
+  });
+  assert.equal(new Set(['pane-1', ...result.generated]).size, 4);
+  assert.deepEqual(result.ids, ['pane-1', result.generated[1], result.generated[2]]);
+  assert.equal(result.selected, result.generated[2]);
+  assert.match(result.duplicate, /already exists/);
+  assert.deepEqual(errors, []);
+});
+
 test('a dataset component on a related subgrid receives the parent rows and the staff context', async (t) => {
   const { page, origin, errors } = await fixture(t, { readOnly: true });
   await openRecord(page, origin);
