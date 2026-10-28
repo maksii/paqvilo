@@ -37,22 +37,27 @@ test(
       `
     import fs from 'node:fs/promises'; import http from 'node:http'; import path from 'node:path';
     import {createRequire} from 'node:module'; import {pathToFileURL} from 'node:url';
-    const [mode,copy,profile]=process.argv.slice(2);
+    const [mode,copy,profile,role]=process.argv.slice(2);
+    if(role!=='baseline'&&role!=='exercise')throw new Error('Unknown browser probe role');
     const request=createRequire(path.join(copy,'package.json'));
     // CJS and ESM exports must share the same lazily patched client instance.
     const cjs=request('playwright-core'); const esm=await import(pathToFileURL(request.resolve('playwright-core').replace(/index\\.js$/,'index.mjs')).href);
     if(cjs.chromium!==esm.chromium)throw new Error('different CJS/ESM client');
-    let hits=0; const server=http.createServer((req,res)=>{hits++;res.setHeader('content-type','text/html');res.end('<h1>Invented real HTTP</h1>')});
+    let hits=0; const server=http.createServer((req,res)=>{hits++;if(role==='baseline'){res.statusCode=500;res.end('Unexpected application request from an argument-only baseline');return;}res.setHeader('content-type','text/html');res.end('<h1>Invented real HTTP</h1>')});
     await new Promise(r=>server.listen(0,'127.0.0.1',r)); let browser,context,browserServer;
     try{
       const channel=process.env.PAQVILO_BROWSER||(process.platform==='win32'?'msedge':undefined);
       const options={headless:true,channel:channel==='chromium'?undefined:channel,args:['--enable-automation','--paqvilo-invented-retained'],ignoreDefaultArgs:['--mute-audio']};
       if(mode==='persistent'){context=await esm.chromium.launchPersistentContext(profile,options);browser=context.browser();}
-      else if(mode==='server'){browserServer=await esm.chromium.launchServer(options);browser=await esm.chromium.connect(browserServer.wsEndpoint());context=await browser.newContext();}
-      else{browser=await esm.chromium.launch(options);context=await browser.newContext();}
-      const page=await context.newPage();await page.goto('http://127.0.0.1:'+server.address().port+'/');
-      if(await page.locator('h1').textContent()!=='Invented real HTTP')throw new Error('HTTP content lost');
+      else if(mode==='server'){browserServer=await esm.chromium.launchServer(options);browser=await esm.chromium.connect(browserServer.wsEndpoint());}
+      else{browser=await esm.chromium.launch(options);}
+      if(role==='exercise'){
+        context??=await browser.newContext();
+        const page=await context.newPage();await page.goto('http://127.0.0.1:'+server.address().port+'/');
+        if(await page.locator('h1').textContent()!=='Invented real HTTP')throw new Error('HTTP content lost');
+      }
       const session=await browser.newBrowserCDPSession();const {arguments:args}=await session.send('Browser.getBrowserCommandLine');await session.detach();
+      if(role==='baseline'&&hits!==0)throw new Error('Argument-only baseline made an application request');
       console.log(JSON.stringify({args,hits}));
     }finally{
       const failures=[];
@@ -75,6 +80,7 @@ test(
           mode,
           copy,
           path.join(directory, `profile-${Math.random().toString(36).slice(2)}`),
+          activated ? 'exercise' : 'baseline',
         ],
         {
           cwd: root,
@@ -87,7 +93,7 @@ test(
     };
     for (const mode of ['launch', 'persistent', 'server']) {
       const before = await run(mode, root, false);
-      assert.ok(before.hits >= 1);
+      assert.equal(before.hits, 0, 'argument-only reference must not use the unmitigated application HTTP path');
       assert.equal(before.args.includes(DEFAULT_DISABLED_FEATURES), true);
       assert.equal(before.args.includes('--mute-audio'), false);
       for (const copy of copies) {
