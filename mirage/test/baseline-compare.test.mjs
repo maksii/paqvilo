@@ -16,6 +16,7 @@ import {
   normalizeGeneratedIds,
 } from '../baseline-compare.mjs';
 import { validateMatrix, scenarioDir, captureMatrix } from '../baseline-suite.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const req = (seq, url, extra = {}) => ({
   seq,
@@ -212,7 +213,7 @@ test('grid data Attributes arrays are compared by name, other arrays by position
 });
 
 test('compareScenario verdicts, allowlist classification, second-live variance and summaries', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-baseline-compare-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-baseline-compare-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const scenario = { id: 'area/page' };
   const dir = (name) => path.join(root, name);
@@ -605,7 +606,7 @@ test('validateMatrix accepts a good matrix and rejects invalid ones', () => {
 });
 
 test('captureMatrix switches personas only on change, honours reset:false and records side errors', async (t) => {
-  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-capture-matrix-'));
+  const outDir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-capture-matrix-'));
   t.after(() => fs.rm(outDir, { recursive: true, force: true }));
   const calls = [];
   const side = {
@@ -677,7 +678,7 @@ test('request-side x-sim-* headers are instrumentation and generated ids are nor
 
 test('--only lists take the first token per line and refuse an empty selection', async (t) => {
   const { list } = await import('../baseline-suite.mjs');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-only-list-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-only-list-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'ids.txt');
   await fs.writeFile(
@@ -693,7 +694,7 @@ test('--only lists take the first token per line and refuse an empty selection',
 
 test('evidence age: deltas a recorded live change explains are stale until its proof scenario fails', async (t) => {
   const { loadEvidenceChanges, finalizeEvidenceChanges } = await import('../baseline-compare.mjs');
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-evidence-age-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-evidence-age-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const folder = async (name, capturedAt, title) => {
     const dir = path.join(root, name);
@@ -805,7 +806,7 @@ test('the evidence receiver ties each post to its run; a late post of an abandon
     saver.late.map((late) => late.run),
     [first.run, null],
   );
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-write-capture-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-write-capture-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await assert.rejects(
     writeCapture(

@@ -10,6 +10,7 @@ import { captureSdkResponse, handoffPluginResponse } from '../lib/plugin-respons
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001',
   changed = '20000000-0000-0000-0000-000000000002',
@@ -203,7 +204,7 @@ test(
   'Original DLL SDK callers receive post-operation Results, deletions, typed custom values and isolated nested/failing responses',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-original-response-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-original-response-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'ResponseOriginal.cs'),

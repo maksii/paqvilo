@@ -7,7 +7,7 @@ import { parse } from 'parse5';
 import { observedPageErrorResponse } from '../lib/page-error-presentation.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const observed = { pageErrorPresentation: 'generic-error', evidence: 'invented-loopback/error-structure.json' };
 const failure = { status: 500, code: 'PAGE_QUERY_REQUEST_VALIDATION', message: 'invented diagnostic detail' };
@@ -61,7 +61,7 @@ test('the presentation mode requires site evidence and a known choice', () => {
 });
 
 test('Mirage leaves ordinary pages and unrelated route errors unchanged in the selected mode', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-page-presentation-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-page-presentation-'));
   ownedFixture(t).remove(async () => {
     assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
     await fs.rm(directory, { recursive: true, force: true });

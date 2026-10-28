@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const text = { dataverseType: 'nvarchar' };
 
@@ -238,7 +239,7 @@ test('a continuation from a finished isolated transaction reads the committed st
 });
 
 test('an independent plugin commit inside an isolated transaction that later fails stays uncommitted', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'store-nesting-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'store-nesting-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'state.json');
   const state = emptyState();

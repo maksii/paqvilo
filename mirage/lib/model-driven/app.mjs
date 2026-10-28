@@ -4348,7 +4348,17 @@ window.addEventListener('focus', () =>
       $('#content').replaceChildren();
       $('#navigation').replaceChildren();
       if (staffSession) {
-        catalogue = await api();
+        const refreshGeneration = generation;
+        let refreshed;
+        try {
+          refreshed = await api();
+        } catch (error) {
+          if (refreshGeneration === generation) loadFailed(error, initialize);
+          return;
+        }
+        // An explicit route may have started while the focus-triggered identity read was pending.
+        if (refreshGeneration !== generation) return;
+        catalogue = refreshed;
         await loadRoute();
       }
     } finally {

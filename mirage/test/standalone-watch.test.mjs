@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ID = '11111111-1111-4111-8111-111111111111';
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -26,7 +26,7 @@ for (const level of [null, 'simulation'])
     `standalone watcher ignores runtime/build/DATA outputs and reloads authored XML (${level ?? 'legacy'})`,
     { timeout: 20000 },
     async (t) => {
-      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-source-watch-'));
+      const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-source-watch-'));
       ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
       const files = {
         'Other/Solution.xml':

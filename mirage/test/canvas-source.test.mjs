@@ -6,6 +6,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { canvasInventoryRecord, readCanvasSource, readCanvasSources } from '../lib/canvas-source.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP = [
   'App:',
@@ -109,7 +110,7 @@ test('configured canvas imports retain directory and archive inventories and dia
 });
 
 async function dirOf(t, entries) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-source-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'canvas-source-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(entries)) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });

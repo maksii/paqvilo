@@ -7,13 +7,13 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'admin contact memberships refresh Liquid/source scripts and isolate companies for API reads and writes',
   { timeout: 45000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-personas-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-personas-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     await fs.writeFile(
       path.join(directory, 'Home.webpage.yml'),

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { stateFileSignature } from '../lib/state-storage.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // .NET retains NTFS's 100 ns timestamp precision; fs.utimes(Date) would round
 // the timestamp and test an ordinary detectable edit instead of this boundary.
@@ -32,7 +33,7 @@ for (const journal of [false, true])
       skip: process.platform === 'win32' ? 'Windows excludes ChangeTime; covered by the Windows boundary test' : false,
     },
     async (t) => {
-      const root = await fs.mkdtemp(join(tmpdir(), 'paqvilo-posix-state-'));
+      const root = await makeTemporaryDirectory(join(tmpdir(), 'paqvilo-posix-state-'));
       t.after(() => fs.rm(root, { recursive: true, force: true }));
       const file = join(root, 'state.json'),
         reference = join(root, 'timestamps'),
@@ -95,7 +96,7 @@ for (const journal of [false, true])
     `Windows metadata-preserving edits match the documented ${journal ? 'journal checksum' : 'JSON replacement'} boundary`,
     { skip: process.platform !== 'win32' },
     async (t) => {
-      const root = await fs.mkdtemp(join(tmpdir(), 'paqvilo-windows-state-'));
+      const root = await makeTemporaryDirectory(join(tmpdir(), 'paqvilo-windows-state-'));
       t.after(() => fs.rm(root, { recursive: true, force: true }));
       const file = join(root, 'state.json'),
         persistence = { journalThresholdBytes: journal ? 0 : Number.MAX_SAFE_INTEGER };

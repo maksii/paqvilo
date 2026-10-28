@@ -10,7 +10,7 @@ import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
 import { DOC_PATHS } from '../lib/docs-links.mjs';
-import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CASE = '77777777-7777-4777-8777-777777777760';
 const SITE = '77777777-7777-4777-8777-777777777761';
@@ -73,7 +73,7 @@ async function writeTree(root, files) {
 }
 // owner: { add(close), remove(removeDirectory) }; every close runs before any directory is removed.
 async function tempRoot(owner) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-wiring-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-wiring-'));
   owner.remove(() => fs.rm(root, { recursive: true, force: true }));
   await writeTree(path.join(root, 'solution'), solutionFiles);
   return root;

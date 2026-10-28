@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001';
 const profile = {
@@ -86,7 +87,7 @@ test(
   'Original DLL casts named SDK Execute responses and secondary writes retain caller rollback',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-sdk-execute-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sdk-execute-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'ExecuteOriginal.cs'),

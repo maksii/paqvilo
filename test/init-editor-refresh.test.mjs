@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -207,7 +208,7 @@ test('cross-volume refresh retains working absolute debugger paths and explicitl
   }
   const fx = await fixture(t);
   await fs.mkdir(evidenceRoot, { recursive: true });
-  const sources = await fs.mkdtemp(path.join(evidenceRoot, 'editor-cross-volume-'));
+  const sources = await makeTemporaryDirectory(path.join(evidenceRoot, 'editor-cross-volume-'));
   t.after(() => fs.rm(sources, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const configFile = path.join(sources, 'selected.config.yml');
   const config = {

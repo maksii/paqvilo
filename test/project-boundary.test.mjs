@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,7 +16,7 @@ test('public command namespaces select Lense and Mirage independently', async (t
   const portal = path.join(root, 'examples/project/portal');
   // mirage status reads .paqvilo and paqvilo.config.yml from its working directory and PAQVILO_* settings: run from
   // an empty directory without the developer's or runner's settings, never against this checkout's sessions.
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-boundary-cli-'));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-boundary-cli-'));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
@@ -60,7 +61,7 @@ test('public command namespaces select Lense and Mirage independently', async (t
 
 test('core project contains no private business dependency and the guard detects reintroduction', (t) => {
   assert.deepEqual(inspectProjectBoundary(root), []);
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-boundary-'));
+  const fixture = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-boundary-'));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   fs.mkdirSync(path.join(fixture, 'mirage/packs'), { recursive: true });
   fs.writeFileSync(path.join(fixture, 'mirage/server.mjs'), 'import pack from "./packs/private/pack.mjs";');
@@ -71,7 +72,7 @@ test('core project contains no private business dependency and the guard detects
 });
 
 test('runtime dependencies reject embedded examples and outside imports in both products', (t) => {
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-boundary-imports-'));
+  const fixture = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-boundary-imports-'));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   fs.mkdirSync(path.join(fixture, 'lense'), { recursive: true });
   fs.mkdirSync(path.join(fixture, 'mirage/lib'), { recursive: true });
@@ -130,7 +131,7 @@ test('default Mirage discovery has no project packs and embedded registration is
 });
 
 test('empty templates reject deployed origins, literal project identities and observations', (t) => {
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-template-boundary-'));
+  const fixture = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-template-boundary-'));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   fs.mkdirSync(path.join(fixture, 'templates/project'), { recursive: true });
   const file = path.join(fixture, 'templates/project/pack.mjs.template');
@@ -153,7 +154,7 @@ test('an external preset library persists compactly and resolves after restart w
   const { migrateScenarioState } = await import('../mirage/lib/state-migration.mjs');
   const packs = await discoverPacks({ explicit: [{ module: path.join(root, 'examples/project/pack/pack.mjs') }] });
   const library = presetLibrary({ packs });
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-external-presets-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-external-presets-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'state.json');
   const store = await new DataStore({
@@ -178,7 +179,7 @@ test('an external preset library persists compactly and resolves after restart w
 
 test('project generators receive their own count names and invalid counts fail before writing', async (t) => {
   const { runDataCommand } = await import('../mirage/lib/data-generation.mjs');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-generator-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-generator-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const module = path.join(directory, 'pack.mjs');
   fs.writeFileSync(

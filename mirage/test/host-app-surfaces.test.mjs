@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { drainFixture } from '../testing/owned-fixture.mjs';
+import { drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const solutionFiles = {
   'solution/Other/Solution.xml':
@@ -49,7 +49,7 @@ after(async () => {
 let shared;
 const hosts = () => (shared ??= startHosts({ add: (close) => closers.push(close), remove: (rm) => removers.push(rm) }));
 async function startHosts(owner) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-app-surfaces-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-app-surfaces-'));
   owner.remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(root, { ...solutionFiles, ...portalFiles });
   const common = {

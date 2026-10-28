@@ -6,6 +6,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('embedded simulator rejects empty and malformed ports before reading sources', async () => {
   for (const port of ['', ' ', null, true, -1, '0x10', '1.5', 65536]) {
@@ -17,7 +18,7 @@ test('embedded simulator rejects empty and malformed ports before reading source
 });
 
 async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-server-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-server-'));
   const files = {
     'website.yml': 'adx_name: Integration\nadx_websiteid: site',
     'sitesetting.yml': ['contact', 'account']

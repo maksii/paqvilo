@@ -12,6 +12,7 @@ import { referencedTables, scaffoldData, scaffoldId } from '../lib/scaffold-data
 import { schemaFieldIndex, schemaViolations, formatViolations } from '../lib/schema-validation.mjs';
 import { DataStore } from '../lib/data.mjs';
 import YAML from 'yaml';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const attribute = (name, type, extra = '') =>
   `<attribute PhysicalName="${name}"><Type>${type}</Type><LogicalName>${name}</LogicalName>${extra}</attribute>`;
@@ -108,7 +109,7 @@ const portal = {
 };
 
 async function metadata(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-scaffold-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-scaffold-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'solution.xml');
   await fs.writeFile(file, solutionXml);
@@ -240,7 +241,7 @@ async function writeSolution(dir) {
 }
 
 async function workspace(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-scaffold-cli-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-scaffold-cli-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -365,7 +366,7 @@ describe('data scaffold CLI portal resolution', { concurrency: true }, () => {
 });
 
 test("personas get web role memberships as contactRoles and as the data model's intersect rows; exported site tables are not generated", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-scaffold-roles-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-scaffold-roles-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   // Metadata that also defines the web role table, referenced by a template.
   const file = path.join(dir, 'solution.xml');

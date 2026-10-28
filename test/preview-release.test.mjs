@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -61,7 +62,7 @@ test('stable and next releases retain main ancestry; only correctly bound previe
 });
 
 function fixture(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-preview-release-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paq-preview-release-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const documents = {
     'package.json': { name: 'paqvilo', version, dependencies: { invented: '1.0.0' }, custom: 'keep' },

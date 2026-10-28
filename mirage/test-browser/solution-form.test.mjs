@@ -8,7 +8,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
 import { clientRuntime } from '../lib/platform.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function write(root, files) {
   for (const [name, content] of Object.entries(files)) {
@@ -26,7 +26,7 @@ const view =
 const SUCCESS = 'Submission completed successfully.';
 
 test('solution form layout creates typed data, saved view filters rows, and sources reload', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-browser-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-browser-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portalRoot = path.join(root, 'portal'),
     solutionRoot = path.join(root, 'solution');

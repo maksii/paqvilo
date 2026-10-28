@@ -12,6 +12,7 @@ import {
   buildSite,
   readIdentity,
 } from '../baseline/site.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const snapshot = async (dir) => {
   const files = {};
@@ -27,7 +28,7 @@ const snapshot = async (dir) => {
 let tmp;
 const runs = [];
 before(async () => {
-  tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline-site-'));
+  tmp = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline-site-'));
   for (const n of [1, 2]) {
     const out = path.join(tmp, `site${n}`),
       manifest = path.join(tmp, `manifest${n}.json`);

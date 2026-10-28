@@ -7,7 +7,7 @@ import { DataStore } from '../lib/data.mjs';
 import { createSimulator } from '../server.mjs';
 import { runPluginPhase, pluginPhaseRequiresCheckpoint } from '../lib/exported-plugins.mjs';
 import { pluginFixture, pluginId } from './plugin-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 
 const member = { contactId: 'own-contact', roles: ['Member'] };
@@ -260,7 +260,7 @@ test('placeholder, disabled and target-only mock steps keep HTTP row writes jour
 });
 
 test('only matching executable phases promote a row transaction, and arbitrary handler writes roll back', async (t) => {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'paqvilo-plugin-checkpoint-'));
+  const root = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-plugin-checkpoint-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'state.json');
   const store = await new DataStore({

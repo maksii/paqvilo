@@ -18,6 +18,7 @@ import {
   deepVariantKeys,
   deepVariant,
 } from '../portal-security/deep-variant.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 const schema = JSON.parse(await fs.readFile(new URL('../dataverse/manifest.json', import.meta.url))),
   catalogue = JSON.parse(await fs.readFile(new URL('../data/catalogue.json', import.meta.url)));
 
@@ -517,7 +518,7 @@ test('portal packaging discovers component types and uses valid non-Entity flags
       members.push({ objectid: body.ComponentId, componenttype: body.ComponentType });
     },
   };
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'co-security-')),
+  const temp = await makeTemporaryDirectory(path.join(os.tmpdir(), 'co-security-')),
     dir = path.join(temp, '.paqvilo/portal-security');
   try {
     const result = await packagePortal({ client, siteId, apply: true, evidenceDirectory: dir });

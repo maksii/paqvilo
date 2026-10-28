@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Shared workspace for the Mirage stop-scope tests: real CLI processes, real detached runtimes and
 // real shells replaying the advertised stop hints from other directories.
 import { after } from 'node:test';
@@ -10,7 +11,7 @@ import { execFile } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createFixture } from './fixture.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { startReaper, stopRecordedRuntimes } from './mirage-reaper.mjs';
 
 export const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
@@ -81,7 +82,7 @@ async function stopProcessTree(child) {
 }
 
 export async function workspace(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-stop-scope-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-stop-scope-'));
   // Registered before anything starts. Closers run before the directory removal, and on a test
   // failure or timeout as well: running CLIs are ended with their process tree, then every runtime
   // recorded anywhere under the workspace is stopped. The reaper covers an abruptly ended test process.

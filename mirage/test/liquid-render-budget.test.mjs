@@ -10,7 +10,7 @@ import { renderSettings } from '../lib/render-settings.mjs';
 import { mirageSettings } from '../../lense/config-schema.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const guid = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const portal = { templates: {}, pages: [], snippets: {}, settings: {} };
@@ -174,7 +174,7 @@ test('indexed equality retains GUID decorations, OR predicates, paging totals an
 });
 
 test('runtime answers status after a render has begun and before a long Liquid loop completes', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-render-budget-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-render-budget-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Invented render fixture',

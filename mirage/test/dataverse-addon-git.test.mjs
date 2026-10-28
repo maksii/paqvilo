@@ -3,13 +3,14 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
+import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 const APP_ID = '77777777-7777-4777-8777-777777777777';
 const SOLUTION = 'new_samplesolution';
@@ -138,7 +139,7 @@ const connectBody = (overrides = {}) => ({
 describe('git source control messages', () => {
   let root;
   before(() => {
-    root = mkdtempSync(path.join(tmpdir(), 'paqvilo-addon-git-'));
+    root = makeTemporaryDirectorySync(path.join(tmpdir(), 'paqvilo-addon-git-'));
   });
   after(() => rmSync(root, { recursive: true, force: true }));
 
@@ -155,7 +156,7 @@ describe('git source control messages', () => {
   });
 
   it('connect requires an existing branch', async () => {
-    const dir = remoteWithBranch(mkdtempSync(path.join(root, 'connect-')));
+    const dir = remoteWithBranch(makeTemporaryDirectorySync(path.join(root, 'connect-')));
     const source = await startServer({ gitRemoteDirectory: dir });
     try {
       await createSolution(source);
@@ -170,7 +171,7 @@ describe('git source control messages', () => {
   });
 
   it('connect writes configuration and branch rows', async () => {
-    const dir = remoteWithBranch(mkdtempSync(path.join(root, 'rows-')));
+    const dir = remoteWithBranch(makeTemporaryDirectorySync(path.join(root, 'rows-')));
     const source = await startServer({ gitRemoteDirectory: dir });
     try {
       await createSolution(source);
@@ -191,7 +192,7 @@ describe('git source control messages', () => {
   });
 
   it('commit writes a deterministic commit id', async () => {
-    const dir = remoteWithBranch(mkdtempSync(path.join(root, 'commit-')));
+    const dir = remoteWithBranch(makeTemporaryDirectorySync(path.join(root, 'commit-')));
     const source = await startServer({ gitRemoteDirectory: dir });
     try {
       await createSolution(source);
@@ -220,7 +221,7 @@ describe('git source control messages', () => {
   });
 
   it('commit refuses an out-of-sync branch', async () => {
-    const dir = remoteWithBranch(mkdtempSync(path.join(root, 'sync-')));
+    const dir = remoteWithBranch(makeTemporaryDirectorySync(path.join(root, 'sync-')));
     const source = await startServer({ gitRemoteDirectory: dir });
     try {
       await createSolution(source);
@@ -238,7 +239,7 @@ describe('git source control messages', () => {
   });
 
   it('refresh lists push, pull and conflict', async () => {
-    const dir = remoteWithBranch(mkdtempSync(path.join(root, 'refresh-')));
+    const dir = remoteWithBranch(makeTemporaryDirectorySync(path.join(root, 'refresh-')));
     const source = await startServer({ gitRemoteDirectory: dir });
     try {
       await createSolution(source);
@@ -275,7 +276,7 @@ describe('git source control messages', () => {
   });
 
   it('pull imports the remote zip', async () => {
-    const dir = remoteWithBranch(mkdtempSync(path.join(root, 'pull-')));
+    const dir = remoteWithBranch(makeTemporaryDirectorySync(path.join(root, 'pull-')));
     const source = await startServer({ gitRemoteDirectory: dir });
     try {
       await createSolution(source);
@@ -301,7 +302,7 @@ describe('git source control messages', () => {
   });
 
   it('export from git returns the zip and commit id', async () => {
-    const dir = remoteWithBranch(mkdtempSync(path.join(root, 'export-')));
+    const dir = remoteWithBranch(makeTemporaryDirectorySync(path.join(root, 'export-')));
     const source = await startServer({ gitRemoteDirectory: dir });
     try {
       await createSolution(source);
@@ -328,7 +329,7 @@ describe('git source control messages', () => {
   });
 
   it('export release branches and stored branch heads cannot escape the configured local remote', async () => {
-    const dir = remoteWithBranch(mkdtempSync(path.join(root, 'confined-')));
+    const dir = remoteWithBranch(makeTemporaryDirectorySync(path.join(root, 'confined-')));
     const source = await startServer({ gitRemoteDirectory: dir });
     try {
       await createSolution(source);

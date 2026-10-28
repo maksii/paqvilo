@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -328,7 +329,7 @@ test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work',
 });
 
 test('an external route save does not rebuild the unrelated portal index', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-route-refresh-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-route-refresh-'));
   try {
     const file = path.join(dir, 'external.js');
     fs.writeFileSync(file, 'original');

@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { childOutput } from './child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './profile-cleanup.mjs';
+import { drainFixture } from '../../mirage/testing/owned-fixture.mjs';
 
 /**
  * Stops an owned child and resolves once it has closed: its stdio drained, not merely exited. After a requested
@@ -52,23 +53,28 @@ export function runWorkspaceTask(t, { cli, args, cwd, env, task, port, stop, wor
   let browser;
   t.after(async () => {
     let requestedBrowserClose = false;
-    if (browser) {
-      const session = await browser.newBrowserCDPSession().catch(() => null);
-      if (session) {
-        requestedBrowserClose = true;
-        await session.send('Browser.close').catch(() => {});
-      }
-      await browser.close().catch(() => {});
-    }
-    await stopOwnedChild(child, closed, { graceful: requestedBrowserClose });
-    const stopping = spawn(process.execPath, [cli, 'mirage', 'stop', ...stop, '--json'], {
-      cwd: work,
-      env,
-      windowsHide: true,
-      stdio: 'ignore',
-    });
-    assert.deepEqual(await once(stopping, 'close'), [0, null], 'the project Mirage stops cleanly');
-    await cleanup();
+    await drainFixture([
+      async () => {
+        if (!browser) return;
+        const session = await browser.newBrowserCDPSession().catch(() => null);
+        if (session) {
+          requestedBrowserClose = true;
+          await session.send('Browser.close').catch(() => {});
+        }
+        await browser.close().catch(() => {});
+      },
+      () => stopOwnedChild(child, closed, { graceful: requestedBrowserClose }),
+      async () => {
+        const stopping = spawn(process.execPath, [cli, 'mirage', 'stop', ...stop, '--json'], {
+          cwd: work,
+          env,
+          windowsHide: true,
+          stdio: 'ignore',
+        });
+        assert.deepEqual(await once(stopping, 'close'), [0, null], 'the project Mirage stops cleanly');
+      },
+      cleanup,
+    ]);
     await fs.rm(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
   });
   return {

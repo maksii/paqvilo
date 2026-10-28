@@ -4,7 +4,7 @@ import http from 'node:http';
 import { before, after } from 'node:test';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
 
 /**
  * Launches one browser for the calling test file; `page(t)` opens a fresh context that closes with the test, among the
@@ -58,12 +58,12 @@ export async function warmState(app) {
 
 /** A page in a fresh context on a warmed simulator; the context, the simulator and its directory close with the test. */
 export async function adminPage(t, browser, app, directory) {
-  const context = await browser.newContext({ serviceWorkers: 'block' });
-  t.after(async () => {
-    await context.close();
-    await app.close();
-    await fs.rm(directory, { recursive: true, force: true });
-  });
+  let context;
+  const fixture = ownedFixture(t);
+  fixture.add(() => context?.close());
+  fixture.add(() => app.close());
+  fixture.remove(() => fs.rm(directory, { recursive: true, force: true }));
+  context = await browser.newContext({ serviceWorkers: 'block' });
   const page = await context.newPage();
   await warmState(app);
   page.setDefaultTimeout(10_000);
@@ -112,9 +112,7 @@ export function eventLog({ timeout = 10_000, message = 'The expected event did n
 /** A test-context stand-in whose cleanups run in the file's after hook, for fixtures shared by read-only tests. */
 export function fileScope() {
   const cleanups = [];
-  after(async () => {
-    for (const cleanup of cleanups.reverse()) await cleanup();
-  });
+  after(() => drainFixture(cleanups.toReversed()));
   return {
     after: (cleanup) => {
       cleanups.push(cleanup);

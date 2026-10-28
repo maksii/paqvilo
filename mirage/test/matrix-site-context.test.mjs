@@ -6,10 +6,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { resolveTargets } from '../portal-matrix.mjs';
 import { createMirageContext } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('matrix runtimes retain site-bound platform, observations, profiles and explicit packs with independent state', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-matrix-context-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-matrix-context-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const write = async (name, value) => {
     const file = path.join(root, name);
@@ -147,7 +147,7 @@ test('matrix runtimes retain site-bound platform, observations, profiles and exp
 });
 
 test('matrix and public site contexts retain the explicitly selected environment and its runtime origin', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-matrix-env-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-matrix-env-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const write = async (name, value) => {
     const file = path.join(root, name);

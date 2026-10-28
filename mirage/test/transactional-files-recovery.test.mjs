@@ -7,11 +7,11 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { publishTransactionalFiles, recoverTransactionalFiles } from '../lib/transactional-files.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-interrupted-files-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-interrupted-files-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const files = ['one.json', 'two.json'].map((name) => path.join(directory, name));
   const before = files.map((_, index) => JSON.stringify({ value: `Original ${index}` }));

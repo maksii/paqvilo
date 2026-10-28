@@ -8,6 +8,7 @@ import path from 'node:path';
 import { startGate } from '../harness.mjs';
 import { connectedClient } from '../../../lense/dataverse/client.mjs';
 import { planData, applyData, compareData, runDataQueries } from '../../../lense/dataverse/data.mjs';
+import { makeTemporaryDirectory } from '../../testing/owned-fixture.mjs';
 
 const TIMEOUT = 60_000;
 const ids = {
@@ -137,7 +138,7 @@ test('metadata reads expose the fields the loader needs for widget and gadget', 
 
 test('plan, apply, compare and query run end to end, and a rerun is idempotent', { timeout: TIMEOUT }, async (t) => {
   const { gate, client } = await openGate(t);
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-gate-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-gate-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const input = catalogue();
 

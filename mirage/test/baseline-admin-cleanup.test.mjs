@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { runBaselineCapture } from './support/baseline-capture-cli.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 // A run takes one to two seconds; this bound only reports a hang (and its abort stops the child), whatever the runner's
 // --test-timeout. It is not a speed requirement.
 const RUN_TIMEOUT_MS = 60_000;
@@ -70,7 +71,7 @@ async function fakeBridge() {
     });
 }
 async function run(mode, signal) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline admin cleanup '));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline admin cleanup '));
   try {
     const marker = path.join(directory, 'bridge-closed.txt');
     const hookMarker = path.join(directory, 'hook-events.txt');

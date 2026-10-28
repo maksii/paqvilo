@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -31,7 +32,7 @@ after(() => browser?.close());
 test('All settings saves Mirage sourceMaps at site and project scope independently of Lense source maps', async (t) => {
   for (const kind of ['catalogue', 'project'])
     await t.test(kind, async (t) => {
-      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-source-maps-'));
+      const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-source-maps-'));
       const file = path.join(directory, kind === 'catalogue' ? 'paqvilo.config.yml' : 'mirage.project.yml');
       await fs.writeFile(
         file,
@@ -228,7 +229,7 @@ test(
   'setup journey: template, stage rail, packs, setting editor, restart command and planned-to-live system map',
   { timeout: 120000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-journey-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-journey-'));
     const server = await journeyServer(directory);
     const context = await browser.newContext();
     ownedFixture(t).add(async () => {
@@ -406,7 +407,7 @@ test(
   'identity and persona forms write only changed keys and leave declared users and app registrations alone',
   { timeout: 60000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-identity-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-identity-'));
     const file = path.join(directory, 'paqvilo.config.yml'),
       read = async () => YAML.parse(await fs.readFile(file, 'utf8'));
     const application = {
@@ -491,7 +492,7 @@ test(
   'setting rows show current values, references only for secrets, and Settings reflect the file',
   { timeout: 60000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-values-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-values-'));
     const file = path.join(directory, 'paqvilo.config.yml'),
       projectFile = path.join(directory, 'alpha.project.yml');
     const secrets = { 'invented-vault/api-key': { source: 'environment', variable: 'INVENTED_PRIVATE_VARIABLE' } };

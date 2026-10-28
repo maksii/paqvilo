@@ -9,7 +9,7 @@ import { createSimulator } from '../server.mjs';
 import { loadProjectConfig, projectSummary } from '../lib/project-config.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { readLocalFile } from '../../lense/local-file.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const CLIENT = '99999999-9999-4999-8999-999999999999';
@@ -77,7 +77,7 @@ async function readOwnedArcSecret(challenge) {
 }
 // Writes the invented Solution only; tests that start their own runtime (or CLI) need no fixture runtime.
 async function solutionSources(t, sourceOverrides = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-organization-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-organization-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
@@ -298,7 +298,7 @@ test('standalone validation responses agree with the documented payload and quer
 });
 
 test('project platform settings need evidence, known keys and in-range values', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-platform-config-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-platform-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'project.json'),
     solution = path.join(root, 'solution');

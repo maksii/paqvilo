@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SETTINGS = {
   'Webapi/contact/enabled': 'true',
@@ -70,7 +70,7 @@ const state = () => ({
 
 for (const [format, files] of Object.entries(FORMATS))
   test(`Webapi site settings from ${format} enable tables, columns and innererror`, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-webapi-format-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-webapi-format-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     for (const [file, content] of Object.entries(files)) {
       await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });

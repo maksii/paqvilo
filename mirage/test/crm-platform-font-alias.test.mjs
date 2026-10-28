@@ -6,14 +6,14 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { AssetCache } from '../lib/asset-cache.mjs';
 import { inventedCrmFont } from './fixtures/crm-font.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const origin = 'https://portal.example.test';
 const sourcePath = '/resource/powerappsportal/fonts/CRMMDL2.woff';
 const targetPath = '/resource/powerappsportal/fonts/CRMMDL2.woff2';
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 async function fixture(t, kind = 'woff') {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-font-alias-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-font-alias-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const calls = [];
   const cache = await new AssetCache({

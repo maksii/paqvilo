@@ -6,10 +6,10 @@ import { tmpdir } from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(t, { wizard = false, attachments = false, ...options } = {}) {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'mirage-form-journal-'));
+  const root = await makeTemporaryDirectory(path.join(tmpdir(), 'mirage-form-journal-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Invented feedback',

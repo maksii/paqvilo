@@ -10,6 +10,7 @@ import { DataStore } from '../lib/data.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001',
   empty = '00000000-0000-0000-0000-000000000000';
@@ -112,7 +113,7 @@ test(
   'Original bulk PreOperation SDK changes cannot retain a stale backend grant on any target',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-bulk-grant-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-bulk-grant-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'BulkGrant.cs'),
@@ -239,7 +240,7 @@ test(
   'Original DLL executes Targets, Context4 aligned images, filtering, rank and typed bulk responses',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-sdk-bulk-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sdk-bulk-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'BulkOriginal.cs'),

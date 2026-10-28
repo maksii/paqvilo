@@ -7,6 +7,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { initial, fixture } from '../test/fixtures/platform-experiments.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -18,7 +19,7 @@ test(
   'developer configures platform rules and override presets through two dedicated pages',
   { timeout: 45000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-experiment-ui-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-experiment-ui-'));
     await fixture(root);
     let app, context;
     t.after(async () => {
@@ -88,7 +89,7 @@ test(
   'a shadowed saved configuration stays exportable and deletable without applying ambiguous overrides',
   { timeout: 30000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-experiment-collision-ui-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-experiment-collision-ui-'));
     await fixture(root);
     let app, context;
     t.after(async () => {

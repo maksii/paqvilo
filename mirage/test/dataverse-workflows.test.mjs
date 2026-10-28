@@ -19,6 +19,7 @@ import {
 } from '../lib/dataverse-workflows.mjs';
 import { createSimulator } from '../server.mjs';
 import { settleCommittedWork } from '../lib/committed-work.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP_ID = '22222222-2222-2222-2222-222222222222';
 const PUBLIC_APP_ID = '44444444-4444-4444-4444-444444444444';
@@ -444,7 +445,7 @@ describe('dataverse workflows: rows, activation and ExecuteWorkflow over HTTP', 
 
 describe('dataverse workflows: Solution sources and handler packs', () => {
   it('reads classic and cloud workflow data files with their XAML and JSON text', async (t) => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-workflows-'));
+    const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workflows-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true }));
     const folder = path.join(dir, 'Workflows');
     await fs.mkdir(folder, { recursive: true });
@@ -717,7 +718,7 @@ describe('dataverse workflows: classic triggers on Dataverse writes', () => {
 
 describe('dataverse workflows: a portal write is unchanged by a background trigger on its table', () => {
   it('answers the same status, headers and bytes with and without an activated background trigger', async (t) => {
-    const source = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-workflows-portal-'));
+    const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workflows-portal-'));
     t.after(() => fs.rm(source, { recursive: true, force: true }));
     await fs.writeFile(path.join(source, 'website.yml'), 'adx_websiteid: site\nadx_name: Workflow portal\n');
     await fs.writeFile(

@@ -209,7 +209,7 @@ test('a PATCH another write hook refuses never calls provider.update (host exten
   ownedFixture(t).add(() => {
     delete globalThis[KEY];
   });
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'virtual-order-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'virtual-order-')));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const attribute = (name, type) =>
     `<attribute PhysicalName="${name}"><Name>${name}</Name><Type>${type}</Type></attribute>`;

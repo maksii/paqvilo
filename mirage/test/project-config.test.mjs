@@ -14,6 +14,7 @@ import {
   projectStateFile,
   projectSummary,
 } from '../lib/project-config.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -30,7 +31,7 @@ test('inactive-parent permission replay is an explicit site observation requirin
 });
 
 async function workspace(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-project-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-project-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const dir of ['portals/catalog', 'portals/forms', 'solutions/base', 'solutions/site'])
     await fs.mkdir(path.join(root, dir), { recursive: true });

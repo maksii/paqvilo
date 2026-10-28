@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ownedFixture } from '../../../../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const worker = fileURLToPath(new URL('../collector/worker.mjs', import.meta.url));
 const operation = '10000000-0000-4000-8000-000000000001';
@@ -19,7 +20,7 @@ test(
   'actual worker reports a denied evidence write safely, retains its receipt and resumes in a new process',
   { timeout: 15000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-collector-worker-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-collector-worker-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     const payload = JSON.stringify({
       schemaVersion: 1,

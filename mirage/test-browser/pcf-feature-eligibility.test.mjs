@@ -7,9 +7,10 @@ import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('PCF required declarations never load a constructor while optional features retain host APIs', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pcf-features-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pcf-features-'));
   let server, browser;
   t.after(async () => {
     await browser?.close();

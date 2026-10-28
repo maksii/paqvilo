@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runAcceptance } from '../acceptance.mjs';
 import { navigationCommitBudget } from '../lib/navigation-budget.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 function fixtureApi(pathname, res, fallback) {
   if (!pathname.startsWith('/__sim/api/')) return false;
@@ -48,7 +48,7 @@ async function navigationFixture(
     gateDocumentOnWrites = false,
   } = {},
 ) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-document-commit-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-document-commit-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const historyChange =
     history === 'none' ? '' : history === 'hash' ? "location.hash='pending'" : "history.pushState({},'', '?pending=1')";
@@ -267,7 +267,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
   });
 
   test('acceptance distinguishes failed loopback writes from external proxy refusals', HANG_GUARD, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-acceptance-local-boundary-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-acceptance-local-boundary-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     const server = http.createServer((req, res) => {
       req.resume();
@@ -500,7 +500,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
   });
 
   test('a previously completed comparable redirect chain extends the next commit reserve', HANG_GUARD, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-comparable-chain-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-comparable-chain-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     const markup = (writes) =>
       `<p id="done">Invented page</p><form action="/save" method="POST"><button id="save">Save</button></form>${writes ? `<script>document.querySelector('form').addEventListener('submit',()=>{fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{});})</script>` : ''}`;

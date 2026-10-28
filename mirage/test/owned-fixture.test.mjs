@@ -7,7 +7,7 @@ import http from 'node:http';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import readline from 'node:readline';
-import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, removeFixtureDirectory, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('drained fixture removal retains errors after its bounded asynchronous retry policy', async (t) => {
   const failure = Object.assign(new Error('Invented persistent cleanup failure'), { code: 'EACCES' });
@@ -29,7 +29,7 @@ test(
     skip: process.platform !== 'win32' && 'Windows exclusive file handles prevent deletion',
   },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-fixture-log-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-log-'));
     const child = spawn(
       'powershell.exe',
       [
@@ -72,7 +72,7 @@ test(
   'fixture removal tolerates a held Windows solution directory handle',
   { timeout: 15000, skip: process.platform !== 'win32' && 'Windows directory handles prevent deletion' },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-fixture-directory-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-directory-'));
     const solution = path.join(directory, 'solution');
     await fs.mkdir(solution);
     const child = spawn(process.execPath, ['-e', "console.log('holding-directory'); process.stdin.resume()"], {
@@ -155,7 +155,7 @@ test('several close failures retain all original causes in registration order', 
 });
 
 test('a directory failure occurs after listener shutdown and cannot retain its process handle', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-fixture-listener-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-listener-'));
   const server = http.createServer((request, response) => response.end('invented'));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = 'http://127.0.0.1:' + server.address().port,
@@ -182,7 +182,7 @@ test('a directory failure occurs after listener shutdown and cannot retain its p
 });
 
 test('cleanup awaits accepted asynchronous work before removing its state directory', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-fixture-write-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-write-'));
   const hooks = [],
     owner = ownedFixture({ after: (hook) => hooks.push(hook) });
   let release,

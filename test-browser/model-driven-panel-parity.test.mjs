@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -8,7 +9,7 @@ import { gzipSync } from 'node:zlib';
 import { execFileSync } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
@@ -31,7 +32,7 @@ async function settled(inspector, ready) {
 
 async function modelPanelFixture(t, { nativeBody, withGit = true, archive = false } = {}) {
   const owner = ownedFixture(t),
-    root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-panel-parity-'));
+    root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-panel-parity-'));
   // Async Git reads started by a refresh can still hold the directory briefly on Windows.
   owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10 }));
   const file = path.join(root, 'x_script.js'),

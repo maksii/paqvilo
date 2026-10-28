@@ -11,7 +11,7 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { workflowExtension, workflowHandlers } from '../lib/dataverse-workflows.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP_ID = '77777777-7777-4777-8777-777777777701';
 const SECRET_VAR = 'PAQVILO_WRITE_HOOK_ROLLBACK_SECRET';
@@ -175,7 +175,7 @@ async function fixture(t, file = null) {
 }
 
 async function workspace(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'write-hook-rollback-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'write-hook-rollback-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return path.join(root, 'state.json');
 }

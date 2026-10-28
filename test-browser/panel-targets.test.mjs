@@ -1,4 +1,5 @@
-import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+
 // Two loopback portals exercise the selector.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +19,7 @@ test(
   { timeout: 60_000 },
   async (t) => {
     const fixture = createFixture();
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-targets-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-targets-'));
     const servers = [];
     const panels = [];
     const sessions = new Map();

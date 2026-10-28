@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 // Sustained saves and panel controls.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,7 +17,7 @@ test(
   { timeout: 120_000 },
   async (t) => {
     const fx = createFixture();
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-day-browser-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-day-browser-'));
     const css = 'web-pages/home/content-pages/Home.en-US.webpage.custom_css.css';
     const aboutJs = 'web-pages/about/content-pages/About.en-US.webpage.custom_javascript.js';
     const originalCss = fx.read(css);

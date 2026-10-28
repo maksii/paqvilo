@@ -12,7 +12,7 @@ import { portalDocumentAccess } from '../lib/permissions.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
 import { createStorageRouter, storageSettings } from '../lib/storage-provider.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CASE = '77777777-7777-4777-8777-777777777760';
 const SITE = '77777777-7777-4777-8777-777777777761';
@@ -55,7 +55,7 @@ async function documents(t, { permissions, settings = {}, withStorage = true } =
   const owner = ownedFixture(t);
   let storage, local;
   if (withStorage) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-documents-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-documents-'));
     owner.remove(() => fs.rm(root, { recursive: true, force: true }));
     local = createLocalDiskStorage({ root });
     storage = createStorageRouter({ config: storageSettings({}), providers: { local } });

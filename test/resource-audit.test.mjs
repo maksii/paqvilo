@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -154,7 +155,7 @@ test('inactive metadata sequence records do not conceal unknown fields on active
 });
 
 test('enhanced absent fields are not invented as resource occurrences; metadata-only components are valid', (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-audit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-audit-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const write = (id, xml) => {
     const file = path.join(dir, 'powerpagecomponents', id, 'powerpagecomponent.xml');
@@ -227,7 +228,7 @@ test('duplicate active page URLs warn once and inactive single-extension web fil
   fx.write('web-pages/b/b.webpage.yml', fx.read('web-pages/b/b.webpage.yml') + '\nadx_statecode: 1');
   model = new PortalModel(fx.dir);
   assert.equal(model.warnings.filter((message) => message.includes('duplicate page URL')).length, 0);
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo.inactive.audit.'));
+  const root = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo.inactive.audit.'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, 'web-files'));
   fs.mkdirSync(path.join(root, 'web-pages'));

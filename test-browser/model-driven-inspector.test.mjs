@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readDiscovery } from '../lense/commands/agent.mjs';
@@ -86,7 +87,7 @@ test(
   'model-driven X-ray binds fields, PCF, handlers and ribbon provenance; bounded agent/debugging remains isolated and read-only',
   { timeout: 60000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-inspector-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-inspector-'));
     const methods = [];
     const server = http.createServer((request, response) => {
       methods.push(request.method);
@@ -316,7 +317,7 @@ test(
   'model-driven X-ray reports delayed refresh, settles pending state and offers retry after inspection errors',
   { timeout: 30000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-inspector-feedback-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-inspector-feedback-'));
     const server = http.createServer((_request, response) =>
       response
         .writeHead(200, { 'content-type': 'text/html' })

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { persistentLevel, stateDirectoryOf } from '../lib/organization-host.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CLIENT = '99999999-9999-4999-8999-999999999991';
 const NOTE = '77777777-7777-4777-8777-7777777777b1';
@@ -32,7 +32,7 @@ async function write(root, files) {
 }
 
 async function fixture(t, { level, portal = false, extra = {} }) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'persistent-blobs-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'persistent-blobs-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(root, {
     'solution/Other/Solution.xml':

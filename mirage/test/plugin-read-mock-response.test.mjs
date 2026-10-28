@@ -5,32 +5,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { DataStore } from '../lib/data.mjs';
+import { user, existing, storeFixture } from './fixtures/plugin-widget-store.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
-
-const user = '10000000-0000-0000-0000-000000000001';
-const existing = '20000000-0000-0000-0000-000000000001';
-const storeFixture = () =>
-  new DataStore({
-    state: {
-      version: 1,
-      mappings: {
-        widget: { entitySet: 'widgets', idColumn: 'widgetid' },
-        child: { entitySet: 'children', idColumn: 'childid' },
-      },
-      tables: { widget: [{ widgetid: existing, title: 'Existing' }], child: [] },
-      permissions: [],
-      plugins: [],
-      settings: { permissionMode: 'permissive' },
-    },
-  });
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'Mock and handler read results reach direct and named original SDK callers without a CLR read observer',
   { skip: CLR_SKIP },
   async (t) => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-read-'));
+    const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-sdk-read-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(dir, 'ReadCaller.cs'),

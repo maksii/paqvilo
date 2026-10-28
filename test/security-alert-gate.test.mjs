@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -34,7 +35,7 @@ test('alert gate rejects findings, unavailable/malformed responses and missing r
     assert.equal(git.status, 0, git.stderr);
     bash = path.resolve(git.stdout.trim(), '../../..', 'bin/bash.exe');
   }
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'security-alert-gate-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'security-alert-gate-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const script = path.join(dir, 'gate.sh'),
     argsFile = path.join(dir, 'args.txt');

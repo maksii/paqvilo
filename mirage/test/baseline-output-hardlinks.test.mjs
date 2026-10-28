@@ -7,12 +7,13 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeCapture } from '../baseline-capture.mjs';
 import { ensureCaptureDestination } from '../baseline-paths.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
 const CLI_HANG_MS = 60_000;
 
 async function fixture(run) {
-  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-hardlink-boundary-'));
+  const base = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-hardlink-boundary-'));
   const outDir = path.join(base, 'out'),
     outside = path.join(base, 'outside');
   await fs.mkdir(outDir);

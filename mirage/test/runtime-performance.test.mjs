@@ -14,11 +14,11 @@ import { performanceFixture, performanceId } from './runtime-performance-fixture
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
 import { appCatalogue, appCatalogueAsync } from '../lib/model-driven/catalogue.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { settleFileTimes } from './support/file-times.mjs';
 
 test('unchanged isolated composition clones each business graph once and owned replacement saves zero bytes', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-copy-count-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-copy-count-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   for (const count of [32, 4096]) {
     const state = emptyState();
@@ -165,7 +165,7 @@ test('built-in startup metadata scans are bounded across tables and trusted exte
 });
 
 test('organization seeders checkpoint once, keep existing rows and roll back failed composition', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-bootstrap-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-bootstrap-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const state = emptyState();
   state.mappings.x_item = { entitySet: 'x_items', idColumn: 'x_itemid' };

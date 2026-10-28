@@ -65,32 +65,38 @@ async function assertPrefetchReuse(t, alias) {
   assert.equal(rewriter.rewrite('<p>Online header</p>', '/').html, '<p>Local header</p>');
 }
 
-test(
-  'Windows 8.3 sources retain canonical descriptor reads and unchanged prefetch stamps',
-  { skip: process.platform !== 'win32' },
-  async (t) => {
-    const root = tempDirSync('paqvilo-short-source-');
-    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-    const real = path.join(root, 'source-directory-with-a-long-name');
-    fs.mkdirSync(real);
-    const short = spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${real}") do @echo %~sI"`], {
-      encoding: 'utf8',
-      windowsHide: true,
-      windowsVerbatimArguments: true,
-    });
-    assert.equal(short.status, 0);
-    const alias = short.stdout.trim();
-    assert.equal(fs.realpathSync.native(alias), real);
-    if (!/~\d/.test(alias)) {
-      t.skip('The temporary volume does not provide an 8.3 alias for newly created directories');
-      return;
-    }
-    settleFileTimes(t);
-    const file = path.join(alias, 'file.txt');
-    fs.writeFileSync(file, 'invented bytes');
-    const expectedRealPath = await fs.promises.realpath(file);
-    assert.notEqual(file, expectedRealPath);
-    assert.equal(readLocalFileSync(file, { root: alias, expectedRealPath, encoding: 'utf8' }), 'invented bytes');
-    await assertPrefetchReuse(t, alias);
-  },
-);
+for (const name of ['source-directory-with-a-long-name', 'source-%COMSPEC%-!invented!-with-a-long-name'])
+  test(
+    `Windows 8.3 sources retain canonical descriptor reads and unchanged prefetch stamps (${name})`,
+    { skip: process.platform !== 'win32' },
+    async (t) => {
+      const root = tempDirSync('paqvilo-short-source-');
+      t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+      const real = path.join(root, name);
+      fs.mkdirSync(real);
+      const short = spawnSync(
+        'cmd.exe',
+        ['/d', '/v:off', '/s', '/c', '"for %I in ("%PAQ_TEST_SHORT_SOURCE%") do @echo %~sI"'],
+        {
+          encoding: 'utf8',
+          windowsHide: true,
+          windowsVerbatimArguments: true,
+          env: { ...process.env, PAQ_TEST_SHORT_SOURCE: real },
+        },
+      );
+      assert.equal(short.status, 0);
+      const alias = short.stdout.trim();
+      assert.equal(fs.realpathSync.native(alias), real);
+      if (!/~\d/.test(alias)) {
+        t.skip('The temporary volume does not provide an 8.3 alias for newly created directories');
+        return;
+      }
+      settleFileTimes(t);
+      const file = path.join(alias, 'file.txt');
+      fs.writeFileSync(file, 'invented bytes');
+      const expectedRealPath = await fs.promises.realpath(file);
+      assert.notEqual(file, expectedRealPath);
+      assert.equal(readLocalFileSync(file, { root: alias, expectedRealPath, encoding: 'utf8' }), 'invented bytes');
+      await assertPrefetchReuse(t, alias);
+    },
+  );

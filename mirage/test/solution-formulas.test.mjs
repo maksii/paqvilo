@@ -6,7 +6,7 @@ import path from 'node:path';
 import { scanSolutionSources, buildSolutionSchema, tableFields } from '../lib/solution-schema.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { parseSolutionFormulaDocument, solutionFormulaResolver } from '../lib/solution-formulas.mjs';
 
 const ID = '11111111-1111-4111-8111-111111111111';
@@ -15,7 +15,7 @@ const entity = (ref) =>
   `<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute><attribute PhysicalName="x_code"><Name>x_code</Name><Type>nvarchar</Type></attribute><attribute PhysicalName="x_label"><Name>x_label</Name><Type>nvarchar</Type><SourceType>3</SourceType><FormulaDefinitionFileName>${ref}</FormulaDefinitionFileName></attribute></attributes></entity></EntityInfo></Entity>`;
 const formula = 'x_label: =Concatenate(x_name, " / ", x_code)\n';
 async function fixture(t, ref = reference, expression = formula) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-formula-source-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-formula-source-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'Other/Solution.xml':

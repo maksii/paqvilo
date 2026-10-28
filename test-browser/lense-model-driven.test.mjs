@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -45,7 +46,7 @@ test(
   { timeout: 15000 },
   async (t) => {
     const owner = ownedFixture(t),
-      root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-compiled-map-'));
+      root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-compiled-map-'));
     let context, release, cdp;
     owner.add(() => cdp?.detach());
     owner.add(() => release?.());
@@ -217,7 +218,7 @@ test(
   'model-driven local scripts publish file debugger maps and hit an executable source breakpoint',
   { timeout: 30000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lense-app-debug-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'lense-app-debug-'));
     const file = path.join(root, 'x_debug.js');
     const source =
       'globalThis.modelDrivenProof = function () {\n  globalThis.modelDrivenRan = true;\n};\nglobalThis.modelDrivenProof();';
@@ -275,7 +276,7 @@ test(
   'public model-driven Lense overlays native scripts and reloads on source save without native writes',
   { timeout: 90_000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lense-app-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'lense-app-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
     const solution = path.join(root, 'solution'),
       resourceDir = path.join(solution, 'WebResources');

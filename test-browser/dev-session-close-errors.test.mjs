@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -16,7 +17,7 @@ import { readDiscovery } from '../lense/commands/agent.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { openBrowser } from '../lense/browser.mjs';
 import { createCdpFaultProxy } from './helpers/cdp-fault-proxy.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
@@ -24,7 +25,7 @@ import { freeDebugPort } from './helpers/debug-port.mjs';
 
 async function fixture(t) {
   const owner = ownedFixture(t);
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-dev-close-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dev-close-'));
   const source = createFixture();
   owner.remove(() => source.cleanup());
   // The actual-CLI case keeps its owned browser profile in this directory.

@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 // Panel refresh controls must never repeat a form POST, including URLs with fragments.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,7 +19,7 @@ test(
   { timeout: 90_000 },
   async (t) => {
     const fx = createFixture();
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-reload-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-reload-'));
     let browser;
     let panel;
     let detach;

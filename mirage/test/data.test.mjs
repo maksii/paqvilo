@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DataStore, DataError, compileFilter, parseFetchXml } from '../lib/data.mjs';
 import { initialState } from '../lib/bootstrap.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const user = { contactId: 'c1', accountId: 'a1', roles: ['Member'] };
 test('enforced unknown navigation bindings reject create and plugin updates atomically', async () => {
@@ -619,7 +620,7 @@ const state = () => ({
 });
 
 test('persistent CRUD with atomic rollback and declarative plugin secondary effects', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'pp-mirage-data-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'pp-mirage-data-'));
   try {
     const initial = state();
     initial.plugins = [

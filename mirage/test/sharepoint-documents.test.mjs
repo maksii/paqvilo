@@ -7,7 +7,7 @@ import { EXTENSION } from '../lib/sharepoint-documents.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
 import { createStorageRouter, storageSettings } from '../lib/storage-provider.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CASE = '55555555-5555-4555-8555-555555555555';
 const SITE = '66666666-6666-4666-8666-666666666666';
@@ -43,7 +43,7 @@ async function setup(t, { withStorage = true } = {}) {
   const owner = ownedFixture(t);
   let storage, local;
   if (withStorage) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sharepoint-documents-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sharepoint-documents-'));
     owner.remove(() => fs.rm(root, { recursive: true, force: true }));
     local = createLocalDiskStorage({ root });
     storage = createStorageRouter({ config: storageSettings({}), providers: { local } });

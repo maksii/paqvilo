@@ -5,11 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { importPortal } from '../lib/importer.mjs';
 import { createPortalRenderer } from '../lib/liquid.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const guid = (n) => `a6cce910-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
 async function fixture(t, model, setFields = {}, sidecar = null) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-navigation-objects-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-navigation-objects-'));
   t.after(async () => {
     assert(root.startsWith(path.resolve(os.tmpdir()) + path.sep));
     await fs.rm(root, { recursive: true, force: true });

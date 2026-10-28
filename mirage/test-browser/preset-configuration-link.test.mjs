@@ -7,12 +7,13 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { fixture, initial } from '../test/fixtures/platform-experiments.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'a failed lazy configuration link marks its preset immediately and repeated attempts retain one diagnostic',
   { timeout: 30000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-preset-link-ui-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-preset-link-ui-'));
     await fixture(root);
     let app, browser;
     t.after(async () => {
@@ -84,7 +85,7 @@ test(
 );
 
 test('preset picker retains edits made during the initial access view load', { timeout: 30000 }, async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-preset-startup-ui-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-preset-startup-ui-'));
   await fixture(root);
   let app, browser, releasePersonas, signalPersonas;
   const personasHeld = new Promise((resolve) => (releasePersonas = resolve));

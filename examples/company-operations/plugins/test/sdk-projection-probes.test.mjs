@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { planSdkProjectionProbes } from '../sdk-projection-probes.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 const equipmentId = '10000000-0000-0000-0000-000000000001',
   canaryRunId = '10000000-0000-0000-0000-000000000002',
   markerUtc = 'CO-UTC:2026-10-13T00:00:00.000Z';
@@ -65,7 +66,7 @@ test(
       const changed = (await fs.stat(fileURLToPath(new URL(source, import.meta.url)))).mtimeMs;
       assert.ok(changed <= built.mtimeMs, source + ' changed after the SdkProbes build; rerun ci:prepare');
     }
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-transport-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-sdk-transport-'));
     try {
       // The probe loads the driver and its SDK assemblies from its own application directory.
       await fs.cp(sdkProbesBuild, directory, { recursive: true });

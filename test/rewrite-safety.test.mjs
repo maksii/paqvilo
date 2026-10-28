@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,7 +12,7 @@ let dir;
 let sources;
 let versions;
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-rewrite-safety-'));
+  dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-rewrite-safety-'));
   sources = [];
   versions = new Map();
 });
@@ -568,7 +569,7 @@ test('enhanced sources sharing a file share the raw read but retain separate ext
 test('cached source reads reject a directory replaced by an external junction', () => {
   script('mapped/form.js', 'original();', 'local();');
   const rewriter = makeRewriter({ model: { sourceDir: dir, inlineSources: sources } });
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-rewrite-outside-'));
+  const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-rewrite-outside-'));
   const mapped = path.join(dir, 'mapped');
   fs.writeFileSync(path.join(outside, 'form.js'), 'outsideSecret();');
   fs.renameSync(mapped, path.join(dir, 'original-directory'));

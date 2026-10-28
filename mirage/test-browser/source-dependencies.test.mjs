@@ -6,12 +6,13 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'source-only page JavaScript receives local jQuery, Moment and plugin compatibility before execution',
   { timeout: 30000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-only-dependencies-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'source-only-dependencies-'));
     let app, browser;
     t.after(async () => {
       await browser?.close();

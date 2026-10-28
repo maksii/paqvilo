@@ -14,6 +14,7 @@ import {
   implementationSourceFingerprint,
   cachedImplementationSourceFingerprint,
 } from '../lib/evidence.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // One file at a time, as the walk was written before its reads ran concurrently.
 async function reference(root) {
@@ -37,7 +38,7 @@ async function reference(root) {
 }
 
 async function tree(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'evidence-walk-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'evidence-walk-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, content] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });

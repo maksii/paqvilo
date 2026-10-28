@@ -21,7 +21,8 @@ import {
   roundNumeric,
   averageNumeric,
 } from '../lib/exact-numeric.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
 const id = '20000000-0000-0000-0000-000000000001',
   user = '10000000-0000-0000-0000-000000000001';
 const fields = {
@@ -130,7 +131,7 @@ test('Source decimal aggregation stays decimal for safe values and local flow re
 });
 
 test('Typed SDK numeric columns survive persisted reload, exact bounds, OData and Fetch ordering/aggregation', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-exact-state-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-exact-state-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const store = new DataStore({ state: initial, file: path.join(root, 'state.json') }),
     service = localOrganizationService(store, profile);
@@ -223,7 +224,7 @@ test('Typed SDK numeric columns survive persisted reload, exact bounds, OData an
 });
 
 test('Loopback API reads and writes numeric JSON literals without rounding their digits or quoting them', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-exact-http-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-exact-http-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented-precision\nadx_name: Precision\n');
   await fs.writeFile(
@@ -281,7 +282,7 @@ test(
   'Original DLL retains Int64/Decimal/Money through service writes and actual SDK query/retrieval casts',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-exact-clr-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-exact-clr-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'PrecisionOriginal.cs'),

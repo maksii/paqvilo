@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { makeTemporaryDirectorySync } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const prepare = (args) =>
@@ -17,7 +18,7 @@ const prepare = (args) =>
   });
 
 test('default schema preparation reproduces the committed reviewed cohort', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-schema-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-schema-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const output = path.join(directory, 'manifest.json'),
     result = prepare(['--out', output]);
@@ -30,7 +31,7 @@ test('default schema preparation reproduces the committed reviewed cohort', (t) 
 });
 
 test('Source5 requires explicit selection and a separate output while preserving the reviewed schema', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-schema-source5-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-schema-source5-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const committed = path.join(project, 'dataverse/manifest.json'),
     before = fs.readFileSync(committed, 'utf8');

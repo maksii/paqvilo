@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 // Browser semantics with fulfilled requests.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +13,7 @@ test(
   'real browser: HTML recovery, dynamic imports and existing source-map directives retain their semantics',
   { timeout: 45_000 },
   async (t) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-rewrite-browser-'));
+    const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-rewrite-browser-'));
     const file = path.join(dir, 'page.js');
     let browser;
     t.after(async () => {

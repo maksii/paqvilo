@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const STAFF = '77777777-7777-4777-8777-777777777795';
 const CURRENCY = '77777777-7777-4777-8777-777777777796';
@@ -15,7 +15,7 @@ const BASE = '77777777-7777-4777-8777-777777777799';
 const TYPE = '77777777-7777-4777-8777-777777777790';
 
 async function fixture(t, create = false) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'preset-native-save-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'preset-native-save-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const source = path.join(root, 'portal'),
     solution = path.join(root, 'solution');

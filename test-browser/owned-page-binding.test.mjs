@@ -11,6 +11,7 @@ import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { createOwnedPageBindings } from '../lense/owned-page-binding.mjs';
 import { comparison } from '../lense/panel.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
+import { drainFixture, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 const server = http.createServer((request, response) =>
   response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><h1>Invented</h1>'),
@@ -21,12 +22,16 @@ before(async () => {
   origin = 'http://127.0.0.1:' + server.address().port;
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
 });
-after(async () => {
-  await browser?.close();
-  // Keep-alive sockets from the separate CDP-attached profile would otherwise hold close() open.
-  server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
-});
+after(() =>
+  drainFixture([
+    () => browser?.close(),
+    () => {
+      // Keep-alive sockets from the separate CDP-attached profile would otherwise hold close() open.
+      server.closeAllConnections();
+      return new Promise((resolve) => server.close(resolve));
+    },
+  ]),
+);
 
 // lense/owned-page-binding.mjs: concurrent callbacks per bridge and the reply delivery deadline.
 const OWNED_CALL_CAPACITY = 32;
@@ -37,10 +42,7 @@ const REPLY_DEADLINE_MS = 1500;
 async function fixture(t) {
   const context = await browser.newContext();
   const owned = [];
-  t.after(async () => {
-    for (const close of owned.reverse()) await close();
-    await context.close();
-  });
+  t.after(() => drainFixture([...owned.toReversed(), () => context.close()]));
   const page = await context.newPage();
   await page.goto(origin);
   return { context, page, origin, own: (close) => owned.push(close) };
@@ -59,7 +61,9 @@ const rejectionOf = (page, value) =>
 
 // Only the external-owner test needs a persistent profile with a debugging port.
 async function persistentFixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'owned-binding-test-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'owned-binding-test-'))),
+    owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const port = await freeDebugPort();
   const context = await chromium.launchPersistentContext(
     root,
@@ -68,15 +72,50 @@ async function persistentFixture(t) {
       args: ['--remote-debugging-port=' + port],
     }),
   );
+  owner.add(() => context.close());
   const page = context.pages()[0];
   await page.goto(origin);
-  t.after(async () => {
-    await context.close();
-    // Windows can report the profile busy briefly after its browser process exits.
-    await fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-  });
   return { context, page, origin, port };
 }
+
+test('binding fixture drains every bridge and its context after one bridge close fails', async (t) => {
+  const hooks = [];
+  let f;
+  ownedFixture(t).add(() => f?.context.close());
+  f = await fixture({ after: (hook) => hooks.push(hook) });
+  const failure = Error('Invented bridge close failure'),
+    closed = [];
+  f.own(() => closed.push('remaining bridge'));
+  f.own(() => {
+    throw failure;
+  });
+  await assert.rejects(hooks[0](), (error) => error === failure);
+  assert.deepEqual(closed, ['remaining bridge']);
+  assert.equal(f.page.isClosed(), true, 'one rejected bridge close must not retain its context');
+});
+
+test('persistent binding fixture releases its browser and profile after initial navigation fails', async (t) => {
+  const hooks = [],
+    failure = Error('Invented first navigation failure'),
+    launch = chromium.launchPersistentContext.bind(chromium);
+  let context, profile;
+  const owner = ownedFixture(t);
+  owner.add(() => context?.close());
+  owner.remove(() => profile && fs.rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  t.mock.method(chromium, 'launchPersistentContext', async (directory, ...args) => {
+    profile = directory;
+    context = await launch(directory, ...args);
+    t.mock.method(context.pages()[0], 'goto', async () => {
+      throw failure;
+    });
+    return context;
+  });
+  await assert.rejects(persistentFixture({ after: (hook) => hooks.push(hook) }), (error) => error === failure);
+  assert.equal(hooks.length, 1, 'owned cleanup must exist before the first page navigation');
+  await hooks[0]();
+  assert.equal(context.pages().length, 0);
+  await assert.rejects(fs.stat(profile), { code: 'ENOENT' });
+});
 
 test(
   'owned raw binding survives independent persistent-browser CDP owners and observers',

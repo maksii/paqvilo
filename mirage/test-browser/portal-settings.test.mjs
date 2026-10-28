@@ -6,12 +6,13 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'admin edits, removes and resets snippets through controls, rendering and retaining changes locally',
   { timeout: 45000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-values-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-admin-values-'));
     let app, browser;
     t.after(async () => {
       await browser?.close();

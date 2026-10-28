@@ -8,12 +8,13 @@ import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { verifyParity } from '../verify.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime issues, preserves attached browser',
   { timeout: 90_000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-parity-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-parity-'));
     const body =
       '<!doctype html><html lang="en"><head><title>Portal</title><style>body{font:16px Arial;margin:30px;background:white}h1{color:#223344}</style></head><body><h1>Portal workspace</h1><p>Same rendered output</p><a href="/route/">A route</a></body></html>';
     let mode = 'same';
@@ -309,7 +310,7 @@ test(
   async (t) => {
     const { openCdpTabDriver, openOwnedBrowser, captureProblem, clientObjectFacts } =
       await import('../parity-suite.mjs');
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-parity-suite-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-parity-suite-'));
     const received = [];
     const page = `<!doctype html><html lang="en"><head><title>Portal</title></head><body>
 <div id="paqvilo-panel">toolkit panel</div>

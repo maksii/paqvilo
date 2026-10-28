@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -54,7 +55,7 @@ test('cold native command selectors prioritize full scoped exported declarations
   assert.ok(wrongTable.unavailable.some((item) => item.key === selector));
 });
 async function fixture(t, count = 3) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-model-metadata-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-model-metadata-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const formFile = path.join(directory, 'form.xml'),
     entityFile = path.join(directory, 'Entity.xml');

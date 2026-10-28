@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { importPortal } from '../lib/importer.mjs';
 import { assertPortalSource, detectSourceDialect, portalSourceDir, PortalSourceError } from '../lib/source-dialect.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { bootstrapReport, resolveReportInputs } from '../bootstrap-report.mjs';
 import { bootstrapProject } from '../lib/project-config.mjs';
 
@@ -21,7 +21,7 @@ const execFileAsync = promisify(execFile);
 const CLI = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'cli.mjs');
 
 async function tree(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-source-dialect-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-source-dialect-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files)) {
     const file = path.join(root, name);

@@ -6,12 +6,13 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'online frame selection permits only the selected embed and leaves parent API/scripts local',
   { timeout: 30000 },
   async (t) => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-frame-policy-'));
+    const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-frame-policy-'));
     const files = {
       'website.yml': 'adx_websiteid: site\nadx_name: Frame policy',
       'web-pages/Home.webpage.yml':

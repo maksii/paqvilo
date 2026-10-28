@@ -13,12 +13,12 @@ import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { composeOrganizationHost } from '../lib/organization-host.mjs';
 import { assemblyXml, stepXml, pluginId } from './plugin-fixture.mjs';
 import { fixedClock, sequentialIds } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const GUID = (n) => `77777777-7777-4777-8777-${String(n).padStart(12, '0')}`;
 
 test('a standalone runtime switch to clr prepares the CLR runtime and stores nothing when preparation fails', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'organization-host-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'organization-host-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'solution/Other/Solution.xml':
@@ -138,7 +138,7 @@ test('the operation catalogue is memoised on an unchanged store revision and reb
 });
 
 test('host clock and ids reach the store and the organization in the standalone host', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'organization-host-clock-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'organization-host-clock-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'solution', 'Other'), { recursive: true });
   await fs.writeFile(

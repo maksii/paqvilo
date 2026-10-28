@@ -16,6 +16,7 @@ import {
   redactEncodedLayoutTokens,
   redactEncodedLayoutEvidence,
 } from '../lib/capture-control-redaction.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const token = Buffer.from('invented signed configuration fixture').toString('base64');
 for (const [label, input] of [
   ['JSON', JSON.stringify({ base64SecureConfiguration: token, sibling: 'kept' })],
@@ -273,7 +274,7 @@ test('contextual layout differences preserve comparison counts and verdicts whil
 });
 
 test('capture persistence removes plain and encoded signed tokens in every evidence surface', async () => {
-  const out = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-control-redaction-'));
+  const out = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-control-redaction-'));
   const nativeToken = Buffer.from('invented per-process signed control configuration').toString('base64');
   const uploadHandle = Buffer.from('invented per-process upload handle').toString('base64');
   const json = JSON.stringify({
@@ -598,7 +599,7 @@ test('tagged HTML attribute maps and declared CSP diff values redact without rew
 });
 
 test('nonce persistence removes protected values and raw text digests from every capture surface', async () => {
-  const out = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-csp-nonce-'));
+  const out = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-csp-nonce-'));
   const nonce = 'inventedPersistenceNonce123',
     html = `<script nonce="${nonce}">ok</script>`,
     policy = `script-src 'nonce-${nonce}' https://scripts.invalid`,

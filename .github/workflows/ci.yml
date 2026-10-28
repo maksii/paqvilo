@@ -58,6 +58,7 @@ jobs:
       smoke: ${{ steps.scope.outputs.smoke }}
       site: ${{ steps.scope.outputs.site }}
       full: ${{ steps.scope.outputs.full }}
+      sdk: ${{ steps.scope.outputs.sdk }}
       units: ${{ steps.scope.outputs.units }}
       browsers: ${{ steps.scope.outputs.browsers }}
     steps:
@@ -167,9 +168,11 @@ jobs:
   browser:
     needs: changes
     if: needs.changes.outputs.runtime == 'true'
-    name: Browser tests (Node 24, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
-    runs-on: ubuntu-24.04
+    name: Browser tests (Node 24, ${{ matrix.os }}, ${{ matrix.channel }}, ${{ matrix.suite }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 40
+    env:
+      PAQ_CI_BROWSER: ${{ matrix.channel }}
     strategy:
       fail-fast: false
       matrix:
@@ -197,11 +200,11 @@ jobs:
           git config --global gc.auto 0
       - name: Read locked browser version
         id: playwright
-        run: echo "version=$(node -p "require('./package.json').dependencies['playwright-core']")" >> "$GITHUB_OUTPUT"
+        run: node -e "require('node:fs').appendFileSync(process.env.GITHUB_OUTPUT,'version='+require('./package.json').dependencies['playwright-core']+'\n')"
       - name: Restore matching Chromium
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
-          path: ~/.cache/ms-playwright
+          path: ${{ runner.os == 'Windows' && '~/AppData/Local/ms-playwright' || '~/.cache/ms-playwright' }}
           key: playwright-chromium-${{ runner.os }}-${{ steps.playwright.outputs.version }}
       - name: Install the pinned .NET SDK
         if: matrix.suite != 'lense'
@@ -260,26 +263,61 @@ jobs:
         uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
         with:
           global-json-file: global.json
-      # The full SDK client gate runs once, beside the first Mirage shard.
+      - name: Install Python for the required SDK client
+        if: matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.sdk == 'true'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      # The complete SDK gate runs once for every applicable PR, beside the first Mirage shard.
       - name: Prepare the selected suite
-        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }} ${{ matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.full == 'true' && '--sdk' || '' }}
+        run: npm run ci:prepare -- --suite ${{ matrix.suite }} --unit ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }} ${{ matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.sdk == 'true' && '--sdk' || '' }}
       - name: Verify the selected suite
         run: npm run ci:verify -- --suite ${{ matrix.suite }} --unit --prepared ${{ matrix.shard && format('--shard {0}', matrix.shard) || '' }}
       # ServiceClient drops the port from its URL, so its gate binds loopback port 80. The hosted Windows image's kernel
       # HTTP service holds that port; stop it there only. A self-hosted runner must leave port 80 free itself.
       - name: Release port 80 for the ServiceClient gate
-        if: matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.full == 'true' && runner.environment == 'github-hosted'
+        if: matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.sdk == 'true' && runner.environment == 'github-hosted'
         shell: pwsh
         run: |
           Get-NetTCPConnection -LocalPort 80 -State Listen -ErrorAction SilentlyContinue |
             Select-Object LocalAddress, OwningProcess | Format-Table -AutoSize | Out-String | Write-Output
-          net stop http /y
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $http = Get-Service -Name HTTP -ErrorAction Stop
+          if ($http.Status -ne 'Stopped') {
+            net stop http /y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           $held = Get-NetTCPConnection -LocalPort 80 -State Listen -ErrorAction SilentlyContinue
           if ($held) { $held | Format-Table -AutoSize | Out-String | Write-Output; throw 'Port 80 is still held.' }
       - name: Verify the full Windows SDK clients and storage volume
-        if: matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.full == 'true'
+        if: matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/')) && needs.changes.outputs.sdk == 'true'
         run: node scripts/ci.mjs sdk
+  sdk-linux:
+    needs: changes
+    if: needs.changes.outputs.sdk == 'true'
+    name: Linux SDK clients and storage volume
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .node-version
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Permit the SDK's loopback port 80 on this hosted runner
+        if: runner.environment == 'github-hosted'
+        run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+      - name: Prepare every pinned SDK client
+        run: npm run ci:sdk:prepare
+      - name: Verify every SDK client and storage volume
+        run: npm run ci:sdk
   package:
     needs: changes
     if: needs.changes.outputs.smoke == 'true'
@@ -330,6 +368,7 @@ jobs:
       - test
       - browser
       - windows
+      - sdk-linux
       - package
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -341,9 +380,11 @@ jobs:
           PACKAGE: ${{ needs.changes.outputs.package }}
           RUNTIME: ${{ needs.changes.outputs.runtime }}
           SMOKE_REQUIRED: ${{ needs.changes.outputs.smoke }}
+          SDK_REQUIRED: ${{ needs.changes.outputs.sdk }}
           CHECKS: ${{ needs.checks.result }}
           TESTS: ${{ needs.test.result }}
           BROWSER: ${{ needs.browser.result }}
           WINDOWS: ${{ needs.windows.result }}
+          SDK: ${{ needs.sdk-linux.result }}
           SMOKE: ${{ needs.package.result }}
-        run: node -e "const e=process.env; const want=(required,result)=>result===(required?'success':'skipped'); if(e.SCOPE_RESULT!=='success'||!want(e.QUALITY==='true'||e.PACKAGE==='true',e.CHECKS)||[e.TESTS,e.BROWSER,e.WINDOWS].some(r=>!want(e.RUNTIME==='true',r))||!want(e.SMOKE_REQUIRED==='true',e.SMOKE))process.exit(1)"
+        run: node -e "const e=process.env; const want=(required,result)=>result===(required?'success':'skipped'); if(e.SCOPE_RESULT!=='success'||!want(e.QUALITY==='true'||e.PACKAGE==='true',e.CHECKS)||[e.TESTS,e.BROWSER,e.WINDOWS].some(r=>!want(e.RUNTIME==='true',r))||!want(e.SDK_REQUIRED==='true',e.SDK)||!want(e.SMOKE_REQUIRED==='true',e.SMOKE))process.exit(1)"

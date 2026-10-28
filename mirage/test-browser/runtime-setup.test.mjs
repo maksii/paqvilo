@@ -7,6 +7,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { startSetupServer } from '../../lense/setup/server.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // These cases exercise the All settings view of /_setup/ (Quick setup is the default for a new browser).
 const allSettings = (page) =>
@@ -32,7 +33,7 @@ async function capture(page, name) {
   await page.screenshot({ path: path.join(directory, name + '.png') });
 }
 async function work(t) {
-  const container = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-runtime-ui-'));
+  const container = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-runtime-ui-'));
   const root = path.join(container, 'workspace');
   await fs.mkdir(root);
   const resources = [];

@@ -101,7 +101,9 @@
     "check:pr": "node scripts/pr-readiness.mjs",
     "audit:dependencies": "node scripts/audit-dependencies.mjs",
     "hooks:push": "node scripts/git-hooks.mjs pre-push",
-    "review:code": "node scripts/generate-compat-watchers.mjs --check && node scripts/code-review.mjs --check"
+    "review:code": "node scripts/generate-compat-watchers.mjs --check && node scripts/code-review.mjs --check",
+    "ci:sdk:prepare": "node scripts/ci.mjs sdk-prepare",
+    "ci:sdk": "node scripts/ci.mjs sdk"
   },
   "engines": {
     "node": "^24.22.1"

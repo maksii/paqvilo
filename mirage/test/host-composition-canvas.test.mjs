@@ -6,13 +6,13 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator, preflight } from '../api.mjs';
-import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 
 const HOME = 'Screens:\n  HomeScreen:\n    Properties:\n      Fill: =RGBA(255, 255, 255, 1)\n';
 
 test('Solution canvas metadata, payload and metadata-only overlay agree between host and both preflights', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-fidelity-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'canvas-fidelity-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const payload = writeSolutionAssetEntries([{ name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(HOME) }]);
   for (const [relative, bytes] of Object.entries({
@@ -60,7 +60,7 @@ test('Solution canvas metadata, payload and metadata-only overlay agree between 
 });
 
 async function start(owner, canvas, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-canvas-'));
   owner.remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'solution/Other/Solution.xml':
@@ -183,7 +183,7 @@ test('a missing canvas source reports CANVAS_SOURCE_MISSING and a missing prefli
 });
 
 test('canvas.enabled false unmounts /_apps/canvas/ on the Power Pages host too', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-canvas-pp-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-canvas-pp-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'solution/Other/Solution.xml':
@@ -216,7 +216,7 @@ test('canvas.enabled false unmounts /_apps/canvas/ on the Power Pages host too',
 });
 
 test('Solution and project canvas rendering preflight includes incomplete project source', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-coverage-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'canvas-coverage-'));
   const owner = ownedFixture(t);
   owner.remove(() => fs.rm(root, { recursive: true, force: true }));
   const payload = writeSolutionAssetEntries([{ name: 'Src/HomeScreen.pa.yaml', data: Buffer.from(HOME) }]);
@@ -273,7 +273,7 @@ test('configured extracted canvas media survives inventory and host composition'
 });
 
 async function solutionWithCanvasMedia(t, assets) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-solution-media-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'canvas-solution-media-'));
   const owner = ownedFixture(t);
   owner.remove(() => fs.rm(root, { recursive: true, force: true }));
   const payload = writeSolutionAssetEntries([{ name: 'Src/Home.pa.yaml', data: Buffer.from(HOME) }, ...assets]);

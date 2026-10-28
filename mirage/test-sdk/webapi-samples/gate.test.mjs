@@ -1,6 +1,6 @@
 // SDK verification gate: Microsoft's PowerApps-Samples WebAPIService library (pinned in PINNED_COMMIT.txt,
 // cloned outside the repo under .paqvilo/sdk-gates/) replaying its request shapes against the simulated Dataverse API.
-// Opt-in (`node --test mirage/test-sdk/webapi-samples/gate.test.mjs`); never part of `npm run validate`.
+// Full verification requires this prepared client; direct optional runs report unavailable tooling explicitly.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -8,21 +8,21 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startGate, clientCredentialsToken } from '../harness.mjs';
+import { requireSdkSample } from '../../../scripts/sdk-preparation.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const project = path.join(here, 'Gate', 'Gate.csproj');
-const samples = path.resolve(here, '../../../.paqvilo/sdk-gates/PowerApps-Samples');
 const exe = path.join(here, 'Gate', 'bin', 'Release', 'net10.0', process.platform === 'win32' ? 'Gate.exe' : 'Gate');
 const REQUIRED = ['construct', 'whoami', 'create', 'retrieve', 'update', 'retrieveMultiple', 'delete', 'batch'];
 
 const dotnet = spawnSync('dotnet', ['--version'], { encoding: 'utf8' });
-const skip = dotnet.status === 0 ? false : 'dotnet is not installed: WebAPIService gate skipped';
+const skip =
+  dotnet.status === 0 || process.env.PAQ_TEST_REQUIRE_SDK_GATES === '1'
+    ? false
+    : 'dotnet is not installed: WebAPIService gate skipped';
 
 test('PowerApps-Samples WebAPIService replays against the simulator', { timeout: 600_000, skip }, async (t) => {
-  // The clone follows the default branch; refuse any checkout other than the reviewed commit.
-  const pinned = /^Commit:\s*([0-9a-f]{40})$/m.exec(fs.readFileSync(path.join(here, 'PINNED_COMMIT.txt'), 'utf8'))[1];
-  const head = spawnSync('git', ['-C', samples, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
-  assert.equal(head.stdout?.trim(), pinned, `${samples} must be checked out at ${pinned}; see PINNED_COMMIT.txt`);
+  assert.doesNotThrow(() => requireSdkSample(path.resolve(here, '../../..')));
   const build = spawnSync('dotnet', ['build', project, '-c', 'Release', '-nologo'], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,

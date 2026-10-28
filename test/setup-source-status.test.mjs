@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,7 +10,7 @@ import { sourceStatus } from '../lense/setup/store.mjs';
 
 const run = promisify(execFile);
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-source-status-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-source-status-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }

@@ -19,6 +19,7 @@ import { closeSyncIoBridge, syncIo, syncIoWorker } from '../lib/sync-io-bridge.m
 import { EXTENSION as CASCADE } from '../lib/dataverse-cascade.mjs';
 import { EXTENSION as ROLLUP, recalculate } from '../lib/dataverse-rollup.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ENDPOINT = '77777777-7777-4777-8777-777777777b01',
   STEP = '77777777-7777-4777-8777-777777777b02';
@@ -359,7 +360,7 @@ test('a web hook authentication value never crosses the bridge: the worker resol
 
 test('a worker crash is reported to the waiting caller within the call, and the next call gets a new worker', async (t) => {
   const receiver = await threadReceiver(t);
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-sync-io-crash-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-sync-io-crash-'));
   const crashing = path.join(dir, 'crashing-worker.mjs');
   const real = syncIoWorker.url;
   await fs.writeFile(

@@ -17,6 +17,7 @@ import {
   validateClrDescriptor,
 } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
   rowId = '20000000-0000-0000-0000-000000000001';
@@ -124,7 +125,7 @@ test('persistent CLR hosts require explicit Boolean opt-in', () => {
 });
 
 test('failed CLR preparation removes only its owned cache directory', { skip: CLR_SKIP }, async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-build-failure-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-build-failure-'));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
   await fs.writeFile(path.join(root, 'Original.dll'), 'invented assembly');
   await fs.writeFile(path.join(root, 'Sdk.dll'), 'invented SDK');
@@ -159,7 +160,7 @@ test(
   'CLR workers reject non-object output and completion with pending SDK calls and kill owned children',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-protocol-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-protocol-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const source = path.join(root, 'Protocol.cs'),
       executable = path.join(root, 'Protocol.exe');
@@ -393,7 +394,7 @@ test(
   'pooled original DLL gets fresh instance, configuration, context, frame and SDK callbacks; failures close owned hosts',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-pool-')),
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-pool-')),
       sdk = clrSdk(),
       notes = [];
     t.after(() => {

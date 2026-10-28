@@ -23,6 +23,15 @@ export function qualifyPullRequest(pr, expectedHead) {
       : check.status !== 'COMPLETED',
   );
   if (pending.length) reasons.push(`${pending.length} checks have not completed.`);
+  const failed = checks.filter((check) =>
+    check.__typename === 'StatusContext'
+      ? ['FAILURE', 'ERROR'].includes(check.state)
+      : check.status === 'COMPLETED' && !['SUCCESS', 'NEUTRAL', 'SKIPPED'].includes(check.conclusion),
+  );
+  if (failed.length)
+    reasons.push(
+      `${failed.length} checks are unsuccessful: ${failed.map((check) => check.name ?? check.context ?? 'unnamed check').join(', ')}.`,
+    );
   return {
     schemaVersion: 1,
     ok: reasons.length === 0,

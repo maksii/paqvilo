@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { SolutionFileCache } from '../lib/solution-cache.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { settleFileTimes } from './support/file-times.mjs';
 
 const entity = (name, label) =>
@@ -17,7 +17,7 @@ test(
   async (t) => {
     // The reuse assertions below concern files written moments ago.
     settleFileTimes(t);
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-standalone-reload-cache-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-standalone-reload-cache-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     const solution = path.join(root, 'solution');
     const files = {

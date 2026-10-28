@@ -9,6 +9,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ID = '00000000-0000-4000-8000-000000000001';
 
@@ -19,7 +20,7 @@ before(async () => {
 after(() => browser?.close());
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-postback-flows-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-postback-flows-'));
   const files = {
     'website.yml': 'adx_websiteid: flows-site\nadx_name: Invented postback flows',
     'Home.webpage.yml':

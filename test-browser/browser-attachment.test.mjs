@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -51,7 +52,7 @@ test(
   'CDP debugger conflicts leave the intended browser untouched and disconnect preserves its pages',
   { timeout: 60_000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-cdp-ownership-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cdp-ownership-'));
     const fixture = http.createServer((_request, response) =>
       response
         .writeHead(200, { 'content-type': 'text/html' })

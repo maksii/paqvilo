@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -84,7 +85,7 @@ test('Dataverse diagnostics use the requested stream and retain the JSON error p
 });
 
 test('malformed credential input does not expose file contents in diagnostics', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-dataverse-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dataverse-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'connection.json');
   await fs.writeFile(file, '{"credential":"invented-private-value" INVALID');
@@ -98,7 +99,7 @@ test('malformed credential input does not expose file contents in diagnostics', 
 });
 
 test('PAC runner preserves Unicode and metacharacters as arguments and hides start errors', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-process-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-process-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const folder = path.join(root, 'OneDrive - Example', 'Проєкт & space');
   await fs.mkdir(folder, { recursive: true });
@@ -113,7 +114,7 @@ test('PAC runner preserves Unicode and metacharacters as arguments and hides sta
 });
 
 test('offline data plan writes its complete report and --json prints that report', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-data-plan-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-data-plan-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const catalogue = path.join(root, 'catalogue.json');
   const report = path.join(root, 'report.json');
@@ -140,7 +141,7 @@ test('offline data plan writes its complete report and --json prints that report
 });
 
 test('report outputs cannot replace their input or connection, including hard-link aliases', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-output-collision-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-output-collision-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const catalogue = path.join(root, 'catalogue.json');
   const connection = path.join(root, 'connection.json');
@@ -174,7 +175,7 @@ test('report outputs cannot replace their input or connection, including hard-li
 });
 
 test('inspect does not print URL credentials, query values or fragments', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-inspect-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-inspect-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const connection = path.join(root, 'connection.json');
   const input = JSON.stringify({
@@ -196,7 +197,7 @@ test('inspect does not print URL credentials, query values or fragments', async 
 });
 
 test('register rejects an invalid environment before invoking PAC', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-invalid-register-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-invalid-register-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const result = spawnSync(
     process.execPath,
@@ -226,7 +227,7 @@ test('register rejects an invalid environment before invoking PAC', async (t) =>
 });
 
 test('connect refuses registration and consumable secret aliases before reading or writing', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-connect-collision-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-connect-collision-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const directory = path.join(root, '.paqvilo');
   await fs.mkdir(directory);
@@ -256,7 +257,7 @@ test('connect refuses registration and consumable secret aliases before reading 
 });
 
 test('export rejects invalid solution names before loading a connection', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-invalid-export-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-invalid-export-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const result = run(
     'export',

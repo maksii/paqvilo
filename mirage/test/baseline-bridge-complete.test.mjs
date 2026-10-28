@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // baseline-suite.mjs races each bridge call against a 30-second evidence fallback timer. A run takes one to two seconds;
 // a process that kept that timer would exit only after 30 seconds, so the deadline sits between the two.
@@ -15,7 +16,7 @@ test(
   'a complete loopback bridge capture closes without leftover evidence or child grace timers',
   { timeout: EVIDENCE_FALLBACK_MS },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline positive fixture '));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline positive fixture '));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const marker = path.join(directory, 'closed.txt'),
       server = path.join(directory, 'server.mjs');

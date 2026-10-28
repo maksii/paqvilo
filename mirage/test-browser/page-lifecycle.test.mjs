@@ -2,6 +2,7 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
+import { drainFixture } from '../testing/owned-fixture.mjs';
 import { browserLaunchOptions, observePageLifecycle, observeContextLifecycle } from '../acceptance-api.mjs';
 
 // The stateless fixture server and the browser are shared; every test observes its own context.
@@ -37,11 +38,16 @@ before(async () => {
   origin = `http://127.0.0.1:${server.address().port}`;
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
 });
-after(async () => {
-  await browser?.close();
-  server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
-});
+after(() =>
+  drainFixture([
+    () => browser?.close(),
+    async () => {
+      if (!server) return;
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    },
+  ]),
+);
 
 async function fixture(t) {
   const context = await browser.newContext();
@@ -131,14 +137,15 @@ test('failed live reads and authored aborts stay failed after unrelated navigati
   const failed = ['/reset', '/pending-abort'].map((path) =>
     page.waitForEvent('requestfailed', (request) => request.url().endsWith(path)),
   );
+  const pendingObserved = page.waitForRequest((request) => request.url().endsWith('/pending-abort'));
   await page.evaluate(async () => {
     await fetch('/reset').catch(() => {});
-    const controller = new AbortController();
-    const pending = fetch('/pending-abort', { signal: controller.signal }).catch(() => {});
-    // The server never answers this read; the authored abort ends it.
-    setTimeout(() => controller.abort(), 30);
-    await pending;
+    window.authoredAbort = new AbortController();
+    fetch('/pending-abort', { signal: window.authoredAbort.signal }).catch(() => {});
   });
+  await pendingObserved;
+  // Abort only after the observer has received the authored read, never after an assumed delay.
+  await page.evaluate(() => window.authoredAbort.abort());
   await Promise.all(failed);
   await page.goto(origin + '/other');
   const result = await observer.settle();
@@ -341,15 +348,24 @@ test(
     });
     await held;
     // The other page keeps the context busy until its held read is released.
+    // Advance an exact clock after the context has begun waiting on both pages.
+    // The first page completes its quiet window while the other read is still held.
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
     const resultPromise = observer.settle({ timeout: 700, quietMs: 75 });
-    // No event reports that this page's own settle finished; 125ms is beyond its 75ms quiet window.
-    await page.waitForTimeout(125);
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(75);
+    await new Promise((resolve) => setImmediate(resolve));
     const late = page.waitForRequest((request) => request.url().endsWith('/pending-after-quiet'));
     await page.evaluate(() => {
       fetch('/pending-after-quiet').catch(() => {});
     });
     await late;
+    const finished = other.waitForEvent('requestfinished', (request) => request.url().endsWith('/held-read'));
     releaseHeldReads();
+    await finished;
+    t.mock.timers.tick(75);
+    await new Promise((resolve) => setImmediate(resolve));
+    t.mock.timers.tick(550);
     const result = await resultPromise;
     assert.equal(result.settled, false);
     assert.equal(result.passed, false);

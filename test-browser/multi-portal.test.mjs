@@ -1,4 +1,5 @@
-import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -59,7 +60,7 @@ test(
   'headless checks preserve the saved headed window placement in owned and selected external profiles',
   { timeout: 60_000 },
   async (t) => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-headless-placement-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-headless-placement-'));
     const servers = [];
     let browser;
     ownedFixture(t).add(async () => {
@@ -140,7 +141,7 @@ test(
   'one catalogue browser isolates lazy portal sessions, environments, panels, APIs and source refreshes',
   { timeout: 180_000 },
   async (t) => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-multi-portal-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-multi-portal-'));
     const alpha = createFixture();
     const beta = createFixture();
     const servers = [];
@@ -528,7 +529,7 @@ test(
   'all-day navigation retains template edits after commit and recovers a restored checkout without restart',
   { timeout: 90_000 },
   async (t) => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-all-day-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-all-day-'));
     const alpha = createFixture();
     const beta = createFixture();
     const hidden = `${beta.dir}-temporarily-missing`;
@@ -651,7 +652,7 @@ test(
   'actual dev CLI activates catalogue navigation and agent stop tears down the whole browser',
   { timeout: 90_000 },
   async (t) => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-multi-cli-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-multi-cli-'));
     const fixture = createFixture();
     const servers = [];
     const toolkit = fileURLToPath(new URL('..', import.meta.url));

@@ -8,7 +8,7 @@ import { likeMatcher } from '../lib/dataverse-values.mjs';
 import { parseODataExpression } from '../lib/odata-query.mjs';
 import { webApiErrorResponse } from '../lib/webapi-handler.mjs';
 import { DataError } from '../lib/data.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const G = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const observed = {
@@ -58,7 +58,7 @@ test('SQL bracket patterns and OData quoted values preserve the distinct wire gr
 });
 
 test('observed API errors retain rejection and atomicity without contacting bound origins', async (t) => {
-  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-observed-input-'));
+  const source = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-observed-input-'));
   ownedFixture(t).remove(() => fs.rm(source, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(source, 'website.yml'),

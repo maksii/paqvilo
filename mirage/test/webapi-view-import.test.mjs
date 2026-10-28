@@ -5,10 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('imported Web API view columns combine with explicit fields without exposing related, filter or sort columns', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-api-column-view-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-api-column-view-'));
   const portal = path.join(directory, 'portal'),
     solution = path.join(directory, 'solution');
   ownedFixture(t).remove(async () => {

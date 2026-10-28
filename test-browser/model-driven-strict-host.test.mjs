@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -6,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 import { createHash } from 'node:crypto';
@@ -37,7 +38,7 @@ test(
   { timeout: 30000 },
   async (t) => {
     const owner = ownedFixture(t),
-      root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-strict-host-'));
+      root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-strict-host-'));
     owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const server = http.createServer((request, response) => {
       const csp = {

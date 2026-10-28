@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -118,7 +119,7 @@ test(
 for (const layout of ['classic', 'enhanced'])
   test(`${layout} form sources edit and recover through the real watcher`, { timeout: 90_000 }, async (t) => {
     const fx = createFixture();
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-form-workflows-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-form-workflows-'));
     const sourceDir = layout === 'enhanced' ? fx.file('enhanced-source') : fx.dir;
     let watcher;
     let detach;

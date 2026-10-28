@@ -16,9 +16,10 @@ import {
   cachedImplementationSourceFingerprint,
   implementationEvidence,
 } from '../lib/evidence.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('implementation hashes ignore only generated SDK directories and retain authored and mapped assemblies', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-sdk-fingerprint-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-sdk-fingerprint-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = [
     'test-sdk/Gate/obj/apphost.exe',
@@ -63,7 +64,7 @@ test('implementation hashes ignore only generated SDK directories and retain aut
 });
 
 test('cached fingerprints tolerate files and directories removed at their read gates without hiding other errors', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-fingerprint-removal-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-fingerprint-removal-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const originalStat = fs.stat,
     originalReaddir = fs.readdir;
@@ -113,7 +114,7 @@ test(
   'fresh startup seeds the complete implementation fingerprint cache and state reads still detect source edits',
   { timeout: 60000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-fingerprint-startup-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-fingerprint-startup-'));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const toolkit = fileURLToPath(new URL('../../', import.meta.url));
     const runtime = path.join(directory, 'mirage');
@@ -208,7 +209,7 @@ test(
 
 test('fresh Mirage startup tolerates an exclusively locked SDK build product', { timeout: 60000 }, async (t) => {
   const sdkRoot = fileURLToPath(new URL('../test-sdk/', import.meta.url));
-  const owned = await fs.mkdtemp(path.join(sdkRoot, 'fingerprint-lock-'));
+  const owned = await makeTemporaryDirectory(path.join(sdkRoot, 'fingerprint-lock-'));
   const generated = path.join(owned, 'obj', 'apphost.exe');
   await fs.mkdir(path.dirname(generated));
   await fs.writeFile(generated, 'owned SDK build product');
@@ -262,7 +263,7 @@ test('fresh Mirage startup tolerates an exclusively locked SDK build product', {
 });
 
 test('cached implementation fingerprints match full hashes and follow same-size edits, additions and removals', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-cached-fingerprint-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-cached-fingerprint-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'admin'));
   await fs.writeFile(path.join(root, 'admin', 'app.mjs'), 'export const version = 1;');
@@ -291,7 +292,7 @@ test('cached implementation fingerprints match full hashes and follow same-size 
 });
 
 test('a file removed during the walk is left out and another read failure rejects the hash', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-fingerprint-reads-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-fingerprint-reads-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   // More files than reads run at a time, so a failure arrives while later reads are still in flight.
   for (let n = 0; n < 80; n++) await fs.writeFile(path.join(root, `file-${String(n).padStart(2, '0')}.txt`), `${n}`);
@@ -313,7 +314,7 @@ test('a file removed during the walk is left out and another read failure reject
 });
 
 test('cached implementation fingerprints skip a file removed while the signature walk runs', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-cached-removal-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-cached-removal-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'kept.mjs'), 'export const kept = true;');
   const removed = path.join(root, 'removed.mjs');
@@ -330,7 +331,7 @@ test('cached implementation fingerprints skip a file removed while the signature
 });
 
 test('an on-demand browser asset edit invalidates evidence from still-loaded modules', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-implementation-evidence-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-implementation-evidence-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'browser.js'), 'window.localVersion = 1;');
   const loaded = await sourceFingerprint(root);

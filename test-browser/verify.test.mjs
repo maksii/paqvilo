@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 // Exercises the real verify command against disposable fixtures.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -50,7 +51,7 @@ function component(dir, id, type, name, content, attachment) {
 }
 
 async function fixture(t, layout, uncommittedInline = false) {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-acceptance-'));
+  const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-acceptance-'));
   const classic = layout === 'classic' ? createFixture() : null;
   const sourceDir = classic?.dir ?? path.join(work, 'enhanced-source');
   const sourceFiles = [];

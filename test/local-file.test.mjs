@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,7 +12,7 @@ test(
   { skip: process.platform !== 'win32' },
   (t) => {
     const native = fs.realpathSync.native;
-    const root = native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-native-read-')));
+    const root = native(makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-native-read-')));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const directory = path.join(root, ...Array.from({ length: 12 }, (_, index) => 'nested-' + index));
     fs.mkdirSync(directory, { recursive: true });

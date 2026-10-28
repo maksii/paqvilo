@@ -7,10 +7,10 @@ import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
-import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('PCF localized instances keep languages, missing keys and empty labels across updates and teardown', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pcf-localization-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pcf-localization-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const dir = path.join(root, 'Controls', 'tst_Synthetic.Localized');
   await fs.mkdir(path.join(dir, 'strings'), { recursive: true });

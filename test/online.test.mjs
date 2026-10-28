@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -151,7 +152,7 @@ test('status-only checks and non-200 responses cancel the body without buffering
 });
 
 test('local oversize, missing, and cancelled comparisons do no HTTP work', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-online-limit-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-online-limit-'));
   const file = path.join(dir, 'large.js');
   const handle = fs.openSync(file, 'w');
   fs.ftruncateSync(handle, 33 * 1024 * 1024);
@@ -178,7 +179,7 @@ test('local oversize, missing, and cancelled comparisons do no HTTP work', async
 });
 
 test('async local comparison preserves newline normalization and releases the file handle', async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-online-text-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-online-text-'));
   const file = path.join(dir, 'source.js');
   fs.writeFileSync(file, '\uFEFFone\r\ntwo\r\n');
   t.mock.method(globalThis, 'fetch', async () => new Response('one\ntwo\n'));

@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -20,7 +21,7 @@ before(async () => {
 after(() => browser?.close());
 
 async function fixture(t, source, { scriptFor } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-parser-boundary-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-parser-boundary-'));
   const metadataFile = path.join(directory, 'Main.webtemplate.yml');
   await fs.writeFile(metadataFile, 'adx_webtemplateid: invented-main\nadx_name: Main');
   await fs.writeFile(path.join(directory, 'Main.webtemplate.source.html'), source);

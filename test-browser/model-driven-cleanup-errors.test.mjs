@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import run from '../lense/commands/model-driven.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { createStandaloneRuntime } from '../mirage/lib/standalone-runtime.mjs';
 import { modelDrivenActionAvailability } from '../lense/model-driven-action-runner.mjs';
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
@@ -25,7 +26,7 @@ const BROWSER_TEST_TIMEOUT_MS = 60_000;
 
 async function fixture(t, { resetDocument = false } = {}) {
   const owner = ownedFixture(t);
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-model-close-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-model-close-'));
   // Owned and external browser profiles live in this directory.
   owner.remove(() => fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const solution = path.join(directory, 'solution');

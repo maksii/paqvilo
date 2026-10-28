@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -44,7 +45,7 @@ test(
   'source-only public dev closes owned browser/runtime, preserves reused runtime and isolates a sibling',
   { timeout: 90000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-standalone-dev-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-standalone-dev-'));
     const project = path.join(directory, 'owned.project.json'),
       sibling = path.join(directory, 'sibling.project.json');
     const source = path.join(directory, 'solution', 'AppModules', 'x_workspace', 'AppModule.xml');

@@ -8,6 +8,7 @@ import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { warmState } from './shared-browser.mjs';
+import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 test(
   'admin: record and configuration CRUD, routing, identity, presets, errors, safe diagnostics, responsive layout',
@@ -603,7 +604,7 @@ test(
   { timeout: 60_000 },
   async (t) => {
     const { createSimulator } = await import('../server.mjs');
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-admin-'));
+    const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-mirage-admin-'));
     const source = path.join(directory, 'source');
     fs.mkdirSync(source);
     fs.writeFileSync(

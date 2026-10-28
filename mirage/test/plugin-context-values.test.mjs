@@ -11,7 +11,8 @@ import { clrContext, recordToSdkEntity, prepareClrRuntime } from '../lib/plugin-
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001',
   replacement = '20000000-0000-0000-0000-000000000002';
@@ -112,7 +113,7 @@ test('External update CLR context preserves the native message and typed externa
 });
 
 test('Original external-event DLL receives typed snapshots after commit', { skip: CLR_SKIP }, async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-external-context-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-external-context-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
   const sdk = clrSdk(),
     source = path.join(root, 'ExternalObserver.cs'),
@@ -268,7 +269,7 @@ test(
   'Original DLL receives stage-correct results and typed Target, images, SDK choices writes and reload',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-context-values-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-context-values-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'ContextValues.cs'),
@@ -357,7 +358,7 @@ test(
   'Original Retrieve and RetrieveMultiple CLR observers see intervening ranked handler results and custom outputs',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-ranked-read-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-ranked-read-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'RankedRead.cs'),

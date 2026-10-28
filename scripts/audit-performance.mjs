@@ -1,10 +1,10 @@
 // Repeatable, synthetic loopback measurements for the test-audit follow-up.
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
+import { auditOutput, writeAuditOutput, auditDependencies, auditGit } from './audit-qualification.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -92,9 +92,10 @@ if (values.probe) {
   if (!/^[1-9]\d*$/.test(values.samples) || Number(values.samples) > 20)
     throw new Error('--samples must be an integer from 1 to 20.');
   const samples = Number(values.samples);
+  const output = values.output ? await auditOutput(root, values.output) : null;
   const roots = values.baseline ? { before: path.resolve(values.baseline), after: root } : { current: root };
   const git = (cwd, args) => {
-    const result = spawnSync('git', args, { cwd, encoding: 'utf8', windowsHide: true });
+    const result = auditGit(cwd, args, { encoding: 'utf8' });
     if (result.status !== 0) throw new Error(`Cannot read Git identity: ${result.stderr}`);
     return result.stdout.trim();
   };
@@ -105,6 +106,9 @@ if (values.probe) {
       );
     return git(cwd, ['write-tree']);
   };
+  const dependencies = Object.fromEntries(
+    await Promise.all(Object.entries(roots).map(async ([label, cwd]) => [label, await auditDependencies(cwd)])),
+  );
   const report = {
     version: 1,
     environment: {
@@ -127,6 +131,7 @@ if (values.probe) {
           sourceTree: sourceTree(cwd),
           diff: git(cwd, ['diff', 'HEAD', '--stat']),
           probes: {},
+          dependencies: dependencies[label],
         },
       ]),
     ),
@@ -171,11 +176,14 @@ if (values.probe) {
       throw new Error('Browser version changed between samples; the comparison is not qualified.');
   }
   for (const [label, cwd] of Object.entries(roots))
-    if (sourceTree(cwd) !== report.runs[label].sourceTree) throw new Error('Source tree changed during measurement.');
+    if (
+      sourceTree(cwd) !== report.runs[label].sourceTree ||
+      JSON.stringify(await auditDependencies(cwd)) !== JSON.stringify(dependencies[label])
+    )
+      throw new Error('Source tree or installed dependencies changed during measurement.');
   const json = JSON.stringify(report, null, 2) + '\n';
-  if (values.output) {
-    await fs.mkdir(path.dirname(path.resolve(values.output)), { recursive: true });
-    await fs.writeFile(values.output, json);
-  }
+  if (output) await writeAuditOutput(output, json);
+  for (const [label, cwd] of Object.entries(roots))
+    if (sourceTree(cwd) !== report.runs[label].sourceTree) throw new Error('Source tree changed while writing report.');
   console.log(json);
 }

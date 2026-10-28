@@ -1,6 +1,7 @@
 // Test-only ownership: acquire a single after hook before registering resources.
 // Shared fixture builders receive the same TestContext and therefore the same owner.
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 
 const owners = new WeakMap();
 
@@ -72,4 +73,14 @@ export function ownedFixture(context) {
   });
   owners.set(context, owner);
   return owner;
+}
+
+/** Create an owned workspace at its physical path, preserving the caller's complete prefix. */
+export async function makeTemporaryDirectory(prefix) {
+  return fs.realpath(await fs.mkdtemp(prefix));
+}
+
+/** Synchronous physical workspace creation for fixtures that initialize before test registration. */
+export function makeTemporaryDirectorySync(prefix) {
+  return fsSync.realpathSync.native(fsSync.mkdtempSync(prefix));
 }

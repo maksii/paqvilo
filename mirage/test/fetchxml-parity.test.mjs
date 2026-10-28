@@ -9,7 +9,7 @@ import { DataStore } from '../lib/data.mjs';
 import { fixedClock } from '../lib/runtime-clock.mjs';
 import { createPortalRenderer } from '../lib/liquid.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const DAY = 24 * 60 * 60 * 1000;
@@ -542,7 +542,7 @@ test('count/page paging cookies round-trip through Liquid and stay XML-attribute
 });
 
 test('Web API FetchXML publishes the documented paging cookie wrapper and continuation', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-fetch-parity-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-fetch-parity-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Fetch parity\n');
   await fs.writeFile(

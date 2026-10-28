@@ -9,18 +9,27 @@ import { processIdentities, processIdentity, isAlive } from '../lense/commands/m
 // The process a non-administrator cannot open on this OS: System on Windows, init on POSIX.
 const SYSTEM_PID = process.platform === 'win32' ? 4 : 1;
 
-test('batched process identities match single reads for live, missing and system processes', async () => {
-  const exited = spawn(process.execPath, ['-e', ''], { stdio: 'ignore', windowsHide: true });
-  await once(exited, 'exit');
-  // An exited child's PID is missing unless the OS already reused it, which the per-PID comparison still covers.
-  const pids = [process.pid, exited.pid, SYSTEM_PID];
+test('batched process identities match single reads for owned live and system processes', async (t) => {
+  const child = spawn(process.execPath, ['-e', "process.stdout.write('ready');process.stdin.resume()"], {
+    stdio: ['pipe', 'pipe', 'ignore'],
+    windowsHide: true,
+  });
+  const closed = once(child, 'close');
+  t.after(async () => {
+    child.stdin.end();
+    await closed;
+  });
+  await once(child.stdout, 'data');
+  // Hold the child's PID throughout both observations: an exited PID can be reused between OS reads.
+  const pids = [process.pid, child.pid, SYSTEM_PID];
   const single = new Map(pids.map((pid) => [pid, processIdentity(pid)]));
   // More than one PID takes the batched path; repeats and invalid PIDs are ignored as before.
   const batched = processIdentities([...pids, process.pid, 0, -1, 1.5]);
   assert.deepEqual([...batched.keys()], pids);
   assert.deepEqual(batched, single);
   assert.match(batched.get(process.pid), /\S/, 'a live process has a readable identity');
-  if (!isAlive(exited.pid)) assert.equal(batched.get(exited.pid), null, 'a missing process has no identity');
+  assert.match(batched.get(child.pid), /\S/, 'an owned live child has a readable identity');
+  assert.equal(isAlive(child.pid), true, 'the owned PID remains allocated through the observations');
 });
 
 function processPlatform(t, platform, execute) {
@@ -34,6 +43,23 @@ function processPlatform(t, platform, execute) {
     syncBuiltinESMExports();
   });
 }
+
+for (const platform of ['win32', 'linux'])
+  test(`${platform} identities return null for missing processes without assuming a dead PID stays unused`, (t) => {
+    processPlatform(t, platform, () => ({ status: 1, stdout: '' }));
+    if (platform === 'linux')
+      t.mock.method(fs, 'readFileSync', () => {
+        throw Object.assign(Error('Invented missing process'), { code: 'ENOENT' });
+      });
+    assert.equal(processIdentity(110), null);
+    assert.deepEqual(
+      processIdentities([110, 120]),
+      new Map([
+        [110, null],
+        [120, null],
+      ]),
+    );
+  });
 
 test('Windows batching filters PIDs, retains unread identities and falls back only for omitted rows', (t) => {
   const calls = [];

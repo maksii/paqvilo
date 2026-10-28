@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { startMcpServer } from '../mcp-stdio.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SERVER = `
 import readline from "node:readline";
@@ -30,7 +31,7 @@ test(
   'MCP stdio client round trips, surfaces errors, times out and closes the child',
   { timeout: 30_000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mcp-stdio-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mcp-stdio-'));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const script = path.join(directory, 'server.mjs');
     const marker = path.join(directory, 'marker.txt');

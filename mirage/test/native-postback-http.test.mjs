@@ -6,6 +6,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { createSimulator } from '../server.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(
   t,
@@ -18,7 +19,7 @@ async function fixture(
     attachments = false,
   } = {},
 ) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-postback-http-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-postback-http-'));
   const files = {
     'website.yml': 'adx_websiteid: fixture-site\nadx_name: Invented native transport',
     'Home.webpage.yml':

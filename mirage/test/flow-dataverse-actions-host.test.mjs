@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const UNBOUND = '77777777-7777-4777-8777-0000000000d1',
   BOUND = '77777777-7777-4777-8777-0000000000d2';
@@ -59,7 +59,7 @@ const files = {
 };
 
 async function host(t, profile) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-dv-actions-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-dv-actions-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const write = async (dir, entries) => {
     for (const [name, text] of Object.entries(entries)) {

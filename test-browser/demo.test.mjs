@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 // Exercise the newcomer command itself, including browser launch and owned runtime cleanup.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,7 +18,7 @@ test(
   'demo command opens a populated browser, supports the walkthrough and stops its Mirage',
   { timeout: 180_000 },
   async (t) => {
-    const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-demo-browser-'));
+    const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-demo-browser-'));
     const directory = path.join(work, 'example');
     const debugPort = await freeDebugPort();
     const cli = process.env.PAQVILO_DEMO_CLI || fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));

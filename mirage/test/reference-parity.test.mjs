@@ -8,7 +8,7 @@ import path from 'node:path';
 import { normalizeContract, compareReferenceContracts } from '../reference-parity.mjs';
 import { createSimulator } from '../server.mjs';
 import { createPortalSession } from '../testing/sessions.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('reference projections preserve nulls, missing-field errors, ordering and explicit status-only checks', () => {
   const plan = { collection: 'value', fields: ['id', 'name'], unordered: true };
@@ -72,7 +72,7 @@ test('malformed reference options fail before local or reference reads instead o
 });
 
 test('reference parity uses explicit local visitors, membership and override roles without changing runtime identity', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'reference-visitor-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'reference-visitor-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_name: Parity fixture\nadx_websiteid: site',
@@ -198,7 +198,7 @@ test('reference parity uses explicit local visitors, membership and override rol
 });
 
 test('reference runner detects JSON/status/state mismatches, rejects writes and redacts query values', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'reference-contract-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'reference-contract-'));
   let revision = 1,
     localReads = 0;
   const anonymousCookie = 'fixture-visitor=private-anonymous-session';
@@ -303,7 +303,7 @@ test('reference runner detects JSON/status/state mismatches, rejects writes and 
 });
 
 test('anonymous parity requires session controls and refuses runtime-state redirects before reference access', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'reference-session-guard-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'reference-session-guard-'));
   let forwardedRequests = 0,
     referenceRequests = 0,
     redirect = true;

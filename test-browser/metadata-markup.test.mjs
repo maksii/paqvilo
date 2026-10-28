@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 // Offline YAML field overlays in a real DOM.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +15,7 @@ test(
   'real browser: discovered YAML footer and localized form markup apply after safe edits and refresh',
   { timeout: 45_000 },
   async (t) => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-metadata-browser-'));
+    const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-metadata-browser-'));
     let browser;
     t.after(async () => {
       await browser?.close();

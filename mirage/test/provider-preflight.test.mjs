@@ -14,11 +14,12 @@ import { preflight } from '../lib/capability-report.mjs';
 import { assertProvider, preflightProvider } from '../lib/storage-provider.mjs';
 import { createMemoryStorage } from '../lib/storage-memory.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const MEMORY = new URL('../lib/storage-memory.mjs', import.meta.url).href;
 
 async function fixture(t, packSource) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'provider-preflight-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'provider-preflight-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'solution', 'Other'), { recursive: true });
   await fs.writeFile(
@@ -128,7 +129,7 @@ test('preflightProvider is bounded and the contract checks its shape', async (t)
     () => assertProvider(Object.assign(createMemoryStorage({ id: 'fx-bad' }), { preflight: true })),
     /preflight must be a function/,
   );
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'provider-preflight-disk-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'provider-preflight-disk-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const disk = createLocalDiskStorage({ root: path.join(root, 'blobs'), id: 'fx-disk' });
   assert.deepEqual(await preflightProvider(disk), { ready: true, reason: null });

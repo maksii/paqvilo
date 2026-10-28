@@ -6,10 +6,10 @@ import os from 'node:os';
 import http from 'node:http';
 import { createSimulator } from '../api.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-audit-runtime-api-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-audit-runtime-api-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: invented\nadx_name: Runtime audit',
