@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { once } from 'node:events';
+import { listenOwnedServer } from './helpers/owned-server.mjs';
 import { chromium } from 'playwright-core';
 import { OverlaySession } from '../lense/session.mjs';
 import { attachSession } from '../lense/browser.mjs';
@@ -53,21 +53,13 @@ test(
     ownedFixture(t).add(async () => {
       await browser?.close();
     });
-    ownedFixture(t).add(async () => {
-      server.closeAllConnections();
-    });
-    ownedFixture(t).add(async () => {
-      await new Promise((resolve) => server.close(resolve));
-    });
     ownedFixture(t).remove(async () => {
       fx.cleanup();
     });
     ownedFixture(t).remove(async () => {
       fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    origin = `http://127.0.0.1:${server.address().port}`;
+    origin = await listenOwnedServer(t, server);
     const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
     browser = await chromium.launch({
       channel: channel === 'chromium' ? undefined : channel,

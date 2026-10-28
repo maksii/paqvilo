@@ -451,13 +451,14 @@ export function fullSdkGate(scope, platform = process.platform) {
 async function verifySdkGates() {
   requireDotnet();
   requireSdkClients();
-  const { requireSdkFixtures } = await import('./sdk-preparation.mjs');
+  const { requireSdkFixtures, auditServiceClientDependencies } = await import('./sdk-preparation.mjs');
   await requireSdkFixtures(root);
   environment('PAQ_TEST_REQUIRE_SDK_GATES', '1');
   execute('dotnet', ['restore', 'mirage/test-sdk/cert-auth/Gate/Gate.csproj', '--locked-mode']);
   for (const project of ['tds', 'dynamics-web-api', 'cert-auth'])
     npm(['--prefix', 'mirage/test-sdk/' + project, 'test']);
   execute('dotnet', ['restore', 'mirage/test-sdk/serviceclient/Gate/Gate.csproj', '--locked-mode']);
+  await auditServiceClientDependencies({ root, execute });
   execute(process.execPath, ['--test', '--test-timeout=600000', 'mirage/test-sdk/serviceclient/gate.test.mjs'], {
     env: { ...process.env, PAQ_TEST_REQUIRE_SDK_GATES: '1' },
   });

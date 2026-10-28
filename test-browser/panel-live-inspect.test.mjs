@@ -5,13 +5,30 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import { once } from 'node:events';
+import { listenOwnedServer } from './helpers/owned-server.mjs';
 import { chromium } from 'playwright-core';
 import { OverlaySession } from '../lense/session.mjs';
 import { attachSession } from '../lense/browser.mjs';
 import { enablePanel } from '../lense/panel.mjs';
 import { SITE } from '../test/fixture.mjs';
 import { inspectionFixture, addNativeInspectionFixture } from '../test/source-inspection-fixture.mjs';
+
+function launchInspectBrowser() {
+  const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+  return chromium.launch({
+    channel: channel === 'chromium' ? undefined : channel,
+    headless: true,
+    args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
+  });
+}
+
+async function prepareInspectPage(context, session) {
+  const page = await context.newPage();
+  // Existing pages are awaited by attachSession; later pages attach in the
+  // background and may replace an already-loaded native document afterward.
+  const detach = await attachSession(context, session);
+  return { page, detach };
+}
 
 test(
   'live Inspect works without Mirage and opens exact project Solution sources, locates controls and refreshes navigation',
@@ -79,24 +96,11 @@ test(
     ownedFixture(t).add(async () => {
       await browser?.close();
     });
-    ownedFixture(t).add(async () => {
-      server.closeAllConnections();
-    });
-    ownedFixture(t).add(async () => {
-      await new Promise((resolve) => server.close(resolve));
-    });
     ownedFixture(t).remove(async () => {
       fx.cleanup();
     });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    const origin = `http://127.0.0.1:${server.address().port}`;
-    const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
-    browser = await chromium.launch({
-      channel: channel === 'chromium' ? undefined : channel,
-      headless: true,
-      args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
-    });
+    const origin = await listenOwnedServer(t, server);
+    browser = await launchInspectBrowser();
     const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1440, height: 1000 } });
     context.setDefaultTimeout(12_000);
     await context.route('**/*', (route) =>
@@ -113,7 +117,9 @@ test(
       browser: {},
       mirageConfig: { project: fx.project },
     });
-    detach = await attachSession(context, session);
+    const readyPage = await prepareInspectPage(context, session);
+    const { page } = readyPage;
+    detach = readyPage.detach;
     panel = enablePanel(context, session, {
       open: async (...args) => {
         opened.push(args);
@@ -121,7 +127,6 @@ test(
         return null;
       },
     });
-    const page = await context.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
     // Resolves with the source the panel asked the editor to open after one click.
     const openedBy = async (locator) => {
@@ -277,5 +282,77 @@ test(
       false,
     );
     assert.deepEqual(errors, []);
+  },
+);
+
+test(
+  'live Inspect fixture awaits real interception setup before application evidence can be captured',
+  { timeout: 30000 },
+  async (t) => {
+    const fx = inspectionFixture();
+    fs.appendFileSync(path.join(fx.portal, 'web-files/widget.js'), '\nfetch("/_api/fx_widgets");');
+    const held = Promise.withResolvers(),
+      release = Promise.withResolvers();
+    let browser, preparing, detach;
+    const owner = ownedFixture(t);
+    owner.add(async () => {
+      release.resolve();
+      if (preparing) detach = (await preparing).detach;
+      await detach?.();
+    });
+    owner.add(() => browser?.close());
+    const server = http.createServer((request, response) => {
+      if (request.url === '/widget.js')
+        return response.writeHead(200, { 'content-type': 'text/javascript' }).end('window.widgetFeature = false;');
+      if (request.url.startsWith('/_api/'))
+        return response.writeHead(200, { 'content-type': 'application/json' }).end('{"value":[]}');
+      response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><script src="/widget.js"></script>');
+    });
+    owner.remove(() => fx.cleanup());
+    const origin = await listenOwnedServer(t, server);
+    browser = await launchInspectBrowser();
+    const context = await browser.newContext();
+    context.setDefaultTimeout(12000);
+    const createCDP = context.newCDPSession.bind(context);
+    t.mock.method(context, 'newCDPSession', async (...args) => {
+      const cdp = await createCDP(...args),
+        send = cdp.send.bind(cdp);
+      t.mock.method(cdp, 'send', async (method, ...values) => {
+        if (method === 'Fetch.enable') {
+          held.resolve();
+          await release.promise;
+        }
+        return send(method, ...values);
+      });
+      return cdp;
+    });
+    const session = new OverlaySession({
+      sourceDir: fx.portal,
+      origin,
+      site: structuredClone(SITE),
+      sourceMaps: false,
+      browser: {},
+    });
+    let prepared = false;
+    preparing = prepareInspectPage(context, session).then((result) => {
+      prepared = true;
+      return result;
+    });
+    preparing.catch(() => {}); // The owned cleanup also awaits this preparation if an assertion fails.
+    await held.promise;
+    assert.equal(prepared, false, 'a held real Fetch setup cannot publish a ready fixture');
+    release.resolve();
+    const { page } = await preparing;
+    await page.goto(origin);
+    await page.waitForFunction(
+      () =>
+        window.widgetFeature === true &&
+        performance.getEntriesByType('resource').some((entry) => entry.name.includes('/_api/fx_widgets')),
+    );
+    assert.equal(await page.evaluate(() => window.widgetFeature), true, 'the selected local script actually ran');
+    assert.equal(
+      session.pageHits.get(page).some((hit) => hit.type === 'file' && hit.url === '/widget.js'),
+      true,
+    );
   },
 );

@@ -6,12 +6,7 @@ import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import {
-  makeTemporaryDirectory,
-  ownedFixture,
-  removeFixtureDirectory,
-  assertTemporaryDirectory,
-} from '../mirage/testing/owned-fixture.mjs';
+import { browserWorkspace } from '../test/browser-workspace.mjs';
 import { DEFAULT_DISABLED_FEATURES, BACKPORTED_DISABLED_FEATURES } from '../test/browser-backport.mjs';
 
 const execute = promisify(execFile);
@@ -23,12 +18,7 @@ test(
   'effective CDP arguments retain browser defaults and real HTTP across package copies and persistent launches',
   { timeout: 180000 },
   async (t) => {
-    const directory = await makeTemporaryDirectory(path.join(root, '.paqvilo/browser-backport-'));
-    ownedFixture(t).remove(async () =>
-      removeFixtureDirectory(
-        await assertTemporaryDirectory(directory, { parent: path.join(root, '.paqvilo'), directChild: true }),
-      ),
-    );
+    const directory = await browserWorkspace(t);
     const third = path.join(directory, 'example/node_modules/playwright-core');
     await fs.cp(path.dirname(require.resolve('playwright-core/package.json')), third, { recursive: true });
     const script = path.join(directory, 'probe.mjs');

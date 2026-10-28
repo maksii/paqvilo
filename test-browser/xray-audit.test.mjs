@@ -5,6 +5,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 const column = (entity, name) => ({ entity, name, label: name, ref: `@solution/${entity}.xml`, resolved: true });
 const base = {
@@ -130,6 +131,33 @@ async function selectLateShadow({ pick, field, xray }) {
     assert.ok(Math.abs(geometry.target[key] - geometry.outline[key]) <= 2, key);
 }
 
+async function loadAuditFixture(page) {
+  const deadline = performance.now() + 2500;
+  const remaining = () => {
+    const value = deadline - performance.now();
+    if (value <= 0) throw new Error('The X-ray fixture DOM was not ready within 2500 ms.');
+    return value;
+  };
+  await page.goto('http://127.0.0.1:11887/', { waitUntil: 'commit', timeout: remaining() });
+  await page.locator('css:light=[data-audit-fixture-ready]').waitFor({ state: 'attached', timeout: remaining() });
+}
+
+async function selectedGeometry(page, selector) {
+  return page.locator('css:light=#paqvilo-xray').evaluate((host, selector) => {
+    const target = document.querySelector(selector);
+    const outline = host.shadowRoot.querySelector('.selected');
+    const box = outline?.getBoundingClientRect();
+    const style = outline && getComputedStyle(outline);
+    const visible =
+      box && box.width > 0 && box.height > 0 && style.visibility === 'visible' && style.display !== 'none';
+    return {
+      target: target?.getBoundingClientRect().toJSON(),
+      outline: visible ? box.toJSON() : null,
+      evidence: host.__px.selection()?.evidence,
+    };
+  }, selector);
+}
+
 // Each case uses its own browser context, so cases run concurrently in one browser.
 test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurrency: 4 }, async (t) => {
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -154,10 +182,14 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurr
     }
   });
   const cases = [];
-  const scenario = (id, title, html, run, report = base, { beforeXray } = {}) => {
+  const scenario = (id, title, html, run, report = base, { beforeXray, preparePage, tail = '' } = {}) => {
     cases.push(
       t.test(`${id} ${title}`, async (scenarioContext) => {
-        const context = await browser.newContext({ viewport: { width: 1400, height: 1000 }, serviceWorkers: 'block' });
+        let context, fixtureControl;
+        const owner = ownedFixture(scenarioContext);
+        owner.add(() => fixtureControl?.cleanup?.());
+        owner.add(() => context?.close());
+        context = await browser.newContext({ viewport: { width: 1400, height: 1000 }, serviceWorkers: 'block' });
         context.setDefaultTimeout(2500);
         await context.route('**/*', (route) => route.abort());
         const page = await context.newPage(),
@@ -167,9 +199,13 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurr
         results.push(row);
         try {
           await page.route('http://127.0.0.1:11887/**', (route) =>
-            route.fulfill({ contentType: 'text/html', body: style + `<div class="case">${html}</div>` }),
+            route.fulfill({
+              contentType: 'text/html',
+              body: style + `<div class="case">${html}</div><div data-audit-fixture-ready hidden></div>` + tail,
+            }),
           );
-          await page.goto('http://127.0.0.1:11887/', { waitUntil: 'domcontentloaded' });
+          fixtureControl = await preparePage?.(page);
+          await loadAuditFixture(page);
           await beforeXray?.(page);
           const data = { origin: 'http://127.0.0.1:11887', token: 'invented-audit-session' };
           await page.evaluate(xrayUi, data);
@@ -221,6 +257,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurr
             field,
             painted,
             wheeled,
+            fixtureControl,
             diagnostic: (message) => scenarioContext.diagnostic(message),
           });
           assert.deepEqual(errors, [], 'no browser errors');
@@ -234,9 +271,21 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurr
         } catch (error) {
           row.status = 'failed';
           row.error = String(error.message).slice(0, 1500);
+          const fixtureSnapshot = await page
+            .locator(':root')
+            .evaluate(
+              () => ({
+                readyState: document.readyState,
+                fixtureReady: Boolean(document.querySelector('[data-audit-fixture-ready]')),
+                fixtureField: Boolean(document.getElementById('fixture-field')),
+                xrayPresent: Boolean(document.getElementById('paqvilo-xray')),
+              }),
+              null,
+              { timeout: 2500 },
+            )
+            .catch(() => ({ unavailable: true }));
+          scenarioContext.diagnostic(JSON.stringify({ id, fixtureSnapshot }));
           throw error;
-        } finally {
-          await context.close();
         }
       }),
     );
@@ -426,11 +475,10 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurr
     'G01',
     'Viewport-fixed child escapes an untransformed overflow ancestor',
     '<div style="height:80px;width:80px;overflow:hidden"><button id="fixed" style="position:fixed;left:350px;top:300px">Fixed</button></div>',
-    async ({ page, pick, xray, painted }) => {
+    async ({ page, pick, painted }) => {
       await pick('#fixed');
       await painted();
-      const a = await page.locator('#fixed').boundingBox(),
-        b = await xray.locator('.selected').boundingBox();
+      const { target: a, outline: b } = await selectedGeometry(page, '#fixed');
       assert.ok(b, 'visible fixed element has an outline');
       assert.ok(Math.abs(a.x - b.x) < 2 && Math.abs(a.width - b.width) < 2);
     },
@@ -1036,6 +1084,80 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurr
       await pick('#audit_first');
       assert.equal(await xray.locator('[data-inspection-evidence]').getAttribute('data-owner-status'), 'candidate');
       assert.equal(await xray.locator('[data-evidence-role=alternatives] .ie-row').count(), 1);
+    },
+  );
+
+  scenario(
+    'D11',
+    'The actual fixture DOM is inspectable before an unrelated parser-blocking script finishes',
+    '<div data-entityname="audit_a"><input id="fixture-field" data-field="audit_first"></div>',
+    async ({ page, pick, field, painted, fixtureControl }) => {
+      await fixtureControl.requested;
+      assert.equal(await page.evaluate(() => document.readyState), 'loading');
+      assert.equal(await page.locator('css:light=[data-audit-fixture-ready]').count(), 1);
+      await pick('#fixture-field');
+      await field('audit_a.audit_first');
+      await painted();
+      const { target, outline, evidence } = await selectedGeometry(page, '#fixture-field');
+      assert.equal(evidence.owner.status, 'candidate');
+      assert.deepEqual(
+        evidence.candidates.map((row) => row.component),
+        [{ kind: 'field', key: 'column:audit_a:audit_first', entity: 'audit_a', name: 'audit_first' }],
+      );
+      assert.equal(evidence.source.status, 'candidate');
+      assert.deepEqual(
+        evidence.source.refs.map(({ ref, status }) => ({ ref, status })),
+        [{ ref: 'templates/fixture.html', status: 'candidate' }],
+      );
+      assert.ok(outline, 'a visible positive outline exists while document load is still held');
+      assert.ok(Math.abs(target.x - outline.x) < 2 && Math.abs(target.width - outline.width) < 2);
+      assert.equal(await page.evaluate(() => document.readyState), 'loading');
+      fixtureControl.release();
+      await page.waitForLoadState('domcontentloaded');
+    },
+    {
+      ...base,
+      elementSources: [
+        { selector: '#fixture-field', kind: 'template', name: 'Fixture source', ref: 'templates/fixture.html' },
+      ],
+    },
+    {
+      tail: '<script src="/fixture-startup-tail.js"></script>',
+      preparePage: async (page) => {
+        const requested = Promise.withResolvers(),
+          released = Promise.withResolvers();
+        await page.route('http://127.0.0.1:11887/fixture-startup-tail.js', async (route) => {
+          requested.resolve();
+          await released.promise;
+          await route.fulfill({ contentType: 'text/javascript', body: 'window.fixtureTailFinished = true;' });
+        });
+        return {
+          requested: requested.promise,
+          release: () => released.resolve(),
+          cleanup: async () => {
+            released.resolve();
+            await page.unrouteAll({ behavior: 'wait' });
+          },
+        };
+      },
+    },
+  );
+
+  scenario(
+    'G12',
+    'An atomic visible geometry snapshot does not walk unrelated padding shadow roots',
+    '<div style="height:80px;width:80px;overflow:hidden"><button id="fixed" style="position:fixed;left:350px;top:300px">Fixed</button></div><div id="padding" hidden></div>',
+    async ({ page, pick, painted }) => {
+      await page.locator('css:light=#padding').evaluate((node) => {
+        node.innerHTML = '<i></i>'.repeat(9000);
+      });
+      await pick('#fixed');
+      await painted();
+      await withoutPaddingShadowTraversal(page, async () => {
+        const { target, outline } = await selectedGeometry(page, '#fixed');
+        assert.ok(outline, 'the actual selected mark has a visible positive box');
+        assert.ok(Math.abs(target.x - outline.x) < 2 && Math.abs(target.width - outline.width) < 2);
+      });
     },
   );
   await Promise.all(cases);

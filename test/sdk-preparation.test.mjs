@@ -6,11 +6,205 @@ import path from 'node:path';
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
 import { createHash } from 'node:crypto';
-import { prepareSdkFixtures, requireSdkFixtures, requireSdkSample } from '../scripts/sdk-preparation.mjs';
+import {
+  prepareSdkFixtures,
+  requireSdkFixtures,
+  requireSdkSample,
+  auditServiceClientDependencies,
+} from '../scripts/sdk-preparation.mjs';
 
 const pin = '8e42f87026f4c93d7e468f28416f5852375d325a';
 const hashed = `msal==1.39.0 --hash=sha256:${'a'.repeat(64)}\n`;
 const sha = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+function nugetFixture(t) {
+  const files = fixture(t);
+  const project = path.join(files.root, 'mirage/test-sdk/serviceclient/Gate/Gate.csproj');
+  fs.mkdirSync(path.dirname(project), { recursive: true });
+  fs.writeFileSync(project, '<Project Sdk="Microsoft.NET.Sdk" />');
+  fs.writeFileSync(
+    path.join(path.dirname(project), 'packages.lock.json'),
+    JSON.stringify({
+      dependencies: {
+        'net10.0': {
+          'Invented.Direct': { type: 'Direct', resolved: '1.2.3' },
+          'Invented.Transitive': { type: 'Transitive', resolved: '4.5.6' },
+        },
+      },
+    }),
+  );
+  const inventory = {
+    version: 1,
+    parameters: '--include-transitive',
+    projects: [
+      {
+        path: project,
+        frameworks: [
+          {
+            framework: 'net10.0',
+            topLevelPackages: [{ id: 'Invented.Direct', resolvedVersion: '1.2.3' }],
+            transitivePackages: [{ id: 'Invented.Transitive', resolvedVersion: '4.5.6' }],
+          },
+        ],
+      },
+    ],
+  };
+  const vulnerable = {
+    version: 1,
+    parameters: '--vulnerable --include-transitive',
+    sources: ['https://api.nuget.org/v3/index.json'],
+    projects: [{ path: project }],
+  };
+  const calls = [];
+  const execute = (command, args, options) => {
+    calls.push({ command, args, options });
+    return { status: 0, stdout: JSON.stringify(args.includes('--vulnerable') ? vulnerable : inventory), stderr: '' };
+  };
+  return { ...files, project, inventory, vulnerable, calls, execute };
+}
+
+test('NuGet audit requires a complete locked inventory before accepting the real clean-report shape', async (t) => {
+  const files = nugetFixture(t);
+  const result = await auditServiceClientDependencies({ root: files.root, execute: files.execute });
+  assert.deepEqual(result, {
+    projects: 1,
+    packages: 2,
+    advisoryRecords: 0,
+    project: sha(files.project),
+    lock: sha(path.join(path.dirname(files.project), 'packages.lock.json')),
+  });
+  assert.equal(files.calls.length, 2);
+  assert.ok(
+    files.calls.every(
+      (call) =>
+        call.command === 'dotnet' &&
+        call.args.includes('--include-transitive') &&
+        call.args.includes('--no-restore') &&
+        call.options.timeout === 120000,
+    ),
+  );
+  assert.equal(files.calls[0].args.includes('--vulnerable'), false);
+  assert.equal(files.calls[1].args.includes('--vulnerable'), true);
+});
+
+test('NuGet exit-zero reports still fail on direct or transitive advisories at every severity', async (t) => {
+  const files = nugetFixture(t);
+  for (const key of ['topLevelPackages', 'transitivePackages']) {
+    const dependency = files.inventory.projects[0].frameworks[0][key][0];
+    files.vulnerable.projects[0].frameworks = [
+      {
+        framework: 'net10.0',
+        [key]: [
+          {
+            ...dependency,
+            vulnerabilities: ['Low', 'Moderate', 'High', 'Critical'].map((severity) => ({
+              severity,
+              advisoryurl: 'https://example.invalid/invented-advisory',
+            })),
+          },
+        ],
+      },
+    ];
+    await assert.rejects(
+      auditServiceClientDependencies({ root: files.root, execute: files.execute }),
+      /4 advisory records: Invented/,
+    );
+  }
+});
+
+test('NuGet audit rejects missing frameworks, lock drift and malformed or unavailable audit results', async (t) => {
+  const files = nugetFixture(t);
+  const inventory = structuredClone(files.inventory),
+    vulnerable = structuredClone(files.vulnerable);
+  const mutations = [
+    () => {
+      delete files.inventory.projects[0].frameworks;
+    },
+    () => {
+      files.inventory.projects[0].frameworks = [];
+    },
+    () => {
+      files.inventory.projects[0].frameworks[0].transitivePackages = [];
+    },
+    () => {
+      files.inventory.projects[0].frameworks[0].topLevelPackages[0].resolvedVersion = 'stale';
+    },
+    () => {
+      files.vulnerable.projects = [];
+    },
+    () => {
+      files.vulnerable.projects[0].path = path.join(files.root, 'other.csproj');
+    },
+    () => {
+      files.vulnerable.sources = [];
+    },
+    () => {
+      files.vulnerable.sources = [null];
+    },
+    () => {
+      files.vulnerable.parameters = '--include-transitive';
+    },
+    () => {
+      files.vulnerable.problems = ['invented advisory service failure'];
+    },
+    () => {
+      files.vulnerable.projects[0].errors = ['invented project audit failure'];
+    },
+    () => {
+      files.vulnerable.projects[0].frameworks = [{ framework: 'net8.0' }];
+    },
+    () => {
+      files.vulnerable.projects[0].frameworks = {};
+    },
+  ];
+  for (const mutate of mutations) {
+    Object.assign(files.inventory, structuredClone(inventory));
+    for (const key of Object.keys(files.vulnerable)) delete files.vulnerable[key];
+    Object.assign(files.vulnerable, structuredClone(vulnerable));
+    mutate();
+    await assert.rejects(
+      auditServiceClientDependencies({ root: files.root, execute: files.execute }),
+      /incomplete report/,
+    );
+  }
+  for (const response of [
+    { status: 1, stdout: '', stderr: 'invented network failure' },
+    { status: 0, stdout: 'not JSON', stderr: '' },
+    { status: 0, stdout: JSON.stringify(inventory), stderr: 'warning NU1900: invented audit source unavailable' },
+    { status: 0, stdout: '{}', stderr: '' },
+  ])
+    await assert.rejects(auditServiceClientDependencies({ root: files.root, execute: () => response }), /audit/);
+  const lock = path.join(path.dirname(files.project), 'packages.lock.json');
+  for (const invalid of [[{}, {}], { 'Invented.Direct': {}, 'Invented.Transitive': {} }]) {
+    fs.writeFileSync(lock, JSON.stringify({ dependencies: { 'net10.0': invalid } }));
+    await assert.rejects(
+      auditServiceClientDependencies({
+        root: files.root,
+        execute: (_command, args) => ({
+          status: 0,
+          stdout: JSON.stringify(args.includes('--vulnerable') ? vulnerable : inventory),
+          stderr: '',
+        }),
+      }),
+      /incomplete report/,
+    );
+  }
+});
+
+test('NuGet audit revokes a clean result if the project changes during the check', async (t) => {
+  const files = nugetFixture(t);
+  await assert.rejects(
+    auditServiceClientDependencies({
+      root: files.root,
+      execute: (command, args, options) => {
+        const result = files.execute(command, args, options);
+        if (args.includes('--vulnerable')) fs.appendFileSync(files.project, '<!-- changed -->');
+        return result;
+      },
+    }),
+    /changed during the NuGet audit/,
+  );
+});
 
 function fixture(t) {
   const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paq-sdk-preparation-')));

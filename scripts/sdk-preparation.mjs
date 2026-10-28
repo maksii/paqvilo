@@ -8,6 +8,120 @@ const sampleRemote = 'https://github.com/microsoft/PowerApps-Samples.git';
 const sampleTree = 'dataverse/webapi/CSharp-NETx/WebAPIService';
 const canonicalName = (name) => name.toLowerCase().replace(/[-_.]+/g, '-');
 const digest = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+
+/** NuGet's vulnerable-package command exits zero even when it reports advisories. */
+export async function auditServiceClientDependencies({ root, execute = spawnSync }) {
+  root = fs.realpathSync.native(root);
+  const project = path.join(root, 'mirage/test-sdk/serviceclient/Gate/Gate.csproj');
+  const lock = path.join(path.dirname(project), 'packages.lock.json');
+  const qualification = { project: digest(project), lock: digest(lock) };
+  const malformed = () => {
+    throw new Error('ServiceClient NuGet vulnerability audit returned an incomplete report.');
+  };
+  const diagnostics = (value) => {
+    if (value.error) malformed();
+    for (const key of ['errors', 'problems', 'logs'])
+      if (value[key] !== undefined && (!Array.isArray(value[key]) || value[key].length)) malformed();
+  };
+  const read = async (vulnerable) => {
+    const result = await execute(
+      'dotnet',
+      [
+        'list',
+        project,
+        'package',
+        ...(vulnerable ? ['--vulnerable'] : []),
+        '--include-transitive',
+        '--format',
+        'json',
+        '--no-restore',
+      ],
+      { cwd: root, encoding: 'utf8', stdio: 'pipe', timeout: 120_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true },
+    );
+    if (result?.error || result?.status !== 0 || typeof result.stdout !== 'string' || result.stderr?.trim())
+      throw new Error('ServiceClient NuGet vulnerability audit failed or returned diagnostics.');
+    let report;
+    try {
+      report = JSON.parse(result.stdout);
+    } catch {
+      throw new Error('ServiceClient NuGet vulnerability audit returned invalid JSON.');
+    }
+    if (
+      report?.version !== 1 ||
+      typeof report.parameters !== 'string' ||
+      !report.parameters.split(/\s+/).includes('--include-transitive') ||
+      (vulnerable &&
+        (!report.parameters.split(/\s+/).includes('--vulnerable') ||
+          !Array.isArray(report.sources) ||
+          !report.sources.length ||
+          report.sources.some((source) => typeof source !== 'string' || !source.trim()))) ||
+      !Array.isArray(report.projects) ||
+      report.projects.length !== 1 ||
+      report.error
+    )
+      malformed();
+    diagnostics(report);
+    const selected = report.projects[0];
+    if (typeof selected?.path !== 'string' || path.relative(project, path.resolve(root, selected.path))) malformed();
+    diagnostics(selected);
+    if (selected.frameworks !== undefined && !Array.isArray(selected.frameworks)) malformed();
+    return selected;
+  };
+  const inventory = await read(false);
+  if (inventory.frameworks?.length !== 1 || inventory.frameworks[0]?.framework !== 'net10.0') malformed();
+  const framework = inventory.frameworks[0];
+  diagnostics(framework);
+  if (
+    !Array.isArray(framework.topLevelPackages) ||
+    !framework.topLevelPackages.length ||
+    !Array.isArray(framework.transitivePackages)
+  )
+    malformed();
+  const resolved = new Map();
+  for (const dependency of [...framework.topLevelPackages, ...framework.transitivePackages]) {
+    if (
+      typeof dependency?.id !== 'string' ||
+      typeof dependency.resolvedVersion !== 'string' ||
+      resolved.has(dependency.id.toLowerCase())
+    )
+      malformed();
+    resolved.set(dependency.id.toLowerCase(), dependency.resolvedVersion);
+  }
+  const locked = JSON.parse(fs.readFileSync(lock, 'utf8')).dependencies?.['net10.0'];
+  if (!locked || typeof locked !== 'object' || Array.isArray(locked) || Object.keys(locked).length !== resolved.size)
+    malformed();
+  for (const [name, dependency] of Object.entries(locked))
+    if (typeof dependency?.resolved !== 'string' || resolved.get(name.toLowerCase()) !== dependency.resolved)
+      malformed();
+  const selected = await read(true);
+  const affected = [];
+  // A clean NuGet JSON-v1 report omits frameworks entirely for this project.
+  for (const framework of selected.frameworks || []) {
+    if (framework?.framework !== 'net10.0') malformed();
+    diagnostics(framework);
+    for (const key of ['topLevelPackages', 'transitivePackages']) {
+      if (framework[key] !== undefined && !Array.isArray(framework[key])) malformed();
+      for (const dependency of framework[key] || []) {
+        if (
+          typeof dependency?.id !== 'string' ||
+          typeof dependency.resolvedVersion !== 'string' ||
+          resolved.get(dependency.id.toLowerCase()) !== dependency.resolvedVersion ||
+          !Array.isArray(dependency.vulnerabilities) ||
+          !dependency.vulnerabilities.length
+        )
+          malformed();
+        affected.push({ id: dependency.id, records: dependency.vulnerabilities.length });
+      }
+    }
+  }
+  if (affected.length)
+    throw new Error(
+      `ServiceClient NuGet audit found ${affected.reduce((sum, item) => sum + item.records, 0)} advisory records: ${affected.map((item) => item.id).join(', ')}`,
+    );
+  if (digest(project) !== qualification.project || digest(lock) !== qualification.lock)
+    throw new Error('ServiceClient project or lock changed during the NuGet audit.');
+  return { projects: 1, packages: resolved.size, advisoryRecords: 0, ...qualification };
+}
 const pythonInventory = String.raw`
 import base64, csv, hashlib, importlib.metadata, io, json, platform, sys
 expected=json.loads(sys.argv[1])

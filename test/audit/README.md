@@ -2,6 +2,8 @@
 
 The [0.9.8 finalization](0.9.8-finalization.md) consolidates the two new review rounds, the additional hosted-failure reviews, their fixes and controlled evidence, retained scope, and required final validation. The partition tables below are historical snapshots of the original audit. The [earlier 0.9.8 follow-up](0.9.8-follow-up.md) retains its commit-specific quality and performance measurements and observations; those results do not qualify later changes.
 
+The latest revalidation records cover [Lense fixtures](ci-round6-lense-fixtures.md), [inspection and startup](ci-round6-inspection-startup.md), [Xray](ci-round6-xray.md), [acceptance navigation](ci-round6-acceptance-no-content.md) and [ServiceClient advisories](ci-round6-nuget.md). They preserve failed controls and distinguish focused local evidence from final-head qualification.
+
 Every test file in the toolkit was reviewed against the behaviour it claims to cover: Lense unit (`test/`) and browser
 (`test-browser/`) suites, Mirage unit (`mirage/test/`) and browser (`mirage/test-browser/`) suites, the example
 projects, the SDK client gates (`mirage/test-sdk/`), the volume checks (`mirage/test-volume/`), CI workflows and the
