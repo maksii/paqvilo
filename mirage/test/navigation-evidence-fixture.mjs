@@ -33,36 +33,96 @@ const request = (row) => ({
   durationMs: number(row.durationMs),
   elapsedMs: number(row.elapsedMs),
 });
+const sameIdentity = (left, right) => left.dev === right.dev && left.ino === right.ino;
+const ordinaryFile = (entry) => entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1n;
 
 async function ordinaryDirectory(directory) {
   await fs.mkdir(directory, { recursive: true });
-  const entry = await fs.lstat(directory);
+  const entry = await fs.lstat(directory, { bigint: true });
   if (!entry.isDirectory() || entry.isSymbolicLink()) throw Error('Synthetic evidence directories must not be links.');
+  return entry;
 }
 
-async function readArtifact(directory, name, maximum) {
+async function readArtifact(directory, sourceEntry, name, maximum) {
   const file = path.join(directory, name);
-  let entry;
+  let handle;
   try {
-    entry = await fs.lstat(file);
+    handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
-  if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1 || entry.size > maximum)
-    throw Error('Synthetic navigation artifact must be an ordinary bounded file.');
-  if (path.relative(directory, await fs.realpath(file)) !== name)
-    throw Error('Synthetic navigation artifact escaped its owned directory.');
-  const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
-    const opened = await handle.stat();
-    if (opened.dev !== entry.dev || opened.ino !== entry.ino || opened.nlink !== 1 || opened.size > maximum)
+    const opened = await handle.stat({ bigint: true });
+    const ordinary = (entry) => ordinaryFile(entry) && entry.size <= BigInt(maximum);
+    if (!ordinary(opened)) throw Error('Synthetic navigation artifact must be an ordinary bounded file.');
+    const assertSource = async () => {
+      const current = await fs.lstat(directory, { bigint: true });
+      if (!current.isDirectory() || current.isSymbolicLink() || !sameIdentity(current, sourceEntry))
+        throw Error('Synthetic navigation source directory changed while opening.');
+      if (path.relative(directory, await fs.realpath(directory)))
+        throw Error('Synthetic navigation source directory changed or escaped its owned root.');
+    };
+    await assertSource();
+    const entry = await fs.lstat(file, { bigint: true });
+    if (!ordinary(entry)) throw Error('Synthetic navigation artifact must be an ordinary bounded file.');
+    if (path.relative(directory, await fs.realpath(file)) !== name)
+      throw Error('Synthetic navigation artifact escaped its owned directory.');
+    const current = await fs.lstat(file, { bigint: true });
+    if (
+      !ordinary(current) ||
+      [entry, current].some((candidate) => candidate.dev !== opened.dev || candidate.ino !== opened.ino)
+    )
       throw Error('Synthetic navigation artifact changed while opening.');
-    const bytes = await handle.readFile();
-    if (bytes.length > maximum) throw Error('Synthetic navigation artifact exceeds its bound.');
-    return bytes;
+    // A fixed buffer also bounds a file that grows after the metadata checks; read only this verified descriptor.
+    const buffer = Buffer.alloc(maximum + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (!bytesRead) break;
+      length += bytesRead;
+    }
+    if (length > maximum) throw Error('Synthetic navigation artifact exceeds its bound.');
+    await assertSource();
+    return buffer.subarray(0, length);
   } finally {
     await handle.close();
+  }
+}
+
+async function discardArtifact(file, opened) {
+  try {
+    const current = await fs.lstat(file, { bigint: true });
+    if (ordinaryFile(current) && sameIdentity(current, opened)) await fs.unlink(file);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+}
+
+async function writeArtifact(directory, name, bytes, assertPublication) {
+  const file = path.join(directory, name);
+  let handle, opened;
+  let complete = false;
+  try {
+    await assertPublication();
+    handle = await fs.open(file, 'wx', 0o600);
+    opened = await handle.stat({ bigint: true });
+    await assertPublication();
+    const assertLeaf = async () => {
+      const entry = await fs.lstat(file, { bigint: true });
+      if (!ordinaryFile(opened) || !ordinaryFile(entry) || !sameIdentity(opened, entry))
+        throw Error('Synthetic navigation publication file changed while writing.');
+      if (path.relative(directory, await fs.realpath(file)) !== name)
+        throw Error('Synthetic navigation publication file escaped its owned directory.');
+    };
+    await assertLeaf();
+    await handle.writeFile(bytes);
+    await assertPublication();
+    await assertLeaf();
+    complete = true;
+  } finally {
+    await handle?.close();
+    if (opened && !complete) await discardArtifact(file, opened);
   }
 }
 
@@ -76,7 +136,7 @@ export async function preserveNavigationEvidence(
   if (!path.basename(root).startsWith(fixtureName))
     throw Error('Only the invented navigation fixture may publish evidence.');
   const source = path.join(root, 'evidence');
-  const sourceEntry = await fs.lstat(source);
+  const sourceEntry = await fs.lstat(source, { bigint: true });
   if (!sourceEntry.isDirectory() || sourceEntry.isSymbolicLink())
     throw Error('Synthetic evidence source must not be a link.');
   for (const screenshot of flow.screenshots ?? [])
@@ -86,11 +146,13 @@ export async function preserveNavigationEvidence(
       )
     )
       throw Error('Synthetic navigation screenshot is outside the explicit fixture allowlist.');
-  const failurePng = await readArtifact(source, '1-Document-boundary-failure.png', 2 * 1024 * 1024);
-  const finalPng = failurePng ? null : await readArtifact(source, '1-Document-boundary-final.png', 2 * 1024 * 1024);
+  const failurePng = await readArtifact(source, sourceEntry, '1-Document-boundary-failure.png', 2 * 1024 * 1024);
+  const finalPng = failurePng
+    ? null
+    : await readArtifact(source, sourceEntry, '1-Document-boundary-final.png', 2 * 1024 * 1024);
   const png = failurePng ?? finalPng;
   if (png && !png.subarray(0, 8).equals(pngSignature)) throw Error('Synthetic navigation screenshot must be a PNG.');
-  const network = await readArtifact(source, '1-browser-network.json', 1024 * 1024);
+  const network = await readArtifact(source, sourceEntry, '1-browser-network.json', 1024 * 1024);
   const parsed = network ? JSON.parse(network) : {};
   const diagnostic = {
     synthetic: true,
@@ -140,16 +202,32 @@ export async function preserveNavigationEvidence(
   };
   const json = JSON.stringify(diagnostic, null, 2) + '\n';
   if (Buffer.byteLength(json) > maxJson) throw Error('Synthetic navigation diagnostic exceeds its bound.');
-  const state = path.join(await fs.realpath(toolkitRoot), '.paqvilo');
-  await ordinaryDirectory(state);
+  const toolkit = await fs.realpath(toolkitRoot);
+  const state = path.join(toolkit, '.paqvilo');
+  const stateEntry = await ordinaryDirectory(state);
   const destination = path.join(state, 'synthetic-navigation');
-  await ordinaryDirectory(destination);
+  const destinationEntry = await ordinaryDirectory(destination);
+  const assertPublication = async () => {
+    const currentState = await fs.lstat(state, { bigint: true });
+    const currentDestination = await fs.lstat(destination, { bigint: true });
+    if (
+      !currentState.isDirectory() ||
+      currentState.isSymbolicLink() ||
+      !sameIdentity(currentState, stateEntry) ||
+      !currentDestination.isDirectory() ||
+      currentDestination.isSymbolicLink() ||
+      !sameIdentity(currentDestination, destinationEntry) ||
+      path.relative(toolkit, await fs.realpath(state)) !== '.paqvilo' ||
+      path.relative(state, await fs.realpath(destination)) !== 'synthetic-navigation'
+    )
+      throw Error('Synthetic navigation publication directory changed or escaped its owned root.');
+  };
   const prefix = randomUUID().replaceAll('-', '');
   const files = [`${prefix}-diagnostic.json`];
-  await fs.writeFile(path.join(destination, files[0]), json, { flag: 'wx', mode: 0o600 });
+  await writeArtifact(destination, files[0], json, assertPublication);
   if (png) {
     files.push(`${prefix}-failure.png`);
-    await fs.writeFile(path.join(destination, files[1]), png, { flag: 'wx', mode: 0o600 });
+    await writeArtifact(destination, files[1], png, assertPublication);
   }
   return { destination, files };
 }

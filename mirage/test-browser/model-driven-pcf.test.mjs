@@ -10,6 +10,20 @@ import { sharedBrowser } from './shared-browser.mjs';
 import { drainFixture } from '../testing/owned-fixture.mjs';
 
 const chrome = sharedBrowser();
+const frameworkModules = new Map(
+  await Promise.all(
+    [
+      'pcf-runtime.mjs',
+      'controls.mjs',
+      'choice-control.mjs',
+      'lookup-control.mjs',
+      'date-control.mjs',
+      'duration-control.mjs',
+      'control-descriptors.mjs',
+      'icons.mjs',
+    ].map(async (name) => [name, await fs.readFile(new URL(`../lib/model-driven/${name}`, import.meta.url))]),
+  ),
+);
 
 // A compiled standard control: the same public lifecycle a PAC bundle exports.
 const bundle = `var InventedExports; InventedExports = { Input: class {
@@ -21,9 +35,17 @@ const bundle = `var InventedExports; InventedExports = { Input: class {
   destroy() { window.lifecycle.push('destroy');this.input.remove(); }
 } };`;
 
-async function fixture(t) {
+async function fixture(t, { isolateFramework = true, moduleTransport = null } = {}) {
   let scripts = 0;
+  const trail = [];
+  const record = (event) => {
+    if (trail.length < 80) trail.push(event);
+  };
   const server = http.createServer(async (req, res) => {
+    const pathname = new URL(req.url, 'http://fixture').pathname;
+    record({ event: 'request', path: pathname });
+    res.once('finish', () => record({ event: 'response', path: pathname, status: res.statusCode }));
+    res.once('close', () => record({ event: 'closed', path: pathname, finished: res.writableEnded }));
     if (req.url === '/bundle.js') {
       scripts++;
       res.setHeader('content-type', 'text/javascript');
@@ -70,24 +92,16 @@ async function fixture(t) {
     }
     if (req.url.startsWith('/assets/')) {
       const name = req.url.slice('/assets/'.length);
-      if (
-        ![
-          'pcf-runtime.mjs',
-          'controls.mjs',
-          'choice-control.mjs',
-          'lookup-control.mjs',
-          'date-control.mjs',
-          'duration-control.mjs',
-          'control-descriptors.mjs',
-          'icons.mjs',
-        ].includes(name)
-      ) {
+      moduleTransport?.requests.push(name);
+      if (moduleTransport?.reset) return req.socket.destroy();
+      const bytes = frameworkModules.get(name);
+      if (!bytes) {
         res.writeHead(404);
         res.end();
         return;
       }
       res.setHeader('content-type', 'text/javascript');
-      res.end(await fs.readFile(new URL(`../lib/model-driven/${name}`, import.meta.url)));
+      res.end(bytes);
       return;
     }
     res.setHeader('content-type', 'text/html');
@@ -110,42 +124,84 @@ async function fixture(t) {
   const page = await chrome.page({ after: (cleanup) => browserCleanup.push(cleanup) });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(`http://127.0.0.1:${server.address().port}`);
-  await page.evaluate(async () => {
-    window.lifecycle = [];
-    window.changes = 0;
-    window.render = (await import('/assets/controls.mjs')).renderControl;
-    window.field = { name: 'x_name', label: 'Name', type: 'text', maxLength: 20 };
-    window.extensions = {
-      trusted: true,
-      pcf: {
-        controls: [
-          {
-            name: 'publisher.InventedInput',
-            constructor: 'Invented.Input',
-            controlType: 'standard',
-            properties: [
-              { name: 'value', ofType: 'SingleLine.Text', usage: 'bound' },
-              { name: 'prefix', ofType: 'Whole.None', usage: 'input' },
-            ],
-            resources: { code: ['/bundle.js'], exports: ['InventedExports'] },
-          },
-        ],
-      },
-    };
-    window.options = {
-      pcf: { name: 'publisher.InventedInput', bindings: { value: { field: 'x_name' }, prefix: { value: '3' } } },
-      clientExtensions: window.extensions,
-    };
-    window.mount = async (options) => {
-      window.control = window.render(window.field, 'Initial', options ?? window.options);
-      document.querySelector('main').append(window.control.element);
-      window.control.element.addEventListener('input', () => window.changes++);
-      await window.control.ready;
-    };
+  page.on('requestfailed', (request) =>
+    record({ event: 'requestfailed', path: new URL(request.url()).pathname, error: request.failure()?.errorText }),
+  );
+  page.on('response', (response) => {
+    const pathname = new URL(response.url()).pathname;
+    if (pathname.startsWith('/assets/'))
+      record({
+        event: 'module-response',
+        path: pathname,
+        status: response.status(),
+        type: response.headers()['content-type'],
+      });
   });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  // Framework initialization is fixture plumbing. Component bundles, styles and platform libraries still use HTTP.
+  // Routing disables the browser HTTP cache, so scriptCount also proves the PCF runtime owns resource reuse.
+  if (isolateFramework)
+    for (const [name, bytes] of frameworkModules)
+      await page.route(`${origin}/assets/${name}`, (route) =>
+        route.fulfill({ contentType: 'text/javascript', body: bytes }),
+      );
+  await page.goto(origin);
+  try {
+    await page.evaluate(async () => {
+      window.lifecycle = [];
+      window.changes = 0;
+      window.render = (await import('/assets/controls.mjs')).renderControl;
+      window.field = { name: 'x_name', label: 'Name', type: 'text', maxLength: 20 };
+      window.extensions = {
+        trusted: true,
+        pcf: {
+          controls: [
+            {
+              name: 'publisher.InventedInput',
+              constructor: 'Invented.Input',
+              controlType: 'standard',
+              properties: [
+                { name: 'value', ofType: 'SingleLine.Text', usage: 'bound' },
+                { name: 'prefix', ofType: 'Whole.None', usage: 'input' },
+              ],
+              resources: { code: ['/bundle.js'], exports: ['InventedExports'] },
+            },
+          ],
+        },
+      };
+      window.options = {
+        pcf: { name: 'publisher.InventedInput', bindings: { value: { field: 'x_name' }, prefix: { value: '3' } } },
+        clientExtensions: window.extensions,
+      };
+      window.mount = async (options) => {
+        window.control = window.render(window.field, 'Initial', options ?? window.options);
+        document.querySelector('main').append(window.control.element);
+        window.control.element.addEventListener('input', () => window.changes++);
+        await window.control.ready;
+      };
+    });
+  } catch (error) {
+    t.diagnostic('PCF framework initialization: ' + JSON.stringify(trail));
+    throw error;
+  }
   return { page, errors, scriptCount: () => scripts };
 }
+
+test('PCF framework initialization is independent of module HTTP resets while component bundles remain real HTTP', async (t) => {
+  const legacy = { reset: true, requests: [] };
+  await assert.rejects(
+    fixture(t, { isolateFramework: false, moduleTransport: legacy }),
+    /Failed to fetch dynamically imported module/,
+  );
+  assert.ok(legacy.requests.includes('controls.mjs'), 'the controlled legacy module transport actually reset');
+  const transport = { reset: true, requests: [] };
+  const { page, errors, scriptCount } = await fixture(t, { moduleTransport: transport });
+  await page.evaluate(() => window.mount());
+  assert.equal(await page.evaluate(() => window.control.read()), 'Initial');
+  assert.equal(scriptCount(), 1, 'the compiled PCF bundle still executes through the HTTP server');
+  assert.deepEqual(transport.requests, [], 'only the exact framework modules bypass their independent HTTP transport');
+  assert.deepEqual(errors, []);
+});
 
 test('PCF fixture teardown closes speculative HTTP connections after its browser context', async (t) => {
   const { page } = await fixture(t);

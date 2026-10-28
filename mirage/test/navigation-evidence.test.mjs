@@ -58,6 +58,232 @@ async function fixture(t) {
   return { root, toolkitRoot, evidence, screenshot, flow };
 }
 
+function inspectArtifactHandle(t, screenshot, inspect) {
+  const open = fs.open.bind(fs);
+  t.mock.method(fs, 'open', async (file, ...args) => {
+    const handle = await open(file, ...args);
+    if (file === screenshot) inspect(handle);
+    return handle;
+  });
+}
+
+function observedReads(t, handle, beforeRead = async () => {}) {
+  const observed = { bytes: 0, calls: 0, unboundedCalls: 0 };
+  const read = handle.read.bind(handle);
+  const readFile = handle.readFile.bind(handle);
+  t.mock.method(handle, 'read', async (...args) => {
+    await beforeRead();
+    const result = await read(...args);
+    observed.calls++;
+    observed.bytes += result.bytesRead;
+    return result;
+  });
+  t.mock.method(handle, 'readFile', async (...args) => {
+    await beforeRead();
+    const result = await readFile(...args);
+    observed.unboundedCalls++;
+    observed.bytes += result.length;
+    return result;
+  });
+  return observed;
+}
+
+test('navigation evidence refuses an ordinary source directory substituted before opening an artifact', async (t) => {
+  const files = await fixture(t);
+  const replacement = path.join(files.toolkitRoot, 'invented-replacement');
+  await fs.mkdir(replacement);
+  await fs.writeFile(
+    path.join(replacement, path.basename(files.screenshot)),
+    Buffer.concat([png, Buffer.from(secret)]),
+  );
+  const open = fs.open.bind(fs);
+  let substituted = false;
+  let reads;
+  t.mock.method(fs, 'open', async (file, ...args) => {
+    if (file === files.screenshot && !substituted) {
+      substituted = true;
+      await fs.rename(files.evidence, files.evidence + '-original');
+      await fs.rename(replacement, files.evidence);
+    }
+    const handle = await open(file, ...args);
+    if (file === files.screenshot) reads = observedReads(t, handle);
+    return handle;
+  });
+  await assert.rejects(preserveNavigationEvidence(files.root, files.flow, files), /source directory changed/);
+  assert.equal(substituted, true);
+  assert.deepEqual(reads, { bytes: 0, calls: 0, unboundedCalls: 0 });
+  assert.deepEqual(await fs.readFile(path.join(files.evidence + '-original', path.basename(files.screenshot))), png);
+  assert.equal((await fs.readFile(files.screenshot)).includes(Buffer.from(secret)), true);
+  await assert.rejects(fs.stat(path.join(files.toolkitRoot, '.paqvilo')), { code: 'ENOENT' });
+});
+
+test('navigation evidence refuses a publication directory substituted before its exclusive output open', async (t) => {
+  const files = await fixture(t);
+  const destination = path.join(files.toolkitRoot, '.paqvilo', 'synthetic-navigation');
+  const outside = path.join(files.toolkitRoot, 'invented-outside');
+  await fs.mkdir(outside);
+  const sentinel = path.join(outside, 'sentinel.json');
+  await fs.writeFile(sentinel, secret);
+  const open = fs.open.bind(fs);
+  const writeFile = fs.writeFile.bind(fs);
+  let substituted = false;
+  let written = 0;
+  const substitute = async (file) => {
+    if (path.dirname(file) === destination && !substituted) {
+      substituted = true;
+      await fs.rename(destination, destination + '-original');
+      await fs.symlink(outside, destination, process.platform === 'win32' ? 'junction' : 'dir');
+    }
+  };
+  t.mock.method(fs, 'writeFile', async (file, bytes, ...args) => {
+    await substitute(file);
+    if (path.dirname(file) === destination) written += Buffer.byteLength(bytes);
+    return writeFile(file, bytes, ...args);
+  });
+  t.mock.method(fs, 'open', async (file, ...args) => {
+    await substitute(file);
+    const handle = await open(file, ...args);
+    if (path.dirname(file) === destination) {
+      const writeFile = handle.writeFile.bind(handle);
+      t.mock.method(handle, 'writeFile', async (bytes, ...options) => {
+        written += Buffer.byteLength(bytes);
+        return writeFile(bytes, ...options);
+      });
+    }
+    return handle;
+  });
+  await assert.rejects(preserveNavigationEvidence(files.root, files.flow, files), /publication directory changed/);
+  assert.equal(substituted, true);
+  assert.equal(written, 0, 'no bytes may be written through a redirected publication directory');
+  assert.deepEqual(await fs.readdir(outside), ['sentinel.json']);
+  assert.equal(await fs.readFile(sentinel, 'utf8'), secret);
+  assert.deepEqual(await fs.readdir(destination + '-original'), []);
+});
+
+test('navigation evidence refuses a publication leaf replaced during its descriptor write', async (t) => {
+  const files = await fixture(t);
+  const destination = path.join(files.toolkitRoot, '.paqvilo', 'synthetic-navigation');
+  const open = fs.open.bind(fs);
+  let substituted;
+  t.mock.method(fs, 'open', async (file, ...args) => {
+    const handle = await open(file, ...args);
+    if (path.dirname(file) === destination && !substituted) {
+      const writeFile = handle.writeFile.bind(handle);
+      t.mock.method(handle, 'writeFile', async (...writeArgs) => {
+        substituted = file;
+        await fs.rename(file, file + '-original');
+        await fs.writeFile(file, secret);
+        return writeFile(...writeArgs);
+      });
+    }
+    return handle;
+  });
+  await assert.rejects(preserveNavigationEvidence(files.root, files.flow, files), /publication file changed/);
+  assert.equal(typeof substituted, 'string');
+  assert.equal(await fs.readFile(substituted, 'utf8'), secret, 'cleanup must preserve the injected foreign leaf');
+  assert.equal(JSON.parse(await fs.readFile(substituted + '-original', 'utf8')).synthetic, true);
+});
+
+test('navigation evidence opens its candidate before a controlled pathname substitution and reads no replacement', async (t) => {
+  const files = await fixture(t);
+  const original = await fs.lstat(files.screenshot, { bigint: true });
+  const replacement = path.join(files.toolkitRoot, 'private-replacement.png');
+  await fs.writeFile(replacement, Buffer.concat([png, Buffer.from(secret)]));
+  const lstat = fs.lstat.bind(fs);
+  let substituted = false;
+  let openedOriginal = false;
+  let reads;
+  inspectArtifactHandle(t, files.screenshot, (handle) => {
+    const stat = handle.stat.bind(handle);
+    t.mock.method(handle, 'stat', async (...args) => {
+      const current = await stat(...args);
+      openedOriginal = current.dev === original.dev && current.ino === original.ino;
+      return current;
+    });
+    reads = observedReads(t, handle);
+  });
+  t.mock.method(fs, 'lstat', async (file, ...args) => {
+    const entry = await lstat(file, ...args);
+    if (file === files.screenshot && !substituted) {
+      substituted = true;
+      await fs.rename(file, file + '.original');
+      await fs.copyFile(replacement, file);
+    }
+    return entry;
+  });
+  await assert.rejects(preserveNavigationEvidence(files.root, files.flow, files), /changed while opening/);
+  assert.equal(substituted, true);
+  assert.equal(openedOriginal, true, 'the candidate descriptor must precede every pathname identity check');
+  assert.deepEqual(reads, { bytes: 0, calls: 0, unboundedCalls: 0 });
+  assert.equal((await fs.readFile(replacement)).includes(Buffer.from(secret)), true);
+  await assert.rejects(fs.stat(path.join(files.toolkitRoot, '.paqvilo')), { code: 'ENOENT' });
+});
+
+test('navigation evidence bounds descriptor reads even when a source grows after metadata validation', async (t) => {
+  const files = await fixture(t);
+  const maximum = 2 * 1024 * 1024;
+  let grown = false;
+  let reads;
+  inspectArtifactHandle(t, files.screenshot, (handle) => {
+    reads = observedReads(t, handle, async () => {
+      if (grown) return;
+      grown = true;
+      await fs.appendFile(files.screenshot, Buffer.alloc(maximum + 256));
+    });
+  });
+  await assert.rejects(preserveNavigationEvidence(files.root, files.flow, files), /exceeds its bound/);
+  assert.equal(grown, true);
+  assert.equal(reads.unboundedCalls, 0, 'a descriptor readFile cannot impose a pre-read allocation bound');
+  assert.ok(reads.bytes <= maximum + 1, 'only a bounded overflow sentinel may be read');
+  await assert.rejects(fs.stat(path.join(files.toolkitRoot, '.paqvilo')), { code: 'ENOENT' });
+});
+
+test('navigation evidence refuses nonregular descriptor metadata before reading any bytes', async (t) => {
+  const files = await fixture(t);
+  let reads;
+  inspectArtifactHandle(t, files.screenshot, (handle) => {
+    const stat = handle.stat.bind(handle);
+    t.mock.method(handle, 'stat', async (...args) => {
+      const entry = await stat(...args);
+      Object.defineProperty(entry, 'isFile', { value: () => false });
+      return entry;
+    });
+    reads = observedReads(t, handle);
+  });
+  await assert.rejects(preserveNavigationEvidence(files.root, files.flow, files), /ordinary bounded file/);
+  assert.deepEqual(reads, { bytes: 0, calls: 0, unboundedCalls: 0 });
+});
+
+test('navigation evidence distinguishes 64-bit descriptor and pathname identities without Number collisions', async (t) => {
+  const files = await fixture(t);
+  const openedInode = 9007199254740992n;
+  const replacedInode = 9007199254740993n;
+  assert.equal(Number(openedInode), Number(replacedInode), 'the controlled IDs collide as Numbers');
+  let reads;
+  inspectArtifactHandle(t, files.screenshot, (handle) => {
+    const stat = handle.stat.bind(handle);
+    t.mock.method(handle, 'stat', async (options) => {
+      const entry = await stat(options);
+      entry.dev = options?.bigint ? 77n : 77;
+      entry.ino = options?.bigint ? openedInode : Number(openedInode);
+      return entry;
+    });
+    reads = observedReads(t, handle);
+  });
+  const lstat = fs.lstat.bind(fs);
+  t.mock.method(fs, 'lstat', async (file, options) => {
+    const entry = await lstat(file, options);
+    if (file === files.screenshot) {
+      entry.dev = options?.bigint ? 77n : 77;
+      entry.ino = options?.bigint ? replacedInode : Number(replacedInode);
+    }
+    return entry;
+  });
+  await assert.rejects(preserveNavigationEvidence(files.root, files.flow, files), /changed while opening/);
+  assert.deepEqual(reads, { bytes: 0, calls: 0, unboundedCalls: 0 });
+  await assert.rejects(fs.stat(path.join(files.toolkitRoot, '.paqvilo')), { code: 'ENOENT' });
+});
+
 test('invented navigation failure evidence survives fixture cleanup and reaches the synthetic collector', async (t) => {
   const files = await fixture(t);
   await fs.writeFile(path.join(files.evidence, 'discovery.json'), secret);
