@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const chrome = sharedBrowser();
 
@@ -32,8 +33,71 @@ test('native shell selectors filter, navigate, dismiss and preserve keyboard foc
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  const startup = { requests: [], responses: [], failures: [], metadata: [] },
+    startupAt = performance.now();
+  const relevant = (url) =>
+    /^\/(?:_apps\/api\/(?:index|metadata\/x_item|tables\/x_item)|_sim\/api\/(?:dataverse\/session|status))$/.test(
+      url.pathname,
+    );
+  const record = (rows, value) => {
+    if (rows.length < 20) rows.push(value);
+  };
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (!relevant(url)) return;
+    let view;
+    try {
+      view = JSON.parse(url.searchParams.get('query') ?? '{}').view;
+    } catch {
+      /* Keep malformed query values out of diagnostics. */
+    }
+    record(startup.requests, {
+      path: url.pathname,
+      atMs: Math.round(performance.now() - startupAt),
+      ...(view ? { view } : {}),
+    });
+  });
+  page.on('response', (response) => {
+    const url = new URL(response.url());
+    if (relevant(url))
+      record(startup.responses, {
+        path: url.pathname,
+        status: response.status(),
+        atMs: Math.round(performance.now() - startupAt),
+      });
+  });
+  page.on('requestfailed', (request) => {
+    const url = new URL(request.url());
+    if (relevant(url)) record(startup.failures, { path: url.pathname, error: request.failure()?.errorText });
+  });
+  page.on('requestfinished', async (request) => {
+    if (new URL(request.url()).pathname !== '/_apps/api/metadata/x_item') return;
+    try {
+      const response = await request.response();
+      if (!response?.ok()) return;
+      const metadata = await response.json();
+      record(startup.metadata, { views: metadata.views?.map(({ id, name, isDefault }) => ({ id, name, isDefault })) });
+    } catch {
+      /* The request itself remains in the bounded response/failure trail. */
+    }
+  });
+
   await page.goto((sim.origin ?? sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
-  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  try {
+    await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  } catch (error) {
+    const shell = await page
+      .evaluate(() => ({
+        state: document.documentElement.dataset.mirageAppState,
+        notice: document.querySelector('#notice')?.textContent?.slice(0, 1000),
+        view: document.querySelector('.view-select')?.textContent,
+        content: document.querySelector('#content')?.textContent?.slice(0, 3000),
+      }))
+      .catch(() => ({ state: 'unavailable' }));
+    throw new Error('Initial Copper grid did not render: ' + JSON.stringify({ startup, shell, errors }), {
+      cause: error,
+    });
+  }
   const apps = page.getByRole('button', { name: 'Application', exact: true });
   await apps.click();
   const modal = page.getByRole('dialog', { name: 'Apps', exact: true });
@@ -130,6 +194,135 @@ test('native shell selectors filter, navigate, dismiss and preserve keyboard foc
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.deepEqual(errors, []);
 });
+
+test(
+  'Apps Refresh preserves pending startup metadata, refreshed apps and an active form draft',
+  { timeout: 60000 },
+  async (t) => {
+    const metadataGate = Promise.withResolvers(),
+      metadataRequested = Promise.withResolvers();
+    ownedFixture(t).add(() => metadataGate.resolve());
+    const fixture = await modelDrivenFixture(t, { defer: true });
+    const appRoot = path.join(fixture.solutionDir, 'AppModules/x_review');
+    await fs.mkdir(appRoot, { recursive: true });
+    await fs.writeFile(
+      path.join(appRoot, 'AppModule.xml'),
+      '<AppModule><UniqueName>x_review</UniqueName><AppModuleId>{88888888-8888-4888-8888-888888888888}</AppModuleId><LocalizedNames><LocalizedName description="Review workspace" languagecode="1033"/></LocalizedNames><AppModuleComponents><AppModuleComponent type="1" schemaName="x_child"/></AppModuleComponents></AppModule>',
+    );
+    const sim = await fixture.start();
+    const page = await chrome.page(t);
+    let indexReads = 0,
+      metadataReads = 0,
+      tableMetadataReads = 0,
+      writes = 0;
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname.startsWith('/_apps/api/metadata/')) tableMetadataReads++;
+      if (request.method() === 'PATCH' && new URL(request.url()).pathname.startsWith('/_apps/api/tables/')) writes++;
+    });
+    await page.route('**/_apps/api/index', async (route) => {
+      const response = await route.fetch(),
+        json = await response.json();
+      if (++indexReads === 1) {
+        json.apps = json.apps.filter((app) => app.uniqueName !== 'x_review');
+        delete json.tables.x_child;
+      }
+      await route.fulfill({ response, json });
+    });
+    await page.route('**/_apps/api/metadata/x_item', async (route) => {
+      metadataReads++;
+      if (metadataReads !== 1) return route.continue();
+      const response = await route.fetch();
+      metadataRequested.resolve();
+      await metadataGate.promise;
+      await route.fulfill({ response });
+    });
+    const navigation = page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+    await metadataRequested.promise;
+    const applications = page.getByRole('button', { name: 'Application', exact: true });
+    await applications.click();
+    const modal = page.getByRole('dialog', { name: 'Apps', exact: true });
+    await modal.waitFor();
+    assert.equal(await modal.getByRole('button', { name: 'Review workspace', exact: true }).count(), 0);
+    await modal.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await modal.getByRole('button', { name: 'Review workspace', exact: true }).waitFor();
+    assert.match(page.url(), /appname=x_example/);
+    metadataGate.resolve();
+    await navigation;
+    await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready');
+    assert.match(await page.locator('#content').textContent(), /Copper/);
+    await modal.getByRole('button', { name: 'Review workspace', exact: true }).click();
+    await page.waitForURL(/appname=x_review/);
+    await page.getByRole('button', { name: 'Copper child', exact: true }).click();
+    const name = page.getByLabel('Name', { exact: true });
+    await name.fill('Unsaved picker draft');
+    const activeField = await name.elementHandle(),
+      activeUrl = page.url(),
+      readsBeforeRefresh = tableMetadataReads;
+    await applications.click();
+    await modal.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('#dialog .app-picker-toolbar button[aria-busy="true"]'));
+    await modal.getByRole('button', { name: 'Example workspace', exact: true }).click();
+    const discard = page.getByRole('dialog', { name: 'Unsaved changes', exact: true });
+    await discard.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await discard.waitFor({ state: 'hidden' });
+    assert.equal(page.url(), activeUrl);
+    assert.equal(
+      await activeField.evaluate((node) => node.isConnected),
+      true,
+      'refreshing app availability does not replace the active form',
+    );
+    assert.equal(await name.inputValue(), 'Unsaved picker draft');
+    assert.equal(tableMetadataReads, readsBeforeRefresh, 'the active table metadata remains loaded');
+    assert.equal(writes, 0, 'refreshing the app list cannot save the draft');
+    assert.equal(
+      sim.store.state.tables.x_child.find((row) => row.x_childid === 'dddddddd-dddd-4ddd-8ddd-dddddddddddd')?.x_name,
+      'Copper child',
+    );
+  },
+);
+
+test(
+  'selecting the current app while initial metadata is pending starts a usable route',
+  { timeout: 60000 },
+  async (t) => {
+    const held = Promise.withResolvers(),
+      release = Promise.withResolvers(),
+      retried = Promise.withResolvers();
+    ownedFixture(t).add(() => release.resolve());
+    const { origin } = await modelDrivenFixture(t);
+    const page = await chrome.page(t);
+    let reads = 0;
+    await page.route('**/_apps/api/metadata/x_item', async (route) => {
+      if (++reads !== 1) {
+        retried.resolve();
+        return route.continue();
+      }
+      const response = await route.fetch();
+      held.resolve();
+      await release.promise;
+      await route.fulfill({ response });
+    });
+    const navigation = page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+    await held.promise;
+    await page.getByRole('button', { name: 'Application', exact: true }).click();
+    const failed = page
+      .waitForFunction(() => document.querySelector('#notice')?.textContent.includes('Cannot read properties'))
+      .then(() => {
+        throw Error('The enabled current-app card read table.entity before initial metadata was available.');
+      });
+    await page
+      .getByRole('dialog', { name: 'Apps', exact: true })
+      .getByRole('button', { name: 'Example workspace', exact: true })
+      .click();
+    await Promise.race([retried.promise, failed]);
+    await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+    release.resolve();
+    await navigation;
+    assert.match(page.url(), /appname=x_example/);
+    assert.equal(await page.getByRole('button', { name: 'Copper', exact: true }).isVisible(), true);
+    assert.equal(await page.locator('#notice').textContent(), '');
+  },
+);
 
 test('column menu applies sorting, reordering, widths and column-specific filters', async (t) => {
   const { origin } = await modelDrivenFixture(t);

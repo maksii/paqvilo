@@ -106,13 +106,21 @@ test(
       const original = window.fetch.bind(window);
       window.__inspectionMode = 'delay';
       window.__inspectionRequests = 0;
+      window.__inspectionStartGate = new Promise((resolve) => {
+        window.__releaseInspectionStart = resolve;
+      });
+      window.__inspectionStarted = new Promise((resolve) => {
+        window.__inspectionArrived = resolve;
+      });
       window.__catalogMode = 'failure';
       window.__catalogRequests = 0;
       window.__openRequests = 0;
       window.fetch = async (...args) => {
         if (String(args[0]).includes('/__paqvilo/api/open')) window.__openRequests++;
         if (String(args[0]).includes('/__paqvilo/api/inspect')) {
+          await window.__inspectionStartGate;
           window.__inspectionRequests++;
+          window.__inspectionArrived();
           const mode = window.__inspectionMode;
           if (mode === 'delay')
             await new Promise((resolve) => {
@@ -166,6 +174,11 @@ test(
     await page.emulateMedia({ reducedMotion: 'reduce' });
     assert.equal(await xray.locator('.scan-orbit').evaluate((node) => getComputedStyle(node).animationName), 'none');
     await page.emulateMedia({ reducedMotion: 'no-preference' });
+    // The scan can paint before fetch starts. Exercise exit while the actual request is held.
+    await page.evaluate(() => {
+      window.__releaseInspectionStart();
+      return window.__inspectionStarted;
+    });
     await xray.getByRole('button', { name: 'Turn off X-ray' }).click();
     assert.equal(await page.evaluate(() => document.getElementById('paqvilo-xray').__px.enabled), false);
     assert.equal(await page.evaluate(() => window.__inspectionRequests), 1);

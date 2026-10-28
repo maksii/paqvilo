@@ -55,6 +55,26 @@ async function fixture(t, html, report = {}) {
   return { page, identify, data };
 }
 
+test('X-ray action feedback survives source refresh and clears when selecting another element', async (t) => {
+  const { page } = await fixture(t, '<!doctype html><input id="first"><input id="second">');
+  const feedback = 'Opened <invented>.xml in the editor';
+  const observed = await page.evaluate((feedback) => {
+    const host = document.getElementById('paqvilo-xray'),
+      api = host.__px;
+    const status = () => host.shadowRoot.querySelector('.status');
+    api.select(document.getElementById('first'));
+    api.status(feedback);
+    api.refreshSelection('controlled-source-refresh');
+    const afterRefresh = status().textContent,
+      markup = status().innerHTML;
+    api.select(document.getElementById('second'));
+    return { afterRefresh, markup, afterNewSelection: status().textContent };
+  }, feedback);
+  assert.equal(observed.afterRefresh, feedback);
+  assert.equal(observed.markup.includes('<invented>'), false, 'feedback stays text after the redraw');
+  assert.equal(observed.afterNewSelection, '', 'another selection does not inherit the editor result');
+});
+
 const assertNoExact = (row, message) => {
   assert.notEqual(row.evidence.owner.status, 'exact', message);
   assert.notEqual(row.evidence.source.status, 'exact', message);

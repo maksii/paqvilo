@@ -66,6 +66,7 @@ async function runtimeProbe() {
   started = performance.now();
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   result.browserLaunchMs = performance.now() - started;
+  result.browserVersion = browser.version();
   try {
     const page = await browser.newPage();
     await page.setContent('<h1>Invented loopback benchmark</h1>');
@@ -111,6 +112,7 @@ if (values.probe) {
       platform: process.platform,
       cpus: os.cpus().length,
       memoryBytes: os.totalmem(),
+      browserSelection: process.env.PAQVILO_BROWSER ?? 'platform default',
     },
     methodology:
       'One warmup, then fresh child processes in alternating A/B order; warm filesystem cache. Run without concurrent test jobs. Timings describe this fixture and machine, not a universal budget.',
@@ -148,14 +150,25 @@ if (values.probe) {
     }
     for (const [label, rows] of Object.entries(collected)) {
       const median = Object.fromEntries(
-        Object.keys(rows[0]).map((key) => {
-          const sorted = rows.map((row) => row[key]).sort((a, b) => a - b);
-          const middle = Math.floor(sorted.length / 2);
-          return [key, sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2];
-        }),
+        Object.keys(rows[0])
+          .filter((key) => typeof rows[0][key] === 'number')
+          .map((key) => {
+            const sorted = rows.map((row) => row[key]).sort((a, b) => a - b);
+            const middle = Math.floor(sorted.length / 2);
+            return [key, sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2];
+          }),
       );
       report.runs[label].probes[probe] = { samples: rows, median };
     }
+    if (
+      probe === 'runtime' &&
+      new Set(
+        Object.values(collected)
+          .flat()
+          .map((row) => row.browserVersion),
+      ).size !== 1
+    )
+      throw new Error('Browser version changed between samples; the comparison is not qualified.');
   }
   for (const [label, cwd] of Object.entries(roots))
     if (sourceTree(cwd) !== report.runs[label].sourceTree) throw new Error('Source tree changed during measurement.');
