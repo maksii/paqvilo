@@ -74,7 +74,7 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurr
           await page.route('http://127.0.0.1:11887/**', (route) =>
             route.fulfill({ contentType: 'text/html', body: style + `<div class="case">${html}</div>` }),
           );
-          await page.goto('http://127.0.0.1:11887/');
+          await page.goto('http://127.0.0.1:11887/', { waitUntil: 'domcontentloaded' });
           const data = { origin: 'http://127.0.0.1:11887', token: 'invented-audit-session' };
           await page.evaluate(xrayUi, data);
           await page.evaluate(
