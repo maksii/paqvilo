@@ -3,7 +3,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
@@ -17,6 +16,10 @@ const scriptsFor = (options) =>
     Object.entries(developmentWorkflows(options)).map(([name, workflow]) => [name, developmentScript(name, workflow)]),
   );
 const readJson = async (file) => JSON.parse(await fs.readFile(file, 'utf8'));
+const differentVolumes = async (left, right) => {
+  const [physicalLeft, physicalRight] = await Promise.all([fs.realpath(left), fs.realpath(right)]);
+  return path.parse(physicalLeft).root.toLowerCase() !== path.parse(physicalRight).root.toLowerCase();
+};
 async function fixture(t) {
   const root = await tempDir('paqvilo-editor-refresh-');
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -194,20 +197,42 @@ test('selected catalogue proposals retain portable quoted paths and unsafe shell
   }
 });
 
+test('cross-volume capability resolves directory aliases before choosing the assertion path', async (t) => {
+  if (process.platform !== 'win32') {
+    t.skip('Requires Windows volume semantics');
+    return;
+  }
+  const temporary = await tempDir('paqvilo-editor-volume-alias-');
+  t.after(() => fs.rm(temporary, { recursive: true, force: true }));
+  const evidenceRoot = path.join(fileURLToPath(new URL('../', import.meta.url)), '.paqvilo');
+  await fs.mkdir(evidenceRoot, { recursive: true });
+  const physical = await makeTemporaryDirectory(path.join(evidenceRoot, 'editor-volume-target-'));
+  t.after(() => fs.rm(physical, { recursive: true, force: true }));
+  if (!(await differentVolumes(temporary, physical))) {
+    t.skip('Requires temporary and toolkit storage on different physical Windows volumes');
+    return;
+  }
+  const alias = path.join(temporary, 'alias');
+  await fs.symlink(physical, alias, 'junction');
+  assert.equal(await differentVolumes(alias, physical), false, 'a junction is on its target volume');
+  assert.equal(await differentVolumes(temporary, physical), true, 'the independent actual volumes stay distinct');
+});
+
 test('cross-volume refresh retains working absolute debugger paths and explicitly requests review before commit', async (t) => {
   // Only Windows paths have volumes that no relative path crosses; POSIX paths share one root. The sources live in
   // the toolkit checkout's ignored .paqvilo, so this runs where the checkout and the temporary folder are on
   // different drives (GitHub-hosted Windows runners check out to D: and keep the temporary folder on C:).
   const evidenceRoot = path.join(fileURLToPath(new URL('../', import.meta.url)), '.paqvilo');
-  if (
-    process.platform !== 'win32' ||
-    path.parse(os.tmpdir()).root.toLowerCase() === path.parse(evidenceRoot).root.toLowerCase()
-  ) {
+  if (process.platform !== 'win32') {
     t.skip('Requires a toolkit checkout and temporary project on different Windows volumes');
     return;
   }
   const fx = await fixture(t);
   await fs.mkdir(evidenceRoot, { recursive: true });
+  if (!(await differentVolumes(fx.directory, evidenceRoot))) {
+    t.skip('Requires a toolkit checkout and temporary project on different Windows volumes');
+    return;
+  }
   const sources = await makeTemporaryDirectory(path.join(evidenceRoot, 'editor-cross-volume-'));
   t.after(() => fs.rm(sources, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const configFile = path.join(sources, 'selected.config.yml');

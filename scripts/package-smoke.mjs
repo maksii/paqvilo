@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { validateReleaseFiles } from './release-check.mjs';
-import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
+import { consumerStateIsOwned, verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
 import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
 import { assertSmokeProcess } from './smoke-process.mjs';
 import { offlineSmokeEnv, runSmokeNpm } from './smoke-npm.mjs';
@@ -161,13 +161,13 @@ const demoHelp = spawnSync(process.execPath, [installed, 'mirage', 'demo', '--he
 if (demoHelp.status !== 0 || !demoHelp.stdout.includes('Copies a populated'))
   throw new Error(`Installed demo command is missing: ${demoHelp.stderr}`);
 const initialized = cli('mirage', 'init', '--site', 'example', '--json');
-const stateRoot = path.join(project, '.paqvilo') + path.sep;
-if (!initialized.file.startsWith(stateRoot))
+if (!consumerStateIsOwned(project, initialized.file))
   throw new Error('Project initialization wrote inside the installed toolkit.');
 let session;
 try {
   session = cli('mirage', 'start', '--site', 'example', '--port', '0', '--preset', 'example-demo', '--json');
-  if (!session.stateFile.startsWith(stateRoot)) throw new Error('Runtime state did not stay in the portal project.');
+  if (!consumerStateIsOwned(project, session.stateFile))
+    throw new Error('Runtime state did not stay in the portal project.');
   if (!cli('mirage', 'status', '--json').sessions.some((item) => item.pid === session.pid && item.ready))
     throw new Error('Project-scoped status did not discover its runtime.');
   const response = await fetch(session.url);

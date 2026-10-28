@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { writeCapture } from '../baseline-capture.mjs';
 import { ensureCaptureDestination } from '../baseline-paths.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
 const CLI_HANG_MS = 60_000;
@@ -21,8 +21,8 @@ async function fixture(run) {
   try {
     await run({ base, outDir, outside });
   } finally {
-    assert.ok(path.resolve(base).startsWith(path.resolve(os.tmpdir()) + path.sep));
-    await fs.rm(base, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(base);
+    await fs.rm(physical, { recursive: true, force: true });
   }
 }
 

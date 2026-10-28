@@ -7,6 +7,7 @@ import path from 'node:path';
 import { runAcceptance } from '../acceptance.mjs';
 import { navigationCommitBudget } from '../lib/navigation-budget.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { preserveNavigationEvidence } from '../test/navigation-evidence-fixture.mjs';
 
 function fixtureApi(pathname, res, fallback) {
   if (!pathname.startsWith('/__sim/api/')) return false;
@@ -46,15 +47,30 @@ async function navigationFixture(
     timeout = 4000,
     navigationCommitReserveMs,
     gateDocumentOnWrites = false,
+    controlledLateWrites = late,
   } = {},
 ) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-document-commit-'));
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  let flow;
+  ownedFixture(t).remove(async () => {
+    if (!t.passed && flow) {
+      const evidence = await preserveNavigationEvidence(root, flow);
+      t.diagnostic(`Preserved invented navigation diagnostics: ${evidence.files.join(', ')}`);
+    }
+    await fs.rm(root, { recursive: true, force: true });
+  });
   const historyChange =
     history === 'none' ? '' : history === 'hash' ? "location.hash='pending'" : "history.pushState({},'', '?pending=1')";
   const writes = `fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{})`;
   const form = `<form action="/submit" method="${redirect ? 'POST' : 'GET'}"><button id="save">Save</button></form>`;
-  const script = `document.querySelector('form').addEventListener('submit',event=>{${actionDelay ? `const end=Date.now()+${actionDelay};while(Date.now()<end){}` : ''}${noNavigation ? 'event.preventDefault();' : ''}${noCommit ? "fetch('/never').catch(()=>{});" : late ? '' : writes};setTimeout(()=>{${historyChange}},50);${late ? `setTimeout(()=>{${writes}},150);` : ''}})`;
+  const timerScript = `document.querySelector('form').addEventListener('submit',event=>{${actionDelay ? `const end=Date.now()+${actionDelay};while(Date.now()<end){}` : ''}${noNavigation ? 'event.preventDefault();' : ''}${noCommit ? "fetch('/never').catch(()=>{});" : late ? '' : writes};setTimeout(()=>{${historyChange}},50);${late ? `setTimeout(()=>{${writes}},150);` : ''}})`;
+  const script = controlledLateWrites
+    ? `document.querySelector('form').addEventListener('submit',()=>{fetch('/late-writes-ready').then(response=>response.text()).then(()=>{${historyChange};${writes}})})`
+    : timerScript;
+  const documentRequested = Promise.withResolvers();
+  const lateGateFinished = Promise.withResolvers();
+  const writesObserved = Promise.withResolvers();
+  const fixtureEvents = [];
   let observedWrites = 0;
   let releaseDocument;
   const writesArrived = new Promise((resolve) => {
@@ -65,14 +81,33 @@ async function navigationFixture(
     const pathname = new URL(req.url, 'http://fixture').pathname;
     if (fixtureApi(pathname, res, { events: [] })) return;
     if (pathname.startsWith('/slow-') || pathname === '/never') {
-      if (pathname.startsWith('/slow-') && ++observedWrites === 2) releaseDocument();
+      if (pathname.startsWith('/slow-')) {
+        fixtureEvents.push('write:' + pathname);
+        if (++observedWrites === 2) releaseDocument();
+      }
       if (pathname !== '/never' && (completed || writeMs)) {
         const timer = setTimeout(() => res.end('done'), writeMs || 1000);
         res.once('close', () => clearTimeout(timer));
       }
       return;
     }
+    if (controlledLateWrites && pathname === '/late-writes-ready') {
+      void documentRequested.promise.then(() => {
+        fixtureEvents.push('late-writes-released');
+        res.end('ready');
+      });
+      return;
+    }
     res.setHeader('content-type', 'text/html');
+    if (controlledLateWrites && pathname === '/submit') {
+      fixtureEvents.push('navigation');
+      documentRequested.resolve();
+      void Promise.all([writesArrived, lateGateFinished.promise, writesObserved.promise]).then(() => {
+        fixtureEvents.push('document-response');
+        res.end('<p id="done">Saved</p>' + (replacementRead ? "<script>fetch('/never').catch(()=>{})</script>" : ''));
+      });
+      return;
+    }
     if (pathname === '/submit' && gateDocumentOnWrites) {
       void writesArrived.then(() => res.end('<p id="done">Saved</p>'));
       return;
@@ -127,6 +162,25 @@ async function navigationFixture(
     outputDir: path.join(root, 'evidence'),
     timeout,
     navigationCommitReserveMs,
+    prepareContext: controlledLateWrites
+      ? async (context) => {
+          const observed = new Set();
+          context.on('request', (request) => {
+            const pathname = new URL(request.url()).pathname;
+            if (pathname === '/slow-one' || pathname === '/slow-two') {
+              fixtureEvents.push('write-observed:' + pathname);
+              observed.add(pathname);
+              if (observed.size === 2) writesObserved.resolve();
+            }
+          });
+          context.on('requestfinished', (request) => {
+            if (new URL(request.url()).pathname === '/late-writes-ready') {
+              fixtureEvents.push('gate-read-finished');
+              lateGateFinished.resolve();
+            }
+          });
+        }
+      : null,
     flows: [
       {
         name: 'Document boundary',
@@ -142,7 +196,8 @@ async function navigationFixture(
       },
     ],
   });
-  return result.flows[0];
+  flow = { ...result.flows[0], fixtureEvents };
+  return flow;
 }
 
 // Each test owns its loopback server and the browser runAcceptance launches, and mostly waits on fixture
@@ -204,11 +259,26 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       `${crossOrigin ? 'cross-origin' : 'same-origin'} child document commits retire only their predecessor requests`,
       HANG_GUARD,
       async (t) => {
-        const flow = await navigationFixture(t, { embedded: true, crossOrigin, late: true });
+        const flow = await navigationFixture(t, {
+          embedded: true,
+          crossOrigin,
+          late: true,
+          controlledLateWrites: true,
+        });
         assert.equal(flow.passed, true, JSON.stringify(flow));
         assert.equal(flow.navigationCancelledRequests?.length, 2);
         assert.ok(flow.navigationCancelledRequests.every((row) => row.reason === 'document-replaced'));
         assert.deepEqual(flow.blockedRequests, []);
+        assert.equal(flow.fixtureEvents[0], 'navigation');
+        assert.equal(flow.fixtureEvents[1], 'late-writes-released');
+        assert.deepEqual(flow.fixtureEvents.slice(2, -1).sort(), [
+          'gate-read-finished',
+          'write-observed:/slow-one',
+          'write-observed:/slow-two',
+          'write:/slow-one',
+          'write:/slow-two',
+        ]);
+        assert.equal(flow.fixtureEvents.at(-1), 'document-response');
       },
     );
 

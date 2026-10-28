@@ -18,7 +18,11 @@ import {
   deepVariantKeys,
   deepVariant,
 } from '../portal-security/deep-variant.mjs';
-import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
+import {
+  assertTemporaryDirectory,
+  makeTemporaryDirectory,
+  ownedFixture,
+} from 'paqvilo/mirage/testing/owned-fixture.mjs';
 const schema = JSON.parse(await fs.readFile(new URL('../dataverse/manifest.json', import.meta.url))),
   catalogue = JSON.parse(await fs.readFile(new URL('../data/catalogue.json', import.meta.url)));
 
@@ -484,7 +488,7 @@ test('scoped reference projections are idempotent, revoked grants clear, leaves 
   assert.equal(itRoom.privileges.delete, false);
 });
 
-test('portal packaging discovers component types and uses valid non-Entity flags', async () => {
+test('portal packaging discovers component types and uses valid non-Entity flags', async (t) => {
   const siteId = '11111111-1111-4111-8111-111111111111',
     solutionId = '22222222-2222-4222-8222-222222222222',
     publisherId = '33333333-3333-4333-8333-333333333333',
@@ -520,18 +524,15 @@ test('portal packaging discovers component types and uses valid non-Entity flags
   };
   const temp = await makeTemporaryDirectory(path.join(os.tmpdir(), 'co-security-')),
     dir = path.join(temp, '.paqvilo/portal-security');
-  try {
-    const result = await packagePortal({ client, siteId, apply: true, evidenceDirectory: dir });
-    assert.equal(result.verification.siteCount, 1);
-    assert.equal(requests.length, 2);
-    assert.equal(requests[0].ComponentType, 90436);
-    assert.equal(requests[1].ComponentType, 90435);
-  } finally {
-    const resolved = path.resolve(temp),
-      parent = path.resolve(os.tmpdir()) + path.sep;
-    assert.ok(resolved.startsWith(parent));
+  ownedFixture(t).remove(async () => {
+    const resolved = await assertTemporaryDirectory(temp);
     await fs.rm(resolved, { recursive: true, force: true });
-  }
+  });
+  const result = await packagePortal({ client, siteId, apply: true, evidenceDirectory: dir });
+  assert.equal(result.verification.siteCount, 1);
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].ComponentType, 90436);
+  assert.equal(requests[1].ComponentType, 90435);
 });
 
 test('actual tester overlay preserves identity and binds own employment with unique private keys', async () => {

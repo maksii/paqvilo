@@ -54,6 +54,7 @@ async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) 
     }
     res.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html>' + html);
   });
+  ownedFixture(t).add(() => context?.unrouteAll({ behavior: 'wait' }));
   ownedFixture(t).add(async () => {
     await panel?.dispose();
   });
@@ -92,6 +93,77 @@ async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) 
   await panel.draw(page);
   return { page, context, session, panel, origin, fx };
 }
+
+test(
+  'panel fixture drains an API request held before dispatch before retiring its API',
+  { timeout: 30000 },
+  async (t) => {
+    const held = Promise.withResolvers(),
+      release = Promise.withResolvers(),
+      boundary = Promise.withResolvers(),
+      dispatched = Promise.withResolvers(),
+      hooks = [],
+      errors = [];
+    let cleanup, replyStatus;
+    const owner = ownedFixture(t);
+    owner.add(() => release.resolve());
+    owner.add(() => (cleanup ??= hooks[0]?.()));
+    const newContext = browser.newContext.bind(browser);
+    t.mock.method(browser, 'newContext', async (...args) => {
+      const context = await newContext(...args),
+        route = context.route.bind(context),
+        unrouteAll = context.unrouteAll.bind(context);
+      t.mock.method(context, 'unrouteAll', (...options) => {
+        boundary.resolve('transport draining');
+        return unrouteAll(...options);
+      });
+      t.mock.method(context, 'route', (pattern, delegate, ...options) =>
+        route(
+          pattern,
+          async (requestRoute) => {
+            if (!requestRoute.request().url().endsWith('/retiring-probe')) return delegate(requestRoute);
+            held.resolve();
+            await release.promise;
+            const fulfill = requestRoute.fulfill.bind(requestRoute);
+            t.mock.method(requestRoute, 'fulfill', (response) => {
+              replyStatus = response.status;
+              return fulfill(response);
+            });
+            try {
+              await delegate(requestRoute);
+            } catch (error) {
+              errors.push(error);
+              await requestRoute.abort().catch(() => {});
+            } finally {
+              dispatched.resolve();
+            }
+          },
+          ...options,
+        ),
+      );
+      return context;
+    });
+    const { page, session, panel } = await fixture({ after: (hook) => hooks.push(hook) });
+    const dispose = panel.dispose.bind(panel);
+    t.mock.method(panel, 'dispose', () => {
+      boundary.resolve('panel retiring');
+      return dispose();
+    });
+    const request = page.evaluate(() => fetch('/__paqvilo/api/retiring-probe').catch(() => {})).catch(() => {});
+    await held.promise;
+    cleanup = hooks[0]();
+    // Release at the first actual ownership boundary: the previous order already retired session.api here.
+    await boundary.promise;
+    release.resolve();
+    await dispatched.promise;
+    await cleanup;
+    await request;
+    assert.deepEqual(errors, [], 'an accepted route cannot dereference an already-retired panel API');
+    assert.equal(replyStatus, 403, 'the held unauthenticated request still receives its ordinary refusal');
+    assert.equal(session.api, null, 'the panel API is retired after transport draining');
+    assert.equal(page.isClosed(), true);
+  },
+);
 
 test('Issues reports changed Liquid when markup previews are disabled and clears it after reverting', async (t) => {
   const { page, panel, session, fx } = await fixture(t);

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { webApiPolicy, webApiFetchPolicy } from '../lib/webapi-policy.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // HTTP errors carry the documented Power Pages code in the body;
 // the simulator's own classification
@@ -938,8 +938,7 @@ test('HTTP public wildcard API preserves private backend snapshots across denied
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-private-api-'));
   // Removed after the runtime closes, and also when startup fails.
   ownedFixture(t).remove(async () => {
-    const resolved = await fs.realpath(dir);
-    assert.ok(resolved.startsWith((await fs.realpath(os.tmpdir())) + path.sep));
+    const resolved = await assertTemporaryDirectory(dir);
     await fs.rm(resolved, { recursive: true, force: true });
   });
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_name: Private API\nadx_websiteid: site');
@@ -990,8 +989,7 @@ test('HTTP PATCH/PUT/DELETE cannot change immutable metadata columns while permi
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-immutable-api-'));
   // Removed after the runtime closes, and also when startup fails.
   ownedFixture(t).remove(async () => {
-    const resolved = await fs.realpath(dir);
-    assert.ok(resolved.startsWith(await fs.realpath(os.tmpdir())));
+    const resolved = await assertTemporaryDirectory(dir);
     await fs.rm(resolved, { recursive: true, force: true });
   });
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_name: Immutable API\nadx_websiteid: site');

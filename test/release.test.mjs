@@ -129,6 +129,7 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
     'lense/../../secret.mjs',
     'mirage/test/server.test.mjs',
     'mirage/test-browser/admin.test.mjs',
+    'examples/company-operations/test/temporary-cleanup-live.test.mjs',
     'mirage/node_modules/liquidjs/index.js',
     'mirage/.paqvilo/state.json',
     'mirage/packs/customer/pack.mjs',
@@ -155,6 +156,7 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
     'lense/model-driven-native-comparison.mjs',
     'lense/model-driven-targets.mjs',
     'lense/owned-page-binding.mjs',
+    'examples/company-operations/test/temporary-cleanup.test.mjs',
   ])
     assert.throws(
       () => validateReleaseFiles(required.filter((file) => file.path !== requiredPath)),

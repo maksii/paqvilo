@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const OUTPUTS = {
+  'synthetic-navigation': /^[a-f0-9]{32}-(?:diagnostic\.json|failure\.png)$/,
   'extended-round':
     /^(?:multipart\.json|(?:classic|enhanced)-workflows\.(?:json|png)|verify-(?:classic|enhanced)-(?:baseline|working-copy)\.json)$/,
   'multi-portal-round': /^(?:acceptance|cli-smoke)\.json$/,
@@ -20,6 +21,7 @@ export function collectSyntheticEvidence(stateDir) {
     for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
       if (!entry.isFile() || !allowed.test(entry.name)) continue;
       const relative = path.join(folder, entry.name);
+      if (fs.lstatSync(path.join(root, relative)).nlink !== 1) continue;
       const target = path.join(output, relative);
       fs.mkdirSync(path.dirname(target), { recursive: true });
       fs.copyFileSync(path.join(source, entry.name), target);

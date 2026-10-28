@@ -1,6 +1,6 @@
 # Test suite audit record (October 2026)
 
-The [0.9.8 finalization](0.9.8-finalization.md) consolidates the two new review rounds, their fixes and controlled evidence, retained scope, and required final validation. The partition tables below are historical snapshots of the original audit. The [earlier 0.9.8 follow-up](0.9.8-follow-up.md) retains its commit-specific quality and performance measurements and observations; those results do not qualify later changes.
+The [0.9.8 finalization](0.9.8-finalization.md) consolidates the two new review rounds, the additional hosted-failure review, their fixes and controlled evidence, retained scope, and required final validation. The partition tables below are historical snapshots of the original audit. The [earlier 0.9.8 follow-up](0.9.8-follow-up.md) retains its commit-specific quality and performance measurements and observations; those results do not qualify later changes.
 
 Every test file in the toolkit was reviewed against the behaviour it claims to cover: Lense unit (`test/`) and browser
 (`test-browser/`) suites, Mirage unit (`mirage/test/`) and browser (`mirage/test-browser/`) suites, the example

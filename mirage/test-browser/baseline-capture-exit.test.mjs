@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { withProcessSlot } from '../test/process-slots.mjs';
 
 function ownedProcess(t, args, { signal = t.signal } = {}) {
@@ -39,8 +39,8 @@ function ownedProcess(t, args, { signal = t.signal } = {}) {
 async function outputDirectory(t) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-capture-exit-'));
   ownedFixture(t).remove(async () => {
-    assert.ok(path.resolve(directory).startsWith(path.resolve(os.tmpdir()) + path.sep));
-    await fs.rm(directory, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(directory);
+    await fs.rm(physical, { recursive: true, force: true });
   });
   return directory;
 }

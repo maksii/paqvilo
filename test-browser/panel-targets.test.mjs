@@ -24,7 +24,8 @@ test(
     const panels = [];
     const sessions = new Map();
     const requests = [[], []];
-    let browser;
+    let browser, context;
+    ownedFixture(t).add(() => context?.unrouteAll({ behavior: 'wait' }));
     ownedFixture(t).add(async () => {
       await drainFixture(
         panels.map((panel) => () => panel.dispose()),
@@ -78,7 +79,7 @@ test(
         '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
       ],
     });
-    const context = await browser.newContext({ serviceWorkers: 'block' });
+    context = await browser.newContext({ serviceWorkers: 'block' });
     context.setDefaultTimeout(10_000);
     await context.route('**/__paqvilo/api/**', (route) => {
       const url = new URL(route.request().url());

@@ -148,6 +148,7 @@ const COMPANY_QUALIFICATION_SOURCES = new Set(
     'test/currency-reference.test.mjs',
     'test/odata-permission-model.test.mjs',
     'test/odata-probes.test.mjs',
+    'test/temporary-cleanup.test.mjs',
   ].map((name) => `examples/company-operations/${name}`),
 );
 
@@ -251,6 +252,7 @@ export const REQUIRED_RELEASE_FILES = [
   'examples/company-operations/portal-security/deploy.mjs',
   'examples/company-operations/portal-security/reference-projections.mjs',
   'examples/company-operations/portal-security/package.mjs',
+  'examples/company-operations/test/temporary-cleanup.test.mjs',
   'examples/company-operations/portal-harness/compile.mjs',
   'examples/company-operations/portal-harness/runtime.mjs',
   'examples/company-operations/portal-harness/deploy.mjs',

@@ -5,15 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
-import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('imported Web API view columns combine with explicit fields without exposing related, filter or sort columns', async (t) => {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-api-column-view-'));
   const portal = path.join(directory, 'portal'),
     solution = path.join(directory, 'solution');
   ownedFixture(t).remove(async () => {
-    assert.equal(path.dirname(path.resolve(directory)), path.resolve(os.tmpdir()));
-    await fs.rm(directory, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(directory, { directChild: true });
+    await fs.rm(physical, { recursive: true, force: true });
   });
   const attribute = (name, type = 'nvarchar') =>
     `<attribute PhysicalName="${name}"><LogicalName>${name}</LogicalName><Name>${name}</Name><Type>${type}</Type></attribute>`;

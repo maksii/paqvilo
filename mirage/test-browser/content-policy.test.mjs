@@ -6,7 +6,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, assertTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 
 test(
   'online frame selection permits only the selected embed and leaves parent API/scripts local',
@@ -27,11 +27,10 @@ test(
       await fs.writeFile(path.join(dir, file), body);
     }
     let app, browser;
-    t.after(async () => {
-      await browser?.close();
-      await app?.close();
-      const resolved = await fs.realpath(dir);
-      assert.ok(resolved.startsWith(await fs.realpath(os.tmpdir())));
+    ownedFixture(t).add(() => browser?.close());
+    ownedFixture(t).add(() => app?.close());
+    ownedFixture(t).remove(async () => {
+      const resolved = await assertTemporaryDirectory(dir);
       await fs.rm(resolved, { recursive: true, force: true });
     });
     app = await createSimulator({

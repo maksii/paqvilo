@@ -16,7 +16,7 @@ import {
   redactEncodedLayoutTokens,
   redactEncodedLayoutEvidence,
 } from '../lib/capture-control-redaction.mjs';
-import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const token = Buffer.from('invented signed configuration fixture').toString('base64');
 for (const [label, input] of [
   ['JSON', JSON.stringify({ base64SecureConfiguration: token, sibling: 'kept' })],
@@ -380,8 +380,8 @@ test('capture persistence removes plain and encoded signed tokens in every evide
       assert.ok(!text.includes(hash(html)), file);
     }
   } finally {
-    assert.ok(path.resolve(out).startsWith(path.resolve(os.tmpdir()) + path.sep));
-    await fs.rm(out, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(out);
+    await fs.rm(physical, { recursive: true, force: true });
   }
 });
 
