@@ -9,7 +9,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { loadDevTargets } from '../lense/config.mjs';
 import { openBrowser } from '../lense/browser.mjs';
@@ -724,16 +724,12 @@ test(
     );
     // The process executes the actual CLI. A test-only preload restricts Chromium background
     // traffic; production launch/config/runtime/agent/shutdown code runs without substitution.
-    const preload = path.join(work, 'loopback-browser.mjs');
-    fs.writeFileSync(
-      preload,
-      `import { chromium } from ${JSON.stringify(import.meta.resolve('playwright-core'))};\nconst launch = chromium.launchPersistentContext;\nchromium.launchPersistentContext = function(profile, options) { return launch.call(this, profile, {...options, proxy: {server: ${JSON.stringify(alpha.origin)}, bypass: '127.0.0.1,localhost'}, args: [...options.args, '--disable-background-networking', '--disable-component-update', '--disable-sync', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost']}); };\n`,
-    );
+    const preload = new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href;
     child = spawn(
       process.execPath,
       [
         '--import',
-        pathToFileURL(preload).href,
+        preload,
         'lense/cli.mjs',
         'dev',
         '--config',
@@ -744,7 +740,12 @@ test(
         '--debug-port',
         '0',
       ],
-      { cwd: toolkit, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+      {
+        cwd: toolkit,
+        env: { ...env, PAQVILO_TEST_LOOPBACK_PROXY: alpha.origin },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
     );
     childDone = new Promise((resolve, reject) => {
       child.once('exit', (code, signal) => resolve({ code, signal }));
