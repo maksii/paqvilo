@@ -478,6 +478,7 @@ function equivalent(a, b) {
     return Number(a) === Number(b);
   if (a === b) return true;
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && a.length !== b.length) return false;
   const ak = Object.keys(a),
     bk = Object.keys(b);
   return ak.length === bk.length && ak.every((k) => own(b, k) && equivalent(a[k], b[k]));
@@ -1314,7 +1315,9 @@ function evaluate(node, state) {
       return n === 'skip' ? a[0].slice(a[1]) : a[0].slice(0, a[1]);
     case 'first':
     case 'last':
-      return n === 'first' ? (a[0]?.[0] ?? null) : (a[0]?.at(-1) ?? null);
+      if (typeof a[0] !== 'string' && !Array.isArray(a[0]))
+        fail(node.name + '() requires a string or array.', 400, 'LocalFlowExpression');
+      return n === 'first' ? (a[0][0] ?? null) : (a[0].at(-1) ?? null);
     case 'tolower':
     case 'toupper':
     case 'trim':
@@ -1495,7 +1498,7 @@ export function executeFlowDefinition({
     );
   if (!trigger.supported) fail(trigger.errors.join(' '));
   const triggers = Object.values(definition?.triggers ?? {});
-  if (!input || typeof input !== 'object' || Array.isArray(input))
+  if (!input || typeof input !== 'object' || Array.isArray(input) || isExactNumeric(input))
     fail('The cloud-flow input must be an object.', 400, 'InvalidRequest');
   validateFlowInput(input, triggers[0].inputs?.schema);
   // A tracked run passes the non-secret parameter values frozen at its start (runTrackedFlow), so a resume replays them.

@@ -431,7 +431,7 @@ export function compileForm(form, fields, lcid = 1033) {
             column,
             colspan,
             ...(cell.attrs.rowspan ? { rowspan } : {}),
-            showLabel: cell.attrs.showlabel !== 'false',
+            showLabel: formBoolean(cell.attrs.showlabel, true),
           },
         });
         column += colspan;
@@ -443,7 +443,7 @@ export function compileForm(form, fields, lcid = 1033) {
     id: tab.attrs.name ?? tab.attrs.id,
     sourceStructure: sourceStructure(tab),
     label: label(child(tab, 'labels'), lcid) ?? tab.attrs.name ?? 'General',
-    visible: tab.attrs.visible !== 'false',
+    visible: formBoolean(tab.attrs.visible, true),
     columnWidths: (child(tab, 'columns')?.children ?? [])
       .filter((column) => column.name === 'column')
       .map((column) => Number.parseFloat(column.attrs.width) || 100),
@@ -451,8 +451,8 @@ export function compileForm(form, fields, lcid = 1033) {
       ...(section.attrs.name ? { name: section.attrs.name } : {}),
       sourceStructure: sourceStructure(section),
       label: label(child(section, 'labels'), lcid) ?? '',
-      showLabel: section.attrs.showlabel !== 'false',
-      visible: section.attrs.visible !== 'false',
+      showLabel: formBoolean(section.attrs.showlabel, true),
+      visible: formBoolean(section.attrs.visible, true),
       column: (child(tab, 'columns')?.children ?? []).findIndex((column) =>
         descendants(column, 'section').includes(section),
       ),
@@ -462,7 +462,8 @@ export function compileForm(form, fields, lcid = 1033) {
       ...(section.attrs.celllabelalignment ? { labelAlignment: section.attrs.celllabelalignment.toLowerCase() } : {}),
       fields: layoutCells(section).flatMap(({ cell, position }) => {
         const control = child(cell, 'control');
-        if (!control) return [{ ...position, spacer: true, supported: true, visible: cell.attrs.visible !== 'false' }];
+        if (!control)
+          return [{ ...position, spacer: true, supported: true, visible: formBoolean(cell.attrs.visible, true) }];
         const name = control.attrs.datafieldname;
         if (id(control.attrs.classid) === SUBGRID_CLASS) {
           const parameter = (name) => descendants(control, name)[0]?.text.trim();
@@ -475,7 +476,7 @@ export function compileForm(form, fields, lcid = 1033) {
               ...position,
               sourceControl: sourceControl(control),
               label: label(child(cell, 'labels'), lcid) ?? control.attrs.id,
-              visible: cell.attrs.visible !== 'false',
+              visible: formBoolean(cell.attrs.visible, true) && formBoolean(control.attrs.visible, true),
               ...(datasetPcf ? { pcf: datasetPcf } : {}),
               supported: true,
               subgrid: {
@@ -504,8 +505,8 @@ export function compileForm(form, fields, lcid = 1033) {
             sourceControl: sourceControl(control),
             name,
             label: label(child(cell, 'labels'), lcid) ?? fields[name]?.label ?? name ?? control.attrs.id,
-            visible: cell.attrs.visible !== 'false' && control.attrs.visible !== 'false',
-            disabled: control.attrs.disabled === 'true',
+            visible: formBoolean(cell.attrs.visible, true) && formBoolean(control.attrs.visible, true),
+            disabled: formBoolean(control.attrs.disabled, false),
             ...(pcf ? { pcf } : {}),
             supported,
             ...(!supported

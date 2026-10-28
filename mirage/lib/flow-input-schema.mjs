@@ -45,29 +45,34 @@ const unsupportedKeywords = new Set([
 const unsupported = (message) => {
   throw new DataError(message, 501, 'LocalFlowUnsupported');
 };
-const bounded = (depth, state, kind) => {
+const bounded = (depth, state, kind, count = 1) => {
   if (depth > 32) unsupported('The cloud-flow input schema exceeds the local nesting limit.');
-  if (++state[kind] > 10000) unsupported('The cloud-flow input schema exceeds the local validation work limit.');
+  state[kind] += count;
+  if (state[kind] > 10000) unsupported('The cloud-flow input schema exceeds the local validation work limit.');
 };
 
 function inspectSchema(schema, depth, state) {
   bounded(depth, state, 'schemas');
   if (typeof schema === 'boolean') return;
   if (!map(schema)) unsupported('A cloud-flow schema must be an object or boolean.');
-  for (const key of Object.keys(schema))
+  const keywords = Object.keys(schema);
+  bounded(depth, state, 'schemas', keywords.length);
+  for (const key of keywords)
     if (unsupportedKeywords.has(key)) unsupported('Unsupported cloud-flow schema keyword: ' + key);
   if (own(schema, 'type')) {
     const declared = Array.isArray(schema.type) ? schema.type : [schema.type];
+    bounded(depth, state, 'schemas', declared.length);
     if (!declared.length || declared.some((type) => !types.has(type)))
       unsupported('Cloud-flow schema type must name supported JSON types.');
   }
   if (own(schema, 'enum') && (!Array.isArray(schema.enum) || !schema.enum.length))
     unsupported('Cloud-flow schema enum must be a nonempty array.');
-  if (
-    own(schema, 'required') &&
-    (!Array.isArray(schema.required) || schema.required.some((name) => typeof name !== 'string'))
-  )
-    unsupported('Cloud-flow schema required must be an array of property names.');
+  if (own(schema, 'required')) {
+    if (!Array.isArray(schema.required)) unsupported('Cloud-flow schema required must be an array of property names.');
+    bounded(depth, state, 'schemas', schema.required.length);
+    if (schema.required.some((name) => typeof name !== 'string'))
+      unsupported('Cloud-flow schema required must be an array of property names.');
+  }
   if (own(schema, 'properties')) {
     if (!map(schema.properties)) unsupported('Cloud-flow schema properties must be an object.');
     for (const child of Object.values(schema.properties)) inspectSchema(child, depth + 1, state);
@@ -93,10 +98,12 @@ function equalValue(a, b, depth, state) {
     );
   if (a === b) return true;
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
-  const keys = Object.keys(a);
+  if (Array.isArray(a) && a.length !== b.length) return false;
+  const keys = Object.keys(a),
+    other = Object.keys(b);
+  bounded(depth, state, 'checks', keys.length + other.length);
   return (
-    keys.length === Object.keys(b).length &&
-    keys.every((key) => own(b, key) && equalValue(a[key], b[key], depth + 1, state))
+    keys.length === other.length && keys.every((key) => own(b, key) && equalValue(a[key], b[key], depth + 1, state))
   );
 }
 
@@ -141,8 +148,11 @@ function validate(value, schema, name, depth, state) {
       invalid('does not satisfy ' + keyword);
   }
   if (map(value)) {
-    for (const key of schema.required ?? []) if (!own(value, key)) invalid('is missing required property ' + key);
-    for (const [key, child] of Object.entries(value)) {
+    const required = schema.required ?? [],
+      entries = Object.entries(value);
+    bounded(depth, state, 'checks', required.length + entries.length);
+    for (const key of required) if (!own(value, key)) invalid('is missing required property ' + key);
+    for (const [key, child] of entries) {
       if (own(schema.properties, key)) validate(child, schema.properties[key], name + '.' + key, depth + 1, state);
       else if (schema.additionalProperties === false) invalid('contains undeclared property ' + key);
       else if (own(schema, 'additionalProperties'))

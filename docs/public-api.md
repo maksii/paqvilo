@@ -41,8 +41,9 @@ definition; it does not rewind an active runtime, recover an
 advanced identity counter, restore arbitrary provider closures or resurrect
 in-flight timers. A project rebuilds its providers for the new fixture and owns
 teardown of the old runtime. Runtime callbacks in recipe state are rejected.
-Shared-memory buffers and views are rejected because cloning them does not
-isolate their bytes; ordinary array buffers are copied. Recipe graph inspection
+Shared-memory buffers, views and WebAssembly memory are rejected, including when
+nested inside an Error cause, because cloning them does not isolate their bytes;
+ordinary array buffers are copied. Recipe graph inspection
 has a shared work limit.
 
 ## Inspect Solution sources

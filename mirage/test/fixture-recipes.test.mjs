@@ -71,3 +71,32 @@ test('shared memory is rejected while ordinary buffer copies stay independent', 
   a.scheduler.close();
   b.scheduler.close();
 });
+
+test('non-enumerable cloned Error causes cannot hide shared memory across recreated fixtures', () => {
+  const shared = new SharedArrayBuffer(4);
+  for (const memory of [shared, new Uint8Array(shared)]) {
+    const failure = new Error('Synthetic failure', { cause: { memory } });
+    assert.equal(Object.keys(structuredClone(failure)).length, 0);
+    for (const state of [{ failure }, { failures: new Map([['failure', failure]]) }])
+      assert.throws(() => createFixtureRecipes({ baseline: { state } }), /shared-memory/);
+  }
+  const memory = new Uint8Array(4),
+    recipes = createFixtureRecipes({
+      baseline: { state: { failure: new Error('Synthetic failure', { cause: { memory } }) } },
+    }),
+    a = recipes.create('baseline'),
+    b = recipes.create('baseline');
+  memory[0] = 5;
+  a.state.failure.cause.memory[1] = 7;
+  assert.deepEqual([...b.state.failure.cause.memory], [0, 0, 0, 0]);
+  assert.deepEqual([...memory], [5, 0, 0, 0]);
+  a.scheduler.close();
+  b.scheduler.close();
+});
+
+test('shared WebAssembly memory cannot hide shared bytes behind a cloneable native object', () => {
+  const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+  assert.equal(structuredClone(memory).buffer instanceof SharedArrayBuffer, true);
+  for (const state of [{ memory }, { nested: new Map([['memory', memory]]) }])
+    assert.throws(() => createFixtureRecipes({ baseline: { state } }), /shared-memory/);
+});

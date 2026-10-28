@@ -7,11 +7,12 @@ export function inspectionBudget(limit, label) {
   };
 }
 
-/** Account for tableFields' option materialization before allocating its repeated metadata arrays. */
-export function chargeSchemaOptions(table, schema, charge) {
+/** Account for repeated option/target collections before tableFields materializes or consumers inspect them. */
+export function chargeSchemaMetadata(tableName, table, schema, charge) {
   const attributes = Object.values(table.attributes);
   charge(attributes.length);
   for (const attribute of attributes) {
+    charge(schema.targets?.[`${tableName}/${attribute.name}`]?.length ?? 0);
     for (const name of ['options', 'states', 'statuses']) charge(attribute.optionSet?.[name]?.length ?? 0);
     if (attribute.optionSetName)
       charge(schema.optionSets?.[attribute.optionSetName.toLowerCase()]?.options?.length ?? 0);

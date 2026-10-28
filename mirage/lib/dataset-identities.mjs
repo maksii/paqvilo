@@ -153,6 +153,16 @@ export function remapDatasetIdentities(fragment, { schema, identities, existing 
     }
   }
   const result = structuredClone(fragment);
+  // structuredClone preserves aliases, but substitutions are scoped to a table
+  // and row. Split those mutable containers before changing any identity; opaque
+  // nested data keeps its cloned graph and lookup rewrites replace whole values.
+  for (const [table, rows] of Object.entries(result.tables)) {
+    work(rows.length);
+    result.tables[table] = rows.map((row) => {
+      work(Object.keys(row).length);
+      return { ...row };
+    });
+  }
   const replacement = (table, source) => {
     const destination = plans.get(table)?.get(source);
     if (destination !== undefined) used.add(JSON.stringify([table, source]));

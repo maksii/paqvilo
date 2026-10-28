@@ -18,11 +18,18 @@ function isolatedState(state) {
     const value = pending.pop();
     if (!value || typeof value !== 'object' || seen.has(value)) continue;
     seen.add(value);
-    if (value instanceof SharedArrayBuffer || (ArrayBuffer.isView(value) && value.buffer instanceof SharedArrayBuffer))
+    if (
+      value instanceof SharedArrayBuffer ||
+      ((ArrayBuffer.isView(value) || value instanceof WebAssembly.Memory) && value.buffer instanceof SharedArrayBuffer)
+    )
       throw new TypeError('Fixture recipe state cannot contain shared-memory buffers.');
     if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) continue;
     const children =
-      value instanceof Map ? [...value].flat() : value instanceof Set ? [...value] : Object.values(value);
+      value instanceof Map
+        ? [...value].flat()
+        : value instanceof Set
+          ? [...value]
+          : Object.getOwnPropertyNames(value).map((key) => value[key]);
     charge(children.length);
     for (const child of children) pending.push(child);
   }

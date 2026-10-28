@@ -5,17 +5,23 @@ import { guidKey } from './dataverse-values.mjs';
 import { inspectionBudget } from './inspection-budget.mjs';
 
 const plain = (value) => value && [Object.prototype, null].includes(Object.getPrototypeOf(value));
-const normalized = (value) => (value == null ? null : String(value).trim().toLowerCase());
-const identity = (value) => guidKey(value);
+const normalized = (value) => {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new TypeError('Registration names must be primitive strings.');
+  return value.trim().toLowerCase();
+};
+const identity = (value) => (typeof value === 'string' ? guidKey(value) : null);
 const text = (value) => (typeof value === 'string' ? value : null);
-const scalar = (value) => {
+const scalar = (value, charge) => {
   if (value == null) return null;
   if (!['string', 'number', 'boolean'].includes(typeof value) || (typeof value === 'number' && !Number.isFinite(value)))
     throw new TypeError('Registration facts must contain finite primitive values.');
+  if (typeof value === 'string') charge(value.length);
   return value;
 };
-const reference = (value) => {
+const reference = (value, charge) => {
   if (value == null || value === '') return null;
+  charge(typeof value === 'string' ? value.length : 1);
   const id = identity(value);
   if (!id) throw new TypeError('Registration references must be GUID identities.');
   return id;
@@ -47,10 +53,10 @@ function facts(kind, row, charge) {
     return Object.fromEntries(
       ['name', 'fullName', 'version', 'culture', 'publicKeyToken', 'isolationMode', 'sourceType'].map((key) => [
         key,
-        scalar(row[key]),
+        scalar(row[key], charge),
       ]),
     );
-  if (kind === 'types') return { name: text(row.name), assemblyId: reference(row.assemblyId) };
+  if (kind === 'types') return { name: text(row.name), assemblyId: reference(row.assemblyId, charge) };
   if (
     row.images != null &&
     (!Array.isArray(row.images) || row.images.length > 1000 || row.images.some((image) => !plain(image)))
@@ -58,35 +64,38 @@ function facts(kind, row, charge) {
     throw new Error('Registration images must be a bounded object array.');
   charge(row.images?.length ?? 0);
   const images = (row.images ?? []).map((image) => {
-    charge((image.name?.length ?? 0) + (image.alias?.length ?? 0));
+    charge(
+      (typeof image.name === 'string' ? image.name.length : 0) +
+        (typeof image.alias === 'string' ? image.alias.length : 0),
+    );
     return {
       name: text(image.name),
       alias: text(image.alias),
-      type: scalar(image.type),
+      type: scalar(image.type, charge),
       attributes: attributes(image.attributes, charge),
     };
   });
   images.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b), 'en'));
   return {
     name: text(row.name),
-    typeId: reference(row.typeId),
+    typeId: reference(row.typeId, charge),
     typeName: text(row.typeName),
-    assemblyId: reference(row.assemblyId),
+    assemblyId: reference(row.assemblyId, charge),
     assemblyName: text(row.assemblyName),
     entity: normalized(row.entity),
     message: normalized(row.message),
-    messageId: reference(row.messageId),
-    messageFilterId: reference(row.messageFilterId),
-    eventHandlerId: reference(row.eventHandlerId),
-    stage: scalar(row.stage),
-    rank: scalar(row.rank),
-    mode: scalar(row.mode),
-    enabled: scalar(row.enabled),
-    supportedDeployment: scalar(row.supportedDeployment),
-    unfiltered: scalar(row.unfiltered),
+    messageId: reference(row.messageId, charge),
+    messageFilterId: reference(row.messageFilterId, charge),
+    eventHandlerId: reference(row.eventHandlerId, charge),
+    stage: scalar(row.stage, charge),
+    rank: scalar(row.rank, charge),
+    mode: scalar(row.mode, charge),
+    enabled: scalar(row.enabled, charge),
+    supportedDeployment: scalar(row.supportedDeployment, charge),
+    unfiltered: scalar(row.unfiltered, charge),
     filteringAttributes: attributes(row.filteringAttributes, charge),
-    impersonatingUserId: reference(row.impersonatingUserId),
-    serviceEndpointId: reference(row.serviceEndpointId),
+    impersonatingUserId: reference(row.impersonatingUserId, charge),
+    serviceEndpointId: reference(row.serviceEndpointId, charge),
     images,
   };
 }
@@ -116,6 +125,7 @@ export function comparePluginRegistrations(before, after) {
       for (let index = 0; index < rows.length; index++) {
         const row = rows[index];
         if (!plain(row)) throw new Error('Registration records must be plain objects.');
+        charge(typeof row.id === 'string' ? row.id.length : 1);
         const id = identity(row.id);
         if (!id) {
           diagnostics.push({ code: 'REGISTRATION_ID_UNRESOLVED', side, kind, index });

@@ -1544,12 +1544,19 @@ function likeRegex(pattern, escape, collation) {
     } else if (c === '_') {
       out += '[\\s\\S]';
     } else if (c === '[' && pattern.indexOf(']', i + 1) > i + 1) {
-      const close = pattern.indexOf(']', i + 1);
-      const body = pattern.slice(i + 1, close);
-      const negate = body[0] === '^';
-      const set = negate ? body.slice(1) : body;
-      out += `[${negate ? '^' : ''}${foldText(set, collation).replace(/[\\[\]]/g, '\\$&')}]`;
-      i = close;
+      let end = i + 1;
+      const negate = pattern[end] === '^' && escape !== '^';
+      if (negate) end++;
+      let set = '';
+      for (; end < pattern.length && pattern[end] !== ']'; end++) {
+        const escaped = escape !== null && pattern[end] === escape;
+        if (escaped && ++end === pattern.length) return null;
+        const member = foldText(pattern[end], collation).replace(/[\\[\]^]/g, '\\$&');
+        set += escaped ? member.replace(/-/g, '\\-') : member;
+      }
+      if (end === pattern.length || !set) return null;
+      out += `[${negate ? '^' : ''}${set}]`;
+      i = end;
     } else {
       out += literal(c);
     }

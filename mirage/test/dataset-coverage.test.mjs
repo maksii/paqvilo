@@ -170,3 +170,28 @@ test('aliased choice/member and option metadata products share the aggregate ins
   );
   assert.throws(() => summarizeDataset({ schema: input, tables: { x_item: [] } }), /inspection limit/);
 });
+
+test('lookup-target membership builds one bounded index rather than rescanning targets for every row', () => {
+  const input = schema(),
+    values = Array.from({ length: 1000 }, (_, index) => `x_target${index}`);
+  let reads = 0;
+  input.targets['x_item/x_parent'] = new Proxy(values, {
+    get(target, key, receiver) {
+      if (/^\d+$/.test(String(key))) reads++;
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  const report = summarizeDataset({
+    schema: input,
+    tables: { x_item: Array(3000).fill({ x_parent: { id: id(1), logical_name: 'x_target999' } }) },
+  });
+  assert.equal(report.tables.x_item.columns.x_parent.lookup.dangling, 3000);
+  assert.ok(reads >= 1000 && reads < 5000, `bounded lookup membership read ${reads} targets`);
+  input.tables.x_item.attributes = Object.fromEntries(
+    Array.from({ length: 210 }, (_, index) => [`x_ref${index}`, { name: `x_ref${index}`, type: 'lookup' }]),
+  );
+  input.targets = Object.fromEntries(
+    Object.keys(input.tables.x_item.attributes).map((name) => [`x_item/${name}`, Array(10000).fill('x_group')]),
+  );
+  assert.throws(() => summarizeDataset({ schema: input, tables: { x_item: [] } }), /inspection limit/);
+});

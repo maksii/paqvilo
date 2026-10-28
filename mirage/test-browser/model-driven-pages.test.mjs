@@ -344,6 +344,62 @@ test('Xrm.App.sidePanes hosts pages beside the workspace and closes them', async
   assert.deepEqual(errors, []);
 });
 
+test('a closed side pane refuses navigation before changing its detached frame or a replacement pane', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  const result = await page.evaluate(async () => {
+    const panes = window.Xrm.App.sidePanes;
+    const closed = await panes.createPane({ paneId: 'reused-id', title: 'Closed pane' });
+    const frame = document.querySelector('.side-pane iframe');
+    const before = frame.getAttribute('src');
+    closed.close();
+    const replacement = await panes.createPane({ paneId: 'reused-id', title: 'Replacement pane' });
+    const outcome = closed.navigate({ pageType: 'entitylist', entityName: 'x_item' }).then(
+      () => 'resolved',
+      (error) => error.code,
+    );
+    // A stale browser load must not turn a disposed handle back into a live pane.
+    frame.dispatchEvent(new Event('load'));
+    return {
+      outcome: await outcome,
+      unchanged: frame.getAttribute('src') === before,
+      replacementSelected: panes.getSelectedPane() === replacement,
+      panes: panes.getAllPanes().getLength(),
+    };
+  });
+  assert.deepEqual(result, { outcome: 'PaneClosed', unchanged: true, replacementSelected: true, panes: 1 });
+  assert.deepEqual(errors, []);
+});
+
+test('closing a pane rejects in-flight navigation and releases stale frame load handlers', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  await openRecord(page, origin);
+  const result = await page.evaluate(async () => {
+    const panes = window.Xrm.App.sidePanes;
+    const pane = await panes.createPane({ paneId: 'pending-pane' });
+    const frame = document.querySelector('.side-pane iframe');
+    const outcomes = [
+      pane.navigate({ pageType: 'entitylist', entityName: 'x_item' }),
+      pane.navigate({ pageType: 'entityrecord', entityName: 'x_item' }),
+    ].map((pending) =>
+      pending.then(
+        () => 'resolved',
+        (error) => error.code,
+      ),
+    );
+    pane.close();
+    frame.dispatchEvent(new Event('load'));
+    const replacement = await panes.createPane({ paneId: 'pending-pane' });
+    return {
+      outcomes: await Promise.all(outcomes),
+      replacementSelected: panes.getSelectedPane() === replacement,
+      panes: panes.getAllPanes().getLength(),
+    };
+  });
+  assert.deepEqual(result, { outcomes: ['PaneClosed', 'PaneClosed'], replacementSelected: true, panes: 1 });
+  assert.deepEqual(errors, []);
+});
+
 test('side pane selection expands the group and clears badges unless retained', async (t) => {
   const { page, origin, errors } = await fixture(t, { readOnly: true });
   await openRecord(page, origin);
@@ -377,6 +433,38 @@ test('side pane selection expands the group and clears badges unless retained', 
     await window.Xrm.App.sidePanes.createPane({ paneId: 'foreground', title: 'Foreground pane' });
   });
   assert.equal(await page.getByRole('region', { name: 'Foreground pane', exact: true }).isVisible(), true);
+  assert.deepEqual(errors, []);
+});
+
+test('explicit source form selection refuses unavailable forms without substituting a default', async (t) => {
+  const { page, origin, errors } = await fixture(t, { readOnly: true });
+  const route =
+    origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  await page.goto(route + '&formid=not-imported');
+  await page.waitForFunction(() => ['ready', 'error'].includes(document.documentElement.dataset.mirageAppState));
+  assert.equal(await page.locator('html').getAttribute('data-mirage-app-state'), 'error');
+  assert.match(await page.locator('#notice').textContent(), /requested form.*unavailable/i);
+  assert.equal(await page.locator('#record-form').count(), 0, 'no different source form is rendered');
+  for (const suffix of ['&formid=%7BITEM-FORM%7D', '']) {
+    await page.goto(route + suffix);
+    await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && window.Xrm?.Page);
+    assert.equal(await page.getByRole('textbox', { name: 'Name', exact: true }).inputValue(), 'Copper');
+    assert.equal(await page.evaluate(() => window.Xrm.Page.ui.formSelector.getCurrentItem().getId()), '{item-form}');
+  }
+  const refusal = await page.evaluate(async () => {
+    const pane = await window.Xrm.App.sidePanes.createPane({ paneId: 'source-form', title: 'Source form' });
+    await pane.navigate({ pageType: 'entityrecord', entityName: 'x_item', formId: '{ITEM-FORM}' });
+    const frame = document.querySelector('.side-pane[data-pane-id="source-form"] iframe');
+    const before = frame.getAttribute('src');
+    let code;
+    try {
+      await pane.navigate({ pageType: 'entityrecord', entityName: 'x_item', formId: 'not-imported' });
+    } catch (error) {
+      code = error.code;
+    }
+    return { code, unchanged: before === frame.getAttribute('src') };
+  });
+  assert.deepEqual(refusal, { code: 'FormUnavailable', unchanged: true });
   assert.deepEqual(errors, []);
 });
 

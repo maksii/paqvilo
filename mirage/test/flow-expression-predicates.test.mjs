@@ -6,6 +6,12 @@ const state = (input = {}) => ({ input, variables: {}, parameters: {}, results: 
 const value = (expression, input) => resolveFlowValue(expression, state(input));
 const definition = (actions) => ({ triggers: { manual: { type: 'Request', kind: 'Button' } }, actions });
 
+test('array equality preserves local collection length rather than comparing only occupied indexes', () => {
+  assert.equal(value("@equals(triggerBody()?['values'],createArray())", { values: [] }), true);
+  assert.equal(value("@equals(triggerBody()?['values'],createArray())", { values: Array(1) }), false);
+  assert.equal(value("@equals(triggerBody()?['values'],createArray())", { values: [undefined] }), false);
+});
+
 // WDL prefix/suffix comparisons are case-insensitive; contains() keeps its case-sensitive semantics.
 test('startsWith and endsWith compare strings without case sensitivity', () => {
   for (const [name, text, match, miss] of [

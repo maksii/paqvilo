@@ -29,6 +29,18 @@ const parse = (content, schema) =>
     input: {},
   });
 
+test('enum comparison charges wide early mismatches and distinguishes array length for local inputs', async () => {
+  const wide = Object.fromEntries(Array.from({ length: 20000 }, (_, index) => [`field${index}`, index]));
+  unsupported({ enum: [wide] }, {});
+  unsupported({ enum: [{}] }, wide);
+  rejected(Array(1), { type: 'array', enum: [[]] });
+  rejected([], { type: 'array', enum: [Array(1)] });
+  validateFlowInput([], { type: 'array', enum: [[]] });
+  const result = await parse(Array(1), { type: 'array', enum: [[]] });
+  assert.equal(result.body.status, 'Failed');
+  assert.equal(result.body.outputs.error.code, 'ValidationFailed');
+});
+
 test('allOf checks every schema independently together with sibling constraints', () => {
   const schema = { type: 'object', allOf: [{ required: ['x_name'] }, { properties: { x_name: { type: 'string' } } }] };
   validateFlowInput({ x_name: 'local' }, schema);
@@ -150,6 +162,29 @@ test('schema depth and evaluation work limits remain errors across alternatives'
       }),
     /validation work limit/,
   );
+});
+
+test('flat schema assertions and repeated object scans share the bounded validation work', async () => {
+  const names = Array.from({ length: 10001 }, (_, index) => 'x_' + index),
+    value = Object.fromEntries(names.map((name) => [name, 1]));
+  for (const schema of [{ required: names }, { type: Array(10001).fill('object') }])
+    assert.throws(
+      () => validateFlowInput(value, schema),
+      (error) => error.code === 'LocalFlowUnsupported' && /work limit/.test(error.message),
+    );
+  assert.throws(
+    () => validateFlowInput(value, {}),
+    (error) => error.code === 'LocalFlowUnsupported' && /work limit/.test(error.message),
+  );
+  const smaller = Object.fromEntries(names.slice(0, 200).map((name) => [name, 1]));
+  assert.throws(
+    () => validateFlowInput(smaller, { anyOf: Array(60).fill({ required: Object.keys(smaller).slice(0, 100) }) }),
+    (error) => error.code === 'LocalFlowUnsupported' && /work limit/.test(error.message),
+  );
+  const answer = await parse(value, { required: names });
+  assert.equal(answer.body.status, 'Failed');
+  assert.equal(answer.body.outputs.error.code, 'LocalFlowUnsupported');
+  validateFlowInput(smaller, { required: Object.keys(smaller) });
 });
 
 test('ParseJson composition failures use its actual failure branch and successful bodies remain typed', async () => {

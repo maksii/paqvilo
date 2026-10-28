@@ -126,3 +126,15 @@ test('aliased option metadata is charged before repeated materialization', () =>
   );
   assert.throws(() => generateSchemaDeclarations(input), /inspection limit/);
 });
+
+test('shared lookup-target metadata is charged before repeated declaration inspection', () => {
+  const input = schema(),
+    targets = Array(10000).fill('x_group');
+  input.tables.x_item.attributes = Object.fromEntries(
+    Array.from({ length: 110 }, (_, index) => [`x_ref${index}`, { name: `x_ref${index}`, type: 'lookup' }]),
+  );
+  input.targets = Object.fromEntries(
+    Object.keys(input.tables.x_item.attributes).map((name) => [`x_item/${name}`, targets]),
+  );
+  assert.throws(() => generateSchemaDeclarations(input), /inspection limit/);
+});

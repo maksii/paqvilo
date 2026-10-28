@@ -68,6 +68,33 @@ test('substring supports optional length and checks bounds instead of silently c
     invalid(expression);
 });
 
+test('first and last accept only strings or arrays and preserve valid endpoint values', async () => {
+  for (const name of ['first', 'last']) {
+    assert.equal(value(`@${name}(createArray(0))`), 0);
+    assert.equal(value(`@${name}(createArray(false))`), false);
+    assert.equal(value(`@${name}(createArray())`), null);
+    assert.equal(value(`@${name}('')`), null);
+    for (const literal of ['null', '1', 'true', 'json(\'{"0":"invented"}\')', '9007199254740993'])
+      invalid(`@${name}(${literal})`);
+  }
+  assert.equal(value("@first('hello')"), 'h');
+  assert.equal(value("@last('hello')"), 'o');
+  assert.equal(value('@first(createArray(0, false))'), 0);
+  assert.equal(value('@last(createArray(0, false))'), false);
+  const answer = await executeFlowDefinition({
+    definition: definition({
+      Endpoint: { type: 'Compose', inputs: '@last(triggerBody())' },
+      Failure: {
+        type: 'Response',
+        runAfter: { Endpoint: ['Failed'] },
+        inputs: { statusCode: 422, body: "@outputs('Endpoint')?['error']?['code']" },
+      },
+    }),
+    input: { 0: 'invented' },
+  });
+  assert.deepEqual(answer, { status: 422, body: 'LocalFlowExpression' });
+});
+
 test('skip and take preserve collection types, return new arrays and reject unsafe count coercions', () => {
   const input = { rows: [{ x_id: 1 }, { x_id: 2 }, { x_id: 3 }] },
     before = structuredClone(input);

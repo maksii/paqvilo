@@ -27,6 +27,7 @@ test('form items resolve by form identity while attribute and control collection
     forms = form.ui.formSelector.items,
     current = form.ui.formSelector.getCurrentItem();
   assert.equal(forms.get(current.getId()), current);
+  assert.throws(() => current.navigate(), /does not support formSelector item.navigate/);
   assert.equal(forms.get(formId), current);
   assert.equal(forms.get(`{${formId.toUpperCase()}}`), current);
   assert.equal(forms.get('Invented form'), undefined, 'the form label is not its identity');

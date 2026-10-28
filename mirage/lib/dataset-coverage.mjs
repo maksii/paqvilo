@@ -2,7 +2,7 @@
 // enter this report; metadata option codes and column names describe its scope.
 import { tableFields } from './solution-schema.mjs';
 import { guidKey } from './dataverse-values.mjs';
-import { inspectionBudget, chargeSchemaOptions } from './inspection-budget.mjs';
+import { inspectionBudget, chargeSchemaMetadata } from './inspection-budget.mjs';
 
 const own = (value, key) => Object.hasOwn(value, key);
 const plain = (value) => value && [Object.prototype, null].includes(Object.getPrototypeOf(value));
@@ -83,7 +83,7 @@ export function summarizeDataset({ schema, tables = {}, existing = {} } = {}) {
       )
     )
       invalid('columns must have logical names and metadata objects');
-    chargeSchemaOptions(schema.tables[name], schema, charge);
+    chargeSchemaMetadata(name, schema.tables[name], schema, charge);
     const fields = tableFields(
         { ...schema, targets: schema.targets ?? {}, optionSets: schema.optionSets ?? {} },
         name,
@@ -121,6 +121,7 @@ export function summarizeDataset({ schema, tables = {}, existing = {} } = {}) {
       const lookup = lookupTypes.has(field.dataverseType)
         ? { resolved: 0, dangling: 0, ambiguous: 0, invalid: 0 }
         : null;
+      const targets = lookup ? new Set(field.targets ?? []) : null;
       for (const row of rows) {
         if (!own(row, column) || row[column] === undefined) {
           count.missing++;
@@ -148,10 +149,9 @@ export function summarizeDataset({ schema, tables = {}, existing = {} } = {}) {
         }
         if (lookup) {
           const reference = plain(value) ? value : { id: value };
-          const id = guidKey(reference.id),
-            targets = field.targets ?? [];
-          const target = reference.logical_name ?? (targets.length === 1 ? targets[0] : null);
-          if (!id || (target != null && !targets.includes(target))) lookup.invalid++;
+          const id = guidKey(reference.id);
+          const target = reference.logical_name ?? (targets.size === 1 ? targets.values().next().value : null);
+          if (!id || (target != null && !targets.has(target))) lookup.invalid++;
           else if (!target) lookup.ambiguous++;
           else if (indexes.get(target)?.has(id)) lookup.resolved++;
           else lookup.dangling++;

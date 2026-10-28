@@ -54,3 +54,75 @@ test('SQL LIKE preserves case-insensitive matching for contextual Greek sigma', 
     assert.deepEqual(await evaluate("SELECT 1 AS matched WHERE 'ΟΣ' LIKE 'ο_'", collation), [[1]]);
   }
 });
+
+test('SQL LIKE interprets escapes within character sets without creating extra members or ranges', async () => {
+  for (const collation of ['CI_AI', 'CI_AS']) {
+    for (const [value, pattern, expected] of [
+      ['%', '[!%]', true],
+      ['!', '[!%]', false],
+      [']', '[!]]', true],
+      ['!', '[!]]', false],
+      ['^', '[!^a]', true],
+      ['b', '[!^a]', false],
+      ['-', '[a!-c]', true],
+      ['b', '[a!-c]', false],
+      ['a', '[a!-c]', true],
+      ['c', '[a!-c]', true],
+      ['b', '[a-c]', true],
+      [']', '[^!]]', false],
+      ['b', '[^!]]', true],
+    ]) {
+      assert.deepEqual(
+        await evaluate(`SELECT 1 AS matched WHERE '${value}' LIKE '${pattern}' ESCAPE '!'`, collation),
+        expected ? [[1]] : [],
+        `${collation}: ${value} LIKE ${pattern}`,
+      );
+    }
+  }
+  assert.deepEqual(await evaluate("SELECT 1 AS matched WHERE '%' LIKE '[é%]' ESCAPE 'é'"), [[1]]);
+  assert.deepEqual(await evaluate("SELECT 1 AS matched WHERE 'e' LIKE '[é%]' ESCAPE 'é'"), []);
+});
+
+test('SQL LIKE recognizes a configured caret escape before character-set negation', async () => {
+  for (const collation of ['CI_AI', 'CI_AS']) {
+    for (const [value, pattern, expected] of [
+      ['^', '[^^]', true],
+      ['a', '[^^]', false],
+      ['a', '[^a]', true],
+      ['b', '[^a]', false],
+      ['^', '[^^a]', true],
+      ['a', '[^^a]', true],
+      ['b', '[^^a]', false],
+    ]) {
+      assert.deepEqual(
+        await evaluate(`SELECT 1 AS matched WHERE '${value}' LIKE '${pattern}' ESCAPE '^'`, collation),
+        expected ? [[1]] : [],
+        `${collation}: ${value} LIKE ${pattern} ESCAPE ^`,
+      );
+    }
+    assert.deepEqual(await evaluate("SELECT 1 AS matched WHERE 'b' LIKE '[^a]'", collation), [[1]]);
+    assert.deepEqual(await evaluate("SELECT 1 AS matched WHERE 'a' LIKE '[^a]'", collation), []);
+  }
+});
+
+test('SQL LIKE preserves bracket and hyphen escape characters without inventing wildcard syntax', async () => {
+  for (const collation of ['CI_AI', 'CI_AS']) {
+    for (const [value, pattern, escape, expected] of [
+      ['-', '[--]', '-', true],
+      ['b', '[a-c]', '-', false],
+      ['a', '[a-c]', '-', true],
+      ['c', '[a-c]', '-', true],
+      ['[a]', '[[a]', '[', true],
+      ['a', '[[a]', '[', false],
+      ['a]', 'a]]', ']', true],
+      ['a', 'a]]', ']', false],
+      ['a]', 'a]', ']', false],
+    ]) {
+      assert.deepEqual(
+        await evaluate(`SELECT 1 AS matched WHERE '${value}' LIKE '${pattern}' ESCAPE '${escape}'`, collation),
+        expected ? [[1]] : [],
+        `${collation}: ${value} LIKE ${pattern} ESCAPE ${escape}`,
+      );
+    }
+  }
+});

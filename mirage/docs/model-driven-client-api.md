@@ -47,6 +47,9 @@ form IDs and native ribbon `SelectedControlSelectedItemIds`/`SelectedEntityTypeN
 parameters supply record context without a separate pane helper. Reusing a pane
 with `getPane(id).navigate(nextInput)` loads the new context; `select()` expands it.
 Existing-record navigation does not overwrite its values with create defaults.
+A form ID missing from the loaded active Main-form catalogue is refused with
+`FormUnavailable`. A source form excluded from the selected app keeps the existing
+eligible-form fallback; omitting the ID keeps the default or preferred selection.
 These inputs follow Microsoft's [navigateTo contract](https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/clientapi/reference/xrm-navigation/navigateto).
 
 List page inputs support imported `savedquery` views. Missing selected saved views
@@ -105,7 +108,8 @@ Selecting a side pane expands the group and clears its badge unless
 current selection and collapsed state. `hideHeader` hides the title and close
 button; `canClose: false` hides the close button but still permits the script
 to call `close()`. Closing the selected pane selects the last remaining visible
-pane. The pane's `hidden` property hides its content, and changing its `title`
+pane. A closed pane refuses navigation with `PaneClosed`; closing it also rejects
+pending navigation and releases its load listeners. The pane's `hidden` property hides its content, and changing its `title`
 also updates the accessible label. Badge values are retained as API state;
 the shell does not render a badge or icon switcher, and inactive iframe content
 remains mounted rather than implementing the platform's `alwaysRender` lifecycle.

@@ -111,3 +111,128 @@ test('aliased image/attribute products and malformed primitive facts refuse befo
   assert.throws(() => comparePluginRegistrations({ steps: [{ ...step(), images }] }, {}), /inspection limit/);
   assert.throws(() => comparePluginRegistrations({ steps: [{ ...step(), mode: { bad: true } }] }, {}), /primitive/);
 });
+
+test('identity and binding normalization consume the same shared string-inspection budget', () => {
+  const padded = ' '.repeat(1000000) + id(1);
+  assert.throws(() => comparePluginRegistrations({ steps: [{ id: padded }, { id: padded }] }, {}), /inspection limit/);
+  assert.throws(
+    () => comparePluginRegistrations({ steps: [{ ...step(), typeId: padded, assemblyId: padded }] }, {}),
+    /inspection limit/,
+  );
+  const before = { steps: [{ ...step(), typeId: id(2) }] },
+    after = { steps: [{ ...step(), id: ` {${id(1).toUpperCase()}} `, typeId: ` (${id(2).toUpperCase()}) ` }] };
+  assert.equal(comparePluginRegistrations(before, after).unchanged.steps, 1);
+});
+
+test('aliased primitive registration facts share the inspection budget across records and images', () => {
+  const value = 'x'.repeat(100001);
+  for (const field of ['stage', 'rank', 'mode', 'enabled', 'supportedDeployment', 'unfiltered']) {
+    const steps = Array.from({ length: 30 }, (_, index) => ({ id: id(index + 1), [field]: value }));
+    assert.throws(() => comparePluginRegistrations({ steps }, {}), /inspection limit/, field);
+  }
+  for (const field of ['isolationMode', 'sourceType']) {
+    const assemblies = Array.from({ length: 30 }, (_, index) => ({ id: id(index + 1), [field]: value }));
+    assert.throws(() => comparePluginRegistrations({ assemblies }, {}), /inspection limit/, field);
+  }
+  assert.throws(
+    () =>
+      comparePluginRegistrations(
+        { steps: [{ ...step(), images: Array.from({ length: 30 }, () => ({ type: value })) }] },
+        {},
+      ),
+    /inspection limit/,
+  );
+});
+
+test('registration normalized names refuse boxed or executable coercions before invoking them', () => {
+  for (const field of ['entity', 'message']) {
+    assert.throws(
+      () => comparePluginRegistrations({ steps: [{ ...step(), [field]: new String('x'.repeat(2000001)) }] }, {}),
+      /primitive strings/,
+    );
+    let calls = 0;
+    const value = {
+      toString() {
+        calls++;
+        return 'x_item';
+      },
+    };
+    assert.throws(
+      () => comparePluginRegistrations({ steps: [{ ...step(), [field]: value }] }, {}),
+      /primitive strings/,
+    );
+    assert.equal(calls, 0, 'comparison does not execute a source object coercion');
+    for (const value of [[], ['x_item'], 1, false])
+      assert.throws(
+        () => comparePluginRegistrations({ steps: [{ ...step(), [field]: value }] }, {}),
+        /primitive strings/,
+      );
+  }
+  const original = { steps: [{ ...step(), entity: '  X_ITEM ', message: ' UPDATE ' }] };
+  const canonical = { steps: [step()] };
+  assert.equal(comparePluginRegistrations(original, canonical).unchanged.steps, 1);
+  assert.equal(
+    comparePluginRegistrations({ steps: [{ ...step(), entity: null, message: null }] }, {}).removed.length,
+    1,
+  );
+});
+
+test('registration identities and references never invoke function or Symbol.toPrimitive coercions', () => {
+  const padded = ' '.repeat(2000001) + id(1);
+  for (const kind of ['function-toString', 'function-toPrimitive', 'object-toPrimitive']) {
+    let calls = 0;
+    const coerce = () => {
+      calls++;
+      return padded;
+    };
+    const value = kind === 'object-toPrimitive' ? {} : function syntheticIdentity() {};
+    if (kind === 'function-toString') value.toString = coerce;
+    else value[Symbol.toPrimitive] = coerce;
+    const result = comparePluginRegistrations({ steps: [{ ...step(), id: value }] }, {});
+    assert.equal(result.complete, false);
+    assert.equal(result.removed.length, 0);
+    assert.equal(result.diagnostics[0].code, 'REGISTRATION_ID_UNRESOLVED');
+    for (const field of [
+      'typeId',
+      'assemblyId',
+      'messageId',
+      'messageFilterId',
+      'eventHandlerId',
+      'impersonatingUserId',
+      'serviceEndpointId',
+    ])
+      assert.throws(
+        () => comparePluginRegistrations({ steps: [{ ...step(), [field]: value }] }, {}),
+        /GUID identities/,
+      );
+    assert.equal(calls, 0, 'GUID validation never coerces executable or boxed identity values');
+  }
+});
+
+test('ignored nonprimitive text facts do not execute length or primitive conversion hooks', () => {
+  let calls = 0;
+  const value = {
+    get length() {
+      calls++;
+      return {
+        [Symbol.toPrimitive]() {
+          calls++;
+          return 0;
+        },
+      };
+    },
+    [Symbol.toPrimitive]() {
+      calls++;
+      return 'private synthetic value';
+    },
+  };
+  const report = comparePluginRegistrations(
+    { steps: [{ ...step(), name: value, sourceFile: value, images: [{ name: value, alias: value }] }] },
+    {},
+  );
+  assert.equal(report.removed[0].name, null);
+  assert.equal(report.removed[0].sourceFile, null);
+  assert.equal(report.removed[0].facts.images[0].name, null);
+  assert.equal(report.removed[0].facts.images[0].alias, null);
+  assert.equal(calls, 0);
+});

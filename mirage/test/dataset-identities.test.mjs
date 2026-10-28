@@ -61,6 +61,63 @@ test('explicit IDs, typed references and source-derived N:N edge columns remap t
   assert.deepEqual(remapDatasetIdentities(input.fragment, input), result);
 });
 
+test('aliased table arrays and rows keep substitutions within each table metadata boundary', () => {
+  for (const sharedArray of [false, true]) {
+    const opaque = { labels: ['Synthetic value'] };
+    const row = { x_aid: id(1), x_bid: id(2), opaque };
+    const rows = [row];
+    const input = {
+      tables: { x_a: rows, x_b: sharedArray ? rows : [row] },
+    };
+    const schema = {
+      tables: {
+        x_a: {
+          primaryIdAttribute: 'x_aid',
+          attributes: { x_aid: { type: 'primarykey' }, x_bid: { type: 'nvarchar' } },
+        },
+        x_b: {
+          primaryIdAttribute: 'x_bid',
+          attributes: { x_bid: { type: 'primarykey' }, x_aid: { type: 'nvarchar' } },
+        },
+      },
+    };
+    const before = structuredClone(input);
+    const { fragment, report } = remapDatasetIdentities(input, {
+      schema,
+      identities: { x_a: { [id(1)]: id(11) }, x_b: { [id(2)]: id(12) } },
+    });
+    assert.deepEqual(fragment.tables.x_a[0], { ...row, x_aid: id(11) });
+    assert.deepEqual(fragment.tables.x_b[0], { ...row, x_bid: id(12) });
+    assert.notEqual(fragment.tables.x_a, fragment.tables.x_b);
+    assert.notEqual(fragment.tables.x_a[0], fragment.tables.x_b[0]);
+    assert.notEqual(fragment.tables.x_a[0].opaque, opaque);
+    assert.equal(fragment.tables.x_a[0].opaque, fragment.tables.x_b[0].opaque);
+    assert.deepEqual(report, { remappedRows: 2, remappedLookups: 0, unverifiedLookups: 0, unusedIdentities: 0 });
+    assert.deepEqual(input, before);
+  }
+});
+
+test('a lookup object aliased to its row uses the original identity exactly once', () => {
+  const row = { id: id(1), logical_name: 'x_item' };
+  row.x_parent = row;
+  const input = { tables: { x_item: [row, { id: id(11) }] } };
+  const before = structuredClone(input);
+  const { fragment, report } = remapDatasetIdentities(input, {
+    schema: {
+      tables: {
+        x_item: { primaryIdAttribute: 'id', attributes: { id: { type: 'primarykey' }, x_parent: { type: 'lookup' } } },
+      },
+      targets: { 'x_item/x_parent': ['x_item'] },
+    },
+    identities: { x_item: { [id(1)]: id(11), [id(11)]: id(21) } },
+  });
+  assert.equal(fragment.tables.x_item[0].id, id(11));
+  assert.equal(fragment.tables.x_item[0].x_parent.id, id(11));
+  assert.equal(fragment.tables.x_item[1].id, id(21));
+  assert.equal(report.remappedLookups, 1);
+  assert.deepEqual(input, before);
+});
+
 test('self-reference cycles use simultaneous substitutions rather than chaining destinations', () => {
   const input = fixture();
   input.schema.targets['x_item/x_parent'] = ['x_item'];

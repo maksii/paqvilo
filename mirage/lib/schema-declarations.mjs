@@ -1,7 +1,7 @@
 // Project-owned declaration text from imported metadata. No runtime code,
 // business labels, table prefixes or generated dependencies are embedded.
 import { tableFields } from './solution-schema.mjs';
-import { inspectionBudget, chargeSchemaOptions } from './inspection-budget.mjs';
+import { inspectionBudget, chargeSchemaMetadata } from './inspection-budget.mjs';
 
 const plain = (value) => value && [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const name = (value) =>
@@ -46,7 +46,7 @@ export function generateSchemaDeclarations(schema, { tables = Object.keys(schema
       Object.values(source.attributes).some((attribute) => !plain(attribute) || !name(attribute.name))
     )
       throw new TypeError('Schema declaration columns must have logical names and metadata objects.');
-    chargeSchemaOptions(source, metadata, charge);
+    chargeSchemaMetadata(table, source, metadata, charge);
     const fields = tableFields(metadata, table, { provenance: false });
     const primary = source.primaryIdAttribute ?? table + 'id';
     if (!name(primary)) throw new TypeError('Schema primary IDs must be logical names.');

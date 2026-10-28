@@ -32,6 +32,10 @@ For an optional static check of authored model-driven JavaScript, see [web-resou
 
 ## Supported baseline
 
+Supported FormXml layout visibility, disabled-state and label flags accept both
+XML Boolean spellings: `true`/`false` and `1`/`0`. Missing flags retain their
+existing layout defaults.
+
 | Exported component                                     | Local behavior                                                                                                                                               |
 | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Main form XML                                          | Tabs, sections, fields, labels, supported related grids and controls                                                                                         |

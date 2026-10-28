@@ -478,6 +478,16 @@ export function pageRequest(pageInput, navigationOptions = {}, tables = {}, dash
     throw new Error('navigateTo needs a webresourceName for a web resource page.');
   if (
     type === 'entityrecord' &&
+    pageInput.formId &&
+    tables[pageInput.entityName]?.metadata !== 'lazy' &&
+    Array.isArray(tables[pageInput.entityName]?.forms) &&
+    !tables[pageInput.entityName].forms.some((form) => bareId(form.id) === bareId(pageInput.formId))
+  )
+    throw Object.assign(new Error('The requested form is unavailable in the imported source forms.'), {
+      code: 'FormUnavailable',
+    });
+  if (
+    type === 'entityrecord' &&
     pageInput.tabName !== undefined &&
     (typeof pageInput.tabName !== 'string' || !pageInput.tabName.trim() || pageInput.tabName.length > 256)
   )

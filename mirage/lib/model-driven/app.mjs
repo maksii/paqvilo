@@ -2459,15 +2459,20 @@ async function loadRecord(id) {
     const requestedForm = new URLSearchParams(location.search).get('formid')?.replace(/[{}]/g, '').toLowerCase();
     const availableForms = appForms(),
       preferredForm = requestedForm === undefined ? storage.get(preferredFormKey()) : requestedForm;
+    const matchesPreferredForm = (form) =>
+      String(form.id).replace(/[{}]/g, '').toLowerCase() ===
+      String(preferredForm ?? '')
+        .replace(/[{}]/g, '')
+        .toLowerCase();
+    const selectedForm = availableForms.find(matchesPreferredForm);
+    // Source availability and app eligibility differ: a known excluded form
+    // keeps the app's existing first-eligible fallback; a missing source cannot.
+    if (requestedForm && !selectedForm && !table.forms.some(matchesPreferredForm))
+      throw Object.assign(new Error('The requested form is unavailable in the selected exported app.'), {
+        code: 'FormUnavailable',
+      });
     etag = result.etag;
-    formId =
-      availableForms.find(
-        (form) =>
-          String(form.id).replace(/[{}]/g, '').toLowerCase() ===
-          String(preferredForm ?? '')
-            .replace(/[{}]/g, '')
-            .toLowerCase(),
-      )?.id ?? availableForms[0]?.id;
+    formId = selectedForm?.id ?? availableForms[0]?.id;
     if (formId) rememberForm(formId);
     const requestedTab = new URLSearchParams(location.search).get('tabname');
     if (
@@ -2585,12 +2590,14 @@ async function renderRecord() {
           className: 'form-chooser',
           menuClass: 'form-picker',
           choose: async (id) => {
+            const changingForm = id !== formId;
             captureDraft();
             disposeClient();
             formId = id;
             rememberForm(id);
             const url = new URL(location.href);
             url.searchParams.set('formid', id);
+            if (changingForm) url.searchParams.delete('tabname');
             history.replaceState(history.state, '', url);
             await renderRecord();
           },
@@ -4148,6 +4155,8 @@ const sidePanes = {
     host.append(element);
     host.hidden = false;
     if (options.width) element.style.width = `${Number(options.width)}px`;
+    const pendingNavigations = new Set();
+    const closedError = () => Object.assign(new Error(`Side pane ${paneId} is closed.`), { code: 'PaneClosed' });
     const pane = {
       paneId,
       get title() {
@@ -4175,13 +4184,28 @@ const sidePanes = {
       },
       navigate(pageInput) {
         try {
+          if (!panes.includes(pane)) throw closedError();
           const [input] = pageRequest(pageInput, {}, catalogue.tables, app.dashboards);
+          let url;
           if (input.pageType === 'webresource') {
             const page = webResourcePage(catalogue.clientExtensions, input.webresourceName);
             if (!page.url) throw new Error(page.reason);
-            frame.src = page.url + (input.data !== undefined ? '?data=' + encodeURIComponent(input.data) : '');
-          } else frame.src = pageUrl(input);
-          return new Promise((resolve) => frame.addEventListener('load', () => resolve(), { once: true }));
+            url = page.url + (input.data !== undefined ? '?data=' + encodeURIComponent(input.data) : '');
+          } else url = pageUrl(input);
+          return new Promise((resolve, reject) => {
+            const loaded = () => {
+              pendingNavigations.delete(cancel);
+              resolve();
+            };
+            const cancel = () => {
+              frame.removeEventListener('load', loaded);
+              pendingNavigations.delete(cancel);
+              reject(closedError());
+            };
+            pendingNavigations.add(cancel);
+            frame.addEventListener('load', loaded, { once: true });
+            frame.src = url;
+          });
         } catch (error) {
           return Promise.reject(error);
         }
@@ -4196,6 +4220,7 @@ const sidePanes = {
       close() {
         const index = panes.indexOf(pane);
         if (index < 0) return;
+        for (const cancel of pendingNavigations) cancel();
         element.remove();
         panes.splice(index, 1);
         if (selectedPane === pane) {

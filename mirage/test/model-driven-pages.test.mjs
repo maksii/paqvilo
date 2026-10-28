@@ -13,6 +13,43 @@ const siteMap = `<SiteMap><Area Id="main"><Group Id="pages">
   <SubArea Id="external" Url="https://example.test/"/>
 </Group></Area></SiteMap>`;
 
+test('record navigation honors known source forms and defers unavailable lazy metadata to the destination', () => {
+  const id = '77777777-7777-4777-8777-77777777777a';
+  const input = { pageType: 'entityrecord', entityName: 'x_item', formId: `{${id.toUpperCase()}}` };
+  const tables = { x_item: { forms: [{ id }] } };
+  assert.equal(pageRequest(input, {}, tables)[0].formId, id);
+  assert.deepEqual(pageRequest({ pageType: 'entityrecord', entityName: 'x_item' }, {}, tables)[0], {
+    pageType: 'entityrecord',
+    entityName: 'x_item',
+  });
+  for (const forms of [[], [{ id: 'another-form' }]])
+    assert.throws(() => pageRequest(input, {}, { x_item: { forms } }), { code: 'FormUnavailable' });
+  assert.equal(pageRequest(input, {}, { x_item: { metadata: 'lazy', forms: [] } })[0].formId, id);
+  assert.equal(pageRequest(input, {}, { x_item: {} })[0].formId, id);
+});
+
+test('record navigation leaves known source form eligibility to the destination app and keeps target-table scope', () => {
+  const allowed = '77777777-7777-4777-8777-77777777777a',
+    excluded = '77777777-7777-4777-8777-77777777777b',
+    foreign = '77777777-7777-4777-8777-77777777777c';
+  const tables = {
+    x_item: { forms: [{ id: allowed }, { id: excluded }] },
+    x_other: { forms: [{ id: foreign }] },
+  };
+  for (const id of [allowed, excluded])
+    assert.equal(
+      pageRequest({ pageType: 'entityrecord', entityName: 'x_item', formId: `{${id.toUpperCase()}}` }, {}, tables)[0]
+        .formId,
+      id,
+      'the source catalogue retains forms that an owning app may exclude',
+    );
+  assert.throws(
+    () => pageRequest({ pageType: 'entityrecord', entityName: 'x_item', formId: foreign }, {}, tables),
+    { code: 'FormUnavailable' },
+    'a form exported for another table does not prove target-table source availability',
+  );
+});
+
 test('selected-row ribbon parameters compose a native record-pane target without replacing current-record context', async () => {
   const selected = ['77777777-7777-4777-8777-77777777777a'],
     opened = [];

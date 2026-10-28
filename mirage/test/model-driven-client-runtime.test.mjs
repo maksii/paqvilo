@@ -56,6 +56,35 @@ function runtimeFixture(overrides = {}) {
   return { runtime: createFormClientRuntime(host), record, writes, requests, notices, state, host };
 }
 
+test('FormXml numeric booleans preserve source visibility, labels and disabled controls', () => {
+  const compile = (yes, no) =>
+    compileForm(
+      {
+        id: 'invented-form',
+        xml: `<form><tabs><tab name="visible" visible="${yes}"><columns><column><sections><section name="shown" visible="${yes}" showlabel="${no}"><rows><row><cell showlabel="${no}" visible="${yes}"><control id="locked" datafieldname="x_name" disabled="${yes}"/></cell><cell visible="${no}"><control id="hidden" datafieldname="x_name" disabled="${no}"/></cell><cell visible="${no}"/></row></rows></section><section name="hidden-section" visible="${no}"/></sections></column></columns></tab><tab name="hidden-tab" visible="${no}"/></tabs></form>`,
+      },
+      { x_name: { name: 'x_name', type: 'text' } },
+    );
+  const summary = (form) => [
+    form.tabs.map((tab) => tab.visible),
+    form.tabs[0].sections.map((section) => [section.visible, section.showLabel]),
+    form.tabs[0].sections[0].fields.map((field) => [field.visible, field.disabled, field.showLabel]),
+  ];
+  assert.deepEqual(summary(compile('1', '0')), summary(compile('true', 'false')));
+  assert.deepEqual(summary(compile('1', '0')), [
+    [true, false],
+    [
+      [true, false],
+      [false, true],
+    ],
+    [
+      [true, true, false],
+      [false, false, true],
+      [false, undefined, true],
+    ],
+  ]);
+});
+
 test('form client APIs dispatch async events, track edits and cancel OnSave without executing expressions', async () => {
   const { runtime, record, writes, notices } = runtimeFixture();
   let changes = 0;

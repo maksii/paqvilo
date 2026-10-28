@@ -96,6 +96,108 @@ async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}
     });
   return { app, call, dir, state };
 }
+
+test(
+  'HTTP: a source refresh during rendering retains the revision of the rendered source',
+  { timeout: 15000 },
+  async (t) => {
+    for (const route of ['/', '/SignIn/', '/_portal/modal-form-template-path/site?entityformid=modal-edit&id=one'])
+      await t.test(route, async (t) => {
+        const { app, call, dir } = await setup(t);
+        let sourceFile = path.join(dir, 'web-templates/Main.webtemplate.source.html');
+        if (route.startsWith('/_portal/')) {
+          await fs.mkdir(path.join(dir, 'basic-forms'), { recursive: true });
+          await fs.writeFile(
+            path.join(dir, 'basic-forms/Modal.basicform.yml'),
+            'adx_entityformid: modal-edit\nadx_name: Modal edit\nadx_entityname: contact\nadx_mode: 100000001',
+          );
+          await fs.writeFile(
+            path.join(dir, 'basic-forms/Modal.basicform.custom_javascript.js'),
+            'window.inventedModalSource = "{% include \'ModalMarker\' %}";',
+          );
+          await fs.writeFile(
+            path.join(dir, 'web-templates/ModalMarker.webtemplate.yml'),
+            'adx_webtemplateid: modal-marker\nadx_name: ModalMarker',
+          );
+          sourceFile = path.join(dir, 'web-templates/ModalMarker.webtemplate.source.html');
+          await fs.writeFile(sourceFile, 'Original modal source');
+          const configured = await call('/__sim/api/config', 'PATCH', {
+            componentSchemas: { 'Modal edit': { entity: 'contact', mode: 100000001, fields: [{ name: 'fullname' }] } },
+          });
+          assert.equal(configured.status, 200);
+          await app.reload();
+        } else if (route === '/SignIn/') {
+          await fs.appendFile(path.join(dir, 'website.yml'), '\nadx_headerwebtemplateid: header');
+          await fs.writeFile(
+            path.join(dir, 'web-templates/Header.webtemplate.yml'),
+            'adx_webtemplateid: header\nadx_name: Header',
+          );
+          sourceFile = path.join(dir, 'web-templates/Header.webtemplate.source.html');
+          await fs.writeFile(
+            sourceFile,
+            '{% fetchxml rows %}<fetch><entity name="contact"><attribute name="fullname"/></entity></fetch>{% endfetchxml %}<h1>{{rows.results.entities[0].fullname}}</h1>',
+          );
+          await app.reload();
+        }
+        const baseline = await fetch(app.url + route).then((response) => response.text());
+        const revisionOf = (html) => Number(/simulation\.revision=(\d+)/.exec(html)?.[1]);
+        const initialRevision = revisionOf(baseline);
+        assert.ok(Number.isSafeInteger(initialRevision));
+        let entered, release;
+        const arrived = new Promise((resolve) => {
+          entered = resolve;
+        });
+        const gate = new Promise((resolve) => {
+          release = resolve;
+        });
+        t.signal.addEventListener('abort', release, { once: true });
+        const read = app.store.readOperation.bind(app.store);
+        let formRecordRead = false;
+        if (route.startsWith('/_portal/')) {
+          const get = app.store.get.bind(app.store);
+          app.store.get = (...args) => {
+            if (args[0] === 'contact' && args[1] === 'one') formRecordRead = true;
+            return get(...args);
+          };
+        }
+        let held = false;
+        app.store.readOperation = async (...args) => {
+          const value = await read(...args);
+          if (!held && (!route.startsWith('/_portal/') || formRecordRead)) {
+            held = true;
+            entered();
+            await gate;
+          }
+          return value;
+        };
+        const pending = fetch(app.url + route).then((response) => response.text());
+        try {
+          await Promise.race([
+            arrived,
+            pending.then(() => assert.fail('The render did not reach its controlled read.')),
+          ]);
+          await fs.writeFile(
+            sourceFile,
+            route.startsWith('/_portal/')
+              ? 'Changed source'
+              : '<!doctype html><html><body><h1>Changed source</h1></body></html>',
+          );
+          await app.reload();
+        } finally {
+          release();
+        }
+        const stale = await pending;
+        if (!route.startsWith('/_portal/'))
+          assert.ok(/Visible(?:&#32;| )member/.test(stale), 'The original page read remains in the response.');
+        assert.ok(!stale.includes('Changed source'), 'Nested Liquid must use the selected source renderer.');
+        if (route.startsWith('/_portal/')) assert.ok(stale.includes('Original modal source'));
+        assert.equal(revisionOf(stale), initialRevision, 'ready reconciliation must see the old source revision');
+        const current = await fetch(app.url + route).then((response) => response.text());
+        assert.match(current, /Changed source/);
+        assert.equal(revisionOf(current), initialRevision + 1);
+      });
+  },
+);
 test('HTTP: source application-relative links redirect locally, retaining parameters and access checks', async (t) => {
   const { app } = await setup(t);
   for (const [route, target] of [
