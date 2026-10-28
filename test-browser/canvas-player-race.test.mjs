@@ -4,23 +4,25 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { signInContext } from '../mirage/testing.mjs';
 import { canvasPlayerFixture } from '../mirage/test/canvas-player-fixture.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 test('resolution changed while Start is pending is applied after startup', { timeout: 60000 }, async (t) => {
+  let release;
+  ownedFixture(t).add(() => release?.());
   const sim = await canvasPlayerFixture(t, 'directory');
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   await signInContext(context, sim, 'alex');
   const page = await context.newPage();
   await page.goto(`${sim.url}/_apps/canvas/invented`);
-  let release, arrived;
+  let arrived;
   const gate = new Promise((resolve) => {
     release = resolve;
   });
   const seen = new Promise((resolve) => {
     arrived = resolve;
   });
-  t.after(() => release());
   await page.route('**/_apps/api/canvas/invented', async (route) => {
     if (route.request().method() === 'POST' && route.request().postDataJSON().action === 'start') {
       arrived();
@@ -50,7 +52,7 @@ test('resolution changed while Start is pending is applied after startup', { tim
 test('reopening a running app reflects its current resolution without changing it', { timeout: 60000 }, async (t) => {
   const sim = await canvasPlayerFixture(t, 'directory');
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   await signInContext(context, sim, 'alex');
   const page = await context.newPage();
@@ -91,7 +93,7 @@ test('reopening a running app reflects its current resolution without changing i
 test('failed input without a snapshot restores the last observed control value', { timeout: 60000 }, async (t) => {
   const sim = await canvasPlayerFixture(t, 'directory');
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   await signInContext(context, sim, 'alex');
   const page = await context.newPage();

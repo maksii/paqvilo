@@ -3,12 +3,18 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 export const performanceId = (n) => `${n.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
-export async function performanceFixture({ tables = 16, columns = 24, records = 1000, formsPerTable = 1 } = {}) {
+export async function performanceFixture({
+  tables = 16,
+  columns = 24,
+  records = 1000,
+  formsPerTable = 1,
+  temporaryRoot = os.tmpdir(),
+} = {}) {
   for (const [name, value] of Object.entries({ tables, columns, formsPerTable }))
     if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer`);
   if (!Number.isSafeInteger(records) || records < tables)
     throw new TypeError('records must be a safe integer with at least one record per table');
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-performance-')));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(temporaryRoot, 'paqvilo-performance-')));
   const solutionRoots = [path.join(root, 'solution')],
     sourceDir = path.join(root, 'portal');
   const inventory = {

@@ -21,7 +21,7 @@ test(
   'standalone dev starts configured apps, opens the workbench and closes only owned processes',
   { timeout: 120000 },
   async (t) => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-dev-cli-'));
+    const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-dev-cli-')));
     const owner = ownedFixture(t);
     // The development browser's profile and the app's server processes release this directory after they exit.
     owner.remove(() => fs.rm(dir, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));

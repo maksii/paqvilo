@@ -6,12 +6,13 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { signInContext } from '../mirage/testing.mjs';
 import { canvasPlayerFixture } from '../mirage/test/canvas-player-fixture.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 for (const format of ['directory', 'archive']) {
   test(`canvas player runs configured ${format} source in the simulator`, async (t) => {
     const sim = await canvasPlayerFixture(t, format);
     const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-    t.after(() => browser.close());
+    ownedFixture(t).add(() => browser.close());
     const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
     await signInContext(context, sim, 'alex');
     const page = await context.newPage();
@@ -118,9 +119,14 @@ test(
   'player reports source gaps and serializes actions, including a refused action snapshot',
   { timeout: 60_000 },
   async (t) => {
+    let release, releaseSecond;
+    ownedFixture(t).add(() => {
+      release?.();
+      releaseSecond?.();
+    });
     const sim = await canvasPlayerFixture(t, 'directory', { gaps: true });
     const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-    t.after(() => browser.close());
+    ownedFixture(t).add(() => browser.close());
     const context = await browser.newContext();
     await signInContext(context, sim, 'alex');
     const page = await context.newPage();
@@ -133,7 +139,6 @@ test(
     const report = await sim.preflight();
     assert.ok(report.requirements.some((row) => row.id === 'canvas:rendering' && row.status === 'unsupported'));
 
-    let release;
     const gate = new Promise((resolve) => {
       release = resolve;
     });
@@ -141,16 +146,12 @@ test(
     const seen = new Promise((resolve) => {
       firstSeen = resolve;
     });
-    let releaseSecond, secondSeen;
+    let secondSeen;
     const secondGate = new Promise((resolve) => {
       releaseSecond = resolve;
     });
     const secondArrived = new Promise((resolve) => {
       secondSeen = resolve;
-    });
-    t.after(() => {
-      release();
-      releaseSecond();
     });
     const received = [];
     await page.route('**/_apps/api/canvas/invented', async (route) => {

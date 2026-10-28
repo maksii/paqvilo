@@ -6,6 +6,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { signInContext } from '../mirage/testing.mjs';
 import { canvasPlayerFixture } from '../mirage/test/canvas-player-fixture.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 
 test(
   'a watched source save updates the same runtime and requires explicit startup for its new revision',
@@ -13,7 +14,7 @@ test(
   async (t) => {
     const sim = await canvasPlayerFixture(t, 'directory', { watch: true });
     const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-    t.after(() => browser.close());
+    ownedFixture(t).add(() => browser.close());
     const context = await browser.newContext();
     await signInContext(context, sim, 'alex');
     const page = await context.newPage();

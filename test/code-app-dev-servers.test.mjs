@@ -9,9 +9,13 @@ import { fileURLToPath } from 'node:url';
 import { startCodeAppDevServers } from '../lense/code-app-dev-servers.mjs';
 import { stopCodeAppDevServer } from '../lense/code-app-dev-stop.mjs';
 import { childStdioGate, assertChildStdioDrain } from '../test-browser/helpers/child-stdio-gate.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../mirage/testing/owned-fixture.mjs';
 
 const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-const close = (server) => new Promise((resolve) => server.close(resolve));
+const close = (server) => {
+  server.closeAllConnections();
+  return new Promise((resolve) => server.close(resolve));
+};
 
 test('Code App shutdown waits for actual stdio closure after its owner exits', { timeout: 15000 }, async (t) => {
   const child = spawn(process.execPath, ['-e', 'process.stdout.write("owned-output")'], {
@@ -136,11 +140,11 @@ test(
   'multiple app servers start, reuse external listeners and stop only owned children',
   { timeout: 20000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-supervisor-'));
-    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-supervisor-')));
+    ownedFixture(t).remove(() => removeFixtureDirectory(root));
     const external = http.createServer((_req, res) => res.end('external'));
     await listen(external);
-    t.after(() => close(external));
+    ownedFixture(t).add(() => close(external));
     const reservation = http.createServer();
     await listen(reservation);
     const port = reservation.address().port;
@@ -165,6 +169,7 @@ test(
       },
     ];
     const session = await startCodeAppDevServers(apps, { output: () => {}, mirageUrl: 'http://127.0.0.1:4321' });
+    ownedFixture(t).add(() => session.close());
     assert.equal(session.owned, 1);
     assert.deepEqual(await (await fetch(apps[1].localAppUrl)).json(), {
       app: 'owned',
@@ -177,8 +182,8 @@ test(
 );
 
 test('failed startup drains already owned apps and never invokes a shell', { timeout: 20000 }, async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-supervisor-fail-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-supervisor-fail-')));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const server = http.createServer();
   await listen(server);
   const port = server.address().port;
@@ -217,8 +222,8 @@ test('failed startup drains already owned apps and never invokes a shell', { tim
 });
 
 test('an exited app launcher does not orphan its listening descendant', { timeout: 20000 }, async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-tree-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-tree-')));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const reservation = http.createServer();
   await listen(reservation);
   const port = reservation.address().port;
@@ -264,8 +269,8 @@ test('an exited app launcher does not orphan its listening descendant', { timeou
 });
 
 test('cancelling startup closes an owned server that never becomes ready', { timeout: 20000 }, async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-cancel-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-cancel-')));
+  ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const reservation = http.createServer();
   await listen(reservation);
   const port = reservation.address().port;
@@ -293,6 +298,10 @@ test('cancelling startup closes an owned server that never becomes ready', { tim
       },
     },
   );
+  ownedFixture(t).add(async () => {
+    controller.abort(new Error('cancelled during fixture cleanup'));
+    await pending.catch(() => {});
+  });
   await started;
   controller.abort(new Error('cancelled by test'));
   await assert.rejects(pending, /cancelled|abort/i);

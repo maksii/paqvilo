@@ -5,6 +5,7 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
 import { randomUUID } from 'node:crypto';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 export const APP_ID = '77777777-7777-4777-8777-777777777771';
 export const WIDGET = '77777777-7777-4777-8777-777777777772';
@@ -15,7 +16,7 @@ export async function attachmentApi(t, { before = () => {} } = {}) {
   // A variable per call, removed after the test, so later tests in this process never inherit the secret.
   const SECRET_VAR = `PAQVILO_ATTACHMENT_FIXTURE_SECRET_${randomUUID().replaceAll('-', '').toUpperCase()}`;
   process.env[SECRET_VAR] = 'attachment-fixture-secret';
-  t.after(() => {
+  ownedFixture(t).add(() => {
     delete process.env[SECRET_VAR];
   });
   const state = emptyState();
@@ -43,7 +44,7 @@ export async function attachmentApi(t, { before = () => {} } = {}) {
     ],
   });
   const server = await startDataverseApi({ store, settings, log: () => {} });
-  t.after(() => server.close());
+  ownedFixture(t).add(() => server.close());
   const token = await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },

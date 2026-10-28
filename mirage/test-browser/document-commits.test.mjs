@@ -6,7 +6,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { observeDocumentCommits } from '../lib/document-commits.mjs';
 import { eventLog } from './shared-browser.mjs';
 
-const observations = () => eventLog({ timeout: 5000, message: 'Document observation did not arrive' });
+const observations = (kind) => eventLog({ timeout: 5000, message: `${kind} observation did not arrive` });
 test(
   'document commits follow cross-origin renderer targets, swaps and observer disposal',
   { timeout: 30000 },
@@ -30,9 +30,9 @@ test(
     const context = await browser.newContext(),
       page = await context.newPage(),
       cdp = await context.newCDPSession(page),
-      documents = observations(),
-      commits = observations(),
-      requests = observations(),
+      documents = observations('Document'),
+      commits = observations('Commit'),
+      requests = observations('Request'),
       current = new WeakMap();
     page.on('request', (request) => {
       if (request.resourceType() === 'fetch')
@@ -41,6 +41,8 @@ test(
     const dispose = await observeDocumentCommits(page, cdp, {
       document: (frame, token) => {
         current.set(frame, token);
+      },
+      ready: (frame, token) => {
         documents.push({ frame, token });
       },
       commit: (frame, token) => {
@@ -51,15 +53,16 @@ test(
     const origin = `http://127.0.0.1:${server.address().port}`,
       cross = `http://localhost:${server.address().port}`;
     await page.goto(origin);
-    const child = page.frames().find((frame) => frame.parentFrame());
-    await documents.until(() => documents.some((row) => row.frame === child));
+    const child = page.frames().find((frame) => frame.parentFrame()),
+      currentToken = () => documents.findLast((row) => row.frame === child)?.token;
+    await documents.until(() => currentToken());
     const startRead = async (count) => {
       await child.evaluate(() => {
         void fetch('/never').catch(() => {});
       });
       await requests.until(() => requests.length === count);
     };
-    const first = documents.find((row) => row.frame === child).token;
+    const first = currentToken();
     await startRead(1);
     await child.evaluate(() => {
       location.hash = 'same-document';
@@ -70,8 +73,9 @@ test(
     assert.equal(requests[0].retired, false);
     await child.goto(cross + '/next');
     await commits.until(() => commits.some((row) => row.frame === child && row.token === first));
-    await documents.until(() => documents.some((row) => row.frame === child && row.token !== first));
-    const second = documents.filter((row) => row.frame === child).at(-1).token;
+    // An older token also differs from the predecessor; only the latest ready document establishes replacement.
+    await documents.until(() => currentToken() !== first);
+    const second = currentToken();
     await startRead(2);
     await child.evaluate((url) => {
       location.href = url;
@@ -79,16 +83,16 @@ test(
     // A script navigation returns before it commits; the next frame navigation waits for it to load.
     await child.waitForURL(origin + '/same-process');
     await commits.until(() => commits.some((row) => row.frame === child && row.token === second));
-    await documents.until(() => documents.some((row) => row.frame === child && row.token !== second));
-    const third = documents.filter((row) => row.frame === child).at(-1).token;
+    await documents.until(() => currentToken() !== second);
+    const third = currentToken();
     await startRead(3);
     await child.evaluate((url) => {
       location.href = url;
     }, cross + '/return-to-isolated');
     await child.waitForURL(cross + '/return-to-isolated');
     await commits.until(() => commits.some((row) => row.frame === child && row.token === third));
-    await documents.until(() => documents.some((row) => row.frame === child && row.token !== third));
-    const fourth = documents.filter((row) => row.frame === child).at(-1).token;
+    await documents.until(() => currentToken() !== third);
+    const fourth = currentToken();
     await startRead(4);
     await child.goto(cross + '/isolated-again');
     await commits.until(() => commits.some((row) => row.frame === child && row.token === fourth));
@@ -111,9 +115,10 @@ test(
     const retired = documents.length;
     await page.goto(origin + '/after-dispose');
     assert.equal(documents.length, retired);
-    const again = observations();
+    const again = observations('Replacement observer document');
     const stop = await observeDocumentCommits(page, cdp, {
-      document: (frame, token) => again.push({ frame, token }),
+      document: () => {},
+      ready: (frame, token) => again.push({ frame, token }),
       commit: () => {},
     });
     await page.goto(origin + '/second-observer');

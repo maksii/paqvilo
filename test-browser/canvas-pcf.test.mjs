@@ -7,16 +7,16 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { createSimulator } from '../mirage/server.mjs';
 import { signInContext } from '../mirage/testing.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../mirage/testing/owned-fixture.mjs';
 import { canvasLocalIdentity } from '../mirage/test/canvas-player-fixture.mjs';
 
 test(
   'Canvas runs trusted manifest-bound PCF, synchronizes outputs/events and preserves lifecycle across snapshots',
   { timeout: 60000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-pcf-'));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-pcf-')));
     const cleanup = ownedFixture(t);
-    cleanup.remove(() => fs.rm(root, { recursive: true, force: true }));
+    cleanup.remove(() => removeFixtureDirectory(root));
     const write = async (name, value) => {
       const file = path.join(root, name);
       await fs.mkdir(path.dirname(file), { recursive: true });

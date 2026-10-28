@@ -24,7 +24,7 @@ import { settleFileTimes } from './support/file-times.mjs';
 // (t.after hooks run in registration order).
 
 async function workspace(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-cost-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-cost-')));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }
@@ -388,7 +388,10 @@ test(
 );
 
 test('the shell index and selected-table transport exclude unrelated forms and re-evaluate each caller', async (t) => {
-  const fixture = await performanceFixture({ tables: 16, records: 16, formsPerTable: 4 });
+  // A long parent reproduces the former false budget failure: the same source bytes carry longer absolute paths.
+  const temporaryRoot = path.join(await workspace(t), 'long-fixture-parent-for-transport-size-budget');
+  await fs.mkdir(temporaryRoot);
+  const fixture = await performanceFixture({ tables: 16, records: 16, formsPerTable: 4, temporaryRoot });
   ownedFixture(t).remove(fixture.cleanup);
   const sim = await createSimulator({
     runtime: { kind: 'model-driven' },
@@ -416,7 +419,16 @@ test('the shell index and selected-table transport exclude unrelated forms and r
     assert.equal(response.status, 200);
     const text = await response.text();
     const { decodeModelDrivenProvenance } = await import('../lib/model-driven/provenance-transport.mjs');
-    return { value: decodeModelDrivenProvenance(JSON.parse(text)), bytes: Buffer.byteLength(text) };
+    const wire = JSON.parse(text);
+    // Normalize only the test's temporary prefix; all source-relative paths and every other wire value still count.
+    const normalized = JSON.stringify(wire, (_key, value) =>
+      typeof value === 'string' ? value.replaceAll(fixture.root, '<fixture>') : value,
+    );
+    return {
+      value: decodeModelDrivenProvenance(wire),
+      bytes: Buffer.byteLength(normalized),
+      rawBytes: Buffer.byteLength(text),
+    };
   };
   const index = await read('index'),
     table = await read('metadata/x_scale0');
@@ -428,8 +440,8 @@ test('the shell index and selected-table transport exclude unrelated forms and r
       (table) => !table.fields && !table.forms && !table.views && table.metadata === 'lazy',
     ),
   );
-  assert.ok(index.bytes < 160000, `Navigation index: ${index.bytes} bytes`);
-  assert.ok(table.bytes < 100000, `Selected table: ${table.bytes} bytes`);
+  assert.ok(index.bytes < 160000, `Navigation index: ${index.bytes} normalized bytes (${index.rawBytes} on wire)`);
+  assert.ok(table.bytes < 100000, `Selected table: ${table.bytes} normalized bytes (${table.rawBytes} on wire)`);
   const canonical = await (await fetch(sim.url + '/_apps/api/metadata/x_scale0')).json();
   assert.deepEqual(
     table.value,

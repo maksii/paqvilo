@@ -123,20 +123,29 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     assert.ok(result.flows[0].navigationCancelledRequests.every((row) => row.reason === 'document-replaced'));
   });
 
-  for (const [beforeNavigation, lateStart] of [
-    [false, 0],
-    [true, 0],
-    [true, 1200],
+  for (const [beforeNavigation, lateNavigation] of [
+    [false, false],
+    [true, false],
+    [true, true],
   ])
     test(
-      `acceptance settles writes that straddle a delayed document replacement (hold=${beforeNavigation}, late=${lateStart})`,
+      `acceptance settles writes that straddle a delayed document replacement (hold=${beforeNavigation}, late=${lateNavigation})`,
       HANG_GUARD,
       async (t) => {
-        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-navigation-boundary-'));
+        const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-navigation-boundary-')));
         ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+        const documentRequested = Promise.withResolvers();
+        const beforeWriteObserved = Promise.withResolvers();
+        const lateWritesObserved = Promise.withResolvers();
+        const settlementStarted = Promise.withResolvers();
+        const writes = new Set();
         const server = http.createServer((req, res) => {
           const route = new URL(req.url, 'http://fixture').pathname;
+          req.resume();
           if (route.startsWith('/__sim/api/')) {
+            // The runner asks for audit proof only after entering its settle loop. Start the late navigation
+            // there, after the initial navigation-hold snapshot, instead of guessing with a 1200 ms timer.
+            if (route.endsWith('/audit/export') && writes.has('/slow-before')) settlementStarted.resolve();
             res.setHeader('content-type', 'application/json');
             return res.end(
               JSON.stringify(
@@ -149,12 +158,30 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
               ),
             );
           }
-          if (route.startsWith('/slow-')) return;
+          if (route.startsWith('/slow-')) {
+            writes.add(route);
+            if (route === '/slow-before') beforeWriteObserved.resolve();
+            if (writes.has('/slow-one') && writes.has('/slow-two')) lateWritesObserved.resolve();
+            return;
+          }
+          if (route === '/start-navigation') {
+            void Promise.all([
+              beforeWriteObserved.promise,
+              ...(lateNavigation ? [settlementStarted.promise] : []),
+            ]).then(() => res.end('navigate'));
+            return;
+          }
+          if (route === '/late-writes-ready') {
+            void documentRequested.promise.then(() => res.end('write'));
+            return;
+          }
           res.setHeader('content-type', 'text/html');
-          if (route === '/done')
-            return setTimeout(() => res.end('<p id="done">Saved</p>'), beforeNavigation ? 50 : 1500);
+          if (route === '/done') {
+            void lateWritesObserved.promise.then(() => res.end('<p id="done">Saved</p>'));
+            return;
+          }
           res.end(
-            `<form action="/done"><button id="save">Save</button></form><script>document.querySelector('form').addEventListener('submit',event=>{${lateStart ? `event.preventDefault();setTimeout(()=>location.href='/done',${lateStart});` : ''}${beforeNavigation ? `fetch('/slow-before',{method:'PATCH'}).catch(()=>{});` : ''}setTimeout(()=>{fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{})},150)})</script>`,
+            `<form action="/done"><button id="save">Save</button></form><script>document.querySelector('form').addEventListener('submit',event=>{${beforeNavigation ? `event.preventDefault();fetch('/slow-before',{method:'PATCH'}).catch(()=>{});fetch('/start-navigation').then(response=>response.text()).then(()=>location.href='/done');` : ''}fetch('/late-writes-ready').then(response=>response.text()).then(()=>{fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{})})})</script>`,
           );
         });
         await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -166,6 +193,12 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
           localUrl: `http://127.0.0.1:${server.address().port}`,
           outputDir: path.join(root, 'evidence'),
           timeout: 3000,
+          prepareContext: async (context) => {
+            context.on('request', (request) => {
+              if (request.isNavigationRequest() && new URL(request.url()).pathname === '/done')
+                documentRequested.resolve();
+            });
+          },
           flows: [
             {
               name: 'Late document writes',
@@ -179,6 +212,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
           ],
         });
         assert.equal(result.passed, true, JSON.stringify(result.flows[0]));
+        assert.equal(writes.size, beforeNavigation ? 3 : 2);
         const cancelled = result.flows[0].navigationCancelledRequests;
         assert.equal(cancelled.length, beforeNavigation ? 3 : 2);
         assert.ok(cancelled.every((row) => row.reason === 'document-replaced'));
