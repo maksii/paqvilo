@@ -8,7 +8,7 @@ Roles and accounts stay contact-derived. See the [catalogue contract and example
 All project data, personas, generators, backend rules, acceptance fixtures and tests belong to a separate portal project. Mirage contains only generic presets: `empty-local`, `open-sandbox`, `strict-permissions`, and `contact-demo`. No project pack is automatically discovered inside or beside the toolkit.
 
 For schema-directed population with explicit table counts, deterministic field rules
-and resolved local lookups, use [`generateDataset`](dataset-generation.md) from
+and resolved local lookups, use [`generateDataset`](#schema-directed-pack-datasets) from
 `paqvilo/mirage/fixtures` inside your project pack.
 
 Register trusted modules explicitly in `sites.<id>.mirage.dataPacks`, `defaults.mirage.dataPacks`, Mirage project `dataPacks`, or direct CLI `--pack-module`. Catalogue modules resolve from the catalogue directory; project modules resolve from the project file. Embedded `createSimulator({ dataPacks })` and `discoverPacks({ explicit })` accept explicit modules as well. Loading a module executes JavaScript.
@@ -248,3 +248,196 @@ the administration UI. Deleting it removes only the saved copy; the pack entry r
 Create checks for a table-level grant before invoking pack handlers. Stages 10 and 20 run before declarative rules and secondary effects; row-scoped Create permission is then checked before stage 40. Rules may establish the parent link. A scoped denial reports the permission and relationship and rolls back the request, including independent PreValidation SDK writes. Other top-level PreValidation rejection boundaries retain the documented independent SDK commits.
 
 New runtime states can be seeded with catalogue `mirage.confinePortalPages`, `mirage.externalAssets` and `mirage.externalFrameOrigins` (also accepted at the Mirage project root and per portal). Existing state retains its routing choices. The panel identifies project defaults versus runtime state; /_sim **Live connection** can change the saved setting.
+
+## Schema-directed pack datasets
+
+`generateDataset` from `paqvilo/mirage/fixtures` builds a local dataset fragment
+from an imported Solution schema. Use it inside an explicitly registered project
+pack's `dataset()` or preset loader. Counts, rules and realistic business values
+belong to that project. The helper performs no network calls and changes no state.
+
+```js
+import { generateDataset, mergeDataset } from 'paqvilo/mirage/fixtures';
+
+const fragment = generateDataset({
+  schema, // importSolutionData(...).schema from selected local Solution exports
+  seed: 'inventory-demo',
+  counts: { sample_group: 3, sample_item: 12 },
+  rules: {
+    sample_item: {
+      sample_name: { kind: 'one-of', values: ['Small', 'Medium', 'Large'] },
+      sample_quantity: { kind: 'sequence', start: 1, step: 2 },
+      sample_price: { kind: 'range', min: 1.25, max: 9.75 },
+      sample_group: { kind: 'lookup', target: 'sample_group', source: 'generated' },
+    },
+  },
+});
+const { state: next, report } = mergeDataset(state, fragment);
+```
+
+Only tables listed in `counts` receive generated rows. Required scalar columns
+receive simple synthetic values using exported types, numeric bounds, lengths,
+choice values and defaults. Optional columns are omitted unless a rule supplies
+them. Unsupported required types fail with table/column context. This is a data
+construction helper; it does not run server rules, infer personas or grant access.
+
+| Rule `kind` | Inputs                               | Behavior                                                                              |
+| ----------- | ------------------------------------ | ------------------------------------------------------------------------------------- |
+| `constant`  | `value`                              | Repeat a typed value.                                                                 |
+| `one-of`    | `values`, optional `mode`            | Cycle through values, or select deterministically with `mode: 'random'`.              |
+| `sequence`  | optional `start` and `step`          | Numeric sequence; defaults to 1 and 1.                                                |
+| `pattern`   | `template`, optional `start`, `step` | Text with `{seq}` or zero-padded `{seq:4}` tokens; defaults to sequence 1, step 1.    |
+| `range`     | `min`, `max`                         | Seeded numeric selection within inclusive bounds; integers stay integral.             |
+| `null`      | none                                 | Omit an optional column; required columns reject it.                                  |
+| `lookup`    | optional `target`, `source`, `mode`  | Choose an allowed target row; `source` is `generated`, `existing` or `any` (default). |
+
+`existing: { table: rows }` supplies local lookup candidates and alternate-key collision checks without copying those
+rows into the fragment. Their identities must exist in the state that receives the
+fragment. Constant/one-of lookup values use `{ id, logical_name }` and must resolve
+in generated or supplied existing rows. GUID primary keys and exported lookup
+targets are checked. There are no implicit remote reads or unresolved references.
+
+All selected row identities are reserved before columns are populated. Required
+cycles and self-lookups can therefore resolve within the completed offline
+fragment. Table selection and existing-row input ordering do not affect seeded
+selection; changing metadata, rules, seed, counts or candidate identities can
+change values. The helper never mutates its arguments.
+
+Active alternate keys from imported metadata are checked across generated and
+supplied existing rows. `mergeDataset` also checks the final additive rows against
+the selected state's mapping keys, including base preset rows. Matching primary
+keys keep existing rows, so repeating a fragment remains idempotent. Null, omitted
+or empty key members do not enforce uniqueness; inactive index definitions do not
+either. Text uses `CI_AI` by default. Pass `collation: 'CI_AS'` to generation when
+the receiving state's `settings.collation` is accent-sensitive. These checks are
+offline and fail before any state save; they do not create remote indexes.
+Known column metadata also governs key values: equivalent datetime instants and
+numeric representations collide consistently across generation, merge, index
+activation and runtime writes. Date-shaped text remains text. Columns without
+type metadata retain the store's existing scalar coercion rules.
+
+Patterns allow only the explicit sequence tokens, with padding from 1 to 32 digits,
+safe integer sequence values, and templates of at most 65,536 characters. Expanded
+text still follows the column's metadata length. They do not evaluate code or
+interpolate fields. Multiselect choices accept integer arrays or comma-separated
+integers; empty selection omits an optional column and rejects a required column.
+Missing tokens within a nonempty comma-separated value are rejected.
+
+Counts accept integers from 0 to 100,000, with at most 100,000 rows in total.
+Rules reject unknown, primary, derived and non-creatable columns. Candidate values
+are checked against exported types, choices, lengths and numeric bounds, including
+one-of values not selected in a small sample. A valid fragment still needs the
+normal `mergeDataset` schema/reference checks and the project's own scenario tests.
+
+## Remap an offline dataset's identities
+
+`remapDatasetIdentities` from `paqvilo/mirage/fixtures` substitutes explicit
+record identities in a local row fragment. It performs no requests or writes.
+Use it to make a project fixture portable between explicitly chosen identity
+sets; it does not discover or transfer records from another environment.
+
+```js
+import { remapDatasetIdentities, mergeDataset } from 'paqvilo/mirage/fixtures';
+
+const { fragment: remapped, report } = remapDatasetIdentities(fragment, {
+  schema, // selected importSolutionData(...).schema
+  identities: {
+    sample_group: {
+      '10000000-0000-4000-8000-000000000001': '20000000-0000-4000-8000-000000000001',
+    },
+  },
+  existing: { sample_group: destinationRows }, // when a rewritten lookup targets existing local data
+});
+const next = mergeDataset(state, remapped);
+```
+
+The result contains a cloned `fragment` and a count-only `report` with
+`remappedRows`, `remappedLookups`, `unverifiedLookups` and `unusedIdentities`.
+Inputs, mappings, provenance, unmapped IDs and opaque business properties are
+preserved. GUID-looking text is not treated as a relationship.
+
+Primary-key columns come from `schema.tables`. Lookup targets come from
+`schema.targets` and selected relationship metadata. N:N intersect columns are
+derived from that metadata, including self-relations; no core table names or
+prefixes are assumed. Typed `{ id, logical_name }` references keep their sibling
+properties. Scalar lookup columns and Web API `_column_value` aliases retain
+their shape. A polymorphic lookup that needs rewriting must identify its target
+through a typed reference or a logical-name annotation. Conflicting aliases or
+target annotations fail explicitly.
+
+Substitutions are simultaneous and applied once: a destination that is another
+source does not trigger a second replacement in the same call. Repeated calls
+with the same original fragment and plan are deterministic. Applying an
+overlapping plan again to its already transformed output is a new substitution,
+so callers should retain the original fragment rather than repeatedly remap it.
+
+Duplicate destinations, normalized source aliases, primary-key collisions with
+retained or supplied existing rows, and rewritten lookups without a destination
+row fail before a result is returned. Untouched external references are retained
+and counted as unverified when the supplied fragment/existing data cannot resolve
+them. A zero unverified count does not validate all schema, security, alternate
+keys or business rules; the normal `mergeDataset` checks and project acceptance
+tests still apply.
+
+The helper accepts a row-only fragment. Nonempty permissions, persona roles,
+persona catalogues, simulator configuration and plug-in sections require their
+own explicit identity mapping and are refused when substitutions are requested.
+The helper does not guess which IDs in those contracts identify dataset rows.
+Supply a separate row fragment, then explicitly rebuild the project's other
+sections against the chosen destination identities.
+
+Exact primary-key metadata and GUID identities are required. Combined fragment
+and existing rows and substitution pairs are each limited to 100,000, with a
+shared 1,000,000-unit work budget. No partial result or state change is published
+on a refusal.
+
+## Population and relationship coverage
+
+```js
+import { summarizeDataset } from 'paqvilo/mirage/fixtures';
+
+const report = summarizeDataset({ schema, tables: fragment.tables, existing });
+```
+
+`schema` is the imported Solution schema; `tables` selects the tables to inspect.
+`existing` supplies additional local lookup targets. Each column partitions the
+selected rows into missing/undefined, null, empty string/array and populated.
+Boolean `false` and numeric `0` are populated. Choice counts measure rows containing
+each metadata option, counting a repeated multiselect member once. Malformed or
+closed-set unlisted choices do not count as exercised options. Open option sets
+remain explicitly marked; these summaries do not prove a successful native write.
+
+Lookup counts distinguish resolved, dangling, invalid and ambiguous values. A
+polymorphic scalar GUID remains ambiguous without its logical target; a single
+metadata target can resolve a scalar. Identity counts normalize decorated GUIDs
+and identify missing, invalid and duplicate IDs. Unknown column counts do not
+silently disappear. The report contains metadata names and option codes, with no
+row IDs, text values or sample records. Inputs remain unchanged. Limits are
+100,000 selected/existing rows, 10,000 selected metadata columns and two million
+column inspections; choice inspection also rejects excessive nesting/work.
+
+## Project-owned TypeScript declarations
+
+```js
+import { generateSchemaDeclarations } from 'paqvilo/mirage/fixtures';
+
+const { declarations, diagnostics } = generateSchemaDeclarations(schema, {
+  tables: ['sample_item', 'sample_group'],
+});
+// The project chooses where to save declarations as its own schema.d.ts.
+```
+
+The returned declaration text exports `Tables`, `Row`, `FixtureRow`, `Choices`,
+`PrimaryIds`, `Lookup` and `ExactNumeric`. Required metadata fields belong to
+`Row`; `FixtureRow` permits partial fragment columns while retaining the primary
+ID. Choice unions and polymorphic lookup targets come from the selected metadata.
+Exact decimal/money/Int64 fixture values can retain the store's tagged digits.
+Optional columns accept null. These declarations do not validate runtime strings,
+GUID syntax, dates, CSV multiselect tokens or business rules.
+
+Unavailable types use `unknown` with a diagnostic. Missing/open choice sets and
+lookup targets have explicit diagnostics rather than fabricated enums or targets.
+Metadata labels and business values are not emitted. Selection/field order does
+not affect output. Limits are 1,000 selected tables, 10,000 columns, 100,000 option
+codes and two MB of declaration text. This emits types only, without generated
+runtime clients, SDK dependencies or remote schema requests.

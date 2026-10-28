@@ -47,9 +47,11 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 
 These guides describe reusable contracts. Organisation-specific observations, datasets, parity results and business backlogs belong to the separate portal project. Store evidence under ignored `.paqvilo/`.
 
-[Offline fixture analysis](fixture-analysis.md) covers population and lookup
-coverage, source-derived TypeScript declarations, registration comparisons and
-named deterministic fixture recreation. [Dataset generation](dataset-generation.md)
-covers schema-directed local population and alternate-key preflight.
+[Data packs](data-packs.md#schema-directed-pack-datasets) covers schema-directed
+local population, alternate-key preflight, identity remapping, population and lookup
+coverage, and source-derived TypeScript declarations. See [plug-in registration
+comparison](dataverse-plugins.md#local-registration-comparison), [grant comparison](dataverse-parity.md#compare-compiled-portal-grants)
+and [named fixture recreation](../../docs/public-api.md#named-deterministic-recreation)
+for the other offline helpers.
 
 Return to the [Paqvilo documentation index](../../docs/index.md) for Lense, shared configuration and contribution guidance.

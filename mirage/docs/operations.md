@@ -185,3 +185,20 @@ Workers and interpreter budgets bound execution time; they do not provide an arb
 External connectors, custom APIs, complex flow actions and unsupported expressions require explicit handlers, mocks or disabled choices. Mirage never forwards imported definitions to remote Power Automate. To compare a flow with the platform, compare run and action traces and resulting data from an authorized environment that runs the same exported definition.
 
 Use [data packs](data-packs.md) for reusable project providers, [simulation administration](sim-administration.md) for state and personas, and [coverage](../../docs/coverage.md) for the wider platform boundary.
+
+## Flow expression and trigger preflight
+
+```js
+import { inspectFlowExpression, evaluateFlowTriggerConditions } from 'paqvilo/mirage/fixtures';
+
+const syntax = inspectFlowExpression("@equals(triggerBody()?['enabled'], true)");
+const matches = evaluateFlowTriggerConditions(definition, { input, parameters });
+```
+
+The inspector reports syntax, known function and arity diagnostics without
+evaluation. It does not invent types for uncaptured dynamic payloads. Condition
+evaluation uses the supplied body and parameters and starts no tracked run or
+provider. Runtime source conditions are checked before run creation; false creates
+no run history. These APIs preserve normal action `runAfter` failure handling.
+See [flow execution](operations.md#execution-boundary) for trigger hosting and
+the supported exact UTC timestamp `ticks` contract.

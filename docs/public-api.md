@@ -20,6 +20,31 @@ The organization runtime (`createOrganizationRuntime`) accepts `clock` (epoch mi
 
 `createSimulator` accepts the same `clock`, `ids` and `scheduler` options for the Power Pages and the standalone host, and passes them to its state store, organization runtime and committed-work backend. `paqvilo/mirage/testing` exports `fixedClock`, `sequentialIds` and `createScheduler` for project acceptance tests.
 
+## Named deterministic recreation
+
+```js
+import { createFixtureRecipes } from 'paqvilo/mirage/testing';
+
+const recipes = createFixtureRecipes({
+  baseline: { state, epochMs: Date.UTC(2026, 0, 1), namespace },
+});
+const fixture = recipes.create('baseline');
+// Pass fixture.state/clock/ids/scheduler to a fresh local runtime.
+// Close that runtime and fixture.scheduler when the project test finishes.
+```
+
+Recipe definitions are captured as cloneable data. Every `create` supplies fresh
+state, a fixed clock, a fresh deterministic ID sequence and an idle manual
+scheduler. Mutating one fixture does not change the recipe or another fixture.
+At most 100 named definitions are accepted. Recreation starts from the captured
+definition; it does not rewind an active runtime, recover an
+advanced identity counter, restore arbitrary provider closures or resurrect
+in-flight timers. A project rebuilds its providers for the new fixture and owns
+teardown of the old runtime. Runtime callbacks in recipe state are rejected.
+Shared-memory buffers and views are rejected because cloning them does not
+isolate their bytes; ordinary array buffers are copied. Recipe graph inspection
+has a shared work limit.
+
 ## Inspect Solution sources
 
 ```js
@@ -220,8 +245,10 @@ prototype properties cannot count as matching response data.
 `assertOfflineState`, `stateFileFingerprint`, `importPortal` and `createPortalRenderer`.
 It also exports `generateDataset`, `summarizeDataset`, `generateSchemaDeclarations`,
 `comparePluginRegistrations` and `comparePermissionModels`. The testing entry
-exports `createFixtureRecipes`. See [offline fixture analysis](../mirage/docs/fixture-analysis.md)
-and [schema-directed generation](../mirage/docs/dataset-generation.md) for their
+exports `createFixtureRecipes`. See [data packs](../mirage/docs/data-packs.md#schema-directed-pack-datasets),
+[registration comparison](../mirage/docs/dataverse-plugins.md#local-registration-comparison),
+[grant comparison](../mirage/docs/dataverse-parity.md#compare-compiled-portal-grants)
+and [named fixture recreation](#named-deterministic-recreation) for their
 project-owned inputs, bounded reports and compatibility limits.
 `buildPermissionModel`, `parsePluginDocument` and `importSolutionPlugins` expose
 the existing compilers for those offline reports. `remapDatasetIdentities`

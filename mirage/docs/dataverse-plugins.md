@@ -203,3 +203,29 @@ process birth time. A background host watcher terminates that host when its
 exact owner exits, including an abrupt process kill while plugin code loops
 without returning. Reusing a PID with a different birth time cannot keep the
 host alive. Ordinary cleanup still closes owned hosts and verifies their absence.
+
+## Local registration comparison
+
+```js
+import { comparePluginRegistrations } from 'paqvilo/mirage/fixtures';
+
+const report = comparePluginRegistrations(before.plugins, after.plugins);
+```
+
+Pass two parsed `importSolutionPlugins` inventories from explicitly selected
+exports. Stable GUIDs identify assemblies, types and steps. Added, removed and
+changed facts include numeric execution mode, stage/rank, table/message, filtering
+attributes and image alias/type/attribute sets. Attribute-set order and GUID case
+are neutral. Duplicate or missing identities remain diagnostics with
+`complete: false`; no record is matched by its friendly name. Configuration,
+secure configuration and assembly content are never copied into the result.
+This compares exported definitions, not deployed organizations or DLL execution.
+
+The same entry exports `parsePluginDocument(xml)` and
+`importSolutionPlugins(selectedLayers)` to obtain the existing parsed inventories.
+For a single export, `comparePluginRegistrations(parsePluginDocument(beforeXml),
+parsePluginDocument(afterXml))` works directly. Selected layers add source-file
+provenance and existing message/type/assembly resolution; do not substitute a
+runtime catalogue whose `mode` describes its adapter. Full assembly identity and
+source message/filter/handler IDs remain comparison facts even when names are
+unresolved. Inspection uses a shared work budget, including aliased metadata.
