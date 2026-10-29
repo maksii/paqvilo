@@ -249,3 +249,31 @@ test('a receipt syncs only bytes written since the last one, and a sealed writer
   store.suspend();
   assert.match(store.read(2).toString(), /two/);
 });
+
+test('pages are written with Brotli and files written with gzip pages stay readable', async (t) => {
+  const { root, file, store } = fixture(t);
+  const raw = Buffer.from(JSON.stringify({ id: 'invented', text: 'Δ 日本語 '.repeat(500) }));
+  const id = store.append(1, raw, 1);
+  assert.equal(store.page(id).codec, 1);
+  assert.deepEqual(store.read(id), raw);
+  const reader = await RecordPageFile.open(file, store.descriptor());
+  t.after(() => reader.close());
+  assert.deepEqual(reader.read(id), raw);
+
+  // The earlier layout: kind word without a codec byte and a gzip payload.
+  const { gzipSync } = await import('node:zlib');
+  const magic = fs.readFileSync(file).subarray(0, 23),
+    payload = gzipSync(raw, { level: 1 }),
+    header = Buffer.alloc(48);
+  header.writeUInt32LE(1, 0);
+  header.writeUInt32LE(1, 4);
+  header.writeUInt32LE(raw.length, 8);
+  header.writeUInt32LE(payload.length, 12);
+  createHash('sha256').update(payload).digest().copy(header, 16);
+  const legacy = path.join(root, 'legacy.pages');
+  fs.writeFileSync(legacy, Buffer.concat([magic, header, payload]));
+  const old = await RecordPageFile.open(legacy, fullReceipt(legacy, { bytes: fs.statSync(legacy).size, pages: 1 }));
+  t.after(() => old.close());
+  assert.equal(old.page(1).codec, 0);
+  assert.deepEqual(old.read(1), raw);
+});

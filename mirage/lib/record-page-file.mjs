@@ -6,12 +6,18 @@
 // digest of the complete prefix and are verified in full when opened.
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { brotliCompressSync, brotliDecompressSync, constants, gunzipSync } from 'node:zlib';
 import { openRecordReader } from './record-file-lease.mjs';
 
 const MAGIC = Buffer.from('PAQVILO-RECORD-PAGES-1\n');
 const HEADER = 48;
 const MAX_BYTES = 512 * 1024 * 1024;
+// The header's first word holds the page kind (low byte) and its payload codec (second byte). Pages are written with
+// Brotli quality 1, which compresses these JSON pages about twice as fast as gzip level 1 at a better ratio and decodes
+// as fast; gzip pages from earlier files remain readable.
+const GZIP = 0,
+  BROTLI = 1;
+const BROTLI_OPTIONS = { params: { [constants.BROTLI_PARAM_QUALITY]: 1 } };
 const validCount = (kind, count) => Number.isSafeInteger(count) && count > 0 && count <= (kind === 1 ? 512 : 4096);
 const signature = (info) => [info.dev, info.ino, info.size, info.mtimeNs].join(':');
 const damaged = (message) => Object.assign(Error(message), { code: 'StateIntegrity' });
@@ -68,6 +74,7 @@ class PageInventory {
       return next;
     };
     this.kinds = copy(Uint8Array, this.kinds);
+    this.codecs = copy(Uint8Array, this.codecs);
     this.counts = copy(Uint32Array, this.counts);
     this.offsets = copy(Float64Array, this.offsets);
     this.lengths = copy(Uint32Array, this.lengths);
@@ -75,10 +82,11 @@ class PageInventory {
     this.digests = copy(Uint8Array, this.digests, 32);
     this.capacity = capacity;
   }
-  push({ kind, count, offset, length, rawLength, digest }) {
+  push({ kind, codec = GZIP, count, offset, length, rawLength, digest }) {
     if (this.length === this.capacity) this.grow(this.capacity * 2);
     const id = this.length++;
     this.kinds[id] = kind;
+    this.codecs[id] = codec;
     this.counts[id] = count;
     this.offsets[id] = offset;
     this.lengths[id] = length;
@@ -90,6 +98,7 @@ class PageInventory {
     if (!Number.isSafeInteger(id) || id < 1 || id >= this.length) return undefined;
     return {
       kind: this.kinds[id],
+      codec: this.codecs[id],
       count: this.counts[id],
       offset: this.offsets[id],
       length: this.lengths[id],
@@ -176,12 +185,15 @@ export class RecordPageFile {
         }
       };
       const admit = (header) => {
-        const kind = header.readUInt32LE(0),
+        const word = header.readUInt32LE(0),
+          kind = word & 0xff,
+          codec = word >>> 8,
           count = header.readUInt32LE(4),
           rawLength = header.readUInt32LE(8),
           length = header.readUInt32LE(12);
         if (
           ![1, 2, 3, 4, 5].includes(kind) ||
+          ![GZIP, BROTLI].includes(codec) ||
           !validCount(kind, count) ||
           !rawLength ||
           rawLength > MAX_BYTES ||
@@ -195,6 +207,7 @@ export class RecordPageFile {
         result.headers.update(header);
         result.entries.push({
           kind,
+          codec,
           count,
           offset: position,
           length,
@@ -311,11 +324,11 @@ export class RecordPageFile {
       ([2, 3].includes(kind) && raw.length !== count * (kind === 2 ? 4 : 8))
     )
       throw TypeError('Invalid record page');
-    const compressed = gzipSync(raw, { level: 1 });
+    const compressed = brotliCompressSync(raw, BROTLI_OPTIONS);
     if (compressed.length > MAX_BYTES) throw RangeError('Compressed record page exceeds its bound');
     const digest = hashOf(compressed),
       header = Buffer.alloc(HEADER);
-    header.writeUInt32LE(kind, 0);
+    header.writeUInt32LE(kind | (BROTLI << 8), 0);
     header.writeUInt32LE(count, 4);
     header.writeUInt32LE(raw.length, 8);
     header.writeUInt32LE(compressed.length, 12);
@@ -337,6 +350,7 @@ export class RecordPageFile {
     this.headers.update(header);
     this.entries.push({
       kind,
+      codec: BROTLI,
       count,
       offset: previousBytes + HEADER,
       length: compressed.length,
@@ -375,7 +389,10 @@ export class RecordPageFile {
       const compressed = readExactly(this.fd, entry.length, entry.offset);
       if (!hashOf(compressed).equals(entry.digest)) throw damaged('Record page checksum mismatch');
       try {
-        raw = gunzipSync(compressed, { maxOutputLength: entry.rawLength });
+        raw =
+          entry.codec === BROTLI
+            ? brotliDecompressSync(compressed, { maxOutputLength: entry.rawLength })
+            : gunzipSync(compressed, { maxOutputLength: entry.rawLength });
       } catch (cause) {
         throw Object.assign(damaged('Invalid compressed record page'), { cause });
       }
