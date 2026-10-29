@@ -270,6 +270,85 @@ test('native generic modal layouts join only their rendered list or subgrid acti
   assert.doesNotMatch(JSON.stringify(await inspect(field('edit'))), /recordid|Field values must not/);
 });
 
+test('view-only modal placements are exact only for a page-referenced list and otherwise surface table-filtered action forms', async (t) => {
+  const modalPath = '/_portal/modal-form-template-path/invented';
+  const { page, inspect, data, report } = await fixture(
+    t,
+    '<div class="entity-grid" data-selected-view="shared-view">' +
+      `<section class="modal-form modal-form-edit"><iframe id="edit" data-page="${modalPath}" src="${modalPath}"></iframe></section>` +
+      `<section class="modal-form"><iframe id="unclassed" data-page="${modalPath}" src="${modalPath}"></iframe></section>` +
+      `<section class="modal-form modal-form-insert modal-form-edit"><iframe id="both" data-page="${modalPath}" src="${modalPath}"></iframe></section>` +
+      '</div>',
+  );
+  const target = (id, entity) => ({ id, name: id, kind: 'basic-form', entity, formXml: { id: 'xml-' + id } });
+  const index = {
+    forms: [
+      ...forms,
+      target('create', 'x_first'),
+      target('edit', 'x_first'),
+      target('details', 'x_first'),
+      target('other-table', 'x_second'),
+    ],
+    lists: [
+      {
+        id: 'exported',
+        entity: 'x_first',
+        viewIds: ['shared-view'],
+        actions: [
+          { name: 'CreateAction', formId: 'create' },
+          { name: 'EditAction', formId: 'edit' },
+          { name: 'DetailsAction', formId: 'details' },
+          { name: 'CreateAction', formId: 'other-table' },
+        ],
+      },
+    ],
+  };
+  const update = (components) =>
+    page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
+      data,
+      report: { ...report, componentIndex: index, components },
+    });
+  for (const id of ['edit', 'unclassed', 'both'])
+    await page.locator('#' + id).evaluate((frame) => {
+      frame.contentDocument.body.innerHTML =
+        '<div id="EntityFormControl"><div id="EntityFormPanel"><div id="EntityFormControl_EntityFormView"><span data-form-layout></span><input id="x_title"></div></div></div>';
+      frame.contentDocument
+        .querySelector('[data-form-layout]')
+        .setAttribute(
+          'data-form-layout',
+          JSON.stringify({ Id: '00000000-0000-0000-0000-000000000000', EntityName: 'x_first' }),
+        );
+    });
+  const field = (id) => page.frameLocator('#' + id).locator('#x_title');
+  const candidates = (evidence) =>
+    evidence.enclosing
+      .filter((row) => row.component?.kind === 'basic-form' && row.status === 'candidate')
+      .map((row) => row.component.id)
+      .sort();
+  // An exported list that this page does not reference shares the rendered view.
+  await update([]);
+  const unreferenced = await inspect(field('edit'));
+  assert.notEqual(unreferenced.owner.status, 'exact', 'a shared view alone cannot prove the opener');
+  assert.ok(!unreferenced.enclosing.some((row) => row.component?.id === 'edit' && row.status === 'exact'));
+  assert.deepEqual(candidates(unreferenced), ['edit']);
+  assert.ok(
+    unreferenced.enclosing.some((row) => row.component?.kind === 'table' && row.component.entity === 'x_first'),
+  );
+  // Without exactly one action kind, the declared action forms of the modal's kinds (all kinds when
+  // it names none) on the layout table are candidate context.
+  for (const id of ['unclassed', 'both']) {
+    const evidence = await inspect(field(id));
+    assert.notEqual(evidence.owner.status, 'exact', id);
+    assert.deepEqual(candidates(evidence), id === 'both' ? ['create', 'edit'] : ['create', 'details', 'edit'], id);
+  }
+  // The page references the list: its rendered view and single edit action are exact.
+  await update([{ kind: 'list', recordId: 'exported', name: 'Exported', entity: 'x_first' }]);
+  const referenced = await inspect(field('edit'));
+  exactColumn(referenced, 'x_first', 'x_title');
+  assert.ok(referenced.enclosing.some((row) => row.component?.id === 'edit' && row.status === 'exact'));
+  assert.notEqual((await inspect(field('unclassed'))).owner.status, 'exact');
+});
+
 test('two declared grids retain exact declared columns across clones, reordering and redraw without data access', async (t) => {
   const { page, inspect } = await fixture(
     t,

@@ -580,6 +580,7 @@ function xrayBrowserImpl(data) {
             (item) => norm(item.id ?? item.recordId) === norm(list.id ?? list.recordId),
           ),
           ...list,
+          pageReferenced: true,
         })),
         ...(report?.componentIndex?.lists ?? []).filter(
           (list) => !pageLists.some((known) => norm(known.id ?? known.recordId) === norm(list.id ?? list.recordId)),
