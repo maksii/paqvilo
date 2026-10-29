@@ -40,14 +40,14 @@ test('private initialization keeps one data graph and defers nested persistence 
 
 test('a reordered but unchanged private stage does not rewrite its checkpoint', async (t) => {
   const { store, file, before } = await fixture(t);
-  const handle = await fs.open(file, 'r');
-  const info = await handle.stat({ bigint: true });
-  await handle.close();
+  for (const method of ['prepareCheckpoint', 'appendChanges'])
+    store.storage[method] = () => {
+      throw new Error('An unchanged private stage must not publish storage writes');
+    };
   await store.initialize(() => {
     store.state.tables.widget[0] = { name: 'Original', widgetid: 'one' };
   });
   assert.deepEqual(await fs.readFile(file), before);
-  assert.equal((await fs.stat(file, { bigint: true })).mtimeNs, info.mtimeNs);
 });
 
 for (const persistenceFailure of [false, true])

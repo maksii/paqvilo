@@ -1,4 +1,4 @@
-import { copyPlainGraph } from '../state-clone.mjs';
+import { copyPlainGraph, plainDataObject } from '../state-clone.mjs';
 import { compileForm, parseRibbonCommands, dashboardPage, customPageResolution } from './solution.mjs';
 import { powerPagesProvider } from './providers.mjs';
 import { controlDescriptor } from './control-descriptors.mjs';
@@ -182,7 +182,7 @@ function* catalogueSteps({
   for (const [entity, mapping] of Object.entries(mappings)) {
     if (tables[entity]) continue;
     const exported = metadata.entities?.[entity];
-    const fields = { ...mapping.fields, ...mapping.fieldMetadata };
+    const fields = plainDataObject(mapping.fields, mapping.fieldMetadata);
     for (const name of Object.keys(mapping.fieldMetadata ?? {}))
       if (mapping.fields?.[name] && typeof mapping.fields[name] === 'object')
         fields[name] = { ...mapping.fieldMetadata[name], ...mapping.fields[name] };
@@ -192,7 +192,7 @@ function* catalogueSteps({
       singular: exported?.label ?? friendly(entity),
       idColumn: mapping.idColumn ?? `${entity}id`,
       nameColumn: mapping.nameColumn ?? exported?.primaryNameAttribute ?? mapping.idColumn ?? `${entity}id`,
-      fields: { ...fields, ...exported?.fields },
+      fields: plainDataObject(fields, exported?.fields),
       source: exported ? 'solution' : 'local-mapping',
       projected: false,
     };

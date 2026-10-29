@@ -1,6 +1,7 @@
 import { Worker } from 'node:worker_threads';
 import { metadataResponseChunks } from './metadata-response.mjs';
 import { gzipSync } from 'node:zlib';
+import { plainDataObject } from '../state-clone.mjs';
 
 /** Compile/encode one table outside the large record heap. Transfer UTF-8
  * buffers rather than rebuilding the compiled object graph on the main thread.
@@ -43,7 +44,7 @@ export async function* metadataWorkerResponseChunks(
       }
       pending = { resolve, reject };
       try {
-        const fields = {},
+        const fields = plainDataObject(),
           property = { value: undefined, writable: true, enumerable: true, configurable: true };
         for (const [key, field] of Object.entries(source.tableIndex[name].fields)) {
           property.value = field && typeof field === 'object' ? field : { name: key, dataverseType: field };

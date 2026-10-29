@@ -6,6 +6,7 @@ import { organizationRecord } from './organization-context.mjs';
 import { onceReporter } from './dataverse-addon-common.mjs';
 import { fieldKind } from './dataverse-values.mjs';
 import { immutableColumnRights } from './field-rights.mjs';
+import { plainDataObject } from './state-clone.mjs';
 
 export const SYSTEM_ADMINISTRATOR_PROFILE_ID = '572329c1-a042-4e22-be47-367c6374ea45';
 // field_security_permission_type: 0 Not Allowed, 4 Allowed.
@@ -337,7 +338,7 @@ function createFieldSecurity({
     const mapping = mappingOf(logical);
     const source = metadataFields(mapping?.logicalName ?? logical) ?? null;
     let administrator, scope, grants;
-    const result = {},
+    const result = plainDataObject(),
       property = { value: undefined, writable: true, enumerable: true, configurable: true };
     const rights = (read, create, update) =>
       compact ? immutableColumnRights(read, create, update) : { read, create, update };

@@ -6,6 +6,7 @@ import { organizationPrincipalContext } from './dataverse-principal-context.mjs'
 import { parseDataverseRoute, parsePrefer } from './dataverse-odata.mjs';
 import { createDataverseHandler } from './dataverse-api.mjs';
 import { isSecuredField } from './dataverse-fls.mjs';
+import { plainDataObject } from './state-clone.mjs';
 import { immutableFieldRights } from './field-rights.mjs';
 import { Readable } from 'node:stream';
 import { gunzipSync } from 'node:zlib';
@@ -282,7 +283,7 @@ export function createModelDrivenRecordService({
     const definitions =
       names.length && typeof metadataFields === 'function' ? metadataFields(mapping.logicalName ?? entity) : undefined;
     const metadata = typeof metadataFields === 'function' ? () => definitions : undefined;
-    const projected = {},
+    const projected = plainDataObject(),
       property = { value: undefined, writable: true, enumerable: true, configurable: true };
     for (const [name, field] of Object.entries(fields)) {
       const secured = isSecuredField(store.fieldDefinition?.(entity, name, metadata) ?? field);

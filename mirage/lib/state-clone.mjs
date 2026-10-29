@@ -5,6 +5,24 @@ import { cloneRecordGraph, hasRecordGraph } from './record-clone.mjs';
 const BULK_ROWS = 100000;
 const MEMO_PARTITION_LIMIT = 4000000;
 const own = (value, name) => Object.prototype.hasOwnProperty.call(value, name);
+
+/** Wide heterogeneous metadata maps need dictionary storage without changing
+ * their public Object prototype or the data-property semantics of object spread.
+ * Starting with null-prototype storage avoids a separate descriptor transition
+ * chain for every table's distinct primary-key column. */
+export function plainDataObject(...sources) {
+  const result = Object.setPrototypeOf(Object.create(null), Object.prototype),
+    property = { value: undefined, writable: true, enumerable: true, configurable: true };
+  for (const source of sources) {
+    if (source == null) continue;
+    for (const key of Reflect.ownKeys(Object(source))) {
+      if (!Object.getOwnPropertyDescriptor(source, key)?.enumerable) continue;
+      property.value = source[key];
+      Object.defineProperty(result, key, property);
+    }
+  }
+  return result;
+}
 const descriptorValue = (value, key) => {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
   return descriptor && own(descriptor, 'value') ? descriptor.value : undefined;

@@ -17,6 +17,7 @@ const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function modelTargetsFixture(t) {
+  t.diagnostic('model-target phase: fixture');
   const owner = ownedFixture(t);
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-model-targets-'));
   // The CLI's owned browser profile lives in this directory.
@@ -220,7 +221,9 @@ async function modelTargetsFixture(t) {
   // Printed after the owned browser (with its debugging port) and the agent discovery file exist,
   // so neither a starting CDP listener nor a partially written discovery file is observed.
   await wait(() => /^Opening model-driven app at /m.test(output), 'owned browser and agent');
+  t.diagnostic('model-target phase: owned CLI started');
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+  t.diagnostic('model-target phase: CDP connected');
   const page = await wait(
     () =>
       browser
@@ -231,6 +234,7 @@ async function modelTargetsFixture(t) {
   );
   await page.waitForFunction(() => window.targetRevision === 'initial');
   await page.locator('#paqvilo-panel').waitFor();
+  t.diagnostic('model-target phase: initial local application');
   const initialAgents = await discoveries();
   assert.equal(initialAgents.length, 1);
   assert.equal(initialAgents[0].pid, child.pid);
@@ -324,6 +328,7 @@ test(
         throw error;
       }
       await page.waitForFunction(() => window.targetRevision === 'initial');
+      t.diagnostic('model-target phase: review local application');
       await open();
       assert.equal(await selector.inputValue(), '1');
       assert.equal(
@@ -349,7 +354,9 @@ test(
         assert.ok(!response || !response.ok, 'retired origin agent is not still authorized');
       }
       await fs.writeFile(f.js, 'window.targetRevision="review-save";');
+      t.diagnostic('model-target phase: source refresh requested');
       await page.waitForFunction(() => window.targetRevision === 'review-save');
+      t.diagnostic('model-target phase: source refresh applied');
       assert.equal(new URL(page.url()).origin, origins[1], 'source save reloads the selected reference');
       assert.equal(f.nativeReads[1], 0, 'review mapping overlays its own resource URL');
       await open();
@@ -359,6 +366,7 @@ test(
         page.locator('[data-target-go]').click(),
       ]);
       await page.waitForFunction(() => window.targetRevision === 'review-save');
+      t.diagnostic('model-target phase: development local application');
       await open();
       assert.equal(await selector.inputValue(), '0');
       const agents = await f.discoveries();
@@ -373,6 +381,7 @@ test(
         body: '{}',
       });
       assert.equal(stopped.status, 200);
+      t.diagnostic('model-target phase: owned stop accepted');
       assert.equal((await f.closed).code, 0, f.getOutput());
       assert.deepEqual(await f.discoveries(), []);
       assert.ok(

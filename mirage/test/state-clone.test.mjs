@@ -1,6 +1,29 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cloneStateData } from '../lib/state-clone.mjs';
+import { cloneStateData, plainDataObject } from '../lib/state-clone.mjs';
+
+test('wide metadata maps retain ordinary spread semantics, descriptors, ordering and guarded keys', () => {
+  const marker = Symbol('metadata'),
+    shared = { value: 'Retained' },
+    source = Object.create({ inherited: 'Excluded' });
+  let reads = 0;
+  Object.defineProperty(source, 'accessor', { enumerable: true, get: () => ++reads });
+  Object.defineProperty(source, '__proto__', { enumerable: true, value: shared });
+  Object.defineProperty(source, 'hidden', { value: 'Excluded' });
+  source[marker] = shared;
+  const wide = Object.fromEntries(Array.from({ length: 1024 }, (_, index) => ['x_field' + index, index]));
+  const expected = { ...source, ...wide, accessor: 'Override' };
+  reads = 0;
+  const actual = plainDataObject(source, wide, { accessor: 'Override' });
+  assert.equal(reads, 1);
+  assert.deepEqual(actual, expected);
+  assert.deepEqual(Object.getOwnPropertyDescriptors(actual), Object.getOwnPropertyDescriptors(expected));
+  assert.deepEqual(Reflect.ownKeys(actual), Reflect.ownKeys(expected));
+  assert.equal(Object.getPrototypeOf(actual), Object.prototype);
+  assert.equal(actual.__proto__, shared);
+  assert.equal(actual[marker], shared);
+  assert.deepEqual(plainDataObject(null, 'Δx', 5, undefined), { ...null, ...'Δx', ...5, ...undefined });
+});
 
 // Exercise the public dispatch through a genuinely bulk, sparse envelope.
 // Holes keep compatibility cases cheap without exposing implementation helpers.

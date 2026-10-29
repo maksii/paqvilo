@@ -3,6 +3,16 @@
 export function createRecordCapabilitiesSummary(store) {
   let previousNames, previous, encoded;
   const summary = ({ reuse = false } = {}) => {
+    if (reuse && !store.storageAdapter && previousNames) {
+      let index = 0,
+        same = true;
+      for (const name in store.state.mappings)
+        if (Object.hasOwn(store.state.mappings, name) && previousNames[index++] !== name) {
+          same = false;
+          break;
+        }
+      if (same && index === previousNames.length) return previous;
+    }
     const names = Object.keys(store.state.mappings);
     if (!reuse || store.storageAdapter)
       return Object.fromEntries(
@@ -11,8 +21,6 @@ export function createRecordCapabilitiesSummary(store) {
           store.storageAdapter?.recordCapabilities(name) ?? { create: true, update: true, delete: true },
         ]),
       );
-    if (previousNames?.length === names.length && names.every((name, index) => name === previousNames[index]))
-      return previous;
     previousNames = names;
     encoded = undefined;
     previous = Object.freeze(
