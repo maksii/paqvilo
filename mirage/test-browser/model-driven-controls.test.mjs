@@ -15,7 +15,6 @@ const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
 test('model-driven choice fields preserve typed values, required validation, keyboard selection and disabled state', async (t) => {
   const { origin } = await readOnlyApp();
   const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
   await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;
@@ -398,7 +397,6 @@ test('saved state and status remain editable with legacy text class IDs while ne
 test('advanced lookup uses staged Done, preserves a cancelled value, queries exported views and saves a typed reference', async (t) => {
   const { origin } = await modelDrivenFixture(t);
   const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
   const id = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
   await page.goto(`${origin}/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=${id}`);
   await page.getByLabel('Parent', { exact: true }).waitFor();
@@ -456,7 +454,6 @@ test('inline lookup applies its exported lookup view and keeps lookup-only views
     false,
   );
   const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
   await page.goto(
     origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd',
   );
@@ -538,7 +535,6 @@ test('advanced lookup preserves all exported columns and their widths instead of
 /** Opens the child record's advanced Parent lookup on the shared app with Silver selected. */
 async function openParentLookup(t, origin) {
   const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
   await page.goto(
     origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_child&id=dddddddd-dddd-4ddd-8ddd-dddddddddddd',
   );
@@ -612,7 +608,6 @@ test('lookup invalidates selection during search, ignores stale responses and se
 test('lookup target picker clears selection and preserves polymorphic target identity', async (t) => {
   const { origin } = await modelDrivenFixture(t);
   const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
   let targetLabel;
   await page.route('**/_apps/api/metadata/x_child', async (route) => {
     const response = await route.fetch(),
@@ -646,7 +641,6 @@ test('lookup target picker clears selection and preserves polymorphic target ide
 test('inline lookup rejects stale keyboard choices during debounce and after an adapter ignores cancellation', async (t) => {
   const { origin } = await readOnlyApp();
   const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
   await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;

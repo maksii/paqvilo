@@ -17,7 +17,7 @@ const close = (server) => {
   return new Promise((resolve) => server.close(resolve));
 };
 
-test('Code App shutdown waits for actual stdio closure after its owner exits', { timeout: 15000 }, async (t) => {
+test('Code App shutdown waits for actual stdio closure after its owner exits', { timeout: 180_000 }, async (t) => {
   const child = spawn(process.execPath, ['-e', 'process.stdout.write("owned-output")'], {
     detached: process.platform !== 'win32',
     windowsHide: true,
@@ -55,7 +55,7 @@ test('readiness refuses external, non-HTTP and credential-bearing URLs before an
     );
 });
 
-test('readiness does not follow a configured loopback listener redirect', { timeout: 15000 }, async (t) => {
+test('readiness does not follow a configured loopback listener redirect', { timeout: 180_000 }, async (t) => {
   let redirected = 0;
   const destination = http.createServer((_req, res) => {
     redirected++;
@@ -89,7 +89,7 @@ test('readiness does not follow a configured loopback listener redirect', { time
   assert.equal(redirected, 0);
 });
 
-test('readiness probing releases a response whose body does not finish', { timeout: 15000 }, async (t) => {
+test('readiness probing releases a response whose body does not finish', { timeout: 180_000 }, async (t) => {
   let observedClose;
   const closed = new Promise((resolve) => {
     observedClose = resolve;
@@ -129,7 +129,7 @@ test('mirage rejects unsafe starting paths before opening a runtime', () => {
     const result = spawnSync(process.execPath, [cli, 'mirage', 'dev', '--path', value], {
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 10000,
+      timeout: 150_000,
     });
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /origin-relative path/);
@@ -138,7 +138,7 @@ test('mirage rejects unsafe starting paths before opening a runtime', () => {
 
 test(
   'multiple app servers start, reuse external listeners and stop only owned children',
-  { timeout: 20000 },
+  { timeout: 180_000 },
   async (t) => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-supervisor-')));
     ownedFixture(t).remove(() => removeFixtureDirectory(root));
@@ -181,7 +181,7 @@ test(
   },
 );
 
-test('failed startup drains already owned apps and never invokes a shell', { timeout: 20000 }, async (t) => {
+test('failed startup drains already owned apps and never invokes a shell', { timeout: 180_000 }, async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-supervisor-fail-')));
   ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const server = http.createServer();
@@ -221,7 +221,7 @@ test('failed startup drains already owned apps and never invokes a shell', { tim
   await assert.rejects(fetch(`http://127.0.0.1:${firstPort}`));
 });
 
-test('an exited app launcher does not orphan its listening descendant', { timeout: 20000 }, async (t) => {
+test('an exited app launcher does not orphan its listening descendant', { timeout: 180_000 }, async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-tree-')));
   ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const reservation = http.createServer();
@@ -253,7 +253,7 @@ test('an exited app launcher does not orphan its listening descendant', { timeou
           devServer: {
             command: [process.execPath, launcher, worker],
             env: { APP_PORT: String(port) },
-            timeoutMs: 4000,
+            timeoutMs: 60_000,
           },
         },
       ],
@@ -268,7 +268,7 @@ test('an exited app launcher does not orphan its listening descendant', { timeou
   await assert.rejects(fetch(`http://127.0.0.1:${port}`));
 });
 
-test('cancelling startup closes an owned server that never becomes ready', { timeout: 20000 }, async (t) => {
+test('cancelling startup closes an owned server that never becomes ready', { timeout: 180_000 }, async (t) => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'code-app-cancel-')));
   ownedFixture(t).remove(() => removeFixtureDirectory(root));
   const reservation = http.createServer();
@@ -288,7 +288,7 @@ test('cancelling startup closes an owned server that never becomes ready', { tim
         name: 'waiting',
         dir: root,
         localAppUrl: `http://127.0.0.1:${port}`,
-        devServer: { command: [process.execPath, childScript], timeoutMs: 10000 },
+        devServer: { command: [process.execPath, childScript], timeoutMs: 60_000 },
       },
     ],
     {

@@ -242,8 +242,7 @@ export function fixtureStatusURL(session) {
   // a record's URL nor any file content becomes a request host/path/header.
   return `http://127.0.0.1:${port}/_sim/api/status`;
 }
-const requestStatus = (session) =>
-  fetch(fixtureStatusURL(session), { redirect: 'error', signal: AbortSignal.timeout(5000) });
+const requestStatus = (session) => fetch(fixtureStatusURL(session), { redirect: 'error' });
 export const alive = async (session) => assert.equal((await requestStatus(session)).status, 200);
 export const stopped = (session) => assert.rejects(requestStatus(session), /fetch failed/);
 export const portalProject = (sourceDir) => ({

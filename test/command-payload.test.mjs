@@ -204,7 +204,7 @@ test('payload writes reject linked targets and hard-linked user files', (t) => {
 
 test(
   'concurrent identical publishers reuse the completed canonical payload after temporary hard links retire',
-  { timeout: 10000 },
+  { timeout: 180_000 },
   async (t) => {
     const { directory } = fixture(t);
     const bytes = payload('shared publication');

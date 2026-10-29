@@ -551,7 +551,6 @@ async function standalone(t) {
         ...(body ? { 'content-type': 'application/json', prefer: 'return=representation' } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(10000),
     });
   const simApi = (method, suffix, body) =>
     fetch(sim.url + '/_sim/api' + suffix, {

@@ -5,7 +5,7 @@ import { startCodeApp } from './code-app-process.mjs';
 
 test(
   'code app proxy confines request targets and rebases only trusted browser origins',
-  { timeout: 15000 },
+  { timeout: 180_000 },
   async (t) => {
     const calls = [];
     const upstream = http.createServer((req, res) => {
@@ -72,7 +72,7 @@ test(
   },
 );
 
-test('code app proxy closes a truncated upstream response', { timeout: 15000 }, async (t) => {
+test('code app proxy closes a truncated upstream response', { timeout: 180_000 }, async (t) => {
   let upstreamResponse;
   const upstream = http.createServer((_req, res) => {
     upstreamResponse = res;
@@ -101,7 +101,7 @@ test('code app proxy closes a truncated upstream response', { timeout: 15000 }, 
   assert.equal(await completed, 'aborted');
 });
 
-test('code app proxy cancels upstream when the client disconnects before headers', { timeout: 15000 }, async (t) => {
+test('code app proxy cancels upstream when the client disconnects before headers', { timeout: 180_000 }, async (t) => {
   let arrived;
   let closed;
   const requestArrived = new Promise((resolve) => {

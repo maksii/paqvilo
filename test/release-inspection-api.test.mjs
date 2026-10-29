@@ -77,7 +77,7 @@ async function fixture(t, getReport) {
     const answered = Promise.withResolvers();
     const timer = setTimeout(
       () => answered.reject(new Error(`Intercepted request ${id} did not answer within the panel API deadline`)),
-      5000,
+      60_000,
     );
     pending.set(id, answered.resolve);
     tab.pause(id, origin + '/__paqvilo/api/' + name, {

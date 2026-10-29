@@ -14,7 +14,6 @@ let sharedApp;
 async function fixture(t, { timezoneId = 'America/New_York' } = {}) {
   const { origin } = await (sharedApp ??= modelDrivenFixture(scope));
   const page = await chrome.page(t, { timezoneId, viewport: { width: 1200, height: 900 } });
-  page.setDefaultTimeout(5000);
   await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
     const renderControl = window.renderFixtureControl;

@@ -48,7 +48,7 @@ export async function loopbackServer(t, handler) {
 /**
  * Reads a simulator's admin state once before a page times its first render. The first read in a process builds the
  * organization runtime (lazy modules and system tables: about 1 s idle, over 8 s on a loaded host), which admin view
- * tests do not measure and which would otherwise consume their short per-step timeouts.
+ * tests do not measure and which would otherwise count against their first waits.
  */
 export async function warmState(app) {
   const response = await fetch(app.url + '/__sim/api/state');
@@ -66,7 +66,6 @@ export async function adminPage(t, browser, app, directory) {
   context = await browser.newContext({ serviceWorkers: 'block' });
   const page = await context.newPage();
   await warmState(app);
-  page.setDefaultTimeout(10_000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   return { page, errors };
@@ -76,7 +75,7 @@ export async function adminPage(t, browser, app, directory) {
  * An array of observed events whose pushes wake `until(predicate)`, so a test awaits the recorded event itself
  * instead of polling on a timer. The bound only turns a missing event into a named failure before the test timeout.
  */
-export function eventLog({ timeout = 10_000, message = 'The expected event did not arrive' } = {}) {
+export function eventLog({ timeout = 60_000, message = 'The expected event did not arrive' } = {}) {
   const items = [],
     waiters = new Set();
   const push = items.push.bind(items);
@@ -118,4 +117,21 @@ export function fileScope() {
       cleanups.push(cleanup);
     },
   };
+}
+
+/**
+ * Launches a browser handed to `own` at once (so the caller's cleanup closes it even if loading fails), opens `origin`
+ * and collects page errors and any request leaving that origin.
+ */
+export async function observedPage(origin, own) {
+  const browser = own(await chromium.launch(browserLaunchOptions({ headless: true })));
+  const page = await browser.newPage();
+  const errors = [],
+    external = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('request', (request) => {
+    if (!request.url().startsWith(origin + '/')) external.push(request.url());
+  });
+  await page.goto(origin);
+  return { page, errors, external };
 }

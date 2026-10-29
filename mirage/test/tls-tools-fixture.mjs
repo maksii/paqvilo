@@ -7,7 +7,7 @@ export function tlsTools({
   required = process.env.PAQ_TEST_REQUIRE_TLS_TOOLS === '1',
   run = spawnSync,
 } = {}) {
-  const probe = (command, args) => run(command, args, { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+  const probe = (command, args) => run(command, args, { encoding: 'utf8', windowsHide: true, timeout: 60_000 });
   const python = ['python3', 'python', 'py'].find((name) => probe(name, ['--version']).status === 0) ?? null;
   let openssl = probe('openssl', ['version']).status === 0 ? 'openssl' : null;
   if (!openssl && platform === 'win32') {

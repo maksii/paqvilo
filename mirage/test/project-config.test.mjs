@@ -49,7 +49,7 @@ async function workspace(t) {
 // Startup diagnostics belong to stderr. Keep stdout as one JSON document. Readiness is the printed JSON, bounded by
 // the test's own deadline (t.signal, the suite --test-timeout): CLI startup time depends on machine load, so a short
 // fixed wall clock would fail a healthy CLI. Cleanup is bounded so a broken CLI cannot hold the suite open.
-function jsonServer(cli, args, { signal, stopTimeout = 5000 } = {}) {
+function jsonServer(cli, args, { signal, stopTimeout = 30_000 } = {}) {
   const child = spawn(process.execPath, [cli, ...args], {
     cwd: path.dirname(cli),
     stdio: ['pipe', 'pipe', 'pipe'],

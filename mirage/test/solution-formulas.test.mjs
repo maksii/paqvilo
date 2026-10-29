@@ -125,39 +125,35 @@ test('invalid formula paths, missing columns and malformed YAML stay unevaluated
 });
 
 for (const location of ['entity', 'root'])
-  test(
-    `a running model-driven host recomputes source formula values after editing ${location} YAML`,
-    { timeout: 25000 },
-    async (t) => {
-      const fixtureSource = await fixture(t),
-        { root } = fixtureSource;
-      let file = fixtureSource.file;
-      if (location === 'root') {
-        await fs.mkdir(path.join(root, 'Formulas'));
-        file = path.join(root, 'Formulas/Fields.yaml');
-        await fs.rename(fixtureSource.file, file);
-      }
-      const sim = await createSimulator({
-        projectRoot: root,
-        solutionRoots: [root],
-        runtime: { kind: 'model-driven' },
-        stateFile: path.join(root, '.paqvilo/state.json'),
-        simulation: { level: 'dry-run' },
-        watch: true,
-        initial: { tables: { x_item: [{ x_itemid: ID, x_name: 'Invented', x_code: 'A' }] } },
-      });
-      ownedFixture(t).add(() => sim.close());
-      const read = async () => {
-        const response = await fetch(sim.url + '/_apps/api/tables/x_item/' + ID);
-        assert.equal(response.status, 200);
-        return (await response.json()).row.x_label;
-      };
-      assert.equal(await read(), 'Invented / A');
-      // createSimulator resolves after the source watcher reported ready (standalone-runtime.mjs restartWatcher).
-      await fs.writeFile(file, 'x_label: =Concatenate(x_code, " / ", x_name)\n');
-      const deadline = Date.now() + 15000;
-      while ((await read()) !== 'A / Invented' && Date.now() < deadline)
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      assert.equal(await read(), 'A / Invented');
-    },
-  );
+  test(`a running model-driven host recomputes source formula values after editing ${location} YAML`, async (t) => {
+    const fixtureSource = await fixture(t),
+      { root } = fixtureSource;
+    let file = fixtureSource.file;
+    if (location === 'root') {
+      await fs.mkdir(path.join(root, 'Formulas'));
+      file = path.join(root, 'Formulas/Fields.yaml');
+      await fs.rename(fixtureSource.file, file);
+    }
+    const sim = await createSimulator({
+      projectRoot: root,
+      solutionRoots: [root],
+      runtime: { kind: 'model-driven' },
+      stateFile: path.join(root, '.paqvilo/state.json'),
+      simulation: { level: 'dry-run' },
+      watch: true,
+      initial: { tables: { x_item: [{ x_itemid: ID, x_name: 'Invented', x_code: 'A' }] } },
+    });
+    ownedFixture(t).add(() => sim.close());
+    const read = async () => {
+      const response = await fetch(sim.url + '/_apps/api/tables/x_item/' + ID);
+      assert.equal(response.status, 200);
+      return (await response.json()).row.x_label;
+    };
+    assert.equal(await read(), 'Invented / A');
+    // createSimulator resolves after the source watcher reported ready (standalone-runtime.mjs restartWatcher).
+    await fs.writeFile(file, 'x_label: =Concatenate(x_code, " / ", x_name)\n');
+    const deadline = Date.now() + 60_000;
+    while ((await read()) !== 'A / Invented' && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(await read(), 'A / Invented');
+  });

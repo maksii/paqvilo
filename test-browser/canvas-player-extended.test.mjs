@@ -745,9 +745,8 @@ test('player fixture drains accepted idle sockets before browser cleanup', { tim
   socket = net.createConnection({ host: '127.0.0.1', port: page.canvasServer.address().port });
   await once(socket, 'connect');
   await accepted;
-  // A browser preconnect has no HTTP request for close() to finish. Its close event is the gate;
-  // the timeout only names a missing event, and the test's own cleanup releases a broken fixture.
-  const socketClosed = once(socket, 'close', { signal: AbortSignal.timeout(5000) });
+  // A browser preconnect has no HTTP request for close() to finish. Its close event is the gate.
+  const socketClosed = once(socket, 'close');
   const pending = close();
   await socketClosed;
   await pending;

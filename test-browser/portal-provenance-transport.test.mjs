@@ -95,7 +95,6 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   const context = await browser.newContext();
-  context.setDefaultTimeout(5000);
   const page = await context.newPage();
   await context.addCookies([{ name: 'invented', value: 'one', url: origin }]);
   const transport = createPortalProvenanceTransport(context, [{ origin, mirage }]);

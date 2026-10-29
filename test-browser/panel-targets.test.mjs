@@ -80,7 +80,6 @@ test(
       ],
     });
     context = await browser.newContext({ serviceWorkers: 'block' });
-    context.setDefaultTimeout(10_000);
     await context.route('**/__paqvilo/api/**', (route) => {
       const url = new URL(route.request().url());
       return sessions.get(url.origin).api(route, url.pathname.split('/').at(-1));

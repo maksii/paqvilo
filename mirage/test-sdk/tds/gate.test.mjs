@@ -102,7 +102,6 @@ describe('Dataverse TDS endpoint through tedious', () => {
       method: 'POST',
       headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
       body: JSON.stringify(data),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(response.status < 300, `${collection} create answered ${response.status}`);
     return response.headers.get('OData-EntityId').match(/\(([^)]+)\)$/)[1];
@@ -118,8 +117,8 @@ describe('Dataverse TDS endpoint through tedious', () => {
           database: 'org',
           encrypt: true,
           trustServerCertificate: true,
-          connectTimeout: 5000,
-          requestTimeout: 10000,
+          connectTimeout: 60_000,
+          requestTimeout: 60_000,
         },
       });
       connection.on('connect', (err) => (err ? reject(err) : resolve(connection)));

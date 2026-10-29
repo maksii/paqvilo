@@ -117,78 +117,70 @@ test('persistent binding fixture releases its browser and profile after initial 
   await assert.rejects(fs.stat(profile), { code: 'ENOENT' });
 });
 
-test(
-  'owned raw binding survives independent persistent-browser CDP owners and observers',
-  { timeout: 20000 },
-  async (t) => {
-    const f = await persistentFixture(t);
-    const helper = new URL('../lense/owned-page-binding.mjs', import.meta.url).href;
-    const child = `import{chromium}from'playwright-core';import{createOwnedPageBindings}from'${helper}';const b=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');let observer;try{const p=await b.contexts()[0].newPage();await p.goto('${f.origin}/attached');const bridge=await createOwnedPageBindings(p,{origin:'${f.origin}',bindings:{inventedEcho:(_source,v)=>({echo:v})}});const before=await p.evaluate(()=>inventedEcho('before'));observer=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const during=await p.evaluate(()=>inventedEcho('during'));await observer.close();observer=null;const after=await p.evaluate(()=>inventedEcho('after'));await p.reload();const navigation=await p.evaluate(()=>inventedEcho('navigation'));await bridge.close();const closed=await p.evaluate(()=>typeof inventedEcho);await p.reload();const retired=await p.evaluate(()=>typeof inventedEcho);console.log(JSON.stringify({before,during,after,navigation,closed,retired}));await p.close()}finally{await observer?.close();await b.close()}`;
-    const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', child], {
-      windowsHide: true,
-    });
-    assert.deepEqual(JSON.parse(result.stdout), {
-      before: { echo: 'before' },
-      during: { echo: 'during' },
-      after: { echo: 'after' },
-      navigation: { echo: 'navigation' },
-      closed: 'undefined',
-      retired: 'undefined',
-    });
-  },
-);
+test('owned raw binding survives independent persistent-browser CDP owners and observers', async (t) => {
+  const f = await persistentFixture(t);
+  const helper = new URL('../lense/owned-page-binding.mjs', import.meta.url).href;
+  const child = `import{chromium}from'playwright-core';import{createOwnedPageBindings}from'${helper}';const b=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');let observer;try{const p=await b.contexts()[0].newPage();await p.goto('${f.origin}/attached');const bridge=await createOwnedPageBindings(p,{origin:'${f.origin}',bindings:{inventedEcho:(_source,v)=>({echo:v})}});const before=await p.evaluate(()=>inventedEcho('before'));observer=await chromium.connectOverCDP('http://127.0.0.1:${f.port}');const during=await p.evaluate(()=>inventedEcho('during'));await observer.close();observer=null;const after=await p.evaluate(()=>inventedEcho('after'));await p.reload();const navigation=await p.evaluate(()=>inventedEcho('navigation'));await bridge.close();const closed=await p.evaluate(()=>typeof inventedEcho);await p.reload();const retired=await p.evaluate(()=>typeof inventedEcho);console.log(JSON.stringify({before,during,after,navigation,closed,retired}));await p.close()}finally{await observer?.close();await b.close()}`;
+  const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', child], {
+    windowsHide: true,
+  });
+  assert.deepEqual(JSON.parse(result.stdout), {
+    before: { echo: 'before' },
+    during: { echo: 'during' },
+    after: { echo: 'after' },
+    navigation: { echo: 'navigation' },
+    closed: 'undefined',
+    retired: 'undefined',
+  });
+});
 
-test(
-  'owned binding rejects child contexts, foreign origins, oversized calls and oversized replies',
-  { timeout: 15000 },
-  async (t) => {
-    const f = await fixture(t);
-    let calls = 0;
-    const bridge = await createOwnedPageBindings(f.page, {
-      origin: f.origin,
-      maxBytes: 200,
-      maxResultBytes: 200,
-      bindings: {
-        inventedEcho(source, value) {
-          calls++;
-          assert.equal(source.page, f.page);
-          assert.equal(source.frame, f.page.mainFrame());
-          return value === 'large-result' ? 'x'.repeat(201) : value;
-        },
+test('owned binding rejects child contexts, foreign origins, oversized calls and oversized replies', async (t) => {
+  const f = await fixture(t);
+  let calls = 0;
+  const bridge = await createOwnedPageBindings(f.page, {
+    origin: f.origin,
+    maxBytes: 200,
+    maxResultBytes: 200,
+    bindings: {
+      inventedEcho(source, value) {
+        calls++;
+        assert.equal(source.page, f.page);
+        assert.equal(source.frame, f.page.mainFrame());
+        return value === 'large-result' ? 'x'.repeat(201) : value;
       },
-    });
-    f.own(() => bridge.close());
-    assert.equal(await f.page.evaluate(() => window.inventedEcho('valid')), 'valid');
-    assert.equal(await rejectionOf(f.page, 'x'.repeat(300)), 'The owned page request is too large.');
-    assert.equal(await rejectionOf(f.page, 'large-result'), 'The owned page request failed.');
-    await f.page.evaluate(() => {
-      const frame = document.createElement('iframe');
-      frame.src = '/child';
-      document.body.append(frame);
-    });
-    const child = await f.page.waitForEvent('framenavigated', {
-      predicate: (frame) => frame !== f.page.mainFrame(),
-    });
-    assert.equal(await child.evaluate(() => typeof inventedEcho), 'undefined');
-    await child.evaluate(() => {
-      const raw = Object.getOwnPropertyNames(window).find((name) => name.startsWith('__paqviloOwned_'));
-      window[raw](JSON.stringify({ id: 1, name: 'inventedEcho', args: ['child'] }));
-    });
-    await f.page.goto(f.origin.replace('127.0.0.1', 'localhost'));
-    assert.equal(await f.page.evaluate(() => typeof inventedEcho), 'undefined');
-    await f.page.evaluate(() => {
-      const raw = Object.getOwnPropertyNames(window).find((name) => name.startsWith('__paqviloOwned_'));
-      window[raw](JSON.stringify({ id: 1, name: 'inventedEcho', args: ['foreign'] }));
-    });
-    // Binding calls arrive in order on one DevTools session and refused calls return before
-    // any callback, so a later accepted call is a barrier for the two refused ones above.
-    await f.page.goto(f.origin);
-    assert.equal(await f.page.evaluate(() => window.inventedEcho('barrier')), 'barrier');
-    assert.equal(calls, 3);
-  },
-);
+    },
+  });
+  f.own(() => bridge.close());
+  assert.equal(await f.page.evaluate(() => window.inventedEcho('valid')), 'valid');
+  assert.equal(await rejectionOf(f.page, 'x'.repeat(300)), 'The owned page request is too large.');
+  assert.equal(await rejectionOf(f.page, 'large-result'), 'The owned page request failed.');
+  await f.page.evaluate(() => {
+    const frame = document.createElement('iframe');
+    frame.src = '/child';
+    document.body.append(frame);
+  });
+  const child = await f.page.waitForEvent('framenavigated', {
+    predicate: (frame) => frame !== f.page.mainFrame(),
+  });
+  assert.equal(await child.evaluate(() => typeof inventedEcho), 'undefined');
+  await child.evaluate(() => {
+    const raw = Object.getOwnPropertyNames(window).find((name) => name.startsWith('__paqviloOwned_'));
+    window[raw](JSON.stringify({ id: 1, name: 'inventedEcho', args: ['child'] }));
+  });
+  await f.page.goto(f.origin.replace('127.0.0.1', 'localhost'));
+  assert.equal(await f.page.evaluate(() => typeof inventedEcho), 'undefined');
+  await f.page.evaluate(() => {
+    const raw = Object.getOwnPropertyNames(window).find((name) => name.startsWith('__paqviloOwned_'));
+    window[raw](JSON.stringify({ id: 1, name: 'inventedEcho', args: ['foreign'] }));
+  });
+  // Binding calls arrive in order on one DevTools session and refused calls return before
+  // any callback, so a later accepted call is a barrier for the two refused ones above.
+  await f.page.goto(f.origin);
+  assert.equal(await f.page.evaluate(() => window.inventedEcho('barrier')), 'barrier');
+  assert.equal(calls, 3);
+});
 
-test('late callback replies remain confined to the original document context', { timeout: 15000 }, async (t) => {
+test('late callback replies remain confined to the original document context', async (t) => {
   const f = await fixture(t);
   let release, began;
   const started = new Promise((resolve) => {
@@ -218,43 +210,39 @@ test('late callback replies remain confined to the original document context', {
   assert.equal(await f.page.evaluate(() => window.inventedEcho('still-fresh')), 'still-fresh');
 });
 
-test(
-  'bounded callback lifetime and real debugger pause preserve a fresh bridge call',
-  { timeout: 10000 },
-  async (t) => {
-    const f = await fixture(t);
-    const bridge = await createOwnedPageBindings(f.page, {
-      origin: f.origin,
-      callTimeout: 50,
-      bindings: {
-        inventedEcho(_source, value) {
-          return value === 'never' ? new Promise(() => {}) : value;
-        },
+test('bounded callback lifetime and real debugger pause preserve a fresh bridge call', async (t) => {
+  const f = await fixture(t);
+  const bridge = await createOwnedPageBindings(f.page, {
+    origin: f.origin,
+    callTimeout: 50,
+    bindings: {
+      inventedEcho(_source, value) {
+        return value === 'never' ? new Promise(() => {}) : value;
       },
-    });
-    f.own(() => bridge.close());
-    assert.equal(await rejectionOf(f.page, 'never'), 'The owned page request failed.');
-    const debuggerSession = await f.context.newCDPSession(f.page);
-    let pauses = 0;
-    debuggerSession.on('Debugger.paused', () => {
-      pauses++;
-      void debuggerSession.send('Debugger.resume').catch(() => {});
-    });
-    await debuggerSession.send('Debugger.enable');
-    assert.equal(
-      await f.page.evaluate(() => {
-        // eslint-disable-next-line no-debugger -- The debugger pause is the synthetic lifecycle boundary under test.
-        debugger;
-        return window.inventedEcho('after-debugger');
-      }),
-      'after-debugger',
-    );
-    assert.ok(pauses > 0);
-    await debuggerSession.detach();
-  },
-);
+    },
+  });
+  f.own(() => bridge.close());
+  assert.equal(await rejectionOf(f.page, 'never'), 'The owned page request failed.');
+  const debuggerSession = await f.context.newCDPSession(f.page);
+  let pauses = 0;
+  debuggerSession.on('Debugger.paused', () => {
+    pauses++;
+    void debuggerSession.send('Debugger.resume').catch(() => {});
+  });
+  await debuggerSession.send('Debugger.enable');
+  assert.equal(
+    await f.page.evaluate(() => {
+      // eslint-disable-next-line no-debugger -- The debugger pause is the synthetic lifecycle boundary under test.
+      debugger;
+      return window.inventedEcho('after-debugger');
+    }),
+    'after-debugger',
+  );
+  assert.ok(pauses > 0);
+  await debuggerSession.detach();
+});
 
-test('wrapper installation exceptions fail readiness and clean the owned channel', { timeout: 10000 }, async (t) => {
+test('wrapper installation exceptions fail readiness and clean the owned channel', async (t) => {
   const f = await fixture(t);
   await f.page.evaluate(() =>
     Object.defineProperty(window, 'inventedEcho', {
@@ -278,39 +266,35 @@ test('wrapper installation exceptions fail readiness and clean the owned channel
   assert.equal(await f.page.evaluate(() => window.inventedEcho), 'occupied');
 });
 
-test(
-  'cleanup attempts later real protocol operations and preserves an exact injected cause',
-  { timeout: 10000 },
-  async (t) => {
-    const f = await fixture(t),
-      original = f.context.newCDPSession.bind(f.context);
-    const marker = Error('Invented script cleanup refusal');
-    let fail = false;
-    const commands = [];
-    f.context.newCDPSession = async (page) => {
-      const session = await original(page),
-        send = session.send.bind(session);
-      session.send = async (method, params) => {
-        commands.push(method);
-        if (fail && method === 'Page.removeScriptToEvaluateOnNewDocument') throw marker;
-        return send(method, params);
-      };
-      return session;
+test('cleanup attempts later real protocol operations and preserves an exact injected cause', async (t) => {
+  const f = await fixture(t),
+    original = f.context.newCDPSession.bind(f.context);
+  const marker = Error('Invented script cleanup refusal');
+  let fail = false;
+  const commands = [];
+  f.context.newCDPSession = async (page) => {
+    const session = await original(page),
+      send = session.send.bind(session);
+    session.send = async (method, params) => {
+      commands.push(method);
+      if (fail && method === 'Page.removeScriptToEvaluateOnNewDocument') throw marker;
+      return send(method, params);
     };
-    const bridge = await createOwnedPageBindings(f.page, {
-      origin: f.origin,
-      bindings: { inventedEcho: (_source, value) => value },
-    });
-    fail = true;
-    commands.length = 0;
-    await assert.rejects(bridge.close(), (error) => error === marker);
-    assert.ok(commands.indexOf('Runtime.evaluate') > commands.indexOf('Page.removeScriptToEvaluateOnNewDocument'));
-    assert.ok(commands.indexOf('Runtime.removeBinding') > commands.indexOf('Runtime.evaluate'));
-    assert.equal(await f.page.evaluate(() => typeof inventedEcho), 'undefined');
-  },
-);
+    return session;
+  };
+  const bridge = await createOwnedPageBindings(f.page, {
+    origin: f.origin,
+    bindings: { inventedEcho: (_source, value) => value },
+  });
+  fail = true;
+  commands.length = 0;
+  await assert.rejects(bridge.close(), (error) => error === marker);
+  assert.ok(commands.indexOf('Runtime.evaluate') > commands.indexOf('Page.removeScriptToEvaluateOnNewDocument'));
+  assert.ok(commands.indexOf('Runtime.removeBinding') > commands.indexOf('Runtime.evaluate'));
+  assert.equal(await f.page.evaluate(() => typeof inventedEcho), 'undefined');
+});
 
-test('closing the bridge preserves a real user debugger pause and the owned browser', { timeout: 10000 }, async (t) => {
+test('closing the bridge preserves a real user debugger pause and the owned browser', async (t) => {
   const f = await fixture(t);
   const bridge = await createOwnedPageBindings(f.page, {
     origin: f.origin,
@@ -346,131 +330,119 @@ test('closing the bridge preserves a real user debugger pause and the owned brow
   assert.equal(await execution, 'continued');
 });
 
-test(
-  'blocked protocol replies release capacity and expired delivery cannot complete a request',
-  { timeout: 10000 },
-  async (t) => {
-    const f = await fixture(t),
-      original = f.context.newCDPSession.bind(f.context);
-    let send,
-      blocked = true,
-      allDelayed;
-    const delayed = [];
-    const capacityHeld = new Promise((resolve) => {
-      allDelayed = resolve;
-    });
-    f.context.newCDPSession = async (page) => {
-      const session = await original(page);
-      send = session.send.bind(session);
-      session.send = (method, params) => {
-        if (blocked && method === 'Runtime.callFunctionOn') {
-          if (delayed.push(params) === OWNED_CALL_CAPACITY) allDelayed();
-          return new Promise(() => {});
-        }
-        return send(method, params);
-      };
-      return session;
+test('blocked protocol replies release capacity and expired delivery cannot complete a request', async (t) => {
+  const f = await fixture(t),
+    original = f.context.newCDPSession.bind(f.context);
+  let send,
+    blocked = true,
+    allDelayed;
+  const delayed = [];
+  const capacityHeld = new Promise((resolve) => {
+    allDelayed = resolve;
+  });
+  f.context.newCDPSession = async (page) => {
+    const session = await original(page);
+    send = session.send.bind(session);
+    session.send = (method, params) => {
+      if (blocked && method === 'Runtime.callFunctionOn') {
+        if (delayed.push(params) === OWNED_CALL_CAPACITY) allDelayed();
+        return new Promise(() => {});
+      }
+      return send(method, params);
     };
-    const bridge = await createOwnedPageBindings(f.page, {
-      origin: f.origin,
-      bindings: { inventedEcho: (_source, value) => value },
-    });
-    f.own(() => bridge.close());
-    await f.page.evaluate(() => {
-      window.ownedDeliveryProbe = Promise.all(
-        Array.from({ length: 32 }, () =>
-          window.inventedEcho('held').then(
-            () => 'incorrect-success',
-            (error) => error.message,
-          ),
+    return session;
+  };
+  const bridge = await createOwnedPageBindings(f.page, {
+    origin: f.origin,
+    bindings: { inventedEcho: (_source, value) => value },
+  });
+  f.own(() => bridge.close());
+  await f.page.evaluate(() => {
+    window.ownedDeliveryProbe = Promise.all(
+      Array.from({ length: 32 }, () =>
+        window.inventedEcho('held').then(
+          () => 'incorrect-success',
+          (error) => error.message,
         ),
-      );
-    });
-    await capacityHeld;
-    assert.equal(delayed.length, OWNED_CALL_CAPACITY);
-    // Every reply's deadline timer was scheduled before its blocked send was recorded, and
-    // Node fires timers in expiry order, so this later timer runs only after all of them have
-    // released capacity. The page also sees its expiresAt stamp in the past.
-    await new Promise((resolve) => setTimeout(resolve, REPLY_DEADLINE_MS + 100));
-    blocked = false;
-    assert.equal(await f.page.evaluate(() => window.inventedEcho('fresh-after-deadlines')), 'fresh-after-deadlines');
-    for (const params of delayed) await send('Runtime.callFunctionOn', params);
-    assert.deepEqual(
-      await f.page.evaluate(() => window.ownedDeliveryProbe),
-      Array(32).fill('The owned page reply expired.'),
+      ),
     );
-  },
-);
+  });
+  await capacityHeld;
+  assert.equal(delayed.length, OWNED_CALL_CAPACITY);
+  // Every reply's deadline timer was scheduled before its blocked send was recorded, and
+  // Node fires timers in expiry order, so this later timer runs only after all of them have
+  // released capacity. The page also sees its expiresAt stamp in the past.
+  await new Promise((resolve) => setTimeout(resolve, REPLY_DEADLINE_MS + 100));
+  blocked = false;
+  assert.equal(await f.page.evaluate(() => window.inventedEcho('fresh-after-deadlines')), 'fresh-after-deadlines');
+  for (const params of delayed) await send('Runtime.callFunctionOn', params);
+  assert.deepEqual(
+    await f.page.evaluate(() => window.ownedDeliveryProbe),
+    Array(32).fill('The owned page reply expired.'),
+  );
+});
 
-test(
-  'existing Unicode Diff results above4MiB remain supported and results above16MiB are refused',
-  { timeout: 15000 },
-  async (t) => {
-    const f = await fixture(t);
-    const before = ('//' + '漢'.repeat(498) + '\n').repeat(1500),
-      after = ('//' + '字'.repeat(498) + '\n').repeat(1500);
-    assert.ok(Buffer.byteLength(before) < 3 * 1024 * 1024 && Buffer.byteLength(after) < 3 * 1024 * 1024);
-    const valid = comparison(before, after);
-    assert.ok(Buffer.byteLength(JSON.stringify(valid)) > 4 * 1024 * 1024);
-    const bridge = await createOwnedPageBindings(f.page, {
-      origin: f.origin,
-      bindings: {
-        inventedEcho: (_source, input) => (input === 'valid' ? valid : 'x'.repeat(16 * 1024 * 1024 + 1)),
-      },
-    });
-    f.own(() => bridge.close());
-    const result = await f.page.evaluate(async () => {
-      const value = await window.inventedEcho('valid');
-      return {
-        lines: value.lines.length,
-        added: value.added,
-        removed: value.removed,
-      };
-    });
-    assert.deepEqual(result, {
-      lines: 3000,
-      added: valid.added,
-      removed: valid.removed,
-    });
-    assert.equal(await rejectionOf(f.page, 'oversized'), 'The owned page request failed.');
-  },
-);
-
-test(
-  'cross-origin retirement accepts only actual already-absent script removal and still retires wrappers',
-  { timeout: 10000 },
-  async (t) => {
-    const f = await fixture(t),
-      original = f.context.newCDPSession.bind(f.context);
-    let absenceObserved = false;
-    f.context.newCDPSession = async (page) => {
-      const session = await original(page),
-        send = session.send.bind(session);
-      session.send = async (method, params) => {
-        if (method !== 'Page.removeScriptToEvaluateOnNewDocument') return send(method, params);
-        // A real second removal deterministically exercises Chromium's absence response
-        // even on versions which retain script IDs across the origin change.
-        try {
-          await send(method, params);
-          await send(method, params);
-        } catch (error) {
-          absenceObserved = error.message.endsWith(
-            'Protocol error (Page.removeScriptToEvaluateOnNewDocument): Script not found',
-          );
-          throw error;
-        }
-      };
-      return session;
+test('existing Unicode Diff results above4MiB remain supported and results above16MiB are refused', async (t) => {
+  const f = await fixture(t);
+  const before = ('//' + '漢'.repeat(498) + '\n').repeat(1500),
+    after = ('//' + '字'.repeat(498) + '\n').repeat(1500);
+  assert.ok(Buffer.byteLength(before) < 3 * 1024 * 1024 && Buffer.byteLength(after) < 3 * 1024 * 1024);
+  const valid = comparison(before, after);
+  assert.ok(Buffer.byteLength(JSON.stringify(valid)) > 4 * 1024 * 1024);
+  const bridge = await createOwnedPageBindings(f.page, {
+    origin: f.origin,
+    bindings: {
+      inventedEcho: (_source, input) => (input === 'valid' ? valid : 'x'.repeat(16 * 1024 * 1024 + 1)),
+    },
+  });
+  f.own(() => bridge.close());
+  const result = await f.page.evaluate(async () => {
+    const value = await window.inventedEcho('valid');
+    return {
+      lines: value.lines.length,
+      added: value.added,
+      removed: value.removed,
     };
-    const bridge = await createOwnedPageBindings(f.page, {
-      origin: f.origin,
-      bindings: { inventedEcho: (_source, value) => value },
-    });
-    assert.equal(await f.page.evaluate(() => window.inventedEcho('before')), 'before');
-    await f.page.goto(f.origin.replace('127.0.0.1', 'localhost'));
-    await bridge.close();
-    assert.equal(absenceObserved, true);
-    await f.page.goto(f.origin);
-    assert.equal(await f.page.evaluate(() => typeof inventedEcho), 'undefined');
-  },
-);
+  });
+  assert.deepEqual(result, {
+    lines: 3000,
+    added: valid.added,
+    removed: valid.removed,
+  });
+  assert.equal(await rejectionOf(f.page, 'oversized'), 'The owned page request failed.');
+});
+
+test('cross-origin retirement accepts only actual already-absent script removal and still retires wrappers', async (t) => {
+  const f = await fixture(t),
+    original = f.context.newCDPSession.bind(f.context);
+  let absenceObserved = false;
+  f.context.newCDPSession = async (page) => {
+    const session = await original(page),
+      send = session.send.bind(session);
+    session.send = async (method, params) => {
+      if (method !== 'Page.removeScriptToEvaluateOnNewDocument') return send(method, params);
+      // A real second removal deterministically exercises Chromium's absence response
+      // even on versions which retain script IDs across the origin change.
+      try {
+        await send(method, params);
+        await send(method, params);
+      } catch (error) {
+        absenceObserved = error.message.endsWith(
+          'Protocol error (Page.removeScriptToEvaluateOnNewDocument): Script not found',
+        );
+        throw error;
+      }
+    };
+    return session;
+  };
+  const bridge = await createOwnedPageBindings(f.page, {
+    origin: f.origin,
+    bindings: { inventedEcho: (_source, value) => value },
+  });
+  assert.equal(await f.page.evaluate(() => window.inventedEcho('before')), 'before');
+  await f.page.goto(f.origin.replace('127.0.0.1', 'localhost'));
+  await bridge.close();
+  assert.equal(absenceObserved, true);
+  await f.page.goto(f.origin);
+  assert.equal(await f.page.evaluate(() => typeof inventedEcho), 'undefined');
+});

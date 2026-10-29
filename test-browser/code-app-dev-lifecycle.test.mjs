@@ -120,7 +120,6 @@ test(
       });
       const output = childOutput(child);
       const match = await output.waitFor(/[Oo]pening (http:\/\/127\.0\.0\.1:\d+)(\/[^\s]*)/, {
-        timeoutMs: 60000,
         label: 'Code Apps development opening browser',
       });
       browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);

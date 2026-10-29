@@ -125,47 +125,39 @@ async function host(t, profile) {
 
 const owner = (grants) => ({ userId: USER, evidence: 'Invented flow owner', grants });
 
-test(
-  'PerformUnboundAction and PerformBoundAction run a pack custom API inside the flow run and answer its response',
-  { timeout: 30000 },
-  async (t) => {
-    const { run } = await host(
-      t,
-      owner([
-        { entity: 'x_widget', operations: ['read'] },
-        { message: 'x_Echo', operations: ['execute'] },
-        { message: 'x_Close', operations: ['execute'] },
-      ]),
-    );
-    const unbound = await run(UNBOUND);
-    assert.equal(unbound.status, 201, JSON.stringify(unbound.body));
-    assert.deepEqual(unbound.body.response.body, {
-      status: 'Succeeded',
-      outputs: { statusCode: 200, body: { Result: 'echo:hi' } },
-    });
-    const bound = await run(BOUND);
-    assert.equal(bound.status, 201, JSON.stringify(bound.body));
-    assert.deepEqual(bound.body.response.body, {
-      status: 'Succeeded',
-      outputs: { statusCode: 200, body: { Result: 'close:bye' } },
-    });
-  },
-);
+test('PerformUnboundAction and PerformBoundAction run a pack custom API inside the flow run and answer its response', async (t) => {
+  const { run } = await host(
+    t,
+    owner([
+      { entity: 'x_widget', operations: ['read'] },
+      { message: 'x_Echo', operations: ['execute'] },
+      { message: 'x_Close', operations: ['execute'] },
+    ]),
+  );
+  const unbound = await run(UNBOUND);
+  assert.equal(unbound.status, 201, JSON.stringify(unbound.body));
+  assert.deepEqual(unbound.body.response.body, {
+    status: 'Succeeded',
+    outputs: { statusCode: 200, body: { Result: 'echo:hi' } },
+  });
+  const bound = await run(BOUND);
+  assert.equal(bound.status, 201, JSON.stringify(bound.body));
+  assert.deepEqual(bound.body.response.body, {
+    status: 'Succeeded',
+    outputs: { statusCode: 200, body: { Result: 'close:bye' } },
+  });
+});
 
-test(
-  'without an execute grant, or with a profile user that is no systemuser, the action fails 403 and never runs as SYSTEM',
-  { timeout: 30000 },
-  async (t) => {
-    const { run } = await host(t, owner([{ entity: 'x_widget', operations: ['read'] }]));
-    const denied = await run(UNBOUND);
-    assert.equal(denied.body.response.body.status, 'Failed');
-    assert.equal(denied.body.response.body.outputs.error.code, 'LocalBackendPermissionDenied');
-    const { run: runAsNobody } = await host(t, {
-      userId: NOBODY,
-      evidence: 'Invented',
-      grants: [{ message: 'x_Echo', operations: ['execute'] }],
-    });
-    const nobody = await runAsNobody(UNBOUND);
-    assert.equal(nobody.body.response.body.outputs.error.code, 'LocalBackendIdentityRequired');
-  },
-);
+test('without an execute grant, or with a profile user that is no systemuser, the action fails 403 and never runs as SYSTEM', async (t) => {
+  const { run } = await host(t, owner([{ entity: 'x_widget', operations: ['read'] }]));
+  const denied = await run(UNBOUND);
+  assert.equal(denied.body.response.body.status, 'Failed');
+  assert.equal(denied.body.response.body.outputs.error.code, 'LocalBackendPermissionDenied');
+  const { run: runAsNobody } = await host(t, {
+    userId: NOBODY,
+    evidence: 'Invented',
+    grants: [{ message: 'x_Echo', operations: ['execute'] }],
+  });
+  const nobody = await runAsNobody(UNBOUND);
+  assert.equal(nobody.body.response.body.outputs.error.code, 'LocalBackendIdentityRequired');
+});

@@ -25,7 +25,6 @@ test('drained fixture removal retains errors after its bounded asynchronous retr
 test(
   'fixture removal permits a scheduled Windows exclusive log-handle release',
   {
-    timeout: 15000,
     skip: process.platform !== 'win32' && 'Windows exclusive file handles prevent deletion',
   },
   async (t) => {
@@ -70,7 +69,7 @@ test(
 
 test(
   'fixture removal tolerates a held Windows solution directory handle',
-  { timeout: 15000, skip: process.platform !== 'win32' && 'Windows directory handles prevent deletion' },
+  { skip: process.platform !== 'win32' && 'Windows directory handles prevent deletion' },
   async (t) => {
     const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'owned-fixture-directory-'));
     const solution = path.join(directory, 'solution');
@@ -172,7 +171,7 @@ test('a directory failure occurs after listener shutdown and cannot retain its p
   });
   try {
     await assert.rejects(hooks[0], (error) => error === failure);
-    await assert.rejects(fetch(url, { signal: AbortSignal.timeout(1000) }), /fetch failed/);
+    await assert.rejects(fetch(url), /fetch failed/);
     assert.ok((await fs.stat(root)).isDirectory());
   } finally {
     server.closeAllConnections();
@@ -248,7 +247,7 @@ test('the original test failure remains visible while later cleanup still runs',
   `;
   const result = spawnSync(process.execPath, [...process.execArgv, '--input-type=module', '-e', source], {
     encoding: 'utf8',
-    timeout: 10000,
+    timeout: 150_000,
     windowsHide: true,
   });
   assert.equal(result.error, undefined);

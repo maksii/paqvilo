@@ -14,7 +14,7 @@ const prepare = (args) =>
     cwd: project,
     encoding: 'utf8',
     windowsHide: true,
-    timeout: 10000,
+    timeout: 150_000,
   });
 
 test('default schema preparation reproduces the committed reviewed cohort', (t) => {

@@ -216,7 +216,6 @@ test(
       viewport: { width: 1440, height: 960 },
     });
     const page = await context.newPage();
-    page.setDefaultTimeout(12_000);
     const pageErrors = [];
     const unexpected = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
@@ -666,7 +665,6 @@ test(
     const context = await browser.newContext({ serviceWorkers: 'block' });
     const page = await context.newPage();
     await warmState(simulator);
-    page.setDefaultTimeout(10_000);
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(simulator.adminUrl + '#overview');

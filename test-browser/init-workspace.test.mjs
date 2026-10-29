@@ -41,7 +41,7 @@ test('workspace task drains independent fixtures after Mirage stop fails and ret
   assert.equal((await fs.stat(work)).isDirectory(), true, 'failed teardown retains its workspace for diagnosis');
 });
 
-test('owned task shutdown drains pending stdio after the direct child exit', { timeout: 15000 }, async (t) => {
+test('owned task shutdown drains pending stdio after the direct child exit', async (t) => {
   const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-init-drain-'));
   const child = spawn(process.execPath, ['-e', 'process.stdout.write("owned-output");'], {
     cwd: work,

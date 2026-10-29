@@ -128,8 +128,6 @@ async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {
     route.request().url().startsWith(app.url) ? route.continue() : route.abort(),
   );
   const page = await context.newPage();
-  // Generous: these end-to-end flows share the machine with other browser suites.
-  page.setDefaultTimeout(20_000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const notice = async (text) => {

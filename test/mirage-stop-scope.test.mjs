@@ -44,7 +44,7 @@ test(
       try {
         await execute('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], {
           windowsHide: true,
-          timeout: 10000,
+          timeout: 60_000,
         });
         nativeShells.push('pwsh.exe');
       } catch (error) {

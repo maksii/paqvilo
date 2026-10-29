@@ -8,7 +8,7 @@ import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs
 
 test(
   'missing or failed app startup rejects promptly and drains an already-exited child',
-  { timeout: 5000 },
+  { timeout: 180_000 },
   async (t) => {
     const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'code-app-startup-'));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));

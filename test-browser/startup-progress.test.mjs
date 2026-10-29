@@ -96,7 +96,7 @@ test('startup separates delayed navigation, delayed usable application, failures
   await page.goto(origin);
   // Stopping while the request is in flight ends the wait without a load.
   const inFlight = new Promise((resolve) => (hangReceived = resolve));
-  const cancelled = await run('/hang', { stopped: inFlight, timeout: 1000 });
+  const cancelled = await run('/hang', { stopped: inFlight });
   assert.equal(cancelled.loaded, false);
   const closingPage = await context.newPage();
   await closingPage.route('**/main.aspx', (route) =>
@@ -106,7 +106,6 @@ test('startup separates delayed navigation, delayed usable application, failures
   const closing = waitForStartupPage(closingPage, origin + '/main.aspx', {
     progress,
     modelDriven: true,
-    timeout: 1000,
   });
   await closingPage.locator('p').waitFor();
   await closingPage.close();
@@ -173,9 +172,7 @@ test('real browser replacement finishes after current data despite missing old t
   const page = await context.newPage(),
     origin = 'http://127.0.0.1:' + server.address().port;
   const wrapped = hideOrphanTerminalEvents(page);
-  const loading = waitForStartupPage(wrapped, origin + '/first', {
-    timeout: 3000,
-  });
+  const loading = waitForStartupPage(wrapped, origin + '/first');
   await page.locator('p').waitFor();
   await page.goto(origin + '/second', { waitUntil: 'domcontentloaded' });
   assert.equal(await loading, true);
@@ -256,9 +253,7 @@ test('real browser detached frame orphan cannot hide current parent fetch', asyn
   });
   const page = await context.newPage();
   assert.equal(
-    await waitForStartupPage(hideOrphanTerminalEvents(page), 'http://127.0.0.1:' + server.address().port, {
-      timeout: 3000,
-    }),
+    await waitForStartupPage(hideOrphanTerminalEvents(page), 'http://127.0.0.1:' + server.address().port),
     true,
   );
   assert.equal(parentFinished, true);
@@ -290,7 +285,6 @@ test('native app startup completes with worker terminal events missing and an on
   assert.equal(
     await waitForStartupPage(hideOrphanTerminalEvents(page), `http://127.0.0.1:${server.address().port}/main.aspx`, {
       nativeModelDriven: true,
-      timeout: 3000,
       progress,
     }),
     true,

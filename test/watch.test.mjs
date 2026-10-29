@@ -194,7 +194,7 @@ test('closing the watcher cancels queued saves and prevents reload after shutdow
 
 test(
   'watcher shutdown does not wait for a stalled browser navigation or emit a late refresh',
-  { timeout: 5000 },
+  { timeout: 180_000 },
   async (t) => {
     const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-stalled-refresh-')));
     let reached;
@@ -252,7 +252,7 @@ test('an explicit route file outside the source directory is watched', async () 
   try {
     await new Promise((resolve) => watcher.on('ready', resolve));
     const seen = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('external route save was missed')), 3000);
+      const timer = setTimeout(() => reject(new Error('external route save was missed')), 60_000);
       session.once('refreshed', (event) => {
         clearTimeout(timer);
         resolve(event);

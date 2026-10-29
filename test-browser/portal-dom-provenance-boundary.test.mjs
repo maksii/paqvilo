@@ -65,7 +65,6 @@ async function fixture(t, source, { scriptFor } = {}) {
   await once(server, 'listening');
   const origin = 'http://127.0.0.1:' + server.address().port;
   context = await browser.newContext();
-  context.setDefaultTimeout(7000);
   const page = await context.newPage(),
     errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -233,7 +232,6 @@ attackStatus.status=request.status;attackStatus.descriptorExposed=request.respon
     else deliver();
   });
   context = await browser.newContext();
-  context.setDefaultTimeout(7000);
   const page = await context.newPage();
   const transport = createInspectionProvenanceTransport(context, [{ origin: app.url, mirage: true }]);
   detach = await interceptOrigin(context, app.url, (route) => route.fallback(), { onAttach: transport.onAttach });

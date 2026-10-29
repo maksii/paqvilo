@@ -9,7 +9,6 @@ const chrome = sharedBrowser();
 test('control-only fixture focus never starts requests from a discarded application shell', async (t) => {
   const { origin } = await modelDrivenFixture(t);
   const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
   await prepareNativeControls(page, origin);
   const requested = await page.evaluate(() => {
     const requested = [],

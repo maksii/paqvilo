@@ -58,7 +58,7 @@ test('alert gate rejects findings, unavailable/malformed responses and missing r
       env,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 10000,
+      timeout: 150_000,
     });
   };
   const clear = run('0');

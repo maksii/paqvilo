@@ -27,42 +27,38 @@ readline.createInterface({ input: process.stdin })
   .on("close", () => { fs.appendFileSync(marker, "closed\\n"); process.exit(0); });
 `;
 
-test(
-  'MCP stdio client round trips, surfaces errors, times out and closes the child',
-  { timeout: 30_000 },
-  async (t) => {
-    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mcp-stdio-'));
-    t.after(() => fs.rm(directory, { recursive: true, force: true }));
-    const script = path.join(directory, 'server.mjs');
-    const marker = path.join(directory, 'marker.txt');
-    await fs.writeFile(script, SERVER);
-    const stderr = [];
-    const client = startMcpServer({
-      command: process.execPath,
-      args: [script, marker],
-      cwd: directory,
-      onStderr: (text) => stderr.push(text),
-    });
-    try {
-      const init = await client.initialize();
-      assert.equal(init.serverInfo.name, 'fake');
-      assert.equal(init.client, 'paqvilo-baseline');
-      assert.deepEqual(
-        (await client.listTools()).map((tool) => tool.name),
-        ['echo', 'fail'],
-      );
-      assert.equal(await client.callTool('echo', { a: 1 }), 'a=1\ntwo');
-      await assert.rejects(client.callTool('fail'), /tool broke/);
-      await assert.rejects(client.callTool('slow', {}, 200), /tools\/call timed out after 200 ms/);
-      assert.equal(
-        await client.callTool('echo', { a: 2 }),
-        'a=2\ntwo',
-        'a late or missing reply does not desynchronise later calls',
-      );
-    } finally {
-      await client.close();
-    }
-    assert.equal(await fs.readFile(marker, 'utf8'), 'notified:notifications/initialized\nclosed\n');
-    assert.deepEqual(stderr, []);
-  },
-);
+test('MCP stdio client round trips, surfaces errors, times out and closes the child', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mcp-stdio-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const script = path.join(directory, 'server.mjs');
+  const marker = path.join(directory, 'marker.txt');
+  await fs.writeFile(script, SERVER);
+  const stderr = [];
+  const client = startMcpServer({
+    command: process.execPath,
+    args: [script, marker],
+    cwd: directory,
+    onStderr: (text) => stderr.push(text),
+  });
+  try {
+    const init = await client.initialize();
+    assert.equal(init.serverInfo.name, 'fake');
+    assert.equal(init.client, 'paqvilo-baseline');
+    assert.deepEqual(
+      (await client.listTools()).map((tool) => tool.name),
+      ['echo', 'fail'],
+    );
+    assert.equal(await client.callTool('echo', { a: 1 }), 'a=1\ntwo');
+    await assert.rejects(client.callTool('fail'), /tool broke/);
+    await assert.rejects(client.callTool('slow', {}, 200), /tools\/call timed out after 200 ms/);
+    assert.equal(
+      await client.callTool('echo', { a: 2 }),
+      'a=2\ntwo',
+      'a late or missing reply does not desynchronise later calls',
+    );
+  } finally {
+    await client.close();
+  }
+  assert.equal(await fs.readFile(marker, 'utf8'), 'notified:notifications/initialized\nclosed\n');
+  assert.deepEqual(stderr, []);
+});

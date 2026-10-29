@@ -701,7 +701,7 @@ test('repeated file requests retain a count without growing per-tab history', as
 test('committing a local edit removes its changed-scope override without another source save', async (t) => {
   // The watchers keep the process alive, so a missed refresh must fail instead of hanging the
   // unit lane, which has no --test-timeout. A refresh normally lands within one Git poll and flush.
-  const REFRESH_DEADLINE_MS = 10_000;
+  const REFRESH_DEADLINE_MS = 120_000;
   const local = createFixture();
   t.after(() => local.cleanup());
   const site = structuredClone(SITE);

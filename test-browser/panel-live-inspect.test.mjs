@@ -102,7 +102,6 @@ test(
     const origin = await listenOwnedServer(t, server);
     browser = await launchInspectBrowser();
     const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1440, height: 1000 } });
-    context.setDefaultTimeout(12_000);
     await context.route('**/*', (route) =>
       new URL(route.request().url()).origin === origin ? route.fallback() : route.abort(),
     );
@@ -285,74 +284,69 @@ test(
   },
 );
 
-test(
-  'live Inspect fixture awaits real interception setup before application evidence can be captured',
-  { timeout: 30000 },
-  async (t) => {
-    const fx = inspectionFixture();
-    fs.appendFileSync(path.join(fx.portal, 'web-files/widget.js'), '\nfetch("/_api/fx_widgets");');
-    const held = Promise.withResolvers(),
-      release = Promise.withResolvers();
-    let browser, preparing, detach;
-    const owner = ownedFixture(t);
-    owner.add(async () => {
-      release.resolve();
-      if (preparing) detach = (await preparing).detach;
-      await detach?.();
-    });
-    owner.add(() => browser?.close());
-    const server = http.createServer((request, response) => {
-      if (request.url === '/widget.js')
-        return response.writeHead(200, { 'content-type': 'text/javascript' }).end('window.widgetFeature = false;');
-      if (request.url.startsWith('/_api/'))
-        return response.writeHead(200, { 'content-type': 'application/json' }).end('{"value":[]}');
-      response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><script src="/widget.js"></script>');
-    });
-    owner.remove(() => fx.cleanup());
-    const origin = await listenOwnedServer(t, server);
-    browser = await launchInspectBrowser();
-    const context = await browser.newContext();
-    context.setDefaultTimeout(12000);
-    const createCDP = context.newCDPSession.bind(context);
-    t.mock.method(context, 'newCDPSession', async (...args) => {
-      const cdp = await createCDP(...args),
-        send = cdp.send.bind(cdp);
-      t.mock.method(cdp, 'send', async (method, ...values) => {
-        if (method === 'Fetch.enable') {
-          held.resolve();
-          await release.promise;
-        }
-        return send(method, ...values);
-      });
-      return cdp;
-    });
-    const session = new OverlaySession({
-      sourceDir: fx.portal,
-      origin,
-      site: structuredClone(SITE),
-      sourceMaps: false,
-      browser: {},
-    });
-    let prepared = false;
-    preparing = prepareInspectPage(context, session).then((result) => {
-      prepared = true;
-      return result;
-    });
-    preparing.catch(() => {}); // The owned cleanup also awaits this preparation if an assertion fails.
-    await held.promise;
-    assert.equal(prepared, false, 'a held real Fetch setup cannot publish a ready fixture');
+test('live Inspect fixture awaits real interception setup before application evidence can be captured', async (t) => {
+  const fx = inspectionFixture();
+  fs.appendFileSync(path.join(fx.portal, 'web-files/widget.js'), '\nfetch("/_api/fx_widgets");');
+  const held = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  let browser, preparing, detach;
+  const owner = ownedFixture(t);
+  owner.add(async () => {
     release.resolve();
-    const { page } = await preparing;
-    await page.goto(origin);
-    await page.waitForFunction(
-      () =>
-        window.widgetFeature === true &&
-        performance.getEntriesByType('resource').some((entry) => entry.name.includes('/_api/fx_widgets')),
-    );
-    assert.equal(await page.evaluate(() => window.widgetFeature), true, 'the selected local script actually ran');
-    assert.equal(
-      session.pageHits.get(page).some((hit) => hit.type === 'file' && hit.url === '/widget.js'),
-      true,
-    );
-  },
-);
+    if (preparing) detach = (await preparing).detach;
+    await detach?.();
+  });
+  owner.add(() => browser?.close());
+  const server = http.createServer((request, response) => {
+    if (request.url === '/widget.js')
+      return response.writeHead(200, { 'content-type': 'text/javascript' }).end('window.widgetFeature = false;');
+    if (request.url.startsWith('/_api/'))
+      return response.writeHead(200, { 'content-type': 'application/json' }).end('{"value":[]}');
+    response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><script src="/widget.js"></script>');
+  });
+  owner.remove(() => fx.cleanup());
+  const origin = await listenOwnedServer(t, server);
+  browser = await launchInspectBrowser();
+  const context = await browser.newContext();
+  const createCDP = context.newCDPSession.bind(context);
+  t.mock.method(context, 'newCDPSession', async (...args) => {
+    const cdp = await createCDP(...args),
+      send = cdp.send.bind(cdp);
+    t.mock.method(cdp, 'send', async (method, ...values) => {
+      if (method === 'Fetch.enable') {
+        held.resolve();
+        await release.promise;
+      }
+      return send(method, ...values);
+    });
+    return cdp;
+  });
+  const session = new OverlaySession({
+    sourceDir: fx.portal,
+    origin,
+    site: structuredClone(SITE),
+    sourceMaps: false,
+    browser: {},
+  });
+  let prepared = false;
+  preparing = prepareInspectPage(context, session).then((result) => {
+    prepared = true;
+    return result;
+  });
+  preparing.catch(() => {}); // The owned cleanup also awaits this preparation if an assertion fails.
+  await held.promise;
+  assert.equal(prepared, false, 'a held real Fetch setup cannot publish a ready fixture');
+  release.resolve();
+  const { page } = await preparing;
+  await page.goto(origin);
+  await page.waitForFunction(
+    () =>
+      window.widgetFeature === true &&
+      performance.getEntriesByType('resource').some((entry) => entry.name.includes('/_api/fx_widgets')),
+  );
+  assert.equal(await page.evaluate(() => window.widgetFeature), true, 'the selected local script actually ran');
+  assert.equal(
+    session.pageHits.get(page).some((hit) => hit.type === 'file' && hit.url === '/widget.js'),
+    true,
+  );
+});

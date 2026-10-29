@@ -74,7 +74,7 @@ test(
           await execute(process.execPath, [cli, 'mirage', command, '--project', file, '--json', ...args], {
             cwd: directory,
             windowsHide: true,
-            timeout: 30000,
+            signal: t.signal,
           })
         ).stdout,
       );
@@ -146,7 +146,7 @@ test(
     const owned = await develop();
     await closeBrowser(owned.browser);
     assert.deepEqual(await owned.exited, { code: 0, signal: null });
-    await assert.rejects(fetch(owned.url + '/_sim/api/status', { signal: AbortSignal.timeout(2000) }), /fetch failed/);
+    await assert.rejects(fetch(owned.url + '/_sim/api/status'), /fetch failed/);
     assert.equal((await fetch(siblingRuntime.url + '/_sim/api/status')).status, 200);
 
     const background = await commands(project, 'start', '--port', '0'),

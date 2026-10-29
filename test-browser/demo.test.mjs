@@ -78,12 +78,10 @@ test(
     });
     // dev prints its debugger port once the owned browser is listening on it.
     await output.waitFor(new RegExp(`debugger\\s+port ${debugPort}\\b`), {
-      timeoutMs: 120_000,
       label: 'Demo opening its browser',
     });
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
     const context = browser.contexts()[0];
-    context.setDefaultTimeout(15_000);
     // The normal dev lifecycle creates and navigates the first tab itself.
     const home = (candidate) => /^http:\/\/127\.0\.0\.1:\d+\/$/.test(candidate.url());
     const page =

@@ -125,7 +125,7 @@ for (const journal of [false, true])
           env: { ...process.env, PAQ_STORAGE_FIXTURE: file },
           encoding: 'utf8',
           windowsHide: true,
-          timeout: 15000,
+          timeout: 150_000,
         },
       );
       assert.equal(edited.status, 0, edited.stderr || edited.error?.message);

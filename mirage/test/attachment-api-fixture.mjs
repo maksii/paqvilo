@@ -61,7 +61,6 @@ export async function attachmentApi(t, { before = () => {} } = {}) {
       method: 'POST',
       headers: { authorization, 'content-type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10000),
     });
     const text = await response.text();
     return { status: response.status, json: text ? JSON.parse(text) : null, headers: response.headers };

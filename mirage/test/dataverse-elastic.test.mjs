@@ -163,7 +163,6 @@ describe('elastic tables over HTTP and SOAP', () => {
   const call = (path, { token = customizer, method = 'GET', body, headers = {} } = {}) =>
     fetch(`${origin}${path}`, {
       method,
-      signal: AbortSignal.timeout(10_000),
       headers: {
         ...(token ? { authorization: `Bearer ${token}` } : {}),
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),

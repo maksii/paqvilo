@@ -251,7 +251,6 @@ describe('plug-in registration over HTTP', () => {
   const call = (path, { token = appToken, method = 'GET', body } = {}) =>
     fetch(`${origin}/api/data/v9.2/${path}`, {
       method,
-      signal: AbortSignal.timeout(10_000),
       headers: {
         authorization: `Bearer ${token}`,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
@@ -844,7 +843,6 @@ describe('plug-in registration: pipeline', () => {
   const call = (path, { method = 'GET', body, prefer } = {}) =>
     fetch(`${origin}/api/data/v9.2/${path}`, {
       method,
-      signal: AbortSignal.timeout(10_000),
       headers: {
         authorization: `Bearer ${token}`,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),

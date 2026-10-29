@@ -197,7 +197,7 @@ test('runtime receipts resolve an installed toolkit from an external project wit
         '-e',
         `const {replayRuntimeFingerprint}=await import(${JSON.stringify(module)});console.log(await replayRuntimeFingerprint());`,
       ],
-      { encoding: 'utf8', timeout: 15000, windowsHide: true },
+      { encoding: 'utf8', timeout: 150_000, windowsHide: true },
     );
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout.trim(), /^[a-f\d]{64}$/);

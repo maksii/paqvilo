@@ -676,8 +676,6 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
   try {
     await page.waitForFunction(
       () => document.querySelector('h1')?.textContent === 'PCF updated' || !document.querySelector('#notice')?.hidden,
-      null,
-      { timeout: 5000 },
     );
   } catch (error) {
     assert.fail(

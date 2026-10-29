@@ -135,7 +135,6 @@ test(
       args: ['--disable-background-networking', '--disable-component-update'],
     });
     const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1400, height: 1000 } });
-    context.setDefaultTimeout(20_000);
     const allowed = new Set([classicApp.url, enhancedApp.url, live.origin]);
     await context.route('**/*', (route) =>
       allowed.has(new URL(route.request().url()).origin) ? route.fallback() : route.abort(),

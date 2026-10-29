@@ -261,7 +261,9 @@ export async function runAcceptance({
         navigationHolds = new Set(),
         navigationBudgets = new Map();
       let settlementDeadline = Infinity,
-        actionDeadline = Infinity;
+        actionDeadline = Infinity,
+        // The current step's own deadline: a step's `timeout` overrides the flow's for that step only.
+        actionTimeout = timeout;
       const navigationTimings = new Map();
       const navigationKey = (method, value) => method + ' ' + new URL(value).href;
       const requestFrame = (request) => {
@@ -329,7 +331,7 @@ export async function runAcceptance({
           // Chromium reuses the network id across redirects; all hops share the first
           // hold's budget and leave time for the action's navigation to commit.
           const now = Date.now();
-          const remaining = Math.min(timeout, Math.max(0, actionDeadline - now));
+          const remaining = Math.min(actionTimeout, Math.max(0, actionDeadline - now));
           const key = navigationKey(event.request.method, event.request.url);
           const comparableMs = navigationTimings.get(key);
           const { reserveMs, policy: reservePolicy } = navigationCommitBudget(remaining, {
@@ -622,7 +624,7 @@ export async function runAcceptance({
       const loadQuiet = async () => {
         const quiet = await awaitNetworkQuiet(() => [...cdpRecords.values()], {
           frames: () => frameState(frameEvents),
-          timeout,
+          timeout: actionTimeout,
           ignore: (row) => simulatorBackgroundRequest(row.url ?? row.path, origin),
         });
         (observation.loadWaits ??= []).push({ url: safeUrl(page.url()), ...quiet });
@@ -636,7 +638,7 @@ export async function runAcceptance({
           [...pending.values()].filter(
             (record) => record.type !== 'eventsource' && !simulatorBackgroundRequest(record.url, origin),
           );
-        const deadline = Date.now() + timeout;
+        const deadline = Date.now() + actionTimeout;
         settlementDeadline = deadline;
         try {
           let lastProofCheck = 0;
@@ -701,13 +703,23 @@ export async function runAcceptance({
             passed: false,
           };
           observation.steps.push(entry);
+          actionTimeout = step.timeout ?? timeout;
+          if (
+            !Number.isFinite(actionTimeout) ||
+            actionTimeout <= 0 ||
+            (navigationCommitReserveMs !== undefined && navigationCommitReserveMs >= actionTimeout)
+          )
+            throw new Error('A step timeout must be a positive finite number larger than navigationCommitReserveMs.');
+          if (step.timeout !== undefined) entry.timeout = actionTimeout;
+          page.setDefaultTimeout(actionTimeout);
+          page.setDefaultNavigationTimeout(actionTimeout);
           if (
             isLive &&
             (step.mutation ||
               ['identity', 'preset', 'record', 'rememberRecord', 'waitRecord', 'richtext'].includes(step.action))
           )
             throw new Error('A local mutation/state assertion cannot execute in a live observation flow.');
-          actionDeadline = Date.now() + timeout;
+          actionDeadline = Date.now() + actionTimeout;
           const surface = step.frame
             ? (Array.isArray(step.frame) ? step.frame : [step.frame]).reduce(
                 (surface, selector) => surface.frameLocator(selector),
@@ -721,7 +733,7 @@ export async function runAcceptance({
               throw new Error('Navigation must use a portal-relative path.');
             if (step.waitUntil && !['load', 'domcontentloaded'].includes(step.waitUntil))
               throw new Error('Navigation readiness must be load or domcontentloaded.');
-            actionDeadline = Date.now() + timeout;
+            actionDeadline = Date.now() + actionTimeout;
             const response = await page.goto(origin + step.path, {
               // Exported pages may leave asynchronous data requests open while
               // their document and controls are already usable. Navigation
@@ -741,7 +753,7 @@ export async function runAcceptance({
             await control.waitFor({ state: 'attached' });
             entry.alreadyVisible = await control.isVisible();
             if (!entry.alreadyVisible) {
-              actionDeadline = Date.now() + timeout;
+              actionDeadline = Date.now() + actionTimeout;
               await locate(surface, step.trigger).click();
             }
             await control.waitFor({ state: 'visible' });
@@ -769,7 +781,7 @@ export async function runAcceptance({
           } else if (step.action === 'value') {
             // Authored modal scripts can initialize defaults after the control
             // is attached. Assert the resulting value within the action deadline.
-            const deadline = Date.now() + timeout;
+            const deadline = Date.now() + actionTimeout;
             let matched = false;
             let observed = false;
             while (Date.now() < deadline) {
@@ -842,7 +854,7 @@ export async function runAcceptance({
             await page.locator('#confirm').waitFor({ state: 'hidden' });
           } else if (['record', 'rememberRecord', 'waitRecord'].includes(step.action)) {
             let current, matches;
-            const deadline = Date.now() + (step.action === 'waitRecord' ? timeout : 0);
+            const deadline = Date.now() + (step.action === 'waitRecord' ? actionTimeout : 0);
             for (;;) {
               current = await readState(true);
               requireLocal(current);
@@ -866,6 +878,9 @@ export async function runAcceptance({
           actionDeadline = Infinity;
           entry.passed = true;
         }
+        actionTimeout = timeout;
+        page.setDefaultTimeout(timeout);
+        page.setDefaultNavigationTimeout(timeout);
         await page.waitForTimeout(300);
         await settle();
         await capture('final');

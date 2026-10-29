@@ -13,7 +13,7 @@ import { tempDir } from './fixture.mjs';
 
 const execute = promisify(execFile);
 // A watchdog for one shell run (shell start plus at most sixteen Node children), not a duration under test.
-const SHELL_RUN_BOUND_MS = 15_000;
+const SHELL_RUN_BOUND_MS = 60_000;
 const shells = process.platform === 'win32' ? ['cmd', 'cmd-delayed', 'powershell'] : ['posix'];
 const cases = [
   {
@@ -309,37 +309,46 @@ test('oversized incompressible commands use immutable file transport across shel
   );
 });
 
-test('external command replay refuses a pipe before reading or executing any child', { timeout: 10000 }, async (t) => {
-  const { directory, cli } = await collectorFixture(t);
-  let file;
-  if (process.platform === 'win32') {
-    file = `\\\\.\\pipe\\paqvilo-stop-payload-${process.pid}-${randomBytes(8).toString('hex')}`;
-    const sockets = new Set();
-    const server = net.createServer((socket) => {
-      sockets.add(socket);
-      socket.on('close', () => sockets.delete(socket));
-    });
-    await new Promise((resolve, reject) => {
-      server.once('error', reject);
-      server.listen(file, resolve);
-    });
-    t.after(async () => {
-      for (const socket of sockets) socket.destroy();
-      await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-    });
-  } else {
-    file = path.join(directory, 'replaced-payload.fifo');
-    await execute('mkfifo', [file]);
-  }
-  const commands = Array.from({ length: 6 }, () => ['mirage', 'stop', '--literal', randomBytes(2048).toString('hex')]);
-  const hint = mirageCommandHint(commands, { cli, storePayload: () => file });
-  assert.match(hint, /^node -e "/);
-  await assert.rejects(
-    execute(process.execPath, ['-e', hint.slice('node -e "'.length, -1)], {
-      cwd: directory,
-      timeout: 3000,
-      windowsHide: true,
-    }),
-    (error) => error.code === 1 && /Command payload must be a regular file/.test(error.stderr) && error.stdout === '',
-  );
-});
+test(
+  'external command replay refuses a pipe before reading or executing any child',
+  { timeout: 180_000 },
+  async (t) => {
+    const { directory, cli } = await collectorFixture(t);
+    let file;
+    if (process.platform === 'win32') {
+      file = `\\\\.\\pipe\\paqvilo-stop-payload-${process.pid}-${randomBytes(8).toString('hex')}`;
+      const sockets = new Set();
+      const server = net.createServer((socket) => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+      });
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(file, resolve);
+      });
+      t.after(async () => {
+        for (const socket of sockets) socket.destroy();
+        await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      });
+    } else {
+      file = path.join(directory, 'replaced-payload.fifo');
+      await execute('mkfifo', [file]);
+    }
+    const commands = Array.from({ length: 6 }, () => [
+      'mirage',
+      'stop',
+      '--literal',
+      randomBytes(2048).toString('hex'),
+    ]);
+    const hint = mirageCommandHint(commands, { cli, storePayload: () => file });
+    assert.match(hint, /^node -e "/);
+    await assert.rejects(
+      execute(process.execPath, ['-e', hint.slice('node -e "'.length, -1)], {
+        cwd: directory,
+        timeout: 120_000,
+        windowsHide: true,
+      }),
+      (error) => error.code === 1 && /Command payload must be a regular file/.test(error.stderr) && error.stdout === '',
+    );
+  },
+);

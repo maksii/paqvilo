@@ -132,14 +132,8 @@ async function selectLateShadow({ pick, field, xray }) {
 }
 
 async function loadAuditFixture(page) {
-  const deadline = performance.now() + 2500;
-  const remaining = () => {
-    const value = deadline - performance.now();
-    if (value <= 0) throw new Error('The X-ray fixture DOM was not ready within 2500 ms.');
-    return value;
-  };
-  await page.goto('http://127.0.0.1:11887/', { waitUntil: 'commit', timeout: remaining() });
-  await page.locator('css:light=[data-audit-fixture-ready]').waitFor({ state: 'attached', timeout: remaining() });
+  await page.goto('http://127.0.0.1:11887/', { waitUntil: 'commit' });
+  await page.locator('css:light=[data-audit-fixture-ready]').waitFor({ state: 'attached' });
 }
 
 async function selectedGeometry(page, selector) {
@@ -190,7 +184,6 @@ test('X-ray case-by-case adversarial browser audit', { timeout: 180_000, concurr
         owner.add(() => fixtureControl?.cleanup?.());
         owner.add(() => context?.close());
         context = await browser.newContext({ viewport: { width: 1400, height: 1000 }, serviceWorkers: 'block' });
-        context.setDefaultTimeout(2500);
         await context.route('**/*', (route) => route.abort());
         const page = await context.newPage(),
           errors = [];

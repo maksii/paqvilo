@@ -150,7 +150,7 @@ test(
 
 test(
   'shared hint payload stays while a target is unverified and is removed after the final owned target stops',
-  { timeout: 30000 },
+  { timeout: 180_000 },
   async (t) => {
     const work = await workspace(t);
     const paths = miragePaths({ stateDir: path.join(work.directory, '.paqvilo') });

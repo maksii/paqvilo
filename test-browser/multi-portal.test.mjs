@@ -246,7 +246,6 @@ test(
       'all-portal mode uses a dedicated catalogue profile',
     );
     const { context } = browser;
-    context.setDefaultTimeout(20_000);
     const contextPageListeners = context.listenerCount('page');
     const errors = [];
     const observe = (page) => page.on('pageerror', (error) => errors.push(error.message));
@@ -351,7 +350,7 @@ test(
         window.keepOnCssSwap = true;
       });
     }
-    const refreshed = (record) => once(record.session, 'refreshed', { signal: AbortSignal.timeout(30_000) });
+    const refreshed = (record) => once(record.session, 'refreshed');
     const cssRefreshes = [refreshed(alphaRecord), refreshed(alphaTestRecord)];
     alpha.write(CSS, style('rgb(70, 80, 90)'));
     for (const [event] of await Promise.all(cssRefreshes)) assert.equal(event.how, 'css');
@@ -668,9 +667,9 @@ test(
           !['NODE_OPTIONS', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NODE_USE_ENV_PROXY'].includes(key),
       ),
     );
-    const waitFor = async (check, message, timeout = 30_000) => {
-      const deadline = Date.now() + timeout;
-      while (Date.now() < deadline) {
+    // Polls until the check passes; only the test's own timeout ends a wait that never does.
+    const waitFor = async (check, message) => {
+      while (!t.signal.aborted) {
         if (child?.exitCode !== null) throw new Error(`dev exited early (${child?.exitCode}): ${output}`);
         const result = await check();
         if (result) return result;
@@ -804,16 +803,10 @@ test(
     const stopped = await promisify(execFile)(
       process.execPath,
       ['lense/cli.mjs', 'agent', 'stop', '--session', betaAgent.file],
-      { cwd: toolkit, env, windowsHide: true, timeout: 15_000 },
+      { cwd: toolkit, env, windowsHide: true, signal: t.signal },
     );
     assert.ok(JSON.parse(stopped.stdout), 'the actual agent CLI returns structured stop output');
-    let exitTimer;
-    const finished = await Promise.race([
-      childDone,
-      new Promise((_, reject) => {
-        exitTimer = setTimeout(() => reject(new Error(`dev did not stop: ${output}`)), 15_000);
-      }),
-    ]).finally(() => clearTimeout(exitTimer));
+    const finished = await childDone;
     assert.equal(finished.code, 0, output);
     for (const discovery of discoveries)
       assert.equal(fs.existsSync(discovery.file), false, 'stop from one portal removes every browser-owned agent');

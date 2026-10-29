@@ -103,7 +103,7 @@ test('Python gate aborts its owned SDK child when the test signal is cancelled',
         env,
         encoding: 'utf8',
         windowsHide: true,
-        timeout: 15_000,
+        timeout: 150_000,
       },
     );
     assert.equal(result.error, undefined, 'cancellation must not leave the gate process hanging');

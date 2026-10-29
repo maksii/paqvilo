@@ -67,7 +67,6 @@ test('an admin request-limit override applies to the standalone Web API', async 
   const read = () =>
     fetch(sim.dataverse.origin + '/api/data/v9.2/x_items?$top=1', {
       headers: { authorization: `Bearer ${token.access_token}` },
-      signal: AbortSignal.timeout(10000),
     });
   const setEnvironment = (body) =>
     fetch(sim.url + '/_sim/api/dataverse/environment', {

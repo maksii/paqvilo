@@ -21,7 +21,7 @@ async function server(t, diagnostics = []) {
   const fixture = await createSharePointFixtureServer({ fixtures, diagnostic: (entry) => diagnostics.push(entry) });
   t.after(() => fixture.close());
   const call = async (method, path, { body, headers } = {}) => {
-    const response = await fetch(fixture.url + path, { method, headers, body, signal: AbortSignal.timeout(10000) });
+    const response = await fetch(fixture.url + path, { method, headers, body });
     const text = await response.text();
     return { status: response.status, body: text ? JSON.parse(text) : null };
   };
@@ -128,7 +128,6 @@ test('the fixture server takes its clock and ids from the injected seam', async 
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'Fresh', folder: {} }),
-    signal: AbortSignal.timeout(10000),
   });
   assert.equal(response.status, 201);
   const created = await response.json();

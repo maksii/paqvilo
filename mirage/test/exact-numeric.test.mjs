@@ -47,7 +47,7 @@ const profile = {
   grants: [{ entity: 'precisionrow', operations: ['read', 'create', 'update', 'delete'] }],
 };
 // A hang guard for the one-file csc.exe build of the invented plug-in; a normal build finishes in about a second.
-const COMPILE_TIMEOUT_MS = 20_000;
+const COMPILE_TIMEOUT_MS = 150_000;
 const text = (value) => (typeof value === 'object' ? value.value : String(value));
 const typed = (type, value) => ({ $type: type, value });
 

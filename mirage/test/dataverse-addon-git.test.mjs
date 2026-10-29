@@ -11,6 +11,7 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
+import { signedInRequester } from './support/web-api.mjs';
 
 const APP_ID = '77777777-7777-4777-8777-777777777777';
 const SOLUTION = 'new_samplesolution';
@@ -46,28 +47,7 @@ async function startServer({ gitRemoteDirectory } = {}) {
     },
   };
   const server = await startDataverseApi({ store, settings, extensions: [...EXTENSIONS, capture], log: () => {} });
-  const token = await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'client_credentials',
-      client_id: APP_ID,
-      client_secret: process.env[secretVariable],
-      scope: `${server.origin}/.default`,
-    }),
-  });
-  const authorization = `Bearer ${(await token.json()).access_token}`;
-  const base = `${server.origin}/api/data/v9.2`;
-  const request = async (method, path, body, headers = {}) => {
-    const response = await fetch(`${base}${path}`, {
-      method,
-      headers: { authorization, 'content-type': 'application/json', accept: 'application/json', ...headers },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(10000),
-    });
-    const text = await response.text();
-    return { status: response.status, headers: response.headers, json: text ? JSON.parse(text) : null };
-  };
+  const request = await signedInRequester(server, APP_ID, process.env[secretVariable]);
   return {
     server,
     store,

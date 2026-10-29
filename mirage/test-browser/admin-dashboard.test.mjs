@@ -167,7 +167,6 @@ async function open(t, origin, { clock = false } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   t.after(() => context.close());
   const page = await context.newPage();
-  page.setDefaultTimeout(10_000);
   // The dashboard polls every 5 s; a fake page clock lets the test trigger each poll.
   if (clock) await page.clock.install();
   const errors = [];

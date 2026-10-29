@@ -267,7 +267,6 @@ export default { id: "invented-virtual", name: "Invented virtual", description: 
       method,
       headers: { authorization: `Bearer ${token.access_token}`, 'content-type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10000),
     });
 
   const created = await api('POST', '/x_remotes', { x_name: 'Remote row' });

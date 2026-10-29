@@ -194,7 +194,6 @@ async function navigationFixture(
   const result = await runAcceptance({
     localUrl: `http://127.0.0.1:${server.address().port}`,
     outputDir: path.join(root, 'evidence'),
-    timeout,
     navigationCommitReserveMs,
     prepareContext:
       noCommit || controlledLateWrites || customizeContext
@@ -253,8 +252,10 @@ async function navigationFixture(
         steps: [
           { action: 'navigate', path: '/' },
           ...(child || embedded ? [{ action: 'visible', frame: '#child', selector: '#save' }] : []),
-          { action: 'click', selector: '#save', ...(embedded ? { frame: '#child' } : {}) },
-          { action: 'settle' },
+          // The budgets under test belong to the triggering action and its settlement; page loads keep the
+          // runner's default deadline, so a slow cold load cannot consume them.
+          { action: 'click', selector: '#save', timeout, ...(embedded ? { frame: '#child' } : {}) },
+          { action: 'settle', timeout },
           ...(!noCommit && !noContent && !resetNavigation && !noNavigation
             ? [{ action: 'visible', selector: '#done', ...(embedded ? { frame: '#child' } : {}) }]
             : []),
@@ -272,10 +273,6 @@ const TESTS_IN_PARALLEL = 4;
 // A hang guard, not a product budget: a browser launch, a flow bounded by its own action timeout (at most 15 s,
 // asserted through its error or reserve), evidence capture and close. A loaded runner can spend seconds on each.
 const HANG_GUARD = { timeout: 60_000 };
-// A deliberately hanging read never settles, so these flows fail at their action deadline whatever its length.
-// The same deadline also bounds the cold browser's first document load, which a loaded Windows Edge runner can
-// spend several seconds on.
-const HANGING_READ_TIMEOUT = 8000;
 describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL }, () => {
   for (const history of ['hash', 'pushState'])
     test(`same-document ${history} does not consume a pending document replacement`, HANG_GUARD, async (t) => {
@@ -297,7 +294,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       `a hash change cannot retire a hanging read (${noNavigation ? 'no navigation' : '204 navigation'})`,
       HANG_GUARD,
       async (t) => {
-        const flow = await navigationFixture(t, { noCommit: true, noNavigation, timeout: HANGING_READ_TIMEOUT });
+        const flow = await navigationFixture(t, { noCommit: true, noNavigation, timeout: 2500 });
         assert.equal(flow.passed, false);
         assert.match(flow.error, /Portal requests did not settle.*GET.*never/);
         assert.equal(flow.navigationCancelledRequests?.length ?? 0, 0);
@@ -311,7 +308,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       let releaseDocumentResponse;
       const flow = await navigationFixture(t, {
         noCommit: true,
-        timeout: HANGING_READ_TIMEOUT,
+        timeout: 2500,
         scheduleDocumentResponse: (callback) => {
           releaseDocumentResponse = callback;
         },
@@ -421,7 +418,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     );
 
   test('replacement document requests remain pending after retiring its predecessor', HANG_GUARD, async (t) => {
-    const flow = await navigationFixture(t, { replacementRead: true, late: true, timeout: HANGING_READ_TIMEOUT });
+    const flow = await navigationFixture(t, { replacementRead: true, late: true, timeout: 2500 });
     assert.equal(flow.passed, false);
     assert.match(flow.error, /Portal requests did not settle.*GET.*never/);
     assert.equal(flow.navigationCancelledRequests?.length, 2);
@@ -519,7 +516,6 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
         const result = await runAcceptance({
           localUrl: `http://127.0.0.1:${server.address().port}`,
           outputDir: path.join(directory, kind),
-          timeout: 3000,
           flows: [
             {
               name: kind,
@@ -739,16 +735,15 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     const result = await runAcceptance({
       localUrl: `http://127.0.0.1:${server.address().port}`,
       outputDir: path.join(directory, 'evidence'),
-      timeout: 5000,
       flows: [
         {
           name: 'Comparable chain',
           steps: [
             { action: 'navigate', path: '/' },
-            { action: 'click', selector: '#save' },
+            { action: 'click', selector: '#save', timeout: 5000 },
             { action: 'visible', selector: '#done' },
-            { action: 'click', selector: '#save' },
-            { action: 'settle' },
+            { action: 'click', selector: '#save', timeout: 5000 },
+            { action: 'settle', timeout: 5000 },
             { action: 'visible', selector: '#done' },
           ],
         },

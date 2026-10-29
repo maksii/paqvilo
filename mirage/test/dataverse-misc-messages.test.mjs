@@ -14,6 +14,7 @@ import { hashSecret } from '../lib/dataverse-auth.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { pluginCatalogue } from '../lib/exported-plugins.mjs';
+import { bearerCall } from './support/web-api.mjs';
 
 const APP_ID = '22222222-2222-2222-2222-222222222222';
 const PUBLIC_APP_ID = '44444444-4444-4444-4444-444444444444';
@@ -303,17 +304,8 @@ async function token(form) {
   return (await response.json()).access_token;
 }
 
-// One request. A JSON body is serialised. The default token is the System Administrator application.
-const call = (path, { token = appToken, method = 'GET', body } = {}) =>
-  fetch(`${origin}${path}`, {
-    method,
-    signal: AbortSignal.timeout(10_000),
-    headers: {
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+// One request. The default token is the System Administrator application.
+const call = (path, options) => bearerCall(origin, () => appToken)(path, options);
 const webApi = (suffix) => `/api/data/v9.2/${suffix}`;
 const fetchXmlToQuery = (xml, token) =>
   call(webApi(`FetchXmlToQueryExpression(FetchXml='${encodeURIComponent(xml)}')`), { token });

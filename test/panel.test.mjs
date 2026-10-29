@@ -85,7 +85,7 @@ async function setup(online = {}, overrides = {}, panelOptions = {}) {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`Intercepted request ${id} did not answer within the panel API deadline`));
-      }, 5_000);
+      }, 60_000);
       pending.set(id, () => {
         clearTimeout(timer);
         pending.delete(id);

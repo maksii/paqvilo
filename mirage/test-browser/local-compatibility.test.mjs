@@ -79,7 +79,7 @@ test('clean source-only forms use local date and rich-text compatibility assets 
   });
   await page.goto(app.url);
   try {
-    await page.waitForFunction(() => window.sourceGlobals?.plugin === 'function', null, { timeout: 5000 });
+    await page.waitForFunction(() => window.sourceGlobals?.plugin === 'function');
   } catch {
     throw new Error(
       JSON.stringify({

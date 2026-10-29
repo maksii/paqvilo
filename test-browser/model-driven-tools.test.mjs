@@ -11,191 +11,183 @@ import { startModelDrivenInspector } from '../lense/model-driven-inspector.mjs';
 import { createModelDrivenOverlay } from '../lense/model-driven.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
 
-test(
-  'owned action bindings keep native results out of metadata and scope identity to actual tab requests',
-  { timeout: 30000 },
-  async (t) => {
-    const objectId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      recordId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      requests = [];
-    const foreignCalls = [],
-      foreignServer = http.createServer((request, response) => {
-        foreignCalls.push(request.headers.callerobjectid);
-        response.writeHead(200, { 'access-control-allow-origin': '*' }).end('foreign');
-      });
-    await new Promise((resolve) => foreignServer.listen(0, '127.0.0.1', resolve));
-    const foreignOrigin = `http://127.0.0.1:${foreignServer.address().port}`;
-    const server = http.createServer((request, response) => {
-      requests.push({ path: request.url.split('?')[0], caller: request.headers.callerobjectid });
-      if (request.url === '/api/data/v9.2/redirect')
-        return response.writeHead(302, { location: foreignOrigin + '/destination' }).end();
-      if (request.url.startsWith('/api/'))
-        return response
-          .writeHead(200, { 'content-type': 'application/json' })
-          .end(
-            JSON.stringify(
-              request.url.includes('systemusers')
-                ? { value: [{ azureactivedirectoryobjectid: objectId, fullname: 'PRIVATE_DIRECTORY_NAME' }] }
-                : { value: [] },
-            ),
-          );
-      response.writeHead(200, { 'content-type': 'text/html' })
-        .end(`<!doctype html><title>Invented app</title><div>App</div><script>
+test('owned action bindings keep native results out of metadata and scope identity to actual tab requests', async (t) => {
+  const objectId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    recordId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    requests = [];
+  const foreignCalls = [],
+    foreignServer = http.createServer((request, response) => {
+      foreignCalls.push(request.headers.callerobjectid);
+      response.writeHead(200, { 'access-control-allow-origin': '*' }).end('foreign');
+    });
+  await new Promise((resolve) => foreignServer.listen(0, '127.0.0.1', resolve));
+  const foreignOrigin = `http://127.0.0.1:${foreignServer.address().port}`;
+  const server = http.createServer((request, response) => {
+    requests.push({ path: request.url.split('?')[0], caller: request.headers.callerobjectid });
+    if (request.url === '/api/data/v9.2/redirect')
+      return response.writeHead(302, { location: foreignOrigin + '/destination' }).end();
+    if (request.url.startsWith('/api/'))
+      return response
+        .writeHead(200, { 'content-type': 'application/json' })
+        .end(
+          JSON.stringify(
+            request.url.includes('systemusers')
+              ? { value: [{ azureactivedirectoryobjectid: objectId, fullname: 'PRIVATE_DIRECTORY_NAME' }] }
+              : { value: [] },
+          ),
+        );
+    response.writeHead(200, { 'content-type': 'text/html' })
+      .end(`<!doctype html><title>Invented app</title><div>App</div><script>
       window.recordIdReads=0; window.Xrm={Utility:{getGlobalContext:()=>({getClientUrl:()=>location.origin,getVersion:()=>'9.2.0.0',userSettings:{userId:'cccccccc-cccc-4ccc-8ccc-cccccccccccc',getSecurityRolePrivilegesInfo:async()=>({one:{privilegeName:'prvActOnBehalfOfAnotherUser'}})}})},Page:{data:{entity:{getId:()=>{window.recordIdReads++;return '${recordId}'},getEntityName:()=>'inv_item',attributes:{get:()=>[{getName:()=>'inv_name',getAttributeType:()=>'string',getIsDirty:()=>true,getValue:()=>'PRIVATE_DRAFT_VALUE'}]}}},ui:{getFormType:()=>2,formSelector:{getCurrentItem:()=>({getId:()=>'dddddddd-dddd-4ddd-8ddd-dddddddddddd'})}}}};
     </script>`);
-    });
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const origin = `http://127.0.0.1:${server.address().port}`,
-      root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-tools-'));
-    let browser, inspector, release;
-    ownedFixture(t).add(async () => {
-      await inspector?.close();
-    });
-    ownedFixture(t).add(async () => {
-      await release?.();
-    });
-    ownedFixture(t).add(async () => {
-      await browser?.close();
-    });
-    ownedFixture(t).add(async () => {
-      server.closeAllConnections();
-    });
-    ownedFixture(t).add(async () => {
-      foreignServer.closeAllConnections();
-    });
-    ownedFixture(t).add(async () => {
-      await Promise.all([
-        new Promise((resolve) => server.close(resolve)),
-        new Promise((resolve) => foreignServer.close(resolve)),
-      ]);
-    });
-    ownedFixture(t).remove(async () => {
-      await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
-    });
-    // The lane's selected browser, as in every other browser test (not always Edge on Windows).
-    const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
-    browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true });
-    const context = await browser.newContext(),
-      page = await context.newPage(),
-      other = await context.newPage();
-    const imported = { assets: new Map(), resources: [], diagnostics: [], layers: [] },
-      overlay = createModelDrivenOverlay({ origin, imported });
-    release = await interceptOrigin(
-      context,
-      origin,
-      (route) => {
-        inspector?.prepareRequest(route);
-        return overlay.handle(route);
-      },
-      { ownsPage: (candidate) => candidate === page },
-    );
-    inspector = await startModelDrivenInspector({
-      context,
-      page,
-      overlay,
-      imported,
-      cfg: { origin, stateDir: root, sourceDir: root, siteName: 'invented', envName: 'loopback' },
-    });
-    await page.goto(origin + '/main.aspx?etn=inv_item');
-    await other.goto(origin + '/other');
-    await page.waitForFunction(() => document.getElementById('paqvilo-panel')?.__paqModelActions);
-    assert.equal(
-      await page.evaluate(() => window.recordIdReads),
-      0,
-      'passive tools do not call record identity getters',
-    );
-    const token = inspector.snapshot().token;
-    await page.evaluate(() => {
-      const tools = document.getElementById('paqvilo-panel').__paqModelActions,
-        original = tools.receive;
-      tools.receive = (id, value) => {
-        (window.toolResults ??= {})[id] = value;
-        original(id, value);
-      };
-    });
-    const input = { token, requestId: 'inspect', action: 'form:changed-fields', params: {} };
-    const ack = await page.evaluate((input) => window.__paqviloModelAction(input), input);
-    assert.deepEqual(ack, { accepted: true, requestId: 'inspect' });
-    assert.equal(await page.evaluate(() => window.toolResults.inspect.rows[0][2]), 'PRIVATE_DRAFT_VALUE');
-    const serialized = JSON.stringify(inspector.snapshot());
-    for (const value of ['PRIVATE_DRAFT_VALUE', 'PRIVATE_DIRECTORY_NAME', recordId, objectId])
-      assert.equal(serialized.includes(value), false);
-    assert.equal(
-      await other.evaluate(() => typeof window.__paqviloModelAction),
-      'undefined',
-      'the binding is not exposed to other tabs',
-    );
-    assert.deepEqual(
-      await page.evaluate((input) => window.__paqviloModelAction({ ...input, token: 'retired' }), input),
-      { accepted: false, requestId: 'inspect' },
-    );
-    assert.deepEqual(
-      await page.evaluate(
-        (input) =>
-          window.__paqviloModelAction({
-            ...input,
-            requestId: 'invalid',
-            action: 'navigation:open-list',
-            params: { entity: 'PRIVATE INVALID INPUT' },
-          }),
-        input,
-      ),
-      { accepted: false, requestId: 'invalid', reason: 'invalid-input' },
-    );
-    const attached = page.waitForEvent('frameattached');
-    await page.evaluate(() => {
-      const frame = document.createElement('iframe');
-      frame.src = '/frame';
-      document.body.append(frame);
-    });
-    const frame = await attached;
-    await frame.waitForLoadState();
-    assert.equal(
-      await frame.evaluate(() => typeof window.__paqviloModelAction),
-      'undefined',
-      'child documents do not receive owned action bindings',
-    );
-    const start = await page.evaluate((input) => window.__paqviloModelIdentity(input), {
-      token,
-      requestId: 'start',
-      objectId,
-    });
-    assert.deepEqual(start, { accepted: true, requestId: 'start' });
-    await page.evaluate(() => fetch('/api/data/v9.2/inv_items'));
-    await other.evaluate(() => fetch('/api/data/v9.2/inv_items'));
-    await page.evaluate(() => fetch('/asset'));
-    const calls = requests.filter((request) => request.path === '/api/data/v9.2/inv_items');
-    assert.equal(calls.at(-2).caller, objectId);
-    assert.equal(calls.at(-1).caller, undefined);
-    assert.equal(requests.find((request) => request.path === '/asset').caller, undefined);
-    await page.evaluate(() => fetch('/api/data/v9.2/redirect').catch(() => null));
-    assert.deepEqual(foreignCalls, [undefined], 'CDP header overrides do not follow a redirect to another origin');
-    assert.equal(JSON.stringify(inspector.snapshot()).includes(objectId), false);
-    await page.evaluate(() => history.pushState({}, '', '/main.aspx?etn=inv_item&pagetype=entitylist'));
-    await page.evaluate(() => fetch('/api/data/v9.2/inv_items'));
-    assert.equal(
-      requests.filter((request) => request.path === '/api/data/v9.2/inv_items').at(-1).caller,
-      objectId,
-      'same-document native navigation keeps the visible tab identity active',
-    );
-    await page.evaluate((input) => window.__paqviloModelIdentity(input), { token, requestId: 'stop', objectId: null });
-    await page.evaluate(() => fetch('/api/data/v9.2/inv_items'));
-    assert.equal(requests.filter((request) => request.path === '/api/data/v9.2/inv_items').at(-1).caller, undefined);
-    await page.evaluate((input) => window.__paqviloModelIdentity(input), { token, requestId: 'restart', objectId });
-    await page.goto(origin + '/main.aspx?etn=inv_item');
-    await page.waitForFunction(() => document.getElementById('paqvilo-panel')?.__paqModelActions);
-    await page.evaluate(() => fetch('/api/data/v9.2/inv_items'));
-    assert.equal(
-      requests.filter((request) => request.path === '/api/data/v9.2/inv_items').at(-1).caller,
-      undefined,
-      'a full document navigation stops request identity before the new app issues API reads',
-    );
-    await inspector.close();
-    await page.waitForFunction(() => !document.getElementById('paqvilo-panel'));
-    assert.equal(
-      await page.evaluate(() => typeof window.__paqviloModelAction),
-      'undefined',
-      'closing the inspector removes owned wrappers',
-    );
-  },
-);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`,
+    root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'model-tools-'));
+  let browser, inspector, release;
+  ownedFixture(t).add(async () => {
+    await inspector?.close();
+  });
+  ownedFixture(t).add(async () => {
+    await release?.();
+  });
+  ownedFixture(t).add(async () => {
+    await browser?.close();
+  });
+  ownedFixture(t).add(async () => {
+    server.closeAllConnections();
+  });
+  ownedFixture(t).add(async () => {
+    foreignServer.closeAllConnections();
+  });
+  ownedFixture(t).add(async () => {
+    await Promise.all([
+      new Promise((resolve) => server.close(resolve)),
+      new Promise((resolve) => foreignServer.close(resolve)),
+    ]);
+  });
+  ownedFixture(t).remove(async () => {
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+  });
+  // The lane's selected browser, as in every other browser test (not always Edge on Windows).
+  const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
+  browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true });
+  const context = await browser.newContext(),
+    page = await context.newPage(),
+    other = await context.newPage();
+  const imported = { assets: new Map(), resources: [], diagnostics: [], layers: [] },
+    overlay = createModelDrivenOverlay({ origin, imported });
+  release = await interceptOrigin(
+    context,
+    origin,
+    (route) => {
+      inspector?.prepareRequest(route);
+      return overlay.handle(route);
+    },
+    { ownsPage: (candidate) => candidate === page },
+  );
+  inspector = await startModelDrivenInspector({
+    context,
+    page,
+    overlay,
+    imported,
+    cfg: { origin, stateDir: root, sourceDir: root, siteName: 'invented', envName: 'loopback' },
+  });
+  await page.goto(origin + '/main.aspx?etn=inv_item');
+  await other.goto(origin + '/other');
+  await page.waitForFunction(() => document.getElementById('paqvilo-panel')?.__paqModelActions);
+  assert.equal(await page.evaluate(() => window.recordIdReads), 0, 'passive tools do not call record identity getters');
+  const token = inspector.snapshot().token;
+  await page.evaluate(() => {
+    const tools = document.getElementById('paqvilo-panel').__paqModelActions,
+      original = tools.receive;
+    tools.receive = (id, value) => {
+      (window.toolResults ??= {})[id] = value;
+      original(id, value);
+    };
+  });
+  const input = { token, requestId: 'inspect', action: 'form:changed-fields', params: {} };
+  const ack = await page.evaluate((input) => window.__paqviloModelAction(input), input);
+  assert.deepEqual(ack, { accepted: true, requestId: 'inspect' });
+  assert.equal(await page.evaluate(() => window.toolResults.inspect.rows[0][2]), 'PRIVATE_DRAFT_VALUE');
+  const serialized = JSON.stringify(inspector.snapshot());
+  for (const value of ['PRIVATE_DRAFT_VALUE', 'PRIVATE_DIRECTORY_NAME', recordId, objectId])
+    assert.equal(serialized.includes(value), false);
+  assert.equal(
+    await other.evaluate(() => typeof window.__paqviloModelAction),
+    'undefined',
+    'the binding is not exposed to other tabs',
+  );
+  assert.deepEqual(await page.evaluate((input) => window.__paqviloModelAction({ ...input, token: 'retired' }), input), {
+    accepted: false,
+    requestId: 'inspect',
+  });
+  assert.deepEqual(
+    await page.evaluate(
+      (input) =>
+        window.__paqviloModelAction({
+          ...input,
+          requestId: 'invalid',
+          action: 'navigation:open-list',
+          params: { entity: 'PRIVATE INVALID INPUT' },
+        }),
+      input,
+    ),
+    { accepted: false, requestId: 'invalid', reason: 'invalid-input' },
+  );
+  const attached = page.waitForEvent('frameattached');
+  await page.evaluate(() => {
+    const frame = document.createElement('iframe');
+    frame.src = '/frame';
+    document.body.append(frame);
+  });
+  const frame = await attached;
+  await frame.waitForLoadState();
+  assert.equal(
+    await frame.evaluate(() => typeof window.__paqviloModelAction),
+    'undefined',
+    'child documents do not receive owned action bindings',
+  );
+  const start = await page.evaluate((input) => window.__paqviloModelIdentity(input), {
+    token,
+    requestId: 'start',
+    objectId,
+  });
+  assert.deepEqual(start, { accepted: true, requestId: 'start' });
+  await page.evaluate(() => fetch('/api/data/v9.2/inv_items'));
+  await other.evaluate(() => fetch('/api/data/v9.2/inv_items'));
+  await page.evaluate(() => fetch('/asset'));
+  const calls = requests.filter((request) => request.path === '/api/data/v9.2/inv_items');
+  assert.equal(calls.at(-2).caller, objectId);
+  assert.equal(calls.at(-1).caller, undefined);
+  assert.equal(requests.find((request) => request.path === '/asset').caller, undefined);
+  await page.evaluate(() => fetch('/api/data/v9.2/redirect').catch(() => null));
+  assert.deepEqual(foreignCalls, [undefined], 'CDP header overrides do not follow a redirect to another origin');
+  assert.equal(JSON.stringify(inspector.snapshot()).includes(objectId), false);
+  await page.evaluate(() => history.pushState({}, '', '/main.aspx?etn=inv_item&pagetype=entitylist'));
+  await page.evaluate(() => fetch('/api/data/v9.2/inv_items'));
+  assert.equal(
+    requests.filter((request) => request.path === '/api/data/v9.2/inv_items').at(-1).caller,
+    objectId,
+    'same-document native navigation keeps the visible tab identity active',
+  );
+  await page.evaluate((input) => window.__paqviloModelIdentity(input), { token, requestId: 'stop', objectId: null });
+  await page.evaluate(() => fetch('/api/data/v9.2/inv_items'));
+  assert.equal(requests.filter((request) => request.path === '/api/data/v9.2/inv_items').at(-1).caller, undefined);
+  await page.evaluate((input) => window.__paqviloModelIdentity(input), { token, requestId: 'restart', objectId });
+  await page.goto(origin + '/main.aspx?etn=inv_item');
+  await page.waitForFunction(() => document.getElementById('paqvilo-panel')?.__paqModelActions);
+  await page.evaluate(() => fetch('/api/data/v9.2/inv_items'));
+  assert.equal(
+    requests.filter((request) => request.path === '/api/data/v9.2/inv_items').at(-1).caller,
+    undefined,
+    'a full document navigation stops request identity before the new app issues API reads',
+  );
+  await inspector.close();
+  await page.waitForFunction(() => !document.getElementById('paqvilo-panel'));
+  assert.equal(
+    await page.evaluate(() => typeof window.__paqviloModelAction),
+    'undefined',
+    'closing the inspector removes owned wrappers',
+  );
+});

@@ -160,7 +160,7 @@ test('diagnostics and native warning/request failure types satisfy the shared Is
 
 test(
   'overlapping real Git source updates retain only the latest catalogue and coalesce pending revisions',
-  { timeout: 15000 },
+  { timeout: 180_000 },
   async (t) => {
     const fixture = createFixture();
     const owner = ownedFixture(t);

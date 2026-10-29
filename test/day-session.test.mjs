@@ -125,7 +125,7 @@ test('repository watching notices a commit with a pinned baseline and polling st
   const watcher = watchSources(s, { pages: () => [] }, { baselinePollMs: 60_000, log: () => {} });
   ownedFixture(t).add(() => watcher.close());
   await watcher.ready;
-  const updated = once(s, 'head', { signal: AbortSignal.timeout(10_000) });
+  const updated = once(s, 'head', { signal: AbortSignal.timeout(120_000) });
   fx.write('web-files/app.js', 'window.committed = true;');
   fx.commit();
   const [head] = await updated;
@@ -134,7 +134,7 @@ test('repository watching notices a commit with a pinned baseline and polling st
   await watcher.close();
   const poll = watchSources(s, { pages: () => [] }, { gitWatch: false, baselinePollMs: 30, log: () => {} });
   ownedFixture(t).add(() => poll.close());
-  const renamed = once(s, 'head', { signal: AbortSignal.timeout(10_000) });
+  const renamed = once(s, 'head', { signal: AbortSignal.timeout(120_000) });
   git(fx.dir, 'switch', '-c', 'polling-still-aware');
   assert.equal((await renamed)[0].branch, 'polling-still-aware');
 });

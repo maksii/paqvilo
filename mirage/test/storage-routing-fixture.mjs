@@ -135,7 +135,6 @@ export async function routingApi(t, { storage = true, routes, root, file, state,
     const raw = Buffer.isBuffer(body);
     const response = await fetch(`${server.origin}/api/data/v9.2/${suffix}`, {
       method,
-      signal: AbortSignal.timeout(20000),
       headers: {
         authorization,
         ...(body !== undefined && !raw ? { 'content-type': 'application/json' } : {}),

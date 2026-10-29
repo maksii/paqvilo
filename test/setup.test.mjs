@@ -196,7 +196,7 @@ test('bootstrap enforces the supported Node LTS line and security patch floor', 
 test('setup JSON is offline only and reports readiness without installing', () => {
   const script = fileURLToPath(new URL('../scripts/ensure-dependencies.mjs', import.meta.url));
   const run = (...args) =>
-    spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', windowsHide: true, timeout: 15_000 });
+    spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', windowsHide: true, timeout: 150_000 });
   const report = run('--check', '--json');
   assert.equal(report.status, 0, report.stderr);
   const value = JSON.parse(report.stdout);

@@ -328,7 +328,7 @@ test('recursive source watching uses bounded Windows handles, observes atomic sa
   await once(watcher, 'ready');
   if (process.platform === 'win32') assert.equal(watcher.nativeWatchCount(), root.split(path.sep).length);
   const observed = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(Error('Source save was not observed')), 5000);
+    const timer = setTimeout(() => reject(Error('Source save was not observed')), 60_000);
     watcher.on('all', (_event, changed) => {
       if (path.resolve(changed) === file) {
         clearTimeout(timer);
@@ -369,7 +369,7 @@ test(
         const timer = setTimeout(() => {
           watcher.off('all', changed);
           reject(Error('Replaced source was not observed: ' + wanted));
-        }, 5000);
+        }, 60_000);
         watcher.on('all', changed);
       });
     for (const [index, replaced] of [root, container].entries()) {

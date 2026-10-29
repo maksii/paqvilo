@@ -100,14 +100,12 @@ async function client(sim) {
           ...(value ? { 'content-type': 'application/json', prefer: 'return=representation' } : {}),
         },
         ...(value ? { body: JSON.stringify(value) } : {}),
-        signal: AbortSignal.timeout(15000),
       }),
     ui: (method, suffix, value, etag) =>
       fetch(sim.url + '/_apps/api' + suffix, {
         method,
         headers: { ...headers, ...(etag ? { 'if-match': etag } : {}) },
         ...(value ? { body: JSON.stringify(value) } : {}),
-        signal: AbortSignal.timeout(15000),
       }),
   };
 }

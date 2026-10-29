@@ -58,15 +58,15 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     const result = await runAcceptance({
       localUrl: `http://127.0.0.1:${server.address().port}`,
       outputDir: path.join(root, 'evidence'),
-      timeout: 3000,
       flows: [
         {
           name: 'Detached form frame',
           steps: [
             { action: 'navigate', path: '/' },
             { action: 'visible', frame: '#child', selector: '#save' },
-            { action: 'click', frame: '#child', selector: '#save' },
-            { action: 'settle' },
+            // Only the triggering action and its settlement carry the short budget; loads keep the default.
+            { action: 'click', frame: '#child', selector: '#save', timeout: 3000 },
+            { action: 'settle', timeout: 3000 },
             { action: 'visible', selector: '#done' },
           ],
         },
@@ -124,15 +124,14 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     const result = await runAcceptance({
       localUrl: `http://127.0.0.1:${server.address().port}`,
       outputDir: path.join(root, 'evidence'),
-      timeout: 3000,
       flows: [
         {
           name: 'Replaced page',
           steps: [
             { action: 'navigate', path: '/' },
-            { action: 'click', selector: '#save' },
+            { action: 'click', selector: '#save', timeout: 3000 },
             { action: 'visible', selector: '#done' },
-            { action: 'settle' },
+            { action: 'settle', timeout: 3000 },
           ],
         },
       ],
@@ -211,7 +210,6 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
         const result = await runAcceptance({
           localUrl: `http://127.0.0.1:${server.address().port}`,
           outputDir: path.join(root, 'evidence'),
-          timeout: 3000,
           prepareContext: async (context) => {
             context.on('request', (request) => {
               if (request.isNavigationRequest() && new URL(request.url()).pathname === '/done')
@@ -223,8 +221,8 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
               name: 'Late document writes',
               steps: [
                 { action: 'navigate', path: '/' },
-                { action: 'click', selector: '#save' },
-                { action: 'settle' },
+                { action: 'click', selector: '#save', timeout: 3000 },
+                { action: 'settle', timeout: 3000 },
                 { action: 'visible', selector: '#done' },
               ],
             },
@@ -489,12 +487,12 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
             name: 'Incorrect control expectation',
             steps: [
               { action: 'navigate', path: '/' },
-              { action: 'value', selector: '#userroles', value: 'Wrong role' },
+              // The mismatch fails at this step's own deadline; the page load keeps the default.
+              { action: 'value', selector: '#userroles', value: 'Wrong role', timeout: 2000 },
             ],
           },
         ],
         outputDir: path.join(directory, 'failed-evidence'),
-        timeout: 2000,
       });
       assert.equal(failed.passed, false);
       assert.match(failed.flows[0].error, /expected field value/i);
@@ -538,11 +536,16 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       flows: [
         {
           name: 'DOM ready with outstanding image request',
-          steps: [{ action: 'navigate', path: '/' }, { action: 'visible', selector: '#ready' }, { action: 'settle' }],
+          // The never-finishing image fails only the settlement, at its own deadline. Navigation keeps the
+          // default deadline, which it would exhaust if it waited for the load event.
+          steps: [
+            { action: 'navigate', path: '/' },
+            { action: 'visible', selector: '#ready' },
+            { action: 'settle', timeout: 1000 },
+          ],
         },
       ],
       outputDir: path.join(directory, 'evidence'),
-      timeout: 1000,
     });
     assert.equal(result.flows[0].steps[0].passed, true, JSON.stringify(result.flows[0]));
     assert.equal(result.flows[0].steps[1].passed, true);
@@ -553,5 +556,17 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       result.flows[0].resources.some((resource) => resource.url.endsWith('/never-finishes.png')),
       'the slow image remains visible in the request report',
     );
+    // A step deadline applies to its own step only, is recorded with it, and is validated like the flow's.
+    assert.deepEqual(
+      result.flows[0].steps.map((step) => step.timeout),
+      [undefined, undefined, 1000],
+    );
+    const invalid = await runAcceptance({
+      localUrl: `http://127.0.0.1:${server.address().port}`,
+      flows: [{ name: 'Invalid step deadline', steps: [{ action: 'navigate', path: '/', timeout: 0 }] }],
+      outputDir: path.join(directory, 'invalid'),
+    });
+    assert.equal(invalid.flows[0].passed, false);
+    assert.match(invalid.flows[0].error, /step timeout must be a positive finite number/);
   });
 });

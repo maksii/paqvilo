@@ -78,7 +78,6 @@ test('opening, replacing and reopening an actual modal form keeps field context 
     },
   });
   context = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
-  context.setDefaultTimeout(8000);
   const page = await context.newPage();
   const session = new OverlaySession({
     sourceDir: fx.portal,

@@ -229,7 +229,6 @@ async function modelTargetsFixture(t) {
         .find((page) => page.url().startsWith(origins[0])),
     'initial target page',
   );
-  page.setDefaultTimeout(10000);
   await page.waitForFunction(() => window.targetRevision === 'initial');
   await page.locator('#paqvilo-panel').waitFor();
   const initialAgents = await discoveries();

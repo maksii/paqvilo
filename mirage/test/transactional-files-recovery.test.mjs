@@ -247,7 +247,7 @@ test(
     const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 15000,
+      timeout: 150_000,
       env: { ...process.env, PAQVILO_TEST_SHORT_PATH: f.directory },
     });
     assert.ifError(result.error);

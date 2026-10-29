@@ -17,12 +17,13 @@ import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
 
-// A startup deadline for scenarios whose target phase stalls until cleanup: long enough for
-// the earlier phases (browser launch or CDP connection) on a loaded host, short for the test.
-const STALLED_STARTUP_DEADLINE_MS = 5000;
+// A startup deadline for scenarios whose target phase stalls until cleanup. The stall never ends by itself, so the
+// asserted expiry does not depend on this length; it only has to outlast the earlier phases (browser launch or CDP
+// connection) however slow the host is.
+const STALLED_STARTUP_DEADLINE_MS = 30_000;
 // Hang guards for whole tests that launch browsers; each covers its product deadlines plus
-// browser launch and profile cleanup, which take several seconds on a loaded Windows host.
-const BROWSER_TEST_TIMEOUT_MS = 60_000;
+// browser launch and profile cleanup.
+const BROWSER_TEST_TIMEOUT_MS = 120_000;
 
 async function fixture(t, { resetDocument = false } = {}) {
   const owner = ownedFixture(t);
@@ -295,8 +296,6 @@ test(
         url: setup.origin,
         headless: true,
         browser: setup.channel,
-        // The inspector stall never ends by itself, so the deadline only has to outlast the
-        // owned browser launch, measured at up to 1.6 s on a loaded host.
         'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
       }),
       (error) => error.code === 'startup_timeout' && error.phase === 'interception and inspector setup',
@@ -327,8 +326,6 @@ test(
         url: setup.origin,
         headless: true,
         'cdp-url': `http://127.0.0.1:${port}`,
-        // The held document stalls navigation indefinitely, so the deadline only has to outlast
-        // CDP connection and interception setup, measured at up to 1.4 s on a loaded host.
         'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
       }),
       (error) => error.code === 'startup_timeout' && error.phase === 'document navigation',

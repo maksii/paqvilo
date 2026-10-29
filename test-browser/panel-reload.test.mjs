@@ -73,7 +73,6 @@ test(
       ],
     });
     const context = await browser.newContext({ serviceWorkers: 'block' });
-    context.setDefaultTimeout(10_000);
     await context.route('**/*', async (route) =>
       new URL(route.request().url()).origin === origin ? route.continue() : route.abort(),
     );

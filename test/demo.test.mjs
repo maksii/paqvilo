@@ -76,7 +76,7 @@ test('demo copies an editable project, preserves source edits on repeat and refu
       '--dir',
       cliDirectory,
     ],
-    { cwd: root, encoding: 'utf8', timeout: 15000, windowsHide: true },
+    { cwd: root, encoding: 'utf8', timeout: 150_000, windowsHide: true },
   );
   assert.match(scaffold, /No runtime was started/);
   assert.match(scaffold, /paqvilo-demo\.code-workspace/);

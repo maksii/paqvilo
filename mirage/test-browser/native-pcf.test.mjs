@@ -72,7 +72,6 @@ test('explicit portal metadata activates exported form-bound PCF and saves throu
   const page = await context.newPage(),
     errors = [],
     external = [];
-  page.setDefaultTimeout(10000);
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => {
     if (!request.url().startsWith(app.url)) external.push(request.url());

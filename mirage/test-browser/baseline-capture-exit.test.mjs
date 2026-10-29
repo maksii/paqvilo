@@ -126,7 +126,7 @@ test('capture CLI reports failed assertions without losing completed evidence', 
   }
 });
 
-test('aborting an owned capture process drains its pipes before removing output', { timeout: 10000 }, async (t) => {
+test('aborting an owned capture process drains its pipes before removing output', async (t) => {
   const dir = await outputDirectory(t);
   const controller = new AbortController();
   const child = ownedProcess(t, ['-e', "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"], {

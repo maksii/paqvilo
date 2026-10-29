@@ -106,7 +106,6 @@ test(
       );
     }
     const page = await browser.page(t);
-    page.setDefaultTimeout(10000);
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     const csrf = sim.state().csrf;

@@ -43,8 +43,7 @@ function identityEndpoint(api, mode, params) {
   endpoint.search = params.toString();
   return endpoint.href;
 }
-const requestIdentity = (endpoint, headers) =>
-  fetch(endpoint, { headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
+const requestIdentity = (endpoint, headers) => fetch(endpoint, { headers, redirect: 'error' });
 
 async function ownedArcChallenge(header, root) {
   const prefix = 'Basic realm=';
@@ -123,7 +122,6 @@ const ui = (sim, method, suffix = '', values, etag) =>
       ...(etag ? { 'if-match': etag } : {}),
     },
     ...(values ? { body: JSON.stringify(values) } : {}),
-    signal: AbortSignal.timeout(10000),
   });
 async function client(sim) {
   const registration = await body(
@@ -157,7 +155,6 @@ async function client(sim) {
         ...(values ? { 'content-type': 'application/json', prefer: 'return=representation' } : {}),
       },
       ...(values ? { body: JSON.stringify(values) } : {}),
-      signal: AbortSignal.timeout(10000),
     });
 }
 
@@ -559,7 +556,7 @@ test('independent client directory and ZIP sources reload without changing compl
   assert.equal(await selectedSource(urls['x_/external.js']), 'window.External = 1;');
   assert.equal(await selectedSource(urls['x_/archive.js']), 'window.Archive = 1;');
   const changed = async (url, expected) => {
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       if ((await selectedSource(url)) === expected) return;
       await new Promise((resolve) => setTimeout(resolve, 50));

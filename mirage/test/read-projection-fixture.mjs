@@ -87,7 +87,6 @@ export async function readFixture(t, { mappings = {}, tables = {}, settings: ext
       ...(body !== undefined
         ? { body: typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body) }
         : {}),
-      signal: AbortSignal.timeout(10000),
     });
   const json = async (response, status) => {
     const text = await response.text();

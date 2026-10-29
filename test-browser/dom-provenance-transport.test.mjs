@@ -101,7 +101,6 @@ async function fixture(t, { sourceMaps = false, acknowledge = true, inline = fal
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   const context = await browser.newContext();
-  context.setDefaultTimeout(6000);
   const page = await context.newPage();
   const transport = createInspectionProvenanceTransport(context, [{ origin }]);
   const diagnostics = {

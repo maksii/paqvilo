@@ -297,7 +297,7 @@ test('solution form layout creates typed data, saved view filters rows, and sour
       document.body.append(child);
     }
   }, modalPath);
-  await modal.waitForFunction(() => window.lookupFramesLoaded === 8, {}, { timeout: 10000 });
+  await modal.waitForFunction(() => window.lookupFramesLoaded === 8);
   assert.deepEqual(childStreams, []);
   assert.deepEqual(extraTopStreams, []);
   assert.equal((await modal.request.get(app.url + '/__sim/api/state')).status(), 200);

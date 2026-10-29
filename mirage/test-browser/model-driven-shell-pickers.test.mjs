@@ -8,19 +8,78 @@ import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const chrome = sharedBrowser();
 
-test(
-  'a staff refresh failure during held cold metadata exposes recovery instead of abandoning the grid',
-  { timeout: 30000 },
-  async (t) => {
+test('a staff refresh failure during held cold metadata exposes recovery instead of abandoning the grid', async (t) => {
+  const held = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  ownedFixture(t).add(() => release.resolve());
+  const { origin } = await modelDrivenFixture(t);
+  const page = await chrome.page(t),
+    errors = [];
+  let sessions = 0,
+    indexes = 0;
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.route('**/_sim/api/dataverse/session', async (route) => {
+    const response = await route.fetch(),
+      json = await response.json();
+    if (++sessions === 2) json.current.name = 'Invented updated staff name';
+    await route.fulfill({ response, json });
+  });
+  await page.route('**/_apps/api/index', async (route) => {
+    if (++indexes === 2)
+      return route.fulfill({ status: 503, json: { error: { message: 'Invented cold staff catalogue refusal' } } });
+    await route.continue();
+  });
+  await page.route('**/_apps/api/metadata/x_item', async (route) => {
+    const response = await route.fetch();
+    held.resolve();
+    await release.promise;
+    await route.fulfill({ response });
+  });
+  const navigation = page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await held.promise;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.locator('#notice').filter({ hasText: 'Invented cold staff catalogue refusal' }).waitFor();
+  release.resolve();
+  await navigation;
+  assert.equal(
+    await page.locator('html').getAttribute('data-mirage-app-state'),
+    'error',
+    'a failed identity refresh must retire the abandoned cold route and expose a retry',
+  );
+  assert.equal(await page.getByRole('button', { name: 'Copper', exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  assert.equal(await page.locator('html').getAttribute('data-mirage-app-state'), 'ready');
+  assert.equal(await page.locator('#notice').textContent(), '');
+  assert.deepEqual(errors, []);
+});
+
+for (const outcome of ['success', 'failure'])
+  test(`a late staff catalogue ${outcome} preserves a newer accepted application route`, async (t) => {
     const held = Promise.withResolvers(),
       release = Promise.withResolvers();
     ownedFixture(t).add(() => release.resolve());
     const { origin } = await modelDrivenFixture(t);
-    const page = await chrome.page(t),
-      errors = [];
+    const page = await chrome.page(t);
     let sessions = 0,
       indexes = 0;
-    page.on('pageerror', (error) => errors.push(error.message));
+    await page.addInitScript(() => {
+      const fetch = window.fetch.bind(window);
+      let indexes = 0;
+      window.fetch = async (...args) => {
+        const response = await fetch(...args);
+        if (new URL(args[0], location.href).pathname !== '/_apps/api/index' || ++indexes !== 2) return response;
+        const json = response.json.bind(response);
+        response.json = async () => {
+          try {
+            return await json();
+          } finally {
+            window.__inventedStaffRefreshParsed = true;
+          }
+        };
+        return response;
+      };
+    });
     await page.route('**/_sim/api/dataverse/session', async (route) => {
       const response = await route.fetch(),
         json = await response.json();
@@ -28,105 +87,38 @@ test(
       await route.fulfill({ response, json });
     });
     await page.route('**/_apps/api/index', async (route) => {
-      if (++indexes === 2)
-        return route.fulfill({ status: 503, json: { error: { message: 'Invented cold staff catalogue refusal' } } });
-      await route.continue();
-    });
-    await page.route('**/_apps/api/metadata/x_item', async (route) => {
+      if (++indexes !== 2) return route.continue();
       const response = await route.fetch();
       held.resolve();
       await release.promise;
-      await route.fulfill({ response });
+      await route.fulfill(
+        outcome === 'success'
+          ? { response }
+          : { status: 503, json: { error: { message: 'Invented superseded staff catalogue refusal' } } },
+      );
     });
-    const navigation = page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
-    await held.promise;
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await page.locator('#notice').filter({ hasText: 'Invented cold staff catalogue refusal' }).waitFor();
-    release.resolve();
-    await navigation;
-    assert.equal(
-      await page.locator('html').getAttribute('data-mirage-app-state'),
-      'error',
-      'a failed identity refresh must retire the abandoned cold route and expose a retry',
-    );
-    assert.equal(await page.getByRole('button', { name: 'Copper', exact: true }).count(), 0);
-    await page.getByRole('button', { name: 'Try again', exact: true }).click();
+    await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
     await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await held.promise;
+    await page.getByRole('button', { name: 'Application', exact: true }).click();
+    await page
+      .getByRole('dialog', { name: 'Apps', exact: true })
+      .getByRole('button', { name: 'Example workspace', exact: true })
+      .click();
+    const copper = page.getByRole('button', { name: 'Copper', exact: true });
+    await copper.waitFor();
+    const accepted = await copper.elementHandle();
+    release.resolve();
+    await page.waitForFunction(() => window.__inventedStaffRefreshParsed === true);
+    assert.equal(
+      await accepted.evaluate((node) => node.isConnected),
+      true,
+      'the accepted route retains its grid nodes',
+    );
     assert.equal(await page.locator('html').getAttribute('data-mirage-app-state'), 'ready');
     assert.equal(await page.locator('#notice').textContent(), '');
-    assert.deepEqual(errors, []);
-  },
-);
-
-for (const outcome of ['success', 'failure'])
-  test(
-    `a late staff catalogue ${outcome} preserves a newer accepted application route`,
-    { timeout: 30000 },
-    async (t) => {
-      const held = Promise.withResolvers(),
-        release = Promise.withResolvers();
-      ownedFixture(t).add(() => release.resolve());
-      const { origin } = await modelDrivenFixture(t);
-      const page = await chrome.page(t);
-      let sessions = 0,
-        indexes = 0;
-      await page.addInitScript(() => {
-        const fetch = window.fetch.bind(window);
-        let indexes = 0;
-        window.fetch = async (...args) => {
-          const response = await fetch(...args);
-          if (new URL(args[0], location.href).pathname !== '/_apps/api/index' || ++indexes !== 2) return response;
-          const json = response.json.bind(response);
-          response.json = async () => {
-            try {
-              return await json();
-            } finally {
-              window.__inventedStaffRefreshParsed = true;
-            }
-          };
-          return response;
-        };
-      });
-      await page.route('**/_sim/api/dataverse/session', async (route) => {
-        const response = await route.fetch(),
-          json = await response.json();
-        if (++sessions === 2) json.current.name = 'Invented updated staff name';
-        await route.fulfill({ response, json });
-      });
-      await page.route('**/_apps/api/index', async (route) => {
-        if (++indexes !== 2) return route.continue();
-        const response = await route.fetch();
-        held.resolve();
-        await release.promise;
-        await route.fulfill(
-          outcome === 'success'
-            ? { response }
-            : { status: 503, json: { error: { message: 'Invented superseded staff catalogue refusal' } } },
-        );
-      });
-      await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
-      await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
-      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-      await held.promise;
-      await page.getByRole('button', { name: 'Application', exact: true }).click();
-      await page
-        .getByRole('dialog', { name: 'Apps', exact: true })
-        .getByRole('button', { name: 'Example workspace', exact: true })
-        .click();
-      const copper = page.getByRole('button', { name: 'Copper', exact: true });
-      await copper.waitFor();
-      const accepted = await copper.elementHandle();
-      release.resolve();
-      await page.waitForFunction(() => window.__inventedStaffRefreshParsed === true);
-      assert.equal(
-        await accepted.evaluate((node) => node.isConnected),
-        true,
-        'the accepted route retains its grid nodes',
-      );
-      assert.equal(await page.locator('html').getAttribute('data-mirage-app-state'), 'ready');
-      assert.equal(await page.locator('#notice').textContent(), '');
-    },
-  );
+  });
 
 test('native shell selectors filter, navigate, dismiss and preserve keyboard focus', async (t) => {
   const fixture = await modelDrivenFixture(t, { defer: true });
@@ -585,7 +577,6 @@ test('filter drawer uses typed scalar values, literal contains, null conditions 
     assert.equal(response.status, 201, await response.clone().text());
   }
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  page.setDefaultTimeout(5000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
@@ -854,7 +845,6 @@ test('subgrid exported view picker preserves its named parent relationship acros
     assert.equal(response.status, 201, await response.clone().text());
   }
   const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=' + parent);
   await page.getByRole('tab', { name: 'Related items', exact: true }).click();
   const grid = page.locator('.related-grid'),
@@ -1107,7 +1097,6 @@ test('authored app areas isolate their groups and 137 records paginate through s
   t.after(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  page.setDefaultTimeout(6000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const change = async (action, entity, expectedPage, expectedCount, expectedTotal) => {

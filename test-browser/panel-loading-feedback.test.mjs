@@ -68,7 +68,6 @@ test(
       serviceWorkers: 'block',
       reducedMotion: 'no-preference',
     });
-    context.setDefaultTimeout(10_000);
     const session = new OverlaySession({
       sourceDir: fx.portal,
       origin,
@@ -282,86 +281,82 @@ test(
   },
 );
 
-test(
-  'background X-ray refresh shows progress while retaining source details, and retires accepted progress',
-  { timeout: 30_000 },
-  async (t) => {
-    const context = await browser.newContext();
-    t.after(() => context.close());
-    const page = await context.newPage();
-    await page.setContent('<form data-entityname="fx_widget"><input id="fx_title" name="fx_title"></form>');
-    await page.evaluate(xrayUi, { origin: 'null', token: 'invented-progress' });
-    await page.evaluate(() => {
-      window.fixtureReport = {
-        columns: [{ name: 'fx_title', entity: 'fx_widget', type: 'string', label: 'Title' }],
-        tables: [{ logicalName: 'fx_widget' }],
-      };
-      const ui = document.getElementById('paqvilo-xray').__px;
-      ui.update(
-        {
-          origin: 'null',
-          token: 'invented-progress',
-          inspection: { active: true, version: 1 },
-          inspectionLoading: false,
-        },
-        window.fixtureReport,
-      );
-      ui.toggle(true);
-      ui.select(document.getElementById('fx_title'));
-    });
-    const xray = page.locator('#paqvilo-xray');
-    await xray.locator('[data-evidence-role="alternatives"]').evaluate((node) => {
-      node.open = true;
-    });
-    await xray.locator('[data-evidence-role="alternatives"]').getByText('fx_title', { exact: true }).waitFor();
-    await page.evaluate(() =>
-      document.getElementById('paqvilo-xray').__px.update(
-        {
-          origin: 'null',
-          token: 'invented-progress',
-          inspection: { active: true, version: 1, loading: true, loadingId: 2, phase: 'Reading updated metadata' },
-          inspectionLoading: true,
-        },
-        window.fixtureReport,
-      ),
+test('background X-ray refresh shows progress while retaining source details, and retires accepted progress', async (t) => {
+  const context = await browser.newContext();
+  t.after(() => context.close());
+  const page = await context.newPage();
+  await page.setContent('<form data-entityname="fx_widget"><input id="fx_title" name="fx_title"></form>');
+  await page.evaluate(xrayUi, { origin: 'null', token: 'invented-progress' });
+  await page.evaluate(() => {
+    window.fixtureReport = {
+      columns: [{ name: 'fx_title', entity: 'fx_widget', type: 'string', label: 'Title' }],
+      tables: [{ logicalName: 'fx_widget' }],
+    };
+    const ui = document.getElementById('paqvilo-xray').__px;
+    ui.update(
+      {
+        origin: 'null',
+        token: 'invented-progress',
+        inspection: { active: true, version: 1 },
+        inspectionLoading: false,
+      },
+      window.fixtureReport,
     );
-    await xray.getByText('Updating source inspection', { exact: true }).waitFor();
-    assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
-    assert.equal(await xray.locator('.scan-wash').isVisible(), false, 'cached report refresh uses compact feedback');
-    assert.equal(
-      await xray.locator('[data-evidence-role="alternatives"]').getByText('fx_title', { exact: true }).isVisible(),
-      true,
-      'existing details remain readable',
-    );
-    await page.evaluate(() =>
-      document.getElementById('paqvilo-xray').__px.update(
-        {
-          origin: 'null',
-          token: 'invented-progress',
-          inspection: { active: true, version: 1, loading: true, loadingId: 2 },
-          inspectionLoading: false,
-        },
-        window.fixtureReport,
-      ),
-    );
-    assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'false');
-    assert.equal(
-      await xray.locator('.scan-state').isVisible(),
-      false,
-      'accepted response suppresses its delayed server progress push',
-    );
-    await page.evaluate(() =>
-      document.getElementById('paqvilo-xray').__px.update(
-        {
-          origin: 'null',
-          token: 'invented-progress',
-          inspection: { active: true, version: 1, loading: true, loadingId: 3 },
-          inspectionLoading: true,
-        },
-        window.fixtureReport,
-      ),
-    );
-    await xray.getByText('Updating source inspection', { exact: true }).waitFor();
-    assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
-  },
-);
+    ui.toggle(true);
+    ui.select(document.getElementById('fx_title'));
+  });
+  const xray = page.locator('#paqvilo-xray');
+  await xray.locator('[data-evidence-role="alternatives"]').evaluate((node) => {
+    node.open = true;
+  });
+  await xray.locator('[data-evidence-role="alternatives"]').getByText('fx_title', { exact: true }).waitFor();
+  await page.evaluate(() =>
+    document.getElementById('paqvilo-xray').__px.update(
+      {
+        origin: 'null',
+        token: 'invented-progress',
+        inspection: { active: true, version: 1, loading: true, loadingId: 2, phase: 'Reading updated metadata' },
+        inspectionLoading: true,
+      },
+      window.fixtureReport,
+    ),
+  );
+  await xray.getByText('Updating source inspection', { exact: true }).waitFor();
+  assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
+  assert.equal(await xray.locator('.scan-wash').isVisible(), false, 'cached report refresh uses compact feedback');
+  assert.equal(
+    await xray.locator('[data-evidence-role="alternatives"]').getByText('fx_title', { exact: true }).isVisible(),
+    true,
+    'existing details remain readable',
+  );
+  await page.evaluate(() =>
+    document.getElementById('paqvilo-xray').__px.update(
+      {
+        origin: 'null',
+        token: 'invented-progress',
+        inspection: { active: true, version: 1, loading: true, loadingId: 2 },
+        inspectionLoading: false,
+      },
+      window.fixtureReport,
+    ),
+  );
+  assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'false');
+  assert.equal(
+    await xray.locator('.scan-state').isVisible(),
+    false,
+    'accepted response suppresses its delayed server progress push',
+  );
+  await page.evaluate(() =>
+    document.getElementById('paqvilo-xray').__px.update(
+      {
+        origin: 'null',
+        token: 'invented-progress',
+        inspection: { active: true, version: 1, loading: true, loadingId: 3 },
+        inspectionLoading: true,
+      },
+      window.fixtureReport,
+    ),
+  );
+  await xray.getByText('Updating source inspection', { exact: true }).waitFor();
+  assert.equal(await xray.locator('.ui').getAttribute('aria-busy'), 'true');
+});

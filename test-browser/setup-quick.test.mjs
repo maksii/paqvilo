@@ -71,7 +71,6 @@ async function setupFixture(t, prefix) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   ownedFixture(t).add(() => context.close());
   const page = await context.newPage();
-  page.setDefaultTimeout(15_000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(server.url);
@@ -108,11 +107,7 @@ test(
 
     await page.locator('#quick-run').getByRole('button', { name: 'Stop' }).click();
     await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).waitFor({ timeout: 60_000 });
-    await assert.rejects(
-      fetch(website, { signal: AbortSignal.timeout(5000) }),
-      /fetch failed/,
-      'the stopped preview no longer answers',
-    );
+    await assert.rejects(fetch(website), /fetch failed/, 'the stopped preview no longer answers');
     assert.deepEqual(errors, []);
   },
 );

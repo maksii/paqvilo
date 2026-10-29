@@ -22,7 +22,7 @@ function fixture(t) {
       cwd: directory,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 10_000,
+      timeout: 150_000,
     });
   return { directory, checkout, run };
 }
