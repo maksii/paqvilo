@@ -13,6 +13,11 @@ const INLINE = 'virtual:paqvilo-code-app-inline/';
 const source = (name) => fileURLToPath(new URL(name, import.meta.url)).replaceAll('\\', '/');
 const browserFile = (name) => '/@fs/' + source(name);
 const publicId = (id) => '/@id/__x00__' + id;
+// A page's script URL becomes a string literal in generated module code; escaping markup and line-terminator
+// characters keeps it one inert literal.
+const unsafeLiteralCharacters = { '<': '\\u003C', '>': '\\u003E', '\u2028': '\\u2028', '\u2029': '\\u2029' };
+const moduleString = (value) =>
+  JSON.stringify(String(value)).replace(/[<>\u2028\u2029]/g, (char) => unsafeLiteralCharacters[char]);
 
 function localOrigin(value) {
   let url;
@@ -210,7 +215,7 @@ export { setConfig } from ${JSON.stringify('/@fs/' + nativeApp)};
       if (id.startsWith('\0' + ENTRY)) {
         const target = entries.get(id.slice(1));
         if (!target) throw new Error('Unknown Code Apps module entry. Reload the application.');
-        return `import { inOrder } from ${JSON.stringify(ORDER)}; await inOrder(async () => { await import(${JSON.stringify(BOOTSTRAP)}); await import(${JSON.stringify(target)}); });`;
+        return `import { inOrder } from ${JSON.stringify(ORDER)}; await inOrder(async () => { await import(${JSON.stringify(BOOTSTRAP)}); await import(${moduleString(target)}); });`;
       }
       if (id.startsWith('\0' + INLINE)) return inlineSources.get(id.slice(1))?.code;
     },

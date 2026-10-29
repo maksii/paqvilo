@@ -167,6 +167,15 @@ test('external module scripts remain external but run after bootstrap', () => {
     plugin.load('\0' + id),
     /await inOrder\(async \(\) => \{ await import\("virtual:paqvilo-code-app-bootstrap"\); await import\("https:\/\/cdn\.example\.test\/app\.js"\); \}\);$/,
   );
+  // A script URL carrying markup or quotes stays one inert string literal that imports the same URL.
+  const { html: marked } = plugin.transformIndexHtml.handler(
+    `<script type="module" src="https://cdn.example.test/app.js?q=&lt;/script&gt;&quot;'"></script>`,
+    { path: '/index.html', filename: '/project/index.html' },
+  );
+  const entry = plugin.load('\0' + marked.match(/src="\/@id\/__x00__(.*?)"/)[1]);
+  assert.doesNotMatch(entry, /<\/script|[\u2028\u2029]/i);
+  const specifier = entry.match(/await import\(("[^"]*")\); \}\);$/)[1];
+  assert.equal(JSON.parse(specifier), new URL(`https://cdn.example.test/app.js?q=</script>"'`).href);
 });
 
 test('an unreadable configuration renders an unknown stamp and reloads once its bytes are readable', async (t) => {
