@@ -1165,10 +1165,15 @@ export function renderPcfDataset(cell, options) {
     view,
     destroyed = false,
     failed = false,
+    observer,
+    trackingResize = false,
     state = {},
     queued = false;
+  const pendingChanges = new Set();
   const virtual = admission.admission?.kind === 'virtual';
   const cleanup = () => {
+    observer?.disconnect();
+    observer = undefined;
     const current = instance,
       mounted = view;
     instance = undefined;
@@ -1203,7 +1208,20 @@ export function renderPcfDataset(cell, options) {
       isVisible: true,
       allocatedWidth: -1,
       allocatedHeight: -1,
-      trackContainerResize() {},
+      trackContainerResize(track) {
+        const next = Boolean(track);
+        if (destroyed || failed || next === trackingResize) return;
+        observer?.disconnect();
+        observer = undefined;
+        trackingResize = next;
+        if (trackingResize && typeof ResizeObserver !== 'undefined') {
+          observer = new ResizeObserver(() => {
+            if (trackingResize && context.mode.allocatedWidth !== element.clientWidth) rerender(['layout']);
+          });
+          observer.observe(element);
+        }
+        rerender(['layout']);
+      },
       setControlState(next) {
         state = structuredClone(next);
       },
@@ -1213,13 +1231,17 @@ export function renderPcfDataset(cell, options) {
     },
     ...pcfServices(definition, options, staff, () => !destroyed && !failed),
   };
-  const rerender = () => {
-    if (!instance || destroyed || failed || queued) return;
+  const rerender = (changed = ['dataset', datasetName]) => {
+    if (!instance || destroyed || failed) return;
+    for (const property of changed) pendingChanges.add(property);
+    if (queued) return;
     queued = true;
     queueMicrotask(() => {
       queued = false;
       if (!instance || destroyed || failed) return;
-      context.updatedProperties = ['dataset', datasetName];
+      context.updatedProperties = [...pendingChanges];
+      pendingChanges.clear();
+      context.mode.allocatedWidth = trackingResize ? element.clientWidth : -1;
       try {
         const result = instance.updateView(context);
         if (view) view.render(result);

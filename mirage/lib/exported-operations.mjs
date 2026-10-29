@@ -645,12 +645,17 @@ export function runExportedCloudFlow({
     context,
   };
   const runs = flowRunsOf(store);
-  if (!runs) return executeFlowDefinition(args);
+  const skipped = (answer) =>
+    answer?.status === 'Skipped' ? { status: 202, body: { status: 'Skipped', reason: answer.reason } } : answer;
+  if (!runs) {
+    const answer = executeFlowDefinition(args);
+    return typeof answer?.then === 'function' ? answer.then(skipped) : skipped(answer);
+  }
   // The native answer of a Power Pages flow request whose run waits before its Response is a guess (natively the request
   // waits for the Response until the portal times out), as is the flowrun triggertype text.
   return runTrackedFlow({ runs, processId: record.processId, trigger: 'PowerPages', ...args }).then((answer) =>
     answer?.status === 'Waiting'
       ? (answer.response ?? { status: 202, body: { runId: answer.runId, status: 'Waiting' } })
-      : answer,
+      : skipped(answer),
   );
 }

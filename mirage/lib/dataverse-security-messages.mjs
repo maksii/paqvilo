@@ -17,6 +17,7 @@ import {
   ownershipOf,
   privilegeDeniedError,
   privilegeName,
+  revokeAccess,
   seedTablePrivileges,
   setBusinessUnit,
   teamsOfUser,
@@ -592,7 +593,7 @@ function operations(api) {
             // ponytail: one access team per (template, record); the platform's team naming and cascade rules are not modelled.
             const org = organizationRecord(store);
             team = {
-              teamid: uuidV5(template.teamtemplateid, `access-team:${id}`),
+              teamid: store.ids.uuid(),
               name: template.teamtemplatename ?? '',
               teamtype: ACCESS_TEAM,
               systemmanaged: true,
@@ -624,18 +625,32 @@ function operations(api) {
       kind: 'action',
       binding: 'entity',
       entity: 'systemuser',
-      // ponytail: the access team is kept when its last member leaves; the platform's cleanup is not modelled.
       handle: async (c) => {
         await write(() => ensureTeamTemplates(store));
-        const { id, template } = recordTeamContext(c);
+        const { mapping, id, template } = recordTeamContext(c);
         const memberId = c.target.id;
-        await write(() => {
+        await write(async () => {
           const team = accessTeamOf(store, template.teamtemplateid, id);
-          if (team)
-            removeWhere(
-              tableOf(store, 'teammembership'),
-              (m) => sameId(refId(m.teamid), team.teamid) && sameId(refId(m.systemuserid), memberId),
-            );
+          if (!team) return;
+          const memberships = tableOf(store, 'teammembership');
+          let removed = false;
+          for (let index = memberships.length - 1; index >= 0; index--) {
+            const member = memberships[index];
+            if (sameId(refId(member.teamid), team.teamid) && sameId(refId(member.systemuserid), memberId)) {
+              store.removeRow('teammembership', memberships, index);
+              removed = true;
+            }
+          }
+          if (!removed || memberships.some((member) => sameId(refId(member.teamid), team.teamid))) return;
+          // Microsoft documents final-member removal as removing the team's
+          // record share and deleting the system-managed access team. The
+          // enclosing transaction publishes both removals together.
+          await revokeAccess(store, {
+            target: { id, logical: mapping.logicalName },
+            principal: { id: team.teamid, logical_name: 'team' },
+          });
+          const teams = tableOf(store, 'team');
+          store.removeRow('team', teams, teams.indexOf(team));
         });
         return { status: 204 };
       },

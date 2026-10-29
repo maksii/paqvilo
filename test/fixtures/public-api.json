@@ -70,6 +70,7 @@
       "runSessionMatrix",
       "runStorageContract", "STORAGE_CONTRACT_CASES",
       "fixedClock", "sequentialIds", "createScheduler",
+      "createFixtureRecipes",
       "signInContext",
       "signInHeaders"
     ],
@@ -105,6 +106,9 @@
     "paqvilo/mirage/fixtures": [
       "formatMockRecord",
       "mergeDataset",
+      "generateDataset", "summarizeDataset", "generateSchemaDeclarations", "remapDatasetIdentities",
+      "buildPermissionModel", "comparePermissionModels", "comparePluginRegistrations",
+      "parsePluginDocument", "importSolutionPlugins", "inspectFlowExpression", "evaluateFlowTriggerConditions",
       "findDanglingLookups",
       "schemaViolations",
       "fieldIndexFromMappings",

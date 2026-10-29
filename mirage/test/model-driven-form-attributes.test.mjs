@@ -13,6 +13,32 @@ const fields = {
 const xml =
   '<form><header><rows><row><cell><control id="header_x_status" datafieldname="x_status"/></cell></row></rows></header><tabs><tab name="general"><columns><column><sections><section name="main"><rows><row><cell><control id="x_name" datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>';
 
+test('subgrid source visibility combines cell and control booleans like bound fields', () => {
+  for (const [cell, control, expected] of [
+    [undefined, undefined, true],
+    [undefined, 'false', false],
+    [undefined, '0', false],
+    ['true', '1', true],
+    ['1', 'true', true],
+    ['false', 'true', false],
+    ['0', '1', false],
+    ['1', 'invalid', false],
+  ]) {
+    const attribute = (value) => (value === undefined ? '' : ` visible="${value}"`);
+    const form = compileForm(
+      {
+        id: 'invented-subgrid',
+        xml: `<form><tabs><tab name="general"><columns><column><sections><section><rows><row><cell${attribute(cell)}><control id="children" classid="{E7A81278-8635-4d9e-8D4D-59480B391C5B}"${attribute(control)}><parameters><TargetEntityType>x_child</TargetEntityType></parameters></control></cell></row></rows></section></sections></column></columns></tab></tabs></form>`,
+      },
+      {},
+    );
+    const compiled = form.tabs[0].sections[0].fields[0];
+    assert.equal(compiled.visible, expected, `cell=${cell}, control=${control}`);
+    assert.equal(compiled.subgrid.entity, 'x_child');
+    assert.equal(compiled.sourceControl.id, 'children');
+  }
+});
+
 function runtime(extra = {}) {
   const form = compileForm({ id: 'invented-form', name: 'Information', xml }, fields);
   const table = { entity: 'x_item', idColumn: 'x_itemid', nameColumn: 'x_name', fields };

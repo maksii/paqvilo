@@ -601,3 +601,28 @@ test('standalone: CancelAllCloudFlowRuns cancels the waiting run and removes its
   const late = await simApi('POST', `/flow-waits/${wait.id}`, { outcome: 'Approve' });
   assert.equal(late.status, 404, 'a cancelled run has no wait to answer');
 });
+
+test('a child flow filtered by its trigger condition creates no child history or fabricated Response', async (t) => {
+  const flows = {
+    [FLOW]: {
+      triggers: manual,
+      actions: {
+        Child: { type: 'Workflow', inputs: { host: { workflowReferenceName: CHILD }, body: {} } },
+        Rejected: {
+          type: 'Response',
+          runAfter: { Child: ['Failed'] },
+          inputs: { statusCode: 409, body: "@outputs('Child')" },
+        },
+      },
+    },
+    [CHILD]: {
+      triggers: { manual: { type: 'Request', kind: 'Button', conditions: [{ expression: '@false' }] } },
+      actions: { Reply: { type: 'Response', inputs: { body: 'must not answer' } } },
+    },
+  };
+  const { runs, start } = await unit(t, flows);
+  const result = await start(FLOW);
+  assert.equal(result.status, 409);
+  assert.equal(result.body.error.code, 'ChildFlowNotStarted');
+  assert.equal(runs.list({ processId: CHILD }).length, 0);
+});

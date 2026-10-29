@@ -27,6 +27,7 @@ The [CLI guide](cli.md) covers command help, quoting on Windows/Linux, Unicode a
 | Understand support and project boundaries                     | [Architecture](architecture.md)                                                           |
 | Contribute to the toolkit                                     | [Contributing](../CONTRIBUTING.md)                                                        |
 | Maintain releases, security checks and hosting                | [Repository maintenance](repository-admin.md)                                             |
+| Explore the projects that inspired toolkit features           | [Kudos](kudos.md)                                                                         |
 
 ## Runtime reference
 

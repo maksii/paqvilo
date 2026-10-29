@@ -14,6 +14,7 @@ import { redactSecrets } from './sim-messaging-routes.mjs';
 import { inspectFlowTrigger, runTrackedFlow, triggerPrincipal, validateFlowInput } from './flow-runtime.mjs';
 import { flowTriggersOf, flowCallbackUrl, verifyFlowCallback } from './flow-triggers.mjs';
 import { runOwned } from './dataverse-transaction-context.mjs';
+import { isExactNumeric, parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
 
 const MAX_BODY = 64 * 1024;
 const PREFIX = /^\/(?:_sim|__sim)\/api(?=\/|$)/;
@@ -23,22 +24,25 @@ const failure = (status, code, message) => Object.assign(new Error(message), { s
 
 function send(res, status, value, headers = {}) {
   res.writeHead(status, { ...headers, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-  res.end(JSON.stringify(redactSecrets(value)));
+  res.end(stringifyExactJson(redactSecrets(value)));
 }
 async function body(req) {
-  let text = '';
+  const chunks = [];
+  let size = 0;
   for await (const chunk of req) {
-    text += chunk;
-    if (text.length > MAX_BODY) throw failure(413, 'PayloadTooLarge', 'The request body is too large.');
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += bytes.length;
+    if (size > MAX_BODY) throw failure(413, 'PayloadTooLarge', 'The request body is too large.');
+    chunks.push(bytes);
   }
-  if (!text) return {};
+  if (!size) return {};
   let value;
   try {
-    value = JSON.parse(text);
+    value = parseExactJson(Buffer.concat(chunks, size).toString('utf8'));
   } catch {
     throw failure(400, 'InvalidRequest', 'The request body must be JSON.');
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value))
+  if (!value || typeof value !== 'object' || Array.isArray(value) || isExactNumeric(value))
     throw failure(400, 'InvalidRequest', 'The request body must be a JSON object.');
   return value;
 }
@@ -60,7 +64,7 @@ async function startRun(api, processId, input, { kinds, trigger }) {
       'FlowTriggerUnsupported',
       `This route starts ${kinds.join(', ')} flows; this flow's trigger is ${inspected.kind}${inspected.supported ? '' : ' (' + inspected.errors.join(' ') + ')'}.`,
     );
-  if (!input || typeof input !== 'object' || Array.isArray(input))
+  if (!input || typeof input !== 'object' || Array.isArray(input) || isExactNumeric(input))
     throw failure(400, 'InvalidRequest', 'The flow input must be a JSON object.');
   const store = api.store,
     transact = (fn) => store.transact(fn, { cloneResult: false });
@@ -263,6 +267,10 @@ export function createFlowRoutes({ api, csrf, resumeRun = api?.resumeRun ?? null
           kinds: ['manual', 'http', 'recurrence', 'connector'],
           trigger: 'Manual',
         });
+        if (result?.status === 'Skipped') {
+          send(res, 202, { runId: null, status: 'Skipped', reason: result.reason });
+          return true;
+        }
         send(res, 201, {
           ...(runs.get(runId) ? { ...runs.get(runId), journal: undefined } : { runId }),
           ...(Number.isInteger(result?.status)

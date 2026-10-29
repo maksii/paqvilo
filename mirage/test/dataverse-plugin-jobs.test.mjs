@@ -285,9 +285,11 @@ describe('plugintracelog follows organization.plugintracelogsetting', () => {
       await assert.rejects(write(failing, 'loud'), /Invented trace failure/);
       assert.equal(
         failing.store.tableRows('plugintracelog').length,
-        0,
-        'a rolled-back write takes its trace row with it',
+        1,
+        'the platform trace survives the failed business transaction',
       );
+      assert.equal(failing.store.tableRows('contoso_widget').length, 0);
+      assert.equal(failing.store.tableRows('plugintracelog')[0].exceptiondetails, 'Invented trace failure');
     } finally {
       await failing.close();
     }

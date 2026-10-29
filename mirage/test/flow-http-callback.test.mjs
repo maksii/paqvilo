@@ -3,6 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { Readable } from 'node:stream';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createScheduler, fixedClock, sequentialIds, storeScheduler } from '../lib/runtime-clock.mjs';
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
@@ -54,7 +55,7 @@ const performed = {
   actions: { Note: { type: 'Compose', runAfter: {}, inputs: 'fired' } },
 };
 
-async function host(t) {
+async function host(t, { httpDefinition = HTTP_DEFINITION } = {}) {
   const clock = fixedClock(),
     notes = [];
   const store = await new DataStore({ state: emptyState(), clock, ids: sequentialIds() }).init();
@@ -63,7 +64,7 @@ async function host(t) {
   t.after(() => scheduler.close());
   const connectors = createConnectorRuntime({ store, scheduler, clock });
   const workflows = new Map([
-      [HTTP_FLOW, wrap(HTTP_DEFINITION)],
+      [HTTP_FLOW, wrap(httpDefinition)],
       [PERFORMED, wrap(performed)],
     ]),
     identities = new Map();
@@ -115,8 +116,114 @@ async function host(t) {
     const text = await response.text();
     return { status: response.status, body: text ? JSON.parse(text) : null };
   };
-  return { store, runs, runner, notes, call, scheduler };
+  return { store, runs, runner, notes, call, scheduler, origin, routes };
 }
+
+test('callback and on-demand HTTP inputs and responses preserve exact numeric tokens', async (t) => {
+  const httpDefinition = structuredClone(HTTP_DEFINITION);
+  httpDefinition.triggers.request.inputs.schema = {
+    type: 'object',
+    required: ['x_count', 'x_fraction'],
+    properties: { x_count: { type: 'integer' }, x_fraction: { type: 'number' } },
+  };
+  httpDefinition.actions.Reply.inputs.body = {
+    count: "@triggerBody()?['x_count']",
+    text: "@string(triggerBody()?['x_count'])",
+    fraction: "@triggerBody()?['x_fraction']",
+    next: "@add(triggerBody()?['x_count'], 1)",
+  };
+  const { call, origin } = await host(t, { httpDefinition });
+  const issued = await call('POST', `/_sim/api/flow-triggers/${HTTP_FLOW}/callback-url`, undefined, {
+    'x-sim-csrf': CSRF,
+  });
+  const input = '{"x_count":9007199254740993,"x_fraction":0.1000000000000000000000000001}';
+  const expected =
+    '{"count":9007199254740993,"text":"9007199254740993","fraction":0.1000000000000000000000000001,"next":9007199254740994}';
+  for (const [path, payload, status] of [
+    [issued.body.url, input, 200],
+    [`${origin}/_sim/api/flow-runs`, `{"processId":"${HTTP_FLOW}","input":${input}}`, 201],
+  ]) {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-sim-csrf': CSRF },
+      body: payload,
+    });
+    assert.equal(response.status, status);
+    const text = await response.text();
+    assert.ok(text.includes(expected), 'exact input digits and response tokens survive the actual route');
+    assert.ok(!text.includes('DataverseNumeric'), 'internal numeric records never escape in public JSON');
+  }
+});
+
+test('exact numeric JSON scalars cannot masquerade as callback bodies or manual trigger input objects', async (t) => {
+  for (const schema of [undefined, {}])
+    await t.test(schema ? 'empty schema' : 'absent schema', async (inner) => {
+      const httpDefinition = structuredClone(HTTP_DEFINITION);
+      if (schema) httpDefinition.triggers.request.inputs.schema = schema;
+      else delete httpDefinition.triggers.request.inputs.schema;
+      const { call, runs, origin } = await host(inner, { httpDefinition });
+      const issued = await call('POST', `/_sim/api/flow-triggers/${HTTP_FLOW}/callback-url`, undefined, {
+        'x-sim-csrf': CSRF,
+      });
+      for (const number of ['1', '9007199254740993', '0.1000000000000000000000000001']) {
+        for (const [path, body] of [
+          [issued.body.url, number],
+          [`${origin}/_sim/api/flow-runs`, `{"processId":"${HTTP_FLOW}","input":${number}}`],
+        ]) {
+          const response = await fetch(path, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-sim-csrf': CSRF },
+            body,
+          });
+          assert.equal(response.status, 400);
+          assert.equal((await response.json()).error.code, 'InvalidRequest');
+        }
+      }
+      assert.equal(runs.list().length, 0);
+    });
+});
+
+test('flow request chunks preserve split UTF-8 characters and enforce the limit on received bytes', async (t) => {
+  const { call, routes, runs, origin } = await host(t);
+  const issued = await call('POST', `/_sim/api/flow-triggers/${HTTP_FLOW}/callback-url`, undefined, {
+    'x-sim-csrf': CSRF,
+  });
+  const request = async (chunks) => {
+    const req = Object.assign(Readable.from(chunks), { method: 'POST', headers: { host: new URL(origin).host } });
+    let status, text;
+    await routes(
+      req,
+      {
+        writeHead(code) {
+          status = code;
+        },
+        end(value) {
+          text = value;
+        },
+      },
+      new URL(issued.body.url),
+    );
+    return { status, body: JSON.parse(text) };
+  };
+  const name = 'caf\u00e9 \u{1f680}',
+    bytes = Buffer.from(JSON.stringify({ x_name: name })),
+    splitAccent = bytes.indexOf(Buffer.from('\u00e9')) + 1,
+    splitEmoji = bytes.indexOf(Buffer.from('\u{1f680}')) + 2;
+  assert.deepEqual(
+    await request([
+      bytes.subarray(0, splitAccent),
+      bytes.subarray(splitAccent, splitEmoji),
+      bytes.subarray(splitEmoji),
+    ]),
+    { status: 200, body: { hello: name } },
+  );
+  const oversized = JSON.stringify({ x_name: '\u6f22'.repeat(22000) });
+  assert.ok(oversized.length < 64 * 1024 && Buffer.byteLength(oversized) > 64 * 1024);
+  const rejected = await request([Buffer.from(oversized)]);
+  assert.equal(rejected.status, 413);
+  assert.equal(rejected.body.error.code, 'PayloadTooLarge');
+  assert.equal(runs.list().length, 1, 'the refused body starts no second flow run');
+});
 
 test('the signed callback URL runs the flow; a bad signature, another method or a body outside the schema is refused', async (t) => {
   const { store, runs, call } = await host(t);

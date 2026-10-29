@@ -226,10 +226,34 @@ test(
     await page.keyboard.press('Alt+Shift+P');
     const css = path.join(directory, 'portal/web-files/demo.css');
     await fs.appendFile(css, '\nbody{--demo-source-proof:verified;}\n');
-    await page.waitForFunction(
-      () =>
-        document.body && getComputedStyle(document.body).getPropertyValue('--demo-source-proof').trim() === 'verified',
-    );
+    await page
+      .waitForFunction(
+        () =>
+          document.body &&
+          getComputedStyle(document.body).getPropertyValue('--demo-source-proof').trim() === 'verified',
+      )
+      .catch(async (cause) => {
+        const diagnostic = await page
+          .evaluate(async () => {
+            const read = (route) => fetch(route, { signal: AbortSignal.timeout(3000) });
+            const status = await read('/_sim/api/status').then((response) => response.json());
+            const diagnostics = await read('/_sim/api/diagnostics').then((response) => response.json());
+            const css = await read('/demo.css').then((response) => response.text());
+            return {
+              documentRevision: window.__portalSimulation?.revision,
+              streamState: window.__portalSimulation?.reloadStream?.readyState,
+              runtimeRevision: status.revision,
+              reloading: status.reloading,
+              pendingReload: status.pendingReload,
+              diagnosticCodes: (diagnostics.diagnostics ?? []).map((entry) => entry.code),
+              cssContainsEdit: css.includes('--demo-source-proof:verified'),
+            };
+          })
+          .catch((error) => ({ diagnosticFailure: error.name }));
+        t.diagnostic(`Demo source reload: ${JSON.stringify(diagnostic)}`);
+        await evidence('demo-source-reload-failure').catch(() => {});
+        throw cause;
+      });
     await page.goto(url + '/approach/out-of-the-box/');
     await page.locator('.entity-grid tbody tr[data-id]').first().waitFor();
     assert.equal(await page.locator('.entity-grid tbody tr[data-id]').count(), 10);

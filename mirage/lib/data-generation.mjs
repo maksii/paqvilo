@@ -12,6 +12,7 @@ import { resolvePreset } from './presets.mjs';
 import { fieldIndexFromMappings, formatViolations, schemaViolations } from './schema-validation.mjs';
 import { validatePersonaCatalog, mergePersonaCatalogs } from './persona-catalog.mjs';
 import { membershipsForRoles } from './permissions.mjs';
+import { assertDatasetAlternateKeys } from './alternate-key-values.mjs';
 import { guidKey } from './dataverse-values.mjs';
 
 const clone = (value) => structuredClone(value);
@@ -148,6 +149,17 @@ export function mergeDataset(
   }
   mergeMappings(result.mappings, fragment.mappings);
   mergeRows(result, fragment.tables, report.generated);
+  assertDatasetAlternateKeys(
+    result.mappings,
+    result.tables,
+    new Set([
+      ...Object.keys(basePreset?.tables ?? {}),
+      ...Object.keys(fragment.tables ?? {}),
+      ...Object.keys(basePreset?.mappings ?? {}),
+      ...Object.keys(fragment.mappings ?? {}),
+    ]),
+    result.settings?.collation,
+  );
   let catalog = result.personaCatalog;
   if (basePreset?.personaCatalog !== undefined)
     catalog = mergePersonaCatalogs(
