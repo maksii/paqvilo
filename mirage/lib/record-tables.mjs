@@ -691,7 +691,7 @@ export class RecordPageSession {
             if (file !== lastFile || pageNumber !== lastPage) {
               entry =
                 allowed.has(file) && pageNumber <= allowed.get(file).pages && pageNumber > 0
-                  ? this.files[file]?.store.entries[pageNumber]
+                  ? this.files[file]?.store.entries.at(pageNumber)
                   : undefined;
               lastFile = file;
               lastPage = pageNumber;

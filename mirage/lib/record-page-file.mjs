@@ -54,6 +54,55 @@ async function* prefixChunks(fd, length, io = fs) {
   }
 }
 
+/** Page headers in typed columns: a file of millions of pages keeps 53 bytes per page instead of an object and a
+ * digest buffer. Index 0 is the unused slot before the first page; at(id) returns a fresh header view. */
+class PageInventory {
+  constructor() {
+    this.length = 1;
+    this.grow(1024);
+  }
+  grow(capacity) {
+    const copy = (Type, old, width = 1) => {
+      const next = new Type(capacity * width);
+      if (old) next.set(old);
+      return next;
+    };
+    this.kinds = copy(Uint8Array, this.kinds);
+    this.counts = copy(Uint32Array, this.counts);
+    this.offsets = copy(Float64Array, this.offsets);
+    this.lengths = copy(Uint32Array, this.lengths);
+    this.rawLengths = copy(Uint32Array, this.rawLengths);
+    this.digests = copy(Uint8Array, this.digests, 32);
+    this.capacity = capacity;
+  }
+  push({ kind, count, offset, length, rawLength, digest }) {
+    if (this.length === this.capacity) this.grow(this.capacity * 2);
+    const id = this.length++;
+    this.kinds[id] = kind;
+    this.counts[id] = count;
+    this.offsets[id] = offset;
+    this.lengths[id] = length;
+    this.rawLengths[id] = rawLength;
+    this.digests.set(digest, id * 32);
+    return id;
+  }
+  at(id) {
+    if (!Number.isSafeInteger(id) || id < 1 || id >= this.length) return undefined;
+    return {
+      kind: this.kinds[id],
+      count: this.counts[id],
+      offset: this.offsets[id],
+      length: this.lengths[id],
+      rawLength: this.rawLengths[id],
+      digest: Buffer.from(this.digests.buffer, this.digests.byteOffset + id * 32, 32),
+    };
+  }
+  *[Symbol.iterator]() {
+    yield null;
+    for (let id = 1; id < this.length; id++) yield this.at(id);
+  }
+}
+
 export class RecordPageFile {
   constructor(file, fd, { writable = false, cacheBytes = 4 * 1024 * 1024, io = fs } = {}) {
     if (!Number.isSafeInteger(cacheBytes) || cacheBytes < 0) throw TypeError('Invalid record page cache budget');
@@ -66,7 +115,7 @@ export class RecordPageFile {
     this.io = io;
     this.bytes = 0;
     this.synced = 0;
-    this.entries = [null];
+    this.entries = new PageInventory();
     this.headers = createHash('sha256');
     this.cache = new Map();
     this.cacheLimit = cacheBytes;
@@ -297,8 +346,9 @@ export class RecordPageFile {
     return this.entries.length - 1;
   }
   page(id) {
-    if (!Number.isSafeInteger(id) || id < 1 || !this.entries[id]) throw damaged('Unknown record page');
-    return this.entries[id];
+    const entry = this.entries.at(id);
+    if (!entry) throw damaged('Unknown record page');
+    return entry;
   }
   read(id, { copy = true } = {}) {
     if (this.closed) throw Error('Record page file is closed');

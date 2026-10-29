@@ -164,7 +164,7 @@ test('inventory, bounds, truncation and index widths are verified independently 
   await assert.rejects(RecordPageFile.open(file, { ...descriptor, pages: 2 }), integrity);
   await assert.rejects(RecordPageFile.open(file, { ...descriptor, bytes: descriptor.bytes + 1 }), integrity);
   const bytes = fs.readFileSync(file);
-  const headerOffset = bytes.length - store.entries[1].length - 48;
+  const headerOffset = bytes.length - store.page(1).length - 48;
   bytes.writeUInt32LE(3, headerOffset + 4);
   fs.writeFileSync(file, bytes);
   const altered = { ...descriptor, sha256: createHash('sha256').update(bytes).digest('hex') };

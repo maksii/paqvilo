@@ -130,7 +130,7 @@ test('lookup and ordinary edits avoid target-table decoding and index rebuilds',
   const count = (kinds) => {
     store.flushRecords();
     return store.files.reduce(
-      (sum, file) => sum + file.store.entries.filter((entry) => entry && kinds.includes(entry.kind)).length,
+      (sum, file) => sum + [...file.store.entries].filter((entry) => entry && kinds.includes(entry.kind)).length,
       0,
     );
   };
@@ -448,7 +448,7 @@ test('a sparse table stores only ordinal holes and cannot masquerade as generate
 const pageCount = (store, kinds) => {
   store.flushRecords();
   return store.files.reduce(
-    (sum, file) => sum + file.store.entries.filter((entry) => entry && kinds.includes(entry.kind)).length,
+    (sum, file) => sum + [...file.store.entries].filter((entry) => entry && kinds.includes(entry.kind)).length,
     0,
   );
 };
