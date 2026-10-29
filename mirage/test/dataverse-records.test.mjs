@@ -462,6 +462,42 @@ test('entity GET by GUID and by alternate key, with 404 for a missing row', asyn
   assert.equal(missing.message, `widget With Id = ${MISSING} Does Not Exist`);
 });
 
+test('an organization-service lookup finds its target row through the primary key instead of scanning the target table', async () => {
+  const t = await setup();
+  let idReads = 0;
+  const ids = Array.from({ length: 2000 }, () => randomUUID());
+  for (const id of ids)
+    t.store.state.tables.widget.push(
+      Object.defineProperty({ name: 'Invented' }, 'widgetid', {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          idReads++;
+          return id;
+        },
+      }),
+    );
+  // An organization-service create names its lookup as { id, logical_name } and checks appendTo on that row.
+  const context = {
+    user: t.admin,
+    caller: t.admin,
+    url: new URL(ORIGIN),
+    origin: ORIGIN,
+    version: VERSION,
+    identity: { admin: true, id: t.admin.systemuserid, systemUserId: t.admin.systemuserid },
+  };
+  const bind = (name) =>
+    t.handlers.createInternal(context, 'gadget', {
+      name,
+      widgetid: { id: ids.at(-1), logical_name: 'widget' },
+    });
+  await bind('First');
+  idReads = 0;
+  await bind('Second');
+  assert.equal(t.store.state.tables.gadget.at(-1).widgetid.id, ids.at(-1));
+  assert.ok(idReads < 200, `One lookup bind read the id of ${idReads} target rows`);
+});
+
 test('POST creates with OData-EntityId, honours return=representation and binds absolute references', async () => {
   const t = await setup();
   const widget = await create(t, 'widgets', { name: 'Parent' });

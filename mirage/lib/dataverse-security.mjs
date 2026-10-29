@@ -1671,7 +1671,12 @@ function parentRowOf(store, logical, row) {
   const find = (table, id) => {
     const idColumn =
       store.state.mappings[table]?.idColumn ?? standardTableDef(table)?.primaryIdAttribute ?? `${table}id`;
-    const hit = (store.state.tables[table] ?? []).find((r) => sameId(r[idColumn], id) || sameId(r.activityid, id));
+    // A row keyed by the id is found through the primary key index; the scan also finds a row by its activityid.
+    const mapping = store.state.mappings[table];
+    const keyed =
+      mapping && typeof id === 'string' ? store.primaryKeySubset({ ...mapping, logicalName: table }, [id]) : null;
+    const hit =
+      keyed?.[0] ?? (store.state.tables[table] ?? []).find((r) => sameId(r[idColumn], id) || sameId(r.activityid, id));
     return hit ? { logical: table, row: hit } : null;
   };
   if (logical === 'activityparty') {

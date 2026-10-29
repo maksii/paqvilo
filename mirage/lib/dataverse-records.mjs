@@ -2517,7 +2517,11 @@ export function createRecordHandlers({
       } catch {
         continue;
       }
-      const row = store.tableRows(target.logicalName).find((r) => guidKey(r[target.idColumn]) === guidKey(value.id));
+      // The primary key index answers the target row; a table without one is scanned.
+      const keyed = typeof value.id === 'string' ? store.primaryKeySubset(target, [value.id]) : null;
+      const row = keyed
+        ? keyed[0]
+        : store.tableRows(target.logicalName).find((r) => guidKey(r[target.idColumn]) === guidKey(value.id));
       authorize(c, target.logicalName, 'appendto', target, row);
     }
   }
