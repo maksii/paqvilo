@@ -61,6 +61,11 @@
   declaration-only helpers; preserve strict content, authentication, denial and external-asset acceptance checks.
 - Remove verification's temporary copy asynchronously, so queued Windows directory-handle releases can finish, and retry
   a profile file the exited browser still holds with a linear backoff of up to 11 s.
+- Run a code app's module scripts in document order under `codeApps()`, as the browser does without it, so an
+  application module never runs before an earlier inline script. The code apps workbench launches each app in a new
+  frame, so a dev-server reload of the previous document cannot drop applied query parameters.
+- Scan FetchXML and form XML markup in linear time, with the same results, on unterminated comments, tags and
+  attributes.
 - Extend regressions for crowded cards, frame shortcuts, dynamic modal/quick-view identities, nested editors and
   owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy:
   a tab or popup whose interception setup fails or is cancelled closes alone, healthy tabs keep their drafts, watchers
