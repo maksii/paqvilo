@@ -49,7 +49,81 @@ test('materializing source forms detaches records without copying immutable XML 
   assert.notEqual(row, component.row);
   row.formxml = '<form>Local</form>';
   assert.equal(component.row.formxml, xml);
-  assert.equal(store.state.dataverse.sourceSolutionComponents.baseline['systemform/' + FORM].row.formxml, xml);
+  assert.deepEqual(store.state.dataverse.sourceSolutionComponents.baseline['systemform/' + FORM], {
+    component: { logical: 'systemform', id: FORM },
+  });
+});
+
+test('persisted source baselines hold identities only, so row writes do not copy or compare source rows', async (t) => {
+  const xml = (text) => '<form>' + text.repeat(20000) + '</form>';
+  let forms = [1, 2, 3].map((n) => ({
+    logical: 'systemform',
+    kind: 'systemform',
+    id: FORM.slice(0, -1) + n,
+    row: { formid: FORM.slice(0, -1) + n, name: 'Source ' + n, description: 'Source text', formxml: xml('Invented ') },
+  }));
+  const store = new DataStore({ state: emptyState() });
+  const adapter = createSourceSolutionComponentStorage({ store, components: () => forms });
+  t.after(adapter.close);
+  adapter.materialize();
+  const section = JSON.stringify(store.state.dataverse);
+  assert.ok(section.length < 2000, `Source rows stay out of the dataverse section: ${section.length} bytes`);
+  await store.update('systemform', forms[0].id, { name: 'Local 1' }, ADMIN);
+  assert.deepEqual(store.state.dataverse.sourceSolutionComponents.overlays['systemform/' + forms[0].id], {
+    values: { name: 'Local 1' },
+    unset: [],
+  });
+
+  // A restart restores identities and overlays; a later source change still reaches unedited columns.
+  const restarted = new DataStore({ state: JSON.parse(JSON.stringify(store.state)) });
+  forms = forms.map((form) => ({
+    ...form,
+    row: { ...form.row, description: 'Changed source', formxml: xml('Next ') },
+  }));
+  const again = createSourceSolutionComponentStorage({ store: restarted, components: () => forms });
+  t.after(again.close);
+  again.materialize();
+  const rows = new Map(restarted.state.tables.systemform.map((row) => [row.formid, row]));
+  assert.equal(rows.get(forms[0].id).name, 'Local 1');
+  assert.equal(rows.get(forms[0].id).description, 'Changed source');
+  assert.equal(rows.get(forms[1].id).name, 'Source 2');
+  assert.equal(rows.get(forms[1].id).formxml, xml('Next '));
+
+  // A write against a copied baseline (an isolated working state) still records a sparse delta.
+  const settings = restarted.state.dataverse.sourceSolutionComponents;
+  settings.baseline = { ...settings.baseline };
+  await restarted.update('systemform', forms[1].id, { description: 'Local 2' }, ADMIN);
+  assert.deepEqual(settings.overlays['systemform/' + forms[1].id], { values: { description: 'Local 2' }, unset: [] });
+});
+
+test('legacy baselines with stored source rows keep local edits apart from later source changes', (t) => {
+  const old = { formid: FORM, name: 'Source', description: 'Old source', formxml: '<form>Old</form>' };
+  const state = emptyState();
+  state.tables.systemform = [{ ...old, name: 'Local edit', __simVersion: 3 }];
+  state.dataverse = {
+    sourceSolutionComponents: {
+      version: 1,
+      baseline: {
+        ['systemform/' + FORM]: { component: { logical: 'systemform', kind: 'systemform', id: FORM }, row: old },
+      },
+      overlays: {},
+    },
+  };
+  const store = new DataStore({ state });
+  const component = {
+    logical: 'systemform',
+    kind: 'systemform',
+    id: FORM,
+    row: { ...old, description: 'New source', formxml: '<form>New</form>' },
+  };
+  const adapter = createSourceSolutionComponentStorage({ store, components: () => [component] });
+  t.after(adapter.close);
+  adapter.materialize();
+  const row = store.state.tables.systemform[0];
+  assert.equal(row.name, 'Local edit');
+  assert.equal(row.description, 'New source');
+  assert.equal(row.formxml, '<form>New</form>');
+  assert.equal(store.state.dataverse.sourceSolutionComponents.baseline['systemform/' + FORM].row, undefined);
 });
 
 test('unchanged restored source rows keep identity, versions and read-only properties while sharing source text', (t) => {
@@ -179,6 +253,7 @@ test('active API solution layer does not leak into source deltas or resurrect af
   const adapter = createSourceSolutionComponentStorage({ store, components: () => source() });
   t.after(adapter.close);
   adapter.materialize();
+  const sourceOverlay = structuredClone(store.state.dataverse.sourceSolutionComponents.overlays[`appmodule/${APP}`]);
   const solutionId = '77777777-7777-4777-8777-777777777780';
   applySolutionPayloads(store.state, solutionId, source('Imported app'), {
     overwrite: true,
@@ -188,7 +263,7 @@ test('active API solution layer does not leak into source deltas or resurrect af
   assert.equal(store.state.tables.appmodule[0].name, 'Imported app');
   await store.update('appmodule', APP, { name: 'Imported local edit' }, ADMIN);
   adapter.materialize();
-  assert.equal(store.state.dataverse.sourceSolutionComponents.overlays[`appmodule/${APP}`], undefined);
+  assert.deepEqual(store.state.dataverse.sourceSolutionComponents.overlays[`appmodule/${APP}`], sourceOverlay);
   removeSolutionPayloads(store.state, [solutionId]);
   adapter.materialize();
   assert.equal(store.state.tables.appmodule[0].name, 'Source app');
