@@ -11,7 +11,7 @@ import { platformSettingEntries } from '../lib/platform-settings.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 import { mirageSettings } from '../../lense/config-schema.mjs';
 import { profileFixture } from './fixtures/deployment-profiles.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { bootstrapReport, resolveReportInputs } from '../bootstrap-report.mjs';
 import { createMirageContext } from '../lib/mirage-context.mjs';
 import { classifyResponse, ciSummary } from '../render-sweep.mjs';
@@ -207,7 +207,7 @@ test('catalogue platform settings apply to embedded contexts and bootstrap repor
   assert.equal(status.platformSettings.find((row) => row.key === 'QueryLinkEntityLimit').origin, 'Catalogue');
 });
 test('HTTP scoped Web API FetchXML omission deduplicates roots and pages while explicit false keeps multiplicity', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-permission-query-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-permission-query-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [file, body] of Object.entries({
     'website.yml': 'adx_websiteid: site\nadx_name: Invented',

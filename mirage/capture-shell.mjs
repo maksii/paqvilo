@@ -6,6 +6,7 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { chromium } from 'playwright-core';
+import { windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { loadCatalogue, loadConfig } from '../lense/config.mjs';
 import { miragePaths, discoveries, samePath } from '../lense/commands/mirage.mjs';
 import { createSimulator } from './server.mjs';
@@ -43,11 +44,14 @@ export async function launchCaptureBrowser(channel) {
     await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
     const port = probe.address().port;
     await new Promise((resolve) => probe.close(resolve));
-    context = await chromium.launchPersistentContext(directory, {
-      headless: true,
-      ...(channel !== 'chromium' ? { channel } : {}),
-      args: [`--remote-debugging-port=${port}`],
-    });
+    context = await chromium.launchPersistentContext(
+      directory,
+      windowsLaunchOptions({
+        headless: true,
+        ...(channel !== 'chromium' ? { channel } : {}),
+        args: [`--remote-debugging-port=${port}`],
+      }),
+    );
     return {
       cdp: `http://127.0.0.1:${port}`,
       close: async () => {

@@ -11,7 +11,8 @@ import { prepareClrRuntime, validateClrDescriptor, dispatchSdkCall, recordToSdkE
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { sdkValueToRecord, localOrganizationService } from '../lib/local-organization-service.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
 const user = '10000000-0000-0000-0000-000000000001',
   rowId = '20000000-0000-0000-0000-000000000001',
   stepId = '30000000-0000-0000-0000-000000000001';
@@ -217,7 +218,7 @@ test(
   { skip: CLR_SKIP },
   async (t) => {
     const sdk = clrSdk(),
-      root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-fixture-'));
+      root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-fixture-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     const source = path.join(root, 'Original.cs');
     await fs.writeFile(

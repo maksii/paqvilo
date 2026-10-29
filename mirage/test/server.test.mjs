@@ -6,6 +6,7 @@ import os from 'node:os';
 import http from 'node:http';
 import { createHash } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
+import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('embedded simulator rejects empty and malformed ports before reading sources', async () => {
   for (const port of ['', ' ', null, true, -1, '0x10', '1.5', 65536]) {
@@ -87,7 +88,7 @@ test('startup ownership keeps caller initial records and simulator settings deta
 });
 
 async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-server-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-server-'));
   const files = {
     'website.yml': 'adx_name: Integration\nadx_websiteid: site',
     'sitesetting.yml': ['contact', 'account']
@@ -148,8 +149,7 @@ async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}
   });
   t.after(async () => {
     await app.close();
-    const resolved = await fs.realpath(dir);
-    assert.ok(resolved.startsWith(await fs.realpath(os.tmpdir())));
+    const resolved = await assertTemporaryDirectory(dir);
     await fs.rm(resolved, { recursive: true, force: true });
   });
   const state = await (await fetch(`${app.url}/__sim/api/state?summary=1`)).json();

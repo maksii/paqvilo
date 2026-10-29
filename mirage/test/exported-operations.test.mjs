@@ -17,7 +17,7 @@ import {
 import { validatePack } from '../lib/preset-registry.mjs';
 import { createSimulator } from '../server.mjs';
 import { isExactNumeric, stringifyExactJson } from '../lib/exact-numeric.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('modern flow imports bound the opened file and reject growth during its read', async (t) => {
   const { dir } = await source(t, '');
@@ -116,7 +116,7 @@ test('exported server connector writes exact raw literals and returns raw-number
 
 const role = 'd0000000-0000-4000-8000-000000000001';
 async function source(t, code) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-operation-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-operation-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'logic.js');
   await fs.writeFile(file, code);

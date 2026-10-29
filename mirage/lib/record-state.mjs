@@ -27,7 +27,7 @@ export function encodeRecordReferences(entry, { directory, ownerKey } = {}) {
         let target = directory;
         if (directory)
           try {
-            target = fs.realpathSync(directory);
+            target = fs.realpathSync.native(directory);
           } catch (error) {
             if (error.code !== 'ENOENT') throw error;
           }

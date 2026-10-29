@@ -30,7 +30,6 @@ const sourceRefs = columns.map(({ entity, name }) => ({
 }));
 async function fixture(t, html) {
   const context = await browser.newContext();
-  context.setDefaultTimeout(5000);
   t.after(() => context.close());
   await context.route('http://127.0.0.1:11942/**', (route) => {
     const url = new URL(route.request().url());

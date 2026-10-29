@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // A run takes about a second; this bound only reports a hang (and its abort stops the child), whatever the runner's
 // --test-timeout. The fixture's own watchdog is longer still: it only ends an orphan and never decides the result.
@@ -14,7 +15,7 @@ test(
   'a bridge missing the requested tool is closed before baseline setup rejects',
   { timeout: RUN_TIMEOUT_MS },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline setup fixture '));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline setup fixture '));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const marker = path.join(directory, 'closed.txt'),
       server = path.join(directory, 'server.mjs');

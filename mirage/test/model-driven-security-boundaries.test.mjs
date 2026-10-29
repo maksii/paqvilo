@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const guid = (number) => `${String(number).padStart(8, '0')}-1111-4111-8111-111111111111`;
 const A = guid(1),
@@ -20,7 +20,7 @@ const field = (name, type = 'nvarchar', extra = '') =>
   `<attribute PhysicalName="${name}"><Name>${name}</Name><LogicalName>${name}</LogicalName><Type>${type}</Type>${extra}</attribute>`;
 
 async function fixture(t, enabled = true, presets, unflaggedCore = false) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-staff-boundary-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-staff-boundary-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const sourceDir = path.join(directory, 'portal'),
     solution = path.join(directory, 'solution');

@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { runAcceptance } from '../acceptance.mjs';
 import { navigationCommitBudget } from '../lib/navigation-budget.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { preserveNavigationEvidence } from '../test/navigation-evidence-fixture.mjs';
 
 function fixtureApi(pathname, res, fallback) {
   if (!pathname.startsWith('/__sim/api/')) return false;
@@ -46,15 +47,39 @@ async function navigationFixture(
     timeout = 4000,
     navigationCommitReserveMs,
     gateDocumentOnWrites = false,
+    controlledLateWrites = late,
+    scheduleDocumentResponse = setTimeout,
+    customizeContext = null,
   } = {},
 ) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-document-commit-'));
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-document-commit-'));
+  let flow;
+  ownedFixture(t).remove(async () => {
+    if (!t.passed && flow) {
+      const evidence = await preserveNavigationEvidence(root, flow);
+      t.diagnostic(`Preserved invented navigation diagnostics: ${evidence.files.join(', ')}`);
+    }
+    await fs.rm(root, { recursive: true, force: true });
+  });
   const historyChange =
     history === 'none' ? '' : history === 'hash' ? "location.hash='pending'" : "history.pushState({},'', '?pending=1')";
   const writes = `fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{})`;
   const form = `<form action="/submit" method="${redirect ? 'POST' : 'GET'}"><button id="save">Save</button></form>`;
-  const script = `document.querySelector('form').addEventListener('submit',event=>{${actionDelay ? `const end=Date.now()+${actionDelay};while(Date.now()<end){}` : ''}${noNavigation ? 'event.preventDefault();' : ''}${noCommit ? "fetch('/never').catch(()=>{});" : late ? '' : writes};setTimeout(()=>{${historyChange}},50);${late ? `setTimeout(()=>{${writes}},150);` : ''}})`;
+  const timerScript = `document.querySelector('form').addEventListener('submit',event=>{${actionDelay ? `const end=Date.now()+${actionDelay};while(Date.now()<end){}` : ''}${noNavigation ? 'event.preventDefault();' : ''}${late ? '' : writes};setTimeout(()=>{${historyChange}},50);${late ? `setTimeout(()=>{${writes}},150);` : ''}})`;
+  const script = noCommit
+    ? `document.querySelector('form').addEventListener('submit',event=>{${noNavigation ? 'event.preventDefault();' : ''}fetch('/never').catch(()=>{});fetch('/no-content-ready').then(response=>response.text()).then(()=>{${historyChange}})})`
+    : controlledLateWrites
+      ? `document.querySelector('form').addEventListener('submit',()=>{fetch('/late-writes-ready').then(response=>response.text()).then(()=>{${historyChange};${writes}})})`
+      : timerScript;
+  const documentRequested = Promise.withResolvers();
+  const lateGateFinished = Promise.withResolvers();
+  const writesObserved = Promise.withResolvers();
+  const readArrived = Promise.withResolvers();
+  const readObserved = Promise.withResolvers();
+  const historyObserved = Promise.withResolvers();
+  const historyReadFinished = Promise.withResolvers();
+  if (history === 'none') historyObserved.resolve();
+  const fixtureEvents = [];
   let observedWrites = 0;
   let releaseDocument;
   const writesArrived = new Promise((resolve) => {
@@ -65,23 +90,67 @@ async function navigationFixture(
     const pathname = new URL(req.url, 'http://fixture').pathname;
     if (fixtureApi(pathname, res, { events: [] })) return;
     if (pathname.startsWith('/slow-') || pathname === '/never') {
-      if (pathname.startsWith('/slow-') && ++observedWrites === 2) releaseDocument();
+      if (noCommit && pathname === '/never') {
+        fixtureEvents.push('read:/never');
+        readArrived.resolve();
+      }
+      if (pathname.startsWith('/slow-')) {
+        fixtureEvents.push('write:' + pathname);
+        if (++observedWrites === 2) releaseDocument();
+      }
       if (pathname !== '/never' && (completed || writeMs)) {
         const timer = setTimeout(() => res.end('done'), writeMs || 1000);
         res.once('close', () => clearTimeout(timer));
       }
       return;
     }
+    if (noCommit && pathname === '/no-content-ready') {
+      void Promise.all([
+        readArrived.promise,
+        readObserved.promise,
+        ...(noNavigation ? [] : [documentRequested.promise]),
+      ]).then(() => {
+        fixtureEvents.push('history-released');
+        res.end('ready');
+      });
+      return;
+    }
+    if (controlledLateWrites && pathname === '/late-writes-ready') {
+      void documentRequested.promise.then(() => {
+        fixtureEvents.push('late-writes-released');
+        res.end('ready');
+      });
+      return;
+    }
     res.setHeader('content-type', 'text/html');
+    if (noCommit && pathname === '/submit') {
+      fixtureEvents.push('navigation');
+      documentRequested.resolve();
+      void Promise.all([historyObserved.promise, historyReadFinished.promise]).then(() => {
+        fixtureEvents.push('document-response');
+        res.writeHead(204);
+        res.end();
+      });
+      return;
+    }
+    if (controlledLateWrites && pathname === '/submit') {
+      fixtureEvents.push('navigation');
+      documentRequested.resolve();
+      void Promise.all([writesArrived, lateGateFinished.promise, writesObserved.promise]).then(() => {
+        fixtureEvents.push('document-response');
+        res.end('<p id="done">Saved</p>' + (replacementRead ? "<script>fetch('/never').catch(()=>{})</script>" : ''));
+      });
+      return;
+    }
     if (pathname === '/submit' && gateDocumentOnWrites) {
       void writesArrived.then(() => res.end('<p id="done">Saved</p>'));
       return;
     }
     if (pathname === '/submit' || pathname.startsWith('/hop-')) {
-      const timer = setTimeout(
+      const timer = scheduleDocumentResponse(
         () => {
           if (resetNavigation) return req.socket.destroy();
-          if (noCommit || noContent) {
+          if (noContent) {
             res.statusCode = typeof noContent === 'number' ? noContent : 204;
             return res.end();
           }
@@ -125,16 +194,68 @@ async function navigationFixture(
   const result = await runAcceptance({
     localUrl: `http://127.0.0.1:${server.address().port}`,
     outputDir: path.join(root, 'evidence'),
-    timeout,
     navigationCommitReserveMs,
+    prepareContext:
+      noCommit || controlledLateWrites || customizeContext
+        ? async (context) => {
+            await customizeContext?.(context);
+            if (noCommit) {
+              let historyRecorded = false;
+              context.on('page', (page) => {
+                page.on('framenavigated', (frame) => {
+                  const url = new URL(frame.url());
+                  if (
+                    !historyRecorded &&
+                    frame === page.mainFrame() &&
+                    (url.hash === '#pending' || url.searchParams.get('pending') === '1')
+                  ) {
+                    historyRecorded = true;
+                    fixtureEvents.push('history-observed');
+                    historyObserved.resolve();
+                  }
+                });
+              });
+              context.on('request', (request) => {
+                if (new URL(request.url()).pathname === '/never') {
+                  fixtureEvents.push('read-observed:/never');
+                  readObserved.resolve();
+                }
+              });
+              context.on('requestfinished', (request) => {
+                if (new URL(request.url()).pathname === '/no-content-ready') {
+                  fixtureEvents.push('no-content-gate-read-finished');
+                  historyReadFinished.resolve();
+                }
+              });
+            }
+            if (!controlledLateWrites) return;
+            const observed = new Set();
+            context.on('request', (request) => {
+              const pathname = new URL(request.url()).pathname;
+              if (pathname === '/slow-one' || pathname === '/slow-two') {
+                fixtureEvents.push('write-observed:' + pathname);
+                observed.add(pathname);
+                if (observed.size === 2) writesObserved.resolve();
+              }
+            });
+            context.on('requestfinished', (request) => {
+              if (new URL(request.url()).pathname === '/late-writes-ready') {
+                fixtureEvents.push('gate-read-finished');
+                lateGateFinished.resolve();
+              }
+            });
+          }
+        : null,
     flows: [
       {
         name: 'Document boundary',
         steps: [
           { action: 'navigate', path: '/' },
           ...(child || embedded ? [{ action: 'visible', frame: '#child', selector: '#save' }] : []),
-          { action: 'click', selector: '#save', ...(embedded ? { frame: '#child' } : {}) },
-          { action: 'settle' },
+          // The budgets under test belong to the triggering action and its settlement; page loads keep the
+          // runner's default deadline, so a slow cold load cannot consume them.
+          { action: 'click', selector: '#save', timeout, ...(embedded ? { frame: '#child' } : {}) },
+          { action: 'settle', timeout },
           ...(!noCommit && !noContent && !resetNavigation && !noNavigation
             ? [{ action: 'visible', selector: '#done', ...(embedded ? { frame: '#child' } : {}) }]
             : []),
@@ -142,7 +263,8 @@ async function navigationFixture(
       },
     ],
   });
-  return result.flows[0];
+  flow = { ...result.flows[0], fixtureEvents };
+  return flow;
 }
 
 // Each test owns its loopback server and the browser runAcceptance launches, and mostly waits on fixture
@@ -179,6 +301,74 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       },
     );
 
+  test(
+    'a 204 negative flow reaches pending-read diagnostics without a fixture response timer',
+    HANG_GUARD,
+    async (t) => {
+      let releaseDocumentResponse;
+      const flow = await navigationFixture(t, {
+        noCommit: true,
+        timeout: 2500,
+        scheduleDocumentResponse: (callback) => {
+          releaseDocumentResponse = callback;
+        },
+        customizeContext: async (context) => {
+          // Pause this invented page's authored history timer; browser protocol, promises and the native action
+          // deadline continue normally. Neither history ordering nor a 204 response should need that fixture clock.
+          await context.addInitScript(() => {
+            globalThis.setTimeout = () => 0;
+          });
+          context.on('page', (page) => {
+            const locate = page.locator.bind(page);
+            page.locator = (...args) => {
+              const locator = locate(...args);
+              if (args[0] === '#save') {
+                const click = locator.click.bind(locator);
+                locator.click = async (...options) => {
+                  try {
+                    return await click(...options);
+                  } finally {
+                    // Release a legacy response timer after the actual action ends, so its timeout stays observable
+                    // without leaving the fixture's native navigation pending during failure capture or teardown.
+                    releaseDocumentResponse?.();
+                  }
+                };
+              }
+              return locator;
+            };
+          });
+        },
+      });
+      assert.equal(flow.passed, false);
+      assert.match(flow.error, /Portal requests did not settle.*GET.*never/);
+      assert.deepEqual(
+        flow.steps.map(({ action, passed }) => [action, passed]),
+        [
+          ['navigate', true],
+          ['click', true],
+          ['settle', false],
+        ],
+      );
+      assert.equal(flow.noContentNavigations?.length, 1);
+      assert.equal(flow.noContentNavigations[0].status, 204);
+      assert.deepEqual(
+        flow.pendingRequests.map(({ method, url }) => [method, new URL(url).pathname]),
+        [['GET', '/never']],
+      );
+      assert.equal(flow.navigationCancelledRequests?.length ?? 0, 0);
+      for (const event of [
+        'read:/never',
+        'read-observed:/never',
+        'history-observed',
+        'no-content-gate-read-finished',
+      ]) {
+        assert.ok(flow.fixtureEvents.includes(event), event);
+        assert.ok(flow.fixtureEvents.indexOf(event) < flow.fixtureEvents.indexOf('document-response'), event);
+      }
+      assert.ok(flow.fixtureEvents.indexOf('navigation') < flow.fixtureEvents.indexOf('history-released'));
+    },
+  );
+
   for (const child of [false, true])
     test(`redirect chains share one navigation hold (${child ? 'child' : 'main'} writes)`, HANG_GUARD, async (t) => {
       const flow = await navigationFixture(t, { redirect: true, history: 'none', child, writeMs: 15000 });
@@ -204,11 +394,26 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       `${crossOrigin ? 'cross-origin' : 'same-origin'} child document commits retire only their predecessor requests`,
       HANG_GUARD,
       async (t) => {
-        const flow = await navigationFixture(t, { embedded: true, crossOrigin, late: true });
+        const flow = await navigationFixture(t, {
+          embedded: true,
+          crossOrigin,
+          late: true,
+          controlledLateWrites: true,
+        });
         assert.equal(flow.passed, true, JSON.stringify(flow));
         assert.equal(flow.navigationCancelledRequests?.length, 2);
         assert.ok(flow.navigationCancelledRequests.every((row) => row.reason === 'document-replaced'));
         assert.deepEqual(flow.blockedRequests, []);
+        assert.equal(flow.fixtureEvents[0], 'navigation');
+        assert.equal(flow.fixtureEvents[1], 'late-writes-released');
+        assert.deepEqual(flow.fixtureEvents.slice(2, -1).sort(), [
+          'gate-read-finished',
+          'write-observed:/slow-one',
+          'write-observed:/slow-two',
+          'write:/slow-one',
+          'write:/slow-two',
+        ]);
+        assert.equal(flow.fixtureEvents.at(-1), 'document-response');
       },
     );
 
@@ -267,7 +472,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
   });
 
   test('acceptance distinguishes failed loopback writes from external proxy refusals', HANG_GUARD, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-acceptance-local-boundary-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-acceptance-local-boundary-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     const server = http.createServer((req, res) => {
       req.resume();
@@ -311,7 +516,6 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
         const result = await runAcceptance({
           localUrl: `http://127.0.0.1:${server.address().port}`,
           outputDir: path.join(directory, kind),
-          timeout: 3000,
           flows: [
             {
               name: kind,
@@ -500,7 +704,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
   });
 
   test('a previously completed comparable redirect chain extends the next commit reserve', HANG_GUARD, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-comparable-chain-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-comparable-chain-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     const markup = (writes) =>
       `<p id="done">Invented page</p><form action="/save" method="POST"><button id="save">Save</button></form>${writes ? `<script>document.querySelector('form').addEventListener('submit',()=>{fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{});})</script>` : ''}`;
@@ -531,16 +735,15 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     const result = await runAcceptance({
       localUrl: `http://127.0.0.1:${server.address().port}`,
       outputDir: path.join(directory, 'evidence'),
-      timeout: 5000,
       flows: [
         {
           name: 'Comparable chain',
           steps: [
             { action: 'navigate', path: '/' },
-            { action: 'click', selector: '#save' },
+            { action: 'click', selector: '#save', timeout: 5000 },
             { action: 'visible', selector: '#done' },
-            { action: 'click', selector: '#save' },
-            { action: 'settle' },
+            { action: 'click', selector: '#save', timeout: 5000 },
+            { action: 'settle', timeout: 5000 },
             { action: 'visible', selector: '#done' },
           ],
         },

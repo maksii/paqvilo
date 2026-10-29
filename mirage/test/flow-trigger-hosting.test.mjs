@@ -14,7 +14,7 @@ import { inspectFlowTrigger } from '../lib/flow-runtime.mjs';
 import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 import { createFlowRoutes } from '../lib/sim-flow-routes.mjs';
 import { PACK_EXPORTS } from '../lib/pack-exports.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // Recurrence and pack connector triggers are hosted by the trigger runner (opt-in: exported mode plus explicit
 // local activation); HTTP Request and manual flows start on demand through /_sim/api.
@@ -358,7 +358,7 @@ test('a Dataverse action trigger runs a tracked flow with the action inputs and 
     }).errors.join(' '),
     /Unsupported Dataverse action trigger parameter: x_other/,
   );
-  const file = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'flow-action-trigger-')), 'state.json');
+  const file = path.join(await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-action-trigger-')), 'state.json');
   ownedFixture(t).remove(() => fs.rm(path.dirname(file), { recursive: true, force: true }));
   const first = await host(t, { extra: { [PERFORMED]: wrap(definition) }, file });
   enable(first.overrides, PERFORMED);

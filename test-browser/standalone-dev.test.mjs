@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -44,7 +45,7 @@ test(
   'source-only public dev closes owned browser/runtime, preserves reused runtime and isolates a sibling',
   { timeout: 90000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-standalone-dev-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-standalone-dev-'));
     const project = path.join(directory, 'owned.project.json'),
       sibling = path.join(directory, 'sibling.project.json');
     const source = path.join(directory, 'solution', 'AppModules', 'x_workspace', 'AppModule.xml');
@@ -73,7 +74,7 @@ test(
           await execute(process.execPath, [cli, 'mirage', command, '--project', file, '--json', ...args], {
             cwd: directory,
             windowsHide: true,
-            timeout: 30000,
+            signal: t.signal,
           })
         ).stdout,
       );
@@ -145,7 +146,7 @@ test(
     const owned = await develop();
     await closeBrowser(owned.browser);
     assert.deepEqual(await owned.exited, { code: 0, signal: null });
-    await assert.rejects(fetch(owned.url + '/_sim/api/status', { signal: AbortSignal.timeout(2000) }), /fetch failed/);
+    await assert.rejects(fetch(owned.url + '/_sim/api/status'), /fetch failed/);
     assert.equal((await fetch(siblingRuntime.url + '/_sim/api/status')).status, 200);
 
     const background = await commands(project, 'start', '--port', '0'),

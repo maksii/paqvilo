@@ -111,7 +111,7 @@ test('analysis accepts explicitly aliased roots and rebases clone paths from a c
 test('native Git-root identity retains indexed-link refusals when legacy realpath preserves an alias spelling', async (t) => {
   const fixture = await tempDir('paqvilo-git-root-alias-');
   t.after(() => fs.rm(fixture, { recursive: true, force: true }));
-  const root = path.join(fixture, 'repository-with-a-long-directory-name'),
+  const root = path.join(fixture, 'repository-%COMSPEC%-!invented!-with-a-long-directory-name'),
     alias = path.join(fixture, 'repo-alias');
   const linked = path.join(root, 'mirage/lib/linked'),
     privateSource = path.join(root, '.paqvilo/private');
@@ -132,11 +132,16 @@ test('native Git-root identity retains indexed-link refusals when legacy realpat
   const requested = [alias];
   if (process.platform === 'win32') {
     // Read-only conversion uses the actual volume's 8.3 alias when available.
-    const short = spawnSync('cmd.exe', ['/d', '/s', '/c', `"for %I in ("${root}") do @echo %~sI"`], {
-      encoding: 'utf8',
-      windowsHide: true,
-      windowsVerbatimArguments: true,
-    });
+    const short = spawnSync(
+      'cmd.exe',
+      ['/d', '/v:off', '/s', '/c', '"for %I in ("%PAQ_TEST_SHORT_ROOT%") do @echo %~sI"'],
+      {
+        encoding: 'utf8',
+        windowsHide: true,
+        windowsVerbatimArguments: true,
+        env: { ...process.env, PAQ_TEST_SHORT_ROOT: root },
+      },
+    );
     assert.equal(short.status, 0);
     assert.equal(syncFs.realpathSync.native(short.stdout.trim()), syncFs.realpathSync.native(root));
     requested.push(short.stdout.trim());

@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { planLateQueryProfile, applyQueryProfile, restoreQueryProfile } from '../portal-harness/native-profile.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 const registry = () => ({
   messages: [{ name: 'RetrieveMultiple', sdkmessageid: 'rm' }],
   steps: [
@@ -48,7 +49,7 @@ test('late query profile preserves final stage and refuses ambiguous or foreign 
   assert.throws(() => planLateQueryProfile(source, 'observer'), /one active/);
 });
 test('journal recovers an interrupted conditional profile mutation and rejects unrelated configuration drift', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'paqvilo-profile-')),
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-profile-')),
     file = path.join(dir, 'lease.json');
   try {
     const source = registry(),

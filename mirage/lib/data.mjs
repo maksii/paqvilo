@@ -988,7 +988,7 @@ export class DataStore {
     if (this.temporaryRecordDirectory) {
       const directory = this.temporaryRecordDirectory;
       if (
-        dirname(directory) !== fsSync.realpathSync(tmpdir()) ||
+        dirname(directory) !== fsSync.realpathSync.native(tmpdir()) ||
         !basename(directory).startsWith('paqvilo-record-state-')
       )
         throw Error('Temporary record directory is outside its owned root');
@@ -1088,8 +1088,8 @@ export class DataStore {
     await mkdir(dirname(this.file), { recursive: true });
     const intendedRecords = resolve(this.file) + '.records';
     const recordDirectory = fsSync.existsSync(intendedRecords)
-      ? fsSync.realpathSync(intendedRecords)
-      : join(fsSync.realpathSync(dirname(intendedRecords)), basename(intendedRecords));
+      ? fsSync.realpathSync.native(intendedRecords)
+      : join(fsSync.realpathSync.native(dirname(intendedRecords)), basename(intendedRecords));
     if (this.recordSession && this.recordSession.directory !== recordDirectory) {
       await this.storage.assertUnchanged();
       const migrated = await compactRecordGraph(selectedState, recordDirectory, { stateOwner: this.file });
@@ -1549,7 +1549,7 @@ export class DataStore {
     if (!session?.ownedDirectory) return { skipped: 'unverified-directory' };
     if (this.file) {
       const intended = resolve(this.file) + '.records';
-      if (fsSync.lstatSync(intended).isSymbolicLink() || fsSync.realpathSync(intended) !== session.directory)
+      if (fsSync.lstatSync(intended).isSymbolicLink() || fsSync.realpathSync.native(intended) !== session.directory)
         return { skipped: 'directory-identity' };
     }
     const lockPath = this.file ? this.file + '.lock' : null,

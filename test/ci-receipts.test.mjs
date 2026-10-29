@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { tempDirSync } from './fixture.mjs';
 
 function ciFixture(t) {
@@ -16,7 +17,10 @@ function ciFixture(t) {
   };
   for (const file of ['scripts/ci.mjs', '.github/scripts/change-scope.mjs'])
     write(file, fs.readFileSync(new URL(`../${file}`, import.meta.url)));
-  write('scripts/ensure-dependencies.mjs', 'export const dependencyReadiness = () => ({ ready: true });');
+  write(
+    'scripts/ensure-dependencies.mjs',
+    'export const dependencyReadiness = () => ({ ready: true }); export const browserExecutable = async () => ({ path: null });',
+  );
   write(
     'scripts/verified-download.mjs',
     'export function downloadVerifiedArchive() { throw new Error("Unexpected download"); }',
@@ -165,7 +169,9 @@ test(
           arch: process.arch,
           nodeOptions: env.NODE_OPTIONS ?? '',
           playwright: '1.0.0',
-          chromium: null,
+          browserChannel: 'chromium',
+          browserExecutable: null,
+          browserHeadlessShell: null,
           tedious: null,
           clrSdk: null,
           dotnet: dotnet.status === 0 ? dotnet.stdout.trim() : null,
@@ -235,4 +241,160 @@ test('parallel validation runs every step concurrently and reports each failure 
   assert.ok(fs.existsSync(path.join(directory, 'after')), 'a failed step does not stop the remaining steps');
   assert.equal(fs.existsSync(path.join(directory, 'unreached')), false, 'a failed command ends its own step');
   assert.match(fs.readFileSync(path.join(logs, 'fails.log'), 'utf8'), /Invented step failure/);
+});
+
+test('SDK preparation command installs every npm client and invokes fixture preparation', { timeout: 90_000 }, (t) => {
+  const { directory, write, env } = ciFixture(t);
+  write('global.json', JSON.stringify({ sdk: { version: '10.0.114' } }));
+  const preload = write(
+    'pinned-dotnet.mjs',
+    `import cp from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    const original = cp.spawnSync;
+    cp.spawnSync = (command, args, options) => command === 'dotnet' && args[0] === '--version'
+      ? { status: 0, stdout: '10.0.114\\n' } : original(command, args, options);
+    syncBuiltinESMExports();`,
+  );
+  env.npm_execpath = write(
+    'fake-npm.mjs',
+    `import fs from 'node:fs';
+    fs.appendFileSync('prepared-npm.jsonl', JSON.stringify(process.argv.slice(2)) + '\\n');`,
+  );
+  write(
+    'scripts/sdk-preparation.mjs',
+    `import fs from 'node:fs';
+    export async function prepareSdkFixtures({ root, execute }) {
+      if (root !== process.cwd() || typeof execute !== 'function') throw new Error('Preparation lost its owner');
+      fs.writeFileSync('sdk-fixtures-prepared', 'complete');
+    }`,
+  );
+  const result = spawnSync(
+    process.execPath,
+    ['--import', pathToFileURL(preload).href, path.join(directory, 'scripts/ci.mjs'), 'sdk-prepare'],
+    {
+      cwd: directory,
+      env,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 60_000,
+    },
+  );
+  assert.equal(result.status, 0, result.error?.message ?? result.stderr);
+  const calls = fs
+    .readFileSync(path.join(directory, 'prepared-npm.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    calls.map((args) => (args.includes('--prefix') ? args[args.indexOf('--prefix') + 1] : '.')),
+    ['.', 'mirage', 'mirage/test-sdk/tds', 'mirage/test-sdk/dynamics-web-api', 'mirage/test-sdk/cert-auth'],
+  );
+  assert.equal(fs.readFileSync(path.join(directory, 'sdk-fixtures-prepared'), 'utf8'), 'complete');
+});
+
+test('receipt browser identity follows the selected channel and changes when its executable changes', async (t) => {
+  const { verificationBrowser, matchingVerification } = await import('../scripts/ci.mjs');
+  const directory = tempDirSync('paq-ci-browser-receipt-');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const executable = path.join(directory, 'invented-edge');
+  fs.writeFileSync(executable, 'invented browser v1');
+  const locate = async (channel) => ({ path: channel === 'msedge' ? executable : null });
+  const headless = path.join(directory, 'invented-headless-shell');
+  fs.writeFileSync(headless, 'invented headless browser v1');
+  const locateHeadless = () => headless;
+  const chromium = await verificationBrowser({ env: {}, platform: 'win32', locate, locateHeadless });
+  const edge = await verificationBrowser({ env: { PAQ_CI_BROWSER: 'msedge' }, platform: 'win32', locate });
+  assert.equal(chromium.channel, 'chromium');
+  assert.equal(edge.channel, 'msedge');
+  assert.notEqual(chromium.executable, edge.executable);
+  const scope = { lense: true };
+  fs.appendFileSync(headless, ' changed headless bytes');
+  const headlessChanged = await verificationBrowser({ env: {}, platform: 'win32', locate, locateHeadless });
+  assert.notEqual(headlessChanged.headlessShell, chromium.headlessShell);
+  assert.equal(matchingVerification({ identity: chromium, scope }, headlessChanged, scope), false);
+  assert.equal(edge.headlessShell, null);
+  const receipt = { identity: chromium, scope };
+  assert.equal(matchingVerification(receipt, edge, scope), false, 'another channel cannot reuse the receipt');
+  fs.appendFileSync(executable, ' changed browser bytes');
+  const updated = await verificationBrowser({ env: { PAQ_CI_BROWSER: 'msedge' }, platform: 'win32', locate });
+  assert.notEqual(updated.executable, edge.executable);
+  assert.equal(matchingVerification({ identity: edge, scope }, updated, scope), false);
+});
+
+test('verification rejected before identity qualification revokes earlier successful evidence', (t) => {
+  const { directory, write, env } = ciFixture(t);
+  for (const args of [['--unknown-verification-option'], ['--full', '--unit'], ['--full', '--prepared']]) {
+    const receipt = write(
+      '.paqvilo/ci/verification.json',
+      JSON.stringify({ full: true, identity: { tree: 'earlier-pass' } }),
+    );
+    const result = spawnSync(process.execPath, [path.join(directory, 'scripts/ci.mjs'), 'verify', ...args], {
+      cwd: directory,
+      env,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.equal(
+      fs.existsSync(receipt),
+      false,
+      'even an early validation failure revokes the old pass: ' + args.join(' '),
+    );
+  }
+});
+
+test('matching cached receipts lose qualification when an SDK fixture disappears or TLS tools stop working', async (t) => {
+  const { verificationFixturesReady, matchingVerification } = await import('../scripts/ci.mjs');
+  const directory = tempDirSync('paq-ci-mutable-fixture-');
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const fixture = path.join(directory, 'prepared-sdk-fixture.json');
+  fs.writeFileSync(fixture, JSON.stringify({ prepared: true }));
+  const scope = { mirage: true, sdk: true },
+    identity = { tree: 'unchanged-source-tree' };
+  const receipt = { full: true, identity };
+  let tlsAvailable = true;
+  const checks = {
+    suite() {},
+    sdk() {
+      assert.equal(JSON.parse(fs.readFileSync(fixture, 'utf8')).prepared, true);
+    },
+    tls() {
+      if (!tlsAvailable) throw new Error('Required TLS tools unavailable');
+    },
+  };
+  const qualified = async () =>
+    matchingVerification(receipt, identity, scope) &&
+    (await verificationFixturesReady(scope, ['mirage'], { platform: 'linux' }, checks));
+  assert.equal(await qualified(), true);
+  fs.rmSync(fixture);
+  assert.equal(matchingVerification(receipt, identity, scope), true, 'the old source receipt alone still matches');
+  assert.equal(await qualified(), false, 'missing SDK fixture invalidates receipt reuse');
+  fs.writeFileSync(fixture, JSON.stringify({ prepared: false }));
+  assert.equal(await qualified(), false, 'corrupt SDK fixture invalidates receipt reuse');
+  fs.writeFileSync(fixture, JSON.stringify({ prepared: true }));
+  tlsAvailable = false;
+  assert.equal(await qualified(), false, 'missing TLS clients invalidate receipt reuse');
+  for (const [unrelatedScope, suites] of [
+    [{ lense: true }, ['lense']],
+    [{}, []],
+  ]) {
+    assert.equal(
+      await verificationFixturesReady(
+        unrelatedScope,
+        suites,
+        {},
+        {
+          suite() {},
+          sdk() {
+            assert.fail('unrelated verification cannot require SDK clients');
+          },
+          tls() {
+            assert.fail('unrelated verification cannot require TLS clients');
+          },
+        },
+      ),
+      true,
+    );
+  }
 });

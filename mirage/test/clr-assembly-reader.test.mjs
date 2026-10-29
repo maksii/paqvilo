@@ -4,13 +4,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, X509Certificate } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { InvalidAssembly, inspectAssembly, inspectSigningCertificate } from '../lib/clr-assembly-reader.mjs';
 import { buildAssembly, fakePublicKey, certificateInspectionFixture } from './clr-assembly-fixture.mjs';
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const IPLUGIN = 'Microsoft.Xrm.Sdk.IPlugin';
 const ACTIVITY = 'System.Activities.CodeActivity';
@@ -233,7 +234,7 @@ describe('CLR assembly reader against a compiled assembly (dotnet)', () => {
     { skip: dotnet.status !== 0 && 'dotnet is not installed', timeout: 240000 },
     async () => {
       const tfm = `net${dotnet.stdout.trim().split('.')[0]}.0`; // the SDK's own target, so no package download is needed
-      const dir = await mkdtemp(path.join(tmpdir(), 'paqvilo-clr-'));
+      const dir = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-clr-'));
       try {
         await writeFile(
           path.join(dir, 'Contoso.Plugins.WidgetCheck.csproj'),

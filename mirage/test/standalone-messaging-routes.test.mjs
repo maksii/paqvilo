@@ -6,14 +6,14 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ENDPOINT = '77777777-7777-4777-8777-777777777791';
 const STEP = '77777777-7777-4777-8777-777777777792';
 const WIDGET = '77777777-7777-4777-8777-777777777793';
 
 async function solutionFixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'standalone-messaging-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'standalone-messaging-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {

@@ -16,6 +16,7 @@ import { customConnectorsOf } from '../lib/custom-connector.mjs';
 import { createScriptHost, dotnetSdk, scriptHash } from '../lib/custom-connector-script.mjs';
 import { createConnectorRuntime, connectionSettings } from '../lib/connector-runtime.mjs';
 import { executeFlowDefinition } from '../lib/flow-runtime.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const NAME = 'x_5fscriptapi',
   AT = `Connectors/${NAME}/`;
@@ -132,7 +133,7 @@ describe('a trusted script host under a state directory', { skip: SKIP }, () => 
   const trustedScripts = [{ connector: NAME, sha256: scriptHash(SCRIPT) }];
   let stateDirectory;
   before(async () => {
-    stateDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'connector-script-'));
+    stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'connector-script-'));
   });
   after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
 

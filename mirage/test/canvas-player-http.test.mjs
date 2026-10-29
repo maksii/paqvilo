@@ -7,6 +7,11 @@ import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 import { readCanvasSource } from '../lib/canvas-source.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 
+const closeServer = (server) => {
+  server.closeAllConnections();
+  return new Promise((resolve) => server.close(resolve));
+};
+
 test('player GET is inert, assets are same-origin and start requires CSRF', async (t) => {
   let starts = 0;
   let launchOptions;
@@ -31,7 +36,7 @@ test('player GET is inert, assets are same-origin and start requires CSRF', asyn
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => closeServer(server));
   const url = `http://127.0.0.1:${server.address().port}`;
   const page = await fetch(`${url}/_apps/canvas/test`);
   assert.match(page.headers.get('content-security-policy'), /script-src 'self'/);
@@ -108,7 +113,7 @@ test('partial canvas sources remain playable but list and inventory report incom
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => closeServer(server));
   const url = `http://127.0.0.1:${server.address().port}`;
   const list = await (await fetch(`${url}/_apps/canvas/`, { headers: { accept: 'application/json' } })).json();
   assert.equal(list.apps[0].level, 'inventory');
@@ -156,7 +161,7 @@ test('collision source is inventoried without starting, and real runtime refuses
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => closeServer(server));
   const url = `http://127.0.0.1:${server.address().port}`;
   const inventory = await (await fetch(`${url}/_apps/canvas/api/collision`)).json();
   assert.equal(inventory.reason, 'CANVAS_SOURCE_NAME_COLLISION');
@@ -188,7 +193,7 @@ test('canvas archive media is served only through bounded same-origin asset rout
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => closeServer(server));
   const url = `http://127.0.0.1:${server.address().port}`;
   const inventory = await (await fetch(`${url}/_apps/canvas/api/media`)).json();
   assert.deepEqual(inventory.assets, {

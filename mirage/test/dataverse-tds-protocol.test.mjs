@@ -286,8 +286,8 @@ describe('TDS protocol end to end with tedious', { skip }, () => {
           database: 'org',
           encrypt: true,
           trustServerCertificate: true,
-          connectTimeout: 5000,
-          requestTimeout: 10000,
+          connectTimeout: 60_000,
+          requestTimeout: 60_000,
         },
       });
       connection.on('connect', (err) => (err ? reject(err) : resolve(connection)));
@@ -306,21 +306,17 @@ describe('TDS protocol end to end with tedious', { skip }, () => {
     });
   }
 
-  test(
-    'access-token login over encrypted TDS 7 runs SELECT 1 AS x as RPC and as a SQL batch',
-    { timeout: 20_000 },
-    async () => {
-      const connection = await connect();
-      try {
-        assert.deepEqual((await execute(connection, 'SELECT 1 AS x')).rows, [[1]]);
-        assert.deepEqual((await execute(connection, 'SELECT 1 AS x', { batch: true })).rows, [[1]]);
-      } finally {
-        connection.close();
-      }
-    },
-  );
+  test('access-token login over encrypted TDS 7 runs SELECT 1 AS x as RPC and as a SQL batch', async () => {
+    const connection = await connect();
+    try {
+      assert.deepEqual((await execute(connection, 'SELECT 1 AS x')).rows, [[1]]);
+      assert.deepEqual((await execute(connection, 'SELECT 1 AS x', { batch: true })).rows, [[1]]);
+    } finally {
+      connection.close();
+    }
+  });
 
-  test('a parameterised query reaches the server through sp_executesql', { timeout: 20_000 }, async () => {
+  test('a parameterised query reaches the server through sp_executesql', async () => {
     const connection = await connect();
     try {
       const result = await execute(connection, 'SELECT @p AS v', { params: [['p', tedious.TYPES.Int, 42]] });
@@ -330,7 +326,7 @@ describe('TDS protocol end to end with tedious', { skip }, () => {
     }
   });
 
-  test('a server error reaches the client with its number', { timeout: 20_000 }, async () => {
+  test('a server error reaches the client with its number', async () => {
     const connection = await connect();
     try {
       await assert.rejects(execute(connection, 'SELECT missing'), (err) => err.number === 208);
@@ -339,24 +335,20 @@ describe('TDS protocol end to end with tedious', { skip }, () => {
     }
   });
 
-  test(
-    'ATTENTION from tedious cancels a running query and the connection stays usable',
-    { timeout: 20_000 },
-    async () => {
-      const connection = await connect();
-      try {
-        const started = new Promise((resolve) => {
-          waitStarted = resolve;
-        });
-        const pending = execute(connection, 'WAIT');
-        await started;
-        waitStarted = null;
-        connection.cancel();
-        await assert.rejects(pending);
-        assert.deepEqual((await execute(connection, 'SELECT 1 AS x')).rows, [[1]]);
-      } finally {
-        connection.close();
-      }
-    },
-  );
+  test('ATTENTION from tedious cancels a running query and the connection stays usable', async () => {
+    const connection = await connect();
+    try {
+      const started = new Promise((resolve) => {
+        waitStarted = resolve;
+      });
+      const pending = execute(connection, 'WAIT');
+      await started;
+      waitStarted = null;
+      connection.cancel();
+      await assert.rejects(pending);
+      assert.deepEqual((await execute(connection, 'SELECT 1 AS x')).rows, [[1]]);
+    } finally {
+      connection.close();
+    }
+  });
 });

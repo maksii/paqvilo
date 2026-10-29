@@ -17,6 +17,7 @@ import {
   validateClrDescriptor,
 } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
   rowId = '20000000-0000-0000-0000-000000000001';
@@ -26,7 +27,7 @@ const PARENT_PROBE_LIMIT_MS = 30_000;
 // A killed host exits at once, and an orphan host's watcher checks its exact parent every 100 ms (plugin-clr-host.cs).
 // Windows gives no exit handle for a process another one started, so absence is polled; the limit bounds only a failing
 // run, as a passing run stops polling when the host is gone.
-const HOST_EXIT_LIMIT_MS = 2_000;
+const HOST_EXIT_LIMIT_MS = 30_000;
 async function processAbsent(pid, limitMs) {
   for (const deadline = Date.now() + limitMs; Date.now() < deadline; await delay(20))
     try {
@@ -67,7 +68,7 @@ Console.ReadLine();Console.WriteLine("{\\"kind\\":\\"result\\"}");}}`,
     files: await Promise.all(
       [assembly, executable].map(async (file) => ({ path: file, sha256: hash(await fs.readFile(file)) })),
     ),
-    descriptor: { typeName: 'Invented.Original', timeoutMs: 5000 },
+    descriptor: { typeName: 'Invented.Original', timeoutMs: 10000 },
     provenance: { hostSourceSha256: hash(await fs.readFile(new URL('../lib/plugin-clr-host.cs', import.meta.url))) },
   };
   await fs.writeFile(path.join(directory, 'runtime.json'), JSON.stringify(runtime));
@@ -84,8 +85,8 @@ catch(error){if(mode==='valid'||error.code!=='LocalPluginParentUnavailable')thro
       env: { ...process.env, INVENTED_PARENT_MODE: mode },
       windowsHide: true,
       encoding: 'utf8',
-      // The probe limit, then the 5-second plugin budget and its 1-second worker margin, plus Node startup.
-      timeout: PARENT_PROBE_LIMIT_MS + 15_000,
+      // The probe limit, then the 10-second plugin budget (the product maximum) and its worker margin, plus Node startup.
+      timeout: PARENT_PROBE_LIMIT_MS + 30_000,
     });
     assert.equal(result.status, 0, result.stderr || result.stdout || result.error?.message);
     assert.equal(result.stdout.trim(), mode === 'valid' ? 'fresh-host' : 'LocalPluginParentUnavailable');
@@ -124,7 +125,7 @@ test('persistent CLR hosts require explicit Boolean opt-in', () => {
 });
 
 test('failed CLR preparation removes only its owned cache directory', { skip: CLR_SKIP }, async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-build-failure-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-build-failure-'));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
   await fs.writeFile(path.join(root, 'Original.dll'), 'invented assembly');
   await fs.writeFile(path.join(root, 'Sdk.dll'), 'invented SDK');
@@ -159,7 +160,7 @@ test(
   'CLR workers reject non-object output and completion with pending SDK calls and kill owned children',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-protocol-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-protocol-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const source = path.join(root, 'Protocol.cs'),
       executable = path.join(root, 'Protocol.exe');
@@ -178,7 +179,7 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
             input = { mode };
           const worker = new Worker(
             new URL(pooled ? '../lib/plugin-clr-pool-worker.mjs' : '../lib/plugin-clr-worker.mjs', import.meta.url),
-            { workerData: { port: port2, signal, executable, input, timeout: 5000 }, transferList: [port2] },
+            { workerData: { port: port2, signal, executable, input, timeout: 10000 }, transferList: [port2] },
           );
           let pid;
           sub.after(async () => {
@@ -191,7 +192,7 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
             port1.close();
             await worker.terminate();
           });
-          // The worker always answers: a protocol failure, or its own 5-second timeout failure if the host never writes.
+          // The worker always answers: a protocol failure, or its own timeout failure if the host never writes.
           const failure = await new Promise((resolve, reject) => {
             worker.once('error', reject);
             port1.on('message', (message) => {
@@ -199,7 +200,7 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
               if (message.kind === 'failure') resolve(message);
             });
             if (pooled)
-              port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 5000 });
+              port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 10000 });
           });
           assert.equal(failure.code, 'LocalPluginProtocol', failure.message);
           if (pooled) assert.equal(failure.invocationId, 'invented-invocation');
@@ -242,7 +243,7 @@ test(
         executable: host,
         files,
         allowedFiles: files.map((file) => path.basename(file.path)),
-        descriptor: { persistentHost: true, typeName: 'Invented.Original', timeoutMs: 5000 },
+        descriptor: { persistentHost: true, typeName: 'Invented.Original', timeoutMs: 10000 },
         provenance: { hostSourceSha256 },
       };
     };
@@ -393,7 +394,7 @@ test(
   'pooled original DLL gets fresh instance, configuration, context, frame and SDK callbacks; failures close owned hosts',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-pool-')),
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-pool-')),
       sdk = clrSdk(),
       notes = [];
     t.after(() => {

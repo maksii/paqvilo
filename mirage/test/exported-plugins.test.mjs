@@ -20,6 +20,7 @@ import { pluginFixture, pluginId, assemblyXml, pluginStepsXml } from './plugin-f
 import { observedConfig } from '../lib/project-config.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('explicit C# sources stay confined to trusted roots and survive generated-project root normalization', async (t) => {
   const { dir, portal, solution } = await pluginFixture(t, { simulator: false });
@@ -66,7 +67,7 @@ test('explicit C# sources stay confined to trusted roots and survive generated-p
       }),
     /relative/,
   );
-  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-plugin-outside-'));
+  const outside = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-plugin-outside-'));
   t.after(() => fs.rm(outside, { recursive: true, force: true }));
   await fs.writeFile(path.join(outside, 'Outside.cs'), 'Outside trusted root');
   await fs.symlink(outside, path.join(codeDir, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');

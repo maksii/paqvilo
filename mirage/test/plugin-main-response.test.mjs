@@ -8,6 +8,7 @@ import path from 'node:path';
 import { DataStore } from '../lib/data.mjs';
 import { prepareClrRuntime, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const guid = (n) => `20000000-0000-0000-0000-${String(n).padStart(12, '0')}`,
   user = guid(1),
@@ -97,7 +98,7 @@ test(
   'Original pre-only DLL callers receive actual main CRUD/read/bulk results and custom outputs without post registrations',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-main-response-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-main-response-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'MainResponse.cs'),

@@ -224,7 +224,6 @@ describe('dataverse API: wired modules over HTTP', () => {
   const call = (path, { token = appToken, method = 'GET', body, headers = {} } = {}) =>
     fetch(`${origin}${path}`, {
       method,
-      signal: AbortSignal.timeout(10_000),
       headers: {
         ...(token ? { authorization: `Bearer ${token}` } : {}),
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),

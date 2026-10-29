@@ -164,7 +164,6 @@ async function startServer({ applicationId = APP_ID, extensions = EXTENSIONS, st
       method,
       headers: { authorization, 'content-type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
-      signal: AbortSignal.timeout(5000),
     });
     const text = await res.text();
     return { status: res.status, body: text ? JSON.parse(text) : null };

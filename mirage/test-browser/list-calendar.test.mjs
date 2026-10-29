@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { AssetCache } from '../lib/asset-cache.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
 
@@ -23,7 +23,7 @@ const MONTH = '1b000000-0000-4000-8000-000000000012';
 const CONTACT = 'c0000000-0000-4000-8000-000000000011';
 
 async function site(owner, list, bootstrapV5, capturedCss) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'list-calendar-browser-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'list-calendar-browser-'));
   ownedFixture(owner).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const calendar =
     'adx_calendar_enabled: true\nadx_calendar_startdatefieldname: opens\nadx_calendar_summaryfieldname: name\nadx_calendar_descriptionfieldname: city';

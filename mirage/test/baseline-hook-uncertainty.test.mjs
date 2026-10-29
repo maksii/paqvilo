@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { runBaselineCapture } from './support/baseline-capture-cli.mjs';
+import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 // A run takes one to two seconds; this bound only reports a hang (and its abort stops the child), whatever the runner's
 // --test-timeout. It is not a speed requirement.
 const RUN_TIMEOUT_MS = 60_000;
@@ -71,7 +72,7 @@ async function bridgeFixture() {
     });
 }
 async function fixture(t, mode) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline uncertain hook '));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline uncertain hook '));
   try {
     const server = path.join(directory, 'bridge.mjs'),
       hook = path.join(directory, 'hook.mjs');
@@ -133,8 +134,8 @@ async function fixture(t, mode) {
     await walk(out);
     return { exit, run, hooks: await readEvents(hookEvents), bridge: await readEvents(bridgeEvents), files, output };
   } finally {
-    assert.ok(directory.startsWith(os.tmpdir() + path.sep));
-    await fs.rm(directory, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(directory);
+    await fs.rm(physical, { recursive: true, force: true });
   }
 }
 function assertBlocked(result, hook, phase) {

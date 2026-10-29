@@ -6,10 +6,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('a reload while a job that calls change() is pending completes', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'standalone-reload-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'standalone-reload-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });

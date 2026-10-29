@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SOLUTION = {
   'Other/Solution.xml':
@@ -23,7 +23,7 @@ const write = async (dir, entries) => {
 const apis = (sim) => (sim.store.state.tables.customapi ?? []).map((row) => row.uniquename);
 
 async function renameBetweenReloads(t, portal) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-reload-rejected-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'source-reload-rejected-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await write(solution, SOLUTION);

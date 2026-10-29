@@ -4,10 +4,10 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function host(t, embed) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'powerbi-host-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'powerbi-host-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: 77777777-7777-4777-8777-777777777793\nadx_name: Invented fixture host',

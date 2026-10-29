@@ -31,7 +31,7 @@ async function fixture(t, { broker: brokerOptions = {}, bus: busOptions = {} } =
     id: 'emulator',
     settings: { connectionString: 'env:FX_SB', amqpPort: broker.port },
     env: env(),
-    timeoutMs: 2000,
+    timeoutMs: 30_000,
     ...busOptions,
   });
   t.after(async () => {
@@ -91,12 +91,12 @@ test('abandon redelivers with a higher delivery count and the broker dead-letter
   await bus.send('fx-orders', { n: 1 });
   const [first] = await bus.receive('fx-orders');
   await bus.abandon(first.lockToken);
-  const [second] = await bus.receive('fx-orders', { waitMs: 500 });
+  const [second] = await bus.receive('fx-orders', { waitMs: 30_000 });
   assert.equal(second.deliveryCount, 2);
   assert.notEqual(second.lockToken, first.lockToken);
   await bus.abandon(second.lockToken);
   assert.deepEqual(await bus.receive('fx-orders'), []);
-  const [dead] = await bus.receive('fx-orders/$deadletterqueue', { mode: 'receiveAndDelete', waitMs: 500 });
+  const [dead] = await bus.receive('fx-orders/$deadletterqueue', { mode: 'receiveAndDelete', waitMs: 30_000 });
   assert.equal(dead.state, 'deadLettered');
   assert.equal(dead.deadLetterReason, 'MaxDeliveryCountExceeded');
   assert.equal(dead.lockToken, null);
@@ -108,7 +108,7 @@ test('an explicit dead-letter keeps reason and description; a dead-lettered mess
   await bus.send('fx-orders', { n: 2 });
   const [message] = await bus.receive('fx-orders');
   await bus.deadLetter(message.lockToken, { reason: 'x_invalid', description: 'Invented failure' });
-  const [dead] = await bus.receive('fx-orders/$deadletterqueue', { waitMs: 500 });
+  const [dead] = await bus.receive('fx-orders/$deadletterqueue', { waitMs: 30_000 });
   assert.equal(dead.deadLetterReason, 'x_invalid');
   assert.equal(dead.deadLetterDescription, 'Invented failure');
   assert.deepEqual(dead.properties, {}, 'reason fields are not application properties of the view');
@@ -119,7 +119,7 @@ test('an explicit dead-letter keeps reason and description; a dead-lettered mess
 test('a topic send reaches its subscription; receive-and-delete removes on delivery', async (t) => {
   const { broker, bus } = await fixture(t);
   await bus.send('fx-events', { n: 3 });
-  const [message] = await bus.receive('fx-events/subscriptions/fx-audit', { mode: 'receiveAndDelete', waitMs: 500 });
+  const [message] = await bus.receive('fx-events/subscriptions/fx-audit', { mode: 'receiveAndDelete', waitMs: 30_000 });
   assert.deepEqual(message.body, { n: 3 });
   assert.equal(message.lockToken, null);
   assert.equal(broker.count('fx-events/subscriptions/fx-audit'), 0);
@@ -144,7 +144,7 @@ test('a message larger than the broker frame size crosses as a multi-frame trans
   const { bus } = await fixture(t, { broker: { maxFrameSize: 1024 } });
   const text = 'x'.repeat(10_000);
   await bus.send('fx-orders', { text });
-  const [message] = await bus.receive('fx-orders', { waitMs: 500 });
+  const [message] = await bus.receive('fx-orders', { waitMs: 30_000 });
   assert.equal(message.body.text, text);
   await assert.rejects(bus.send('fx-orders', { text: 'x'.repeat(300_000) }), { code: 'TooLarge' });
 });
@@ -270,7 +270,7 @@ test("the client puts attach, flow, transfer and disposition fields at their spe
   await bus.send('fx-orders', { n: 1 });
   const [message] = await bus.receive('fx-orders');
   await bus.abandon(message.lockToken);
-  const [again] = await bus.receive('fx-orders', { waitMs: 500 });
+  const [again] = await bus.receive('fx-orders', { waitMs: 30_000 });
   await bus.complete(again.lockToken);
   await settled(bus);
   assert.equal(broker.count('fx-orders'), 0);

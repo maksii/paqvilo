@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -16,7 +17,7 @@ test(
   async (t) => {
     const npm = process.env.npm_execpath;
     assert.ok(npm, 'run this test through npm');
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-offline-cache-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-offline-cache-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const pkg = path.join(root, 'package');
     const consumer = path.join(root, 'consumer');

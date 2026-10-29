@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { archiveOwnedRun, cleanupArchivedRun } from '../portal-harness/native-archive.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 test('owned immutable archive gates conditional cleanup and safely resumes an unknown deletion outcome', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'paqvilo-archive-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-archive-'));
   const runId = '00000000-0000-4000-8000-000000000001',
     opId = '00000000-0000-4000-8000-000000000002',
     eventId = '00000000-0000-4000-8000-000000000003',

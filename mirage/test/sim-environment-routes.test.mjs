@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function json(response, status = 200) {
   const text = await response.text();
@@ -15,7 +15,7 @@ async function json(response, status = 200) {
 }
 
 test('standalone environment routes edit local overrides and report deployment profiles as unsupported', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-environment-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-environment-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {

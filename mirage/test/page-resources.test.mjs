@@ -6,6 +6,7 @@ import path from 'node:path';
 import { importPortal } from '../lib/importer.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { resolvePageResources } from '../lib/page-resources.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const portal = () => ({
   sourceDir: 'C:/portal',
@@ -374,7 +375,7 @@ test('an exported override of entity_list is inspected as a template without ass
 });
 
 test('real PAC and unpacked solution imports return openable source-relative page dependencies', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'page-resources-import-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'page-resources-import-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const portalPath = path.join(root, 'portal'),
     solutionPath = path.join(root, 'solution');

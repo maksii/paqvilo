@@ -9,6 +9,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { adminPage } from './shared-browser.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -17,7 +18,7 @@ before(async () => {
 after(() => browser?.close());
 
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-drafts-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-admin-drafts-'));
   await fs.writeFile(
     path.join(directory, 'Home.webpage.yml'),
     'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',

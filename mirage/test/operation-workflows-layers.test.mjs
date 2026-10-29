@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { importOperationWorkflows } from '../lib/exported-operations.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FLOW = '77777777-7777-4777-8777-777777777781';
 // A lower-case workflows folder: exported Solutions differ in folder case, and ZIP entry names are case-sensitive.
@@ -16,7 +17,7 @@ const files = {
 };
 
 test('operation workflows are read from a lower-case Workflows folder in a directory and in a Solution ZIP layer', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'operation-layers-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'operation-layers-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const dir = path.join(root, 'solution'),
     zip = path.join(root, 'solution.zip');

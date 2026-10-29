@@ -11,6 +11,7 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { sourceOrganizationExtensions } from '../lib/source-organization-extensions.mjs';
 import { organizationCustomApi, runExportedServerLogic } from '../lib/exported-operations.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-777777777730';
 const CONTACT = '77777777-7777-4777-8777-777777777731';
@@ -18,7 +19,7 @@ const portal = { settings: {}, website: { id: SITE, name: 'Invented site' } };
 const identity = { id: CONTACT, contactId: CONTACT, roleIds: ['77777777-7777-4777-8777-777777777732'] };
 
 async function logic(t, code) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'server-logic-bridges-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'server-logic-bridges-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'logic.js'), code);
   return { name: 'invented', file: await fs.realpath(path.join(dir, 'logic.js')) };

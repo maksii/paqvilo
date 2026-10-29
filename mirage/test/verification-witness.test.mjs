@@ -6,7 +6,7 @@ import os from 'node:os';
 import { verificationWitness, compareVerificationWitnesses } from '../lib/verification-witness.mjs';
 import { createSimulator } from '../server.mjs';
 import { connectRuntime, createPortalSession } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const initial = () => ({
   version: 1,
@@ -126,7 +126,7 @@ test('pending visitor session inspections protect role changes and closing just 
 });
 
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-witness-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-witness-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_name: Witness fixture\nadx_websiteid: source-site');
   await fs.writeFile(path.join(directory, 'webrole.yml'), '- adx_webroleid: reader\n  adx_name: Reader');

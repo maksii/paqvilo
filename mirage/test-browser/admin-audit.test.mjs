@@ -7,12 +7,13 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'real simulator admin lazy records and audit show API/Liquid correlation, valid-token denial and sanitized export',
   { timeout: 60000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-audit-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-admin-audit-'));
     const files = {
       'website.yml': 'adx_websiteid: site\nadx_name: Audit fixture',
       'sitesetting.yml':

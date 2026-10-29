@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 export function stateRecordOwner(file) {
   const absolute = path.resolve(file),
-    identity = path.join(fs.realpathSync(path.dirname(absolute)), path.basename(absolute));
+    identity = path.join(fs.realpathSync.native(path.dirname(absolute)), path.basename(absolute));
   return createHash('sha256')
     .update(process.platform === 'win32' ? identity.toLowerCase() : identity)
     .digest('hex');
@@ -14,11 +14,27 @@ const recordFileName = new RegExp('^' + uuid + '\\.pages$');
 const leaseName = new RegExp('^' + uuid + '\\.lease$');
 const integrity = (message) => Object.assign(Error(message), { code: 'StateIntegrity' });
 
+// Open first, then compare the path with the opened handle. Reads remain bound
+// to that handle even if the name changes after validation.
+export function openRecordReader(file, io = fs) {
+  const fd = io.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    const opened = io.fstatSync(fd, { bigint: true }),
+      named = io.lstatSync(file, { bigint: true });
+    if (!opened.isFile() || named.isSymbolicLink() || opened.dev !== named.dev || opened.ino !== named.ino)
+      throw integrity('Record file identity changed or is a symlink');
+    return fd;
+  } catch (error) {
+    io.closeSync(fd);
+    throw error;
+  }
+}
+
 /** A live session protects every file it has ever admitted. Publish protection
  * before creating a writer or opening a restored file; updates are monotonic. */
 export class RecordFileLease {
   constructor(directory, { io = fs } = {}) {
-    this.directory = fs.realpathSync(directory);
+    this.directory = fs.realpathSync.native(directory);
     this.io = io;
     this.id = randomUUID();
     this.file = path.join(this.directory, this.id + '.lease');
@@ -90,8 +106,12 @@ export async function collectRecordGarbage(directory, publishedNames, { isAlive 
     const file = path.join(root, name);
     let body;
     try {
-      if ((await fs.promises.lstat(file)).isSymbolicLink()) throw integrity('Record leases cannot be symlinks');
-      body = JSON.parse(await fs.promises.readFile(file, 'utf8'));
+      const fd = openRecordReader(file);
+      try {
+        body = JSON.parse(fs.readFileSync(fd, 'utf8'));
+      } finally {
+        fs.closeSync(fd);
+      }
     } catch (error) {
       if (error.code === 'ENOENT') continue;
       throw error;

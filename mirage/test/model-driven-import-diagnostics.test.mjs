@@ -5,13 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { importModelDrivenResources, clientExtensionCatalogue } from '../lib/model-driven-resources.mjs';
 import { modelDrivenSettings } from '../lib/model-driven-settings.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const descriptor = (name, file) =>
   `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
 
 // An unpacked Solution with a PCF control whose manifest cannot be parsed, and a declared WebResource that is missing.
 async function brokenSolution(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-diagnostics-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-diagnostics-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'InventedSolution');
   const files = {
@@ -60,7 +61,7 @@ test('diagnostic callback is optional and a clean Solution delivers nothing', as
   const { solution } = await brokenSolution(t);
   const result = await importModelDrivenResources([{ type: 'directory', dir: solution }]);
   assert.equal(result.diagnostics.length, 2);
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-diagnostics-clean-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-diagnostics-clean-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const delivered = [];
   const clean = await importModelDrivenResources([{ type: 'directory', dir: root }], {

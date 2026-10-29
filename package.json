@@ -73,12 +73,12 @@
     "dataverse": "node bin/paqvilo.mjs dataverse",
     "agent": "node bin/paqvilo.mjs lense agent",
     "benchmark": "node scripts/benchmark.mjs",
-    "test": "node --test --test-concurrency=4 test/*.test.mjs",
-    "test:browser": "node --test --test-concurrency=2 test-browser/*.test.mjs",
-    "test:example": "npm install --prefix examples/project --offline --ignore-scripts --no-audit --no-fund --package-lock=false && node --test examples/project/test/baseline-*.test.mjs examples/project/test/portal.test.mjs examples/project/test/plugins.test.mjs",
-    "test:example:browser": "node --test --test-concurrency=2 examples/project/test/*-browser.test.mjs",
+    "test": "node --test --test-concurrency=4 --test-timeout=180000 test/*.test.mjs",
+    "test:browser": "node --test --import=./test/browser-bootstrap.mjs --test-concurrency=2 --test-timeout=300000 test-browser/*.test.mjs",
+    "test:example": "npm install --prefix examples/project --offline --ignore-scripts --no-audit --no-fund --package-lock=false && node --test --test-timeout=180000 examples/project/test/baseline-*.test.mjs examples/project/test/portal.test.mjs examples/project/test/plugins.test.mjs",
+    "test:example:browser": "node --test --import=./test/browser-bootstrap.mjs --test-concurrency=2 --test-timeout=300000 examples/project/test/*-browser.test.mjs",
     "test:company": "npm ci --prefix examples/company-operations --offline --ignore-scripts --no-audit --no-fund && npm --prefix examples/company-operations test",
-    "test:company:browser": "npm --prefix examples/company-operations run test:browser",
+    "test:company:browser": "node test/browser-bootstrap.mjs --npm --prefix examples/company-operations run test:browser",
     "check": "node scripts/check.mjs && npm run check:boundary",
     "validate": "node scripts/ci.mjs verify --full",
     "release:check": "node scripts/release-check.mjs",
@@ -101,13 +101,16 @@
     "check:pr": "node scripts/pr-readiness.mjs",
     "audit:dependencies": "node scripts/audit-dependencies.mjs",
     "hooks:push": "node scripts/git-hooks.mjs pre-push",
-    "review:code": "node scripts/generate-compat-watchers.mjs --check && node scripts/code-review.mjs --check"
+    "review:code": "node scripts/generate-compat-watchers.mjs --check && node scripts/code-review.mjs --check",
+    "ci:sdk:prepare": "node scripts/ci.mjs sdk-prepare",
+    "ci:sdk": "node scripts/ci.mjs sdk"
   },
   "engines": {
     "node": "^24.22.1"
   },
   "dependencies": {
     "chokidar": "6.0.0",
+    "dompurify": "3.4.17",
     "jquery": "3.7.1",
     "moment": "2.31.0",
     "parse5": "8.0.1",

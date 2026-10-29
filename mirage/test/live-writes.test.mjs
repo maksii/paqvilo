@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { LiveBridge } from '../lib/live.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // Live writes are impossible unless the runtime was started with --allow-live-writes.
 // Every live write (portal routes in live page mode, /_api in live data mode, native form saves and subgrid actions)
@@ -75,7 +75,7 @@ test('the live bridge refuses every write without the runtime permission, whatev
 });
 
 async function portal(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-live-writes-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-live-writes-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_name: Live Writes\nadx_websiteid: site',

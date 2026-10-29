@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const require = createRequire(import.meta.url);
 const SITE = '6a2b3c4d-1e2f-4a5b-8c6d-7e8f9a0b1c2d';
@@ -19,7 +19,7 @@ const ACCOUNTS = [
 ];
 
 test('native client runtime: WebForms validators, jQuery grid events, paging and the lookup modal', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-runtime-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-runtime-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   // The portal's own jQuery is a source web file.
   const jquery = await fs.readFile(

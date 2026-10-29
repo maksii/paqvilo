@@ -6,11 +6,12 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { applyPortalOverrides, validatePortalOverrides } from '../lib/portal-overrides.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // persist: a state file, for the test that restarts from it; the others run in memory (a state file costs a full
 // serialization and fsync per transaction).
 async function setupPortalOverrides(t, { persist = false } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-portal-overrides-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-portal-overrides-'));
   let app;
   t.after(async () => {
     await app?.close();

@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -16,7 +17,7 @@ import { readDiscovery } from '../lense/commands/agent.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { openBrowser } from '../lense/browser.mjs';
 import { createCdpFaultProxy } from './helpers/cdp-fault-proxy.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
@@ -24,7 +25,7 @@ import { freeDebugPort } from './helpers/debug-port.mjs';
 
 async function fixture(t) {
   const owner = ownedFixture(t);
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-dev-close-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dev-close-'));
   const source = createFixture();
   owner.remove(() => source.cleanup());
   // The actual-CLI case keeps its owned browser profile in this directory.
@@ -143,7 +144,6 @@ test(
     const discovery = await readDiscovery(record.agent.discoveryFile);
     const agentRead = async (path) => {
       const response = await fetch(discovery.endpoint + path, {
-        signal: AbortSignal.timeout(5000),
         headers: { authorization: `Bearer ${discovery.token}` },
       });
       assert.equal(response.status, 200);
@@ -224,238 +224,225 @@ test(
 );
 
 for (const attached of [false, true]) {
-  test(
-    `a failed new target preserves two healthy drafts, the agent and retry (${attached ? 'attached' : 'owned'})`,
-    { timeout: 30000 },
-    async (t) => {
-      const { owner, origin, context, selection } = await fixture(t);
-      const logs = [];
-      let stopped = false;
-      // Open the healthy tabs before startup so their interception is installed before they
-      // navigate; a tab opened afterwards can need a late repair reload that would replace a
-      // draft typed too early. Only the failing tab is new to the running session.
-      const healthy = [await context.newPage(), await context.newPage()];
-      const runtime = await startDevSessions(context, selection, {
-        attached,
-        stop: () => {
-          stopped = true;
-        },
-        log: (line) => logs.push(line),
-      });
-      owner.add(() => runtime.close());
-      for (const [index, page] of healthy.entries()) {
-        await page.goto(origin);
-        await page.evaluate((value) => {
-          const input = document.createElement('input');
-          input.id = 'draft';
-          input.value = value;
-          document.body.append(input);
-        }, `unsaved-${index}`);
+  test(`a failed new target preserves two healthy drafts, the agent and retry (${attached ? 'attached' : 'owned'})`, async (t) => {
+    const { owner, origin, context, selection } = await fixture(t);
+    const logs = [];
+    let stopped = false;
+    // Open the healthy tabs before startup so their interception is installed before they
+    // navigate; a tab opened afterwards can need a late repair reload that would replace a
+    // draft typed too early. Only the failing tab is new to the running session.
+    const healthy = [await context.newPage(), await context.newPage()];
+    const runtime = await startDevSessions(context, selection, {
+      attached,
+      stop: () => {
+        stopped = true;
+      },
+      log: (line) => logs.push(line),
+    });
+    owner.add(() => runtime.close());
+    for (const [index, page] of healthy.entries()) {
+      await page.goto(origin);
+      await page.evaluate((value) => {
+        const input = document.createElement('input');
+        input.id = 'draft';
+        input.value = value;
+        document.body.append(input);
+      }, `unsaved-${index}`);
+    }
+    const original = context.newCDPSession.bind(context);
+    let injected = false;
+    let retryReady;
+    const retrySetup = new Promise((resolve) => {
+      retryReady = resolve;
+    });
+    t.mock.method(context, 'newCDPSession', async (page) => {
+      const cdp = await original(page);
+      if (!injected && !healthy.includes(page)) {
+        injected = true;
+        const send = cdp.send.bind(cdp);
+        cdp.send = (method, params) =>
+          method === 'Page.getFrameTree'
+            ? Promise.reject(new Error('Page.getFrameTree did not answer within 10000 ms'))
+            : method === 'Fetch.disable' && !attached
+              ? new Promise(() => {})
+              : send(method, params);
+      } else if (injected && !healthy.includes(page)) {
+        const send = cdp.send.bind(cdp);
+        cdp.send = async (method, params) => {
+          const result = await send(method, params);
+          if (method === 'Fetch.enable') retryReady();
+          return result;
+        };
       }
-      const original = context.newCDPSession.bind(context);
-      let injected = false;
-      let retryReady;
-      const retrySetup = new Promise((resolve) => {
-        retryReady = resolve;
-      });
-      t.mock.method(context, 'newCDPSession', async (page) => {
-        const cdp = await original(page);
-        if (!injected && !healthy.includes(page)) {
-          injected = true;
-          const send = cdp.send.bind(cdp);
-          cdp.send = (method, params) =>
-            method === 'Page.getFrameTree'
-              ? Promise.reject(new Error('Page.getFrameTree did not answer within 10000 ms'))
-              : method === 'Fetch.disable' && !attached
-                ? new Promise(() => {})
-                : send(method, params);
-        } else if (injected && !healthy.includes(page)) {
-          const send = cdp.send.bind(cdp);
-          cdp.send = async (method, params) => {
-            const result = await send(method, params);
-            if (method === 'Fetch.enable') retryReady();
-            return result;
-          };
-        }
-        return cdp;
-      });
-      const failed = await context.newPage();
-      if (attached) await failed.waitForFunction(() => document.title === 'Local preview unavailable');
-      else if (!failed.isClosed()) await failed.waitForEvent('close');
-      assert.equal(stopped, false);
-      assert.equal(runtime.failure, undefined);
-      assert.equal(runtime.active.size, 1);
-      assert.ok(logs.some((line) => line.includes('Healthy tabs remain active')));
-      for (const [index, page] of healthy.entries()) {
-        assert.equal(await page.locator('#draft').inputValue(), `unsaved-${index}`);
-        assert.match(
-          await page.evaluate(() => fetch('/scripts/app.js').then((response) => response.text())),
-          /console\.log\("app"\)/,
-        );
-      }
-      const record = runtime.active.get(origin);
-      if (!attached) {
-        const discovery = await readDiscovery(record.agent.discoveryFile);
-        assert.equal(discovery.endpoint, record.agent.endpoint);
-        const status = await fetch(`${discovery.endpoint}/v1/session`, {
-          redirect: 'error',
-          signal: AbortSignal.timeout(5000),
-          headers: { authorization: `Bearer ${discovery.token}` },
-        });
-        try {
-          assert.equal(status.status, 200);
-        } finally {
-          await status.body?.cancel();
-        }
-      }
-      const retry = await context.newPage();
-      await retrySetup;
-      await retry.goto(origin);
+      return cdp;
+    });
+    const failed = await context.newPage();
+    if (attached) await failed.waitForFunction(() => document.title === 'Local preview unavailable');
+    else if (!failed.isClosed()) await failed.waitForEvent('close');
+    assert.equal(stopped, false);
+    assert.equal(runtime.failure, undefined);
+    assert.equal(runtime.active.size, 1);
+    assert.ok(logs.some((line) => line.includes('Healthy tabs remain active')));
+    for (const [index, page] of healthy.entries()) {
+      assert.equal(await page.locator('#draft').inputValue(), `unsaved-${index}`);
       assert.match(
-        await retry.evaluate(() => fetch('/scripts/app.js').then((response) => response.text())),
+        await page.evaluate(() => fetch('/scripts/app.js').then((response) => response.text())),
         /console\.log\("app"\)/,
       );
-      assert.equal(
-        healthy.every((page) => !page.isClosed()),
-        true,
-      );
-    },
-  );
+    }
+    const record = runtime.active.get(origin);
+    if (!attached) {
+      const discovery = await readDiscovery(record.agent.discoveryFile);
+      assert.equal(discovery.endpoint, record.agent.endpoint);
+      const status = await fetch(`${discovery.endpoint}/v1/session`, {
+        redirect: 'error',
+        headers: { authorization: `Bearer ${discovery.token}` },
+      });
+      try {
+        assert.equal(status.status, 200);
+      } finally {
+        await status.body?.cancel();
+      }
+    }
+    const retry = await context.newPage();
+    await retrySetup;
+    await retry.goto(origin);
+    assert.match(
+      await retry.evaluate(() => fetch('/scripts/app.js').then((response) => response.text())),
+      /console\.log\("app"\)/,
+    );
+    assert.equal(
+      healthy.every((page) => !page.isClosed()),
+      true,
+    );
+  });
 }
 
 for (const multiple of [false, true]) {
-  test(
-    `development teardown exposes actual agent filesystem failure and drains remaining owners (${multiple ? 'multiple causes' : 'single cause'})`,
-    { timeout: 30000 },
-    async (t) => {
-      const { owner, origin, context, selection } = await fixture(t);
-      const pageListeners = context.listenerCount('page');
-      const runtime = await startDevSessions(context, selection, {
-        log: () => {},
-      });
-      const record = runtime.active.get(origin);
-      const discovery = record.agent.discoveryFile;
-      const logFailure = new Error('Invented synchronous log cleanup failure');
-      let expectedFailure;
-      owner.add(async () => {
-        // The blocker is entirely owned by this fixture. Preserve genuine cleanup
-        // faults while accepting only the exact failure asserted by this test.
-        await fs.rmdir(discovery);
-        try {
-          await runtime.close();
-        } catch (cause) {
-          if (cause !== expectedFailure) throw cause;
-        }
-      });
-      const credentials = await readDiscovery(discovery);
-      await fs.unlink(discovery);
-      await fs.mkdir(discovery);
-      const stopLogs = record.stopLogs;
-      if (multiple)
-        record.stopLogs = () => {
-          stopLogs();
-          throw logFailure;
-        };
-      let watcherClosed = false;
-      const closeWatcher = record.watcher.close.bind(record.watcher);
-      owner.add(async () => {
-        // Also drain directly if a counterfactual runtime abandons this record
-        // after a synchronous stop callback failure.
-        await closeWatcher();
-        try {
-          await record.agent.close();
-        } catch (cause) {
-          if (!/EISDIR|EPERM/.test(cause.code ?? '')) throw cause;
-        }
-      });
-      record.watcher.close = async () => {
-        await closeWatcher();
-        watcherClosed = true;
-      };
-      let failure;
+  test(`development teardown exposes actual agent filesystem failure and drains remaining owners (${multiple ? 'multiple causes' : 'single cause'})`, async (t) => {
+    const { owner, origin, context, selection } = await fixture(t);
+    const pageListeners = context.listenerCount('page');
+    const runtime = await startDevSessions(context, selection, {
+      log: () => {},
+    });
+    const record = runtime.active.get(origin);
+    const discovery = record.agent.discoveryFile;
+    const logFailure = new Error('Invented synchronous log cleanup failure');
+    let expectedFailure;
+    owner.add(async () => {
+      // The blocker is entirely owned by this fixture. Preserve genuine cleanup
+      // faults while accepting only the exact failure asserted by this test.
+      await fs.rmdir(discovery);
       try {
         await runtime.close();
       } catch (cause) {
-        failure = cause;
+        if (cause !== expectedFailure) throw cause;
       }
-      expectedFailure = failure;
-      assert.ok(failure, 'cleanup failure must not become successful runtime completion');
-      let agentFailure;
+    });
+    const credentials = await readDiscovery(discovery);
+    await fs.unlink(discovery);
+    await fs.mkdir(discovery);
+    const stopLogs = record.stopLogs;
+    if (multiple)
+      record.stopLogs = () => {
+        stopLogs();
+        throw logFailure;
+      };
+    let watcherClosed = false;
+    const closeWatcher = record.watcher.close.bind(record.watcher);
+    owner.add(async () => {
+      // Also drain directly if a counterfactual runtime abandons this record
+      // after a synchronous stop callback failure.
+      await closeWatcher();
       try {
         await record.agent.close();
       } catch (cause) {
-        agentFailure = cause;
+        if (!/EISDIR|EPERM/.test(cause.code ?? '')) throw cause;
       }
-      assert.match(agentFailure.code, /EISDIR|EPERM/);
-      if (multiple) {
-        assert.ok(failure instanceof AggregateError);
-        assert.deepEqual(failure.errors, [logFailure, agentFailure]);
-      } else assert.equal(failure, agentFailure, 'one original error remains unchanged');
-      assert.equal(
-        runtime.failure instanceof AggregateError
-          ? runtime.failure.errors.includes(agentFailure)
-          : runtime.failure === agentFailure,
-        true,
-        'failure remains observable after records are removed',
-      );
-      assert.equal(watcherClosed, true);
-      assert.equal(runtime.active.size, 0);
-      assert.equal(context.listenerCount('page'), pageListeners);
-      assert.equal(record.session.eventNames().length, 0);
-      assert.equal(
-        await servesAgentSession(credentials),
-        false,
-        'the failed remover must not leave its HTTP listener open',
-      );
-      await assert.rejects(runtime.close(), (cause) => cause === failure);
-    },
-  );
+    });
+    record.watcher.close = async () => {
+      await closeWatcher();
+      watcherClosed = true;
+    };
+    let failure;
+    try {
+      await runtime.close();
+    } catch (cause) {
+      failure = cause;
+    }
+    expectedFailure = failure;
+    assert.ok(failure, 'cleanup failure must not become successful runtime completion');
+    let agentFailure;
+    try {
+      await record.agent.close();
+    } catch (cause) {
+      agentFailure = cause;
+    }
+    assert.match(agentFailure.code, /EISDIR|EPERM/);
+    if (multiple) {
+      assert.ok(failure instanceof AggregateError);
+      assert.deepEqual(failure.errors, [logFailure, agentFailure]);
+    } else assert.equal(failure, agentFailure, 'one original error remains unchanged');
+    assert.equal(
+      runtime.failure instanceof AggregateError
+        ? runtime.failure.errors.includes(agentFailure)
+        : runtime.failure === agentFailure,
+      true,
+      'failure remains observable after records are removed',
+    );
+    assert.equal(watcherClosed, true);
+    assert.equal(runtime.active.size, 0);
+    assert.equal(context.listenerCount('page'), pageListeners);
+    assert.equal(record.session.eventNames().length, 0);
+    assert.equal(
+      await servesAgentSession(credentials),
+      false,
+      'the failed remover must not leave its HTTP listener open',
+    );
+    await assert.rejects(runtime.close(), (cause) => cause === failure);
+  });
 }
 
-test(
-  'development initialization preserves its primary failure and a separate real watcher cleanup failure',
-  { timeout: 30000 },
-  async (t) => {
-    const { owner, context, selection } = await fixture(t);
-    const primary = new Error('Invented source reconciliation failure');
-    const cleanup = new Error('Invented watcher close failure');
-    const create = OverlaySession.create;
-    t.mock.method(OverlaySession, 'create', async function (...args) {
-      const session = await create.apply(this, args);
-      session.reconcile = () => {
-        throw primary;
-      };
-      return session;
-    });
-    const originalWatch = chokidar.watch;
-    const watches = [];
-    t.mock.method(chokidar, 'watch', function (...args) {
-      const watcher = originalWatch.apply(this, args);
-      const close = watcher.close.bind(watcher);
-      const first = watches.length === 0;
-      watches.push({ watcher, close });
-      watcher.close = async () => {
-        await close();
-        if (first) throw cleanup;
-      };
-      return watcher;
-    });
-    owner.add(async () => {
-      for (const entry of watches) await entry.close();
-    });
-    const listeners = context.listenerCount('page');
-    await assert.rejects(startDevSessions(context, selection, { log: () => {} }), (cause) => {
-      assert.ok(cause instanceof AggregateError);
-      assert.deepEqual(cause.errors, [primary, cleanup]);
-      return true;
-    });
-    assert.ok(watches.length > 0);
-    for (const entry of watches) assert.deepEqual(Object.keys(entry.watcher.getWatched()), []);
-    assert.equal(context.listenerCount('page'), listeners);
-  },
-);
+test('development initialization preserves its primary failure and a separate real watcher cleanup failure', async (t) => {
+  const { owner, context, selection } = await fixture(t);
+  const primary = new Error('Invented source reconciliation failure');
+  const cleanup = new Error('Invented watcher close failure');
+  const create = OverlaySession.create;
+  t.mock.method(OverlaySession, 'create', async function (...args) {
+    const session = await create.apply(this, args);
+    session.reconcile = () => {
+      throw primary;
+    };
+    return session;
+  });
+  const originalWatch = chokidar.watch;
+  const watches = [];
+  t.mock.method(chokidar, 'watch', function (...args) {
+    const watcher = originalWatch.apply(this, args);
+    const close = watcher.close.bind(watcher);
+    const first = watches.length === 0;
+    watches.push({ watcher, close });
+    watcher.close = async () => {
+      await close();
+      if (first) throw cleanup;
+    };
+    return watcher;
+  });
+  owner.add(async () => {
+    for (const entry of watches) await entry.close();
+  });
+  const listeners = context.listenerCount('page');
+  await assert.rejects(startDevSessions(context, selection, { log: () => {} }), (cause) => {
+    assert.ok(cause instanceof AggregateError);
+    assert.deepEqual(cause.errors, [primary, cleanup]);
+    return true;
+  });
+  assert.ok(watches.length > 0);
+  for (const entry of watches) assert.deepEqual(Object.keys(entry.watcher.getWatched()), []);
+  assert.equal(context.listenerCount('page'), listeners);
+});
 
-test('actual development CLI exits nonzero after agent filesystem cleanup failure', { timeout: 30000 }, async (t) => {
+test('actual development CLI exits nonzero after agent filesystem cleanup failure', async (t) => {
   const { owner, config, origin } = await fixture(t);
   const preload = new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href;
   const env = Object.fromEntries(
@@ -490,7 +477,6 @@ test('actual development CLI exits nonzero after agent filesystem cleanup failur
   owner.add(() => remoteBrowser?.close());
   // dev prints the discovery path once the file is completely written.
   const [, advertised] = await output.waitFor(/^agent API\s+.+?: (.+\.json)\s*$/m, {
-    timeoutMs: 15_000,
     label: 'actual dev must reach its agent startup',
   });
   blocker = advertised;

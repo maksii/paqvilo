@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { createDashboardRoutes, DASHBOARD_STATUSES, activityFacts } from '../lib/sim-dashboard-routes.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CLIENT = '77777777-7777-4777-8777-777777777781';
 const ENDPOINT = '77777777-7777-4777-8777-777777777782';
@@ -26,7 +26,7 @@ async function json(response, status = 200) {
 }
 
 async function standalone(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-dashboard-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
@@ -307,7 +307,7 @@ const portalFiles = {
 };
 
 test('Power Pages dashboard adds the portal listener, admin hosts and the portal request ring', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-pp-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-dashboard-pp-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
@@ -376,7 +376,7 @@ test('Power Pages dashboard adds the portal listener, admin hosts and the portal
 });
 
 test('Power Pages dashboard connects code components to the pages that host them and the records they read', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-pcf-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-dashboard-pcf-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const control = 'solution/Controls/x_Invented.Editor';
   const files = {
@@ -475,7 +475,7 @@ test('standalone dashboard connects each part to what really calls it, and draws
 });
 
 test('with the Web API listener off, Web API messages still run from the model-driven in-app Web API', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-dashboard-md-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-dashboard-md-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'solution', 'Other'), { recursive: true });
   await fs.writeFile(

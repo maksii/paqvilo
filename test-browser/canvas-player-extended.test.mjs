@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
+import { once } from 'node:events';
+import { closeServer } from '../mirage/test-browser/shared-browser.mjs';
+import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { stringify } from 'yaml';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
@@ -293,11 +297,12 @@ async function player(t, { display, resolution, onDanger, watch, onRevision, onS
     if (!handler(req, res)) res.writeHead(404).end();
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  ownedFixture(t).add(() => closeServer(server));
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(() => browser.close());
+  ownedFixture(t).add(() => browser.close());
   const context = await browser.newContext();
   const page = await context.newPage();
+  page.canvasServer = server;
   page.canvasApp = app;
   page.canvasRuntime = runtime;
   if (watch) await page.clock.install();
@@ -722,4 +727,28 @@ test('choice dropdown displays labels and filters inactive backing values', { ti
   const page = await player(t);
   const options = page.locator('[data-control="ChoiceStatus"] option');
   assert.deepEqual(await options.allTextContents(), ['Active']);
+});
+
+test('player fixture drains accepted idle sockets before browser cleanup', { timeout: 60000 }, async (t) => {
+  const hooks = [];
+  let socket, cleanup;
+  const close = () =>
+    (cleanup ??= (async () => {
+      for (const hook of hooks) await hook();
+    })());
+  t.after(async () => {
+    socket?.destroy();
+    await close();
+  });
+  const page = await player({ after: (hook) => hooks.push(hook) });
+  const accepted = once(page.canvasServer, 'connection');
+  socket = net.createConnection({ host: '127.0.0.1', port: page.canvasServer.address().port });
+  await once(socket, 'connect');
+  await accepted;
+  // A browser preconnect has no HTTP request for close() to finish. Its close event is the gate.
+  const socketClosed = once(socket, 'close');
+  const pending = close();
+  await socketClosed;
+  await pending;
+  assert.equal(page.isClosed(), true);
 });

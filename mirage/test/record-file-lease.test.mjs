@@ -4,7 +4,75 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { RecordFileLease, collectRecordGarbage } from '../lib/record-file-lease.mjs';
+import { execFileSync } from 'node:child_process';
+import {
+  RecordFileLease,
+  collectRecordGarbage,
+  stateRecordOwner,
+  openRecordReader,
+} from '../lib/record-file-lease.mjs';
+import { RecordPageSession } from '../lib/record-tables.mjs';
+import { encodeRecordReferences } from '../lib/record-state.mjs';
+
+test('a file replaced during opening is rejected and its handle is closed', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-open-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'lease');
+  fs.writeFileSync(file, 'Original');
+  let closed = 0;
+  assert.throws(
+    () =>
+      openRecordReader(file, {
+        ...fs,
+        openSync(...args) {
+          const fd = fs.openSync(...args);
+          fs.renameSync(file, file + '.old');
+          fs.writeFileSync(file, 'Replacement');
+          return fd;
+        },
+        closeSync(fd) {
+          closed++;
+          fs.closeSync(fd);
+        },
+      }),
+    { code: 'StateIntegrity' },
+  );
+  assert.equal(closed, 1);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'Replacement');
+});
+
+test('directory aliases share canonical record ownership, leases and publication identity', async (t) => {
+  const root = await fs.promises.realpath(fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-paths-')));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const target = path.join(root, 'canonical-directory'),
+    link = path.join(root, 'directory-alias');
+  fs.mkdirSync(target);
+  fs.symlinkSync(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+  const aliases = [link];
+  if (process.platform === 'win32') {
+    const short = execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${target}") do @echo %~sI`], {
+      encoding: 'utf8',
+      windowsVerbatimArguments: true,
+      windowsHide: true,
+    }).trim();
+    if (short !== target) aliases.push(short);
+  }
+  const session = new RecordPageSession(target, { stateOwner: path.join(target, 'state.json') });
+  t.after(() => session.close());
+  const rows = session.from([{ id: 'invented-row', value: 'Retained' }], { primaryKey: 'id' });
+  for (const alias of aliases) {
+    assert.equal(stateRecordOwner(path.join(alias, 'state.json')), stateRecordOwner(path.join(target, 'state.json')));
+    const reader = new RecordPageSession(alias, { stateOwner: path.join(alias, 'state.json') });
+    t.after(() => reader.close());
+    assert.equal(reader.directory, target);
+    assert.equal(reader.lease.directory, target);
+    assert.doesNotThrow(() =>
+      encodeRecordReferences({ tables: { item: rows } }, { directory: alias, ownerKey: reader.ownerKey }),
+    );
+    const [restored] = await reader.restoreMany([session.describe(rows)]);
+    assert.equal(restored[0].value, 'Retained');
+  }
+});
 
 test('collection preserves committed files and every active reader, then reclaims closed and dead owners', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-leases-'));

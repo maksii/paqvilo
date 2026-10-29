@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { DataStore } from '../lib/data.mjs';
 import { StateStorage, readStateFile, stateFileSignature } from '../lib/state-storage.mjs';
 import { jsonChunks, parseJsonStream, hashStateFile } from '../lib/state-stream.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const seed = () => ({
   settings: { permissionMode: 'permissive' },
@@ -42,7 +43,7 @@ for (const journalThresholdBytes of [0, Number.MAX_SAFE_INTEGER])
     await assert.rejects(restarted.update('items', 'one', { name: 'lost' }), { code: 'StateConflict' });
   });
 async function workspace(t, state = seed(), persistence = { journalThresholdBytes: 0 }) {
-  const root = await fs.mkdtemp(join(tmpdir(), 'mirage-stream-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'mirage-stream-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = join(root, 'state.json');
   return { file, store: await new DataStore({ file, state, persistence }).init() };
@@ -422,7 +423,7 @@ test('snapshot digests provide bounded optimistic replacement checks', async (t)
 });
 
 test('an in-memory fixture can bind its persistence path before init or its first save', async (t) => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'mirage-late-file-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'mirage-late-file-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const operation of ['init', 'save']) {
     const store = new DataStore({ state: seed(), persistence: { journalThresholdBytes: 0 } });

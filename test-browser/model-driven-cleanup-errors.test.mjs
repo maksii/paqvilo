@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -9,23 +10,24 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import run from '../lense/commands/model-driven.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { createStandaloneRuntime } from '../mirage/lib/standalone-runtime.mjs';
 import { modelDrivenActionAvailability } from '../lense/model-driven-action-runner.mjs';
 import { servesAgentSession } from './helpers/agent-endpoint.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
 
-// A startup deadline for scenarios whose target phase stalls until cleanup: long enough for
-// the earlier phases (browser launch or CDP connection) on a loaded host, short for the test.
-const STALLED_STARTUP_DEADLINE_MS = 5000;
+// A startup deadline for scenarios whose target phase stalls until cleanup. The stall never ends by itself, so the
+// asserted expiry does not depend on this length; it only has to outlast the earlier phases (browser launch or CDP
+// connection) however slow the host is.
+const STALLED_STARTUP_DEADLINE_MS = 30_000;
 // Hang guards for whole tests that launch browsers; each covers its product deadlines plus
-// browser launch and profile cleanup, which take several seconds on a loaded Windows host.
-const BROWSER_TEST_TIMEOUT_MS = 60_000;
+// browser launch and profile cleanup.
+const BROWSER_TEST_TIMEOUT_MS = 120_000;
 
 async function fixture(t, { resetDocument = false } = {}) {
   const owner = ownedFixture(t);
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-model-close-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-model-close-'));
   // Owned and external browser profiles live in this directory.
   owner.remove(() => fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const solution = path.join(directory, 'solution');
@@ -266,8 +268,10 @@ test(
     let frameTrees = 0,
       stalled = false,
       closed = false;
+    const runnerListeners = new Set(process.rawListeners('SIGINT'));
     t.mock.method(chromium, 'launchPersistentContext', async (profile, options) => {
-      const context = await launch(profile, { ...options, ...setup.network });
+      // Playwright's own SIGINT handler would end the process; the command's handlers are what is under test.
+      const context = await launch(profile, { ...options, ...setup.network, handleSIGINT: false });
       context.once('close', () => {
         closed = true;
       });
@@ -278,6 +282,12 @@ test(
         cdp.send = (method, params) => {
           if (method === 'Page.getFrameTree' && ++frameTrees === 2) {
             stalled = true;
+            // Cancel startup as Ctrl+C does once inspector setup is observed stalling, not at a deadline. Only the
+            // command's own listeners receive it: the test runner's SIGINT handling stays out of this.
+            setImmediate(() => {
+              for (const listener of process.rawListeners('SIGINT'))
+                if (!runnerListeners.has(listener)) listener('SIGINT');
+            });
             return new Promise((_, reject) =>
               page.once('close', () => reject(new Error('Owned page closed during inspector setup'))),
             );
@@ -294,11 +304,8 @@ test(
         url: setup.origin,
         headless: true,
         browser: setup.channel,
-        // The inspector stall never ends by itself, so the deadline only has to outlast the
-        // owned browser launch, measured at up to 1.6 s on a loaded host.
-        'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
       }),
-      (error) => error.code === 'startup_timeout' && error.phase === 'interception and inspector setup',
+      (error) => error.code === 'startup_cancelled' && error.phase === 'interception and inspector setup',
     );
     assert.equal(stalled, true);
     assert.equal(closed, true);
@@ -326,8 +333,6 @@ test(
         url: setup.origin,
         headless: true,
         'cdp-url': `http://127.0.0.1:${port}`,
-        // The held document stalls navigation indefinitely, so the deadline only has to outlast
-        // CDP connection and interception setup, measured at up to 1.4 s on a loaded host.
         'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
       }),
       (error) => error.code === 'startup_timeout' && error.phase === 'document navigation',

@@ -6,6 +6,7 @@ import { personaContextSettings } from '../lib/persona-context-settings.mjs';
 import { loadConfig } from '../../lense/config.mjs';
 import os from 'node:os';
 import path from 'node:path';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('context launches serialize duplicate starts, fingerprint definitions and clean failed snapshots', async () => {
   let starts = 0;
@@ -60,7 +61,7 @@ test('catalogue/default context limits are validated and resolved for CLI runtim
   for (const value of [null, [], { unknown: 1 }, { maxInstances: -1 }, { maxInstances: 1.5 }, { maxInstances: 33 }])
     assert.throws(() => personaContextSettings(value), /personaContexts/);
   assert.deepEqual(personaContextSettings({ maxInstances: 0 }), { maxInstances: 0 });
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'persona-config-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'persona-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'paqvilo.config.yml');
   await fs.writeFile(

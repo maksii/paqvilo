@@ -6,10 +6,10 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(t, { compatibility = false, mode = 100000000, readOnly = false } = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rte-browser-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'rte-browser-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Test',
@@ -164,6 +164,48 @@ test('compatibility HTML survives repeated edit/postback/reopen cycles with auth
     assert.deepEqual(await page.evaluate(() => window.richChanges), [], 'loading is not a user change');
   }
   assert.deepEqual(errors, []);
+});
+
+test('compatibility markup retains formatting while excluding executable elements, handlers and URLs', async (t) => {
+  const { app, page } = await fixture(t, { compatibility: true, mode: 100000001 });
+  const unsafe =
+    '<p title="quoted" style="color: red">Formatted <strong>HTML</strong></p>' +
+    '<table><tbody><tr><td>Cell</td></tr></tbody></table><pre>  Code &amp; text</pre>' +
+    '<img src="/invented-missing.png" onerror="parent.richTextExecuted=true">' +
+    '<a href="javascript:parent.richTextExecuted=true">Unsafe link</a>' +
+    '<script>parent.richTextExecuted=true</script><iframe srcdoc="<script>parent.richTextExecuted=true</script>"></iframe>';
+  app.store.state.tables.example[0].narrative = unsafe;
+  await page.goto(app.url + '/?id=11111111-1111-4111-8111-111111111111', { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
+  for (const replace of [false, true]) {
+    const result = await page.evaluate(
+      ({ replace, unsafe }) => {
+        const editor = window.CKEDITOR.instances.narrative_editor;
+        if (replace) editor.setData(unsafe);
+        editor.updateElement();
+        const body = editor.editable();
+        return {
+          executed: window.richTextExecuted === true,
+          unsafe: body.querySelectorAll('script,iframe,[onerror],[href^="javascript:"]').length,
+          title: body.querySelector('p').title,
+          color: body.querySelector('p').style.color,
+          strong: body.querySelector('strong').textContent,
+          cell: body.querySelector('td').textContent,
+          pre: body.querySelector('pre').textContent,
+          stored: JSON.parse(document.getElementById('narrative').value),
+        };
+      },
+      { replace, unsafe },
+    );
+    assert.equal(result.executed, false);
+    assert.equal(result.unsafe, 0);
+    assert.equal(result.title, 'quoted');
+    assert.equal(result.color, 'red');
+    assert.equal(result.strong, 'HTML');
+    assert.equal(result.cell, 'Cell');
+    assert.equal(result.pre, '  Code & text');
+    assert.doesNotMatch(result.stored, /<script|<iframe|onerror|javascript:/i);
+  }
 });
 
 test('read-only compatibility editors retain empty values without editable bodies or enabled formatting', async (t) => {

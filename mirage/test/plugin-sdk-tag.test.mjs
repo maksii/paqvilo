@@ -8,6 +8,7 @@ import { prepareClrRuntime, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const user = '10000000-0000-0000-0000-000000000001',
   record = '20000000-0000-0000-0000-000000000001';
@@ -81,7 +82,7 @@ test(
   'Original DLL named DeleteRequest tag reaches all stages, PreValidation parent and nested shortcut calls',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-tag-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-sdk-tag-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'Tag.cs'),

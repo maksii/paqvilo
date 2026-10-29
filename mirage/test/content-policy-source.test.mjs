@@ -7,10 +7,10 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { createMirageContext } from '../api.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function portal(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-content-policy-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-content-policy-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'web-pages'));
   await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: site\nadx_name: Invented policy');

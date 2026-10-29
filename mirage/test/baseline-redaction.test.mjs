@@ -6,6 +6,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { redactEmbeddedQueryValues as redact, writeCapture, redactTokens } from '../baseline-capture.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('HTML and inline script URLs remove every query value while preserving neighboring structure', () => {
   const value =
@@ -75,7 +76,7 @@ test(
 );
 
 test('redacted text hashes exclude original secret bytes while unchanged text and binary retain raw hashes', async () => {
-  const out = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-redaction-hash-'));
+  const out = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-redaction-hash-'));
   const secret = '<script src="https://maps.invalid/control?key=fixture-secret"></script>';
   const unchanged = '\uFEFFunchanged text';
   const binary = Buffer.from([0, 255, 17, 42]);
@@ -132,7 +133,7 @@ test('redacted text hashes exclude original secret bytes while unchanged text an
 });
 
 test('capture persistence redacts URL queries in DOM, bodies, frames, element inventory and console', async () => {
-  const out = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-redaction-'));
+  const out = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-redaction-'));
   try {
     const url = 'https://maps.invalid/control?key=fixture-secret&callback=init',
       html = `<script src="${url}"></script>`,

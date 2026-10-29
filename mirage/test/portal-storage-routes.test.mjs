@@ -14,7 +14,7 @@ import { submitPortalForm } from '../lib/form-service.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
 import { createMemoryStorage } from '../lib/storage-memory.mjs';
 import { guardProvider } from '../lib/storage-provider.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '8c3d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e81';
 const NOTE = 'a0000000-0000-4000-8000-000000000081';
@@ -23,7 +23,7 @@ const CONTACT = 'c0000000-0000-4000-8000-000000000081';
 const CLIENT = '99999999-9999-4999-8999-999999999981';
 
 async function portalFixture(t, { settings = [], providers } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-storage-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-storage-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const source = path.join(dir, 'portal'),
     stateDir = path.join(dir, 'state');
@@ -91,7 +91,7 @@ test('a portal note download reads the body from the storage provider once it ha
 });
 
 test('a standalone runtime without a state directory routes note bodies to the in-memory provider', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'standalone-storage-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'standalone-storage-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });

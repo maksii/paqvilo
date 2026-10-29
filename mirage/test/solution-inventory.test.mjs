@@ -23,6 +23,7 @@ import {
 } from '../lib/solution-inventory.mjs';
 import { buildSourceGraph } from '../lib/source-graph.mjs';
 import { settleFileTimes } from './support/file-times.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CONNECTOR_ID = '77777777-7777-4777-8777-777777777772';
 const BPF_ID = '77777777-7777-4777-8777-777777777773';
@@ -195,7 +196,7 @@ async function writeTree(root, files) {
   }
 }
 async function tempDir(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-inventory-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-inventory-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }

@@ -15,6 +15,7 @@ export async function performanceFixture({
   shape = 'uniform',
   tableSources = true,
   onProgress = () => {},
+  temporaryRoot = os.tmpdir(),
 } = {}) {
   for (const [name, value] of Object.entries({ tables, columns, formsPerTable }))
     if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer`);
@@ -30,7 +31,7 @@ export async function performanceFixture({
       : Math.floor(records / tables) + (i < records % tables ? 1 : 0);
   if (!Number.isSafeInteger(roots) || roots < 1 || roots > tables)
     throw new TypeError('roots must be between one and the table count');
-  const root = existingRoot ?? (await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-performance-'))));
+  const root = existingRoot ?? (await fs.realpath(await fs.mkdtemp(path.join(temporaryRoot, 'paqvilo-performance-'))));
   const solutionRoots = Array.from({ length: roots }, (_, i) => path.join(root, i ? `solution-${i}` : 'solution')),
     sourceDir = path.join(root, 'portal');
   const inventory = {

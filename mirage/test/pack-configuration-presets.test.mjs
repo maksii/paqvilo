@@ -13,10 +13,10 @@ import {
 } from '../packs.mjs';
 import { configurationPresetReport } from '../lib/experiment-presets.mjs';
 import { fixture, initial } from './fixtures/platform-experiments.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('pack configuration presets are validated, traceable, immutable and opt-in with a dataset', async (t) => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'mirage-pack-config-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'mirage-pack-config-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fixture(root);
   const pack = {
@@ -169,7 +169,7 @@ test('configuration preflight reports invalid bodies and unresolved links withou
   );
 });
 test('startup applies a linked configuration only when explicitly selected', async (t) => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'mirage-start-config-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'mirage-start-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fixture(root);
   for (const apply of [false, true]) {
@@ -235,7 +235,7 @@ test('startup applies a linked configuration only when explicitly selected', asy
   assert.deepEqual(await fs.readFile(file), before);
 });
 test('a saved preset collision remains readable and removable after a pack upgrade', async (t) => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'mirage-config-collision-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'mirage-config-collision-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fixture(root);
   const file = join(root, 'state.json');
@@ -281,7 +281,7 @@ test('a saved preset collision remains readable and removable after a pack upgra
 });
 
 test('a lazy data preset carries its declared configuration link into startup hydration', async (t) => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'mirage-lazy-start-config-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'mirage-lazy-start-config-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fixture(root);
   let calls = 0;

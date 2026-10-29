@@ -317,17 +317,17 @@ test(
             active: { formId: current?.split(':').at(-1) },
             budget: { items: 128, bytes: 256 * 1024 },
           });
-          await nativePage.evaluate(
-            `(${modelDrivenObservationRuntime.toString()})().install(${JSON.stringify({ token: selection.token, origin, localSimulation: false, ...details, validatedScope: scope, validatedAnchorGeneration: selection.anchorGeneration })})`,
-          );
-          const observed = await nativePage.evaluate(({ scope, anchorGeneration }) => {
+          // Install and query in one task: the live inspector's own refresh reinstalls this token's
+          // provider with unvalidated details, and must not land between the two.
+          const observed = await nativePage.evaluate(`(() => {
+            (${modelDrivenObservationRuntime.toString()})().install(${JSON.stringify({ token: selection.token, origin, localSimulation: false, ...details, validatedScope: scope, validatedAnchorGeneration: selection.anchorGeneration })});
             window.fixtureForbiddenReads = 0;
             const packet = window.__paqviloModelDrivenProvider.query(
               document.getElementById('fixture-native-surface').firstElementChild,
-              { scope, anchorGeneration },
+              ${JSON.stringify({ scope: selection.scope, anchorGeneration: selection.anchorGeneration })},
             );
             return { packet, forbidden: window.fixtureForbiddenReads };
-          }, selection);
+          })()`);
           packet = observed.packet;
           assert.equal(observed.forbidden, 0);
           assert.ok(packet.facts.every((fact) => fact.proof !== 'mirage-registry'));

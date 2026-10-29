@@ -196,44 +196,40 @@ test('complete chunked metadata retains identical JSON bytes, precision, forms a
   );
 });
 
-test(
-  'a blocked metadata reader stops further encoding until drain and disconnect closes the generator',
-  { timeout: 5000 },
-  async () => {
-    const response = new EventEmitter();
-    response.destroyed = false;
-    let encoded = 0,
-      ended = false,
-      released = false;
-    const wroteSecond = Promise.withResolvers();
-    response.write = () => {
-      if (encoded === 2) wroteSecond.resolve();
-      return false;
-    };
-    response.end = () => {
-      ended = true;
-    };
-    function* pieces() {
-      try {
-        for (let index = 0; index < 64; index++) {
-          encoded++;
-          yield 'encoded metadata';
-        }
-      } finally {
-        released = true;
+test('a blocked metadata reader stops further encoding until drain and disconnect closes the generator', async () => {
+  const response = new EventEmitter();
+  response.destroyed = false;
+  let encoded = 0,
+    ended = false,
+    released = false;
+  const wroteSecond = Promise.withResolvers();
+  response.write = () => {
+    if (encoded === 2) wroteSecond.resolve();
+    return false;
+  };
+  response.end = () => {
+    ended = true;
+  };
+  function* pieces() {
+    try {
+      for (let index = 0; index < 64; index++) {
+        encoded++;
+        yield 'encoded metadata';
       }
+    } finally {
+      released = true;
     }
-    const pending = writeJsonChunks(response, pieces());
-    assert.equal(encoded, 1, 'backpressure bounds the encoded work');
-    response.emit('drain');
-    await wroteSecond.promise;
-    assert.equal(encoded, 2, 'only the admitted piece advances after drain');
-    response.destroyed = true;
-    response.emit('close');
-    await assert.rejects(pending, { name: 'AbortError' });
-    assert.equal(released, true);
-    assert.equal(ended, false);
-    assert.equal(response.listenerCount('close'), 0);
-    assert.equal(response.listenerCount('drain'), 0);
-  },
-);
+  }
+  const pending = writeJsonChunks(response, pieces());
+  assert.equal(encoded, 1, 'backpressure bounds the encoded work');
+  response.emit('drain');
+  await wroteSecond.promise;
+  assert.equal(encoded, 2, 'only the admitted piece advances after drain');
+  response.destroyed = true;
+  response.emit('close');
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(released, true);
+  assert.equal(ended, false);
+  assert.equal(response.listenerCount('close'), 0);
+  assert.equal(response.listenerCount('drain'), 0);
+});

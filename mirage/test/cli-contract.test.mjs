@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MIRAGE_TOOLS } from '../tool-registry.mjs';
 import { assertReportOutput } from '../lib/report-output.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const run = (program, ...args) =>
@@ -55,7 +56,7 @@ test('manual tool parsers reject missing option values and invalid timeouts', as
     assert.equal(result.status, 2);
     assert.match(result.stderr, /--timeout must be an integer/);
   }
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-тест-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-тест-'));
   try {
     const suite = path.join(dir, 'suite.json');
     await fs.writeFile(suite, JSON.stringify({ tests: [] }));
@@ -156,7 +157,7 @@ test('JSON and preflight detection respect option values and the terminator', ()
 });
 
 test('JSON tools report missing inputs without reading a configured site', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-cli-empty-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cli-empty-'));
   try {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
     for (const name of [
@@ -254,7 +255,7 @@ test('data counts fail before resolving a missing catalogue', () => {
 });
 
 test('conformance output cannot replace suite or rules through direct or hard-linked paths', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-conformance-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-conformance-'));
   try {
     const suite = path.join(dir, 'suite.json'),
       rules = path.join(dir, 'rules.json'),
@@ -277,7 +278,7 @@ test('conformance output cannot replace suite or rules through direct or hard-li
 });
 
 test('bootstrap and Liquid report outputs preserve portal sources and catalogue aliases', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-report-boundary-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-report-boundary-'));
   try {
     const source = path.join(dir, 'portal');
     await fs.cp(fixture, source, { recursive: true });
@@ -322,7 +323,7 @@ test('bootstrap and Liquid report outputs preserve portal sources and catalogue 
 });
 
 test('render refuses to overwrite a portal source or linked workspace state before startup', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-render-boundary-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-render-boundary-'));
   try {
     const source = path.join(dir, 'portal');
     await fs.cp(fixture, source, { recursive: true });
@@ -348,7 +349,7 @@ test('render refuses to overwrite a portal source or linked workspace state befo
 });
 
 test('missing optional source roots do not prevent external report output', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-missing-root-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-missing-root-'));
   try {
     const missing = path.join(dir, 'missing-solution');
     await assert.doesNotReject(assertReportOutput(path.join(dir, 'report.json'), { sourceRoots: [missing] }));
@@ -362,7 +363,7 @@ test('missing optional source roots do not prevent external report output', asyn
 });
 
 test('report output rejects dangling symbolic links instead of writing through them', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-dangling-output-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dangling-output-'));
   try {
     const source = path.join(dir, 'portal');
     await fs.cp(fixture, source, { recursive: true });

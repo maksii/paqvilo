@@ -1,6 +1,10 @@
 // Test-only ownership: acquire a single after hook before registering resources.
 // Shared fixture builders receive the same TestContext and therefore the same owner.
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
+import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
 
 const owners = new WeakMap();
 
@@ -72,4 +76,27 @@ export function ownedFixture(context) {
   });
   owners.set(context, owner);
   return owner;
+}
+
+/** Create an owned workspace at its physical path, preserving the caller's complete prefix. */
+export async function makeTemporaryDirectory(prefix) {
+  return fs.realpath(await fs.mkdtemp(prefix));
+}
+
+/** Synchronous physical workspace creation for fixtures that initialize before test registration. */
+export function makeTemporaryDirectorySync(prefix) {
+  return fsSync.realpathSync.native(fsSync.mkdtempSync(prefix));
+}
+
+/** Assert an owned workspace's physical containment before returning its safe deletion target. */
+export async function assertTemporaryDirectory(directory, { parent = os.tmpdir(), directChild = false } = {}) {
+  const [physicalParent, physicalDirectory] = await Promise.all([fs.realpath(parent), fs.realpath(directory)]);
+  const relative = path.relative(physicalParent, physicalDirectory);
+  assert.ok(
+    relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative),
+    'Fixture directory must be strictly inside its owned temporary parent.',
+  );
+  if (directChild)
+    assert.equal(path.dirname(relative), '.', 'Fixture directory must be a direct child of its temporary parent.');
+  return physicalDirectory;
 }

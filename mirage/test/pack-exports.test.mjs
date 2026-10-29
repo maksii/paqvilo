@@ -14,6 +14,7 @@ import {
 } from '../lib/pack-exports.mjs';
 import { discoverPacks, validatePack } from '../lib/preset-registry.mjs';
 import { operationHandlers } from '../lib/exported-operations.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const STEP = '77777777-7777-4777-8777-777777777777';
 const pack = (id, extra = {}) => ({
@@ -172,7 +173,7 @@ test('provider exports are pre-registered as pending until their module register
 });
 
 test('discoverPacks surfaces export diagnostics of every loaded pack', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pack-exports-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pack-exports-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'pack.mjs');
   await fs.writeFile(

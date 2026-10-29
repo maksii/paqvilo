@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { executeGridQuery } from '../lib/native-services.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ITEM = '78787878-7878-4787-8787-787878787881',
   MEMBER = '78787878-7878-4787-8787-787878787801',
@@ -39,7 +39,7 @@ const model = {
 };
 
 async function grid(t, enhanced) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'list-masked-search-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'list-masked-search-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(dir, 'website.yml'),

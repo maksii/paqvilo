@@ -5,10 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const id = 'd0000000-0000-4000-8000-000000000001';
 async function fixture(t, resources = '<code path="bundle.js" order="1"/>') {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-pcf-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-pcf-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const control = path.join(dir, 'Controls', 'tst_Synthetic.Editor');
   await fs.mkdir(control, { recursive: true });

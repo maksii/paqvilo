@@ -1,13 +1,14 @@
 // Admin workspace API: inspection, personas, scenarios, access rules, environment, state
 // transfer and the live log stream.
 import test from 'node:test';
+import { environmentVariableFixture, adminJsonCaller } from './fixtures/source-site.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { presetId, presetBody, syntheticPresetPack } from './fixtures/lazy-preset-pack.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FILES = {
   'website.yml': 'adx_websiteid: site\nadx_name: Admin API fixture\nadx_headerwebtemplateid: header',
@@ -134,7 +135,7 @@ const initial = () => ({
 });
 
 async function setup(t, options = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-api-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-admin-api-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(FILES)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
@@ -691,17 +692,7 @@ test('administration calls through /_sim are not audited as portal pages and the
 });
 
 test('local environment variable values persist over Solution re-seeding until reset', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-envvars-'));
-  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
-  const portal = path.join(dir, 'portal'),
-    solution = path.join(dir, 'solution');
-  for (const [name, body] of Object.entries({
-    'website.yml': 'adx_websiteid: site\nadx_name: Variables',
-    'web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /',
-  })) {
-    await fs.mkdir(path.dirname(path.join(portal, name)), { recursive: true });
-    await fs.writeFile(path.join(portal, name), body);
-  }
+  const { dir, portal, solution } = await environmentVariableFixture(t, 'pp-admin-envvars-');
   const variable = path.join(solution, 'environmentvariabledefinitions', 'sample_Seeded');
   await fs.mkdir(variable, { recursive: true });
   await fs.writeFile(
@@ -721,15 +712,7 @@ test('local environment variable values persist over Solution re-seeding until r
     solutionRoots: [solution],
   });
   ownedFixture(t).add(() => app.close());
-  const csrf = app.csrf;
-  const call = async (route, method = 'GET', body) => {
-    const response = await fetch(app.url + route, {
-      method,
-      headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    return { status: response.status, json: await response.json().catch(() => null) };
-  };
+  const call = adminJsonCaller(app);
   const seeded = async () =>
     (await call('/__sim/api/environment')).json.environmentVariables.definitions.find(
       (item) => item.schemaName === 'sample_Seeded',

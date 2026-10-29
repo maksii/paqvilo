@@ -326,7 +326,7 @@ test('a grid confirmation dialog is exposed to assistive technology while shown,
   await tab.locator("tr[data-id] button[data-toggle='dropdown']").click();
   await tab.locator('tr[data-id] a.delete-link').click();
   const confirm = tab.getByRole('dialog').getByRole('button', { name: 'Delete' });
-  await confirm.waitFor({ timeout: 5000 });
+  await confirm.waitFor();
   assert.equal(await tab.locator('.modal-delete').getAttribute('aria-hidden'), 'false');
   await tab.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click();
   await tab.waitForFunction(() => document.querySelector('.modal-delete').getAttribute('aria-hidden') === 'true');

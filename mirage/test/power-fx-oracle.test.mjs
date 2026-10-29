@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { CORPUS, compareResults, parsePacResults, runOracle } from '../test-support/power-fx-oracle.mjs';
+import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 const output = (expressions, value = '1') =>
   Buffer.concat([
@@ -30,7 +31,7 @@ const fake =
     };
   };
 async function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-oracle-test-'));
+  const root = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-oracle-test-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const pac = path.join(root, 'pac.exe');
   fs.writeFileSync(pac, 'fixture');

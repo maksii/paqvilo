@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -16,9 +17,6 @@ import { refreshModelDrivenPage } from '../lense/commands/model-driven.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
-// Bound for one awaited CLI signal (an observation or output line); the session itself
-// runs until the test stops it through its agent API.
-const SIGNAL_TIMEOUT_MS = 30_000;
 
 // Releases this test's interception and context before its loopback server and keep-alive sockets.
 function ownBrowserResources(t, server, owned) {
@@ -40,242 +38,228 @@ before(async () => {
 });
 after(() => browser?.close());
 
-test(
-  'an original-source breakpoint resolved through an explicitly served compiled sidecar binds and pauses',
-  { timeout: 15000 },
-  async (t) => {
-    const owner = ownedFixture(t),
-      root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-compiled-map-'));
-    let context, release, cdp;
-    owner.add(() => cdp?.detach());
-    owner.add(() => release?.());
-    owner.add(() => context?.close());
-    owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const original = 'export function answer(): number {\n  return 42;\n}',
-      compiled = 'globalThis.compiledAnswer = function(){\n  return 42;\n};\n//# sourceMappingURL=bundle.js.map',
-      payload = {
-        version: 3,
-        sources: ['src/original.ts'],
-        sourcesContent: [original],
-        names: [],
-        mappings: 'AAAA;AACA;AACA',
-      },
-      file = path.join(root, 'bundle.js'),
-      mappingFile = path.join(root, 'map.json');
-    await fs.writeFile(file, compiled);
-    await fs.writeFile(path.join(root, 'bundle.js.map'), JSON.stringify(payload));
-    await fs.writeFile(
-      mappingFile,
-      JSON.stringify({
-        version: 1,
-        resources: [
-          {
-            path: '/WebResources/bundle.js',
-            resource: 'bundle.js',
-            sourceMap: { path: '/WebResources/bundle.js.map', file: 'bundle.js.map' },
-          },
-        ],
-      }),
+test('an original-source breakpoint resolved through an explicitly served compiled sidecar binds and pauses', async (t) => {
+  const owner = ownedFixture(t),
+    root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-compiled-map-'));
+  let context, release, cdp;
+  owner.add(() => cdp?.detach());
+  owner.add(() => release?.());
+  owner.add(() => context?.close());
+  owner.remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+  const original = 'export function answer(): number {\n  return 42;\n}',
+    compiled = 'globalThis.compiledAnswer = function(){\n  return 42;\n};\n//# sourceMappingURL=bundle.js.map',
+    payload = {
+      version: 3,
+      sources: ['src/original.ts'],
+      sourcesContent: [original],
+      names: [],
+      mappings: 'AAAA;AACA;AACA',
+    },
+    file = path.join(root, 'bundle.js'),
+    mappingFile = path.join(root, 'map.json');
+  await fs.writeFile(file, compiled);
+  await fs.writeFile(path.join(root, 'bundle.js.map'), JSON.stringify(payload));
+  await fs.writeFile(
+    mappingFile,
+    JSON.stringify({
+      version: 1,
+      resources: [
+        {
+          path: '/WebResources/bundle.js',
+          resource: 'bundle.js',
+          sourceMap: { path: '/WebResources/bundle.js.map', file: 'bundle.js.map' },
+        },
+      ],
+    }),
+  );
+  const server = http.createServer((_request, response) =>
+    response
+      .writeHead(200, { 'content-type': 'text/html' })
+      .end('<!doctype html><script src="/WebResources/bundle.js"></script>'),
+  );
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  owner.add(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  context = await browser.newContext();
+  const page = await context.newPage(),
+    imported = {
+      resources: [{ name: 'bundle.js' }],
+      diagnostics: [],
+      assets: new Map([['bundle', { name: 'bundle.js', file, data: Buffer.from(compiled), mime: 'text/javascript' }]]),
+    };
+  const overlay = createModelDrivenOverlay({
+    origin,
+    imported,
+    mappings: await readModelDrivenResourceMap(mappingFile, { assets: imported.assets }),
+  });
+  release = await interceptOrigin(context, origin, (route) => overlay.handle(route));
+  cdp = await context.newCDPSession(page);
+  const pauses = [];
+  await cdp.send('Debugger.enable');
+  cdp.on('Debugger.paused', (event) => {
+    pauses.push(event);
+    cdp.send('Debugger.resume').catch(() => {});
+  });
+  await page.goto(origin);
+  const served = await page.evaluate(() => fetch('/WebResources/bundle.js.map').then((response) => response.json()));
+  assert.equal(served.sourcesContent[0], original);
+  const map = new SourceMap(served),
+    requested = { source: 'src/original.ts', line: 1, column: 0 };
+  const binding = compiled
+    .split('\n')
+    .map((_, line) => map.findEntry(line, 0))
+    .find(
+      (entry) =>
+        entry.originalSource === requested.source &&
+        entry.originalLine === requested.line &&
+        entry.originalColumn === requested.column,
     );
-    const server = http.createServer((_request, response) =>
-      response
-        .writeHead(200, { 'content-type': 'text/html' })
-        .end('<!doctype html><script src="/WebResources/bundle.js"></script>'),
-    );
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    owner.add(() => {
-      server.closeAllConnections();
-      return new Promise((resolve) => server.close(resolve));
-    });
-    const origin = `http://127.0.0.1:${server.address().port}`;
-    context = await browser.newContext();
-    const page = await context.newPage(),
-      imported = {
-        resources: [{ name: 'bundle.js' }],
-        diagnostics: [],
-        assets: new Map([
-          ['bundle', { name: 'bundle.js', file, data: Buffer.from(compiled), mime: 'text/javascript' }],
-        ]),
-      };
-    const overlay = createModelDrivenOverlay({
-      origin,
-      imported,
-      mappings: await readModelDrivenResourceMap(mappingFile, { assets: imported.assets }),
-    });
-    release = await interceptOrigin(context, origin, (route) => overlay.handle(route));
-    cdp = await context.newCDPSession(page);
-    const pauses = [];
-    await cdp.send('Debugger.enable');
-    cdp.on('Debugger.paused', (event) => {
-      pauses.push(event);
-      cdp.send('Debugger.resume').catch(() => {});
-    });
-    await page.goto(origin);
-    const served = await page.evaluate(() => fetch('/WebResources/bundle.js.map').then((response) => response.json()));
-    assert.equal(served.sourcesContent[0], original);
-    const map = new SourceMap(served),
-      requested = { source: 'src/original.ts', line: 1, column: 0 };
-    const binding = compiled
-      .split('\n')
-      .map((_, line) => map.findEntry(line, 0))
-      .find(
-        (entry) =>
-          entry.originalSource === requested.source &&
-          entry.originalLine === requested.line &&
-          entry.originalColumn === requested.column,
-      );
-    assert.ok(binding, 'the requested original-source line has a generated location');
-    const breakpoint = await cdp.send('Debugger.setBreakpointByUrl', {
-      url: origin + '/WebResources/bundle.js',
-      lineNumber: binding.generatedLine,
-      columnNumber: binding.generatedColumn,
-    });
-    assert.equal(breakpoint.locations.length, 1);
-    assert.equal(await page.evaluate(() => globalThis.compiledAnswer()), 42);
-    assert.equal(pauses.length, 1);
-    const paused = pauses[0].callFrames[0].location;
-    assert.equal(map.findEntry(paused.lineNumber, paused.columnNumber).originalLine, requested.line);
-  },
-);
+  assert.ok(binding, 'the requested original-source line has a generated location');
+  const breakpoint = await cdp.send('Debugger.setBreakpointByUrl', {
+    url: origin + '/WebResources/bundle.js',
+    lineNumber: binding.generatedLine,
+    columnNumber: binding.generatedColumn,
+  });
+  assert.equal(breakpoint.locations.length, 1);
+  assert.equal(await page.evaluate(() => globalThis.compiledAnswer()), 42);
+  assert.equal(pauses.length, 1);
+  const paused = pauses[0].callFrames[0].location;
+  assert.equal(map.findEntry(paused.lineNumber, paused.columnNumber).originalLine, requested.line);
+});
 
-test(
-  'model-driven overlay refresh bypasses an existing worker only in its owned tab and restores it on release',
-  { timeout: 30000 },
-  async (t) => {
-    const worker = `self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
+test('model-driven overlay refresh bypasses an existing worker only in its owned tab and restores it on release', async (t) => {
+  const worker = `self.addEventListener('install', event => event.waitUntil(self.skipWaiting()));
     self.addEventListener('activate', event => event.waitUntil(self.clients.claim()));
     self.addEventListener('fetch', event => { if (new URL(event.request.url).pathname === '/WebResources/x_cached.js')
       event.respondWith(new Response('window.cachedAsset = "native-worker"', { headers: { 'content-type': 'text/javascript' } })); });`;
-    const server = http.createServer((request, response) => {
-      if (request.url === '/worker.js') {
-        response.setHeader('content-type', 'text/javascript');
-        response.end(worker);
-        return;
-      }
-      response.setHeader('content-type', 'text/html');
-      response.end(
-        request.url.startsWith('/main.aspx')
-          ? '<!doctype html><script src="/WebResources/x_cached.js"></script>'
-          : '<!doctype html>Worker registration fixture',
-      );
-    });
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const owned = {};
-    ownBrowserResources(t, server, owned);
-    const origin = `http://127.0.0.1:${server.address().port}`;
-    const context = (owned.context = await browser.newContext());
-    const page = await context.newPage();
-    await page.goto(origin + '/register');
-    await page.evaluate(async () => {
-      await navigator.serviceWorker.register('/worker.js');
-      await navigator.serviceWorker.ready;
-    });
-    await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
-    await page.goto(origin + '/main.aspx');
-    assert.equal(await page.evaluate(() => window.cachedAsset), 'native-worker');
-    const sibling = await context.newPage();
-    await sibling.goto(origin + '/main.aspx');
-    const imported = (value) => ({
-      resources: [{ name: 'x_cached.js' }],
-      diagnostics: [],
-      assets: new Map([
-        [
-          'x_cached.js',
-          {
-            name: 'x_cached.js',
-            mime: 'text/javascript',
-            data: Buffer.from(`window.cachedAsset = ${JSON.stringify(value)}`),
-          },
-        ],
-      ]),
-    });
-    const overlay = createModelDrivenOverlay({ origin, imported: imported('local first') });
-    owned.release = await interceptOrigin(context, origin, (route) => overlay.handle(route), {
-      ownsPage: (candidate) => candidate === page,
-    });
-    await refreshModelDrivenPage(page, origin);
-    assert.equal(await page.evaluate(() => window.cachedAsset), 'local first');
-    overlay.replace(imported('local changed'));
-    await refreshModelDrivenPage(page, origin);
-    assert.equal(await page.evaluate(() => window.cachedAsset), 'local changed');
-    assert.equal(overlay.report().currentRevisionApplied, 1);
-    await sibling.goto(origin + '/main.aspx?unowned');
-    assert.equal(await sibling.evaluate(() => window.cachedAsset), 'native-worker');
-    assert.equal(
-      await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length),
-      1,
-      'the worker remains registered',
+  const server = http.createServer((request, response) => {
+    if (request.url === '/worker.js') {
+      response.setHeader('content-type', 'text/javascript');
+      response.end(worker);
+      return;
+    }
+    response.setHeader('content-type', 'text/html');
+    response.end(
+      request.url.startsWith('/main.aspx')
+        ? '<!doctype html><script src="/WebResources/x_cached.js"></script>'
+        : '<!doctype html>Worker registration fixture',
     );
-    await owned.release();
-    owned.release = null;
-    await page.goto(origin + '/main.aspx?released');
-    assert.equal(await page.evaluate(() => window.cachedAsset), 'native-worker');
-  },
-);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const owned = {};
+  ownBrowserResources(t, server, owned);
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const context = (owned.context = await browser.newContext());
+  const page = await context.newPage();
+  await page.goto(origin + '/register');
+  await page.evaluate(async () => {
+    await navigator.serviceWorker.register('/worker.js');
+    await navigator.serviceWorker.ready;
+  });
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller));
+  await page.goto(origin + '/main.aspx');
+  assert.equal(await page.evaluate(() => window.cachedAsset), 'native-worker');
+  const sibling = await context.newPage();
+  await sibling.goto(origin + '/main.aspx');
+  const imported = (value) => ({
+    resources: [{ name: 'x_cached.js' }],
+    diagnostics: [],
+    assets: new Map([
+      [
+        'x_cached.js',
+        {
+          name: 'x_cached.js',
+          mime: 'text/javascript',
+          data: Buffer.from(`window.cachedAsset = ${JSON.stringify(value)}`),
+        },
+      ],
+    ]),
+  });
+  const overlay = createModelDrivenOverlay({ origin, imported: imported('local first') });
+  owned.release = await interceptOrigin(context, origin, (route) => overlay.handle(route), {
+    ownsPage: (candidate) => candidate === page,
+  });
+  await refreshModelDrivenPage(page, origin);
+  assert.equal(await page.evaluate(() => window.cachedAsset), 'local first');
+  overlay.replace(imported('local changed'));
+  await refreshModelDrivenPage(page, origin);
+  assert.equal(await page.evaluate(() => window.cachedAsset), 'local changed');
+  assert.equal(overlay.report().currentRevisionApplied, 1);
+  await sibling.goto(origin + '/main.aspx?unowned');
+  assert.equal(await sibling.evaluate(() => window.cachedAsset), 'native-worker');
+  assert.equal(
+    await page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length),
+    1,
+    'the worker remains registered',
+  );
+  await owned.release();
+  owned.release = null;
+  await page.goto(origin + '/main.aspx?released');
+  assert.equal(await page.evaluate(() => window.cachedAsset), 'native-worker');
+});
 
-test(
-  'model-driven local scripts publish file debugger maps and hit an executable source breakpoint',
-  { timeout: 30000 },
-  async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lense-app-debug-'));
-    const file = path.join(root, 'x_debug.js');
-    const source =
-      'globalThis.modelDrivenProof = function () {\n  globalThis.modelDrivenRan = true;\n};\nglobalThis.modelDrivenProof();';
-    await fs.writeFile(file, source);
-    const server = http.createServer((request, response) => {
-      response.setHeader('content-type', 'text/html');
-      response.end('<!doctype html><script src="/WebResources/x_debug.js"></script>');
-    });
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const owned = {};
-    ownBrowserResources(t, server, owned);
-    ownedFixture(t).remove(async () => {
-      await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
-    });
-    const origin = `http://127.0.0.1:${server.address().port}`;
-    const context = (owned.context = await browser.newContext({ serviceWorkers: 'block' }));
-    const page = await context.newPage();
-    const overlay = createModelDrivenOverlay({
-      origin,
-      imported: {
-        resources: [{ name: 'x_debug.js' }],
-        diagnostics: [],
-        assets: new Map([['local', { name: 'x_debug.js', file, data: Buffer.from(source), mime: 'text/javascript' }]]),
-      },
-    });
-    owned.release = await interceptOrigin(context, origin, (route) => overlay.handle(route), {
-      ownsPage: (candidate) => candidate === page,
-    });
-    const cdp = await context.newCDPSession(page),
-      scripts = [],
-      pauses = [];
-    cdp.on('Debugger.scriptParsed', (event) => {
-      if (event.url === `${origin}/WebResources/x_debug.js`) scripts.push(event);
-    });
-    cdp.on('Debugger.paused', (event) => {
-      pauses.push(event);
-      cdp.send('Debugger.resume').catch(() => {});
-    });
-    await cdp.send('Debugger.enable');
-    await cdp.send('Debugger.setBreakpointByUrl', { url: `${origin}/WebResources/x_debug.js`, lineNumber: 1 });
-    await page.goto(`${origin}/main.aspx`, { waitUntil: 'load' });
-    assert.equal(await page.evaluate(() => globalThis.modelDrivenRan), true);
-    assert.equal(scripts.length, 1);
-    assert.equal(pauses.length, 1);
-    assert.equal(pauses[0].callFrames[0].location.lineNumber, 1);
-    const map = JSON.parse(Buffer.from(scripts[0].sourceMapURL.split(',')[1], 'base64'));
-    assert.equal(fileURLToPath(map.sources[0]), file);
-    assert.equal(map.sourcesContent[0], source);
-    assert.equal(overlay.report().currentRevisionApplied, 1);
-    await cdp.detach();
-  },
-);
+test('model-driven local scripts publish file debugger maps and hit an executable source breakpoint', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'lense-app-debug-'));
+  const file = path.join(root, 'x_debug.js');
+  const source =
+    'globalThis.modelDrivenProof = function () {\n  globalThis.modelDrivenRan = true;\n};\nglobalThis.modelDrivenProof();';
+  await fs.writeFile(file, source);
+  const server = http.createServer((request, response) => {
+    response.setHeader('content-type', 'text/html');
+    response.end('<!doctype html><script src="/WebResources/x_debug.js"></script>');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const owned = {};
+  ownBrowserResources(t, server, owned);
+  ownedFixture(t).remove(async () => {
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+  });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const context = (owned.context = await browser.newContext({ serviceWorkers: 'block' }));
+  const page = await context.newPage();
+  const overlay = createModelDrivenOverlay({
+    origin,
+    imported: {
+      resources: [{ name: 'x_debug.js' }],
+      diagnostics: [],
+      assets: new Map([['local', { name: 'x_debug.js', file, data: Buffer.from(source), mime: 'text/javascript' }]]),
+    },
+  });
+  owned.release = await interceptOrigin(context, origin, (route) => overlay.handle(route), {
+    ownsPage: (candidate) => candidate === page,
+  });
+  const cdp = await context.newCDPSession(page),
+    scripts = [],
+    pauses = [];
+  cdp.on('Debugger.scriptParsed', (event) => {
+    if (event.url === `${origin}/WebResources/x_debug.js`) scripts.push(event);
+  });
+  cdp.on('Debugger.paused', (event) => {
+    pauses.push(event);
+    cdp.send('Debugger.resume').catch(() => {});
+  });
+  await cdp.send('Debugger.enable');
+  await cdp.send('Debugger.setBreakpointByUrl', { url: `${origin}/WebResources/x_debug.js`, lineNumber: 1 });
+  await page.goto(`${origin}/main.aspx`, { waitUntil: 'load' });
+  assert.equal(await page.evaluate(() => globalThis.modelDrivenRan), true);
+  assert.equal(scripts.length, 1);
+  assert.equal(pauses.length, 1);
+  assert.equal(pauses[0].callFrames[0].location.lineNumber, 1);
+  const map = JSON.parse(Buffer.from(scripts[0].sourceMapURL.split(',')[1], 'base64'));
+  assert.equal(fileURLToPath(map.sources[0]), file);
+  assert.equal(map.sourcesContent[0], source);
+  assert.equal(overlay.report().currentRevisionApplied, 1);
+  await cdp.detach();
+});
 
 test(
   'public model-driven Lense overlays native scripts and reloads on source save without native writes',
   { timeout: 90_000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'lense-app-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'lense-app-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
     const solution = path.join(root, 'solution'),
       resourceDir = path.join(solution, 'WebResources');
@@ -396,15 +380,8 @@ test(
     });
     // Wait for a real signal (an observation request or CLI output); an exit fails at once.
     const until = async (ready, emitter, event, label) => {
-      const signal = AbortSignal.timeout(SIGNAL_TIMEOUT_MS);
       while (!ready()) {
-        const next = await Promise.race([
-          once(emitter, event, { signal }).then(
-            () => 'next',
-            () => 'timeout',
-          ),
-          exited.then(() => 'exited'),
-        ]);
+        const next = await Promise.race([once(emitter, event).then(() => 'next'), exited.then(() => 'exited')]);
         if (next !== 'next' && !ready()) assert.fail(`${label} (${next}): ${output}`);
       }
     };

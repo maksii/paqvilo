@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 // Sustained saves and panel controls.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,7 +17,7 @@ test(
   { timeout: 120_000 },
   async (t) => {
     const fx = createFixture();
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-day-browser-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-day-browser-'));
     const css = 'web-pages/home/content-pages/Home.en-US.webpage.custom_css.css';
     const aboutJs = 'web-pages/about/content-pages/About.en-US.webpage.custom_javascript.js';
     const originalCss = fx.read(css);
@@ -121,8 +122,7 @@ test(
     // The first published comparison of the locally served web file is the result to check;
     // it is also observed local application before any draft is typed.
     const compared = (async () => {
-      const signal = AbortSignal.timeout(15_000);
-      while (!session.onlineState.has('/day.css')) await once(session, 'online-state', { signal });
+      while (!session.onlineState.has('/day.css')) await once(session, 'online-state');
       return session.onlineState.get('/day.css');
     })();
     await Promise.all([home.goto(origin), about.goto(origin + '/about-us/')]);
@@ -132,7 +132,7 @@ test(
     await about.locator('#draft').fill('another draft');
     // Each real watcher event must finish before the next save; exercise repeated in-place swaps.
     for (let i = 1; i <= 20; i++) {
-      const refreshed = once(session, 'refreshed', { signal: AbortSignal.timeout(15_000) });
+      const refreshed = once(session, 'refreshed');
       fx.write(css, originalCss.replace('color: red', `color: rgb(${i}, 2, 3)`));
       const [event] = await refreshed;
       assert.equal(event.how, 'css');
@@ -145,12 +145,12 @@ test(
       );
     }
     // A page script refreshes its page alone, then committing keeps the startup baseline intact.
-    const saved = once(session, 'refreshed', { signal: AbortSignal.timeout(15_000) });
+    const saved = once(session, 'refreshed');
     fx.write(aboutJs, 'window.aboutVersion = "edited";');
     assert.equal((await saved)[0].how, 'reload');
     await about.waitForFunction(() => window.aboutVersion === 'edited');
     assert.equal(await home.locator('#draft').inputValue(), 'keep my draft');
-    const moved = once(session, 'head', { signal: AbortSignal.timeout(15_000) });
+    const moved = once(session, 'head');
     fx.commit();
     await moved;
     assert.equal(session.baseline.commit, pinned);

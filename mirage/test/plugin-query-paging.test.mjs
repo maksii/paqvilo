@@ -7,12 +7,13 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { CLR_SKIP, clrSdk } from './fixtures/clr-sdk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'Installed SDK query paging codec preserves constructor, omitted, null and populated states',
   { skip: CLR_SKIP },
   async (t) => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-query-paging-'));
+    const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-query-paging-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(dir, 'PagingProbe.cs'),

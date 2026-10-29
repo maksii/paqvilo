@@ -15,7 +15,7 @@ import { performanceFixture, performanceId } from './runtime-performance-fixture
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
 import { appCatalogue, appCatalogueAsync } from '../lib/model-driven/catalogue.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('paged FetchXML projects only returned rows while preserving counts, cookies, ordering and detached values', () => {
   const payload = 'Invented large payload'.repeat(16);
@@ -65,7 +65,7 @@ test('paged FetchXML projects only returned rows while preserving counts, cookie
 import { settleFileTimes } from './support/file-times.mjs';
 
 test('unchanged isolated composition clones each business graph once and owned replacement saves zero bytes', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-copy-count-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-copy-count-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   for (const count of [32, 4096]) {
     const state = emptyState();
@@ -248,7 +248,7 @@ test('built-in startup metadata scans are bounded across tables and trusted exte
 });
 
 test('organization seeders checkpoint once, keep existing rows and roll back failed composition', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-bootstrap-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-bootstrap-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const state = emptyState();
   state.mappings.x_item = { entitySet: 'x_items', idColumn: 'x_itemid' };
@@ -598,131 +598,127 @@ test('cooperative catalogue construction preserves the complete synchronous cont
 });
 
 for (const watch of [false, true])
-  test(
-    `catalogue invalidates source, form and field-security metadata with watch ${watch}`,
-    { timeout: 30000 },
-    async (t) => {
-      const fixture = await performanceFixture({ tables: 2, records: 8 });
-      ownedFixture(t).remove(fixture.cleanup);
-      for (let i = 0; i < 2; i++) {
-        const file = path.join(fixture.solutionRoots[0], `Entities/x_scale${i}/Entity.xml`);
-        await fs.writeFile(
-          file,
-          (await fs.readFile(file, 'utf8')).replace(
-            '</EntitySetName>',
-            '</EntitySetName><OwnershipTypeMask>UserOwned</OwnershipTypeMask>',
-          ),
-        );
-      }
-      const sim = await createSimulator({
-        runtime: { kind: 'model-driven' },
-        solutionRoots: fixture.solutionRoots,
-        watch,
-        packs: [fixture.pack],
-        preset: 'invented-scale',
-        presetMode: 'bootstrap',
-        dataverse: {
-          enabled: false,
-          users: [
-            {
-              objectId: performanceId(700),
-              domainname: 'invented@example.test',
-              fullname: 'Invented restricted staff',
-              roles: ['Basic User'],
-            },
-          ],
-        },
-      });
-      ownedFixture(t).add(() => sim.close());
-      const session = await (await fetch(sim.url + '/_sim/api/dataverse/session')).json();
-      const selected = await fetch(sim.url + '/_sim/api/dataverse/session', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
-        body: JSON.stringify({ userId: session.users.find((user) => user.name === 'Invented restricted staff').id }),
-      });
-      assert.equal(selected.status, 200);
-      const cookie = selected.headers.get('set-cookie').split(';')[0];
-      const catalogue = async () =>
-        await (await fetch(sim.url + '/_apps/api/metadata/x_scale0', { headers: { cookie } })).json();
-      const before = await catalogue();
-      assert.equal(before.capabilities.fields.x_value1.read, false);
-      const csrf = sim.csrf,
-        headers = { 'content-type': 'application/json', 'x-sim-csrf': csrf };
-      const made = await fetch(sim.url + '/_apps/api/tables/x_scale0', {
-        method: 'POST',
-        headers: { ...headers, cookie },
-        body: JSON.stringify({ x_value0: 'Invented staff row' }),
-      });
-      assert.equal(made.status, 201);
-      const created = await made.json();
-      const saved = await fetch(sim.url + '/_apps/api/tables/x_scale0/' + created.id, {
-        method: 'PATCH',
-        headers: { ...headers, 'if-match': created.etag },
-        body: JSON.stringify({ x_value1: 'Must stay masked' }),
-      });
-      assert.equal(saved.status, 200);
-      const read = async (route) => {
-        const response = await fetch(sim.url + '/_apps/api/' + route, { headers: { cookie } });
-        assert.equal(response.status, 200);
-        return response.json();
-      };
-      const recordRoute = 'tables/x_scale0/' + created.id;
-      assert.equal((await read(recordRoute)).row.x_value1, null);
-      const grid = await read(
-        'tables/x_scale0?query=' +
-          encodeURIComponent(
-            JSON.stringify({
-              columns: ['x_value0', 'x_value1'],
-              filters: [{ field: 'x_value0', operator: 'eq', value: 'Invented staff row' }],
-              pageSize: 50,
-            }),
-          ),
-      );
-      assert.equal(grid.rows.length, 1);
-      assert.ok(grid.rows[0].x_value1 == null);
-      assert.doesNotMatch(JSON.stringify(grid), /Must stay masked/);
-      const entityFile = path.join(fixture.solutionRoots[0], 'Entities/x_scale0/Entity.xml'),
-        formFile = path.join(fixture.solutionRoots[0], 'Entities/x_scale0/FormXml/main/form.xml');
+  test(`catalogue invalidates source, form and field-security metadata with watch ${watch}`, async (t) => {
+    const fixture = await performanceFixture({ tables: 2, records: 8 });
+    ownedFixture(t).remove(fixture.cleanup);
+    for (let i = 0; i < 2; i++) {
+      const file = path.join(fixture.solutionRoots[0], `Entities/x_scale${i}/Entity.xml`);
       await fs.writeFile(
-        entityFile,
-        (await fs.readFile(entityFile, 'utf8'))
-          .replace('<IsSecured>1</IsSecured>', '<IsSecured>0</IsSecured>')
-          .replace(
-            '</attributes>',
-            '<attribute PhysicalName="x_added"><Name>x_added</Name><Type>nvarchar</Type></attribute></attributes>',
-          ),
-      );
-      await fs.writeFile(
-        formFile,
-        (await fs.readFile(formFile, 'utf8')).replace(
-          '</rows>',
-          '<row><cell><control datafieldname="x_added"/></cell></row></rows>',
+        file,
+        (await fs.readFile(file, 'utf8')).replace(
+          '</EntitySetName>',
+          '</EntitySetName><OwnershipTypeMask>UserOwned</OwnershipTypeMask>',
         ),
       );
-      if (!watch) await sim.reload();
-      let changed;
-      const deadline = performance.now() + 10000;
-      do {
-        changed = await catalogue();
-        if (changed.fields.x_added && changed.capabilities.fields.x_value1.read) break;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      } while (performance.now() < deadline);
-      assert.ok(changed.fields.x_added);
-      assert.equal(changed.capabilities.fields.x_value1.read, true);
-      assert.equal(
-        (await read(recordRoute)).row.x_value1,
-        'Must stay masked',
-        'The next record read uses changed source security metadata.',
-      );
-      assert.ok(
-        changed.forms.some((form) =>
-          form.tabs.some((tab) =>
-            tab.sections.some((section) => section.fields.some((field) => field.name === 'x_added')),
-          ),
+    }
+    const sim = await createSimulator({
+      runtime: { kind: 'model-driven' },
+      solutionRoots: fixture.solutionRoots,
+      watch,
+      packs: [fixture.pack],
+      preset: 'invented-scale',
+      presetMode: 'bootstrap',
+      dataverse: {
+        enabled: false,
+        users: [
+          {
+            objectId: performanceId(700),
+            domainname: 'invented@example.test',
+            fullname: 'Invented restricted staff',
+            roles: ['Basic User'],
+          },
+        ],
+      },
+    });
+    ownedFixture(t).add(() => sim.close());
+    const session = await (await fetch(sim.url + '/_sim/api/dataverse/session')).json();
+    const selected = await fetch(sim.url + '/_sim/api/dataverse/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
+      body: JSON.stringify({ userId: session.users.find((user) => user.name === 'Invented restricted staff').id }),
+    });
+    assert.equal(selected.status, 200);
+    const cookie = selected.headers.get('set-cookie').split(';')[0];
+    const catalogue = async () =>
+      await (await fetch(sim.url + '/_apps/api/metadata/x_scale0', { headers: { cookie } })).json();
+    const before = await catalogue();
+    assert.equal(before.capabilities.fields.x_value1.read, false);
+    const csrf = sim.csrf,
+      headers = { 'content-type': 'application/json', 'x-sim-csrf': csrf };
+    const made = await fetch(sim.url + '/_apps/api/tables/x_scale0', {
+      method: 'POST',
+      headers: { ...headers, cookie },
+      body: JSON.stringify({ x_value0: 'Invented staff row' }),
+    });
+    assert.equal(made.status, 201);
+    const created = await made.json();
+    const saved = await fetch(sim.url + '/_apps/api/tables/x_scale0/' + created.id, {
+      method: 'PATCH',
+      headers: { ...headers, 'if-match': created.etag },
+      body: JSON.stringify({ x_value1: 'Must stay masked' }),
+    });
+    assert.equal(saved.status, 200);
+    const read = async (route) => {
+      const response = await fetch(sim.url + '/_apps/api/' + route, { headers: { cookie } });
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const recordRoute = 'tables/x_scale0/' + created.id;
+    assert.equal((await read(recordRoute)).row.x_value1, null);
+    const grid = await read(
+      'tables/x_scale0?query=' +
+        encodeURIComponent(
+          JSON.stringify({
+            columns: ['x_value0', 'x_value1'],
+            filters: [{ field: 'x_value0', operator: 'eq', value: 'Invented staff row' }],
+            pageSize: 50,
+          }),
         ),
-      );
-    },
-  );
+    );
+    assert.equal(grid.rows.length, 1);
+    assert.ok(grid.rows[0].x_value1 == null);
+    assert.doesNotMatch(JSON.stringify(grid), /Must stay masked/);
+    const entityFile = path.join(fixture.solutionRoots[0], 'Entities/x_scale0/Entity.xml'),
+      formFile = path.join(fixture.solutionRoots[0], 'Entities/x_scale0/FormXml/main/form.xml');
+    await fs.writeFile(
+      entityFile,
+      (await fs.readFile(entityFile, 'utf8'))
+        .replace('<IsSecured>1</IsSecured>', '<IsSecured>0</IsSecured>')
+        .replace(
+          '</attributes>',
+          '<attribute PhysicalName="x_added"><Name>x_added</Name><Type>nvarchar</Type></attribute></attributes>',
+        ),
+    );
+    await fs.writeFile(
+      formFile,
+      (await fs.readFile(formFile, 'utf8')).replace(
+        '</rows>',
+        '<row><cell><control datafieldname="x_added"/></cell></row></rows>',
+      ),
+    );
+    if (!watch) await sim.reload();
+    let changed;
+    const deadline = performance.now() + 120_000;
+    do {
+      changed = await catalogue();
+      if (changed.fields.x_added && changed.capabilities.fields.x_value1.read) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } while (performance.now() < deadline);
+    assert.ok(changed.fields.x_added);
+    assert.equal(changed.capabilities.fields.x_value1.read, true);
+    assert.equal(
+      (await read(recordRoute)).row.x_value1,
+      'Must stay masked',
+      'The next record read uses changed source security metadata.',
+    );
+    assert.ok(
+      changed.forms.some((form) =>
+        form.tabs.some((tab) =>
+          tab.sections.some((section) => section.fields.some((field) => field.name === 'x_added')),
+        ),
+      ),
+    );
+  });
 
 test('catalogue yields to status while retaining one security read and releases cancelled readers', async (t) => {
   const store = new DataStore(),

@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const text = { dataverseType: 'nvarchar' };
 
@@ -238,7 +239,7 @@ test('a continuation from a finished isolated transaction reads the committed st
 });
 
 test('an independent plugin commit inside an isolated transaction that later fails stays uncommitted', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'store-nesting-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'store-nesting-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'state.json');
   const state = emptyState();
@@ -273,7 +274,7 @@ test('an independent plugin commit inside an isolated transaction that later fai
   assert.equal(persisted.includes('"M"'), false);
 });
 
-test('a plain transact inside an isolated transaction joins it instead of deadlocking', { timeout: 5000 }, async () => {
+test('a plain transact inside an isolated transaction joins it instead of deadlocking', async () => {
   const store = fixture();
   const before = store.revision;
   await store.transact(

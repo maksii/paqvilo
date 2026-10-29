@@ -9,7 +9,7 @@ import { createSimulator } from '../api.mjs';
 import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { composeHostDescription, activeDeploymentProfile } from '../lib/organization-host.mjs';
 import '../lib/provider-modules.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CUSTOMIZATIONS =
   '<ImportExportXml><Entities/><connectionreferences><connectionreference connectionreferencelogicalname="x_fxref">' +
@@ -18,7 +18,7 @@ const CUSTOMIZATIONS =
 const SCENARIO = { id: 'fx-scenario', requires: ['connector:fixture', 'outbox:local', 'connectionreference:*'] };
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-description-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-description-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [relative, content] of Object.entries({
     'solution/Other/Solution.xml':
@@ -190,7 +190,7 @@ test('offline preflight and both running hosts report the same module and operat
 });
 
 test('the offline preflight applies the startup preset, so a step whose service endpoint the preset seeds resolves as on the host', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-description-preset-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-description-preset-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const ENDPOINT = '77777777-7777-4777-8777-0000000000f1',
     STEP = '77777777-7777-4777-8777-0000000000f2';

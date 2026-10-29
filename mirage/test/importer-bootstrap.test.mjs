@@ -11,7 +11,7 @@ import { bootstrapReport, resolveReportInputs } from '../bootstrap-report.mjs';
 import { SolutionFileCache } from '../lib/solution-cache.mjs';
 import { portalWebRoles, resolvePortalIdentity } from '../lib/permissions.mjs';
 import { languageRoute, deniedPageRoute } from '../lib/redirects.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function write(root, files) {
   for (const [name, body] of Object.entries(files)) {
@@ -21,7 +21,7 @@ async function write(root, files) {
   }
 }
 async function temp(t, prefix) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), prefix));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   return fs.realpath(dir);
 }
@@ -388,7 +388,7 @@ test('a running runtime reloads solution changes, recompiles metadata and report
   const dir = await temp(t, 'pp-reload-');
   // Keep the spelling os.tmpdir() gives (possibly a Windows 8.3 short path): the watcher
   // reports paths in this spelling while scanned layers use real paths.
-  const solutions = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-reload-solutions-'));
+  const solutions = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-reload-solutions-'));
   ownedFixture(t).remove(() => fs.rm(solutions, { recursive: true, force: true }));
   await write(dir, portalFiles);
   await write(solutions, {

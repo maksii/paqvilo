@@ -8,7 +8,7 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { annotationMatcher, parsePrefer, parseWebApiRoute, webApiErrorResponse } from '../lib/webapi-handler.mjs';
 import { DataError } from '../lib/data-error.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const FORMATTED = '@OData.Community.Display.V1.FormattedValue';
@@ -182,7 +182,7 @@ const fixture = () => ({
 });
 
 async function start(t, { settings = SETTINGS, state = fixture(), observed = null } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-odata-parity-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-odata-parity-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: OData parity\n');
   await fs.writeFile(path.join(directory, 'sitesetting.yml'), settingsYaml(settings));

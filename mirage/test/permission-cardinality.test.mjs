@@ -7,7 +7,7 @@ import { buildPermissionModel, resolveScopedRelationship } from '../lib/permissi
 import { importSolutionData } from '../lib/solution-data.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 function fixture() {
   const records = [
@@ -54,7 +54,7 @@ function fixture() {
   return { portal: { records }, state };
 }
 async function metadata(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-permission-cardinality-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-permission-cardinality-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const xml = `<ImportExportXml><EntityRelationships>${['organization', 'contact'].map((target) => `<EntityRelationship Name="assignment_${target}"><EntityRelationshipType>OneToMany</EntityRelationshipType><ReferencingEntityName>assignment</ReferencingEntityName><ReferencedEntityName>${target}</ReferencedEntityName><ReferencingAttributeName>${target}id</ReferencingAttributeName><ReferencedAttributeName>${target}id</ReferencedAttributeName></EntityRelationship>`).join('')}</EntityRelationships></ImportExportXml>`;
   await fs.writeFile(path.join(root, 'customizations.xml'), xml);

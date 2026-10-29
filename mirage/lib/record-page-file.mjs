@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
+import { openRecordReader } from './record-file-lease.mjs';
 
 const MAGIC = Buffer.from('PAQVILO-RECORD-PAGES-1\n');
 const HEADER = 48;
@@ -92,8 +93,7 @@ export class RecordPageFile {
       requested.set(prefix.bytes, prefix);
     }
     const prefixes = [...requested.values()].sort((a, b) => a.bytes - b.bytes);
-    if (fs.lstatSync(file).isSymbolicLink()) throw damaged('Record page files cannot be symlinks');
-    const fd = fs.openSync(file, 'r');
+    const fd = openRecordReader(file);
     try {
       const before = fs.fstatSync(fd, { bigint: true });
       if (before.size < BigInt(descriptor.bytes)) throw damaged('Published record page prefix is missing');
@@ -263,8 +263,7 @@ export class RecordPageFile {
   read(id, { copy = true } = {}) {
     if (this.closed) throw Error('Record page file is closed');
     if (this.fd === null) {
-      if (fs.lstatSync(this.file).isSymbolicLink()) throw damaged('Record page files cannot be symlinks');
-      const fd = fs.openSync(this.file, 'r');
+      const fd = openRecordReader(this.file);
       try {
         const info = fs.fstatSync(fd, { bigint: true });
         if ([info.dev, info.ino].join(':') !== this.identity || info.size < BigInt(this.bytes))

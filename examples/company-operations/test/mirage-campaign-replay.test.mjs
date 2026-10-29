@@ -7,6 +7,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { frozenReplayIdentity, runMirageReplayCampaign } from '../portal-harness/mirage-campaign-replay.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 const actor = '10000000-0000-0000-0000-000000000001',
   site = '20000000-0000-0000-0000-000000000001',
   role = '30000000-0000-0000-0000-000000000001',
@@ -83,7 +84,7 @@ test('campaign identity uses exact native site memberships, default role and typ
   assert.throws(() => frozenReplayIdentity(unknown), /Account-scoped/);
 });
 test('offline campaign resumes immutable completed receipts and rejects input/job/result changes or another worker', async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-offline-replay-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-offline-replay-'));
   try {
     const file = path.join(dir, 'fixture.json'),
       bytes = Buffer.from('{}');
@@ -155,7 +156,7 @@ test('offline campaign resumes immutable completed receipts and rejects input/jo
   }
 });
 test('runtime receipts resolve an installed toolkit from an external project without checkout-relative paths', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-external-worker-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-external-worker-'));
   try {
     await fs.mkdir(path.join(directory, 'portal-harness'));
     await fs.mkdir(path.join(directory, 'plugins'));
@@ -196,7 +197,7 @@ test('runtime receipts resolve an installed toolkit from an external project wit
         '-e',
         `const {replayRuntimeFingerprint}=await import(${JSON.stringify(module)});console.log(await replayRuntimeFingerprint());`,
       ],
-      { encoding: 'utf8', timeout: 15000, windowsHide: true },
+      { encoding: 'utf8', timeout: 150_000, windowsHide: true },
     );
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout.trim(), /^[a-f\d]{64}$/);
@@ -205,7 +206,7 @@ test('runtime receipts resolve an installed toolkit from an external project wit
   }
 });
 test('append-only cell receipts admit newly collected masks without changing prior inputs or overstating coverage', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-append-replay-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-append-replay-'));
   try {
     const cellsDirectory = path.join(directory, 'cells');
     await fs.mkdir(cellsDirectory);

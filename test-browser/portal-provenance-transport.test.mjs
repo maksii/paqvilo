@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -24,7 +25,7 @@ const scope = {
   sourceRevision: 'invented-current',
 };
 async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-proof-ui-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-proof-ui-'));
   const metadataFile = path.join(directory, 'Main.webtemplate.yml');
   await fs.writeFile(metadataFile, 'adx_webtemplateid: invented-main\nadx_name: Main');
   await fs.writeFile(
@@ -94,7 +95,6 @@ async function fixture(t, { mirage = false, delayDescriptor = false } = {}) {
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   const context = await browser.newContext();
-  context.setDefaultTimeout(5000);
   const page = await context.newPage();
   await context.addCookies([{ name: 'invented', value: 'one', url: origin }]);
   const transport = createPortalProvenanceTransport(context, [{ origin, mirage }]);

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { AssetCache } from '../lib/asset-cache.mjs';
 import { createSimulator } from '../server.mjs';
 import { inventedCrmFont } from './fixtures/crm-font.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // Refused sources, glyph coverage and wrong families are covered in crm-platform-font-alias.test.mjs.
 const origin = 'https://portal.example.test';
@@ -14,7 +14,7 @@ const sourcePath = '/resource/powerappsportal/fonts/CRMMDL2.woff';
 const targetPath = '/uclient/resources/styles/CRMMDL2.woff';
 
 test('CRM MDL2 public font fallback is fetched from the CDN without credentials and served offline by the simulator', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-crm-font-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-crm-font-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const bytes = inventedCrmFont(),
     requests = [];

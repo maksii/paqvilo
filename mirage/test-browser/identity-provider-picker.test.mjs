@@ -9,7 +9,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { startIdentityProvider } from '../lib/identity-provider.mjs';
 import { identityChooserFixture } from '../test/fixtures/identity-chooser.mjs';
 import { identityProviderSettings, identityProviderAssets } from '../lib/identity-provider-settings.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { closeServer } from './shared-browser.mjs';
 
 test(
@@ -20,7 +20,7 @@ test(
     await new Promise((resolve) => callback.listen(0, '127.0.0.1', resolve));
     // Closed while the browser still holds keep-alive sockets, so drop them rather than wait.
     ownedFixture(t).add(() => closeServer(callback));
-    const root = await fs.mkdtemp(join(tmpdir(), 'idp-appearance-'));
+    const root = await makeTemporaryDirectory(join(tmpdir(), 'idp-appearance-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     await fs.writeFile(join(root, 'custom.css'), '.chooser-header{background:rgb(240,230,255)}');
     await fs.writeFile(join(root, 'custom.js'), 'document.documentElement.dataset.projectIdentity="ready";');

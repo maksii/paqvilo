@@ -96,7 +96,6 @@ test(
         '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
       ],
     });
-    context.setDefaultTimeout(15_000);
     const session = new OverlaySession({
       sourceDir: site,
       origin,

@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createChangeLog } from '../lib/dataverse-changes.mjs';
 import { clockFunction, fixedClock } from '../lib/runtime-clock.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const A = 'aaaaaaaa-0000-0000-0000-00000000000a';
 const B = 'aaaaaaaa-0000-0000-0000-00000000000b';
@@ -127,7 +128,7 @@ describe('dataverse change log', () => {
   });
 
   it('expires a token from before a restart under a fixed clock, although the new log takes the same epoch', async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'change-log-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'change-log-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const file = path.join(root, 'state.json');
     const first = fakeStore();

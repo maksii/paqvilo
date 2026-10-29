@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { inventedProjectFixture } from './fixtures/source-site.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -8,23 +9,9 @@ import { connectRuntime } from '../testing.mjs';
 import { resolveLocalOverrides } from '../lib/local-overrides.mjs';
 import { injectRuntimeCompatibility } from '../lib/source-dependencies.mjs';
 import { platformStylesStatus, formStyleDiagnostics } from '../lib/platform-styles.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
-async function project(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-public-api-'));
-  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
-  await fs.mkdir(path.join(root, 'portal/web-pages'), { recursive: true });
-  await fs.writeFile(path.join(root, 'portal/website.yml'), 'adx_name: Invented\nadx_websiteid: invented\n');
-  await fs.writeFile(
-    path.join(root, 'portal/web-pages/home.webpage.yml'),
-    'adx_name: Home\nadx_webpageid: home\nadx_partialurl: /\nadx_copy: <div>Home</div>\n',
-  );
-  await fs.writeFile(
-    path.join(root, 'paqvilo.config.yml'),
-    'sourceRoot: .\nsites:\n  invented:\n    source: portal\n    environments:\n      dev: https://invented.example.test\n',
-  );
-  return root;
-}
+const project = (t) => inventedProjectFixture(t, 'paqvilo-public-api-');
 
 test('bootstrap preset mode preserves records on restart and always mode resets them', async (t) => {
   const root = await project(t),
@@ -91,7 +78,7 @@ test('local overrides confine files, preserve head order and disable bundled foo
     root,
   );
   assert.throws(() => resolveLocalOverrides({ compat: { typo: false } }, root), /Unknown adapter/);
-  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-head-outside-'));
+  const outside = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-head-outside-'));
   ownedFixture(t).remove(() => fs.rm(outside, { recursive: true, force: true }));
   await fs.writeFile(path.join(outside, 'outside.css'), 'body{}');
   assert.throws(
@@ -132,7 +119,7 @@ test('local overrides confine files, preserve head order and disable bundled foo
 
 test('local head assets remain confined when a directory is replaced after startup', async (t) => {
   const root = await project(t),
-    outside = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-head-outside-'));
+    outside = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-head-outside-'));
   ownedFixture(t).remove(() => fs.rm(outside, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'local'));
   await fs.writeFile(path.join(root, 'local/extra.css'), 'body{color:purple}');

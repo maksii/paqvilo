@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -13,7 +14,7 @@ test(
   'scaffolded VS Code task signals readiness and attaches to its own development browser',
   { timeout: 120000 },
   async (t) => {
-    const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-workspace-'));
+    const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workspace-'));
     const directory = path.join(work, 'demo');
     const cli = process.env.PAQVILO_DEMO_CLI || fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));

@@ -6,7 +6,7 @@ import { endianness } from 'node:os';
 import { RecordPageFile } from './record-page-file.mjs';
 import { PersistentKeyTree } from './record-key-index.mjs';
 import { KeySorter } from './record-key-sort.mjs';
-import { RecordFileLease, stateRecordOwner } from './record-file-lease.mjs';
+import { RecordFileLease, stateRecordOwner, openRecordReader } from './record-file-lease.mjs';
 import { setImmediate } from 'node:timers/promises';
 
 const FILE = 4294967296,
@@ -85,7 +85,7 @@ export class RecordPageSession {
     if (!Number.isInteger(maxOpenFiles) || maxOpenFiles < 1 || maxOpenFiles > 256)
       throw TypeError('Invalid record file handle budget');
     fs.mkdirSync(directory, { recursive: true });
-    this.directory = fs.realpathSync(directory);
+    this.directory = fs.realpathSync.native(directory);
     this.ownerKey =
       ownerKey ??
       (stateOwner
@@ -96,27 +96,47 @@ export class RecordPageSession {
     if (!/^[a-f0-9]{64}$/.test(this.ownerKey)) throw TypeError('Invalid record directory owner');
     const ownerFile = path.join(this.directory, '.record-owner.json');
     const readOwner = () => {
-      const info = fs.lstatSync(ownerFile);
-      if (info.isSymbolicLink() || info.size > 1024) throw Error('Invalid record directory owner');
+      const fd = openRecordReader(ownerFile);
       let owner;
       try {
-        owner = JSON.parse(fs.readFileSync(ownerFile, 'utf8'));
+        if (fs.fstatSync(fd).size > 1024) throw Error('Invalid record directory owner');
+        owner = JSON.parse(fs.readFileSync(fd, 'utf8'));
       } catch {
         throw Error('Invalid record directory owner');
+      } finally {
+        fs.closeSync(fd);
       }
       if (owner?.format !== 1 || owner.key !== this.ownerKey)
         throw Error('Record directory belongs to a different state');
       this.ownedDirectory = true;
     };
-    if (fs.existsSync(ownerFile)) readOwner();
-    else if (!fs.readdirSync(this.directory).length) {
-      try {
-        fs.writeFileSync(ownerFile, JSON.stringify({ format: 1, key: this.ownerKey }), { flag: 'wx', mode: 0o600 });
-      } catch (error) {
-        if (error.code !== 'EEXIST') throw error;
-      }
+    try {
       readOwner();
-    } else this.ownedDirectory = false;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      if (!fs.readdirSync(this.directory).length) {
+        const temporary = path.join(this.directory, randomUUID() + '.owner.tmp');
+        try {
+          fs.writeFileSync(temporary, JSON.stringify({ format: 1, key: this.ownerKey }), { flag: 'wx', mode: 0o600 });
+          try {
+            fs.linkSync(temporary, ownerFile);
+          } catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+          }
+        } finally {
+          fs.rmSync(temporary, { force: true });
+        }
+        readOwner();
+      } else {
+        // Another owner may have published while the directory was listed.
+        try {
+          readOwner();
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+          this.ownedDirectory = false;
+        }
+      }
+    }
     this.lease = new RecordFileLease(this.directory);
     this.closed = false;
     this.backends = new Set();
@@ -559,7 +579,7 @@ export class RecordPageSession {
       this.lease.protect(groups.keys());
       for (const [name, group] of groups) {
         const file = path.join(this.directory, name),
-          real = fs.realpathSync(file);
+          real = fs.realpathSync.native(file);
         if (path.dirname(real) !== this.directory) throw Error('Record file escapes its owned directory');
         const prefixes = group.prefixes;
         if (prefixes.some((prefix) => !prefix || !Number.isSafeInteger(prefix.bytes)))

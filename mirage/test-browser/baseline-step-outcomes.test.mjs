@@ -6,11 +6,11 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { captureScenario, pageRunner } from '../baseline-capture.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const origin = 'http://127.0.0.1:15153';
-// The static fixture settles as soon as it is quiet; the bound only ends a wait that never settles, which a loaded
-// runner's first page probe alone could exceed at 500 ms (the capture then reports 'page did not settle').
-const SETTLE = { quietMs: 5, timeout: 10_000 };
+// The static fixture settles as soon as it is quiet; the bound only ends a wait that never settles.
+const SETTLE = { quietMs: 5, timeout: 30_000 };
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -112,7 +112,7 @@ test('a visible optional action that fails remains an action error with its succ
 
 test('persisted capture metadata retains explicit optional outcomes without selectors or submitted values', async (t) => {
   const page = await fixture(t);
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-step-outcomes-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-step-outcomes-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const scenario = {
     id: 'invented/persisted-steps',

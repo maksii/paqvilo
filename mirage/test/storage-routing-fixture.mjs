@@ -93,7 +93,7 @@ export async function routingApi(t, { storage = true, routes, root, file, state,
   // A variable per call, removed after the test, so later tests in this process never inherit the secret.
   const SECRET_VAR = `PAQVILO_STORAGE_ROUTING_FIXTURE_SECRET_${randomUUID().replaceAll('-', '').toUpperCase()}`;
   process.env[SECRET_VAR] = 'storage-routing-fixture-secret';
-  t.after(() => {
+  ownedFixture(t).add(() => {
     delete process.env[SECRET_VAR];
   });
   const local = storage ? localRouter(root, routes) : { provider: null, router: null };
@@ -135,7 +135,6 @@ export async function routingApi(t, { storage = true, routes, root, file, state,
     const raw = Buffer.isBuffer(body);
     const response = await fetch(`${server.origin}/api/data/v9.2/${suffix}`, {
       method,
-      signal: AbortSignal.timeout(20000),
       headers: {
         authorization,
         ...(body !== undefined && !raw ? { 'content-type': 'application/json' } : {}),

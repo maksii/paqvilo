@@ -23,6 +23,7 @@ import {
   pluginStepMatchesEntity,
   runPluginPhase,
 } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const WIDGET = 'bbbbbbbb-0000-4000-8000-000000000021';
 const ENDPOINT = 'cccccccc-0000-4000-8000-000000000021';
@@ -81,7 +82,7 @@ server.listen(0, '127.0.0.1', () => console.log('PORT ' + server.address().port)
 `;
 
 async function startReceiver() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-webhook-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-webhook-'));
   const file = path.join(dir, 'receiver.mjs');
   await fs.writeFile(file, RECEIVER);
   const child = childProcess.spawn(process.execPath, [file], { stdio: ['ignore', 'pipe', 'inherit'] });

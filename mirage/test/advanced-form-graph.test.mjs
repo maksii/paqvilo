@@ -9,6 +9,7 @@ import { approximateAdvancedFormSchema } from '../lib/form-schema-fallback.mjs';
 import { renderComponent } from '../lib/platform.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { createWebFormSessions, submitPortalForm } from '../lib/form-service.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const form = {
   id: 'wizard',
@@ -53,7 +54,7 @@ const rows = () => [
 ];
 
 async function metadataFixture(t, records = rows()) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'advanced-graph-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'advanced-graph-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const folder = path.join(root, 'Entities/sample');
   await fs.mkdir(path.join(folder, 'FormXml/main'), { recursive: true });

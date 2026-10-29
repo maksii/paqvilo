@@ -13,10 +13,10 @@ import {
 } from '../lib/richtext-config.mjs';
 import { captureRichTextAssets } from '../lib/richtext-assets.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-rte-baseline-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-rte-baseline-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'exported.js'),
     source = {

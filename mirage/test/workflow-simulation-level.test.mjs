@@ -13,7 +13,7 @@ import { workflowExtension, workflowHandlers } from '../lib/dataverse-workflows.
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { loadPack } from '../lib/preset-registry.mjs';
 import { createSimulationPersistence } from '../lib/simulation-persistence.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const WORKFLOW = '77777777-7777-4777-8777-0000000000b1';
 const FACT = {
@@ -32,7 +32,7 @@ const FACT = {
 };
 
 test('a classic workflow on Create completes its job at simulation level with a DATA file owning only the business table', async (t) => {
-  const directory = await fs.mkdtemp(path.join(tmpdir(), 'paqvilo-wf-sim-'));
+  const directory = await makeTemporaryDirectory(path.join(tmpdir(), 'paqvilo-wf-sim-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'records.json'), JSON.stringify({ tables: { x_widget: [] } }));
   await fs.writeFile(

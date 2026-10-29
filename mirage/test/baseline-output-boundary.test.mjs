@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { writeCapture } from '../baseline-capture.mjs';
 import { ensureCaptureDestination, validateCaptureLabel, validateScenarioId } from '../baseline-paths.mjs';
 import { captureMatrix } from '../baseline-suite.mjs';
+import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
 const CLI_HANG_MS = 60_000;
@@ -17,7 +18,7 @@ const result = () => ({
   raw: { requests: [], console: [], pageErrors: [], dom: '<main>invented</main>', elements: [] },
 });
 async function fixture(run) {
-  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-output-link-'));
+  const base = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-output-link-'));
   try {
     const root = path.join(base, 'out'),
       outside = path.join(base, 'outside');
@@ -25,8 +26,8 @@ async function fixture(run) {
     await fs.mkdir(outside);
     await run({ base, root, outside });
   } finally {
-    assert.ok(path.resolve(base).startsWith(path.resolve(os.tmpdir()) + path.sep));
-    await fs.rm(base, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(base);
+    await fs.rm(physical, { recursive: true, force: true });
   }
 }
 const linkDir = (target, link) => fs.symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');

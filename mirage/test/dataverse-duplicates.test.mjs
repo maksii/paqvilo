@@ -7,10 +7,11 @@ import { randomUUID } from 'node:crypto';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { DataError } from '../lib/data-error.mjs';
 import { install, parseDuplicateRuleXml, readDuplicateRuleSolution, reset } from '../lib/dataverse-duplicates.mjs';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { dataverseError } from '../lib/dataverse-odata.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const VERSION = 'v9.2';
@@ -169,7 +170,7 @@ test('a create or update is checked only when MSCRM.SuppressDuplicateDetection i
 });
 
 test("a solution's duplicaterules folder imports rules with their state and conditions, and the rule then applies", async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'invented-duplicates-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'invented-duplicates-'));
   try {
     const folder = join(dir, 'duplicaterules', 'invented_rule');
     await mkdir(folder, { recursive: true });

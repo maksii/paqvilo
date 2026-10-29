@@ -35,6 +35,7 @@ export async function mountRichTextEditors(settings) {
     toolbar.setAttribute('aria-label', 'Compatibility editor formatting');
     const frame = document.createElement('iframe');
     frame.className = 'cke_wysiwyg_frame';
+    frame.setAttribute('sandbox', 'allow-same-origin');
     frame.title = 'Compatibility rich text editor';
     frame.setAttribute('aria-label', frame.title);
     frame.style.cssText = 'width:100%;min-height:12rem;border:1px solid #8a8886;background:#fff';
@@ -87,7 +88,7 @@ export async function mountRichTextEditors(settings) {
     };
     const getData = () => {
       const current = body(),
-        html = current?.innerHTML ?? content;
+        html = window.DOMPurify.sanitize(current?.innerHTML ?? content, { USE_PROFILES: { html: true } });
       const blocks =
         'address,article,aside,blockquote,details,dialog,div,dl,fieldset,figcaption,figure,footer,form,h1,h2,h3,h4,h5,h6,header,hgroup,hr,main,menu,nav,ol,p,pre,section,table,ul';
       if (!html || current?.querySelector(blocks)) return html;
@@ -113,7 +114,7 @@ export async function mountRichTextEditors(settings) {
       getData,
       setData(value, callback) {
         content = String(value ?? '');
-        if (body()) body().innerHTML = content;
+        if (body()) body().innerHTML = window.DOMPurify.sanitize(content, { USE_PROFILES: { html: true } });
         sync();
         callback?.();
         return editor;
@@ -149,7 +150,8 @@ export async function mountRichTextEditors(settings) {
       const current = body();
       if (frame.contentDocument?.URL !== 'about:srcdoc' || !current || current.__ppSimBound) return;
       current.__ppSimBound = true;
-      if (current.innerHTML !== content) current.innerHTML = content;
+      if (current.innerHTML !== content)
+        current.innerHTML = window.DOMPurify.sanitize(content, { USE_PROFILES: { html: true } });
       current.addEventListener('input', sync);
       current.addEventListener('blur', sync);
     };

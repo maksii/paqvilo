@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -16,7 +17,7 @@ import { prepareProject } from '../lense/project-scaffold.mjs';
 delete process.env.MIRAGE_SETUP_RUNTIME;
 
 async function work(t, prefix = 'paqvilo-setup-unit-') {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), prefix));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return directory;
 }

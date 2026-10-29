@@ -13,6 +13,7 @@ import { loadConfig } from '../../lense/config.mjs';
 import { identityProviderAssets } from '../lib/identity-provider-settings.mjs';
 import { chooserSearch, chooserSelection, chooserResults, chooserReport } from '../lib/persona-chooser.mjs';
 import { indexPersonaCatalog } from '../lib/persona-search.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const nodes = (html) => {
   const all = [];
   const visit = (node) => {
@@ -170,7 +171,7 @@ test('runtime identity provider receives the effective state/pack catalogue and 
 });
 
 test('catalogue/default chooser settings and project-local head assets are validated', async (t) => {
-  const parent = await fs.mkdtemp(path.join(tmpdir(), 'chooser-project-'));
+  const parent = await makeTemporaryDirectory(path.join(tmpdir(), 'chooser-project-'));
   t.after(() => fs.rm(parent, { recursive: true, force: true }));
   const root = path.join(parent, 'project');
   await fs.mkdir(root);

@@ -130,7 +130,7 @@ test('SDK gate binds an alternate loopback address while the default address is 
 
 test(
   'an exclusive Windows wildcard listener blocks SDK loopback until its owner releases it',
-  { skip: process.platform !== 'win32', timeout: 30_000 },
+  { skip: process.platform !== 'win32' },
   async (t) => {
     // Node's Windows sockets use SO_REUSEADDR; use an owned .NET exclusive socket
     // to reproduce HTTP.sys-style ownership without changing services or occupying :80.

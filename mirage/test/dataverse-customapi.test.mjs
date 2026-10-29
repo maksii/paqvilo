@@ -1,7 +1,7 @@
 // Custom APIs: customapi tables, unpacked solution parsing and registry operations.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -10,6 +10,7 @@ import { dataverseError, parseDataverseRoute, parsePrefer } from '../lib/dataver
 import { createRecordHandlers, createRecordHooks } from '../lib/dataverse-records.mjs';
 import { createChangeLog } from '../lib/dataverse-changes.mjs';
 import { customApiHandlers, install, parseCustomApiFiles, readCustomApiSolution } from '../lib/dataverse-customapi.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const VERSION = 'v9.2';
@@ -258,7 +259,7 @@ test('the solution parser links child rows to their API and reads flags, types a
 });
 
 test('readCustomApiSolution reads the unpacked folders from disk', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'customapi-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'customapi-'));
   try {
     for (const file of FILES) {
       const path = join(dir, file.path);
@@ -335,7 +336,7 @@ test('a documented deep insert creates the parameter and property rows under the
 });
 
 test('the seeded customapi mappings are persisted by the ready transaction', async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), 'customapi-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'customapi-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'state.json');
   const store = await new DataStore({ file, state: emptyState() }).init();

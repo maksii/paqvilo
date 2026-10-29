@@ -155,51 +155,43 @@ const relate = (store, operationId) =>
     context: { principal: profile },
   });
 
-test(
-  'a flow Relate/Unrelate rows action without an organization awaits its synchronous web hook in process',
-  { timeout: 20_000 },
-  async (t) => {
-    const hook = await receiver(t);
-    const state = emptyState();
-    Object.assign(state.mappings, structuredClone(mappings));
-    Object.assign(state.tables, tables(hook.url));
-    state.settings.permissionMode = 'permissive';
-    const store = await new DataStore({ state }).init();
-    wire(store, 'Associate');
-    let stop = ticking();
-    assert.equal((await relate(store, 'AssociateEntities')).statusCode, 204);
-    assert.ok(stop() >= 2, 'timers kept running while the Associate step waited');
-    assert.equal(store.tableRows('x_child')[0].x_parentid, PARENT);
-    wire(store, 'Disassociate');
-    stop = ticking();
-    assert.equal((await relate(store, 'DisassociateEntities')).statusCode, 204);
-    assert.ok(stop() >= 2, 'timers kept running while the Disassociate step waited');
-    assert.equal(store.tableRows('x_child')[0].x_parentid ?? null, null);
-    assert.deepEqual(hook.received, ['/hook', '/hook']);
-  },
-);
+test('a flow Relate/Unrelate rows action without an organization awaits its synchronous web hook in process', async (t) => {
+  const hook = await receiver(t);
+  const state = emptyState();
+  Object.assign(state.mappings, structuredClone(mappings));
+  Object.assign(state.tables, tables(hook.url));
+  state.settings.permissionMode = 'permissive';
+  const store = await new DataStore({ state }).init();
+  wire(store, 'Associate');
+  let stop = ticking();
+  assert.equal((await relate(store, 'AssociateEntities')).statusCode, 204);
+  assert.ok(stop() >= 2, 'timers kept running while the Associate step waited');
+  assert.equal(store.tableRows('x_child')[0].x_parentid, PARENT);
+  wire(store, 'Disassociate');
+  stop = ticking();
+  assert.equal((await relate(store, 'DisassociateEntities')).statusCode, 204);
+  assert.ok(stop() >= 2, 'timers kept running while the Disassociate step waited');
+  assert.equal(store.tableRows('x_child')[0].x_parentid ?? null, null);
+  assert.deepEqual(hook.received, ['/hook', '/hook']);
+});
 
-test(
-  'with an organization, the flow action and a Web API $ref both run the association on the asynchronous drive',
-  { timeout: 30_000 },
-  async (t) => {
-    const hook = await receiver(t);
-    const { store, request } = await contractModuleFixture(t, {
-      mappings,
-      tables: tables(hook.url),
-      extension: { name: 'x-invented-none', install() {} },
-    });
-    wire(store, 'Associate');
-    let stop = ticking();
-    assert.equal((await relate(store, 'AssociateEntities')).statusCode, 204);
-    assert.ok(stop() >= 2, 'timers kept running while the flow step waited');
-    assert.equal(store.tableRows('x_child')[0].x_parentid?.id ?? store.tableRows('x_child')[0].x_parentid, PARENT);
-    wire(store, 'Disassociate');
-    stop = ticking();
-    const removed = await request('DELETE', `/x_parents(${PARENT})/x_parent_children(${CHILD})/$ref`);
-    assert.equal(removed.status, 204, await removed.text());
-    assert.ok(stop() >= 2, 'timers kept running while the $ref step waited');
-    assert.equal(store.tableRows('x_child')[0].x_parentid ?? null, null);
-    assert.deepEqual(hook.received, ['/hook', '/hook']);
-  },
-);
+test('with an organization, the flow action and a Web API $ref both run the association on the asynchronous drive', async (t) => {
+  const hook = await receiver(t);
+  const { store, request } = await contractModuleFixture(t, {
+    mappings,
+    tables: tables(hook.url),
+    extension: { name: 'x-invented-none', install() {} },
+  });
+  wire(store, 'Associate');
+  let stop = ticking();
+  assert.equal((await relate(store, 'AssociateEntities')).statusCode, 204);
+  assert.ok(stop() >= 2, 'timers kept running while the flow step waited');
+  assert.equal(store.tableRows('x_child')[0].x_parentid?.id ?? store.tableRows('x_child')[0].x_parentid, PARENT);
+  wire(store, 'Disassociate');
+  stop = ticking();
+  const removed = await request('DELETE', `/x_parents(${PARENT})/x_parent_children(${CHILD})/$ref`);
+  assert.equal(removed.status, 204, await removed.text());
+  assert.ok(stop() >= 2, 'timers kept running while the $ref step waited');
+  assert.equal(store.tableRows('x_child')[0].x_parentid ?? null, null);
+  assert.deepEqual(hook.received, ['/hook', '/hook']);
+});

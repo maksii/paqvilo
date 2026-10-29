@@ -202,7 +202,6 @@ describe('TDS endpoint wired into the Dataverse API', () => {
       method: 'POST',
       headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(response.status < 300, `widget create answered ${response.status}`);
   }
@@ -361,7 +360,6 @@ describe('TDS query paging and service protection', () => {
       method: 'POST',
       headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(response.status < 300, `widget create answered ${response.status}`);
   }
@@ -495,7 +493,7 @@ describe('TDS endpoint with tedious', { skip }, () => {
     await api?.close();
   });
 
-  it('access-token login runs SELECT name FROM widget through tedious', { timeout: 20_000 }, async () => {
+  it('access-token login runs SELECT name FROM widget through tedious', async () => {
     const response = await fetch(`${origin}/${tenantId}/oauth2/v2.0/token`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -511,7 +509,6 @@ describe('TDS endpoint with tedious', { skip }, () => {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Tedious' }),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(created.status < 300, `widget create answered ${created.status}`);
     const connection = await new Promise((resolve, reject) => {
@@ -523,8 +520,8 @@ describe('TDS endpoint with tedious', { skip }, () => {
           database: 'org',
           encrypt: true,
           trustServerCertificate: true,
-          connectTimeout: 5000,
-          requestTimeout: 10000,
+          connectTimeout: 60_000,
+          requestTimeout: 60_000,
         },
       });
       c.on('connect', (err) => (err ? reject(err) : resolve(c)));

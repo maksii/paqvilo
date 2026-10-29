@@ -2,6 +2,7 @@ import { debugScript, exportFieldFile } from './source-debug.mjs';
 import { decodeXml, portalField } from './importer.mjs';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { createHash, randomUUID } from 'node:crypto';
 import { renderFormLabel } from './form-labels.mjs';
 import { clientManagedControlsRuntime, validateManagedControlDefinition } from './managed-controls.mjs';
@@ -521,9 +522,23 @@ export function injectRuntime(html, token, revision, identity = {}, traceId = nu
 }
 
 /** Use the observed managed CKEditor bytes, binding HTML as the native JSON input. */
+let compatibilitySanitizerSource;
 function clientRichTextRuntime(settings) {
   const data = JSON.stringify(settings).replace(/</g, '\\u003c');
-  return '(' + mountRichTextEditors.toString() + ')(' + data + ');';
+  const compatibility = Object.values(settings).some((setting) => setting.compatibility);
+  if (compatibility)
+    compatibilitySanitizerSource ??= readFileSync(
+      createRequire(import.meta.url).resolve('dompurify/purify.min.js'),
+      'utf8',
+    ).replace(/<\/script/gi, '<\\/script');
+  return (
+    (compatibility ? compatibilitySanitizerSource + '\n' : '') +
+    '(' +
+    mountRichTextEditors.toString() +
+    ')(' +
+    data +
+    ');'
+  );
 }
 
 // Native component rendering (basic forms, advanced forms, lists, subgrids,

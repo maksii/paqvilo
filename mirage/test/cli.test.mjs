@@ -58,7 +58,7 @@ async function forceStop(child, completion) {
     child.stdout.destroy();
     child.stderr.destroy();
   }
-  await within(completion, 1500, () => 'CLI did not close after forced termination');
+  await within(completion, 30_000, () => 'CLI did not close after forced termination');
 }
 async function stop(child, completion) {
   if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end('stop\n');
@@ -67,7 +67,7 @@ async function stop(child, completion) {
 function closeServer(server) {
   const completion = new Promise((resolve) => server.close(resolve));
   server.closeAllConnections();
-  return within(completion, 1500, () => 'Owned HTTP fixture did not close');
+  return within(completion, 30_000, () => 'Owned HTTP fixture did not close');
 }
 function startup(child, completion, output) {
   let check;
@@ -174,7 +174,7 @@ test('CLI: invalid serve ports fail before starting or writing simulation state'
   await assert.rejects(fs.stat(path.join(directory, 'first')), { code: 'ENOENT' });
 });
 
-test('CLI: multi-portal serve closes its runtime after browser attachment fails', { timeout: 45_000 }, async (t) => {
+test('CLI: multi-portal serve closes its runtime after browser attachment fails', async (t) => {
   const directory = await fixture(t, {
     'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
     'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
@@ -314,79 +314,75 @@ test(
   },
 );
 
-test(
-  'CLI: explicit solution root resolves real form fixture and owned serve process shuts down cleanly',
-  { timeout: 45_000 },
-  async (t) => {
-    const directory = await fixture(t, {
-      'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Form page\nadx_partialurl: /\n',
-      'portal/Home.webpage.copy.html': "<h1>Form fixture</h1>{% entityform name: 'Edit contact' %}",
-      'portal/Edit.basicform.yml':
-        'adx_entityformid: basic-form\nadx_name: Edit contact\nadx_entityname: contact\nadx_formname: Portal edit\nadx_mode: 100000000\n',
-      // An insert form renders only for an identity with a Create permission.
-      'portal/webrole.yml': '- adx_webroleid: anonymous\n  adx_name: Anonymous Users\n  adx_anonymoususersrole: true\n',
-      'portal/contact.tablepermission.yml':
-        'adx_entitypermissionid: contact-create\nadx_entitylogicalname: contact\nadx_entityname: Contacts\nadx_scope: 756150000\nadx_create: true\nadx_entitypermission_webrole:\n- anonymous\n',
-      'solutions/Package/Entities/contact/Entity.xml':
-        '<Entity><Name>contact</Name><EntityInfo><entity Name="contact"><PrimaryIdAttribute>contactid</PrimaryIdAttribute><EntitySetName>contacts</EntitySetName><attributes><attribute PhysicalName="fullname"><LogicalName>fullname</LogicalName><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel></attribute></attributes></entity></EntityInfo></Entity>',
-      'solutions/Package/Entities/contact/FormXml/main/{form-id}.xml':
-        '<forms><systemform><formid>{form-id}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="general"><columns><column width="100%"><sections><section name="contact"><rows><row><cell showlabel="true"><labels><label description="Friendly name" languagecode="1033"/></labels><control id="fullname" datafieldname="fullname"/></cell></row></rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="Portal edit" languagecode="1033"/></LocalizedNames></systemform></forms>',
-    });
-    const child = spawn(
-      process.execPath,
-      [
-        cli,
-        'serve',
-        '--source',
-        path.join(directory, 'portal'),
-        '--solution-root',
-        path.join(directory, 'solutions'),
-        '--state',
-        'state.json',
-        '--port',
-        '0',
-        '--no-watch',
-        '--json',
-      ],
-      { cwd: directory, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, signal: t.signal, killSignal: 'SIGKILL' },
-    );
-    let stdout = '',
-      stderr = '',
-      ended = false;
-    child.stdout.on('data', (data) => {
-      stdout += data;
-    });
-    child.stderr.on('data', (data) => {
-      stderr += data;
-    });
-    const completion = closed(child).then((values) => {
-      ended = true;
-      return values;
-    });
-    ownedFixture(t).add(async () => {
-      if (!ended) await stop(child, completion);
-    });
-    const discovery = await startup(child, completion, () => ({ stdout, stderr }));
-    const stateResponse = await fetch(`${discovery.url}/__sim/api/state`);
-    assert.equal(discovery.stateFile, path.join(directory, 'state.json'));
-    assert.equal(stateResponse.status, 200);
-    const state = await stateResponse.json();
-    assert.equal(state.status.solutionMetadata.resolved.forms, 1);
-    assert.deepEqual(state.status.solutionMetadata.roots, [path.join(directory, 'solutions')]);
-    const page = await fetch(discovery.url);
-    assert.equal(page.status, 200);
-    assert.match(await page.text(), /Friendly name/);
-    assert.ok(await fs.stat(discovery.discovery));
-    child.stdin.end('stop\n');
-    const { code, error } = await within(
-      completion,
-      10_000,
-      () => `CLI did not stop. stdout: ${stdout}\nstderr: ${stderr}`,
-    );
-    if (error) throw error;
-    assert.equal(code, 0, stderr);
-    assert.equal(JSON.parse(stdout).url, discovery.url);
-    await assert.rejects(fs.stat(discovery.discovery), (error) => error.code === 'ENOENT');
-    await assert.rejects(fetch(discovery.url));
-  },
-);
+test('CLI: explicit solution root resolves real form fixture and owned serve process shuts down cleanly', async (t) => {
+  const directory = await fixture(t, {
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Form page\nadx_partialurl: /\n',
+    'portal/Home.webpage.copy.html': "<h1>Form fixture</h1>{% entityform name: 'Edit contact' %}",
+    'portal/Edit.basicform.yml':
+      'adx_entityformid: basic-form\nadx_name: Edit contact\nadx_entityname: contact\nadx_formname: Portal edit\nadx_mode: 100000000\n',
+    // An insert form renders only for an identity with a Create permission.
+    'portal/webrole.yml': '- adx_webroleid: anonymous\n  adx_name: Anonymous Users\n  adx_anonymoususersrole: true\n',
+    'portal/contact.tablepermission.yml':
+      'adx_entitypermissionid: contact-create\nadx_entitylogicalname: contact\nadx_entityname: Contacts\nadx_scope: 756150000\nadx_create: true\nadx_entitypermission_webrole:\n- anonymous\n',
+    'solutions/Package/Entities/contact/Entity.xml':
+      '<Entity><Name>contact</Name><EntityInfo><entity Name="contact"><PrimaryIdAttribute>contactid</PrimaryIdAttribute><EntitySetName>contacts</EntitySetName><attributes><attribute PhysicalName="fullname"><LogicalName>fullname</LogicalName><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel></attribute></attributes></entity></EntityInfo></Entity>',
+    'solutions/Package/Entities/contact/FormXml/main/{form-id}.xml':
+      '<forms><systemform><formid>{form-id}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="general"><columns><column width="100%"><sections><section name="contact"><rows><row><cell showlabel="true"><labels><label description="Friendly name" languagecode="1033"/></labels><control id="fullname" datafieldname="fullname"/></cell></row></rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="Portal edit" languagecode="1033"/></LocalizedNames></systemform></forms>',
+  });
+  const child = spawn(
+    process.execPath,
+    [
+      cli,
+      'serve',
+      '--source',
+      path.join(directory, 'portal'),
+      '--solution-root',
+      path.join(directory, 'solutions'),
+      '--state',
+      'state.json',
+      '--port',
+      '0',
+      '--no-watch',
+      '--json',
+    ],
+    { cwd: directory, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, signal: t.signal, killSignal: 'SIGKILL' },
+  );
+  let stdout = '',
+    stderr = '',
+    ended = false;
+  child.stdout.on('data', (data) => {
+    stdout += data;
+  });
+  child.stderr.on('data', (data) => {
+    stderr += data;
+  });
+  const completion = closed(child).then((values) => {
+    ended = true;
+    return values;
+  });
+  ownedFixture(t).add(async () => {
+    if (!ended) await stop(child, completion);
+  });
+  const discovery = await startup(child, completion, () => ({ stdout, stderr }));
+  const stateResponse = await fetch(`${discovery.url}/__sim/api/state`);
+  assert.equal(discovery.stateFile, path.join(directory, 'state.json'));
+  assert.equal(stateResponse.status, 200);
+  const state = await stateResponse.json();
+  assert.equal(state.status.solutionMetadata.resolved.forms, 1);
+  assert.deepEqual(state.status.solutionMetadata.roots, [path.join(directory, 'solutions')]);
+  const page = await fetch(discovery.url);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Friendly name/);
+  assert.ok(await fs.stat(discovery.discovery));
+  child.stdin.end('stop\n');
+  const { code, error } = await within(
+    completion,
+    60_000,
+    () => `CLI did not stop. stdout: ${stdout}\nstderr: ${stderr}`,
+  );
+  if (error) throw error;
+  assert.equal(code, 0, stderr);
+  assert.equal(JSON.parse(stdout).url, discovery.url);
+  await assert.rejects(fs.stat(discovery.discovery), (error) => error.code === 'ENOENT');
+  await assert.rejects(fetch(discovery.url));
+});

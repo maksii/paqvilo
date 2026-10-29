@@ -17,6 +17,7 @@ import { bootstrapPresetLibrary, compactBuiltinPresets, listPresets, resolvePres
 import { expressionOperator, footerLogoClasses, packEndpoints, registerShellConventions } from '../lib/extensions.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { seedPresetBody } from '../lib/solution-schema.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const otherPortal = { records: [], templates: {}, forms: [], lists: [], website: { id: 'other', name: 'Other' } };
 
@@ -191,7 +192,7 @@ test('generic presets are project-agnostic and described', () => {
 });
 
 test('explicit and root packs load, validate, dedupe and reject conflicts', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-packs-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-packs-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const alpha = await writePack(root, 'alpha');
   await writePack(root, 'beta');
@@ -207,7 +208,7 @@ test('explicit and root packs load, validate, dedupe and reject conflicts', asyn
     ['alpha', 'beta'],
   );
   // Explicit project entries resolve relative to the project file.
-  const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-project-packs-'));
+  const projectRoot = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-project-packs-'));
   t.after(() => fs.rm(projectRoot, { recursive: true, force: true }));
   await writePack(path.join(projectRoot, 'custom'), 'gamma');
   const project = {
@@ -241,7 +242,7 @@ test('explicit and root packs load, validate, dedupe and reject conflicts', asyn
 });
 
 test('preset library merges packs lazily; descriptors and compaction never generate bodies', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-packs-lazy-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-packs-lazy-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await writePack(root, 'lazy');
   const packs = await discoverPacks({ root });
@@ -302,7 +303,7 @@ test('defineLazyPreset validates ids and loaded bodies', () => {
 });
 
 test('discovery filters a packs root by portal and bootstraps only matching pack presets', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-packs-generic-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-packs-generic-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await writePack(root, 'alpha', { matchName: 'Alpha' });
   await writePack(root, 'beta', { matchName: 'Beta' });
@@ -326,7 +327,7 @@ test('discovery filters a packs root by portal and bootstraps only matching pack
 });
 
 test('packs contribute expression operators, /__sim/ endpoints and shell conventions through the registry', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-packs-ext-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-packs-ext-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const dir = path.join(root, 'gamma');
   await fs.mkdir(dir, { recursive: true });

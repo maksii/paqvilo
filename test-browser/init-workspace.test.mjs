@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -12,8 +13,36 @@ import { createFixture } from '../test/fixture.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
 import { childStdioGate, assertChildStdioDrain } from './helpers/child-stdio-gate.mjs';
 
-test('owned task shutdown drains pending stdio after the direct child exit', { timeout: 15000 }, async (t) => {
-  const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-init-drain-'));
+test('workspace task drains independent fixtures after Mirage stop fails and retains its work', async (t) => {
+  const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-workspace-drain-'));
+  t.after(() => fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  const cli = path.join(work, 'invented-cli.mjs');
+  await fs.writeFile(cli, "if (process.argv[2] === 'mirage') process.exitCode = 7; else console.log('ready');\n");
+  const hooks = [];
+  let cleaned = false;
+  const run = runWorkspaceTask(
+    { after: (hook) => hooks.push(hook) },
+    {
+      cli,
+      args: [],
+      cwd: work,
+      env: process.env,
+      task: {},
+      stop: [],
+      work,
+      cleanup: () => {
+        cleaned = true;
+      },
+    },
+  );
+  await run.output.waitFor(/ready/);
+  await assert.rejects(hooks[0](), /the project Mirage stops cleanly/);
+  assert.equal(cleaned, true, 'a rejected stop must not skip the independent fixture cleanup');
+  assert.equal((await fs.stat(work)).isDirectory(), true, 'failed teardown retains its workspace for diagnosis');
+});
+
+test('owned task shutdown drains pending stdio after the direct child exit', async (t) => {
+  const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-init-drain-'));
   const child = spawn(process.execPath, ['-e', 'process.stdout.write("owned-output");'], {
     cwd: work,
     windowsHide: true,
@@ -33,7 +62,7 @@ test(
   'empty-project debugger task matches the actual local development ready line and reuses its browser',
   { timeout: 120000 },
   async (t) => {
-    const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-init-browser-'));
+    const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-init-browser-'));
     const fixture = createFixture();
     await prepareProject(work, { name: 'sample', noPack: true });
     const config = YAML.parse(await fs.readFile(path.join(work, 'paqvilo.config.yml'), 'utf8'));
