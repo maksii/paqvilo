@@ -78,13 +78,18 @@ export function ownedFixture(context) {
   return owner;
 }
 
-/** Create an owned workspace at its physical path, preserving the caller's complete prefix. */
+/**
+ * Create an owned workspace at its physical path, preserving the caller's complete prefix. The parent is created too:
+ * a fresh CI checkout has no ignored state folders such as .paqvilo/.
+ */
 export async function makeTemporaryDirectory(prefix) {
+  await fs.mkdir(path.dirname(prefix), { recursive: true });
   return fs.realpath(await fs.mkdtemp(prefix));
 }
 
 /** Synchronous physical workspace creation for fixtures that initialize before test registration. */
 export function makeTemporaryDirectorySync(prefix) {
+  fsSync.mkdirSync(path.dirname(prefix), { recursive: true });
   return fsSync.realpathSync.native(fsSync.mkdtempSync(prefix));
 }
 

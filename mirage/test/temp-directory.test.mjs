@@ -31,6 +31,15 @@ test('temporary workspace creators resolve physical parents while retaining dist
   assert.equal(await fs.readFile(path.join(alias, path.basename(asynchronous), 'invented.txt'), 'utf8'), 'invented');
 });
 
+test('temporary workspace creators create an absent ignored state parent, as a fresh CI checkout has none', async (t) => {
+  const checkout = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-fresh-checkout-'));
+  ownedFixture(t).remove(() => fs.rm(checkout, { recursive: true, force: true }));
+  const asynchronous = await makeTemporaryDirectory(path.join(checkout, '.paqvilo', 'asynchronous-'));
+  const synchronous = makeTemporaryDirectorySync(path.join(checkout, '.paqvilo', 'nested', 'synchronous-'));
+  assert.equal(path.dirname(asynchronous), path.join(checkout, '.paqvilo'));
+  assert.equal(path.dirname(synchronous), path.join(checkout, '.paqvilo', 'nested'));
+});
+
 test('temporary cleanup containment resolves aliases, checks direct children and preserves physical boundaries', async (t) => {
   const parent = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-cleanup-physical-parent-'));
   const sibling = parent + '-sibling';

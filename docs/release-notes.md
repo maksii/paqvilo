@@ -71,6 +71,11 @@
   a tab or popup whose interception setup fails or is cancelled closes alone, healthy tabs keep their drafts, watchers
   and agent endpoints continue, a retried tab applies current sources, and losing the shared browser connection ends
   the session. See [Lense](lense.md).
+- Local validation reproduces the hosted checks that previously failed only on GitHub: the Security workflow's
+  CodeQL analysis with its pinned bundle, compared with GitHub's dismissed alerts; Windows browser lanes in both
+  Chromium and Edge; an 8.3 `TEMP` alias and an empty npm cache for the package smoke, as on hosted runners; and two
+  extra runs of each changed test file. See [CONTRIBUTING](../CONTRIBUTING.md).
+- Write the code app bootstrap specifier as an inert module string literal, as page script URLs already are.
 
 Synthetic and native qualification are distinct. Loopback passes establish the exercised contracts; they do not
 establish native control coverage, a deployed source revision or production readiness.
