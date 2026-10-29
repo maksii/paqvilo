@@ -2,14 +2,36 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-export const performanceId = (n) => `${n.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
-export async function performanceFixture({ tables = 16, columns = 24, records = 1000, formsPerTable = 1 } = {}) {
+// Join produces the same GUID bytes without retaining a tree of concatenation
+// fragments for millions of generated identifiers.
+export const performanceId = (n) => [n.toString(16).padStart(8, '0'), '-1111-4111-8111-111111111111'].join('');
+export async function performanceFixture({
+  tables = 16,
+  columns = 24,
+  records = 1000,
+  formsPerTable = 1,
+  roots = 1,
+  existingRoot,
+  shape = 'uniform',
+  tableSources = true,
+  onProgress = () => {},
+} = {}) {
   for (const [name, value] of Object.entries({ tables, columns, formsPerTable }))
     if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer`);
   if (!Number.isSafeInteger(records) || records < tables)
     throw new TypeError('records must be a safe integer with at least one record per table');
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-performance-')));
-  const solutionRoots = [path.join(root, 'solution')],
+  if (!['uniform', 'skewed'].includes(shape)) throw new TypeError('shape must be uniform or skewed');
+  const heavyRecords = Math.min(records - tables + 1, Math.floor(records * 0.9));
+  const countFor = (i) =>
+    shape === 'skewed' && tables > 1
+      ? i === 0
+        ? heavyRecords
+        : Math.floor((records - heavyRecords) / (tables - 1)) + (i <= (records - heavyRecords) % (tables - 1) ? 1 : 0)
+      : Math.floor(records / tables) + (i < records % tables ? 1 : 0);
+  if (!Number.isSafeInteger(roots) || roots < 1 || roots > tables)
+    throw new TypeError('roots must be between one and the table count');
+  const root = existingRoot ?? (await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-performance-'))));
+  const solutionRoots = Array.from({ length: roots }, (_, i) => path.join(root, i ? `solution-${i}` : 'solution')),
     sourceDir = path.join(root, 'portal');
   const inventory = {
     tables,
@@ -22,8 +44,10 @@ export async function performanceFixture({ tables = 16, columns = 24, records = 
     sourceBytes: 0,
   };
   const write = async (file, content) => {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, content);
+    if (!existingRoot) {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, content);
+    }
     inventory.files++;
     inventory.sourceBytes += Buffer.byteLength(content);
     if (file.endsWith('.xml')) inventory.xmlFiles++;
@@ -36,38 +60,33 @@ export async function performanceFixture({ tables = 16, columns = 24, records = 
     path.join(sourceDir, 'web-pages/Home.webpage.yml'),
     `adx_webpageid: ${performanceId(2)}\nadx_name: Home\nadx_partialurl: /\nadx_isroot: true`,
   );
-  await write(
-    path.join(solutionRoots[0], 'Other/Solution.xml'),
-    '<ImportExportXml><SolutionManifest><UniqueName>InventedPerformance</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
-  );
+  for (const [index, solution] of solutionRoots.entries())
+    await write(
+      path.join(solution, 'Other/Solution.xml'),
+      `<ImportExportXml><SolutionManifest><UniqueName>InventedPerformance${index}</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>`,
+    );
   const component = [],
-    mappings = {},
-    data = {};
+    mappings = {};
   for (let i = 0; i < tables; i++) {
     const entity = `x_scale${i}`,
       fields = Array.from({ length: columns }, (_, index) => `x_value${index}`);
     const attribute = (name, type, secured = false) =>
       `<attribute PhysicalName="${name}"><Name>${name}</Name><LogicalName>${name}</LogicalName><Type>${type}</Type>${secured ? '<IsSecured>1</IsSecured>' : ''}</attribute>`;
-    await write(
-      path.join(solutionRoots[0], `Entities/${entity}/Entity.xml`),
-      `<Entity><Name>${entity}</Name><EntityInfo><entity Name="${entity}"><EntitySetName>${entity}s</EntitySetName><PrimaryIdAttribute>${entity}id</PrimaryIdAttribute><PrimaryNameAttribute>x_value0</PrimaryNameAttribute><attributes>${attribute(`${entity}id`, 'primarykey')}${fields.map((name, index) => attribute(name, 'nvarchar', index === 1)).join('')}</attributes></entity></EntityInfo></Entity>`,
-    );
-    for (let form = 0; form < formsPerTable; form++) {
+    if (tableSources)
+      await write(
+        path.join(solutionRoots[i % roots], `Entities/${entity}/Entity.xml`),
+        `<Entity><Name>${entity}</Name><EntityInfo><entity Name="${entity}"><EntitySetName>${entity}s</EntitySetName><PrimaryIdAttribute>${entity}id</PrimaryIdAttribute><PrimaryNameAttribute>x_value0</PrimaryNameAttribute><attributes>${attribute(`${entity}id`, 'primarykey')}${fields.map((name, index) => attribute(name, 'nvarchar', index === 1)).join('')}</attributes></entity></EntityInfo></Entity>`,
+      );
+    for (let form = 0; tableSources && form < formsPerTable; form++) {
       const filename = form === 0 ? 'form.xml' : `form-${String(form).padStart(3, '0')}.xml`;
       await write(
-        path.join(solutionRoots[0], `Entities/${entity}/FormXml/main/${filename}`),
+        path.join(solutionRoots[i % roots], `Entities/${entity}/FormXml/main/${filename}`),
         `<systemform><formid>{${performanceId(1000000 + i * formsPerTable + form)}}</formid><type>2</type><LocalizedNames><LocalizedName description="Invented form ${i}/${form}" languagecode="1033"/></LocalizedNames><form><tabs><tab name="general"><columns><column><sections><section><rows>${fields.map((name) => `<row><cell><control datafieldname="${name}"/></cell></row>`).join('')}</rows></section></sections></column></columns></tab></tabs></form></systemform>`,
       );
     }
     component.push(`<AppModuleComponent type="1" schemaName="${entity}"/>`);
     mappings[entity] = { idColumn: `${entity}id`, entitySet: `${entity}s`, nameColumn: 'x_value0' };
-    const tableRecords = Math.floor(records / tables) + (i < records % tables ? 1 : 0);
-    data[entity] = Array.from({ length: tableRecords }, (_, index) => ({
-      [`${entity}id`]: performanceId(10000 + i * 10000 + index),
-      x_value0: `Invented ${i}/${index}`,
-      x_value1: 'Secured invented value',
-      x_value2: 'payload'.repeat(24),
-    }));
+    if ((i + 1) % 128 === 0 || i + 1 === tables) onProgress({ phase: 'fixture-base', tablesWritten: i + 1, tables });
   }
   await write(
     path.join(solutionRoots[0], 'AppModules/x_scale/AppModule.xml'),
@@ -84,7 +103,17 @@ export async function performanceFixture({ tables = 16, columns = 24, records = 
         name: 'Invented performance dataset',
         load: () => {
           generated++;
-          return { name: 'Invented performance dataset', mappings, tables: structuredClone(data) };
+          const data = {};
+          for (let i = 0; i < tables; i++) {
+            const entity = `x_scale${i}`;
+            data[entity] = Array.from({ length: countFor(i) }, (_, index) => ({
+              [`${entity}id`]: performanceId(10000 + i * Math.ceil(records / tables) + index),
+              x_value0: `Invented ${i}/${index}`,
+              x_value1: 'Secured invented value',
+              x_value2: 'payload'.repeat(24),
+            }));
+          }
+          return { name: 'Invented performance dataset', mappings, tables: data };
         },
       },
     }),

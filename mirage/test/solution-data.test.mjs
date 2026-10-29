@@ -7,6 +7,30 @@ import { deflateRawSync } from 'node:zlib';
 import { importSolutionData, applySolutionData, readSolutionZip } from '../lib/solution-data.mjs';
 import { DataStore } from '../lib/data.mjs';
 
+test('Solution refresh detaches bulk business data without a whole-state native serialization buffer', async () => {
+  const metadata = await importSolutionData([]);
+  const state = new DataStore().state;
+  state.tables.widget = Array.from({ length: 100000 }, (_, i) => ({ widgetid: String(i), name: 'Invented ' + i }));
+  state.tables.other = [state.tables.widget[0]];
+  const native = globalThis.structuredClone;
+  let result;
+  try {
+    globalThis.structuredClone = (value, ...options) => {
+      if (value?.tables?.widget?.length >= 100000) throw new Error('Whole-state native serialization is unavailable');
+      return native(value, ...options);
+    };
+    result = applySolutionData(state, metadata);
+  } finally {
+    globalThis.structuredClone = native;
+  }
+  assert.equal(result.tables.widget.length, 100000);
+  assert.equal(result.tables.widget.at(-1).widgetid, '99999');
+  assert.equal(result.tables.other[0], result.tables.widget[0]);
+  assert.notEqual(result.tables.widget[0], state.tables.widget[0]);
+  result.tables.other[0].name = 'Changed';
+  assert.equal(state.tables.widget[0].name, 'Invented 0');
+});
+
 const entity = (name, set = name + 's') =>
   `<Entity><Name>${name}</Name><EntityInfo><entity Name="${name}"><attributes><attribute PhysicalName="${name}Id"><Type>primarykey</Type><LogicalName>${name}id</LogicalName></attribute><attribute PhysicalName="name"><Type>nvarchar</Type><LogicalName>name</LogicalName><DisplayMask>PrimaryName|ValidForForm</DisplayMask></attribute></attributes><EntitySetName>${set}</EntitySetName></entity></EntityInfo></Entity>`;
 const relationship = (schema, child, parent, lookup) =>

@@ -39,6 +39,31 @@ This capability applies only with site evidence and both `observed.webApiErrorDe
 
 Presets can return bodies or `{ name, description, load() }` descriptors. Body generation is memoized and listing does not generate rows. Stored builtin descriptors resolve using the explicitly supplied portal library. An unavailable project descriptor is reported, never silently replaced. Do not import `data.mjs` or `presets.mjs` at pack module top level if that creates a registry cycle; generators may import runtime utilities lazily.
 
+For large generated presets, `{ name, description, createOwned() }` is an explicit ownership-transfer alternative.
+Its context also supplies [`records.table()` for streamed JSON records](record-storage.md).
+It must synchronously return a new private plain preset body on every call. Do not retain or reuse its mutable
+rows, arrays, mappings or other objects after returning; immutable strings may be shared. Keep the body compatible
+with persisted JSON state. Register executable handlers through the pack's extension exports.
+The toolkit can adopt this body without retaining and cloning a second complete dataset. Column defaults,
+autonumbers, configuration-link validation and explicitly saved user presets retain their usual rules.
+
+Applying or resolving this factory creates a fresh body. Use deterministic IDs and a seed when reapplication
+must reproduce the same data. Listing remains body-free. Direct `library[id]` reads memoize a separate preview;
+editing that preview does not edit the factory. Customize a saved preset or replace the library entry instead.
+Existing `load()` retains its memoization and detached-copy behavior, and takes precedence if both methods exist.
+Ownership transfer is opt-in because an arbitrary existing loader may retain its returned graph.
+
+```js
+presets() {
+  return {
+    'invented-volume': {
+      name: 'Invented volume dataset',
+      createOwned: () => buildDataset({ seed: 42 }), // your project's generator
+    },
+  };
+}
+```
+
 Applying a portal's business-data preset preserves omitted organization-owned tables,
 staff grants, credentials and imported schema. Explicit table or mapping entries
 in the preset still replace those targets. Reset remains a separate operation.

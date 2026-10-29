@@ -1,4 +1,6 @@
-import { isDeepStrictEqual } from 'node:util';
+import { cloneStateData } from './state-clone.mjs';
+import { assignRecordValues, materializeRecord, pagedRecordsOf } from './record-tables.mjs';
+import { privateRecordEqual } from './record-clone.mjs';
 
 export function validateRowIndex(rows, index, insertion = false) {
   if (
@@ -11,6 +13,7 @@ export function validateRowIndex(rows, index, insertion = false) {
     throw new RangeError('Row index must identify an own array element.');
 }
 export function assignRowValues(row, values) {
+  if (assignRecordValues(row, values)) return;
   for (const [key, value] of Object.entries(values))
     Object.defineProperty(row, key, { value, enumerable: true, configurable: true, writable: true });
 }
@@ -50,7 +53,7 @@ export class RowTransaction {
       if (hit && hit.value === value) reused[key] = hit.copy;
       else fresh[key] = value;
     }
-    const copies = structuredClone(fresh);
+    const copies = cloneStateData(fresh, { forkTables: true });
     // Keep the state's section order (rollback re-adds removed sections in this order).
     this.metadata = Object.fromEntries(
       Object.keys(store.state)
@@ -65,44 +68,68 @@ export class RowTransaction {
   set(table, rows, index, row) {
     validateRowIndex(rows, index);
     const previous = rows.at(index);
-    this.undo.push((target) =>
-      replaceRow(
-        target === this.state ? rows : tableRows(target, table),
-        index,
-        target === this.state ? previous : structuredClone(previous),
-      ),
-    );
+    const snapshot = pagedRecordsOf(rows)?.fork();
+    if (snapshot) {
+      this.undo.push((target) =>
+        pagedRecordsOf(target === this.state ? rows : tableRows(target, table)).restore(snapshot),
+      );
+    } else
+      this.undo.push((target) =>
+        replaceRow(
+          target === this.state ? rows : tableRows(target, table),
+          index,
+          target === this.state ? previous : materializeRecord(previous),
+        ),
+      );
     replaceRow(rows, index, row);
     this.entries.push({ op: 'set', table, index, row });
   }
   mutate(table, rows, index, values) {
     validateRowIndex(rows, index);
     const row = rows.at(index),
-      previous = structuredClone(row);
-    this.undo.push((target) => {
-      const destination = target === this.state ? row : tableRows(target, table).at(index);
-      for (const key of Object.keys(destination)) delete destination[key];
-      assignRowValues(destination, target === this.state ? previous : structuredClone(previous));
-    });
+      previous = materializeRecord(row);
+    const snapshot = pagedRecordsOf(rows)?.fork();
+    if (snapshot)
+      this.undo.push((target) => {
+        const destination = pagedRecordsOf(target === this.state ? rows : tableRows(target, table));
+        destination.restore(snapshot, target === this.state ? row : null, previous, index);
+      });
+    else
+      this.undo.push((target) => {
+        const destination = target === this.state ? row : tableRows(target, table).at(index);
+        for (const key of Object.keys(destination)) delete destination[key];
+        assignRowValues(destination, target === this.state ? previous : materializeRecord(previous));
+      });
     assignRowValues(row, values);
     this.entries.push({ op: 'set', table, index, row });
   }
   insert(table, rows, index, row) {
     validateRowIndex(rows, index, true);
-    this.undo.push((target) => (target === this.state ? rows : tableRows(target, table)).splice(index, 1));
+    const snapshot = pagedRecordsOf(rows)?.fork();
+    this.undo.push((target) => {
+      const destination = target === this.state ? rows : tableRows(target, table);
+      if (snapshot) pagedRecordsOf(destination).restore(snapshot);
+      else destination.splice(index, 1);
+    });
     rows.splice(index, 0, row);
     this.entries.push({ op: 'insert', table, index, row });
   }
   remove(table, rows, index) {
     validateRowIndex(rows, index);
     const previous = rows.at(index);
-    this.undo.push((target) =>
-      (target === this.state ? rows : tableRows(target, table)).splice(
-        index,
-        0,
-        target === this.state ? previous : structuredClone(previous),
-      ),
-    );
+    const snapshot = pagedRecordsOf(rows)?.fork();
+    if (snapshot)
+      this.undo.push((target) =>
+        pagedRecordsOf(target === this.state ? rows : tableRows(target, table)).restore(snapshot),
+      );
+    else
+      this.undo.push((target) =>
+        (target === this.state ? rows : tableRows(target, table)).splice(
+          index,
+          0,
+          target === this.state ? previous : materializeRecord(previous),
+        ),
+      );
     rows.splice(index, 1);
     this.entries.push({ op: 'delete', table, index });
   }
@@ -125,7 +152,7 @@ export class RowTransaction {
       if (!Object.hasOwn(this.state, key)) yield { op: 'remove-section', key };
     for (const [key, value] of Object.entries(this.state)) {
       if (key === 'tables') continue;
-      if (!isDeepStrictEqual(value, this.metadata[key])) yield { op: 'section', key, value };
+      if (!privateRecordEqual(value, this.metadata[key])) yield { op: 'section', key, value };
       else this.unchanged.add(key);
     }
     this.compared = true;
@@ -148,7 +175,7 @@ export class RowTransaction {
       if (key !== 'tables' && !Object.hasOwn(this.metadata, key)) delete target[key];
     for (const [key, value] of Object.entries(this.metadata)) {
       if (restoreSection && Object.hasOwn(target, key)) {
-        if (!isDeepStrictEqual(target[key], value)) target[key] = restoreSection(target[key], value);
+        if (!privateRecordEqual(target[key], value)) target[key] = restoreSection(target[key], value);
         continue;
       }
       Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });

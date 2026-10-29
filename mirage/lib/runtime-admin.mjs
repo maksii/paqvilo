@@ -47,6 +47,7 @@ export function createRuntimeAdminRouter({
   change,
   csrf,
   status,
+  statusChunks,
   state,
   configuration,
   configure,
@@ -105,7 +106,15 @@ export function createRuntimeAdminRouter({
   // One table of [prefix, handler]: the dispatcher iterates it and router.routes is read from it, so status `routes` lists
   // exactly the prefixes this router answers. A handler answers true when it served the request.
   const table = [
-    ['/status', status && ((c) => c.method === 'GET' && c.relative === '/status' && c.answer(status()))],
+    [
+      '/status',
+      status &&
+        ((c) => {
+          if (c.method !== 'GET' || c.relative !== '/status') return false;
+          const value = status();
+          return c.answer(value, statusChunks ? { chunks: statusChunks(value) } : undefined);
+        }),
+    ],
     ['/state', state && ((c) => c.method === 'GET' && c.relative === '/state' && c.answer(state(c.url)))],
     [
       '/config',
@@ -204,8 +213,8 @@ export function createRuntimeAdminRouter({
       url,
       relative,
       method,
-      answer: async (value) => {
-        json(res, 200, await value);
+      answer: async (value, options) => {
+        await json(res, 200, await value, {}, options);
         return true;
       },
     };

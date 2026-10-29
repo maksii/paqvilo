@@ -27,6 +27,10 @@ my-portal-project/
 
 Install Paqvilo as a dependency, register your pack, and run your own tests from this project. The [starter](../examples/project/README.md) is complete and uses invented data. Your test suite can consume the public modules without editing Paqvilo's core:
 
+Large generated presets may use the explicit [`createOwned()` factory](../mirage/docs/data-packs.md) to transfer
+a fresh private dataset instead of retaining a memoized baseline plus an application copy. Existing `load()`
+presets keep their copy semantics. Generators and their determinism/ownership tests stay in your project.
+
 ```js
 import { createSimulator, DataStore, discoverPacks, presetLibrary } from 'paqvilo/mirage';
 import { signInHeaders, signInContext } from 'paqvilo/mirage/testing';

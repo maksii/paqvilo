@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -15,6 +16,52 @@ import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadat
 import { appCatalogue, appCatalogueAsync } from '../lib/model-driven/catalogue.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
+
+test('paged FetchXML projects only returned rows while preserving counts, cookies, ordering and detached values', () => {
+  const payload = 'Invented large payload'.repeat(16);
+  const store = new DataStore({
+    state: {
+      tables: {
+        x_item: Array.from({ length: 1500 }, (_, i) => ({
+          x_itemid: performanceId(i + 1),
+          x_name: String(i).padStart(4, '0'),
+          x_payload: payload,
+        })),
+      },
+      mappings: {
+        x_item: {
+          idColumn: 'x_itemid',
+          entitySet: 'x_items',
+          fields: { x_name: { type: 'text' }, x_payload: { type: 'text' } },
+        },
+      },
+    },
+  });
+  const original = globalThis.structuredClone;
+  let projected = 0;
+  globalThis.structuredClone = (value) => {
+    if (value === payload) projected++;
+    return original(value);
+  };
+  try {
+    const xml = (page, cookie = '') =>
+      `<fetch count="25" page="${page}" returntotalrecordcount="true"${cookie ? ' paging-cookie="' + cookie.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;') + '"' : ''}><entity name="x_item"><attribute name="x_name"/><attribute name="x_payload"/><order attribute="x_name" descending="true"/></entity></fetch>`;
+    const second = store.fetchXml(xml(2), { admin: true });
+    assert.equal(projected, 25, 'Off-page values are neither copied nor projected');
+    assert.equal(second.total_record_count, 1500);
+    assert.equal(second.more_records, true);
+    assert.equal(second.entities[0].x_name, '1474');
+    assert.equal(second.entities.at(-1).x_name, '1450');
+    assert.ok(second.paging_cookie);
+    const third = store.fetchXml(xml(3, second.paging_cookie), { admin: true });
+    assert.equal(projected, 50);
+    assert.equal(third.entities[0].x_name, '1449');
+    third.entities[0].x_payload = 'local response edit';
+    assert.equal(store.tableRows('x_item')[1449].x_payload, payload);
+  } finally {
+    globalThis.structuredClone = original;
+  }
+});
 import { settleFileTimes } from './support/file-times.mjs';
 
 test('unchanged isolated composition clones each business graph once and owned replacement saves zero bytes', async (t) => {
@@ -106,6 +153,42 @@ test('metadata inventory work scales with metadata once per read, independent of
       { revision: () => revision },
     );
   }
+});
+
+test('unchanged component checks avoid rebuilding field stamp trees and still detect structured in-place edits', (t) => {
+  const size = 512;
+  const rows = Array.from({ length: size }, (_, index) => ({
+    formid: 'f-' + index,
+    name: 'Form',
+    formxml: '<form/>',
+    settings: { enabled: true },
+  }));
+  const state = {
+    tables: { systemform: rows },
+    dataverse: { sourceSolutionComponents: { baseline: { 'systemform/f-0': {} } } },
+  };
+  const base = { forms: rows.map((row) => ({ id: row.formid, xml: row.formxml })) };
+  const overlay = createSolutionMetadataOverlay();
+  const first = overlay(base, state);
+  const entries = Object.entries;
+  let rowEntryCopies = 0;
+  const rowSet = new Set(rows);
+  const mock = t.mock.method(Object, 'entries', (value) => {
+    if (rowSet.has(value)) rowEntryCopies++;
+    return entries(value);
+  });
+  for (let read = 0; read < 8; read++) assert.equal(overlay(base, state), first);
+  assert.equal(rowEntryCopies, 0, 'unchanged reads do not allocate one entry pair per field per component');
+  mock.mock.restore();
+  rows.at(-1).settings.enabled = false;
+  const changed = overlay(base, state);
+  assert.notEqual(changed, first);
+  rows.at(-1).name = 'Edited locally';
+  assert.equal(overlay(base, state).forms.at(-1).name, 'Edited locally');
+  delete rows.at(-1).settings;
+  assert.notEqual(overlay(base, state), changed);
+  rows.push({ formid: 'new', formxml: '<form/>' });
+  assert.notEqual(overlay(base, state), changed);
 });
 
 test('built-in startup metadata scans are bounded across tables and trusted extensions still see direct edits', async (t) => {
@@ -331,6 +414,90 @@ test('catalogue metadata epoch reuses one snapshot and expires before later sour
       "An epoch does not return another metadata input's value.",
     );
   });
+});
+
+test('overlay invalidates column metadata, component presence and same-ID solution asset edits', () => {
+  const overlay = createSolutionMetadataOverlay();
+  const base = {
+    entities: { x_item: { fields: { x_name: { label: 'Original' } } } },
+    forms: [{ id: 'f', entity: 'x_item', xml: '<form/>' }],
+  };
+  const state = {
+    tables: { systemform: [{ formid: 'f' }] },
+    mappings: { x_item: { fields: { x_name: { columnMetadata: { labels: { 1033: 'First' }, isSecured: false } } } } },
+    dataverse: { sourceSolutionComponents: { baseline: { 'systemform/f': {} } } },
+  };
+  const first = overlay(base, state);
+  state.mappings.x_item.fields.x_name.columnMetadata.labels[1033] = 'Second';
+  state.mappings.x_item.fields.x_name.columnMetadata.isSecured = true;
+  const changed = overlay(base, state);
+  assert.notEqual(changed, first);
+  assert.equal(changed.entities.x_item.fields.x_name.label, 'Second');
+  assert.equal(changed.entities.x_item.fields.x_name.isSecured, true);
+  assert.equal(
+    first.entities.x_item.fields.x_name.columnMetadata.labels[1033],
+    'First',
+    'Published metadata does not retain mutable nested mapping values',
+  );
+  const withoutLayers = structuredClone(state);
+  delete withoutLayers.dataverse.sourceSolutionComponents;
+  assert.equal(
+    overlay(base, withoutLayers).entities.x_item.fields.x_name.label,
+    'Second',
+    'Relevant mapping changes also apply without imported layers or a baseline',
+  );
+  state.tables.systemform = [];
+  const absent = overlay(base, state);
+  assert.equal(absent.forms.length, 0);
+  delete state.dataverse.sourceSolutionComponents.baseline['systemform/f'];
+  state.dataverse.sourceSolutionComponents.baseline.other = {};
+  assert.equal(overlay(base, state).forms.length, 1, 'component presence changes invalidate without a row edit');
+  const bytes = Buffer.from('<Entity><Name>x_item</Name></Entity>');
+  const entry = {
+    name: 'Entities/x_item/Entity.xml',
+    bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    content: bytes.toString('base64'),
+  };
+  state.dataverse.solutionAssets = { layers: [{ id: 'invented-layer', ownerSolutionId: 'owner', entries: [entry] }] };
+  overlay(base, state);
+  entry.content = Buffer.from('tampered').toString('base64');
+  assert.throws(
+    () => overlay(base, state),
+    /integrity/,
+    'cached parsed assets cannot conceal a same-ID integrity failure',
+  );
+});
+
+test('lazy catalogue inventories every table without reading unrelated form bodies and preserves the complete contract', async () => {
+  const mappings = {},
+    entities = {},
+    forms = [];
+  const reads = new Map();
+  for (let index = 0; index < 80; index++) {
+    const entity = 'x_table' + index;
+    mappings[entity] = { idColumn: entity + 'id', nameColumn: 'x_name' };
+    entities[entity] = { fields: { x_name: { name: 'x_name', type: 'string', label: 'Name' } } };
+    forms.push({
+      id: 'form' + index,
+      entity,
+      get xml() {
+        reads.set(entity, (reads.get(entity) ?? 0) + 1);
+        return '<form><tabs><tab name="main"><columns><column><sections><section><rows><row><cell><control datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>';
+      },
+    });
+  }
+  const options = { mappings, metadata: { entities, forms } };
+  const lazy = await appCatalogueAsync({ ...options, lazy: true });
+  assert.equal(Object.keys(lazy.tableIndex).length, 80);
+  assert.equal(reads.size, 0, 'index construction never compiles form bodies');
+  assert.equal(lazy.tables.x_table79.forms.length, 1);
+  assert.deepEqual([...reads.keys()], ['x_table79']);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(lazy)),
+    JSON.parse(JSON.stringify(appCatalogue(options))),
+    'enumerating the complete catalogue retains every table, form, view, control and source',
+  );
 });
 
 test('metadata reuse stops before a potentially mutating read plug-in runs', async () => {

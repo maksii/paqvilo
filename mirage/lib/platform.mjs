@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { renderFormLabel } from './form-labels.mjs';
 import { clientManagedControlsRuntime, validateManagedControlDefinition } from './managed-controls.mjs';
+import { mountRichTextEditors } from './richtext-client.mjs';
 import { clientLocalSelfOriginRuntime } from './local-self-origin.mjs';
 import { clientDateControlsRuntime } from './date-controls.mjs';
 import {
@@ -508,48 +509,7 @@ export function injectRuntime(html, token, revision, identity = {}, traceId = nu
 /** Use the observed managed CKEditor bytes, binding HTML as the native JSON input. */
 function clientRichTextRuntime(settings) {
   const data = JSON.stringify(settings).replace(/</g, '\\u003c');
-  return `(async()=>{
-    const settings=${data},base='/webresources/msdyn_/RichTextEditorControl/';
-    const state=window.__portalSimulation ||= {};
-    const loadJson=async url=>{const response=await fetch(url);if(!response.ok)throw new Error('Rich text configuration unavailable: '+url+' ('+response.status+')');return response.json();};
-    const loadEditor=()=>state.richTextLibrary ||= new Promise((resolve,reject)=>{if(window.CKEDITOR){resolve(window.CKEDITOR);return;}window.CKEDITOR_BASEPATH=base+'libs/ckeditor_latest/';const script=document.createElement('script');script.src=CKEDITOR_BASEPATH+'ckeditor.js';script.onload=()=>resolve(window.CKEDITOR);script.onerror=()=>reject(new Error('The managed rich text editor dependency is unavailable.'));document.head.append(script);});
-    const compatibilityEditor=async(id,input,container)=>{
-      const textarea=document.getElementById(id+'_editor'),initial=textarea?.value||'';
-      const toolbar=document.createElement('div');toolbar.className='sim-richtext-toolbar';toolbar.setAttribute('role','toolbar');toolbar.setAttribute('aria-label','Compatibility editor formatting');
-      const frame=document.createElement('iframe');frame.className='cke_wysiwyg_frame';frame.title='Compatibility rich text editor';frame.setAttribute('aria-label','Compatibility rich text editor');frame.style.cssText='width:100%;min-height:12rem;border:1px solid #8a8886;background:#fff';
-      const badge=document.createElement('span');badge.className='sim-compatibility-badge';badge.textContent='Compatibility editor';
-      const actions=[['Bold','bold'],['Italic','italic'],['Underline','underline'],['Bulleted list','insertUnorderedList'],['Numbered list','insertOrderedList']];
-      for(const [label,command] of actions){const button=document.createElement('button');button.type='button';button.textContent=label;button.setAttribute('aria-label',label);button.addEventListener('mousedown',event=>event.preventDefault());button.addEventListener('click',()=>{frame.contentDocument.execCommand(command,false,null);frame.contentWindow.focus();});toolbar.append(button);}
-      container.replaceChildren(badge,toolbar,frame);container.dataset.simEditorMode='compatibility';
-      const loaded=new Promise(resolve=>frame.addEventListener('load',resolve,{once:true}));
-      frame.srcdoc='<!doctype html><html><head><meta charset="utf-8"><style>body{font:inherit;margin:8px;min-height:10rem;outline:none}body:focus{outline:none}</style></head><body contenteditable="true" role="textbox" aria-label="Rich text content" aria-multiline="true"></body></html>';
-      await loaded;
-      let content=initial;const body=()=>frame.contentDocument?.body;
-      const listeners=new Map(),fire=(name,data={})=>{for(const callback of listeners.get(name)||[])callback({name,editor,...data});};
-      const getData=()=>{const html=body()?.innerHTML??content;if(!html||/<(?:p|div|ul|ol|blockquote|h[1-6])\b/i.test(html))return html;return '<p>'+html+'</p>';};
-      const sync=()=>{content=body()?.innerHTML??content;const encoded=JSON.stringify(getData());input.value=encoded;input.setAttribute('value',encoded);input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));fire('change');};
-      const editor={name:id+'_editor',config:{},on(name,callback){const rows=listeners.get(name)||[];rows.push(callback);listeners.set(name,rows);return editor;},fire(name,data){fire(name,data);return editor;},getData(){return getData();},setData(value,callback){content=String(value??'');const current=body();if(current)current.innerHTML=content;sync();if(callback)callback();return editor;},updateElement(){sync();return editor;},focus(){body()?.focus();return editor;},editable(){return frame.contentDocument.body;},destroy(){frame.remove();toolbar.remove();badge.remove();delete window.CKEDITOR.instances[editor.name];return editor;}};
-      window.CKEDITOR ||= {instances:{},replace(){throw new Error('Native CKEditor is unavailable in compatibility mode.');}};
-      window.CKEDITOR.instances ||= {};window.CKEDITOR.instances[editor.name]=editor;
-      // Moving the frame (authored layout scripts do) reloads its document: restore the content and rebind.
-      const bind=()=>{const current=body();if(!current||current.__ppSimBound)return;current.__ppSimBound=true;if(current.innerHTML!==content)current.innerHTML=content;current.addEventListener('input',sync);current.addEventListener('blur',sync);};
-      frame.addEventListener('load',bind);bind();
-      queueMicrotask(()=>{container.dataset.mounted='ready';container.dispatchEvent(new CustomEvent('sim:richtext-ready',{bubbles:true,detail:{field:id,mode:'compatibility'}}));fire('instanceReady');});
-      console.info('Local rich text compatibility editor active for '+id+'; native CKEditor assets were not captured.');
-    };
-    for(const [id,configuration] of Object.entries(settings)){
-      const input=document.getElementById(id),container=document.querySelector('[data-sim-richtext-editor][data-field="'+id+'"]');if(!input||!container||container.dataset.mounted)continue;container.dataset.mounted='loading';
-      try{
-        if(configuration.compatibility){await compatibilityEditor(id,input,container);continue;}
-        const [editorLibrary,globalConfiguration,fieldConfiguration]=await Promise.all([loadEditor(),state.richTextGlobalConfiguration ||= loadJson(base+'RTEGlobalConfiguration.json'),configuration.configUrl?loadJson(configuration.configUrl):configuration.configuration]);
-        editorLibrary.timestamp='';
-        const config={...globalConfiguration.defaultSupportedProps,...fieldConfiguration.defaultSupportedProps,stylesSet:false,contentsCss:[base+'libs/ckeditor_latest/contents.css'],language:document.documentElement.lang?.split('-')[0]||'en',readOnly:container.dataset.readOnly==='true'};
-        const editor=editorLibrary.replace(id+'_editor',config);
-        const sync=()=>{const encoded=JSON.stringify(editor.getData());input.value=encoded;input.setAttribute('value',encoded);input.dispatchEvent(new Event('change',{bubbles:true}));};
-        editor.on('change',sync);editor.on('instanceReady',()=>{container.dataset.mounted='ready';sync();container.dispatchEvent(new CustomEvent('sim:richtext-ready',{bubbles:true,detail:{field:id}}));});
-      }catch(error){container.dataset.mounted='failed';const alert=container.querySelector('[data-sim-richtext-error]');alert.hidden=false;alert.textContent=error.message;console.error(error);}
-    }
-  })();`;
+  return '(' + mountRichTextEditors.toString() + ')(' + data + ');';
 }
 
 // Native component rendering (basic forms, advanced forms, lists, subgrids,

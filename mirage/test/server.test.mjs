@@ -16,6 +16,76 @@ test('embedded simulator rejects empty and malformed ports before reading source
   }
 });
 
+test('startup validates and applies one owned preset body without generating a second private candidate', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-owned-preset-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented ownership');
+  let calls = 0;
+  const pack = {
+    id: 'invented-owned',
+    name: 'Invented owned',
+    description: 'Invented',
+    matches: () => true,
+    presets: () => ({
+      invented: {
+        name: 'Invented factory',
+        configurationPreset: 'source-defaults',
+        createOwned() {
+          calls++;
+          return {
+            tables: { x_item: [{ x_itemid: 'one', name: 'Invented ' + calls }] },
+            mappings: { x_item: { idColumn: 'x_itemid', nameColumn: 'name' } },
+          };
+        },
+      },
+    }),
+  };
+  const sim = await createSimulator({
+    sourceDir: root,
+    stateFile: null,
+    watch: false,
+    packs: [pack],
+    preset: 'invented',
+    presetConfiguration: 'apply',
+  });
+  t.after(() => sim.close());
+  assert.equal(calls, 1);
+  assert.equal(sim.store.state.tables.x_item[0].name, 'Invented 1');
+  await sim.applyPreset('invented');
+  assert.equal(calls, 2);
+  assert.equal(sim.store.state.tables.x_item[0].name, 'Invented 2');
+});
+
+test('startup ownership keeps caller initial records and simulator settings detached', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-owned-initial-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented ownership');
+  const initial = {
+    tables: { item: [{ itemid: 'one', nested: { value: 1 } }] },
+    mappings: { item: { idColumn: 'itemid', fields: { nested: { type: 'object' } } } },
+    simulator: { externalAssets: false },
+  };
+  const sim = await createSimulator({ sourceDir: root, stateFile: null, initial, watch: false });
+  t.after(() => sim.close());
+  initial.tables.item[0].nested.value = 2;
+  initial.simulator.externalAssets = true;
+  assert.equal(sim.store.state.tables.item[0].nested.value, 1);
+  assert.equal(sim.store.state.simulator.externalAssets, false);
+  sim.store.state.tables.item[0].nested.value = 3;
+  assert.equal(initial.tables.item[0].nested.value, 2);
+  const reset = await fetch(new URL('/_sim/api/reset', sim.url), {
+    method: 'POST',
+    headers: { 'x-sim-csrf': sim.csrf },
+  });
+  assert.equal(reset.status, 200);
+  await reset.arrayBuffer();
+  // Reset still uses the caller's configured baseline, including later edits.
+  assert.equal(sim.store.state.tables.item[0].nested.value, 2);
+  assert.equal(sim.store.state.simulator.externalAssets, true);
+  sim.store.state.tables.item[0].nested.value = 4;
+  assert.equal(initial.tables.item[0].nested.value, 2);
+});
+
 async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-server-'));
   const files = {
@@ -96,6 +166,85 @@ async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}
     });
   return { app, call, dir, state };
 }
+test('status polling reuses unchanged local storage capabilities while public state remains detached', async (t) => {
+  const { app, call } = await setup(t);
+  const fromEntries = Object.fromEntries;
+  let maps = 0;
+  try {
+    Object.fromEntries = (...args) => {
+      const result = fromEntries(...args);
+      if (
+        result.contact?.create === true &&
+        result.contact?.delete === true &&
+        Object.keys(result.contact).length === 3
+      )
+        maps++;
+      return result;
+    };
+    for (let i = 0; i < 5; i++)
+      assert.equal((await (await call('/_sim/api/status')).json()).recordCapabilities.contact.create, true);
+    assert.equal(maps, 1, 'Unchanged HTTP polls do not allocate another map and rights object per table.');
+    app.store.state.mappings.invented_extra = { idColumn: 'id' };
+    app.store.state.tables.invented_extra = [];
+    assert.equal((await (await call('/_sim/api/status')).json()).recordCapabilities.invented_extra.create, true);
+    assert.equal(maps, 2);
+    delete app.store.state.mappings.invented_extra;
+    delete app.store.state.tables.invented_extra;
+    assert.equal((await (await call('/_sim/api/status')).json()).recordCapabilities.invented_extra, undefined);
+    assert.equal(maps, 3);
+  } finally {
+    Object.fromEntries = fromEntries;
+  }
+  const first = app.state({ summary: true });
+  first.recordCapabilities.contact.create = false;
+  first.status.recordCapabilities.contact.update = false;
+  const next = app.state({ summary: true });
+  assert.equal(next.recordCapabilities.contact.create, true);
+  assert.equal(next.status.recordCapabilities.contact.update, true);
+  assert.equal((await (await call('/_sim/api/status')).json()).recordCapabilities.contact.create, true);
+});
+
+test('status lists saved preset descriptors without cloning or reading their record bodies', async (t) => {
+  const { app, call } = await setup(t);
+  const preset = {
+    name: 'Invented saved data',
+    userConfigured: true,
+    configurationPreset: { id: 'invented', settings: { enabled: true } },
+  };
+  Object.defineProperty(preset, 'tables', {
+    enumerable: true,
+    get() {
+      throw Error('Record body read during status');
+    },
+  });
+  app.store.state.presets.invented = preset;
+  const response = await call('/_sim/api/status');
+  assert.equal(response.status, 200);
+  const descriptor = (await response.json()).presets.find((item) => item.id === 'invented');
+  assert.equal(descriptor.name, preset.name);
+  assert.deepEqual(descriptor.configurationPreset, preset.configurationPreset);
+  descriptor.configurationPreset.settings.enabled = false;
+  assert.equal(preset.configurationPreset.settings.enabled, true);
+  delete app.store.state.presets.invented;
+});
+
+test('one status poll shares its detached simulator snapshot across configuration projections', async (t) => {
+  const { app, call } = await setup(t);
+  const snapshot = app.store.snapshot;
+  let simulatorCopies = 0;
+  app.store.snapshot = function (options) {
+    if (options?.sections?.includes('simulator')) simulatorCopies++;
+    return snapshot.call(this, options);
+  };
+  const first = await (await call('/_sim/api/status')).json();
+  assert.equal(simulatorCopies, 3, 'One status snapshot plus the two existing request-authentication reads.');
+  app.store.state.simulator.activeExperiment = 'invented-change';
+  const second = await (await call('/_sim/api/status')).json();
+  assert.equal(simulatorCopies, 6);
+  assert.equal(second.activeConfigurationPreset, 'invented-change');
+  assert.notEqual(first.activeConfigurationPreset, second.activeConfigurationPreset);
+});
+
 test('HTTP: source application-relative links redirect locally, retaining parameters and access checks', async (t) => {
   const { app } = await setup(t);
   for (const [route, target] of [
@@ -818,6 +967,7 @@ test('HTTP: explicit snippet composition keeps source gates, preserves profiles 
 
 test('HTTP: shell capture persists a complete profile and preserves it on capture failure', async (t) => {
   const requests = [];
+  const managedStyle = '/_pcfwebresource/11111111-1111-1111-1111-111111111111?v=2';
   let broken = false;
   const liveBridge = {
     origin: 'https://portal.example',
@@ -834,8 +984,14 @@ test('HTTP: shell capture persists a complete profile and preserves it on captur
           status: 200,
           headers: { 'content-type': 'text/html' },
           body: Buffer.from(
-            `<html><head><link rel="stylesheet" media="screen" href="/platform.css"><script src="/jquery.min.js"></script>${broken ? '<link rel="stylesheet" href="/missing.css?access_token=DO_NOT_PERSIST">' : ''}</head><body><script>const privatePageValue="not persisted";</script></body></html>`,
+            `<html><head><link rel="stylesheet" media="screen" href="/platform.css"><link rel="stylesheet" href="${managedStyle}"><script src="/jquery.min.js"></script>${broken === true ? '<link rel="stylesheet" href="/missing.css?access_token=DO_NOT_PERSIST">' : ''}</head><body><script>const privatePageValue="not persisted";</script></body></html>`,
           ),
+        };
+      if (path === managedStyle)
+        return {
+          status: 200,
+          headers: { 'content-type': broken === 'wrong-role' ? 'application/javascript' : 'text/css; charset=utf-8' },
+          body: Buffer.from(broken === 'wrong-role' ? 'window.unexpected=1;' : '.editor{color:blue}'),
         };
       if (path === '/platform.css')
         return {
@@ -863,10 +1019,10 @@ test('HTTP: shell capture persists a complete profile and preserves it on captur
   assert.equal(response.status, 200);
   const report = await response.json();
   assert.equal(report.complete, true);
-  assert.equal(report.captured.length, 2);
+  assert.equal(report.captured.length, 3);
   assert.ok(Number.isFinite(Date.parse(report.shellProfile.platformStyles.capturedAt)));
   assert.deepEqual(report.shellProfile, {
-    stylesheets: [{ href: '/platform.css', media: 'screen' }],
+    stylesheets: [{ href: '/platform.css', media: 'screen' }, managedStyle],
     headScripts: ['/jquery.min.js'],
     bodyScripts: [],
     beforeContentScripts: [],
@@ -884,6 +1040,13 @@ test('HTTP: shell capture persists a complete profile and preserves it on captur
       missingHeadStylesheets: [],
     },
   });
+  assert.deepEqual(app.store.snapshot().simulator.shellProfile, report.shellProfile);
+  broken = 'wrong-role';
+  response = await call('/__sim/api/assets/capture-shell', 'POST', { path: '/workspace/' });
+  assert.equal(response.status, 409);
+  assert.ok(
+    (await response.json()).failures.some((failure) => failure.code === 'ASSET_CONTENT_TYPE' && failure.blocking),
+  );
   assert.deepEqual(app.store.snapshot().simulator.shellProfile, report.shellProfile);
   assert.ok(requests.every((r) => !r.options?.method || r.options.method === 'GET'));
   const saved = await fs.readFile(path.join(dir, 'state.json'), 'utf8');

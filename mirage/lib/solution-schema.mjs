@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { recordSourceOf, materializeRecordSource } from './record-sources.mjs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { solutionContentFingerprint } from './solution-content-fingerprint.mjs';
@@ -2150,13 +2151,13 @@ export function tableColumnDefaults(attributes) {
  * next value per `table.column`, the DataStore's autoNumberSequences). Explicit values
  * (including null) are kept. Returns new row arrays.
  */
-function seedRecordDefaults(tables, schema, { now = Date.now(), sequences = {} } = {}) {
+function seedRecordDefaults(tables, schema, { now = Date.now(), sequences = {}, owned = false } = {}) {
   if (!schema?.tables || !tables) return tables;
   const stamp = new Date(now).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const out = {};
   for (const [name, rows] of Object.entries(tables)) {
     const attributes = schema.tables[name]?.attributes;
-    if (!attributes || !Array.isArray(rows)) {
+    if (!attributes || (!Array.isArray(rows) && !recordSourceOf(rows))) {
       out[name] = rows;
       continue;
     }
@@ -2167,30 +2168,50 @@ function seedRecordDefaults(tables, schema, { now = Date.now(), sequences = {} }
         /\{SEQNUM:\d+\}/.test(a.autoNumberFormat ?? '') && !/\{(?:RANDSTRING|DATETIMEUTC):/.test(a.autoNumberFormat),
     );
     const states = attributes.statecode?.optionSet?.states ?? [];
+    if (
+      owned &&
+      !defaults.length &&
+      !autonumbers.length &&
+      !states.length &&
+      !attributes.createdon &&
+      !attributes.modifiedon
+    ) {
+      out[name] = rows;
+      continue;
+    }
     const statusOf = (state) => states.find((s) => s.value === Number(state))?.defaultStatus;
-    out[name] = rows.map((row) => {
+    const assign = (current, original, key, value) => {
+      if (current === original) current = { ...original };
+      current[key] = value;
+      return current;
+    };
+    out[name] = materializeRecordSource(rows, (row) => {
       if (!row || typeof row !== 'object') return row;
-      const next = { ...row };
-      for (const [column, value] of defaults) if (!Object.hasOwn(next, column)) next[column] = value;
-      if (states.length && !Object.hasOwn(next, 'statecode')) next.statecode = 0;
+      let next = owned ? row : { ...row };
+      for (const [column, value] of defaults) if (!Object.hasOwn(next, column)) next = assign(next, row, column, value);
+      if (states.length && !Object.hasOwn(next, 'statecode')) next = assign(next, row, 'statecode', 0);
       if (
         states.length &&
         attributes.statuscode &&
         !Object.hasOwn(next, 'statuscode') &&
         statusOf(next.statecode) !== undefined
       )
-        next.statuscode = statusOf(next.statecode);
+        next = assign(next, row, 'statuscode', statusOf(next.statecode));
       for (const a of autonumbers) {
         if (next[a.name] != null && next[a.name] !== '') continue;
         const key = `${name}.${a.name}`;
         const value = Number(sequences[key] ?? 1000);
         sequences[key] = value + 1;
-        next[a.name] = a.autoNumberFormat.replace(/\{SEQNUM:(\d+)\}/g, (_all, width) =>
-          String(value).padStart(Number(width), '0'),
+        next = assign(
+          next,
+          row,
+          a.name,
+          a.autoNumberFormat.replace(/\{SEQNUM:(\d+)\}/g, (_all, width) => String(value).padStart(Number(width), '0')),
         );
       }
-      if (attributes.createdon && !Object.hasOwn(next, 'createdon')) next.createdon = stamp;
-      if (attributes.modifiedon && !Object.hasOwn(next, 'modifiedon')) next.modifiedon = next.createdon ?? stamp;
+      if (attributes.createdon && !Object.hasOwn(next, 'createdon')) next = assign(next, row, 'createdon', stamp);
+      if (attributes.modifiedon && !Object.hasOwn(next, 'modifiedon'))
+        next = assign(next, row, 'modifiedon', next.createdon ?? stamp);
       return next;
     });
   }

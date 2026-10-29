@@ -65,6 +65,212 @@ const exactColumn = (evidence, entity, name) => {
   assert.equal(evidence.source.refs[0].ref, `invented/${entity}.xml`);
 };
 
+test('advanced-form editor hosts follow the rendered step table and layout across step replacement', async (t) => {
+  const { page, inspect, data, report } = await fixture(
+    t,
+    '<div id="WebFormControl_wizard"><span data-form-layout></span><div id="x_notes_ControlView"><iframe id="advanced-editor" src="/advanced-editor"></iframe></div></div>',
+  );
+  const wizard = {
+    id: 'wizard',
+    kind: 'advanced-form',
+    configuredEntities: ['x_first', 'x_second'],
+    formLayouts: [
+      { id: 'layout-a', entity: 'x_first', name: 'First layout' },
+      { id: 'layout-b', entity: 'x_second', name: 'Second layout' },
+    ],
+  };
+  await page.evaluate(
+    ({ data, report, wizard }) =>
+      document.getElementById('paqvilo-xray').__px.update(data, { ...report, componentIndex: { forms: [wizard] } }),
+    { data, report, wizard },
+  );
+  const editor = page.frameLocator('#advanced-editor').locator('body');
+  await editor.evaluate((node) => {
+    node.contentEditable = 'true';
+    Object.defineProperty(node, 'innerHTML', {
+      get() {
+        throw Error('No editor values');
+      },
+    });
+  });
+  for (const [id, entity] of [
+    ['layout-a', 'x_first'],
+    ['layout-b', 'x_second'],
+    ['00000000-0000-0000-0000-000000000000', 'x_second'],
+  ]) {
+    await page
+      .locator('[data-form-layout]')
+      .evaluate((node, layout) => node.setAttribute('data-form-layout', JSON.stringify(layout)), {
+        Id: id,
+        EntityName: entity,
+      });
+    const evidence = await inspect(editor);
+    exactColumn(evidence, entity, 'x_notes');
+    assert.ok(
+      evidence.enclosing.some((row) => row.component?.key === 'advanced-form:wizard' && row.status === 'exact'),
+    );
+    if (id === 'layout-b') assert.ok(evidence.enclosing.some((row) => row.component?.key === 'form:layout-b'));
+    if (id.startsWith('0000'))
+      assert.ok(
+        !evidence.enclosing.some((row) => row.component?.kind === 'form'),
+        'An empty ID cannot choose between configured step layouts',
+      );
+  }
+  await page
+    .locator('[data-form-layout]')
+    .evaluate((node) =>
+      node.setAttribute('data-form-layout', JSON.stringify({ Id: 'layout-a', EntityName: 'x_second' })),
+    );
+  assert.equal((await inspect(editor)).owner.status, 'conflicting');
+});
+
+test('native generic modal layouts join only their rendered list or subgrid action and reject stale hints', async (t) => {
+  const modalPath = '/_portal/modal-form-template-path/invented';
+  const modal = (kind, id) =>
+    `<section class="modal-form modal-form-${kind}"><iframe id="${id}" data-page="${modalPath}" src="${modalPath}"></iframe></section>`;
+  const { page, inspect, data, report } = await fixture(
+    t,
+    `<div data-listid="first"><div class="entity-grid" data-selected-view="view-one">${modal('insert', 'create')}${modal('edit', 'edit')}${modal('details', 'details')}</div></div>` +
+      `<div data-listid="second"><div class="entity-grid" data-selected-view="view-two">${modal('edit', 'second')}</div></div>` +
+      `<div data-formid="basic-a"><div id="ChildRows" class="subgrid"><div class="entity-grid">${modal('edit', 'subgrid')}</div></div></div>`,
+  );
+  const targets = ['create', 'edit', 'details', 'other'].map((id) => ({
+    id,
+    name: id,
+    kind: 'basic-form',
+    entity: 'x_first',
+    formXml: { id: 'xml-' + id, name: id + ' layout' },
+  }));
+  const actions = ['Create', 'Edit', 'Details'].map((name) => ({
+    name: name + 'Action',
+    formId: name.toLowerCase(),
+    targetType: 0,
+  }));
+  const updated = {
+    ...report,
+    componentIndex: {
+      forms: [...forms, ...targets],
+      lists: [
+        { id: 'first', entity: 'x_first', viewIds: ['view-one'], actions },
+        { id: 'second', entity: 'x_first', viewIds: ['view-two'], actions: [{ name: 'EditAction', formId: 'other' }] },
+      ],
+    },
+    nativeComponents: [
+      {
+        kind: 'subgrid',
+        id: 'ChildRows',
+        formId: 'basic-a',
+        entity: 'x_first',
+        actions: [{ name: 'EditAction', formId: 'other' }],
+      },
+    ],
+  };
+  await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
+    data,
+    report: updated,
+  });
+  const populate = async (id, entity = 'x_first') =>
+    page.locator('#' + id).evaluate((frame, entity) => {
+      const doc = frame.contentDocument;
+      doc.body.innerHTML =
+        '<div id="EntityFormControl"><div id="EntityFormPanel"><div id="EntityFormControl_EntityFormView"><span data-form-layout></span><input id="x_title"></div></div></div>';
+      doc
+        .querySelector('[data-form-layout]')
+        .setAttribute(
+          'data-form-layout',
+          JSON.stringify({ Id: '00000000-0000-0000-0000-000000000000', EntityName: entity }),
+        );
+      Object.defineProperty(doc.querySelector('input'), 'value', {
+        get() {
+          throw Error('Field values must not be read');
+        },
+      });
+    }, entity);
+  const field = (id) => page.frameLocator('#' + id).locator('#x_title');
+  for (const [id, target] of [
+    ['create', 'create'],
+    ['edit', 'edit'],
+    ['details', 'details'],
+    ['second', 'other'],
+    ['subgrid', 'other'],
+  ]) {
+    await populate(id);
+    const evidence = await inspect(field(id));
+    exactColumn(evidence, 'x_first', 'x_title');
+    assert.ok(evidence.enclosing.some((row) => row.component?.id === target && row.status === 'exact'));
+    assert.ok(evidence.enclosing.some((row) => row.component?.id === 'xml-' + target));
+  }
+  // Definition hints can only veto this structural join, including the basic/system-form alias.
+  for (const query of ['?entityformid=edit&formid=xml-edit', '?entityformid=other', '?entityname=x_second']) {
+    await page
+      .locator('#edit')
+      .evaluate((frame, url) => frame.contentWindow.history.replaceState(null, '', url), modalPath + query);
+    const evidence = await inspect(field('edit'));
+    assert.equal(evidence.owner.status, query.includes('xml-edit') ? 'exact' : 'conflicting');
+  }
+  const navigated = page.waitForEvent('framenavigated', {
+    predicate: (frame) => frame.url() === data.origin + modalPath,
+  });
+  await page.locator('#edit').evaluate((frame, path) => (frame.src = path), modalPath);
+  await (await navigated).waitForLoadState('domcontentloaded');
+  await populate('edit');
+  exactColumn(await inspect(field('edit')), 'x_first', 'x_title');
+  await page
+    .locator('[data-listid=first] > .entity-grid')
+    .evaluate((node) => node.setAttribute('data-selected-view', 'view-two'));
+  assert.notEqual(
+    (await inspect(field('edit'))).owner.status,
+    'exact',
+    'A rendered view contradicting its list cannot prove modal ownership',
+  );
+  await page
+    .locator('[data-listid=first] > .entity-grid')
+    .evaluate((node) => node.setAttribute('data-selected-view', 'view-one'));
+  await page.locator('#ChildRows').evaluate((node) => {
+    const grid = node.querySelector('.entity-grid');
+    node.classList.add('entity-grid');
+    node.replaceChildren(...grid.childNodes);
+  });
+  await page.locator('#subgrid').evaluate(
+    (frame) =>
+      new Promise((resolve) => {
+        if (frame.contentDocument?.readyState === 'complete') resolve();
+        else frame.addEventListener('load', resolve, { once: true });
+      }),
+  );
+  await populate('subgrid');
+  exactColumn(await inspect(field('subgrid')), 'x_first', 'x_title');
+  await populate('edit', 'x_second');
+  assert.equal((await inspect(field('edit'))).owner.status, 'conflicting');
+  await populate('edit');
+  for (const mode of ['missing', 'duplicate', 'ambiguous-list']) {
+    const changed = structuredClone(updated);
+    if (mode === 'missing')
+      changed.componentIndex.forms = changed.componentIndex.forms.filter((form) => form.id !== 'edit');
+    if (mode === 'duplicate') changed.componentIndex.lists[0].actions.push({ name: 'EditAction', formId: 'other' });
+    if (mode === 'ambiguous-list') {
+      await page.locator('[data-listid=first]').evaluate((node) => node.removeAttribute('data-listid'));
+      changed.componentIndex.lists[1].viewIds = ['view-one'];
+    }
+    await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
+      data,
+      report: changed,
+    });
+    const evidence = await inspect(field('edit'));
+    assert.notEqual(evidence.owner.status, 'exact', mode);
+    assert.ok(
+      evidence.enclosing.some((row) => row.component?.entity === 'x_first' && row.component.kind === 'table'),
+      mode,
+    );
+    if (mode !== 'missing')
+      assert.ok(
+        evidence.enclosing.some((row) => row.component?.id === 'edit' && row.status === 'candidate'),
+        mode,
+      );
+  }
+  assert.doesNotMatch(JSON.stringify(await inspect(field('edit'))), /recordid|Field values must not/);
+});
+
 test('two declared grids retain exact declared columns across clones, reordering and redraw without data access', async (t) => {
   const { page, inspect } = await fixture(
     t,

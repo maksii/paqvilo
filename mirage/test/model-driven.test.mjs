@@ -1,6 +1,7 @@
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import nativeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
@@ -15,6 +16,45 @@ import { columnIcon } from '../lib/model-driven/icons.mjs';
 // Read-only HTTP tests share one runtime; tests that write or restart start their own.
 let shared;
 const cleanup = [];
+
+test('lazy table bodies retain provenance without reopening every root client resource', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-catalogue-resources-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'invented.js');
+  await fs.writeFile(file, '// Invented client resource\n');
+  const metadata = {
+    entities: Object.fromEntries(
+      Array.from({ length: 32 }, (_, i) => ['x_item' + i, { fields: { x_name: { dataverseType: 'nvarchar' } } }]),
+    ),
+  };
+  const mappings = Object.fromEntries(Object.keys(metadata.entities).map((name) => [name, { nameColumn: 'x_name' }]));
+  const options = {
+    metadata,
+    mappings,
+    providers: [],
+    clientExtensions: { resources: [{ name: 'invented.js', sourceFile: file }] },
+  };
+  const eager = appCatalogue(options);
+  const catalogue = appCatalogue({ ...options, lazy: true });
+  assert.deepEqual(catalogue.provenanceRefs, eager.provenanceRefs);
+  assert.ok(catalogue.provenanceRefs.some((ref) => ref.componentKey === 'resource:invented.js'));
+  const open = nativeFs.openSync;
+  let resourceReads = 0;
+  try {
+    nativeFs.openSync = (target, ...args) => {
+      if (path.resolve(String(target)) === file) resourceReads++;
+      return open(target, ...args);
+    };
+    for (const name of Object.keys(catalogue.tables)) assert.deepEqual(catalogue.tables[name], eager.tables[name]);
+  } finally {
+    nativeFs.openSync = open;
+  }
+  assert.equal(
+    resourceReads,
+    0,
+    'Root resource references are computed once; table source references remain complete.',
+  );
+});
 before(async () => {
   shared = await modelDrivenFixture({ after: (fn) => cleanup.push(fn) });
 });
@@ -30,6 +70,70 @@ async function solutionCopy(t) {
   await fs.cp(shared.solutionDir, solutionDir, { recursive: true });
   return { solutionDir };
 }
+
+test('lazy table construction retains the full imported source, application, lookup and control contract', async () => {
+  const scan = await scanSolutionSources([shared.solutionDir]);
+  const imported = await importSolutionMetadata([shared.solutionDir], { scan });
+  const options = {
+    metadata: { ...imported, modelDrivenApps: solutionApps(scan) },
+    mappings: {
+      x_item: { idColumn: 'x_itemid', nameColumn: 'x_name' },
+      x_related: { idColumn: 'x_relatedid', fields: { x_name: { type: 'text' } } },
+    },
+    settings: { timeZoneOffsetMinutes: 120 },
+    clientExtensions: { trusted: true, resources: [], pcf: [] },
+    canvasApps: ['x_invented_page'],
+  };
+  const eager = appCatalogue(options),
+    lazy = appCatalogue({ ...options, lazy: true });
+  assert.ok(eager.tables.x_item.provenanceRefs.length, 'The comparison includes imported source references');
+  for (const name of Object.keys(eager.tables).reverse()) assert.deepEqual(lazy.tables[name], eager.tables[name], name);
+  assert.deepEqual(JSON.parse(JSON.stringify(lazy)), JSON.parse(JSON.stringify(eager)));
+});
+
+test('the lazy table index does not normalize every unrelated field and control', () => {
+  let reads = 0,
+    relationshipReads = 0;
+  const field = {
+    dataverseType: 'nvarchar',
+    get format() {
+      reads++;
+      return 'email';
+    },
+  };
+  const mappings = Object.fromEntries(
+    Array.from({ length: 64 }, (_, i) => [
+      'x_wide' + i,
+      {
+        idColumn: 'x_id',
+        nameColumn: 'x_name',
+        fields: Object.fromEntries(Array.from({ length: 128 }, (_, j) => ['x_value' + j, field])),
+        relationships: Object.fromEntries(
+          Array.from({ length: 128 }, (_, j) => [
+            'x_link' + j,
+            {
+              entity: 'x_target',
+              get alias() {
+                relationshipReads++;
+                return 'Invented target';
+              },
+            },
+          ]),
+        ),
+      },
+    ]),
+  );
+  const lazy = appCatalogue({ mappings, lazy: true });
+  assert.equal(Object.keys(lazy.tables).length, 64);
+  assert.equal(reads, 0, 'Navigation headers do not prepare unrelated field controls');
+  assert.equal(relationshipReads, 0, 'Navigation headers do not copy unrelated relationship bodies');
+  const selected = lazy.tables.x_wide0;
+  assert.equal(Object.keys(selected.fields).length, 130);
+  assert.ok(reads > 0 && reads <= 128, `Only selected fields were prepared (${reads})`);
+  assert.equal(selected.fields.x_value127.format, 'email');
+  assert.equal(relationshipReads, 128, 'The selected table retains all relationship definitions');
+  assert.equal(selected.relationships.x_link127.alias, 'Invented target');
+});
 
 test('source navigation admits bounded imported table-view pages and leaves remote or unknown destinations unavailable', () => {
   const areas = parseSiteMap(

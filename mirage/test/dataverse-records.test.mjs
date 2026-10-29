@@ -165,6 +165,85 @@ async function failure(promise) {
 
 const lowerId = (value) => String(value?.id ?? value).toLowerCase();
 
+test('wide single-record reads reuse metadata during projection and observe later changes', async (t) => {
+  const fields = {
+    widgetid: { dataverseType: 'primarykey' },
+    name: text,
+    statuscode: { dataverseType: 'status', options: [{ value: 1, label: 'First' }] },
+    ...Object.fromEntries(Array.from({ length: 200 }, (_, i) => ['extra' + i, text])),
+  };
+  let reads = 0;
+  const runtime = await setup({
+    metadata: {
+      recordFields: () => {
+        reads++;
+        return fields;
+      },
+    },
+    metadataFields: () => fields,
+  });
+  t.after(() => runtime.handlers.close());
+  const id = randomUUID();
+  runtime.store.state.tables.widget.push({
+    widgetid: id,
+    name: 'Wide',
+    statuscode: 1,
+    ...Object.fromEntries(Array.from({ length: 200 }, (_, i) => ['extra' + i, 'Value ' + i])),
+  });
+  const url = `/api/data/${VERSION}/widgets(${id})`;
+  const headers = { Prefer: 'odata.include-annotations="OData.Community.Display.V1.FormattedValue"' };
+  const first = await runtime.send('GET', url, { headers });
+  assert.equal(first.body.extra199, 'Value 199');
+  assert.ok(reads <= 2, `Metadata resolved ${reads} times for one record`);
+  fields.statuscode.options[0].label = 'Second';
+  reads = 0;
+  const second = await runtime.send('GET', url, { headers });
+  assert.equal(second.body['statuscode@OData.Community.Display.V1.FormattedValue'], 'Second');
+  assert.ok(reads <= 2);
+});
+
+test('wide FetchXML pages derive record metadata per table and refresh it on the next request', async (t) => {
+  const fields = {
+    widgetid: { dataverseType: 'primarykey' },
+    name: text,
+    statuscode: { dataverseType: 'status', options: [{ value: 1, label: 'First' }] },
+    ...Object.fromEntries(Array.from({ length: 80 }, (_, i) => ['extra' + i, text])),
+  };
+  let reads = 0;
+  const runtime = await setup({
+    metadata: {
+      recordFields: () => {
+        reads++;
+        return fields;
+      },
+    },
+    metadataFields: () => fields,
+  });
+  t.after(() => runtime.handlers.close());
+  runtime.store.state.tables.widget.push(
+    ...Array.from({ length: 25 }, (_, i) => ({
+      widgetid: randomUUID(),
+      name: 'Wide ' + i,
+      statuscode: 1,
+      ...Object.fromEntries(Array.from({ length: 80 }, (_, j) => ['extra' + j, 'Value ' + j])),
+    })),
+  );
+  const url =
+    `/api/data/${VERSION}/widgets?fetchXml=` +
+    encodeURIComponent('<fetch count="25"><entity name="widget"><all-attributes/></entity></fetch>');
+  const headers = { Prefer: 'odata.include-annotations="OData.Community.Display.V1.FormattedValue"' };
+  const first = await runtime.send('GET', url, { headers });
+  assert.equal(first.status, 200);
+  assert.equal(first.body.value.length, 25);
+  assert.equal(first.body.value[0].extra79, 'Value 79');
+  assert.ok(reads <= 2, `Metadata resolved ${reads} times for one table's page`);
+  fields.statuscode.options[0].label = 'Second';
+  reads = 0;
+  const second = await runtime.send('GET', url, { headers });
+  assert.equal(second.body.value[0]['statuscode@OData.Community.Display.V1.FormattedValue'], 'Second');
+  assert.ok(reads <= 2);
+});
+
 test('wide read definitions resolve original metadata once per list and retain observed option labels', async (t) => {
   const fields = {
     widgetid: { dataverseType: 'uniqueidentifier' },

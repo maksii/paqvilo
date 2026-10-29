@@ -1053,12 +1053,12 @@ test('viewport candidates survive early offscreen matches and limit notes appear
 test('selected sources precede bounded secondary context and disclosure choices survive picks', async (t) => {
   const { page } = await fixture(t, '<button id="one">One</button><button id="two">Two</button>', {
     elementSources: hints('<button id="one">One</button><button id="two">Two</button>', 'Selected source'),
-    apiReferences: Array.from({ length: 100 }, (_, index) => ({
+    apiReferences: Array.from({ length: 1000 }, (_, index) => ({
       name: 'fx_table' + index,
       entity: 'table' + index,
       ref: 'api' + index + '.js',
     })),
-    permissionRules: Array.from({ length: 100 }, (_, index) => ({
+    permissionRules: Array.from({ length: 1000 }, (_, index) => ({
       name: 'Rule' + index,
       entity: 'table0',
       ref: 'rule' + index + '.yml',
@@ -1086,6 +1086,8 @@ test('selected sources precede bounded secondary context and disclosure choices 
   assert.match(await context.innerText(), /fx_table8/);
   assert.doesNotMatch(await context.innerText(), /\/_api\/fx_table0\b/);
   await pick('two');
+  assert.match(await context.innerText(), /fx_table8/, 'Paging survives an ordinary new selection');
+  assert.equal(await context.locator('.binding').count(), 8, 'A thousand contexts do not expand the card DOM');
   assert.equal(await page.locator('#paqvilo-xray .content').evaluate((node) => node.scrollTop), 0);
 });
 

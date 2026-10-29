@@ -1,6 +1,13 @@
 import fs from 'node:fs/promises';
 
 const runtimePhases = new Set([
+  'runtime-module-load',
+  'runtime-module-ready',
+  'context-configuration',
+  'context-solution-import',
+  'context-portal-import',
+  'context-pack-binding',
+  'context-ready',
   'configuration',
   'portal-import',
   'solution-import',

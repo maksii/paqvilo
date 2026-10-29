@@ -5,6 +5,7 @@ import { metadataComponentId } from './dataverse-metadata.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { onceReporter } from './dataverse-addon-common.mjs';
 import { fieldKind } from './dataverse-values.mjs';
+import { immutableColumnRights } from './field-rights.mjs';
 
 export const SYSTEM_ADMINISTRATOR_PROFILE_ID = '572329c1-a042-4e22-be47-367c6374ea45';
 // field_security_permission_type: 0 Not Allowed, 4 Allowed.
@@ -332,30 +333,36 @@ function createFieldSecurity({
   // A catalogue asks for every field's three rights together. Resolve imported
   // metadata and staff grants once for this table, within the caller's serialized
   // read. Do not retain either across requests or security/source edits.
-  function capabilities(user, logical, columns, recordId) {
+  function capabilities(user, logical, columns, recordId, { compact = false } = {}) {
     const mapping = mappingOf(logical);
     const source = metadataFields(mapping?.logicalName ?? logical) ?? null;
     let administrator, scope, grants;
-    return Object.fromEntries(
-      columns.map((name) => {
-        if (!isSecuredField(mappingField(mapping, name, source)))
-          return [name, { read: true, create: true, update: true }];
+    const result = {},
+      property = { value: undefined, writable: true, enumerable: true, configurable: true };
+    const rights = (read, create, update) =>
+      compact ? immutableColumnRights(read, create, update) : { read, create, update };
+    for (const name of columns) {
+      let access;
+      if (!isSecuredField(mappingField(mapping, name, source))) access = rights(true, true, true);
+      else {
         administrator ??= isAdmin(user);
-        if (administrator) return [name, { read: true, create: true, update: true }];
-        scope ??= scopeOf('systemuser', user.systemuserid);
-        grants ??= grantsOf(scope.profiles);
-        const permission = grants.get(`${key(logical)}.${key(name)}`) ?? {};
-        const shared = sharedOf(scope.principals, recordId, attributeIdOf(organizationId(), logical, name));
-        return [
-          name,
-          {
-            read: permission.canread === ALLOWED || shared.read,
-            create: permission.cancreate === ALLOWED,
-            update: permission.canupdate === ALLOWED || shared.update,
-          },
-        ];
-      }),
-    );
+        if (administrator) access = rights(true, true, true);
+        else {
+          scope ??= scopeOf('systemuser', user.systemuserid);
+          grants ??= grantsOf(scope.profiles);
+          const permission = grants.get(`${key(logical)}.${key(name)}`) ?? {};
+          const shared = sharedOf(scope.principals, recordId, attributeIdOf(organizationId(), logical, name));
+          access = rights(
+            permission.canread === ALLOWED || shared.read,
+            permission.cancreate === ALLOWED,
+            permission.canupdate === ALLOWED || shared.update,
+          );
+        }
+      }
+      property.value = access;
+      Object.defineProperty(result, name, property);
+    }
+    return result;
   }
 
   // Create checks cancreate; update checks canupdate or an update share on the record.

@@ -36,6 +36,9 @@ Startup reports configuration, source discovery, process ownership/import, brows
 
 Model-driven Lense has its own [startup deadline and paired local panel workflow](../mirage/docs/model-driven-customizations.md#pair-the-panel-with-a-standalone-local-app). In a multi-tab Power Pages session, failure to install interception on a newly opened target closes only that failed owned tab. An attached-browser target shows an explicit local failure page. Healthy tabs, drafts, source watchers and agent endpoints remain active; open a fresh tab to retry. A lost shared browser connection still ends the session. A failed target is never reported as a working local preview.
 
+The installed package includes a [redacted disposable owned-browser timeout receipt](owned-target-timeout.md),
+with the source-checkout command for reproducing tab/popup faults, cancellation, retry and shared-transport loss.
+
 ## What can I preview?
 
 | Change                                                   | What to expect                                                                          |
@@ -86,6 +89,11 @@ The same evidence summary appears in the panel and X-ray. **Owner** describes th
 **Enclosing components** describes containment, **Context** adds observed facts, **Alternatives** keeps other possible matches visible, and **Limits & freshness** reports incomplete searches and evidence gaps. A declared dependency, matching selector or first ranked candidate does not prove element ownership. Asset details distinguish **Served** from **Execution observed** and **Mount observed**; serving a script does not prove that it ran or mounted the selected control.
 
 For a Power Pages field, read the available hierarchy in order: **column → Solution form (FormXml) → table → basic form → host webpage**. Enclosing components opens before Local source so you can see the field's form and table before choosing a file. The selected field and its rendered form receive separate outlines. Each component keeps its own evidence state; a host webpage supplies context without becoming the field's owner. Missing definitions remain unavailable rather than being filled from another form or table with the same field name.
+
+A generic native list/subgrid modal with an all-zero layout form ID can resolve through its same-origin `data-page`
+frame, platform modal action class, independently identified opener component, exported action form and layout table.
+Only a unique consistent join establishes the current form; URL hints only reject conflicts. Missing or ambiguous
+joins retain the rendered table and declared action forms as context, without promoting unrelated markup to a field source.
 
 For script-created elements, an observed JavaScript callsite can link the actual node to verified local implementation bytes. The evidence labels **creation**, **clone** and **attachment** separately. Attachment identifies the code that moved or inserted a node; it does not replace that node's original creation source. The link requires the acknowledged response bytes and the browser's actual parsed script version to agree. Serving or parsing code alone does not establish that it executed, and one observed DOM operation does not prove every branch, handler or component mount ran. Anonymous evaluation, custom stack formatting and ambiguous script versions remain unavailable rather than borrowing an older caller's source.
 

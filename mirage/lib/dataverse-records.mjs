@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { globalMetadataVersion } from './metadata-version.mjs';
 import { parseDataverseTop } from './dataverse-top.mjs';
 import { organizationRecord } from './organization-context.mjs';
@@ -1023,6 +1024,10 @@ export function createRecordHandlers({
 
   // allColumns: a read with no $select answers every column, and so does a write representation (unset ones as null); a $select list is projected as given.
   function entityBody(c, mapping, id, params, { allColumns = false } = {}) {
+    return projectPage(() => entityProjectedBody(c, mapping, id, params, { allColumns }));
+  }
+
+  function entityProjectedBody(c, mapping, id, params, { allColumns }) {
     const result = store.query(
       mapping.logicalName,
       params,
@@ -1376,6 +1381,10 @@ export function createRecordHandlers({
   }
 
   function fetchXmlPage(c, mapping, xml, { order = 'sorted' } = {}) {
+    return projectPage(() => fetchXmlProjectedPage(c, mapping, xml, { order }));
+  }
+
+  function fetchXmlProjectedPage(c, mapping, xml, { order = 'sorted' } = {}) {
     if (isElastic(mapping) && /<link-entity\b/i.test(xml))
       throw invalid('Link entities are not supported', '0x80048d0b');
     const logical = mapping.logicalName;
@@ -1517,6 +1526,11 @@ export function createRecordHandlers({
   async function getEntity(c) {
     const { mapping } = c;
     await sourceKey(c, mapping);
+    return projectPage(() => getEntityResult(c));
+  }
+
+  function getEntityResult(c) {
+    const { mapping } = c;
     const key = lookupKey(c, mapping, c.route.key);
     if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
     authorize(c, mapping.logicalName, 'read', mapping, key.row);
@@ -2501,7 +2515,7 @@ export function createRecordHandlers({
     const rows = store.tableRows(mapping.logicalName);
     const row = rows[store.rowIndex(mapping, rows, id, partitionId === undefined ? {} : { partitionId })];
     if (!row) throw notFoundRecord(mapping.logicalName, id);
-    return structuredClone(row);
+    return cloneStateData(row);
   };
 
   /**
@@ -2695,7 +2709,7 @@ export function createRecordHandlers({
           })),
         },
       };
-      const holder = structuredClone(existing),
+      const holder = cloneStateData(existing),
         inherited = store.pluginInTransaction;
       const phase = function* (stage) {
         if (

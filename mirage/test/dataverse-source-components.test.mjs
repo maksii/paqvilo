@@ -21,6 +21,65 @@ const APP = '77777777-7777-4777-8777-777777777777';
 const FORM = '77777777-7777-4777-8777-777777777778';
 const CLIENT = '77777777-7777-4777-8777-777777777779';
 const ADMIN = { admin: true };
+
+test('materializing source forms detaches records without copying immutable XML through native serialization', (t) => {
+  const xml = '<form>' + 'Invented '.repeat(20000) + '</form>';
+  const component = {
+    logical: 'systemform',
+    kind: 'systemform',
+    id: FORM,
+    row: { formid: FORM, name: 'Source', formxml: xml },
+  };
+  const store = new DataStore();
+  const adapter = createSourceSolutionComponentStorage({ store, components: () => [component] });
+  t.after(adapter.close);
+  const native = globalThis.structuredClone;
+  try {
+    globalThis.structuredClone = (value, ...options) => {
+      if ((typeof value === 'string' && value.length > 100000) || value?.formxml?.length > 100000)
+        throw new Error('Duplicated source XML serialization');
+      return native(value, ...options);
+    };
+    adapter.materialize();
+  } finally {
+    globalThis.structuredClone = native;
+  }
+  const row = store.state.tables.systemform.find((row) => row.formid === FORM);
+  assert.equal(row.formxml, xml);
+  assert.notEqual(row, component.row);
+  row.formxml = '<form>Local</form>';
+  assert.equal(component.row.formxml, xml);
+  assert.equal(store.state.dataverse.sourceSolutionComponents.baseline['systemform/' + FORM].row.formxml, xml);
+});
+
+test('unchanged restored source rows keep identity, versions and read-only properties while sharing source text', (t) => {
+  const xml = '<form>' + 'Invented text '.repeat(20000) + '</form>';
+  const component = {
+    logical: 'systemform',
+    kind: 'systemform',
+    id: FORM,
+    row: { formid: FORM, name: 'Source', formxml: xml },
+  };
+  const store = new DataStore();
+  const adapter = createSourceSolutionComponentStorage({ store, components: () => [component] });
+  t.after(adapter.close);
+  adapter.materialize();
+  const restored = JSON.parse(JSON.stringify(store.state.tables.systemform[0]));
+  restored.__simVersion = 20;
+  restored.versionnumber = 20;
+  Object.defineProperty(restored, 'name', { writable: false });
+  store.state.tables.systemform[0] = restored;
+  adapter.materialize();
+  assert.equal(store.state.tables.systemform[0], restored);
+  assert.equal(restored.formxml, xml);
+  assert.equal(restored.__simVersion, 20);
+  assert.equal(restored.versionnumber, 20);
+  assert.equal(Object.getOwnPropertyDescriptor(restored, 'name').writable, false);
+  assert.deepEqual(store.state.dataverse.sourceSolutionComponents.overlays['systemform/' + FORM], {
+    values: {},
+    unset: [],
+  });
+});
 const source = (name = 'Source app') =>
   solutionDocumentComponents(
     `<AppModule><AppModuleId>${APP}</AppModuleId><UniqueName>new_sourceapp</UniqueName><Name>${name}</Name></AppModule>`,

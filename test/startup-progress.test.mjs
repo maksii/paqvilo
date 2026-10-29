@@ -51,11 +51,19 @@ test('runtime log progress is incremental and bounded without forwarding arbitra
   await fs.appendFile(
     file,
     '"phase":"organization","elapsedMs":30}\n' +
+      JSON.stringify({ type: 'runtime-startup', phase: 'runtime-module-load', elapsedMs: 0, secret: 'never-forward' }) +
+      '\n' +
+      JSON.stringify({ type: 'runtime-startup', phase: 'runtime-module-ready', elapsedMs: 31 }) +
+      '\n' +
       JSON.stringify({ type: 'runtime-startup', phase: 'untrusted', elapsedMs: 40 }) +
       '\n',
   );
   const second = await readStartupPhases(file, first.cursor);
-  assert.deepEqual(second.events, [{ phase: 'organization', elapsedMs: 30 }]);
+  assert.deepEqual(second.events, [
+    { phase: 'organization', elapsedMs: 30 },
+    { phase: 'runtime-module-load', elapsedMs: 0 },
+    { phase: 'runtime-module-ready', elapsedMs: 31 },
+  ]);
   assert.deepEqual((await readStartupPhases(file, second.cursor)).events, []);
 });
 

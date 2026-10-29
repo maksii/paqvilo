@@ -9,9 +9,9 @@ import { performanceFixture } from '../mirage/test/runtime-performance-fixture.m
 
 // Opt-in source-volume investigation, deliberately absent from ordinary CI.
 export const LARGE_PERFORMANCE_OPTIONS = Object.freeze({
-  scales: [256],
-  formsPerTable: 40,
-  records: 20000,
+  scales: [1000],
+  formsPerTable: 12,
+  records: 1000000,
   startupBudgets: { fresh: 30000, unchanged: 30000, 'journal-grown': 30000 },
   budgetMs: 30000,
   catalogueBudgetMs: 30000,

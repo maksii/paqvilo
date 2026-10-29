@@ -1,14 +1,15 @@
 // Source metadata rows share the Dataverse record pipeline. Source files remain
 // immutable: local writes are sparse, persisted deltas over a source snapshot.
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, types } from 'node:util';
 import { standardTableDef } from './dataverse-standard.mjs';
 import { ensureSolutionComponentMapping, withSolutionAppMembers } from './dataverse-solution-components.mjs';
+import { copyPlainGraph } from './state-clone.mjs';
 
 const lower = (value) =>
   String(value ?? '')
     .replace(/[{}]/g, '')
     .toLowerCase();
-const copy = (value) => structuredClone(value);
+const copy = copyPlainGraph;
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const system = (name) =>
   /^__sim/.test(name) ||
@@ -117,7 +118,16 @@ export function createSourceSolutionComponentStorage({ store, components, entity
         state.rowVersion = Math.max(state.rowVersion ?? 0, Number(current.__simVersion ?? 0)) + 1;
         row.__simVersion = state.rowVersion;
         if (current.versionnumber !== undefined) row.versionnumber = state.rowVersion;
-      } else if (row && current) row = current;
+      } else if (row && current) {
+        // A restored row keeps its identity/version, but its equal XML need
+        // not retain another physical string beside the accepted source.
+        if (!types.isProxy(current))
+          for (const [name, value] of Object.entries(row)) {
+            const descriptor = Object.getOwnPropertyDescriptor(current, name);
+            if (typeof value === 'string' && descriptor?.writable && descriptor.value === value) current[name] = value;
+          }
+        row = current;
+      }
       if (index !== undefined) {
         rows[index] = row ?? deleted;
         if (!row) {

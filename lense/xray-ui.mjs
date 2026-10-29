@@ -569,7 +569,12 @@ function xrayBrowserImpl(data) {
     ];
     const pageLists = (report?.components ?? []).filter((item) => item.kind === 'list'),
       allLists = [
-        ...pageLists,
+        ...pageLists.map((list) => ({
+          ...(report?.componentIndex?.lists ?? []).find(
+            (item) => norm(item.id ?? item.recordId) === norm(list.id ?? list.recordId),
+          ),
+          ...list,
+        })),
         ...(report?.componentIndex?.lists ?? []).filter(
           (list) => !pageLists.some((known) => norm(known.id ?? known.recordId) === norm(list.id ?? list.recordId)),
         ),
@@ -1293,6 +1298,8 @@ function xrayBrowserImpl(data) {
               views: report?.views ?? [],
               columns: report?.columns ?? b.fields,
               quickForms: (report?.nativeComponents ?? []).filter((component) => component.kind === 'quickform'),
+              subgrids: (report?.nativeComponents ?? []).filter((component) => component.kind === 'subgrid'),
+              pageListId: report?.page?.listId,
             },
             sourceRefs: index.rows,
             sourceRefsByComponent: index.byComponent,

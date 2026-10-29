@@ -30,6 +30,8 @@ const MODEL_DRIVEN_FILES = new Set(
     'pcf-runtime.mjs',
     'catalogue.mjs',
     'metadata-response.mjs',
+    'metadata-worker-response.mjs',
+    'metadata-worker.mjs',
     'offline.mjs',
     'control-descriptors.mjs',
     'controls.mjs',

@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { currentRequest } from './request-context.mjs';
 import { collectPackExport } from './pack-exports.mjs';
@@ -445,7 +446,7 @@ function typedContext({
         .filter((spec) => types.includes(spec.type) && source)
         .map((spec) => [
           spec.alias || spec.name,
-          structuredClone(
+          cloneStateData(
             spec.attributes.length
               ? Object.fromEntries(
                   spec.attributes.filter((name) => Object.hasOwn(source, name)).map((name) => [name, source[name]]),
@@ -473,13 +474,13 @@ function typedContext({
       'onexternaldeleted',
     ].includes(operation)
       ? {
-          Target: structuredClone(target),
+          Target: cloneStateData(target),
           ...(operation === 'onexternalupdated'
-            ? { PreImage: structuredClone(previous), ChangedFields: [...changedAttributes] }
+            ? { PreImage: cloneStateData(previous), ChangedFields: [...changedAttributes] }
             : {}),
         }
       : ['createmultiple', 'updatemultiple'].includes(operation)
-        ? { Targets: structuredClone(targets) }
+        ? { Targets: cloneStateData(targets) }
         : {},
     OutputParameters: stage === 40 && operation === 'create' && idColumn ? { id: record[idColumn] } : {},
     PreEntityImages: images([0, 2], previous),
@@ -620,7 +621,7 @@ export function runPluginPhase({
   // must not supply shared variables, correlation or parent context to this one.
   if (stage === 10 && !asyncExecution && !['retrieve', 'retrievemultiple'].includes(operation))
     executionFrames.set(record, {});
-  if (initialFrame) executionFrames.set(record, structuredClone(initialFrame));
+  if (initialFrame) executionFrames.set(record, cloneStateData(initialFrame));
   const read = ['retrieve', 'retrievemultiple'].includes(operation),
     multiple = operation === 'retrievemultiple',
     bulk = ['createmultiple', 'updatemultiple'].includes(operation),
@@ -660,7 +661,7 @@ export function runPluginPhase({
     if (!value || typeof value !== 'object' || Array.isArray(value))
       throw error('Invalid plugin query/collection result.');
     for (const key of Object.keys(object)) delete object[key];
-    Object.assign(object, structuredClone(value));
+    Object.assign(object, cloneStateData(value));
   };
   const readResultChanged = () => {
     const frame = executionFrames.get(record),
@@ -846,12 +847,12 @@ export function runPluginPhase({
             frame.preValidationContext = {
               $type: 'ExecutionContext',
               values: {
-                ...structuredClone(context.context),
-                InputParameters: structuredClone(answer.inputParameters),
-                OutputParameters: structuredClone(answer.outputParameters),
-                SharedVariables: structuredClone(answer.sharedVariables),
-                PreEntityImages: { $type: 'EntityImageCollection', values: structuredClone(context.preImages) },
-                PostEntityImages: { $type: 'EntityImageCollection', values: structuredClone(context.postImages) },
+                ...cloneStateData(context.context),
+                InputParameters: cloneStateData(answer.inputParameters),
+                OutputParameters: cloneStateData(answer.outputParameters),
+                SharedVariables: cloneStateData(answer.sharedVariables),
+                PreEntityImages: { $type: 'EntityImageCollection', values: cloneStateData(context.preImages) },
+                PostEntityImages: { $type: 'EntityImageCollection', values: cloneStateData(context.postImages) },
               },
             };
           if (read) {
@@ -863,7 +864,7 @@ export function runPluginPhase({
                 readResultChanged();
               }
             } else if (stage === 40 && answer.outputParameters?.values?.BusinessEntity != null) {
-              holder.entity = structuredClone(answer.outputParameters.values.BusinessEntity);
+              holder.entity = cloneStateData(answer.outputParameters.values.BusinessEntity);
               readResultChanged();
             }
             output = {};
@@ -871,7 +872,7 @@ export function runPluginPhase({
             const next = answer.inputParameters?.values?.Targets;
             if (next?.$type !== 'EntityCollection' || !Array.isArray(next.entities))
               throw error('Bulk plugin must retain a typed Targets EntityCollection.');
-            if (stage !== 40) targets.splice(0, targets.length, ...structuredClone(next.entities));
+            if (stage !== 40) targets.splice(0, targets.length, ...cloneStateData(next.entities));
             output = {};
           } else if (association) {
             if (JSON.stringify(answer.inputParameters?.values) !== JSON.stringify(associationParameters))
@@ -930,7 +931,7 @@ export function runPluginPhase({
           const image = (types, source) => {
             const spec = (item.images ?? []).find((entry) => types.includes(entry.type));
             if (!spec || !source) return undefined;
-            return structuredClone(
+            return cloneStateData(
               spec.attributes.length
                 ? Object.fromEntries(
                     spec.attributes.filter((name) => Object.hasOwn(source, name)).map((name) => [name, source[name]]),
@@ -939,31 +940,31 @@ export function runPluginPhase({
             );
           };
           output = handler({
-            step: structuredClone(item),
+            step: cloneStateData(item),
             entity,
             operation,
             stage,
-            target: structuredClone(target),
-            record: structuredClone(record),
-            previous: previous ? structuredClone(previous) : null,
+            target: cloneStateData(target),
+            record: cloneStateData(record),
+            previous: previous ? cloneStateData(previous) : null,
             preImage: image([0, 2], previous),
             postImage: stage === 40 ? image([1, 2], record) : undefined,
-            identity: structuredClone(identity),
+            identity: cloneStateData(identity),
             changedAttributes: [...changedAttributes],
-            ...(association ? { associationParameters: structuredClone(associationParameters) } : {}),
+            ...(association ? { associationParameters: cloneStateData(associationParameters) } : {}),
             ...(bulk
               ? {
-                  targets: structuredClone(targets),
-                  previousRecords: structuredClone(previousRecords),
-                  records: structuredClone(records),
+                  targets: cloneStateData(targets),
+                  previousRecords: cloneStateData(previousRecords),
+                  records: cloneStateData(records),
                 }
               : {}),
             ...(read
               ? {
-                  query: structuredClone(query),
-                  collection: structuredClone(collection),
-                  columns: structuredClone(columns),
-                  entityResult: structuredClone(holder?.entity),
+                  query: cloneStateData(query),
+                  collection: cloneStateData(collection),
+                  columns: cloneStateData(columns),
+                  entityResult: cloneStateData(holder?.entity),
                 }
               : {}),
             ...(typed
@@ -1023,11 +1024,11 @@ export function runPluginPhase({
         if (bulk && output?.targets !== undefined) {
           if (stage === 40 || !Array.isArray(output.targets))
             throw error('Bulk Targets changes require a pre-operation array.');
-          targets.splice(0, targets.length, ...structuredClone(output.targets));
+          targets.splice(0, targets.length, ...cloneStateData(output.targets));
         }
         if (!multiple && output?.entityResult !== undefined) {
           if (stage !== 40) throw error('Retrieve Entity changes require PostOperation.');
-          holder.entity = structuredClone(output.entityResult);
+          holder.entity = cloneStateData(output.entityResult);
           readResultChanged();
         }
         if (read && output?.query !== undefined) {
@@ -1051,8 +1052,8 @@ export function runPluginPhase({
               ['__proto__', 'prototype', 'constructor'].includes(name.toLowerCase())
             )
               throw error('Invalid plugin target column.');
-            target[name] = structuredClone(value);
-            record[name] = structuredClone(value);
+            target[name] = cloneStateData(value);
+            record[name] = cloneStateData(value);
           }
         }
         if (executed) journal(null);
@@ -1069,7 +1070,7 @@ export function runPluginPhase({
         if (nested) leavePluginExecution();
       }
     }
-    return structuredClone(executionFrames.get(record) ?? {});
+    return cloneStateData(executionFrames.get(record) ?? {});
   };
   return run(0);
 }

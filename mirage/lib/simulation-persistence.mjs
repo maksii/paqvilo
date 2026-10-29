@@ -13,6 +13,7 @@ import { readStateFile } from './state-storage.mjs';
 import { INTERNAL_TABLES } from './dataverse-organization.mjs';
 import { WEBAPI_UNSUPPORTED_TABLES, POWER_PAGES_TABLES } from './webapi-policy.mjs';
 import { publishTransactionalFiles, recoverTransactionalFiles } from './transactional-files.mjs';
+import { cloneStateData } from './state-clone.mjs';
 
 // Platform infrastructure belongs to the private runtime, independently of the
 // business dataset. These are platform contracts, never project table prefixes.
@@ -269,7 +270,7 @@ export async function createSimulationPersistence({ settings, packs = [], stateF
           if (error.code !== 'ENOENT') throw error;
         }
       }
-      state = structuredClone(state);
+      state = cloneStateData(state);
       for (const entry of descriptors) {
         const raw = await io.readFile(entry.file);
         try {

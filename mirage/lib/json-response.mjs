@@ -8,8 +8,19 @@ export async function writeJsonChunks(res, chunks) {
   const close = () => abort.abort();
   res.once('close', close);
   let yieldedAt = performance.now();
+  const asynchronous = Boolean(chunks[Symbol.asyncIterator]);
+  const iterator = asynchronous ? chunks[Symbol.asyncIterator]() : chunks[Symbol.iterator]();
+  let complete = false;
   try {
-    for (const chunk of chunks) {
+    while (true) {
+      // Keep synchronous admission synchronous: a reader can release its first
+      // backpressure gate immediately after this function returns its promise.
+      const next = asynchronous ? await iterator.next() : iterator.next();
+      if (next.done) {
+        complete = true;
+        break;
+      }
+      const chunk = next.value;
       if (res.destroyed) throw Error('JSON response reader disconnected.');
       if (!res.write(chunk)) await once(res, 'drain', { signal: abort.signal });
       if (performance.now() - yieldedAt >= 8) {
@@ -19,6 +30,13 @@ export async function writeJsonChunks(res, chunks) {
     }
     res.end();
   } finally {
-    res.off('close', close);
+    try {
+      if (!complete) {
+        const closed = iterator.return?.();
+        if (asynchronous) await closed;
+      }
+    } finally {
+      res.off('close', close);
+    }
   }
 }

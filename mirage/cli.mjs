@@ -7,7 +7,13 @@ import { importPortal } from './lib/importer.mjs';
 import { createPortalRenderer } from './lib/liquid.mjs';
 import { assertPortalSource } from './lib/source-dialect.mjs';
 // Loaded on first use: the server's module graph takes seconds to load, and data, verify and help never start it.
-const createSimulator = async (options) => (await import('./server.mjs')).createSimulator(options);
+const createSimulator = async (options) => {
+  const started = performance.now();
+  options.onStartup?.({ phase: 'runtime-module-load', elapsedMs: 0 });
+  const runtime = await import('./server.mjs');
+  options.onStartup?.({ phase: 'runtime-module-ready', elapsedMs: Math.round(performance.now() - started) });
+  return runtime.createSimulator(options);
+};
 const reportStartup = (event) => console.error(JSON.stringify({ type: 'runtime-startup', ...event }));
 import { builtinPresets, presetDescriptor } from './lib/presets.mjs';
 import { resolveSolutionRoots } from './lib/solution-roots.mjs';

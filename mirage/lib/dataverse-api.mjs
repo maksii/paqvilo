@@ -14,6 +14,7 @@ import { createOrganizationRuntime } from './dataverse-organization.mjs';
 import { createModelDrivenRecordService } from './dataverse-model-driven.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { gzipSync } from 'node:zlib';
+import { acceptsGzip } from './http-content-encoding.mjs';
 import { DataError } from './data-error.mjs';
 import { createAuthority, verifySecret } from './dataverse-auth.mjs';
 import { executeBatch, parseBatch } from './dataverse-batch.mjs';
@@ -211,7 +212,6 @@ const wantsCors = (req, origin) =>
   req.headers.origin !== undefined &&
   (String(req.headers.origin).toLowerCase() !== origin.toLowerCase() ||
     (req.method === 'OPTIONS' && req.headers['access-control-request-method'] !== undefined));
-const acceptsGzip = (req) => /gzip/i.test(String(req.headers['accept-encoding'] ?? ''));
 
 // Every write to res happens here; a throw (for example ERR_INVALID_CHAR from a header value) is the caller's to answer.
 // The fallback answer passes no options: no CORS and no gzip.

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DataStore } from '../lib/data.mjs';
-import { readStateFile, stateFileSignature } from '../lib/state-storage.mjs';
+import { StateStorage, readStateFile, stateFileSignature } from '../lib/state-storage.mjs';
 import { jsonChunks, parseJsonStream, hashStateFile } from '../lib/state-stream.mjs';
 
 const seed = () => ({
@@ -48,6 +48,65 @@ async function workspace(t, state = seed(), persistence = { journalThresholdByte
   return { file, store: await new DataStore({ file, state, persistence }).init() };
 }
 
+test('large appended transactions replay with a bounded operation buffer and retain torn-tail atomicity', async (t) => {
+  const { store, file } = await workspace(t);
+  const prefix = (await fs.stat(file)).size;
+  async function* changes() {
+    yield { op: 'set', table: 'item', index: 0, row: { itemid: 'one', name: 'Changed only at commit' } };
+    for (let index = 1; index <= 10000; index++)
+      yield { op: 'insert', table: 'item', index, row: { itemid: String(index), name: 'Invented Δ ' + index } };
+  }
+  await store.storage.appendChanges(changes());
+  const push = Array.prototype.push;
+  let peak = 0,
+    loaded;
+  try {
+    Array.prototype.push = function (...values) {
+      const length = push.apply(this, values);
+      if (values.some((value) => value?.op === 'insert' && value.row)) peak = Math.max(peak, length);
+      return length;
+    };
+    const storage = new StateStorage(file);
+    loaded = await storage.load();
+    assert.equal(storage.streamedReplayTransactions, 1);
+    assert.equal(storage.peakReplayBufferEntries, 4096);
+  } finally {
+    Array.prototype.push = push;
+  }
+  assert.ok(peak <= 4096, `Journal replay retained ${peak} pending operation objects`);
+  assert.equal(loaded.tables.item.length, 10001);
+  assert.equal(loaded.tables.item[0].name, 'Changed only at commit');
+  assert.equal(loaded.tables.item.at(-1).name, 'Invented Δ 10000');
+  const complete = (await fs.stat(file)).size;
+  assert.ok(complete > prefix);
+  await fs.truncate(file, complete - 10);
+  const recovered = await readStateFile(file);
+  assert.deepEqual(recovered.tables.item, seed().tables.item, 'A large uncommitted tail cannot alter the prefix.');
+});
+
+test('large fragmented replay uses a byte bound and defers invalid-operation failure until a verified commit', async (t) => {
+  const { store, file } = await workspace(t);
+  const text = 'Invented XML '.repeat(800000);
+  const prefix = (await fs.stat(file)).size;
+  await store.storage.appendChanges([{ op: 'section', key: 'settings', value: { text } }]);
+  const storage = new StateStorage(file);
+  assert.equal((await storage.load()).settings.text, text);
+  assert.equal(storage.streamedReplayTransactions, 1);
+  assert.equal(storage.peakReplayBufferEntries, 1);
+  await fs.truncate(file, prefix);
+  const baseline = new StateStorage(file);
+  await baseline.load();
+  await baseline.appendChanges([
+    { op: 'section', key: 'settings', value: { text } },
+    { op: 'set', table: 'missing', index: 0, row: { itemid: 'invalid' } },
+  ]);
+  await assert.rejects(readStateFile(file), TypeError);
+  await fs.truncate(file, (await fs.stat(file)).size - 10);
+  const recovered = await readStateFile(file);
+  assert.deepEqual(recovered.settings, seed().settings);
+  assert.deepEqual(recovered.tables, seed().tables);
+});
+
 test('streamed JSON preserves scalar/escape/UTF-8 boundaries and own prototype names', async () => {
   const state = JSON.parse(
     '{"__proto__":{"x":1},"constructor":"own","x":[null,true,false,-2.4e-12,"\\"\\\\\\n\\u1234😀"],"empty":{}}',
@@ -72,6 +131,52 @@ test('streamed JSON preserves scalar/escape/UTF-8 boundaries and own prototype n
   }
 });
 
+test('large streamed JSON scans segments across every scalar escape boundary and rejects invalid syntax', async () => {
+  // Cross the bounded native-parser budget before the adversarial suffix.
+  const prefix = ' '.repeat(8 * 1024 * 1024 + 1);
+  const value = JSON.parse(
+    '{"__proto__":{"safe":true},"text":"\\"\\\\\\n\\u1234😀","rows":[true,false,null,-1.23e-4],"empty":{}}',
+  );
+  const text = JSON.stringify(value);
+  for (const width of [1, 2, 3, 17, 65536]) {
+    async function* chunks() {
+      yield prefix;
+      for (let start = 0; start < text.length; start += width) yield text.slice(start, start + width);
+    }
+    assert.deepEqual(await parseJsonStream(chunks()), value);
+  }
+  for (const invalid of [
+    '[1,]',
+    '{"x":}',
+    '{}{}',
+    '1 2',
+    '[',
+    '',
+    '{"a" 1}',
+    '{"a":1,}',
+    '01',
+    'truefalse',
+    '\u00a0{}',
+    '"unterminated\\',
+  ])
+    await assert.rejects(parseJsonStream([prefix, invalid]), SyntaxError, invalid);
+  const large = { text: 'Invented \\"\nΔ\ud800'.repeat(1024 * 1024) };
+  assert.deepEqual(await parseJsonStream(jsonChunks(large)), large);
+  assert.equal({}.safe, undefined);
+});
+
+test('stream consumers can coalesce completed objects before later input is read and still receive full data', async () => {
+  const completed = [];
+  async function* chunks() {
+    yield '{"first":{"text":"one"},';
+    assert.equal(completed.length, 1);
+    yield '"second":{"text":"two"}}';
+  }
+  const value = await parseJsonStream(chunks(), { onObject: (item) => completed.push(item) });
+  assert.deepEqual(value, { first: { text: 'one' }, second: { text: 'two' } });
+  assert.deepEqual(completed, [value.first, value.second, value]);
+});
+
 test('legacy JSON loads, large checkpoints stream, and digests cover exact committed bytes', async (t) => {
   const { file, store } = await workspace(t);
   assert.equal(store.storage.journal, true);
@@ -88,6 +193,33 @@ test('legacy JSON loads, large checkpoints stream, and digests cover exact commi
   const legacy = await new DataStore({ file }).init();
   assert.equal(legacy.state.tables.item[0].name, 'original');
 });
+
+for (const journalThresholdBytes of [0, Number.MAX_SAFE_INTEGER])
+  test(`restored row text stays lossless across bounded reuse generations (threshold ${journalThresholdBytes})`, async (t) => {
+    const state = seed();
+    state.tables.item = Array.from({ length: 12000 }, (_, i) => ({
+      itemid: `invented-record-${i}`,
+      name: `Unique invented text ${i}`,
+      common: 'Repeated invented value Δ 日本語',
+      nullable: i % 2 ? null : false,
+      nested: { value: i, text: 'Nested invented value' },
+      long: i % 1000 === 0 ? 'Long payload '.repeat(1000) : 'Short invented value',
+      surrogate: 'An unpaired surrogate \ud800 is retained',
+    }));
+    Object.defineProperty(state.tables.item[0], '__proto__', { enumerable: true, value: 'Own invented text value' });
+    const { store, file } = await workspace(t, state, { journalThresholdBytes });
+    const before = await hashStateFile(file);
+    const loaded = await readStateFile(file);
+    assert.deepEqual(loaded, store.snapshot());
+    assert.equal(await hashStateFile(file), before);
+    loaded.tables.item[0].nested.value = -1;
+    assert.equal(loaded.tables.item[1].nested.value, 1);
+    await store.update('items', 'invented-record-0', { common: 'A changed invented value' });
+    const again = await readStateFile(file);
+    assert.equal(again.tables.item[0].common, 'A changed invented value');
+    assert.equal(again.tables.item[1].common, 'Repeated invented value Δ 日本語');
+    assert.equal({}.common, undefined);
+  });
 
 test('explicitly reinitializing after a JSON replacement cannot append stale journal offsets', async (t) => {
   const { file, store } = await workspace(t);

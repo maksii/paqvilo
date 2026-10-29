@@ -1,12 +1,41 @@
+import { createJsonTextCoalescer } from './json-text.mjs';
 import { orderedMap } from '../../lense/async-map.mjs';
 import { directoryFiles } from '../../lense/directory-files.mjs';
 import { recordedStamp } from '../../lense/file-cache.mjs';
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { assertProjectOutput } from './project-output.mjs';
+import { parseJsonStream, writeJsonStream } from './state-stream.mjs';
+import { types } from 'node:util';
 
 const FORMAT = 2;
+
+// Different readers of one source file retain independent result objects, but
+// often contain identical form XML. Share only immutable string values within
+// that file; the pool itself dies immediately and never retains other sources.
+function coalesceSourceText(results) {
+  const strings = new Map(),
+    visited = new WeakSet(),
+    pending = [results];
+  while (pending.length) {
+    const item = pending.pop();
+    if (!item || typeof item !== 'object' || types.isProxy(item) || visited.has(item)) continue;
+    const prototype = Object.getPrototypeOf(item);
+    if (!Array.isArray(item) && prototype !== Object.prototype && prototype !== null) continue;
+    visited.add(item);
+    for (const key of Object.keys(item)) {
+      const descriptor = Object.getOwnPropertyDescriptor(item, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) continue;
+      const value = descriptor.value;
+      if (typeof value === 'string' && value.length >= 256) {
+        if (!strings.has(value)) strings.set(value, value);
+        else if (descriptor.writable) Object.defineProperty(item, key, { ...descriptor, value: strings.get(value) });
+      } else if (value && typeof value === 'object') pending.push(value);
+    }
+  }
+}
 
 /** Run an async mapper with bounded concurrency while preserving input order. */
 export async function mapLimit(items, limit, mapper) {
@@ -126,10 +155,18 @@ export class SolutionFileCache {
     const cache = new SolutionFileCache(file);
     if (!cache.file) return cache;
     try {
-      const raw = JSON.parse(await fs.readFile(cache.file, 'utf8'));
+      const retainText = createJsonTextCoalescer();
+      const raw = await parseJsonStream(createReadStream(cache.file, { encoding: 'utf8' }), {
+        onObject: (entry) => {
+          retainText(entry);
+          if (typeof entry.stamp === 'string' && entry.results) coalesceSourceText(entry.results);
+        },
+      });
       if (raw?.format === FORMAT && raw.entries && typeof raw.entries === 'object')
         for (const [name, entry] of Object.entries(raw.entries))
-          if (entry && typeof entry.stamp === 'string' && entry.results) cache.entries.set(name, entry);
+          if (entry && typeof entry.stamp === 'string' && entry.results) {
+            cache.entries.set(name, entry);
+          }
     } catch {
       // A missing or unreadable cache is rebuilt from sources.
     }
@@ -176,6 +213,7 @@ export class SolutionFileCache {
         ? { ...entry, results: { ...entry.results, [parserId]: value } }
         : { stamp, hash, results: { [parserId]: value } };
     this.entries.set(file, next);
+    coalesceSourceText(next.results);
     shareEntry(file, next, parserId);
     this.dirty = true;
     return { value, hash, cached: false };
@@ -229,14 +267,15 @@ export class SolutionFileCache {
     const entries = {};
     for (const key of [...(prune ? this.used : this.entries.keys())].sort())
       if (this.entries.has(key)) entries[key] = this.entries.get(key);
+    const temp = `${this.file}.${randomUUID()}.tmp`;
     try {
       await fs.mkdir(path.dirname(this.file), { recursive: true });
-      const temp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
-      await fs.writeFile(temp, JSON.stringify({ format: FORMAT, entries }));
+      await writeJsonStream(temp, { format: FORMAT, entries });
       await fs.rename(temp, this.file);
       this.dirty = false;
       return true;
     } catch {
+      await fs.rm(temp, { force: true }).catch(() => {});
       return false;
     }
   }

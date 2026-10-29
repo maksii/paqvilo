@@ -2,6 +2,49 @@
 
 ## 0.9.8
 
+- Offer explicit `createOwned()` preset factories for private generated datasets, preserving existing `load()`
+  memoization/copying, user-authored presets, defaults and configuration validation. Reuse the validated startup
+  owned body instead of generating it again. Document ownership and deterministic reapplication.
+- Defer relationship-body copies in the lightweight catalogue index; selected/full metadata retains every
+  relationship. Avoid redundant capability-description column scans and repeated fixed-capability JSON/network
+  allocations during status polling; dynamic adapters and public state snapshots remain fresh.
+- Bound large committed journal replay with private candidates, retaining checksum verification and incomplete-tail
+  recovery without holding every operation object until commit. Count administration visibility without a row list
+  and avoid the redundant offline generation input snapshot.
+- Store unique row-index positions as scalars, allocating lists only for duplicates. Preserve sorted positions,
+  wild/null keys, mutation maintenance and rollback; distinguish a captured undefined key from an omitted argument.
+- Reduce wide-record and FetchXML projection metadata derivation to one request-scoped set, retaining
+  fresh labels/security on subsequent requests. Avoid per-character JSON parsing and duplicate source XML
+  copies; bound recurring-text reuse during checkpoint restore and stream parse-cache persistence.
+- Compose unpublished startup state without full rollback copies, deferring atomic persistence until commit
+  and discarding failed initialization. Keep published transaction isolation and snapshot ownership.
+- Journal only changed startup sections/tables and reuse the preceding durable comparison receipt, retaining
+  detection of intervening edits and external-file conflicts. Avoid an unused full-state return copy during
+  standard-module initialization. Preserve caller-provided reset baselines.
+- Compile large complete metadata responses in a request-owned worker, transferring one encoded table at a
+  time and negotiating gzip without accepting `gzip;q=0`. Retain exact JSON, numeric precision, source
+  references, security epochs, backpressure, cancellation and the uncompressed representation.
+- Carry FetchXML's total-count-limit flag into model-driven grids, paging and subgrids, so a capped count
+  displays as `5000+` while subsequent pages and exact smaller filtered counts remain available.
+- Keep root client-resource provenance out of repeated table-body work, while retaining complete table and
+  root references. Separate source-tree traversal and client-asset budgets so large Solution trees retain
+  their scripts and PCF controls. Record constrained measurements and unresolved large-scale resource
+  failures in [consumer qualification](consumer-feedback.md); larger heaps are not laptop qualification.
+- Admit observed same-origin `/_pcfwebresource/<guid>` stylesheets after verifying CSS response bytes, retaining
+  credential, path, origin and size checks. Duplicate observations fetch once; failed captures keep the prior shell.
+- Preserve paragraphs, tables, preformatted blocks and native-style JSON hidden values in rich-text editors;
+  avoid unchanged synchronization feedback in both adapters. Wait for the actual editor document before readiness,
+  and retain read-only behavior. Exercise repeated postback/reopen and authored jQuery observers; the consumer's
+  exact unseen exception remains unverified in [consumer qualification](consumer-feedback.md).
+- Compare unchanged metadata against retained row stamps without allocating a field-pair tree on every read.
+  Invalidate column metadata, component presence and changed same-ID solution assets independently of row epochs.
+  Report runtime-module and context-preparation phases before listener startup.
+- Construct selected model-driven form bodies lazily while preserving the complete catalogue API. Avoid redundant
+  preset graph clones and off-page FetchXML payload copies, retaining totals, cookies, security and distinct semantics.
+  Qualify 1,000 tables / 1,000,000 rows / three roots across fresh, unchanged, journal and source-change starts,
+  plus a 900,000-row single-table distribution; see [measurements and limits](consumer-feedback.md).
+- Stage shell capture bytes and manifest entries until state publication succeeds. Roll back valid siblings as well
+  as failures, clean rejected staging/blobs, preserve stylesheet media/cascade occurrences, and reject origin collisions.
 - Admit each shared model-driven source file once per synchronous metadata projection, retaining fresh filesystem
   validation for subsequent queries and source-opening actions. Keep the source-byte cache bounded.
 - Use native Windows path resolution during source-index construction, preserving root confinement, file identity,
@@ -14,7 +57,11 @@
   beyond the bounded page scan, and keep those tables admitted when the sources reload, so Open source still finds
   them after an edit. Unbound columns retain candidates; API requests and cell values supply no ownership.
 - Accept a verified native basic-form wrapper when its optional layout reports an all-zero form ID. Explicit
-  unknown form declarations and generic wrappers remain unresolved.
+  unknown form declarations remain unresolved. A generic native modal can join its same-origin `data-page`
+  placement, rendered list/subgrid, exported action type/form and layout table when the join is unique and consistent.
+  Definition URL hints can reject conflicts; unresolved joins retain table and declared-form context without field ownership.
+- Reject modal list/view contradictions and retain subgrid ownership when the grid is its own subgrid wrapper.
+  Join rendered advanced-form layouts only to matching configured steps, including subsequent step replacements.
 - Join native quick-view iframe declarations to a verified parent form and exported QuickForms target. Check
   the current document path and conflicting navigation hints; retain unknown or conflicting boundaries.
 - Read only approved form/table query hints for definition context, leaving row and unrelated query values unread.
@@ -33,6 +80,7 @@
 - Extend regressions for crowded cards, frame shortcuts, dynamic modal/quick-view identities, nested editors and
   owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy,
   covering tab/popup deadlines, cancellation, retry, watcher/agent continuity and shared transport loss.
+  Include a [redacted owned-browser test receipt](owned-target-timeout.md) in the installed package.
 
 Synthetic and native qualification are distinct. Loopback passes establish the exercised contracts; they do not
 establish native control coverage, a deployed source revision or production readiness.

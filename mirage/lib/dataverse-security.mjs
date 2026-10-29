@@ -1324,6 +1324,13 @@ function privilegeMapOf(idx, uid) {
   return map;
 }
 
+function privilegeCountOf(idx, uid) {
+  const { direct, team } = grantsOf(idx, uid);
+  let count = direct.size;
+  for (const name of team.keys()) if (!direct.has(name)) count++;
+  return count;
+}
+
 function chainOf(idx, root) {
   if (!idx.chains.has(root)) {
     const out = new Set(),
@@ -1540,7 +1547,7 @@ function privilegeDenied(idx, settings, user, logical, name, schema) {
   const uid = key(user.systemuserid);
   return privilegeDeniedError(user, name, logical, {
     roleCount: rolesOf(idx, uid).size,
-    privilegeCount: privilegeMapOf(idx, uid).size,
+    privilegeCount: privilegeCountOf(idx, uid),
     objectTypeCode: settings?.objectTypeCode?.(logical) ?? DEFAULT_OTC,
     displayName: schema?.displayName ?? logical,
   });

@@ -13,8 +13,9 @@ import { fieldIndexFromMappings, formatViolations, schemaViolations } from './sc
 import { validatePersonaCatalog, mergePersonaCatalogs } from './persona-catalog.mjs';
 import { membershipsForRoles } from './permissions.mjs';
 import { guidKey } from './dataverse-values.mjs';
+import { cloneStateData } from './state-clone.mjs';
 
-const clone = (value) => structuredClone(value);
+const clone = cloneStateData;
 const own = (value, key) => (value != null && Object.hasOwn(value, key) ? value[key] : undefined);
 const idColumnOf = (state, table) => own(state.mappings, table)?.idColumn ?? `${table}id`;
 const rowKey = (value) => guidKey(value) ?? String(value).toLowerCase();
@@ -351,7 +352,10 @@ async function generateDataCommand({
   if (outputPath !== inputPath) await assertOfflineState(inputPath);
   const started = performance.now();
   const source = await new DataStore({ file: inputPath }).init();
-  const input = source.snapshot();
+  // This offline store has no published readers or writers. mergeDataset owns
+  // the one detached result; copying its entire input here duplicated the
+  // existing record heap before that defensive copy even began.
+  const input = source.state;
   const fragment = await pack.dataset({ profile, seed, counts });
   validateDatasetBody(fragment, 'Dataset');
   const library = presetLibrary({ packs: [pack] });
@@ -374,7 +378,11 @@ async function generateDataCommand({
   await assertOfflineState(outputPath);
   const destination =
     outputPath === inputPath ? source : await new DataStore({ file: outputPath, state: output }).init();
-  await destination.replaceState(output, { expectedDigest: destination.snapshotDigest() });
+  await destination.replaceState(output, {
+    expectedDigest: destination.snapshotDigest(),
+    cloneInput: false,
+    returnSnapshot: false,
+  });
   return {
     written: outputPath,
     pack: packId,
@@ -453,7 +461,8 @@ export async function scaffoldDataCommand({
     input = applySolutionData(initialState(portal, { metadata }), metadata);
     bootstrapped = true;
   }
-  const output = structuredClone(input);
+  // Both bootstrap and snapshot produced a private graph owned by this command.
+  const output = input;
   output.tables ??= {};
   output.mappings ??= {};
   output.permissions ??= [];
@@ -462,7 +471,7 @@ export async function scaffoldDataCommand({
   for (const [table, generated] of Object.entries(scaffold.tables)) {
     if (!own(output.mappings, table) && own(metadata.mappings, table)) {
       const { fieldMetadata: _fields, schemaComplete: _complete, ...mapping } = own(metadata.mappings, table);
-      output.mappings[table] = structuredClone(mapping);
+      output.mappings[table] = cloneStateData(mapping);
     } else if (!own(output.mappings, table))
       // Tables the solution layers do not define (such as the web role
       // membership intersect) get the conventional mapping of their rows.
@@ -478,7 +487,7 @@ export async function scaffoldDataCommand({
     let added = 0;
     for (const row of generated)
       if (!ids.has(rowKey(own(row, key)))) {
-        existing.push(structuredClone(row));
+        existing.push(cloneStateData(row));
         added++;
       }
     rows[table] = { added, alreadyPresent: generated.length - added };
@@ -489,7 +498,7 @@ export async function scaffoldDataCommand({
   for (const entry of scaffold.contactRoles) {
     const key = `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`;
     if (seen.has(key)) continue;
-    memberships.push(structuredClone(entry));
+    memberships.push(cloneStateData(entry));
     seen.add(key);
     addedMemberships++;
   }
@@ -499,7 +508,11 @@ export async function scaffoldDataCommand({
     outputPath === inputPath && !bootstrapped
       ? await new DataStore({ file: inputPath }).init()
       : await new DataStore({ file: outputPath, state: output }).init();
-  await destination.replaceState(output, { expectedDigest: destination.snapshotDigest() });
+  await destination.replaceState(output, {
+    expectedDigest: destination.snapshotDigest(),
+    cloneInput: false,
+    returnSnapshot: false,
+  });
   return {
     written: outputPath,
     bootstrapped,

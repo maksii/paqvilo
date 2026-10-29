@@ -7,6 +7,37 @@ import path from 'node:path';
 
 const chrome = sharedBrowser();
 
+test('large grids label capped counts and keep records beyond that count accessible', async (t) => {
+  const rows = Array.from({ length: 6001 }, (_, i) => ({
+    x_itemid: `${i.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`,
+    x_name: 'Invented ' + String(i).padStart(4, '0'),
+    x_quantity: 1,
+  }));
+  const { origin } = await modelDrivenFixture(t, { initial: { tables: { x_item: rows, x_child: [] } } });
+  const query = { view: 'items-view', page: 201, pageSize: 25, sort: 'x_name', direction: 'asc' };
+  const response = await fetch(origin + '/_apps/api/tables/x_item?query=' + encodeURIComponent(JSON.stringify(query)));
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.total, 5000);
+  assert.equal(body.totalLimitExceeded, true);
+  assert.equal(body.rows.length, 25);
+  assert.equal(body.rows[0].x_name, 'Invented 5000');
+  assert.equal(body.more, true);
+  const page = await chrome.page(t);
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.getByRole('button', { name: 'Invented 0000', exact: true }).waitFor();
+  assert.match(await page.locator('.grid-footer').textContent(), /Rows: 5000\+/);
+  await page.getByRole('button', { name: 'Next ›', exact: true }).click();
+  await page.getByRole('button', { name: 'Invented 0050', exact: true }).waitFor();
+  assert.match(await page.locator('.grid-footer').textContent(), /Rows: 5000\+/);
+  const filtered = await fetch(
+    origin + '/_apps/api/tables/x_item?query=' + encodeURIComponent(JSON.stringify({ search: 'Invented 6000' })),
+  );
+  const exact = await filtered.json();
+  assert.equal(exact.total, 1);
+  assert.equal(Boolean(exact.totalLimitExceeded), false);
+});
+
 /** A route gate: `held` settles once a request waits in `hold()`, which returns after `release()`. */
 function routeGate(t) {
   let release, intercepted;

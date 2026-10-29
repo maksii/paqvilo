@@ -122,7 +122,24 @@ test('bound contexts share immutable schema parses and invalidate changed Soluti
     },
   };
   await fs.writeFile(config, JSON.stringify({ sites: { invented: settings } }));
-  const context = await createMirageContext({ config, site: 'invented', env: 'local' });
+  const progress = [];
+  const context = await createMirageContext({
+    config,
+    site: 'invented',
+    env: 'local',
+    onStartup: (event) => progress.push(event),
+  });
+  assert.deepEqual(
+    progress.map((event) => event.phase),
+    [
+      'context-configuration',
+      'context-solution-import',
+      'context-portal-import',
+      'context-pack-binding',
+      'context-ready',
+    ],
+  );
+  assert.ok(progress.every((event, index) => event.elapsedMs >= (progress[index - 1]?.elapsedMs ?? 0)));
   const original = SolutionFileCache.prototype.parse;
   let schemaParses = 0,
     sim;

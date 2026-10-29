@@ -41,6 +41,7 @@ function importBudget(requested = {}) {
   const ceilings = {
     bytes: SOLUTION_ASSET_LIMITS.totalBytes,
     entries: SOLUTION_ASSET_LIMITS.entries,
+    traversalEntries: 100000,
     layers: SOLUTION_ASSET_LIMITS.layers,
   };
   const remaining = { ...ceilings };
@@ -49,6 +50,11 @@ function importBudget(requested = {}) {
       throw new Error(`Invalid Solution client import limit ${key}.`);
     remaining[key] = value;
   }
+  // An explicitly narrowed historical entry limit still bounds discovery too.
+  // By default, unrelated forms/views may be visited without consuming the
+  // independent budget for indexed client assets. Every visit remains bounded.
+  if (requested.entries !== undefined && requested.traversalEntries === undefined)
+    remaining.traversalEntries = requested.entries;
   return {
     remaining,
     take(key, count) {
@@ -88,7 +94,7 @@ async function layerEntries(layer, budget) {
   const root = await fs.realpath(layer.dir);
   async function visit(dir, top = false) {
     for await (const entry of await fs.opendir(dir)) {
-      budget.take('entries', 1);
+      budget.take('traversalEntries', 1);
       const file = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
@@ -101,6 +107,7 @@ async function layerEntries(layer, budget) {
           )
         )
           continue;
+        budget.take('entries', 1);
         const real = await fs.realpath(file);
         if (!inside(root, real)) throw new Error('Solution client asset escapes its root.');
         // Index physical names first. Binary images and unrelated WebResources do

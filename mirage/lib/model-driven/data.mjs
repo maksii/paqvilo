@@ -1,4 +1,5 @@
 import { DataStore } from '../data.mjs';
+import { pagedRecordsOf } from '../record-tables.mjs';
 import { parseSolutionXml, child, serializeXml } from '../solution-xml.mjs';
 import { managementOverlay } from './power-pages.mjs';
 import { controlDescriptor } from './control-descriptors.mjs';
@@ -133,11 +134,16 @@ export function createModelDrivenData({
     // One id map per target table and call: lookup display names cost O(rows + target rows), not a scan per cell.
     const byId = new Map();
     const targetRow = (entity, target, id) => {
+      const source =
+        target.projected && !store.state.mappings[entity]?.modelDrivenSource ? target.rows : store.tableRows(entity);
+      const paged = pagedRecordsOf(source);
+      if (paged && !paged.looseBraceKeys) {
+        const positions = paged.primaryPositions(target.idColumn, id);
+        if (positions !== null) return positions.length ? source[positions[0]] : undefined;
+      }
       if (!byId.has(entity)) {
         const index = new Map();
-        for (const record of target.projected && !store.state.mappings[entity]?.modelDrivenSource
-          ? target.rows
-          : store.tableRows(entity)) {
+        for (const record of source) {
           const key = String(record[target.idColumn]).replace(/[{}]/g, '').toLowerCase();
           if (!index.has(key)) index.set(key, record);
         }
@@ -170,8 +176,8 @@ export function createModelDrivenData({
       return copy;
     });
   };
-  const capabilities = (entity, actor, id, fields = tableFor(entity).fields) => {
-    const rights = recordsOf(actor)?.capabilities?.(entity, actor, { id, fields });
+  const capabilities = (entity, actor, id, fields = tableFor(entity).fields, { compact = false } = {}) => {
+    const rights = recordsOf(actor)?.capabilities?.(entity, actor, { id, fields, ...(compact ? { compact } : {}) });
     return rights && id && tableFor(entity).protectedIds?.includes(id) ? { ...rights, delete: false } : rights;
   };
   return {
@@ -344,6 +350,9 @@ export function createModelDrivenData({
         return {
           rows: secured?.rows ?? format(table, result.entities),
           total: secured?.total ?? result.total_record_count,
+          ...(secured?.totalLimitExceeded || result?.total_record_count_limit_exceeded
+            ? { totalLimitExceeded: true }
+            : {}),
           more: secured?.more ?? result.more_records,
           ...(recordService?.capabilities
             ? {
