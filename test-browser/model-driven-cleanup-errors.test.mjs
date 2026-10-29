@@ -268,8 +268,10 @@ test(
     let frameTrees = 0,
       stalled = false,
       closed = false;
+    const runnerListeners = new Set(process.rawListeners('SIGINT'));
     t.mock.method(chromium, 'launchPersistentContext', async (profile, options) => {
-      const context = await launch(profile, { ...options, ...setup.network });
+      // Playwright's own SIGINT handler would end the process; the command's handlers are what is under test.
+      const context = await launch(profile, { ...options, ...setup.network, handleSIGINT: false });
       context.once('close', () => {
         closed = true;
       });
@@ -280,6 +282,12 @@ test(
         cdp.send = (method, params) => {
           if (method === 'Page.getFrameTree' && ++frameTrees === 2) {
             stalled = true;
+            // Cancel startup as Ctrl+C does once inspector setup is observed stalling, not at a deadline. Only the
+            // command's own listeners receive it: the test runner's SIGINT handling stays out of this.
+            setImmediate(() => {
+              for (const listener of process.rawListeners('SIGINT'))
+                if (!runnerListeners.has(listener)) listener('SIGINT');
+            });
             return new Promise((_, reject) =>
               page.once('close', () => reject(new Error('Owned page closed during inspector setup'))),
             );
@@ -296,9 +304,8 @@ test(
         url: setup.origin,
         headless: true,
         browser: setup.channel,
-        'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
       }),
-      (error) => error.code === 'startup_timeout' && error.phase === 'interception and inspector setup',
+      (error) => error.code === 'startup_cancelled' && error.phase === 'interception and inspector setup',
     );
     assert.equal(stalled, true);
     assert.equal(closed, true);
