@@ -6,7 +6,6 @@ import { promisify } from 'node:util';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { editSource } from 'paqvilo/lense/source-edit.mjs';
-import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const run = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -23,7 +22,7 @@ if (
 ) {
   throw new Error('Use --environment https://YOUR-ENVIRONMENT.crm.dynamics.com');
 }
-const temporary = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-component-query-'));
+const temporary = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-component-query-')));
 try {
   const query = path.join(temporary, 'control.xml');
   await fs.writeFile(

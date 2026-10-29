@@ -4,7 +4,6 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { readClrDependency, canonicalClrDirectory } from 'paqvilo/mirage/lib/plugin-clr.mjs';
 import { savePrivateJson } from '../portal-harness/private-journal.mjs';
-import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 const guid = (value) => typeof value === 'string' && /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/.test(value);
 /** Source-only pure SDK controls. Native writer prepares immutable SDK intents
  * and freezes the referenced records before invoking the read-only driver. */
@@ -80,7 +79,7 @@ export async function executeSdkProjectionProbes({
   if (files[0].sha256 !== expectedDriverSha256)
     throw new Error('Native SDK driver does not match its compiled source receipt.');
   await fs.mkdir(outputRoot, { recursive: true });
-  const directory = await makeTemporaryDirectory(path.join(outputRoot, 'execution-')),
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(outputRoot, 'execution-'))),
     journalFile = path.join(directory, 'journal.json'),
     receipt = {
       schemaVersion: 1,

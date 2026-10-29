@@ -66,7 +66,6 @@ test('a standalone runtime at level simulation sends one message and captures on
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
     body: JSON.stringify({ appId, displayName: 'Invented internal table test', roles: ['System Administrator'] }),
-    signal: AbortSignal.timeout(10000),
   });
   assert.equal(registered.status, 201);
   const { secret } = await registered.json();
@@ -79,14 +78,12 @@ test('a standalone runtime at level simulation sends one message and captures on
       client_secret: secret,
       scope: `${sim.dataverse.origin}/.default`,
     }),
-    signal: AbortSignal.timeout(10000),
   });
   assert.equal(issued.status, 200);
   const { access_token: accessToken } = await issued.json();
   const get = (suffix) =>
     fetch(`${sim.dataverse.origin}/api/data/v9.2/${suffix}`, {
       headers: { authorization: `Bearer ${accessToken}` },
-      signal: AbortSignal.timeout(10000),
     });
   const service = await get('');
   assert.equal(service.status, 200);

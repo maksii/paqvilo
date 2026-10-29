@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createCapabilityRegistry } from './lib/capability-registry.mjs';
 import { chromium } from 'playwright-core';
+import { windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { editRichText, assertRichText } from './lib/richtext-actions.mjs';
 import { reconcileSupersededRead, correlateNetworkConsole } from './lib/request-evidence.mjs';
 import { auditQuery } from './lib/audit-log.mjs';
@@ -174,15 +175,17 @@ export async function runAcceptance({
     // synchronous requests (lib/navigation-settle.mjs).
     blockingProxy = net.createServer((socket) => socket.destroy());
     await new Promise((resolve) => blockingProxy.listen(0, '127.0.0.1', resolve));
-    ownedBrowser = await chromium.launch({
-      channel: channel === 'chromium' ? undefined : channel,
-      headless: true,
-      args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
-      proxy: {
-        server: `http://127.0.0.1:${blockingProxy.address().port}`,
-        bypass: LOOPBACK_HOSTS.join(','),
-      },
-    });
+    ownedBrowser = await chromium.launch(
+      windowsLaunchOptions({
+        channel: channel === 'chromium' ? undefined : channel,
+        headless: true,
+        args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
+        proxy: {
+          server: `http://127.0.0.1:${blockingProxy.address().port}`,
+          bypass: LOOPBACK_HOSTS.join(','),
+        },
+      }),
+    );
     const localContext = await ownedBrowser.newContext({
       viewport: result.viewport,
       serviceWorkers: 'block',
