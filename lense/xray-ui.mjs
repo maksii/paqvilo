@@ -1870,14 +1870,20 @@ function xrayBrowserImpl(data) {
                 (item.evidence === 'observed-api-request' ? 'Observed request' : 'Literal source reference') +
                 '</p></div>' +
                 sourceRows([item, ...(item.sources ?? [])], 'Web API reference') +
-                sourceRows(
-                  (report?.permissionRules ?? [])
-                    .filter((rule) => item.entity && norm(rule.entity) === norm(item.entity))
-                    .map((rule) => ({
-                      ...rule,
-                      kind: 'permission',
-                      evidenceLabel: rule.scope + ' · effective access ' + (rule.effective ?? 'unknown'),
-                    })),
+                // A table's permission rules page like other context, once per table.
+                pageRows(
+                  'api-permissions:' + norm(item.entity),
+                  (report?.permissionRules ?? []).filter(
+                    (rule) => item.entity && norm(rule.entity) === norm(item.entity),
+                  ),
+                  (rules) =>
+                    sourceRows(
+                      rules.map((rule) => ({
+                        ...rule,
+                        kind: 'permission',
+                        evidenceLabel: rule.scope + ' · effective access ' + (rule.effective ?? 'unknown'),
+                      })),
+                    ),
                 ),
             )
             .join(''),

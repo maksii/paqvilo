@@ -349,6 +349,120 @@ test('view-only modal placements are exact only for a page-referenced list and o
   assert.notEqual((await inspect(field('unclassed'))).owner.status, 'exact');
 });
 
+test('crowded native pages keep picked native fields and unknown elements ahead of bounded context while the card avoids each pick', async (t) => {
+  const names = Array.from({ length: 240 }, (_, index) => 'x_field' + index);
+  const { page, inspect, data, report } = await fixture(
+    t,
+    '<div id="EntityFormControl_basica"><div id="EntityFormControl_basica_EntityFormView" style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px">' +
+      names.map((name) => `<div class="control"><input id="${name}" aria-label="${name}"></div>`).join('') +
+      '</div></div>' +
+      Array.from(
+        { length: 240 },
+        (_, index) => `<invented-widget id="unknown${index}">Unknown ${index}</invented-widget>`,
+      ).join(''),
+  );
+  const crowded = {
+    ...report,
+    columns: [...report.columns, ...names.map((name) => ({ entity: 'x_first', name }))],
+    sourceRefs: [
+      ...report.sourceRefs,
+      ...names.map((name) => ({
+        id: 'x_first:' + name,
+        key: 'x_first:' + name,
+        componentKey: 'column:x_first:' + name,
+        kind: 'column',
+        ref: 'invented/x_first.xml',
+        sourceRevision: 'feedback-1',
+        contentRevision: 'invented-current-bytes',
+        relationship: 'definition',
+      })),
+    ],
+    apiReferences: Array.from({ length: 300 }, (_, index) => ({
+      name: 'x_firsts' + index,
+      entity: 'x_first',
+      ref: 'invented/api' + index + '.js',
+    })),
+    permissionRules: Array.from({ length: 1000 }, (_, index) => ({
+      name: 'Invented rule ' + index,
+      entity: 'x_first',
+      scope: 'Global',
+      ref: 'invented/rule' + index + '.yml',
+    })),
+  };
+  await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
+    data,
+    report: crowded,
+  });
+  // Picks never read or change the underlying controls.
+  await page.evaluate(() => {
+    window.valueReads = 0;
+    for (const input of document.querySelectorAll('input'))
+      Object.defineProperty(input, 'value', {
+        get() {
+          window.valueReads++;
+          return '';
+        },
+        set() {
+          window.valueReads++;
+        },
+      });
+  });
+  const markup = () => page.locator('#EntityFormControl_basica').evaluate((node) => node.outerHTML);
+  const before = await markup();
+  const card = page.locator('#paqvilo-xray .card');
+  const context = card.locator('.api-context');
+  const pick = async (selector) => {
+    await page.evaluate(
+      (selector) => document.getElementById('paqvilo-xray').__px.select(document.querySelector(selector)),
+      selector,
+    );
+    const [picked, shown] = await Promise.all([page.locator(selector).boundingBox(), card.boundingBox()]);
+    const overlaps =
+      picked.x < shown.x + shown.width &&
+      shown.x < picked.x + picked.width &&
+      picked.y < shown.y + shown.height &&
+      shown.y < picked.y + picked.height;
+    assert.equal(overlaps, false, selector + ' stays visible beside the card');
+    const order = await card.evaluate((node) => {
+      const html = node.innerHTML;
+      return html.indexOf('data-inspection-evidence') < html.indexOf('api-context');
+    });
+    assert.equal(order, true, selector + ' identity precedes secondary context');
+    assert.ok((await context.locator('.source').count()) <= 8 * 9, 'secondary context stays bounded');
+  };
+  // A native field in the right-hand column, then one on the left.
+  for (const selector of ['#x_field5', '#x_field6']) {
+    exactColumn(await inspect(page.locator(selector)), 'x_first', selector.slice(1));
+    await pick(selector);
+    assert.equal(await context.getAttribute('open'), null, 'secondary context starts collapsed');
+  }
+  await context.locator('summary').click();
+  // A table's permission rules page inside its API context.
+  assert.match(await context.innerText(), /1 \/ 125 · 1000 entries/);
+  await context.locator('button[data-context="api-permissions:x_first"]', { hasText: 'Next' }).first().click();
+  assert.match(await context.innerText(), /Invented rule 8\b/);
+  assert.doesNotMatch(await context.innerText(), /Invented rule 0\b/);
+  // An unknown element keeps the explicit disclosure choice and claims no owner.
+  for (const selector of ['invented-widget#unknown120', '#x_field11']) {
+    await pick(selector);
+    assert.equal(await context.getAttribute('open'), '', selector);
+  }
+  assert.notEqual((await inspect(page.locator('#unknown120'))).owner.status, 'exact');
+  // A moved card still steps aside for the next pick.
+  const head = await card.locator('.cardhead').boundingBox();
+  await page.mouse.move(head.x + 40, head.y + head.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(640, 400, { steps: 4 });
+  await page.mouse.up();
+  assert.ok((await card.boundingBox()).x > 400, 'the header drag moved the card');
+  for (const selector of ['#x_field0', '#x_field235', 'invented-widget#unknown3']) await pick(selector);
+  await context.locator('summary').click();
+  await pick('#x_field1');
+  assert.equal(await context.getAttribute('open'), null);
+  assert.equal(await markup(), before);
+  assert.equal(await page.evaluate(() => window.valueReads), 0);
+});
+
 test('two declared grids retain exact declared columns across clones, reordering and redraw without data access', async (t) => {
   const { page, inspect } = await fixture(
     t,
