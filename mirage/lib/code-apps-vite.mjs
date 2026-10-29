@@ -215,7 +215,7 @@ export { setConfig } from ${JSON.stringify('/@fs/' + nativeApp)};
       if (id.startsWith('\0' + ENTRY)) {
         const target = entries.get(id.slice(1));
         if (!target) throw new Error('Unknown Code Apps module entry. Reload the application.');
-        return `import { inOrder } from ${JSON.stringify(ORDER)}; await inOrder(async () => { await import(${JSON.stringify(BOOTSTRAP)}); await import(${moduleString(target)}); });`;
+        return `import { inOrder } from ${moduleString(ORDER)}; await inOrder(async () => { await import(${moduleString(BOOTSTRAP)}); await import(${moduleString(target)}); });`;
       }
       if (id.startsWith('\0' + INLINE)) return inlineSources.get(id.slice(1))?.code;
     },
