@@ -148,7 +148,13 @@ import { pageAccess } from './lib/page-access.mjs';
 import { cachedImplementationSourceFingerprint, observedEvidence, implementationEvidence } from './lib/evidence.mjs';
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata, portalMetadataEntities } from './lib/solution-metadata.mjs';
-import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './lib/model-driven/catalogue.mjs';
+import {
+  appCatalogue,
+  appCatalogueAsync,
+  canvasAppNames,
+  catalogueRevision,
+  solutionApps,
+} from './lib/model-driven/catalogue.mjs';
 import { createModelDrivenData } from './lib/model-driven/data.mjs';
 import { createModelDrivenHandler, routes as MODEL_DRIVEN_ROUTES } from './lib/model-driven/http.mjs';
 import { offlineSessionState } from './lib/model-driven/offline.mjs';
@@ -919,7 +925,7 @@ async function createPowerPagesSimulator({
     stateFile,
     simulation,
     sources: {
-      readMetadata: (fn) => solutionMetadataOverlay.withReadEpoch(fn),
+      readMetadata: (fn, options) => solutionMetadataOverlay.withReadEpoch(fn, options),
       plugins: () => solutionMetadata.plugins,
       workflows: () => operationWorkflows,
       layers: () => solutionData?.layers ?? [],
@@ -4847,6 +4853,8 @@ async function createPowerPagesSimulator({
     }
     return modelDrivenCache.value;
   };
+  // A streamed catalogue response ends incomplete when a body's mapping or settings inputs change mid-transfer.
+  modelDrivenCatalogue.revision = () => catalogueRevision(store);
   const modelDrivenData = createModelDrivenData({
     store,
     catalogue: modelDrivenCatalogue,

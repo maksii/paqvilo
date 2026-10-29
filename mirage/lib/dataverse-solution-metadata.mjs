@@ -134,7 +134,23 @@ const hasBaseMappingMetadata = (base, mappings) =>
 export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument = parseSchemaDocument } = {}) {
   const parsed = new Map();
   const readEpoch = new AsyncLocalStorage();
-  let previousBase, previousKey, previousRows, previousInputs, previous;
+  let previousBase, previousKey, previousRows, previousInputs, previous, mappingProbe;
+  // Whether a base entity's mapping carries Dataverse metadata, rescanned only when the base,
+  // the mapping set or its size, or the metadata log changes. Metadata writers log every
+  // column/table change; a solution import adds a layer, which takes the full path below.
+  const baseMappingMetadata = (base, state) => {
+    const mappings = state.mappings,
+      size = Object.keys(mappings ?? {}).length,
+      seq = state.dataverse?.metadataLog?.at(-1)?.seq ?? 0;
+    if (
+      mappingProbe?.base !== base ||
+      mappingProbe.mappings !== mappings ||
+      mappingProbe.size !== size ||
+      mappingProbe.seq !== seq
+    )
+      mappingProbe = { base, mappings, size, seq, value: hasBaseMappingMetadata(base, mappings) };
+    return mappingProbe.value;
+  };
   const resolve = (base = {}, state = {}) => {
     const epoch = readEpoch.getStore();
     const reusable = epoch && !epoch.closed && epoch.valid();
@@ -157,8 +173,7 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
     const layers = state.dataverse?.solutionAssets?.layers ?? [];
     const baseline = state.dataverse?.sourceSolutionComponents?.baseline;
     const payloads = state.dataverse?.solutionPayloads;
-    if (!layers.length && !Object.keys(baseline ?? {}).length && !hasBaseMappingMetadata(base, state.mappings))
-      return finish(base);
+    if (!layers.length && !Object.keys(baseline ?? {}).length && !baseMappingMetadata(base, state)) return finish(base);
     const rows = Object.fromEntries(
       ['systemform', 'savedquery', 'appmodule', 'sitemap'].map((table) => [table, state.tables?.[table] ?? []]),
     );

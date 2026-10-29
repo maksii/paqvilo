@@ -5,9 +5,9 @@ import { metadataResponseChunks } from '../lib/model-driven/metadata-response.mj
 import { writeJsonChunks } from '../lib/json-response.mjs';
 import { parseExactJson, stringifyExactJson } from '../lib/exact-numeric.mjs';
 import { createModelDrivenHandler } from '../lib/model-driven/http.mjs';
-import { decodeModelDrivenProvenance } from '../lib/model-driven/provenance-transport.mjs';
+import { decodeModelDrivenProvenance, encodeModelDrivenProvenance } from '../lib/model-driven/provenance-transport.mjs';
 
-test('HTTP metadata keeps lazy capability projection inside its read epoch, including compressed provenance', async () => {
+test('HTTP metadata evaluates capabilities inside its read epoch and streams lazily after it, including compressed provenance', async () => {
   let held = false,
     allowed = true,
     loaded = 0,
@@ -29,7 +29,6 @@ test('HTTP metadata keeps lazy capability projection inside its read epoch, incl
     Object.defineProperty(tables, 'x_table' + index, {
       enumerable: true,
       get() {
-        assert.equal(held, true);
         loaded++;
         return {
           entity: 'x_table' + index,
@@ -41,13 +40,16 @@ test('HTTP metadata keeps lazy capability projection inside its read epoch, incl
     });
   const admitted = Promise.withResolvers(),
     resume = Promise.withResolvers();
-  let payload;
+  let payload,
+    checks = 0,
+    loadedAtRead;
   const handler = createModelDrivenHandler({
     streamMetadata: true,
     catalogue: () => ({ tables }),
     data: {
       capabilities: () => {
         assert.equal(held, true);
+        checks++;
         return { read: allowed };
       },
     },
@@ -58,7 +60,8 @@ test('HTTP metadata keeps lazy capability projection inside its read epoch, incl
       const encoded = [];
       for (const chunk of chunks) {
         encoded.push(chunk);
-        if (loaded === 1) {
+        if (loadedAtRead === undefined && loaded > checks) {
+          loadedAtRead = loaded;
           admitted.resolve();
           await resume.promise;
         }
@@ -73,20 +76,19 @@ test('HTTP metadata keeps lazy capability projection inside its read epoch, incl
     new URL('http://localhost/_apps/api'),
   );
   await admitted.promise;
-  assert.equal(loaded, 1);
-  assert.equal(held, true);
+  assert.equal(checks, 2000, 'Every table right is evaluated in the read');
+  assert.equal(loadedAtRead, 2001, 'Bodies are projected one at a time after the read');
+  assert.equal(held, false, 'The read is released before the first table is sent');
+  // A write proceeds while the reader is gated; the response keeps the rights it read.
   let changed = false;
-  const write = read(() => {
+  await read(() => {
     allowed = false;
     changed = true;
   });
-  await Promise.resolve();
-  assert.equal(changed, false);
+  assert.equal(changed, true);
   resume.resolve();
   await request;
-  await write;
-  assert.equal(loaded, 2000);
-  assert.equal(changed, true);
+  assert.equal(loaded, 4000);
   for (const value of Object.values(payload.tables)) {
     assert.equal(value.capabilities.read, true);
     assert.equal(value.forms.length, 1);
@@ -195,6 +197,44 @@ test('complete chunked metadata retains identical JSON bytes, precision, forms a
     stringifyExactJson({ ...catalogue, tables: {} }),
   );
 });
+
+for (const wire of [false, true])
+  test(`HTTP metadata keeps the 0.9.8 JSON bytes and root key order (wire=${wire})`, async () => {
+    const catalogue = {
+      version: 1,
+      defaultApp: 'app-one',
+      apps: [{ id: 'app-one', name: 'Invented Ї / é / 📦' }],
+      tables: {
+        x_table0: {
+          entity: 'x_table0',
+          fields: { x_amount: { defaultValue: parseExactJson('12345678901234567890.1234') } },
+          provenanceRefs: [{ id: 'f', key: 'f', ref: 'table.xml', sourceRevision: 'a', contentRevision: 'b' }],
+        },
+      },
+      provenanceRefs: [{ id: 'app', key: 'app', ref: 'app.xml', sourceRevision: 'a', contentRevision: 'c' }],
+      capabilities: { localCrud: true },
+    };
+    let bytes;
+    const handler = createModelDrivenHandler({
+      catalogue: () => catalogue,
+      data: { capabilities: (name) => ({ read: name === 'x_table0' }) },
+      read: (fn) => fn(),
+      csrf: () => 'test',
+      json: async (_res, _status, _value, _headers, { chunks }) => {
+        bytes = [...chunks].join('');
+      },
+    });
+    await handler(
+      { method: 'GET', headers: wire ? { 'x-mirage-provenance-format': '1' } : {} },
+      { destroyed: false, setHeader() {} },
+      new URL('http://localhost/_apps/api'),
+    );
+    // 0.9.8: { ...catalogue, tables } with each table's capabilities, then the whole value encoded for the wire.
+    const tables = { x_table0: { ...catalogue.tables.x_table0, capabilities: { read: true } } };
+    const expected = { ...catalogue, tables };
+    assert.equal(bytes, stringifyExactJson(wire ? encodeModelDrivenProvenance(expected) : expected));
+    assert.deepEqual(Object.keys(JSON.parse(bytes)).slice(0, 4), ['version', 'defaultApp', 'apps', 'tables']);
+  });
 
 test('a blocked metadata reader stops further encoding until drain and disconnect closes the generator', async () => {
   const response = new EventEmitter();

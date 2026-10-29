@@ -1,4 +1,6 @@
 import { cloneStateData } from './state-clone.mjs';
+// Projected column values are mostly scalars: only structured values need a detached copy.
+const copyValue = (value) => (value !== null && typeof value === 'object' ? cloneStateData(value) : value);
 // Local FetchXML evaluation with Dataverse semantics. The store supplies
 // permission-filtered rows and metadata; this module never bypasses them.
 import { DataError } from './data-error.mjs';
@@ -1519,18 +1521,18 @@ export function executeFetch(plan, ctx) {
     if (!plan.distinct && row.base[pk] != null) out[pk] = row.base[pk];
     if (rootAll)
       for (const [key, value] of Object.entries(row.base))
-        if (!isEmpty(value) && !key.includes('@')) out[key] = cloneStateData(value);
+        if (!isEmpty(value) && !key.includes('@')) out[key] = copyValue(value);
     for (const alias of allAttributeAliases) {
       if (alias == null) continue;
       for (const [key, value] of Object.entries(row.aliases[alias] ?? {}))
-        if (!isEmpty(value) && !key.includes('@')) out[`${alias}.${key}`] = cloneStateData(value);
+        if (!isEmpty(value) && !key.includes('@')) out[`${alias}.${key}`] = copyValue(value);
     }
     // Distinct queries don't add the primary key implicitly; an explicitly
     // selected key (attribute element or all-attributes) is an ordinary column.
     for (const column of columns) {
       const source = column.alias == null ? row.base : row.aliases[column.alias];
       const value = fieldValue(source, column.attribute);
-      if (!isEmpty(value)) out[column.key] = cloneStateData(value);
+      if (!isEmpty(value)) out[column.key] = copyValue(value);
       else delete out[column.key];
     }
     return out;
@@ -1571,7 +1573,7 @@ export function executeFetch(plan, ctx) {
     const out = [...buckets.values()].map((bucket) => {
       const entity = {};
       groups.forEach((column, index) => {
-        if (bucket.values[index] != null) entity[column.key] = cloneStateData(bucket.values[index]);
+        if (bucket.values[index] != null) entity[column.key] = copyValue(bucket.values[index]);
       });
       for (const column of aggregates) {
         let values = bucket.rows.map((row) => read(row, column)).filter((value) => !isEmpty(value));
@@ -1622,7 +1624,7 @@ export function executeFetch(plan, ctx) {
             keyed.sort((a, b) => compareSortKeys(a.key, b.key, collation));
             const chosen = column.aggregate === 'min' ? keyed[0].value : keyed.at(-1).value;
             const date = parseDateValue(chosen);
-            result = typeof chosen === 'string' && date && !date.dateOnly ? isoUtc(date.ms) : cloneStateData(chosen);
+            result = typeof chosen === 'string' && date && !date.dateOnly ? isoUtc(date.ms) : copyValue(chosen);
             break;
           }
         }

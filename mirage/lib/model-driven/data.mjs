@@ -130,7 +130,9 @@ export function createModelDrivenData({
   const backend = (table) =>
     table.projected && !store.state.mappings[table.entity]?.modelDrivenSource ? projectedStore(table) : store;
   const format = (table, rows) => {
-    const tables = catalogue().tables;
+    // Lookup targets need only their id, name and projection: the lazy catalogue index has them without a body compile.
+    const current = catalogue(),
+      tables = current.tableIndex ?? current.tables;
     // One id map per target table and call: lookup display names cost O(rows + target rows), not a scan per cell.
     const byId = new Map();
     const targetRow = (entity, target, id) => {
@@ -161,7 +163,7 @@ export function createModelDrivenData({
             .toLowerCase();
         let name = value?.name;
         for (const entity of field.targets ?? []) {
-          const target = tables[entity];
+          const target = Object.hasOwn(tables, entity) ? tables[entity] : undefined;
           if (!target) continue;
           const found = targetRow(entity, target, id);
           if (found) {
