@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
-async function fixture(t, { compatibility = false, mode = 100000000, readOnly = false } = {}) {
+async function fixture(t, { compatibility = false, mode = 100000000, readOnly = false, script = null } = {}) {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'rte-browser-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
@@ -20,7 +21,9 @@ async function fixture(t, { compatibility = false, mode = 100000000, readOnly = 
     'web-templates/main/Main.webtemplate.source.html': '{% entityform name: "Narrative" %}',
     'basic-forms/Narrative.basicform.yml': `adx_entityformid: narrative-form\nadx_name: Narrative\nadx_entityname: example\nadx_mode: ${mode}`,
     // Native custom JavaScript precedes the form markup, so it observes after ready.
-    'basic-forms/Narrative.basicform.custom_javascript.js': `document.addEventListener('DOMContentLoaded',()=>{window.richChanges=[];$('#narrative').on('change',function(){const html=JSON.parse(this.value);window.richChanges.push({html,text:$('<div>').html(html).text()});}).each(function(){new MutationObserver(changes=>{const value=changes[0].target.value;window.observedHTML=JSON.parse(value);const doc=new DOMParser().parseFromString(window.observedHTML,'text/html');window.observedText=doc.body.textContent;}).observe(this,{attributes:true});});});`,
+    'basic-forms/Narrative.basicform.custom_javascript.js':
+      script ??
+      `document.addEventListener('DOMContentLoaded',()=>{window.richChanges=[];$('#narrative').on('change',function(){const html=JSON.parse(this.value);window.richChanges.push({html,text:$('<div>').html(html).text()});}).each(function(){new MutationObserver(changes=>{const value=changes[0].target.value;window.observedHTML=JSON.parse(value);const doc=new DOMParser().parseFromString(window.observedHTML,'text/html');window.observedText=doc.body.textContent;}).observe(this,{attributes:true});});});`,
   };
   for (const [name, value] of Object.entries(files)) {
     const file = path.join(root, name);
@@ -116,7 +119,7 @@ test('compatibility HTML survives repeated edit/postback/reopen cycles with auth
   const { app, page, errors } = await fixture(t, { compatibility: true, mode: 100000001 });
   const url = app.url + '/?id=11111111-1111-4111-8111-111111111111';
   const ready = async () => {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 10000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
     await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
   };
   await ready();
@@ -152,7 +155,7 @@ test('compatibility HTML survives repeated edit/postback/reopen cycles with auth
     );
     await page.locator('#UpdateButton').click();
     assert.equal((await posted).status(), 200);
-    await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
+    await page.waitForLoadState('domcontentloaded');
     assert.equal(app.store.snapshot().tables.example[0].narrative, expected);
     await ready();
     assert.equal(await page.locator('#narrative').inputValue(), JSON.stringify(expected));
@@ -210,7 +213,7 @@ test('compatibility markup retains formatting while excluding executable element
 
 test('read-only compatibility editors retain empty values without editable bodies or enabled formatting', async (t) => {
   const { app, page, errors } = await fixture(t, { compatibility: true, readOnly: true });
-  await page.goto(app.url, { waitUntil: 'domcontentloaded', timeout: 10000 });
+  await page.goto(app.url, { waitUntil: 'domcontentloaded' });
   await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
   assert.equal(
     await page.frameLocator('iframe.cke_wysiwyg_frame').locator('body').getAttribute('contenteditable'),
@@ -242,7 +245,7 @@ test('compatibility editor readiness waits for its srcdoc document when an earli
   await page.evaluate(() => {
     window.delayedEditor.frame.src = 'about:blank';
   });
-  await page.waitForFunction(() => window.delayedEditor?.blankLoaded, null, { timeout: 5000 });
+  await page.waitForFunction(() => window.delayedEditor?.blankLoaded);
   assert.equal(await page.locator('[data-sim-richtext-editor]').getAttribute('data-mounted'), 'loading');
   await page.evaluate(() => window.delayedEditor.release());
   await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
@@ -281,5 +284,173 @@ test('native adapter change feedback does not create an attribute-mutation loop 
     return { mutations, changes, value: JSON.parse(input.value) };
   });
   assert.deepEqual(result, { mutations: 1, changes: 1, value: '<p title="quoted">Content &amp; more</p>' });
+  assert.deepEqual(errors, []);
+});
+
+test('authored jQuery consumers read the compatibility source textarea and bound JSON control across edit, postback and reopen cycles', async (t) => {
+  // A native-shaped authored consumer: the field's last id-prefixed control is the
+  // editor's replaced source textarea (HTML; CKEditor keeps it), the bound control is
+  // the JSON string, and the HTML is parsed with jQuery ($(html) is a fragment).
+  const script = `$(function(){if(!$("#narrative").length)return;window.richReads=[];const read=(event)=>{const html=$('[id^=narrative]').last().val();window.richReads.push({event,html,bound:JSON.parse($('#narrative').val()),text:html?$(html).text():'',nested:$('<div>').html(html).find('p p').length});};read('ready');$('#narrative').on('change',()=>read('change'));});`;
+  const { app, page, errors } = await fixture(t, { compatibility: true, mode: 100000001, script });
+  const url = app.url + '/?id=11111111-1111-4111-8111-111111111111';
+  const reopen = async () => {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
+  };
+  let previous = '';
+  for (const [html, expected, text] of [
+    ['Plain "quoted" text', '<p>Plain "quoted" text</p>', 'Plain "quoted" text'],
+    [
+      '<p title="quoted">Formatted <strong>"HTML"</strong> &amp; more</p>',
+      '<p title="quoted">Formatted <strong>"HTML"</strong> &amp; more</p>',
+      'Formatted "HTML" & more',
+    ],
+    ['', '', ''],
+    ['Second "plain" text', '<p>Second "plain" text</p>', 'Second "plain" text'],
+    ['<p>Second <em>"formatted"</em></p>', '<p>Second <em>"formatted"</em></p>', 'Second "formatted"'],
+    ['', '', ''],
+  ]) {
+    await reopen();
+    const opened = await page.evaluate(() => window.richReads);
+    assert.equal(opened.length, 1, 'loading is not a user change');
+    assert.equal(opened[0].html, previous);
+    assert.equal(opened[0].bound, previous);
+    assert.equal(opened[0].nested, 0);
+    await page
+      .frameLocator('iframe.cke_wysiwyg_frame')
+      .locator('body')
+      .evaluate((body, html) => {
+        body.innerHTML = html;
+        body.dispatchEvent(new Event('input', { bubbles: true }));
+      }, html);
+    // The change handler sees the textarea and the bound control already updated.
+    assert.deepEqual(await page.evaluate(() => window.richReads.slice(1)), [
+      { event: 'change', html: expected, bound: expected, text, nested: 0 },
+    ]);
+    const posted = page.waitForResponse(
+      (response) => response.request().isNavigationRequest() && response.request().method() === 'POST',
+    );
+    await page.locator('#UpdateButton').click();
+    assert.equal((await posted).status(), 200);
+    assert.equal(app.store.snapshot().tables.example[0].narrative, expected);
+    previous = expected;
+  }
+  await reopen();
+  assert.equal(await page.locator('#narrative_editor').inputValue(), '');
+  assert.deepEqual(errors, []);
+});
+
+test('class selection wrappers answer jQuery class names that are not CSS identifiers, including for a page-loaded jQuery', async (t) => {
+  const { app, page, errors } = await fixture(t, { compatibility: true });
+  await page.goto(app.url, { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
+  const query = () =>
+    page.evaluate(() => {
+      document.body.insertAdjacentHTML('beforeend', '<span class="1invented"></span>');
+      const result = {
+        numeric: window.jQuery.find('.1invented').length,
+        chained: window.jQuery('.1invented').length,
+        html: window.jQuery('<p title="quoted">"HTML"</p>').text(),
+      };
+      for (const node of document.querySelectorAll('[class="1invented"]')) node.remove();
+      return result;
+    });
+  const expected = { numeric: 1, chained: 1, html: '"HTML"' };
+  assert.deepEqual(await query(), expected);
+  // An authored jQuery assigned after the form adapter receives its selection wrapper.
+  await page.addScriptTag({ path: createRequire(import.meta.url).resolve('jquery/dist/jquery.min.js') });
+  assert.equal(await page.evaluate(() => window.jQuery.find.__ppNativeClassSelection), true);
+  assert.deepEqual(await query(), expected);
+  assert.deepEqual(errors, []);
+});
+
+test('the compatibility sanitizer is private beside an AMD loader', async (t) => {
+  const { app, page, errors } = await fixture(t, { compatibility: true, mode: 100000001 });
+  // A RequireJS-style loader: anonymous modules are only recorded, as outside its own loading.
+  await page.addInitScript(() => {
+    window.anonymousModules = [];
+    window.define = function (name, dependencies) {
+      if (typeof name !== 'string') window.anonymousModules.push(String(dependencies ?? name).slice(0, 4000));
+    };
+    window.define.amd = {};
+  });
+  await page.goto(app.url + '/?id=11111111-1111-4111-8111-111111111111', { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
+  const result = await page.evaluate(() => {
+    const editor = window.CKEDITOR.instances.narrative_editor;
+    editor.setData('<p>Kept</p><img src="/invented-missing.png" onerror="parent.richTextExecuted=true">');
+    return {
+      global: typeof window.DOMPurify,
+      registered: window.anonymousModules.some((module) => module.includes('removeAllHooks')),
+      stored: JSON.parse(document.getElementById('narrative').value),
+    };
+  });
+  assert.deepEqual(result, {
+    global: 'undefined',
+    registered: false,
+    stored: '<p>Kept</p><img src="/invented-missing.png">',
+  });
+  assert.deepEqual(errors, []);
+});
+
+test('the compatibility sanitizer leaves an authored DOMPurify untouched and ignores later DOMPurify reassignment', async (t) => {
+  const { app, page, errors } = await fixture(t, { compatibility: true, mode: 100000001 });
+  await page.addInitScript(() => {
+    const hook = () => {};
+    window.authoredPurifier = { authored: true, hooks: { uponSanitizeElement: [hook] }, sanitize: () => 'AUTHORED' };
+    window.DOMPurify = window.authoredPurifier;
+  });
+  await page.goto(app.url + '/?id=11111111-1111-4111-8111-111111111111', { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-sim-richtext-editor][data-mounted=ready]').waitFor();
+  const unsafe =
+    '<p>Kept</p><img src="/invented-missing.png" onerror="parent.richTextExecuted=true"><script>parent.richTextExecuted=true</script>';
+  const result = await page.evaluate((unsafe) => {
+    const editor = window.CKEDITOR.instances.narrative_editor;
+    const authored =
+      window.DOMPurify === window.authoredPurifier && window.DOMPurify.hooks.uponSanitizeElement.length === 1;
+    editor.setData(unsafe);
+    const first = JSON.parse(document.getElementById('narrative').value);
+    // A later page script replaces the global with a pass-through sanitizer.
+    window.DOMPurify = { sanitize: (html) => html };
+    editor.setData(unsafe + '<a href="javascript:parent.richTextExecuted=true">Link</a>');
+    return {
+      authored,
+      first,
+      second: JSON.parse(document.getElementById('narrative').value),
+      body: editor.editable().querySelectorAll('script,[onerror],[href^="javascript:"]').length,
+      executed: window.richTextExecuted === true,
+    };
+  }, unsafe);
+  assert.deepEqual(result, {
+    authored: true,
+    first: '<p>Kept</p><img src="/invented-missing.png">',
+    second: '<p>Kept</p><img src="/invented-missing.png"><a>Link</a>',
+    body: 0,
+    executed: false,
+  });
+  assert.deepEqual(errors, []);
+});
+
+test('a compatibility editor failure after mounting reports its message in the control alert', async (t) => {
+  const { app, page, errors } = await fixture(t, { compatibility: true });
+  const failures = [];
+  page.on('console', (message) => message.type() === 'error' && failures.push(message.text()));
+  // An authored editor registry that throws once the editor frame is in place.
+  await page.addInitScript(() =>
+    Object.defineProperty(window, 'CKEDITOR', {
+      configurable: true,
+      get() {
+        throw new Error('Invented editor registry failure');
+      },
+    }),
+  );
+  await page.goto(app.url, { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-sim-richtext-editor][data-mounted=failed]').waitFor({ state: 'attached' });
+  const alert = page.locator('[data-sim-richtext-editor] [data-sim-richtext-error]');
+  assert.equal(await alert.count(), 1);
+  assert.equal(await alert.isHidden(), false);
+  assert.equal(await alert.textContent(), 'Invented editor registry failure');
+  assert.ok(failures.some((text) => text.includes('Invented editor registry failure')));
   assert.deepEqual(errors, []);
 });

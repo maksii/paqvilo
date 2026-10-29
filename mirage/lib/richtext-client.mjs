@@ -1,5 +1,9 @@
-/** Self-contained browser entry point, embedded with its settings by platform.mjs. */
-export async function mountRichTextEditors(settings) {
+/**
+ * Self-contained browser entry point, embedded with its settings by platform.mjs.
+ * purifier: the compatibility editor's private DOMPurify instance; page globals
+ * (window.DOMPurify, an AMD define) neither supply nor receive it.
+ */
+export async function mountRichTextEditors(settings, purifier) {
   const base = '/webresources/msdyn_/RichTextEditorControl/';
   const state = (window.__portalSimulation ||= {});
   const loadJson = async (url) => {
@@ -26,8 +30,13 @@ export async function mountRichTextEditors(settings) {
     input.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   };
+  const clean = (html) => purifier.sanitize(html, { USE_PROFILES: { html: true } });
   const compatibilityEditor = async (id, input, container) => {
-    const initial = document.getElementById(id + '_editor')?.value || '';
+    // The replaced textarea stays hidden in the control, as CKEditor leaves it,
+    // and carries the editor's HTML for page scripts that read it.
+    const source = document.getElementById(id + '_editor');
+    const initial = source?.value || '';
+    if (source) source.style.display = 'none';
     const readOnly = container.dataset.readOnly === 'true';
     const toolbar = document.createElement('div');
     toolbar.className = 'sim-richtext-toolbar';
@@ -77,7 +86,12 @@ export async function mountRichTextEditors(settings) {
       '" role="textbox" aria-label="Rich text content" aria-readonly="' +
       readOnly +
       '" aria-multiline="true"></body></html>';
-    container.replaceChildren(badge, toolbar, frame);
+    container.replaceChildren(
+      ...container.querySelectorAll(':scope > textarea, :scope > [data-sim-richtext-error]'),
+      badge,
+      toolbar,
+      frame,
+    );
     container.dataset.simEditorMode = 'compatibility';
     await loaded;
     let content = initial;
@@ -88,7 +102,7 @@ export async function mountRichTextEditors(settings) {
     };
     const getData = () => {
       const current = body(),
-        html = window.DOMPurify.sanitize(current?.innerHTML ?? content, { USE_PROFILES: { html: true } });
+        html = clean(current?.innerHTML ?? content);
       const blocks =
         'address,article,aside,blockquote,details,dialog,div,dl,fieldset,figcaption,figure,footer,form,h1,h2,h3,h4,h5,h6,header,hgroup,hr,main,menu,nav,ol,p,pre,section,table,ul';
       if (!html || current?.querySelector(blocks)) return html;
@@ -96,7 +110,9 @@ export async function mountRichTextEditors(settings) {
     };
     const sync = () => {
       content = body()?.innerHTML ?? content;
-      if (syncValue(input, getData(), true)) fire('change');
+      const html = getData();
+      if (source) source.value = html;
+      if (syncValue(input, html, true)) fire('change');
     };
     const editor = {
       name: id + '_editor',
@@ -114,7 +130,7 @@ export async function mountRichTextEditors(settings) {
       getData,
       setData(value, callback) {
         content = String(value ?? '');
-        if (body()) body().innerHTML = window.DOMPurify.sanitize(content, { USE_PROFILES: { html: true } });
+        if (body()) body().innerHTML = clean(content);
         sync();
         callback?.();
         return editor;
@@ -150,8 +166,7 @@ export async function mountRichTextEditors(settings) {
       const current = body();
       if (frame.contentDocument?.URL !== 'about:srcdoc' || !current || current.__ppSimBound) return;
       current.__ppSimBound = true;
-      if (current.innerHTML !== content)
-        current.innerHTML = window.DOMPurify.sanitize(content, { USE_PROFILES: { html: true } });
+      if (current.innerHTML !== content) current.innerHTML = clean(content);
       current.addEventListener('input', sync);
       current.addEventListener('blur', sync);
     };
@@ -199,7 +214,13 @@ export async function mountRichTextEditors(settings) {
         });
       } catch (error) {
         container.dataset.mounted = 'failed';
-        const alert = container.querySelector('[data-sim-richtext-error]');
+        let alert = container.querySelector('[data-sim-richtext-error]');
+        if (!alert) {
+          alert = document.createElement('p');
+          alert.setAttribute('role', 'alert');
+          alert.setAttribute('data-sim-richtext-error', '');
+          container.append(alert);
+        }
         alert.hidden = false;
         alert.textContent = error.message;
         console.error(error);
