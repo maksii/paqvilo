@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
+import { DEV_READY } from '../lense/dev-messages.mjs';
 
 test(
   'demo command opens a populated browser, supports the walkthrough and stops its Mirage',
@@ -102,6 +103,9 @@ test(
         context.on('page', watch);
       }));
     assert.ok(page, 'the command must open and navigate a browser without a manual console link');
+    // The tab can show the start page before the command's own startup navigation and resource wait finish;
+    // interact only once the command reports the session ready.
+    await output.waitFor(new RegExp(DEV_READY.replaceAll('.', String.raw`\.`)), { label: 'Demo reporting ready' });
     const url = new URL(page.url()).origin;
     // Keep the CLI's own interception intact. These authored sources and sign-in use only loopback.
     const errors = [];
