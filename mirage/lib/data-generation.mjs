@@ -22,8 +22,9 @@ const clone = cloneStateData;
 const own = (value, key) => (value != null && Object.hasOwn(value, key) ? value[key] : undefined);
 const idColumnOf = (state, table) => own(state.mappings, table)?.idColumn ?? `${table}id`;
 const rowKey = (value) => guidKey(value) ?? String(value).toLowerCase();
-function* rowKeys(rows, column) {
-  for (const row of readRecordValues(rows)) yield rowKey(own(row, column));
+// `missing` stands in for an absent key value (the scaffold counts such existing rows as '').
+function* rowKeys(rows, column, missing) {
+  for (const row of readRecordValues(rows)) yield rowKey(own(row, column) ?? missing);
 }
 const object = (value) =>
   value !== null &&
@@ -557,7 +558,8 @@ export async function scaffoldDataCommand({
         };
       const key = own(output.mappings, table)?.idColumn ?? own(scaffold.idColumns, table);
       const existing = own(output.tables, table) ?? (output.tables[table] = []);
-      const ids = new Set(rowKeys(existing, key));
+      // An existing row without the key never hides a generated row without it.
+      const ids = new Set(rowKeys(existing, key, ''));
       let added = 0;
       for (const row of generated)
         if (!ids.has(rowKey(own(row, key)))) {

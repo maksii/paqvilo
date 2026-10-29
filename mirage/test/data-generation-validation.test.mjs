@@ -238,3 +238,46 @@ test('schema-complete fields use own metadata keys when validating prototype-nam
     'mapped',
   );
 });
+
+test('scaffold rows without the mapped key are appended even when existing rows lack the key too', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'invented-scaffold-keys-')),
+    owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const portal = path.join(root, 'portal'),
+    solution = path.join(root, 'solution'),
+    file = path.join(root, 'state.json');
+  await fs.mkdir(portal, { recursive: true });
+  await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
+  await fs.writeFile(path.join(portal, 'website.yml'), 'adx_websiteid: site\nadx_name: Invented scaffold keys\n');
+  await fs.writeFile(path.join(portal, 'sitesetting.yml'), '- adx_name: Webapi/x_item/enabled\n  adx_value: "true"\n');
+  await fs.writeFile(
+    path.join(solution, 'Other', 'Solution.xml'),
+    '<ImportExportXml><SolutionManifest><UniqueName>invented</UniqueName></SolutionManifest></ImportExportXml>',
+  );
+  const attribute = (name, type, extra = '') =>
+    `<attribute PhysicalName="${name}"><Type>${type}</Type><LogicalName>${name}</LogicalName>${extra}</attribute>`;
+  await fs.writeFile(
+    path.join(solution, 'Other', 'Customizations.xml'),
+    `<ImportExportXml><Entities><Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><attributes>${attribute('x_itemid', 'primarykey')}${attribute('x_name', 'nvarchar', '<DisplayMask>PrimaryName|ValidForForm</DisplayMask><MaxLength>100</MaxLength>')}</attributes><EntitySetName>x_items</EntitySetName></entity></EntityInfo></Entity></Entities></ImportExportXml>`,
+  );
+  // The configured mapping names a key that neither the existing row nor the generated rows carry.
+  const store = new DataStore({
+    file,
+    state: {
+      mappings: { x_item: { idColumn: 'x_customid', entitySet: 'x_items', userConfigured: true } },
+      tables: { x_item: [{ x_name: 'Existing without key' }] },
+    },
+  });
+  await store.init();
+  await store.save();
+  const result = await runDataCommand(['scaffold'], {
+    state: file,
+    source: portal,
+    'solution-root': [solution],
+    profile: 'smoke',
+  });
+  assert.deepEqual(result.rows.x_item, { added: 3, alreadyPresent: 0 });
+  const saved = await new DataStore({ file }).init();
+  owner.add(() => saved.closeRecordStorage());
+  assert.equal(saved.state.tables.x_item.length, 4);
+});
