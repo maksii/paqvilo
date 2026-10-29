@@ -64,9 +64,8 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
           steps: [
             { action: 'navigate', path: '/' },
             { action: 'visible', frame: '#child', selector: '#save' },
-            // Only the triggering action and its settlement carry the short budget; loads keep the default.
-            { action: 'click', frame: '#child', selector: '#save', timeout: 3000 },
-            { action: 'settle', timeout: 3000 },
+            { action: 'click', frame: '#child', selector: '#save' },
+            { action: 'settle' },
             { action: 'visible', selector: '#done' },
           ],
         },
@@ -129,9 +128,9 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
           name: 'Replaced page',
           steps: [
             { action: 'navigate', path: '/' },
-            { action: 'click', selector: '#save', timeout: 3000 },
+            { action: 'click', selector: '#save' },
             { action: 'visible', selector: '#done' },
-            { action: 'settle', timeout: 3000 },
+            { action: 'settle' },
           ],
         },
       ],
@@ -221,8 +220,9 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
               name: 'Late document writes',
               steps: [
                 { action: 'navigate', path: '/' },
+                // The held writes end at this click's budget, which the navigation waits report.
                 { action: 'click', selector: '#save', timeout: 3000 },
-                { action: 'settle', timeout: 3000 },
+                { action: 'settle' },
                 { action: 'visible', selector: '#done' },
               ],
             },

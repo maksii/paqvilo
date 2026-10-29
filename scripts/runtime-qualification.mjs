@@ -15,6 +15,9 @@ import { consumeCatalogue } from './catalogue-stream.mjs';
 import { appendFileSync } from 'node:fs';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { setImmediate } from 'node:timers/promises';
+import { availableParallelism } from 'node:os';
+import { getHeapStatistics } from 'node:v8';
+import { pagedRecordsOf } from '../mirage/lib/record-tables.mjs';
 
 const makeFixture = (options) => (options.complex ? complexPerformanceFixture(options) : performanceFixture(options));
 const progressFile = process.env.PAQVILO_QUALIFICATION_PROGRESS;
@@ -65,6 +68,11 @@ if (process.argv[2] === '--worker') {
           csrf: sim.csrf,
           startupMs: Math.round(performance.now() - at),
           generated: fixture.generated(),
+          executionResources: {
+            node: process.version,
+            availableParallelism: availableParallelism(),
+            heapSizeLimitBytes: getHeapStatistics().heap_size_limit,
+          },
           memory: process.memoryUsage(),
           peakRssBytes: process.resourceUsage().maxRSS * 1024,
         },
@@ -97,6 +105,12 @@ if (process.argv[2] === '--worker') {
               .reduce((sum, [, rows]) => sum + rows.length, 0),
             options.records,
           );
+          for (const [name, rows] of Object.entries(sim.store.state.tables))
+            if (/^x_scale\d+$/.test(name)) {
+              const stored = pagedRecordsOf(rows);
+              if (stored)
+                assert.equal(stored.present, rows.length, 'Every generated position contains an actual record');
+            }
           if (options.complex) {
             const wide = Math.ceil(options.tables / 2);
             let wideRecords = 0;

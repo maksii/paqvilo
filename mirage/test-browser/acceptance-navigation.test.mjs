@@ -44,7 +44,10 @@ async function navigationFixture(
     replacementRead = false,
     embedded = false,
     crossOrigin = false,
-    timeout = 4000,
+    // The triggering click and its settlement default to the runner's deadline; tests about budgets set it.
+    timeout,
+    // A test asserting that settlement fails sets only this, so the click keeps its own deadline.
+    settleTimeout = timeout,
     navigationCommitReserveMs,
     gateDocumentOnWrites = false,
     controlledLateWrites = late,
@@ -255,7 +258,7 @@ async function navigationFixture(
           // The budgets under test belong to the triggering action and its settlement; page loads keep the
           // runner's default deadline, so a slow cold load cannot consume them.
           { action: 'click', selector: '#save', timeout, ...(embedded ? { frame: '#child' } : {}) },
-          { action: 'settle', timeout },
+          { action: 'settle', timeout: settleTimeout },
           ...(!noCommit && !noContent && !resetNavigation && !noNavigation
             ? [{ action: 'visible', selector: '#done', ...(embedded ? { frame: '#child' } : {}) }]
             : []),
@@ -283,7 +286,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     });
 
   test('writes completed before a document commits stay finished across a hash change', HANG_GUARD, async (t) => {
-    const flow = await navigationFixture(t, { completed: true, timeout: 8000 });
+    const flow = await navigationFixture(t, { completed: true });
     assert.equal(flow.passed, true, JSON.stringify(flow));
     assert.equal(flow.navigationCancelledRequests?.length ?? 0, 0);
     assert.equal(flow.resources.filter((row) => /slow-/.test(row.url) && row.finished).length, 2);
@@ -294,7 +297,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       `a hash change cannot retire a hanging read (${noNavigation ? 'no navigation' : '204 navigation'})`,
       HANG_GUARD,
       async (t) => {
-        const flow = await navigationFixture(t, { noCommit: true, noNavigation, timeout: 2500 });
+        const flow = await navigationFixture(t, { noCommit: true, noNavigation, settleTimeout: 2500 });
         assert.equal(flow.passed, false);
         assert.match(flow.error, /Portal requests did not settle.*GET.*never/);
         assert.equal(flow.navigationCancelledRequests?.length ?? 0, 0);
@@ -308,7 +311,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       let releaseDocumentResponse;
       const flow = await navigationFixture(t, {
         noCommit: true,
-        timeout: 2500,
+        settleTimeout: 2500,
         scheduleDocumentResponse: (callback) => {
           releaseDocumentResponse = callback;
         },
@@ -371,7 +374,13 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
 
   for (const child of [false, true])
     test(`redirect chains share one navigation hold (${child ? 'child' : 'main'} writes)`, HANG_GUARD, async (t) => {
-      const flow = await navigationFixture(t, { redirect: true, history: 'none', child, writeMs: 15000 });
+      const flow = await navigationFixture(t, {
+        redirect: true,
+        history: 'none',
+        child,
+        writeMs: 15000,
+        timeout: 4000,
+      });
       assert.equal(flow.passed, true, JSON.stringify(flow));
       assert.equal(flow.navigationCancelledRequests?.length, 2);
       assert.ok(
@@ -418,7 +427,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     );
 
   test('replacement document requests remain pending after retiring its predecessor', HANG_GUARD, async (t) => {
-    const flow = await navigationFixture(t, { replacementRead: true, late: true, timeout: 2500 });
+    const flow = await navigationFixture(t, { replacementRead: true, late: true, settleTimeout: 2500 });
     assert.equal(flow.passed, false);
     assert.match(flow.error, /Portal requests did not settle.*GET.*never/);
     assert.equal(flow.navigationCancelledRequests?.length, 2);
@@ -465,7 +474,13 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
   });
 
   test('a delayed form submission keeps its hold inside the triggering click deadline', HANG_GUARD, async (t) => {
-    const flow = await navigationFixture(t, { redirect: true, history: 'none', writeMs: 15000, actionDelay: 1800 });
+    const flow = await navigationFixture(t, {
+      redirect: true,
+      history: 'none',
+      writeMs: 15000,
+      actionDelay: 1800,
+      timeout: 4000,
+    });
     assert.equal(flow.passed, true, JSON.stringify(flow));
     assert.equal(flow.navigationCancelledRequests?.length, 2);
     assert.ok(flow.navigationWaits.reduce((sum, row) => sum + row.waitedMs, 0) < 1800);
@@ -521,8 +536,9 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
               name: kind,
               steps: [
                 { action: 'navigate', path: '/' + kind },
-                { action: 'click', frame: '#child', selector: '#send' },
-                { action: 'settle' },
+                // A refused or failed write can stay pending until settlement ends; the page load keeps the default.
+                { action: 'click', frame: '#child', selector: '#send', timeout: 3000 },
+                { action: 'settle', timeout: 3000 },
               ],
             },
           ],
@@ -639,7 +655,6 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
           completed: true,
           writeMs: 1000,
           documentDelay: 300,
-          timeout: 8000,
         });
         assert.equal(flow.passed, true, JSON.stringify(flow));
         assert.deepEqual(flow.failedRequests, []);

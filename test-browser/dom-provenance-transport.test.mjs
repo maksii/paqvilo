@@ -29,7 +29,10 @@ const scope = {
 };
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
-async function fixture(t, { sourceMaps = false, acknowledge = true, inline = false, bulk = 0 } = {}) {
+async function fixture(
+  t,
+  { sourceMaps = false, acknowledge = true, inline = false, bulk = 0, holdResolution = false } = {},
+) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dom-response-'));
   const file = path.join(directory, 'widget.js');
   const source =
@@ -39,7 +42,7 @@ async function fixture(t, { sourceMaps = false, acknowledge = true, inline = fal
     'window.moveParser=function(){document.getElementById("moved").appendChild(document.getElementById("parser"));};\r\n' +
     'window.cloneWidget=function(){const node=document.getElementById("created").cloneNode(true);node.id="clone";document.body.append(node);};\r\n' +
     'window.htmlWidget=function(){document.getElementById("markup").innerHTML="<strong id=html-created>Invented</strong>";};\r\n' +
-    (bulk ? `for(let i=0;i<${bulk};i++)makeWidget();\r\n` : '');
+    (bulk && !holdResolution ? `for(let i=0;i<${bulk};i++)makeWidget();\r\n` : '');
   await fs.writeFile(file, source);
   const sourceRef = {
     id: 'web-file:invented-widget:$content',
@@ -115,6 +118,21 @@ async function fixture(t, { sourceMaps = false, acknowledge = true, inline = fal
     rawHash: hash(source),
   };
   let bindingEvent, attachmentCDP;
+  let releaseResolution,
+    resolutionArrived,
+    bindingsArrived,
+    resolutionEnabled = false;
+  const resolutionGate = new Promise((resolve) => {
+    releaseResolution = resolve;
+  });
+  const resolutionHeld = new Promise((resolve) => {
+    resolutionArrived = resolve;
+  });
+  const bindingsReceived = new Promise((resolve) => {
+    bindingsArrived = resolve;
+  });
+  const receivedNodes = new Set();
+  t.after(() => releaseResolution());
   const detach = await interceptOrigin(
     context,
     origin,
@@ -136,6 +154,23 @@ async function fixture(t, { sourceMaps = false, acknowledge = true, inline = fal
     {
       onAttach: async (options) => {
         attachmentCDP = options.cdp;
+        if (holdResolution) {
+          const send = options.cdp.send.bind(options.cdp);
+          let held = false;
+          options.cdp.send = async (method, params) => {
+            if (
+              resolutionEnabled &&
+              !held &&
+              method === 'Runtime.callFunctionOn' &&
+              params?.functionDeclaration?.includes('this.resolveMany(entries)')
+            ) {
+              held = true;
+              resolutionArrived();
+              await resolutionGate;
+            }
+            return send(method, params);
+          };
+        }
         options.cdp.on('Network.requestWillBeSent', (event) => {
           if (event.type === 'Script')
             diagnostics.requests.push({
@@ -180,7 +215,11 @@ async function fixture(t, { sourceMaps = false, acknowledge = true, inline = fal
           try {
             const data = JSON.parse(event.payload);
             if (data?.version === 1 && data.frames) bindingEvent = event;
-            if (data.frames) diagnostics.calls.push({ relationship: data.relationship, frames: data.frames });
+            if (data.frames) {
+              diagnostics.calls.push({ relationship: data.relationship, frames: data.frames });
+              if (typeof data.id === 'string') receivedNodes.add(data.id);
+              if (receivedNodes.size >= bulk + 1) bindingsArrived();
+            }
           } catch {
             /* Other bindings are unrelated to DOM evidence. */
           }
@@ -205,6 +244,7 @@ async function fixture(t, { sourceMaps = false, acknowledge = true, inline = fal
     },
   );
   t.after(async () => {
+    releaseResolution();
     await detach();
     await context.close();
     server.closeAllConnections();
@@ -236,7 +276,25 @@ async function fixture(t, { sourceMaps = false, acknowledge = true, inline = fal
     for (const frames of [[null], [0], [[]], [{ url: origin, line: 0, column: 1 }]])
       attachmentCDP.emit('Runtime.bindingCalled', { ...bindingEvent, payload: JSON.stringify({ ...valid, frames }) });
   };
-  return { page, query, proved, proof, source, html, authoredHTML, transport, origin, detach, malformedBinding };
+  return {
+    page,
+    query,
+    proved,
+    proof,
+    source,
+    html,
+    authoredHTML,
+    transport,
+    origin,
+    detach,
+    malformedBinding,
+    resolutionHeld,
+    bindingsReceived,
+    releaseResolution,
+    holdNextResolution: () => {
+      resolutionEnabled = true;
+    },
+  };
 }
 
 for (const sourceMaps of [false, true])
@@ -386,7 +444,15 @@ test('page calls and malformed authenticated binding packets cannot crash the ob
 });
 
 test('a burst beyond the transport budget remains bounded and reports the omitted evidence', async (t) => {
-  const fx = await fixture(t, { bulk: 3000 });
+  const fx = await fixture(t, { bulk: 3000, holdResolution: true });
+  await fx.proved('created');
+  fx.holdNextResolution();
+  await fx.page.evaluate(() => {
+    for (let index = 0; index < 3000; index++) window.makeWidget();
+  });
+  await fx.resolutionHeld;
+  await fx.bindingsReceived;
+  fx.releaseResolution();
   await fx.page.waitForFunction(
     ({ slot, scope }) =>
       window[slot].query(document.getElementById('created'), { scope, anchorGeneration: 3 }).limits.truncated,

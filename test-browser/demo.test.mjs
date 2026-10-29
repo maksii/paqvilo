@@ -41,7 +41,7 @@ test(
       { cwd: work, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
     );
     const output = childOutput(child);
-    let browser;
+    let browser, releaseDemoRuntime;
     const exited = once(child, 'exit');
     const closeOwnedBrowser = async () => {
       if (!browser?.isConnected()) return;
@@ -52,6 +52,7 @@ test(
       await disconnected;
     };
     t.after(async () => {
+      await releaseDemoRuntime?.();
       await closeOwnedBrowser().catch(() => {});
       await browser?.close().catch(() => {});
       if (child.exitCode === null) child.kill('SIGTERM');
@@ -133,14 +134,79 @@ test(
     }
     await evidence('demo-anonymous');
     await page.getByRole('link', { name: 'Sign in to try CRUD', exact: true }).click();
-    await page
+    const runtimeDebugger = await context.newCDPSession(page);
+    await runtimeDebugger.send('Debugger.enable');
+    const runtimeBreakpoint = await runtimeDebugger.send('Debugger.setBreakpointByUrl', {
+      urlRegex: 'demo-runtime\\.js(?:\\?.*)?$',
+      lineNumber: 2,
+    });
+    releaseDemoRuntime = async () => {
+      await runtimeDebugger
+        .send('Debugger.removeBreakpoint', { breakpointId: runtimeBreakpoint.breakpointId })
+        .catch(() => {});
+      await runtimeDebugger.send('Debugger.resume').catch(() => {});
+      await runtimeDebugger.detach().catch(() => {});
+    };
+    let runtimePaused = once(runtimeDebugger, 'Debugger.paused');
+    const signingIn = page
       .locator('.paqvilo-mirage-persona')
       .filter({ hasText: 'Alex Example 01' })
       .getByRole('button', { name: 'Sign in', exact: true })
       .first()
       .click();
+    signingIn.catch(() => {});
+    let authoredTarget;
+    while (true) {
+      const [pausedRuntime] = await runtimePaused;
+      const current = await runtimeDebugger.send('Debugger.evaluateOnCallFrame', {
+        callFrameId: pausedRuntime.callFrames[0].callFrameId,
+        expression:
+          '({path:location.pathname,readyState:document.readyState,target:document.querySelector(".demo-hero .demo-button")?.getAttribute("href")})',
+        returnByValue: true,
+      });
+      if (current.result.value.path === '/') {
+        authoredTarget = current.result.value;
+        break;
+      }
+      runtimePaused = once(runtimeDebugger, 'Debugger.paused');
+      await runtimeDebugger.send('Debugger.resume');
+    }
+    t.diagnostic(`Deferred home customization: ${JSON.stringify(authoredTarget)}`);
+    assert.equal(
+      authoredTarget.target,
+      '/approach/out-of-the-box/',
+      'Authored markup is visible before the deferred local customization.',
+    );
+    await releaseDemoRuntime();
+    await signingIn;
+    await page.waitForFunction(
+      () => document.querySelector('.demo-hero .demo-button')?.getAttribute('href') === '/approach/web-api/',
+    );
     await page.getByRole('link', { name: 'Open the demo', exact: true }).click();
-    await page.locator('[data-account-rows] tr').first().waitFor();
+    await page
+      .locator('[data-account-rows] tr')
+      .first()
+      .waitFor()
+      .catch(async (cause) => {
+        // The workspace reports its own load failures in [data-status]; keep them with the failure.
+        t.diagnostic(
+          `Account list: ${JSON.stringify({
+            path: new URL(page.url()).pathname,
+            status: await page
+              .locator('[data-status]')
+              .textContent()
+              .catch(() => null),
+            empty: await page
+              .locator('[data-account-empty]')
+              .isVisible()
+              .catch(() => null),
+            signInLinks: await page.getByRole('link', { name: 'Sign in to try CRUD', exact: true }).count(),
+            errors,
+          })}`,
+        );
+        await evidence('demo-account-list-failure').catch(() => {});
+        throw cause;
+      });
     assert.equal(await page.locator('[data-account-rows] tr').count(), 8);
     await page.getByRole('link', { name: 'Arcwell Services', exact: true }).click();
     const ready = () =>

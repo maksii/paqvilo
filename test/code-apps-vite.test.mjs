@@ -28,7 +28,7 @@ test('Vite proxy guards Host, Origin and origin-form paths and rewrites approved
   let middleware;
   const watcher = new EventEmitter();
   watcher.add = () => {};
-  plugin.configureServer({
+  const server = {
     middlewares: {
       use: (fn) => {
         middleware = fn;
@@ -37,8 +37,9 @@ test('Vite proxy guards Host, Origin and origin-form paths and rewrites approved
     httpServer: Object.assign(new EventEmitter(), { address: () => ({ port: 5173 }) }),
     config: { root: '.', server: {} },
     watcher,
-    ws: { send() {} },
-  });
+    ws: Object.assign(new EventEmitter(), { send() {} }),
+  };
+  plugin.configureServer(server);
   const request = (url, host, origin) => {
     const req = { url, headers: { host, ...(origin ? { origin } : {}) } };
     const res = {
@@ -66,12 +67,15 @@ test('Vite proxy guards Host, Origin and origin-form paths and rewrites approved
   assert.equal(allowed.next, true);
   assert.equal(allowed.req.headers.origin, 'http://127.0.0.1:8787');
   assert.equal(request('/src/app.js', 'outside.example:5173').next, true);
+  server.httpServer.emit('close');
+  for (const event of ['change', 'add', 'unlink']) assert.equal(watcher.listenerCount(event), 0);
+  assert.equal(server.ws.listenerCount('paqvilo:config-check'), 0);
 });
 
 test('Vite module entry wrappers install bootstrap before the application entry', () => {
   const plugin = codeApps({ app: 'invented', mirageUrl: 'http://localhost:8787' });
   plugin.config();
-  const html = plugin.transformIndexHtml.handler('<script type="module" src="./src/main.js"></script>', {
+  const { html } = plugin.transformIndexHtml.handler('<script type="module" src="./src/main.js"></script>', {
     path: '/index.html',
   });
   const encoded = html.match(/src="\/@id\/__x00__(.*?)"/)[1];
@@ -105,7 +109,7 @@ test('inline module scripts are gated separately and relative imports resolve fr
   plugin.config();
   const input =
     '<script type="module">import "./local.js"; globalThis.count++;</script><script type="module">import "./local.js"; globalThis.count++;</script>';
-  const transformed = plugin.transformIndexHtml.handler(input, {
+  const { html: transformed } = plugin.transformIndexHtml.handler(input, {
     path: '/pages/index.html',
     filename: '/project/pages/index.html',
   });
@@ -134,7 +138,7 @@ test('inline module scripts are gated separately and relative imports resolve fr
 test('external module scripts remain external but run after bootstrap', () => {
   const plugin = codeApps({ app: 'invented', mirageUrl: 'http://localhost:8787' });
   plugin.config();
-  const transformed = plugin.transformIndexHtml.handler(
+  const { html: transformed } = plugin.transformIndexHtml.handler(
     '<script type="module" src="https://cdn.example.test/app.js"></script>',
     { path: '/index.html', filename: '/project/index.html' },
   );

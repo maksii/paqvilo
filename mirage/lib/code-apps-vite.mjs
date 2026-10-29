@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'parse5';
+import { readFileSync } from 'node:fs';
 
 const BOOTSTRAP = 'virtual:paqvilo-code-app-bootstrap';
 const APP = 'virtual:paqvilo-code-app-context';
@@ -34,7 +35,16 @@ function localOrigin(value) {
 
 /** Development-only public SDK integration. Native serve/build configurations remain unchanged. */
 export function codeApps(options = {}) {
-  let app, origin, nativeApp, root;
+  let app, origin, nativeApp, root, configFile;
+  const configurationStamp = () => {
+    if (!configFile) return 'unconfigured';
+    try {
+      return createHash('sha256').update(readFileSync(configFile)).digest('hex');
+    } catch (error) {
+      if (error.code === 'ENOENT') return 'missing';
+      throw error;
+    }
+  };
   const entries = new Map();
   const inlineSources = new Map();
   return {
@@ -65,6 +75,7 @@ export function codeApps(options = {}) {
     },
     configResolved(config) {
       root = config.root;
+      configFile = path.resolve(root, options.config ?? 'power.config.json');
       if (config.plugins?.some((plugin) => plugin.name === 'powerApps'))
         throw new Error(
           'Choose codeApps() for Mirage development or Microsoft powerApps() for native development/build; do not enable both in the same Vite run.',
@@ -104,13 +115,26 @@ export function codeApps(options = {}) {
         if (req.headers.origin) req.headers.origin = origin;
         next();
       });
-      const configFile = path.resolve(server.config.root, options.config ?? 'power.config.json');
+      configFile = path.resolve(server.config.root, options.config ?? 'power.config.json');
       server.watcher.add(configFile);
       const reload = (file) => {
         if (path.resolve(file) === configFile) server.ws.send({ type: 'full-reload', path: '*' });
       };
       server.watcher.on('change', reload);
-      server.httpServer?.once('close', () => server.watcher.off('change', reload));
+      server.watcher.on('add', reload);
+      server.watcher.on('unlink', reload);
+      // The document can load before its HMR transport connects. Reconcile the
+      // document's configuration with current bytes after that connection, so
+      // a full-reload broadcast sent before it existed cannot be lost.
+      const reconcile = (data, client) => {
+        if (typeof data?.stamp === 'string' && data.stamp !== configurationStamp())
+          client.send({ type: 'full-reload', path: '*' });
+      };
+      server.ws.on('paqvilo:config-check', reconcile);
+      server.httpServer?.once('close', () => {
+        for (const event of ['change', 'add', 'unlink']) server.watcher.off(event, reload);
+        server.ws.off('paqvilo:config-check', reconcile);
+      });
     },
     resolveId(id, importer) {
       if (id === '@microsoft/power-apps/app') return '\0' + APP;
@@ -139,7 +163,18 @@ try {
 } catch(error) { report({kind:'bridge-error',status:error.status||0}); throw error; }
 window.addEventListener('error',()=>report({kind:'app-error'}));
 window.addEventListener('unhandledrejection',()=>report({kind:'app-error'}));
-if(import.meta.hot) import.meta.hot.dispose(()=>setDataOperationExecutor(undefined));
+if(import.meta.hot) {
+  const checkConfiguration=()=>{
+    const stamp=document.querySelector('meta[name="paqvilo-code-app-config"]')?.content;
+    if(stamp) import.meta.hot.send('paqvilo:config-check',{stamp});
+  };
+  import.meta.hot.on('vite:ws:connect',checkConfiguration);
+  checkConfiguration();
+  import.meta.hot.dispose(()=>{
+    import.meta.hot.off('vite:ws:connect',checkConfiguration);
+    setDataOperationExecutor(undefined);
+  });
+}
 `;
       if (id === '\0' + APP)
         return `
@@ -197,7 +232,16 @@ export { setConfig } from ${JSON.stringify('/@fs/' + nativeApp)};
         visit(parse(html, { sourceCodeLocationInfo: true }));
         for (const [start, end, replacement] of edits.sort((a, b) => b[0] - a[0]))
           html = html.slice(0, start) + replacement + html.slice(end);
-        return html;
+        return {
+          html,
+          tags: [
+            {
+              tag: 'meta',
+              attrs: { name: 'paqvilo-code-app-config', content: configurationStamp() },
+              injectTo: 'head-prepend',
+            },
+          ],
+        };
       },
     },
   };

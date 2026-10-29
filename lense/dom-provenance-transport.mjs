@@ -200,16 +200,18 @@ export function createDomProvenanceTransport(context, configs) {
         if (record.flushing || !record.objectId || closed || record.closed) return;
         record.flushing = true;
         try {
-          if (record.limitReason && !record.limitSent) {
-            record.limitSent = true;
-            await command('Runtime.callFunctionOn', {
-              objectId: record.objectId,
-              functionDeclaration: 'function(reason){return this.markLimited(reason)}',
-              arguments: [{ value: record.limitReason }],
-              returnByValue: true,
-            });
-          }
           do {
+            // New bindings can overflow the pending queue while a preceding
+            // batch is awaiting its protocol acknowledgement.
+            if (record.limitReason && !record.limitSent) {
+              await command('Runtime.callFunctionOn', {
+                objectId: record.objectId,
+                functionDeclaration: 'function(reason){return this.markLimited(reason)}',
+                arguments: [{ value: record.limitReason }],
+                returnByValue: true,
+              });
+              record.limitSent = true;
+            }
             record.dirty = false;
             if (loaders.get(record.frameId) !== record.loaderId) break;
             const batch = [];
