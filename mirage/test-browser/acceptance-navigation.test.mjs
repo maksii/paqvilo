@@ -46,6 +46,8 @@ async function navigationFixture(
     crossOrigin = false,
     // The triggering click and its settlement default to the runner's deadline; tests about budgets set it.
     timeout,
+    // A test asserting that settlement fails sets only this, so the click keeps its own deadline.
+    settleTimeout = timeout,
     navigationCommitReserveMs,
     gateDocumentOnWrites = false,
     controlledLateWrites = late,
@@ -256,7 +258,7 @@ async function navigationFixture(
           // The budgets under test belong to the triggering action and its settlement; page loads keep the
           // runner's default deadline, so a slow cold load cannot consume them.
           { action: 'click', selector: '#save', timeout, ...(embedded ? { frame: '#child' } : {}) },
-          { action: 'settle', timeout },
+          { action: 'settle', timeout: settleTimeout },
           ...(!noCommit && !noContent && !resetNavigation && !noNavigation
             ? [{ action: 'visible', selector: '#done', ...(embedded ? { frame: '#child' } : {}) }]
             : []),
@@ -295,7 +297,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       `a hash change cannot retire a hanging read (${noNavigation ? 'no navigation' : '204 navigation'})`,
       HANG_GUARD,
       async (t) => {
-        const flow = await navigationFixture(t, { noCommit: true, noNavigation, timeout: 2500 });
+        const flow = await navigationFixture(t, { noCommit: true, noNavigation, settleTimeout: 2500 });
         assert.equal(flow.passed, false);
         assert.match(flow.error, /Portal requests did not settle.*GET.*never/);
         assert.equal(flow.navigationCancelledRequests?.length ?? 0, 0);
@@ -309,7 +311,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       let releaseDocumentResponse;
       const flow = await navigationFixture(t, {
         noCommit: true,
-        timeout: 2500,
+        settleTimeout: 2500,
         scheduleDocumentResponse: (callback) => {
           releaseDocumentResponse = callback;
         },
@@ -425,7 +427,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     );
 
   test('replacement document requests remain pending after retiring its predecessor', HANG_GUARD, async (t) => {
-    const flow = await navigationFixture(t, { replacementRead: true, late: true, timeout: 2500 });
+    const flow = await navigationFixture(t, { replacementRead: true, late: true, settleTimeout: 2500 });
     assert.equal(flow.passed, false);
     assert.match(flow.error, /Portal requests did not settle.*GET.*never/);
     assert.equal(flow.navigationCancelledRequests?.length, 2);
