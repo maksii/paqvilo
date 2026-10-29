@@ -1,9 +1,9 @@
 // The _sim environment variable PUT keeps one value row per definition when the Solution has the definition but no value,
 // including across a Solution re-seed. The admin pattern follows admin-api.test.mjs.
 import test from 'node:test';
+import { environmentVariableFixture, adminJsonCaller } from './fixtures/source-site.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { ownedFixture } from '../testing/owned-fixture.mjs';
@@ -14,17 +14,7 @@ const lowerId = (value) =>
     .toLowerCase();
 
 test('_sim environment variable PUT keeps exactly one value row per definition across re-seeding', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-sim-envput-'));
-  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
-  const portal = path.join(dir, 'portal'),
-    solution = path.join(dir, 'solution');
-  for (const [name, body] of Object.entries({
-    'website.yml': 'adx_websiteid: site\nadx_name: Variables',
-    'web-pages/home/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /',
-  })) {
-    await fs.mkdir(path.dirname(path.join(portal, name)), { recursive: true });
-    await fs.writeFile(path.join(portal, name), body);
-  }
+  const { dir, portal, solution } = await environmentVariableFixture(t, 'pp-sim-envput-');
   // A definition with no environmentvariablevalues.json: the Solution has no value row to seed.
   const variable = path.join(solution, 'environmentvariabledefinitions', 'sample_NoValue');
   await fs.mkdir(variable, { recursive: true });
@@ -39,15 +29,7 @@ test('_sim environment variable PUT keeps exactly one value row per definition a
     solutionRoots: [solution],
   });
   ownedFixture(t).add(() => app.close());
-  const csrf = app.csrf;
-  const call = async (route, method = 'GET', body) => {
-    const response = await fetch(app.url + route, {
-      method,
-      headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    return { status: response.status, json: await response.json().catch(() => null) };
-  };
+  const call = adminJsonCaller(app);
   const definition = async () =>
     (await call('/__sim/api/environment')).json.environmentVariables.definitions.find(
       (item) => item.schemaName === 'sample_NoValue',

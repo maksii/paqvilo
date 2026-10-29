@@ -7,7 +7,7 @@ import { createPersonaContexts } from '../lib/persona-contexts.mjs';
 import { createSimulator } from '../server.mjs';
 import { fixture, initial } from './fixtures/platform-experiments.mjs';
 import { personaFixture, contactId } from './fixtures/persona-catalog.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('warming the persona cache anonymously does not change reported defaults or leak browser sessions', async (t) => {
   const { app } = await personaFixture(t);
@@ -35,7 +35,7 @@ test('warming the persona cache anonymously does not change reported defaults or
 });
 
 test('failed context cleanup cannot be reused and does not prevent other runtimes closing', async (t) => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'context-audit-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'context-audit-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const paths = [],
     stopped = [];
@@ -74,7 +74,7 @@ test('failed context cleanup cannot be reused and does not prevent other runtime
 });
 
 test('operator configuration reads avoid cloning unrelated business tables', async (t) => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'operator-reads-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'operator-reads-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fixture(root);
   const app = await createSimulator({ sourceDir: root, initial: initial(), watch: false });
@@ -98,7 +98,7 @@ test('operator configuration reads avoid cloning unrelated business tables', asy
 });
 
 test('a bridge cleanup failure still releases the runtime HTTP listener', async (t) => {
-  const root = await fs.mkdtemp(join(tmpdir(), 'runtime-close-audit-'));
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'runtime-close-audit-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await fixture(root);
   const app = await createSimulator({ sourceDir: root, initial: initial(), watch: false });

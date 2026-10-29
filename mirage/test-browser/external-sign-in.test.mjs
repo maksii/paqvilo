@@ -6,7 +6,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -101,7 +101,7 @@ const state = {
 };
 
 async function portal(t, settings, header) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-external-browser-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-external-browser-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files(settings, header))) {
     await fs.mkdir(path.dirname(path.join(directory, name)), { recursive: true });

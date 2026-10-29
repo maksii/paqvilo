@@ -39,7 +39,6 @@ async function fixture(t) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const page = await browser.newPage();
-  page.setDefaultTimeout(5000);
   t.after(async () => {
     await page.close();
     server.closeAllConnections();
@@ -57,42 +56,34 @@ async function fixture(t) {
   };
 }
 
-test(
-  'a delayed first reload stream catches source changes made after document rendering',
-  { timeout: 15000 },
-  async (t) => {
-    const app = await fixture(t);
-    await app.page.goto(app.origin);
-    const announce = await app.nextStream();
-    assert.equal(await app.page.evaluate(() => window.__portalSimulation.revision), 1);
-    app.advance();
-    announce();
-    await app.page.waitForFunction(() => window.__portalSimulation?.revision === 2);
-    assert.equal(app.documents(), 2, 'one stale document is replaced by its current source revision');
-  },
-);
+test('a delayed first reload stream catches source changes made after document rendering', async (t) => {
+  const app = await fixture(t);
+  await app.page.goto(app.origin);
+  const announce = await app.nextStream();
+  assert.equal(await app.page.evaluate(() => window.__portalSimulation.revision), 1);
+  app.advance();
+  announce();
+  await app.page.waitForFunction(() => window.__portalSimulation?.revision === 2);
+  assert.equal(app.documents(), 2, 'one stale document is replaced by its current source revision');
+});
 
-test(
-  'current ready events preserve the document and a resumed stream reconciles a missed change',
-  { timeout: 15000 },
-  async (t) => {
-    const app = await fixture(t);
-    await app.page.goto(app.origin);
-    const first = await app.nextStream();
-    await app.page.evaluate(() => {
-      window.readyObserved = new Promise((resolve) =>
-        window.__portalSimulation.reloadStream.addEventListener('ready', resolve, { once: true }),
-      );
-    });
-    first();
-    await app.page.evaluate(() => window.readyObserved.then(() => null));
-    assert.equal(app.documents(), 1, 'connecting at the rendered revision must not reload');
-    await app.page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
-    app.advance();
-    await app.page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow')));
-    const resumed = await app.nextStream();
-    resumed();
-    await app.page.waitForFunction(() => window.__portalSimulation?.revision === 2);
-    assert.equal(app.documents(), 2);
-  },
-);
+test('current ready events preserve the document and a resumed stream reconciles a missed change', async (t) => {
+  const app = await fixture(t);
+  await app.page.goto(app.origin);
+  const first = await app.nextStream();
+  await app.page.evaluate(() => {
+    window.readyObserved = new Promise((resolve) =>
+      window.__portalSimulation.reloadStream.addEventListener('ready', resolve, { once: true }),
+    );
+  });
+  first();
+  await app.page.evaluate(() => window.readyObserved.then(() => null));
+  assert.equal(app.documents(), 1, 'connecting at the rendered revision must not reload');
+  await app.page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
+  app.advance();
+  await app.page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow')));
+  const resumed = await app.nextStream();
+  resumed();
+  await app.page.waitForFunction(() => window.__portalSimulation?.revision === 2);
+  assert.equal(app.documents(), 2);
+});

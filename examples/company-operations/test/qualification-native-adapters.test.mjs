@@ -14,6 +14,7 @@ import {
 } from '../portal-security/qualification-native-adapters.mjs';
 import { planQualificationFixtures } from '../portal-security/qualification-fixtures.mjs';
 import { equipmentLifecycleConfigurations } from '../portal-security/qualification-priority.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const id = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const actor = id(1),
@@ -69,7 +70,7 @@ function api() {
 }
 let apiCurrent;
 async function workspace(run) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'qualification-native-adapters-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'qualification-native-adapters-'));
   try {
     await run(path.join(directory, 'lease.json'));
   } finally {

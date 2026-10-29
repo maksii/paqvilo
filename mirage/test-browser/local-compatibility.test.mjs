@@ -6,10 +6,10 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('clean source-only forms use local date and rich-text compatibility assets with explicit mode', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'local-compatibility-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'local-compatibility-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Test',
@@ -79,7 +79,7 @@ test('clean source-only forms use local date and rich-text compatibility assets 
   });
   await page.goto(app.url);
   try {
-    await page.waitForFunction(() => window.sourceGlobals?.plugin === 'function', null, { timeout: 5000 });
+    await page.waitForFunction(() => window.sourceGlobals?.plugin === 'function');
   } catch {
     throw new Error(
       JSON.stringify({

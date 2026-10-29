@@ -17,7 +17,7 @@ import {
 } from '../lib/platform-manifest.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 import { injectRuntime } from '../lib/platform.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '5a1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f';
 const CONTACT = 'c0000000-0000-4000-8000-000000000011';
@@ -186,7 +186,7 @@ async function shellFixture(t, options) {
   return shell;
 }
 async function startShell({ shellProfile, settings = [], observed = null } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-shell-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-shell-'));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Shell\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
     'Home.webpage.yml':
@@ -421,7 +421,7 @@ test('local platform files are dated by their file and answer conditional reques
 });
 
 test('an exported web file at a native platform path wins over the local equivalent', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-webfile-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-webfile-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.mkdir(path.join(dir, 'web-files'), { recursive: true });
   await fs.writeFile(path.join(dir, 'website.yml'), `adx_websiteid: ${SITE}\nadx_name: Files`);
@@ -455,7 +455,7 @@ test('an exported web file at a native platform path wins over the local equival
 });
 
 test("legacy ASPX page templates render their WebForms layout with the page's attached form and list", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-rewrite-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-rewrite-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Rewrite\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
@@ -1118,7 +1118,7 @@ test("the captcha challenge image and audio answer as the platform's resource ha
 });
 
 test('an HTML web resource is served as a page; other web resources keep their private caching', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-webresource-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-webresource-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const portal = path.join(dir, 'portal'),
     solution = path.join(dir, 'solution');

@@ -12,8 +12,9 @@ import {
 import { formCells } from '../lib/native-services.mjs';
 import { approximateFormSchema } from '../lib/form-schema-fallback.mjs';
 import { formattedValue, isDateOnlyField } from '../lib/dataverse-values.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 async function fixture(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-metadata-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-metadata-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, xml] of Object.entries(files)) {
     const file = path.join(root, name);

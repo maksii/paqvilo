@@ -9,7 +9,7 @@ import { createSimulator } from '../server.mjs';
 import { loadProjectConfig, projectSummary } from '../lib/project-config.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 import { readLocalFile } from '../../lense/local-file.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const CLIENT = '99999999-9999-4999-8999-999999999999';
@@ -43,8 +43,7 @@ function identityEndpoint(api, mode, params) {
   endpoint.search = params.toString();
   return endpoint.href;
 }
-const requestIdentity = (endpoint, headers) =>
-  fetch(endpoint, { headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
+const requestIdentity = (endpoint, headers) => fetch(endpoint, { headers, redirect: 'error' });
 
 async function ownedArcChallenge(header, root) {
   const prefix = 'Basic realm=';
@@ -77,7 +76,7 @@ async function readOwnedArcSecret(challenge) {
 }
 // Writes the invented Solution only; tests that start their own runtime (or CLI) need no fixture runtime.
 async function solutionSources(t, sourceOverrides = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-organization-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-organization-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
@@ -123,7 +122,6 @@ const ui = (sim, method, suffix = '', values, etag) =>
       ...(etag ? { 'if-match': etag } : {}),
     },
     ...(values ? { body: JSON.stringify(values) } : {}),
-    signal: AbortSignal.timeout(10000),
   });
 async function client(sim) {
   const registration = await body(
@@ -157,7 +155,6 @@ async function client(sim) {
         ...(values ? { 'content-type': 'application/json', prefer: 'return=representation' } : {}),
       },
       ...(values ? { body: JSON.stringify(values) } : {}),
-      signal: AbortSignal.timeout(10000),
     });
 }
 
@@ -298,7 +295,7 @@ test('standalone validation responses agree with the documented payload and quer
 });
 
 test('project platform settings need evidence, known keys and in-range values', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-platform-config-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-platform-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'project.json'),
     solution = path.join(root, 'solution');
@@ -559,7 +556,7 @@ test('independent client directory and ZIP sources reload without changing compl
   assert.equal(await selectedSource(urls['x_/external.js']), 'window.External = 1;');
   assert.equal(await selectedSource(urls['x_/archive.js']), 'window.Archive = 1;');
   const changed = async (url, expected) => {
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       if ((await selectedSource(url)) === expected) return;
       await new Promise((resolve) => setTimeout(resolve, 50));

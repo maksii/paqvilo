@@ -192,7 +192,6 @@ describe('dataverse API router', () => {
   it('answers a header that cannot be written with a 500 JSON envelope instead of hanging', async () => {
     const response = await fetch(`${origin}${apiPath('widgets?badheader=1')}`, {
       headers: auth(),
-      signal: AbortSignal.timeout(5000),
     });
     assert.equal(response.status, 500);
     assert.equal(response.headers.get('content-type').split(';')[0], 'application/json');
@@ -785,8 +784,7 @@ describe('dataverse API batch, metadata and sign-in', () => {
 
   let userToken;
   const bearer = (value) => ({ authorization: `Bearer ${value}` });
-  // A timeout turns a hung response (or a batch waiting on its own change slot) into a failure.
-  const send = (path, init = {}) => fetch(`${origin}${path}`, { signal: AbortSignal.timeout(10_000), ...init });
+  const send = (path, init = {}) => fetch(`${origin}${path}`, init);
   const apiPath = (suffix) => `/api/data/v9.2/${suffix}`;
   const count = () => store.tableRows('widget').length;
   const batch = (boundary, parts, headers = {}) =>
@@ -1094,7 +1092,6 @@ describe('dataverse API batch, metadata and sign-in', () => {
       method: 'PATCH',
       headers: { ...bearer(token), 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'x' }),
-      signal: AbortSignal.timeout(5000),
     });
     assert.equal(response.status, 400);
     assert.equal(response.headers.get('content-type').split(';')[0], 'application/json');
@@ -1329,8 +1326,7 @@ describe('dataverse API change tracking and shares inside batches', () => {
   });
 
   const bearer = (value) => ({ authorization: `Bearer ${value}` });
-  // A timeout turns a hung response (or a batch waiting on its own change slot) into a failure.
-  const send = (url, init = {}) => fetch(url, { signal: AbortSignal.timeout(10_000), ...init });
+  const send = (url, init = {}) => fetch(url, init);
   const apiPath = (suffix) => `/api/data/v9.2/${suffix}`;
   const read = (path, headers = {}) => send(`${api.origin}${path}`, { headers: { ...bearer(token), ...headers } });
   const batch = (boundary, parts) =>

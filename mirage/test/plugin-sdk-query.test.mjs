@@ -8,6 +8,7 @@ import { dispatchSdkCall, recordToSdkEntity, prepareClrRuntime } from '../lib/pl
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   rootId = '20000000-0000-0000-0000-000000000001',
   childId = '30000000-0000-0000-0000-000000000001',
@@ -86,7 +87,7 @@ test(
   'Original CLR QueryExpression count controls survive both SDK codec directions and provider metadata',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-count-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-sdk-count-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'Count.cs'),

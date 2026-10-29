@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { prepareNativeControls } from './native-controls-fixture.mjs';
 
 const chrome = sharedBrowser();
 // Control-only tests render into one shared simulator page origin; saved-record tests own theirs.
@@ -13,11 +14,9 @@ let sharedApp;
 async function fixture(t, { timezoneId = 'America/New_York' } = {}) {
   const { origin } = await (sharedApp ??= modelDrivenFixture(scope));
   const page = await chrome.page(t, { timezoneId, viewport: { width: 1200, height: 900 } });
-  page.setDefaultTimeout(5000);
-  await page.goto(origin + '/main.aspx');
-  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready');
+  await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
     const form = document.createElement('form');
     form.style.width = '900px';
@@ -244,7 +243,7 @@ test('date-time controls preserve independent wall time, convert user-local valu
   assert.equal(await page.evaluate(() => window.fields.independent.read()), '2024-02-29T23:45:00.000Z');
   assert.equal(await page.evaluate(() => window.submits), 0);
   const dateOnly = await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const renderControl = window.renderFixtureControl;
     const control = renderControl(
       { name: 'x_date', type: 'date', dateTimeBehavior: 'DateOnly' },
       '2026-06-15T14:30:00Z',

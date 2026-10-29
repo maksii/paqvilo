@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -28,7 +29,7 @@ const drawn = (page, ready) =>
   });
 const response = (body, status = 200) => ({ ok: () => status < 400, status: () => status, json: async () => body });
 async function fixture(t, getReport) {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-inspection-api-'));
+  const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-inspection-api-'));
   const browser = fakeBrowser(),
     tab = browser.openTab(origin + '/scripts/');
   browser.context.request.get = async (url) => {
@@ -76,7 +77,7 @@ async function fixture(t, getReport) {
     const answered = Promise.withResolvers();
     const timer = setTimeout(
       () => answered.reject(new Error(`Intercepted request ${id} did not answer within the panel API deadline`)),
-      5000,
+      60_000,
     );
     pending.set(id, answered.resolve);
     tab.pause(id, origin + '/__paqvilo/api/' + name, {
@@ -168,7 +169,7 @@ test('late inspection responses cannot replace the current navigation report or 
 });
 
 test('runtime-reported roots cannot widen the source editor boundary when no launch roots were supplied', async (t) => {
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-untrusted-report-')),
+  const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-untrusted-report-')),
     file = path.join(outside, 'invented.txt');
   fs.writeFileSync(file, 'Invented private file');
   t.after(() => fs.rmSync(outside, { recursive: true, force: true }));

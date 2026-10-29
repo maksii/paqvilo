@@ -8,12 +8,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
 import { assertAcceptanceCapabilities, runAcceptance } from '../acceptance.mjs';
-import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { composeHostDescription } from '../lib/organization-host.mjs';
 import { fixedClock } from '../testing.mjs';
 
 async function standalone(t, options = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-capabilities-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-capabilities-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
@@ -45,7 +45,7 @@ after(async () => {
 let sharedPortal;
 const portal = () => (sharedPortal ??= startPortal());
 async function startPortal() {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-capabilities-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-capabilities-'));
   sharedRemovers.push(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(
     path.join(dir, 'website.yml'),
@@ -155,7 +155,7 @@ test('portal state carries the registry summary; preflight answers over HTTP and
 
 for (const persistent of [false, true])
   test(`${persistent ? 'persistent' : 'dry-run'} host supports first-send, scheduled delivery and outbox with explicit restart semantics`, async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'host-messaging-lifetime-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'host-messaging-lifetime-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     const clock = fixedClock();
     const options = {
@@ -194,7 +194,7 @@ for (const persistent of [false, true])
 
 test('strict acceptance refuses a required capability that is not executable before any browser starts', async (t) => {
   const sim = await portal();
-  const outputDir = await fs.mkdtemp(path.join(os.tmpdir(), 'acceptance-requires-'));
+  const outputDir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'acceptance-requires-'));
   t.after(() => fs.rm(outputDir, { recursive: true, force: true }));
   await assert.rejects(
     runAcceptance({

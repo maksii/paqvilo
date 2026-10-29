@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -17,7 +18,7 @@ const environment = Object.fromEntries(
   ),
 );
 async function project(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'init-browser-acceptance-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'init-browser-acceptance-'));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   await prepareProject(root, { name: 'acceptance-fixture', noVscode: true, noPack: true });
   await fs.mkdir(path.join(root, 'node_modules'));

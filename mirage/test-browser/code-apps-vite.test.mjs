@@ -10,7 +10,7 @@ import { createServer, build } from 'vite';
 import { createSimulator } from '../api.mjs';
 import { codeApps } from '../lib/code-apps-vite.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const browser = sharedBrowser();
 const toolkit = fileURLToPath(new URL('../../', import.meta.url));
@@ -35,8 +35,10 @@ test(
   'two ordinary SDK Vite apps load, switch, edit and debug through the local workbench',
   { timeout: 60000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-code-app-vite-'));
-    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paq-code-app-vite-')));
+    ownedFixture(t).remove(() => removeFixtureDirectory(root));
+    let release;
+    ownedFixture(t).add(() => release?.());
     await fs.symlink(path.join(toolkit, 'node_modules'), path.join(root, 'node_modules'), 'junction');
     const solution = path.join(root, 'solution');
     await fs.mkdir(path.join(solution, 'Entities/x_item'), { recursive: true });
@@ -104,7 +106,6 @@ test(
       );
     }
     const page = await browser.page(t);
-    page.setDefaultTimeout(10000);
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     const csrf = sim.state().csrf;
@@ -122,7 +123,7 @@ test(
       ).status(),
       200,
     );
-    let release, requested;
+    let requested;
     const gate = new Promise((resolve) => {
       release = resolve;
     });
@@ -137,9 +138,6 @@ test(
         await gate;
       }
       await route.continue();
-    });
-    ownedFixture(t).add(() => {
-      release();
     });
     await page.goto(origin + '/_apps/code/?app=alpha');
     await arrived;

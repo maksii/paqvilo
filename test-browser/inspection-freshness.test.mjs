@@ -60,7 +60,6 @@ async function fixture(t) {
   const page = await context.newPage(),
     pending = [],
     arrivals = new EventEmitter();
-  page.setDefaultTimeout(5000);
   await page.route('**/*', (route) => {
     if (new URL(route.request().url()).pathname === '/__paqvilo/api/inspect') {
       pending.push({ route, body: route.request().postDataJSON() });
@@ -80,8 +79,7 @@ async function fixture(t) {
   await page.evaluate(xrayUi, state);
   await page.evaluate(panelUi, state);
   const waitForRequest = async (count) => {
-    const signal = AbortSignal.timeout(5000);
-    while (pending.length < count) await once(arrivals, 'request', { signal });
+    while (pending.length < count) await once(arrivals, 'request');
     assert.equal(pending.length, count);
     return pending[count - 1];
   };

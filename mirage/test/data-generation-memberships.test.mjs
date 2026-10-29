@@ -8,6 +8,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const contactId = '11111111-1111-4111-8111-111111111111';
 const roleId = '22222222-2222-4222-8222-222222222222';
@@ -106,7 +107,7 @@ test('materialization and membership identity agree on decorated contact and exp
 });
 
 test('data generate materializes memberships only when opted in, remains idempotent and never writes state from bad input', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'generate-memberships-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'generate-memberships-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const source = path.join(directory, 'portal'),
     stateFile = path.join(directory, 'state.json'),

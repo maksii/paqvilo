@@ -1,4 +1,5 @@
-import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+
 // Explicit acceptance suite, run with npm run test:browser; it never reads the repository's site/environment catalogue.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -39,7 +40,7 @@ test(
   { timeout: 120_000 },
   async (t) => {
     const fx = createFixture();
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-browser-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-browser-'));
     let context;
     let detach;
     let panel;
@@ -137,7 +138,6 @@ test(
         '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
       ],
     });
-    context.setDefaultTimeout(15_000);
     const session = new OverlaySession({
       sourceDir: fx.dir,
       origin: local.origin,

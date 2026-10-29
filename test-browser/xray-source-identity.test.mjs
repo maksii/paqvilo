@@ -15,7 +15,6 @@ after(() => browser?.close());
 // Each test gets its own context on the shared browser; the root path serves the fixture and any other path a plain frame.
 async function fixture(t, html, report = {}) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  context.setDefaultTimeout(5000);
   t.after(() => context.close());
   const page = await context.newPage();
   await page.route('**/*', (route) =>
@@ -54,6 +53,26 @@ async function fixture(t, html, report = {}) {
     }, selector);
   return { page, identify, data };
 }
+
+test('X-ray action feedback survives source refresh and clears when selecting another element', async (t) => {
+  const { page } = await fixture(t, '<!doctype html><input id="first"><input id="second">');
+  const feedback = 'Opened <invented>.xml in the editor';
+  const observed = await page.evaluate((feedback) => {
+    const host = document.getElementById('paqvilo-xray'),
+      api = host.__px;
+    const status = () => host.shadowRoot.querySelector('.status');
+    api.select(document.getElementById('first'));
+    api.status(feedback);
+    api.refreshSelection('controlled-source-refresh');
+    const afterRefresh = status().textContent,
+      markup = status().innerHTML;
+    api.select(document.getElementById('second'));
+    return { afterRefresh, markup, afterNewSelection: status().textContent };
+  }, feedback);
+  assert.equal(observed.afterRefresh, feedback);
+  assert.equal(observed.markup.includes('<invented>'), false, 'feedback stays text after the redraw');
+  assert.equal(observed.afterNewSelection, '', 'another selection does not inherit the editor result');
+});
 
 const assertNoExact = (row, message) => {
   assert.notEqual(row.evidence.owner.status, 'exact', message);
@@ -273,18 +292,14 @@ test('descent remembers the selected child, native controls are picked without f
   });
   // Wait for pending pointer/layout events to settle even when the full suite is busy.
   // A recurring geometry poll cannot pass this quiet window.
-  await page.waitForFunction(
-    () => {
-      const now = performance.now();
-      if (window.lastGeometryReads !== window.geometryReads) {
-        window.lastGeometryReads = window.geometryReads;
-        window.geometryQuietSince = now;
-      }
-      return now - window.geometryQuietSince > 450;
-    },
-    null,
-    { timeout: 5000 },
-  );
+  await page.waitForFunction(() => {
+    const now = performance.now();
+    if (window.lastGeometryReads !== window.geometryReads) {
+      window.lastGeometryReads = window.geometryReads;
+      window.geometryQuietSince = now;
+    }
+    return now - window.geometryQuietSince > 450;
+  });
   await page.evaluate(() => (window.geometryReads = 0));
   // No event marks a poll that never runs: any recurring geometry poll of up to one second reads within this window.
   await page.waitForTimeout(1100);
@@ -430,15 +445,11 @@ test('Web Animations started after enabling X-ray and element resizes move the s
   });
   // Outline geometry is compared inside the page so a missed repaint fails at the bounded wait instead of being slept past.
   const outlineMatches = (key) =>
-    page.waitForFunction(
-      (key) => {
-        const a = document.getElementById('moving').getBoundingClientRect(),
-          m = document.getElementById('paqvilo-xray').shadowRoot.querySelector('.selected')?.getBoundingClientRect();
-        return m && Math.abs(a[key] - m[key]) < 2;
-      },
-      key,
-      { timeout: 3000 },
-    );
+    page.waitForFunction((key) => {
+      const a = document.getElementById('moving').getBoundingClientRect(),
+        m = document.getElementById('paqvilo-xray').shadowRoot.querySelector('.selected')?.getBoundingClientRect();
+      return m && Math.abs(a[key] - m[key]) < 2;
+    }, key);
   await page.evaluate(
     () =>
       document

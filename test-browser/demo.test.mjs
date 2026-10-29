@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 // Exercise the newcomer command itself, including browser launch and owned runtime cleanup.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,12 +13,13 @@ import { fileURLToPath } from 'node:url';
 import { childOutput } from './helpers/child-output.mjs';
 import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 import { freeDebugPort } from './helpers/debug-port.mjs';
+import { DEV_READY } from '../lense/dev-messages.mjs';
 
 test(
   'demo command opens a populated browser, supports the walkthrough and stops its Mirage',
   { timeout: 180_000 },
   async (t) => {
-    const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-demo-browser-'));
+    const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-demo-browser-'));
     const directory = path.join(work, 'example');
     const debugPort = await freeDebugPort();
     const cli = process.env.PAQVILO_DEMO_CLI || fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
@@ -77,12 +79,10 @@ test(
     });
     // dev prints its debugger port once the owned browser is listening on it.
     await output.waitFor(new RegExp(`debugger\\s+port ${debugPort}\\b`), {
-      timeoutMs: 120_000,
       label: 'Demo opening its browser',
     });
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
     const context = browser.contexts()[0];
-    context.setDefaultTimeout(15_000);
     // The normal dev lifecycle creates and navigates the first tab itself.
     const home = (candidate) => /^http:\/\/127\.0\.0\.1:\d+\/$/.test(candidate.url());
     const page =
@@ -103,6 +103,9 @@ test(
         context.on('page', watch);
       }));
     assert.ok(page, 'the command must open and navigate a browser without a manual console link');
+    // The tab can show the start page before the command's own startup navigation and resource wait finish;
+    // interact only once the command reports the session ready.
+    await output.waitFor(new RegExp(DEV_READY.replaceAll('.', String.raw`\.`)), { label: 'Demo reporting ready' });
     const url = new URL(page.url()).origin;
     // Keep the CLI's own interception intact. These authored sources and sign-in use only loopback.
     const errors = [];

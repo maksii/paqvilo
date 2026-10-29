@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { prepareNativeControls } from './native-controls-fixture.mjs';
 
 const chrome = sharedBrowser();
 // Tests that only render controls or read records share one simulator; tests that write own theirs.
@@ -14,9 +15,9 @@ const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
 test('duration choices and typed units preserve numeric minutes, keyboard focus and validation', async (t) => {
   const { origin } = await readOnlyApp();
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  await page.goto(origin + '/main.aspx');
+  await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const renderControl = window.renderFixtureControl;
     const form = document.createElement('form');
     form.innerHTML = '<div class="field"></div><button type="button" id="next">Next</button>';
     document.body.replaceChildren(form);
@@ -160,9 +161,9 @@ test('exported duration formats create the duration control and save whole minut
 test('opening duration below a sticky form header restores the field and full popup while keyboard scrolling stays inside the list', async (t) => {
   const { origin } = await readOnlyApp();
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  await page.goto(origin + '/main.aspx');
+  await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
     const root = document.createElement('div');
     root.className = 'record-content';

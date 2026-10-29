@@ -1,6 +1,6 @@
 // SDK verification gate: PowerPlatform-Dataverse-Client 1.1.0 + msal 1.39.0 (Python) against the Mirage Dataverse simulator over TLS.
-// Opt-in only (`node --test mirage/test-sdk/python-dataverse/gate.test.mjs`); not part of `npm run validate`.
-// Needs the venv at .paqvilo/sdk-gates/python-dataverse/.venv; the test skips with a message when it is missing.
+// Uses the prepared venv at .paqvilo/sdk-gates/python-dataverse/.venv. Optional direct runs report missing tooling;
+// PAQ_TEST_REQUIRE_SDK_GATES=1 makes an unavailable client fail verification instead of silently skipping it.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -30,10 +30,12 @@ const REQUIRED = [
 ];
 
 // Runs gate.py asynchronously: the simulator lives in this process, so a synchronous spawn would deadlock it.
-function runGate(gate) {
+function runGate(gate, signal) {
   return new Promise((resolve, reject) => {
     const child = spawn(PYTHON, ['-I', 'gate.py'], {
       cwd: HERE,
+      signal,
+      windowsHide: true,
       env: {
         ...process.env,
         SIM_TLS_ORIGIN: gate.tlsOrigin,
@@ -69,13 +71,17 @@ test(
   { timeout: 120_000 },
   async (t) => {
     if (!PYTHON) {
+      if (process.env.PAQ_TEST_REQUIRE_SDK_GATES === '1')
+        throw new Error(
+          'The required Python Dataverse SDK gate is unavailable; prepare its pinned virtual environment.',
+        );
       t.skip(`SDK venv missing at ${VENV}; create it with msal==1.39.0 and PowerPlatform-Dataverse-Client==1.1.0`);
       return;
     }
     const gate = await startGate({ tls: true });
     t.after(() => gate.close());
 
-    const { code, steps, stderr } = await runGate(gate);
+    const { code, steps, stderr } = await runGate(gate, t.signal);
     const trace = steps.find((step) => step.step === 'trace')?.detail ?? [];
     const failed = steps.filter((step) => !step.ok && !step.optional);
     assert.deepEqual(

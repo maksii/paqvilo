@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,7 +12,7 @@ test('signed-in verification launches the selected external child profile withou
   // The browser identity is under test, not the inline baseline: a plain export needs no Git repository.
   const fixture = createFixture();
   t.after(fixture.cleanup);
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-external-profile-'));
+  const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-external-profile-'));
   t.after(() => fs.rmSync(stateDir, { recursive: true, force: true }));
   const sourceDir = fixture.dir;
   const userDataDir = path.join(stateDir, 'browser');
@@ -82,7 +83,7 @@ test('strict mode treats truncated diagnostic text as incomplete even when prefi
 });
 
 test('JSON verification emits one final failure report when temporary cleanup also fails', async (t) => {
-  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-verify-cleanup-report-'));
+  const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-verify-cleanup-report-'));
   const remove = fs.rmSync;
   const removeAsync = fs.promises.rm;
   let temporary;

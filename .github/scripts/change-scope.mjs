@@ -107,6 +107,7 @@ function initialScope() {
     smoke: false,
     site: false,
     full: false,
+    sdk: false,
     // Required code-scanning comparisons need the same configurations as main,
     // including PRs that change only documentation or one source language.
     codeql: true,
@@ -183,6 +184,7 @@ export function classifyChanges(files, { root = toolkitRoot, full = false } = {}
     ])
       scope[name] = true;
   }
+  scope.sdk = scope.full || scope.mirage;
   return scope;
 }
 
@@ -200,6 +202,14 @@ export function ciLanes(kind, suites) {
     if (total === 1) return [{ suite }];
     return Array.from({ length: total }, (_, index) => ({ suite, shard: `${index + 1}/${total}` }));
   });
+}
+
+export function browserLanes(suites) {
+  return ciLanes('browser', suites).flatMap((lane) => [
+    { ...lane, os: 'ubuntu-24.04', channel: 'chromium' },
+    { ...lane, os: 'windows-2025', channel: 'chromium' },
+    { ...lane, os: 'windows-2025', channel: 'msedge' },
+  ]);
 }
 
 export function preCommitScripts(files) {
@@ -244,7 +254,9 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     ...scope,
     suites: JSON.stringify(suites.length ? suites : ['none']),
     units: JSON.stringify(suites.length ? ciLanes('unit', suites) : [{ suite: 'none' }]),
-    browsers: JSON.stringify(suites.length ? ciLanes('browser', suites) : [{ suite: 'none' }]),
+    browsers: JSON.stringify(
+      suites.length ? browserLanes(suites) : [{ suite: 'none', os: 'ubuntu-24.04', channel: 'chromium' }],
+    ),
   };
   fs.appendFileSync(
     process.env.GITHUB_OUTPUT,

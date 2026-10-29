@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -27,7 +28,7 @@ const runWithEnv = (cwd, overrides, ...args) =>
 const run = (cwd, ...args) => runWithEnv(cwd, {}, ...args);
 
 test('invalid action arguments are rejected before configuration or discovery reads', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli \u00fc '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli \u00fc '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const missing = path.join(cwd, 'missing \u00fc.json');
   const cases = [
@@ -53,7 +54,7 @@ test('invalid action arguments are rejected before configuration or discovery re
 });
 
 test('action-specific options cannot be silently ignored', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli \u00fc '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli \u00fc '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   for (const args of [
     ['mirage', 'status', '--port', '123', '--json'],
@@ -68,7 +69,7 @@ test('action-specific options cannot be silently ignored', async (t) => {
 });
 
 test('empty options, conflicting use selectors and non-decimal deadlines fail before loading configuration', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli \u00fc '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli \u00fc '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const cases = [
     ['list', '--config=', '--json'],
@@ -90,7 +91,7 @@ test('empty options, conflicting use selectors and non-decimal deadlines fail be
 });
 
 test('use selections and source paths with Unicode and special characters round-trip', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli \u00fc '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli \u00fc '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const repo = path.join(cwd, 'r\u00e9po & space');
   const source = path.join(repo, 'export #1');
@@ -122,7 +123,7 @@ test('use selections and source paths with Unicode and special characters round-
 });
 
 test('parse errors respect the option terminator when choosing output format', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const text = await run(cwd, 'list', '--bogus', '--', '--json');
   assert.equal(text.status, 1);
@@ -135,7 +136,7 @@ test('parse errors respect the option terminator when choosing output format', a
 });
 
 test('list reports a successfully written optional Solution cache', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli cache '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli cache '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   for (const [name, content] of Object.entries(FILES)) {
     const file = path.join(cwd, 'portal', name);
@@ -172,7 +173,7 @@ test('list reports a successfully written optional Solution cache', async (t) =>
 });
 
 test('use redacts environment URL queries and shell URL values', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli url '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli url '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const config = path.join(cwd, 'catalogue.json');
   fs.writeFileSync(
@@ -238,7 +239,7 @@ test('offline Mirage inspect forwards source selection and omits inherited runti
 });
 
 test('Mirage status finds its ownership directory without requiring the project or catalogue to remain present', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli status '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli status '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   for (const option of ['--project', '--config']) {
     const missing = path.join(cwd, 'removed.json');
@@ -251,7 +252,7 @@ test('Mirage status finds its ownership directory without requiring the project 
 });
 
 test('list redacts query and fragment values in configured and selected locations', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli list '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli list '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   for (const [name, content] of Object.entries(FILES)) {
     const file = path.join(cwd, 'portal', name);
@@ -298,7 +299,7 @@ test('list redacts query and fragment values in configured and selected location
 });
 
 test('parse failures identify interleaved commands and actions without treating option values as commands', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli parse '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli parse '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   for (const [args, expectedCommand, expectedAction] of [
     [['--json', 'list', '--unknown'], 'list', undefined],
@@ -317,7 +318,7 @@ test('parse failures identify interleaved commands and actions without treating 
 });
 
 test('command-specific options without a command fail instead of silently printing help', async (t) => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo cli no-command '));
+  const cwd = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo cli no-command '));
   t.after(() => fs.rmSync(cwd, { recursive: true, force: true }));
   const text = await run(cwd, '--config', 'missing.json');
   assert.equal(text.status, 1);

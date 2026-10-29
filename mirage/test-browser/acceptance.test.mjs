@@ -7,7 +7,7 @@ import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { runAcceptance } from '../acceptance.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // Each test owns its loopback server or simulator and the browser runAcceptance launches, and mostly waits
 // on fixture response delays, so a few run at once.
@@ -19,12 +19,14 @@ const HANG_GUARD = { timeout: 60_000 };
 const LONG_FLOW_HANG_GUARD = { timeout: 120_000 };
 describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
   test('acceptance settles abandoned frame writes and records navigation cancellations', HANG_GUARD, async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-detached-flow-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-detached-flow-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     const state = {
       config: { mode: 'local', pageMode: 'local', endpoints: [] },
       status: { sourceFingerprint: 'synthetic', implementationFingerprint: 'synthetic' },
     };
+    const observed = new Set(),
+      requestsObserved = Promise.withResolvers();
     const server = http.createServer((req, res) => {
       const route = new URL(req.url, 'http://fixture').pathname;
       if (route === '/__sim/api/state' || route === '/__sim/api/audit/export') {
@@ -33,12 +35,18 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       }
       if (route === '/slow-one' || route === '/slow-two') {
         req.resume();
+        observed.add(route);
+        if (observed.size === 2) requestsObserved.resolve();
+        return;
+      }
+      if (route === '/requests-observed') {
+        void requestsObserved.promise.then(() => res.end('ready'));
         return;
       }
       res.setHeader('content-type', 'text/html');
       if (route === '/frame')
         return res.end(
-          `<button id="save" onclick="fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{});setTimeout(()=>{parent.document.querySelector('#done').hidden=false;parent.document.querySelector('iframe').remove()},100)">Save</button>`,
+          `<button id="save" onclick="fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{});fetch('/requests-observed').then(response=>response.text()).then(()=>{parent.document.querySelector('#done').hidden=false;parent.document.querySelector('iframe').remove()})">Save</button>`,
         );
       res.end('<iframe id="child" src="/frame"></iframe><p id="done" hidden>Saved</p>');
     });
@@ -50,15 +58,15 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     const result = await runAcceptance({
       localUrl: `http://127.0.0.1:${server.address().port}`,
       outputDir: path.join(root, 'evidence'),
-      timeout: 3000,
       flows: [
         {
           name: 'Detached form frame',
           steps: [
             { action: 'navigate', path: '/' },
             { action: 'visible', frame: '#child', selector: '#save' },
-            { action: 'click', frame: '#child', selector: '#save' },
-            { action: 'settle' },
+            // Only the triggering action and its settlement carry the short budget; loads keep the default.
+            { action: 'click', frame: '#child', selector: '#save', timeout: 3000 },
+            { action: 'settle', timeout: 3000 },
             { action: 'visible', selector: '#done' },
           ],
         },
@@ -72,8 +80,10 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
   });
 
   test('acceptance records old main-document reads as cancelled after navigation commits', HANG_GUARD, async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-replaced-flow-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-replaced-flow-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    const observed = new Set(),
+      requestsObserved = Promise.withResolvers();
     const server = http.createServer((req, res) => {
       const route = new URL(req.url, 'http://fixture').pathname;
       if (route.startsWith('/__sim/api/')) {
@@ -89,12 +99,21 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
           ),
         );
       }
-      if (route.startsWith('/slow-')) return;
+      if (route.startsWith('/slow-')) {
+        req.resume();
+        observed.add(route);
+        if (observed.size === 2) requestsObserved.resolve();
+        return;
+      }
+      if (route === '/requests-observed') {
+        void requestsObserved.promise.then(() => res.end('ready'));
+        return;
+      }
       res.setHeader('content-type', 'text/html');
       res.end(
         route === '/done'
           ? '<p id="done">Saved</p>'
-          : `<button id="save" onclick="fetch('/slow-one').catch(()=>{});fetch('/slow-two').catch(()=>{});setTimeout(()=>location.href='/done',100)">Save</button>`,
+          : `<button id="save" onclick="fetch('/slow-one').catch(()=>{});fetch('/slow-two').catch(()=>{});fetch('/requests-observed').then(response=>response.text()).then(()=>location.href='/done')">Save</button>`,
       );
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -105,15 +124,14 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     const result = await runAcceptance({
       localUrl: `http://127.0.0.1:${server.address().port}`,
       outputDir: path.join(root, 'evidence'),
-      timeout: 3000,
       flows: [
         {
           name: 'Replaced page',
           steps: [
             { action: 'navigate', path: '/' },
-            { action: 'click', selector: '#save' },
+            { action: 'click', selector: '#save', timeout: 3000 },
             { action: 'visible', selector: '#done' },
-            { action: 'settle' },
+            { action: 'settle', timeout: 3000 },
           ],
         },
       ],
@@ -123,20 +141,29 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     assert.ok(result.flows[0].navigationCancelledRequests.every((row) => row.reason === 'document-replaced'));
   });
 
-  for (const [beforeNavigation, lateStart] of [
-    [false, 0],
-    [true, 0],
-    [true, 1200],
+  for (const [beforeNavigation, lateNavigation] of [
+    [false, false],
+    [true, false],
+    [true, true],
   ])
     test(
-      `acceptance settles writes that straddle a delayed document replacement (hold=${beforeNavigation}, late=${lateStart})`,
+      `acceptance settles writes that straddle a delayed document replacement (hold=${beforeNavigation}, late=${lateNavigation})`,
       HANG_GUARD,
       async (t) => {
-        const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-navigation-boundary-'));
+        const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-navigation-boundary-')));
         ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+        const documentRequested = Promise.withResolvers();
+        const beforeWriteObserved = Promise.withResolvers();
+        const lateWritesObserved = Promise.withResolvers();
+        const settlementStarted = Promise.withResolvers();
+        const writes = new Set();
         const server = http.createServer((req, res) => {
           const route = new URL(req.url, 'http://fixture').pathname;
+          req.resume();
           if (route.startsWith('/__sim/api/')) {
+            // The runner asks for audit proof only after entering its settle loop. Start the late navigation
+            // there, after the initial navigation-hold snapshot, instead of guessing with a 1200 ms timer.
+            if (route.endsWith('/audit/export') && writes.has('/slow-before')) settlementStarted.resolve();
             res.setHeader('content-type', 'application/json');
             return res.end(
               JSON.stringify(
@@ -149,12 +176,30 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
               ),
             );
           }
-          if (route.startsWith('/slow-')) return;
+          if (route.startsWith('/slow-')) {
+            writes.add(route);
+            if (route === '/slow-before') beforeWriteObserved.resolve();
+            if (writes.has('/slow-one') && writes.has('/slow-two')) lateWritesObserved.resolve();
+            return;
+          }
+          if (route === '/start-navigation') {
+            void Promise.all([
+              beforeWriteObserved.promise,
+              ...(lateNavigation ? [settlementStarted.promise] : []),
+            ]).then(() => res.end('navigate'));
+            return;
+          }
+          if (route === '/late-writes-ready') {
+            void documentRequested.promise.then(() => res.end('write'));
+            return;
+          }
           res.setHeader('content-type', 'text/html');
-          if (route === '/done')
-            return setTimeout(() => res.end('<p id="done">Saved</p>'), beforeNavigation ? 50 : 1500);
+          if (route === '/done') {
+            void lateWritesObserved.promise.then(() => res.end('<p id="done">Saved</p>'));
+            return;
+          }
           res.end(
-            `<form action="/done"><button id="save">Save</button></form><script>document.querySelector('form').addEventListener('submit',event=>{${lateStart ? `event.preventDefault();setTimeout(()=>location.href='/done',${lateStart});` : ''}${beforeNavigation ? `fetch('/slow-before',{method:'PATCH'}).catch(()=>{});` : ''}setTimeout(()=>{fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{})},150)})</script>`,
+            `<form action="/done"><button id="save">Save</button></form><script>document.querySelector('form').addEventListener('submit',event=>{${beforeNavigation ? `event.preventDefault();fetch('/slow-before',{method:'PATCH'}).catch(()=>{});fetch('/start-navigation').then(response=>response.text()).then(()=>location.href='/done');` : ''}fetch('/late-writes-ready').then(response=>response.text()).then(()=>{fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{})})})</script>`,
           );
         });
         await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -165,20 +210,26 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
         const result = await runAcceptance({
           localUrl: `http://127.0.0.1:${server.address().port}`,
           outputDir: path.join(root, 'evidence'),
-          timeout: 3000,
+          prepareContext: async (context) => {
+            context.on('request', (request) => {
+              if (request.isNavigationRequest() && new URL(request.url()).pathname === '/done')
+                documentRequested.resolve();
+            });
+          },
           flows: [
             {
               name: 'Late document writes',
               steps: [
                 { action: 'navigate', path: '/' },
-                { action: 'click', selector: '#save' },
-                { action: 'settle' },
+                { action: 'click', selector: '#save', timeout: 3000 },
+                { action: 'settle', timeout: 3000 },
                 { action: 'visible', selector: '#done' },
               ],
             },
           ],
         });
         assert.equal(result.passed, true, JSON.stringify(result.flows[0]));
+        assert.equal(writes.size, beforeNavigation ? 3 : 2);
         const cancelled = result.flows[0].navigationCancelledRequests;
         assert.equal(cancelled.length, beforeNavigation ? 3 : 2);
         assert.ok(cancelled.every((row) => row.reason === 'document-replaced'));
@@ -190,7 +241,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     'acceptance opens and settles a modal without counting frame lifecycle requests as portal failures',
     HANG_GUARD,
     async (t) => {
-      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-modal-acceptance-'));
+      const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-modal-acceptance-'));
       ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
       await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: site\nadx_name: Modal fixture');
       await fs.writeFile(
@@ -258,7 +309,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
   );
 
   test('acceptance retains Chromium script SyntaxErrors even when their stack is empty', HANG_GUARD, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-syntax-flow-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-syntax-flow-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     await fs.writeFile(
       path.join(directory, 'Home.webpage.yml'),
@@ -290,7 +341,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
     'acceptance records actual role refresh, create/edit persistence, screenshots and failed assertions',
     LONG_FLOW_HANG_GUARD,
     async (t) => {
-      const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-flow-'));
+      const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-flow-'));
       ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
       await fs.writeFile(
         path.join(directory, 'Home.webpage.yml'),
@@ -436,12 +487,12 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
             name: 'Incorrect control expectation',
             steps: [
               { action: 'navigate', path: '/' },
-              { action: 'value', selector: '#userroles', value: 'Wrong role' },
+              // The mismatch fails at this step's own deadline; the page load keeps the default.
+              { action: 'value', selector: '#userroles', value: 'Wrong role', timeout: 2000 },
             ],
           },
         ],
         outputDir: path.join(directory, 'failed-evidence'),
-        timeout: 2000,
       });
       assert.equal(failed.passed, false);
       assert.match(failed.flows[0].error, /expected field value/i);
@@ -451,7 +502,7 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
   );
 
   test('default navigation proceeds at DOM readiness and retains a slow request failure', HANG_GUARD, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-ready-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-ready-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     const state = {
       config: { mode: 'local', pageMode: 'local', live: { allowWrites: false }, endpoints: [] },
@@ -485,11 +536,16 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       flows: [
         {
           name: 'DOM ready with outstanding image request',
-          steps: [{ action: 'navigate', path: '/' }, { action: 'visible', selector: '#ready' }, { action: 'settle' }],
+          // The never-finishing image fails only the settlement, at its own deadline. Navigation keeps the
+          // default deadline, which it would exhaust if it waited for the load event.
+          steps: [
+            { action: 'navigate', path: '/' },
+            { action: 'visible', selector: '#ready' },
+            { action: 'settle', timeout: 1000 },
+          ],
         },
       ],
       outputDir: path.join(directory, 'evidence'),
-      timeout: 1000,
     });
     assert.equal(result.flows[0].steps[0].passed, true, JSON.stringify(result.flows[0]));
     assert.equal(result.flows[0].steps[1].passed, true);
@@ -500,5 +556,17 @@ describe('acceptance runner', { concurrency: TESTS_IN_PARALLEL }, () => {
       result.flows[0].resources.some((resource) => resource.url.endsWith('/never-finishes.png')),
       'the slow image remains visible in the request report',
     );
+    // A step deadline applies to its own step only, is recorded with it, and is validated like the flow's.
+    assert.deepEqual(
+      result.flows[0].steps.map((step) => step.timeout),
+      [undefined, undefined, 1000],
+    );
+    const invalid = await runAcceptance({
+      localUrl: `http://127.0.0.1:${server.address().port}`,
+      flows: [{ name: 'Invalid step deadline', steps: [{ action: 'navigate', path: '/', timeout: 0 }] }],
+      outputDir: path.join(directory, 'invalid'),
+    });
+    assert.equal(invalid.flows[0].passed, false);
+    assert.match(invalid.flows[0].error, /step timeout must be a positive finite number/);
   });
 });

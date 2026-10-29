@@ -7,7 +7,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const id = (n) => `10000000-0000-4000-8000-0000000000${String(n).padStart(2, '0')}`;
 const ROOT = id(41),
@@ -75,7 +75,7 @@ const initial = {
 };
 
 async function portalFixture(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-hierarchy-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-hierarchy-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });

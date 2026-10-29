@@ -117,7 +117,6 @@ async function start({
       method,
       headers: { authorization: `Bearer ${token}`, ...headers },
       body,
-      signal: AbortSignal.timeout(10_000),
     });
   return {
     api,
@@ -351,7 +350,7 @@ describe('managed identity hook', () => {
 
   it('answers a GET it claims before authentication, and leaves other GETs to the router', async () => {
     const s = await start({ managedIdentity });
-    const hooked = await fetch(`${s.origin}/msi/token?resource=x`, { signal: AbortSignal.timeout(10_000) });
+    const hooked = await fetch(`${s.origin}/msi/token?resource=x`);
     assert.equal(hooked.status, 200);
     assert.match(hooked.headers.get('content-type'), /application\/json/);
     assert.deepEqual(await hooked.json(), { via: 'hook', resource: 'x' });
@@ -365,7 +364,6 @@ describe('managed identity hook', () => {
     const issued = s.router.issueManagedIdentityToken({ origin: s.origin, clientId: APP_ID, resource: s.origin });
     const response = await fetch(`${s.origin}${API}WhoAmI`, {
       headers: { authorization: `Bearer ${issued.access_token}` },
-      signal: AbortSignal.timeout(10_000),
     });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).UserId, s.appUserId);

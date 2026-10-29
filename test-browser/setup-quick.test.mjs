@@ -1,6 +1,7 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Quick setup first run, as a person without configuration knowledge does it: open setup in a folder that only holds a
 // portal export, create the project from what was found, start the local preview, open it, and stop it.
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -37,9 +38,11 @@ async function ownPorts(config, t) {
   return { occupied, port };
 }
 // Waits for the started preview, or fails at once with the reason the page shows when it could not start.
+// A status poll that times out on a loaded host shows a recoverable notice and keeps trying; it is not a failure.
 async function started(run) {
   const running = run.getByText(/Your preview is running on this computer/);
-  await running.or(run.getByRole('alert')).first().waitFor({ timeout: 180_000 });
+  const failed = run.getByRole('alert').filter({ hasText: /The preview could not start/ });
+  await running.or(failed).first().waitFor({ timeout: 180_000 });
   assert.equal(await running.count(), 1, await run.innerText());
 }
 let browser;
@@ -48,34 +51,37 @@ before(async () => {
 });
 after(() => browser?.close());
 
+async function setupFixture(t, prefix) {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), prefix));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 }));
+  await fs.cp(path.join(root, 'examples/project/portal'), path.join(directory, 'exports', 'site'), {
+    recursive: true,
+  });
+  const config = path.join(directory, 'paqvilo.config.yml');
+  // Whatever the run leaves behind, the preview this test may have started is stopped.
+  ownedFixture(t).add(async () =>
+    spawnSync(process.execPath, [path.join(root, 'bin/paqvilo.mjs'), 'mirage', 'stop', '--config', config, '--json'], {
+      cwd: directory,
+      windowsHide: true,
+      timeout: 60_000,
+    }),
+  );
+  const server = await startSetupServer({ directory, processEnv: {} });
+  ownedFixture(t).add(() => server.close());
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  ownedFixture(t).add(() => context.close());
+  const page = await context.newPage();
+  const errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.goto(server.url);
+  return { directory, config, page, errors };
+}
+
 test(
   'quick setup creates a project from a found export, starts, opens and stops its preview',
   { timeout: 240_000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-quick-run-'));
-    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 }));
-    await fs.cp(path.join(root, 'examples/project/portal'), path.join(directory, 'exports', 'site'), {
-      recursive: true,
-    });
-    const config = path.join(directory, 'paqvilo.config.yml');
-    // Whatever the run leaves behind, the preview this test may have started is stopped.
-    ownedFixture(t).add(async () =>
-      spawnSync(
-        process.execPath,
-        [path.join(root, 'bin/paqvilo.mjs'), 'mirage', 'stop', '--config', config, '--json'],
-        { cwd: directory, windowsHide: true, timeout: 60_000 },
-      ),
-    );
-    const server = await startSetupServer({ directory, processEnv: {} });
-    ownedFixture(t).add(() => server.close());
-    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-    ownedFixture(t).add(() => context.close());
-    const page = await context.newPage();
-    page.setDefaultTimeout(15_000);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-
-    await page.goto(server.url);
+    const { config, page, errors } = await setupFixture(t, 'paqvilo-quick-run-');
     const create = page.locator('form[data-form=quick-create]');
     assert.match(await create.innerText(), /we found 1 website export/);
     assert.equal(await create.getByLabel(/Power Pages website/).isChecked(), true);
@@ -101,11 +107,7 @@ test(
 
     await page.locator('#quick-run').getByRole('button', { name: 'Stop' }).click();
     await page.locator('#quick-run').getByRole('button', { name: 'Start preview' }).waitFor({ timeout: 60_000 });
-    await assert.rejects(
-      fetch(website, { signal: AbortSignal.timeout(5000) }),
-      /fetch failed/,
-      'the stopped preview no longer answers',
-    );
+    await assert.rejects(fetch(website), /fetch failed/, 'the stopped preview no longer answers');
     assert.deepEqual(errors, []);
   },
 );
@@ -114,29 +116,7 @@ test(
   'All settings creates a project from what to run and the found exports, and starts it from Start & check',
   { timeout: 240_000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-all-run-'));
-    ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 }));
-    await fs.cp(path.join(root, 'examples/project/portal'), path.join(directory, 'exports', 'site'), {
-      recursive: true,
-    });
-    const config = path.join(directory, 'paqvilo.config.yml');
-    ownedFixture(t).add(async () =>
-      spawnSync(
-        process.execPath,
-        [path.join(root, 'bin/paqvilo.mjs'), 'mirage', 'stop', '--config', config, '--json'],
-        { cwd: directory, windowsHide: true, timeout: 60_000 },
-      ),
-    );
-    const server = await startSetupServer({ directory, processEnv: {} });
-    ownedFixture(t).add(() => server.close());
-    const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-    ownedFixture(t).add(() => context.close());
-    const page = await context.newPage();
-    page.setDefaultTimeout(15_000);
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-
-    await page.goto(server.url);
+    const { directory, config, page, errors } = await setupFixture(t, 'paqvilo-all-run-');
     await page.getByRole('button', { name: 'All settings' }).click();
     const create = page.locator('form[data-form=create]');
     assert.match(await create.innerText(), /found in this folder: 1 website export/);

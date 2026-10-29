@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { registerShellConventions } from '../lib/extensions.mjs';
 // A neutral footer logo container class (packs declare their own).
 registerShellConventions('test', { footerLogoClass: 'site-footer-logos' });
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { readFile, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AssetCache } from '../lib/asset-cache.mjs';
 import { capturePortalShell, extractShellReferences } from '../lib/shell-capture.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const origin = 'https://portal.example.test',
   cdn = 'https://content.powerapps.com';
@@ -19,7 +20,7 @@ const htmlResponse = (html) => ({
 const page = (head, body = '') => `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
 
 test('Bootstrap 5 postpreform bundles are retained as native runtime resources', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-v5-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-v5-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const script = '/resource/powerappsportal/dist/postpreform.BootstrapV5.bundle-abcdef.js';
   const live = livePage(page('<link rel="stylesheet" href="/platform.css">', `<script src="${script}"></script>`), {
@@ -35,7 +36,7 @@ test('Bootstrap 5 postpreform bundles are retained as native runtime resources',
 });
 
 test('external jQuery and local CSS external dependencies remain visible without blocking platform capture', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-external-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-external-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const file = join(directory, 'local.css');
   await writeFile(file, '@font-face{src:url("https://fonts.example.test/font.woff2")}');
@@ -66,7 +67,7 @@ test('external jQuery and local CSS external dependencies remain visible without
 });
 
 test('CSS relative URLs resolve identically with single, double and no quotes', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-quotes-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-quotes-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const live = livePage(page('<link rel="stylesheet" href="/css/style.css"><script src="/jquery.js"></script>'), {
     '/css/style.css': {
@@ -87,7 +88,7 @@ test('CSS relative URLs resolve identically with single, double and no quotes', 
 });
 
 test('optional third-party shell failures do not prevent applying captured platform styles', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-optional-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-optional-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const live = livePage(
     page(
@@ -107,7 +108,7 @@ test('optional third-party shell failures do not prevent applying captured platf
 });
 
 test('stylesheet capture accepts a loaded jQuery library with an authored filename', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-library-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-library-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const live = livePage(page('<link rel="stylesheet" href="/style.css"><script src="/project-library.js"></script>'), {
     '/style.css': { type: 'text/css', body: 'body{}' },
@@ -132,7 +133,7 @@ test('stylesheet capture accepts a loaded jQuery library with an authored filena
 });
 
 test('a shell without an observed jQuery provider cannot be applied', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-no-library-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-no-library-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const live = livePage(page('<link rel="stylesheet" href="/style.css">'), {
     '/style.css': { type: 'text/css', body: 'body{}' },
@@ -144,7 +145,7 @@ test('a shell without an observed jQuery provider cannot be applied', async (t) 
 });
 
 test('UTF-16 PAC stylesheet attachments capture their browser font dependencies', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-utf16-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-utf16-'));
   try {
     const file = join(directory, 'bootstrap.css');
     await writeFile(
@@ -175,7 +176,7 @@ test('UTF-16 PAC stylesheet attachments capture their browser font dependencies'
 });
 
 test('managed Moment dependency keeps its native phase before page content', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-moment-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-moment-'));
   try {
     const moment = '/resource/powerappsportal/dist/preform.moment_2_29_4.bundle-example.js';
     const live = livePage(
@@ -208,7 +209,7 @@ test('managed Moment dependency keeps its native phase before page content', asy
 });
 
 test('GUID-addressed PCF resources cache only verified static script or stylesheet responses', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-pcf-cache-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-pcf-cache-'));
   try {
     const css = '/_pcfwebresource/11111111-1111-1111-1111-111111111111';
     const js = '/_pcfwebresource/22222222-2222-2222-2222-222222222222';
@@ -255,7 +256,7 @@ function livePage(html, assets = {}) {
 }
 
 test('observed shell capture preserves order, source assets and safe platform resources without persisting page or inline data', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-'));
   try {
     const localCss = join(directory, 'local.css');
     await writeFile(localCss, 'body{background:url(/local.png)}');
@@ -337,7 +338,7 @@ test('observed shell capture preserves order, source assets and safe platform re
 });
 
 test('shell capture excludes exported template references and follows same-origin CSS font dependencies', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-'));
   try {
     const html = page(
       '<link href="/platform.css" rel="stylesheet" media="screen"><script src="/jquery.min.js"></script>',
@@ -395,7 +396,7 @@ test('shell capture excludes exported template references and follows same-origi
 });
 
 test('missing, non-static, credential and cross-origin shell resources produce explicit failures without fetching excluded URLs', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-'));
   try {
     const html = page(
       '<link rel="stylesheet" href="/missing.css"><link rel="stylesheet" href="/style-endpoint"><link rel="stylesheet" href="https://other.test/style.css"><script src="/jquery.min.js?access_token=SECRET_VALUE"></script><script src="https://content.powerapps.com/elsewhere/bootstrap.js"></script>',
@@ -444,7 +445,7 @@ test('missing, non-static, credential and cross-origin shell resources produce e
 });
 
 test('shell capture rejects disconnected browsers, non-HTML responses and sign-in pages before any static capture', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-'));
   try {
     const cache = await new AssetCache({ directory, origin }).init();
     await assert.rejects(capturePortalShell(cache, { origin }, { path: '/workspace/' }), (e) => e.status === 409);
@@ -470,7 +471,7 @@ test('shell capture rejects disconnected browsers, non-HTML responses and sign-i
 });
 
 test('password markup in source scripts or hidden portal controls does not mark an observed business page as sign-in', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-'));
   try {
     const html = page(
       '<title>Workspace</title><link href="/theme.css" rel="stylesheet"><script src="/jquery.min.js"></script><script>const literal="<title>Sign in</title><input type=password>";</script>',
@@ -494,7 +495,7 @@ test('password markup in source scripts or hidden portal controls does not mark 
 });
 
 test('known platform ResourceManager label dictionaries are captured as JavaScript without a jQuery assumption', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-'));
   try {
     const manager = '/_portal/11111111-1111-1111-1111-111111111111/Resources/ResourceManager';
     const live = livePage(
@@ -544,7 +545,7 @@ test('HTML browser parsing handles unquoted apostrophes without swallowing follo
 });
 
 test('excluded managed platform scripts are identified without claiming their source is exported business code', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-'));
   try {
     const live = livePage(
       page(
@@ -576,7 +577,7 @@ test('excluded managed platform scripts are identified without claiming their so
 });
 
 test('metadata-only exported scripts are captured and CSS dependency failures remain explicit on a ready shell', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-metadata-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-metadata-'));
   try {
     const html = page(
       '<link rel="stylesheet" href="/theme.css"><script src="/jquery.min.js"></script><script src="/exported.js"></script>',
@@ -648,7 +649,7 @@ test('metadata-only exported scripts are captured and CSS dependency failures re
 });
 
 test('shell capture binds observed footer sizing and notification presentation without native item content', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-static-widgets-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-static-widgets-'));
   try {
     const sourceCss = '.site-footer-logos svg {max-height:5rem}',
       file = join(directory, 'theme.css');
@@ -694,7 +695,7 @@ test('shell capture binds observed footer sizing and notification presentation w
 
 for (const variant of ['', '.BootstrapV5'])
   test(`captured preform${variant} supplies jQuery without a standalone script`, async (t) => {
-    const directory = await mkdtemp(join(tmpdir(), 'pp-shell-preform-'));
+    const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-preform-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     const bundle = `/resource/powerappsportal/dist/preform${variant}.moment_2_29_4.bundle-abcdef.js`;
     const manager = '/_portal/11111111-1111-1111-1111-111111111111/Resources/ResourceManager';
@@ -737,7 +738,7 @@ for (const variant of ['', '.BootstrapV5'])
   });
 
 test('native unusable CSS and literal encoded-quote dependencies do not block; excluded URLs explain their host', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-unusable-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-unusable-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const image = '/css/%22images%2Ficon.png%22';
   const live = livePage(
@@ -789,7 +790,7 @@ test('native unusable CSS and literal encoded-quote dependencies do not block; e
 });
 
 test('an unusable stylesheet version does not remove a captured sibling version', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-versions-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-versions-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const live = livePage(
     page(

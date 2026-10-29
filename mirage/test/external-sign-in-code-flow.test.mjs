@@ -7,7 +7,7 @@ import { createHash, generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import { createSimulator } from '../server.mjs';
 import { contactFieldsFromClaims, externalProviders, oidcOptions } from '../lib/external-login.mjs';
 import { startIdentityProvider } from '../lib/identity-provider.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The authorization code flow and the request options of an OpenID Connect provider (lib/identity-provider.mjs,
 // lib/sign-in-flow.mjs).
@@ -483,7 +483,7 @@ const initial = () => ({
   },
 });
 async function portal(t, settings) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-code-flow-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-code-flow-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles(settings))) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });

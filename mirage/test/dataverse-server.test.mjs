@@ -13,13 +13,13 @@ import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { TDS, createMessageReader, encodePrelogin, writeMessage } from '../lib/dataverse-tds-framing.mjs';
 import { GRANT_TYPES } from '../lib/dataverse-settings.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP_ID = '44444444-4444-4444-8444-444444444444';
 const OBJECT_ID = '33333333-3333-4333-8333-333333333333';
 
 async function start(t, options = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-server-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-dataverse-server-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Dataverse server\n');
   const app = await createSimulator({ sourceDir: directory, watch: false, ...options });
@@ -226,7 +226,7 @@ test("Dataverse tables follow the portal's site settings and table permissions",
     },
   });
   const portal = async (settings, permissions) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-gating-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-dataverse-gating-'));
     ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
     await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Gating\n');
     if (settings)
@@ -296,7 +296,7 @@ function httpsRequest(url, { ca, method = 'GET', headers = {}, body } = {}) {
 
 // The CA file's directory is removed with the fixture's directories, after the runtimes that use it have closed.
 async function certificatePath(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-tls-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-dataverse-tls-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   return path.join(directory, 'dataverse-ca.pem');
 }
@@ -500,7 +500,7 @@ test('the arc mode reports the IMDS origin without a header, and an unknown mode
 });
 
 test('Solution custom APIs are seeded into the customapi tables and re-seeded after a reset', async (t) => {
-  const solution = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-dataverse-solution-'));
+  const solution = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-dataverse-solution-'));
   ownedFixture(t).remove(() => fs.rm(solution, { recursive: true, force: true }));
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
   await fs.writeFile(

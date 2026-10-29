@@ -10,6 +10,7 @@ import { DataStore, emptyState, keysetPage } from '../lib/data.mjs';
 import { createPrincipals, ensureSecurityModel, grantAccess, revokeAccess } from '../lib/dataverse-security.mjs';
 import { createServiceProtection } from '../lib/dataverse-limits.mjs';
 import { createWebApiFormatter } from '../lib/webapi-format.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ADMIN = { admin: true };
 const gid = (n) => `77777777-7777-4777-8777-${String(n).padStart(12, '0')}`;
@@ -359,7 +360,7 @@ test('a failed SDK call inside a pipeline undoes its rows through a savepoint an
 });
 
 test('journaled row transactions reuse the section copy the previous commit proved unchanged', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'data-scale-seams-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'data-scale-seams-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'state.json');
   const s = await store([{ x_itemid: gid(1), x_name: 'one' }], {

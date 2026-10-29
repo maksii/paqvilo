@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { rm, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -9,13 +9,14 @@ import {
   restoreNativeAuthProfile,
   verifyNativeAuthCanary,
 } from '../portal-harness/native-auth-cohort.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const site = '10000000-0000-4000-8000-000000000001',
   org = '20000000-0000-4000-8000-000000000001',
   actor = '30000000-0000-4000-8000-000000000001';
 const settings = ['LocalLoginEnabled', 'EmailConfirmationEnabled', 'ProfileRedirectEnabled'];
 test('native auth Boolean lease preserves sibling content and recovers an uncertain write without trusting foreign drift', async () => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'paqvilo-auth-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-auth-'));
   try {
     const records = new Map(
       settings.map((suffix, index) => {

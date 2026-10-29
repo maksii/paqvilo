@@ -8,7 +8,7 @@ import { createSimulator } from '../server.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { handleODataFeed, odataFeeds } from '../lib/odata-feeds.mjs';
 import { signInHeaders } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '8c3d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f';
 const CONTACT = 'c3000000-0000-4000-8000-000000000001';
@@ -18,7 +18,7 @@ const POLL = 'b0000000-0000-4000-8000-000000000001';
 const POLL_PLACEMENT = 'b0000000-0000-4000-8000-000000000002';
 
 async function servicesFixture(t, settings = []) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-services-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-services-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Services`,

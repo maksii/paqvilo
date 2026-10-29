@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const wizardSchema = {
   initialStepId: 'create',
@@ -31,7 +32,7 @@ const wizardSchema = {
 };
 
 async function fixture(t, { formYaml = '', mode = 'local', liveBridge, forms = {} } = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-form-sessions-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-form-sessions-'));
   const files = {
     'website.yml': 'adx_websiteid: website\nadx_name: Test',
     'Home.webpage.yml':

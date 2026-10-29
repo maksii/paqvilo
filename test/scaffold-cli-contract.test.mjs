@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -12,7 +13,7 @@ const run = (cwd, ...args) =>
   spawnSync(process.execPath, [cli, ...args], { cwd, encoding: 'utf8', timeout: 30000, windowsHide: true });
 
 test('init handles spaced Unicode paths and reports filesystem errors as JSON', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-cli-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cli-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const target = path.join(root, 'OneDrive - Example', 'Проєкт & space');
   const result = run(root, 'init', target, '--name', 'example', '--source-root', './Джерела & files', '--json');
@@ -31,7 +32,7 @@ test('init handles spaced Unicode paths and reports filesystem errors as JSON', 
 });
 
 test('setup and demo reject invalid ports before starting or writing', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-cli-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cli-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const setup = run(root, 'setup', '--port', '65536', '--json');
   assert.equal(setup.status, 1);
@@ -53,7 +54,7 @@ test(
     skip: process.platform === 'win32' || (typeof process.geteuid === 'function' && process.geteuid() === 0),
   },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-permissions-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-permissions-'));
     t.after(async () => {
       await fs.chmod(root, 0o700);
       await fs.rm(root, { recursive: true, force: true });
@@ -69,7 +70,7 @@ test(
 );
 
 test('blank scaffold and setup options fail before any filesystem changes', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-blank-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-blank-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const args of [
     ['init', '', '--json'],

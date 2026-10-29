@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -7,7 +8,7 @@ import { standaloneMirageConfiguration, standaloneCatalogueConfiguration } from 
 import { loadCatalogue } from '../lense/config.mjs';
 
 test('standalone and model-driven configuration respect project catalogue, personal and environment editor precedence', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-editor-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-editor-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const project = { configFile: path.join(directory, 'project.json') };
   const file = path.join(directory, 'paqvilo.config.yml');

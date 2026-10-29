@@ -7,14 +7,15 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
 });
 after(() => browser?.close());
 test('terminal resumed multistep native postback shows saved success without losing the session record', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-terminal-wizard-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-terminal-wizard-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_name: Invented\nadx_websiteid: invented',
@@ -130,7 +131,7 @@ test('terminal resumed multistep native postback shows saved success without los
 });
 
 test('Create-only terminal PRG confirms the committed write without reading or exposing its fields', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-create-only-wizard-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-create-only-wizard-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_name: Invented\nadx_websiteid: invented',

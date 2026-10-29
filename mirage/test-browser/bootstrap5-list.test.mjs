@@ -8,7 +8,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -35,7 +35,7 @@ async function launch(
   t,
   { search = true, configured = true, operations = ['read', 'create', 'update', 'delete'] } = {},
 ) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bootstrap5-list-browser-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'bootstrap5-list-browser-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const jquery = await fs.readFile(
     path.join(path.dirname(require.resolve('jquery/package.json')), 'dist', 'jquery.min.js'),

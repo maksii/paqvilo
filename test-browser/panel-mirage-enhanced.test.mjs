@@ -79,7 +79,6 @@ test(
       args: ['--disable-background-networking', '--disable-component-update'],
     });
     const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1400, height: 1000 } });
-    context.setDefaultTimeout(15_000);
     await context.route('**/*', async (route) =>
       new URL(route.request().url()).origin === app.url ? route.fallback() : route.abort(),
     );

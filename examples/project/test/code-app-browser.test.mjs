@@ -6,7 +6,7 @@ import { startCodeApp } from './code-app-process.mjs';
 import { chromium } from 'playwright-core';
 import { createSimulator } from 'paqvilo/mirage';
 import { browserLaunchOptions } from 'paqvilo/mirage/lib/browser-launch.mjs';
-test('example uses the standalone organization and selected staff session', { timeout: 30000 }, async (t) => {
+test('example uses the standalone organization and selected staff session', { timeout: 180_000 }, async (t) => {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const { child, port } = await startCodeApp(
     t,

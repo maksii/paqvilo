@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -53,7 +54,7 @@ test('release counts distinct archive entries whose GUID paths npm masks identic
 });
 
 test('release checks nested user guides and example documentation links', (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-doc-links-'));
+  const root = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-doc-links-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const write = (name, text) => {
     const file = path.join(root, name);
@@ -128,6 +129,7 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
     'lense/../../secret.mjs',
     'mirage/test/server.test.mjs',
     'mirage/test-browser/admin.test.mjs',
+    'examples/company-operations/test/temporary-cleanup-live.test.mjs',
     'mirage/node_modules/liquidjs/index.js',
     'mirage/.paqvilo/state.json',
     'mirage/packs/customer/pack.mjs',
@@ -154,6 +156,7 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
     'lense/model-driven-native-comparison.mjs',
     'lense/model-driven-targets.mjs',
     'lense/owned-page-binding.mjs',
+    'examples/company-operations/test/temporary-cleanup.test.mjs',
   ])
     assert.throws(
       () => validateReleaseFiles(required.filter((file) => file.path !== requiredPath)),
@@ -245,7 +248,7 @@ test('the package names its GitHub repository, which npm provenance requires', (
 });
 
 test('CI collects only synthetic outputs and ignores profile/token/live files and links', (t) => {
-  const state = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-ci-evidence-'));
+  const state = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-ci-evidence-'));
   t.after(() => fs.rmSync(state, { recursive: true, force: true }));
   const write = (name, text) => {
     const file = path.join(state, name);

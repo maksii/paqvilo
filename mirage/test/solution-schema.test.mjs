@@ -17,6 +17,7 @@ import { SolutionFileCache, shareSolutionParses } from '../lib/solution-cache.mj
 import { DataStore } from '../lib/data.mjs';
 import { bootstrapReport, formatReport, resolveReportInputs } from '../bootstrap-report.mjs';
 import { settleFileTimes } from './support/file-times.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const STANDARD = ['createdon', 'createdby', 'modifiedon', 'modifiedby', 'statecode', 'statuscode'];
 
@@ -73,7 +74,7 @@ const solution = (name) =>
   `<ImportExportXml><SolutionManifest><UniqueName>${name}</UniqueName><Version>1.0.0.0</Version><Managed>2</Managed><Publisher><CustomizationPrefix>sample</CustomizationPrefix></Publisher><RootComponents /></SolutionManifest></ImportExportXml>`;
 
 async function tree(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-solution-schema-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-solution-schema-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files)) {
     const file = path.join(root, name);
@@ -763,7 +764,7 @@ test('solution repositories are discovered next to the portal repository without
 test('the watch filter matches layers whose root was given in another spelling (8.3 short name, junction)', async (t) => {
   // chokidar reports paths in the spelling a root was given (the Windows 8.3 short form
   // of os.tmpdir(), a junction or symbolic link), while scanned layer directories are real paths.
-  const given = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-watch-spelling-'));
+  const given = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-watch-spelling-'));
   const alias = given + '-alias';
   t.after(async () => {
     await fs.rm(alias, { force: true });

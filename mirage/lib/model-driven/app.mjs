@@ -789,6 +789,8 @@ function pickerButton(label, choices, options) {
 }
 function chooseApplication() {
   if (!catalogue?.apps?.length) return;
+  const ownerCatalogue = catalogue;
+  let availableCatalogue = catalogue;
   const body = document.createElement('div');
   body.className = 'app-picker-content';
   const toolbar = document.createElement('div');
@@ -811,7 +813,11 @@ function chooseApplication() {
     button(
       'Refresh',
       async () => {
-        catalogue = await api();
+        const refreshed = await api();
+        if (catalogue !== ownerCatalogue) return;
+        // The picker refreshes availability without invalidating the active route or its draft.
+        // Adopt this coherent index only when an explicit application navigation is accepted.
+        availableCatalogue = refreshed;
         render();
       },
       { iconName: 'refresh' },
@@ -832,7 +838,8 @@ function chooseApplication() {
   status.setAttribute('role', 'status');
   const render = () => {
     list.replaceChildren();
-    for (const application of catalogue.apps.filter((application) =>
+    const selectedCatalogue = availableCatalogue;
+    for (const application of selectedCatalogue.apps.filter((application) =>
       (application.name ?? application.uniqueName ?? application.id)
         .toLocaleLowerCase()
         .includes(search.value.toLocaleLowerCase()),
@@ -842,7 +849,12 @@ function chooseApplication() {
         async () => {
           closeDialog();
           const destination = firstPage(application);
-          await navigate(destination?.entity, { application, view: destination?.view });
+          await navigate(destination?.entity, {
+            application,
+            view: destination?.view,
+            nextCatalogue: selectedCatalogue,
+            ownerCatalogue,
+          });
         },
         { className: 'app-card' },
       );
@@ -953,10 +965,24 @@ async function returnToGrid() {
 }
 async function navigate(
   entity,
-  { id, view, application = app, replace = false, defaults, form, area, grid, navigation } = {},
+  {
+    id,
+    view,
+    application = app,
+    replace = false,
+    defaults,
+    form,
+    area,
+    grid,
+    navigation,
+    nextCatalogue,
+    ownerCatalogue,
+  } = {},
 ) {
   if (switchingStaff) return;
   if (!(await canLeave())) return;
+  if (switchingStaff || (nextCatalogue && catalogue !== ownerCatalogue)) return;
+  if (nextCatalogue) catalogue = nextCatalogue;
   if (area) storage.set(`area.${application.uniqueName}`, area);
   $('#sidebar').classList.remove('mobile-open');
   $('#mobile-navigation').setAttribute('aria-expanded', 'false');
@@ -964,7 +990,7 @@ async function navigate(
   if (current) history.replaceState({ ...history.state, grid: origin }, '', location.href);
   const url = targetUrl(entity, { id, view, application, defaults, form });
   const selectedPage =
-    navigation ?? (application === app && entity === table.entity ? activeNavigationItem?.id : undefined);
+    navigation ?? (application === app && entity === table?.entity ? activeNavigationItem?.id : undefined);
   history[replace ? 'replaceState' : 'pushState'](
     { ...(id ? { returnGrid: origin } : grid ? { grid } : {}), ...(selectedPage ? { navigation: selectedPage } : {}) },
     '',
@@ -4408,7 +4434,17 @@ window.addEventListener('focus', () =>
       $('#content').replaceChildren();
       $('#navigation').replaceChildren();
       if (staffSession) {
-        catalogue = await api();
+        const refreshGeneration = generation;
+        let refreshed;
+        try {
+          refreshed = await api();
+        } catch (error) {
+          if (refreshGeneration === generation) loadFailed(error, initialize);
+          return;
+        }
+        // An explicit route may have started while the focus-triggered identity read was pending.
+        if (refreshGeneration !== generation) return;
+        catalogue = refreshed;
         await loadRoute();
       }
     } finally {

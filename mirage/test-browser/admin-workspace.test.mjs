@@ -7,7 +7,7 @@ import path from 'node:path';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FILES = {
   'website.yml': 'adx_websiteid: site\nadx_name: Workspace fixture',
@@ -101,7 +101,7 @@ before(async () => {
 after(() => browser?.close());
 
 async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-admin-workspace-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-admin-workspace-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(FILES)) {
     await fs.mkdir(path.dirname(path.join(directory, name)), { recursive: true });
@@ -128,8 +128,6 @@ async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {
     route.request().url().startsWith(app.url) ? route.continue() : route.abort(),
   );
   const page = await context.newPage();
-  // Generous: these end-to-end flows share the machine with other browser suites.
-  page.setDefaultTimeout(20_000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const notice = async (text) => {

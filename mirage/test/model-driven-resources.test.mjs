@@ -12,12 +12,12 @@ import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { validateValues } from '../lib/model-driven/data.mjs';
 import { importModelDrivenProject } from '../../lense/model-driven.mjs';
 import { importCodeComponents } from '../lib/code-components.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const descriptor = (name, file) =>
   `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
 async function fixture(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-client-resources-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-client-resources-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, data] of Object.entries(files)) {
     const file = path.join(root, name);
@@ -587,7 +587,7 @@ test('modelDriven.enabled false switches the model-driven surface off on both ho
     'on is the default and is not echoed',
   );
   assert.throws(() => modelDrivenSettings({ enabled: 'no' }), /enabled must be true or false/);
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-md-off-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-md-off-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const portal = fileURLToPath(new URL('../../examples/project/portal', import.meta.url));
   for (const options of [

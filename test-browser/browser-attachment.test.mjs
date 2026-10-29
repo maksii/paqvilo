@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -51,7 +52,7 @@ test(
   'CDP debugger conflicts leave the intended browser untouched and disconnect preserves its pages',
   { timeout: 60_000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-cdp-ownership-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-cdp-ownership-'));
     const fixture = http.createServer((_request, response) =>
       response
         .writeHead(200, { 'content-type': 'text/html' })
@@ -119,97 +120,93 @@ test(
   },
 );
 
-test(
-  'late inspection preserves an edited initial document and manual reload applies local sources',
-  { timeout: 30000 },
-  async (t) => {
-    let detach, release;
-    const { browser, origin } = await lateInspectionFixture(
-      t,
-      '<!doctype html><input id="draft"><div id="editor" contenteditable>default</div>',
-      async () => {
-        release?.();
-        await detach?.();
+test('late inspection preserves an edited initial document and manual reload applies local sources', async (t) => {
+  let detach, release;
+  const { browser, origin } = await lateInspectionFixture(
+    t,
+    '<!doctype html><input id="draft"><div id="editor" contenteditable>default</div>',
+    async () => {
+      release?.();
+      await detach?.();
+    },
+  );
+  for (const kind of ['text', 'contenteditable', 'shadow', 'open-shadow']) {
+    const editor = kind === 'contenteditable',
+      shadow = kind === 'shadow' || kind === 'open-shadow';
+    const context = await browser.newContext({ serviceWorkers: 'block' });
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    let entered, reported;
+    const installing = new Promise((resolve) => {
+      entered = resolve;
+    });
+    const warning = new Promise((resolve) => {
+      reported = resolve;
+    });
+    let documents = 0;
+    detach = await interceptOrigin(
+      context,
+      origin,
+      (route) => {
+        if (route.request().isNavigationRequest()) documents++;
+        return route.fulfill({
+          headers: { 'content-type': 'text/html' },
+          body: '<!doctype html><input id="draft"><script>window.localPreview = true</script>',
+        });
+      },
+      {
+        async onAttach({ configure }) {
+          entered();
+          await gate;
+          await configure('Page.enable');
+          await configure('Page.addScriptToEvaluateOnNewDocument', { source: 'window.inspectionReady = true;' });
+        },
+        onError: reported,
       },
     );
-    for (const kind of ['text', 'contenteditable', 'shadow', 'open-shadow']) {
-      const editor = kind === 'contenteditable',
-        shadow = kind === 'shadow' || kind === 'open-shadow';
-      const context = await browser.newContext({ serviceWorkers: 'block' });
-      const gate = new Promise((resolve) => {
-        release = resolve;
-      });
-      let entered, reported;
-      const installing = new Promise((resolve) => {
-        entered = resolve;
-      });
-      const warning = new Promise((resolve) => {
-        reported = resolve;
-      });
-      let documents = 0;
-      detach = await interceptOrigin(
-        context,
-        origin,
-        (route) => {
-          if (route.request().isNavigationRequest()) documents++;
-          return route.fulfill({
-            headers: { 'content-type': 'text/html' },
-            body: '<!doctype html><input id="draft"><script>window.localPreview = true</script>',
-          });
+    const page = await context.newPage();
+    await installing;
+    await page.goto(origin);
+    if (shadow) {
+      await page.evaluate(
+        (mode) => {
+          const host = document.createElement('div'),
+            input = document.createElement('input');
+          host.id = 'fixture-shadow';
+          document.body.appendChild(host);
+          host.attachShadow({ mode }).appendChild(input);
+          window.fixtureShadowInput = input;
+          input.focus();
         },
-        {
-          async onAttach({ configure }) {
-            entered();
-            await gate;
-            await configure('Page.enable');
-            await configure('Page.addScriptToEvaluateOnNewDocument', { source: 'window.inspectionReady = true;' });
-          },
-          onError: reported,
-        },
+        kind === 'open-shadow' ? 'open' : 'closed',
       );
-      const page = await context.newPage();
-      await installing;
-      await page.goto(origin);
-      if (shadow) {
-        await page.evaluate(
-          (mode) => {
-            const host = document.createElement('div'),
-              input = document.createElement('input');
-            host.id = 'fixture-shadow';
-            document.body.appendChild(host);
-            host.attachShadow({ mode }).appendChild(input);
-            window.fixtureShadowInput = input;
-            input.focus();
-          },
-          kind === 'open-shadow' ? 'open' : 'closed',
-        );
-        if (kind === 'open-shadow') await page.locator('#fixture-shadow input').fill('keep my draft');
-        else await page.keyboard.type('keep my draft');
-      } else await page.locator(editor ? '#editor' : '#draft').fill('keep my draft');
-      if (editor || shadow) await page.locator('#draft').focus();
-      release();
-      const diagnostic = await warning;
-      assert.equal(diagnostic.code, 'reload_required');
-      assert.doesNotMatch(diagnostic.message, /keep my draft|127\.0\.0\.1/);
-      assert.equal(page.isClosed(), false);
-      assert.equal(
-        shadow
-          ? await page.evaluate(() => window.fixtureShadowInput.value)
-          : await page.locator(editor ? '#editor' : '#draft')[editor ? 'textContent' : 'inputValue'](),
-        'keep my draft',
-      );
-      assert.equal(documents, 0, 'draft preservation does not start a corrective navigation');
-      await page.goto(origin);
-      assert.equal(documents, 1, 'manual reload restores the complete local overlay');
-      assert.equal(await page.evaluate(() => window.inspectionReady && window.localPreview), true);
-      await detach();
-      detach = null;
-      await context.close();
-    }
-  },
-);
+      if (kind === 'open-shadow') await page.locator('#fixture-shadow input').fill('keep my draft');
+      else await page.keyboard.type('keep my draft');
+    } else await page.locator(editor ? '#editor' : '#draft').fill('keep my draft');
+    if (editor || shadow) await page.locator('#draft').focus();
+    release();
+    const diagnostic = await warning;
+    assert.equal(diagnostic.code, 'reload_required');
+    assert.doesNotMatch(diagnostic.message, /keep my draft|127\.0\.0\.1/);
+    assert.equal(page.isClosed(), false);
+    assert.equal(
+      shadow
+        ? await page.evaluate(() => window.fixtureShadowInput.value)
+        : await page.locator(editor ? '#editor' : '#draft')[editor ? 'textContent' : 'inputValue'](),
+      'keep my draft',
+    );
+    assert.equal(documents, 0, 'draft preservation does not start a corrective navigation');
+    await page.goto(origin);
+    assert.equal(documents, 1, 'manual reload restores the complete local overlay');
+    assert.equal(await page.evaluate(() => window.inspectionReady && window.localPreview), true);
+    await detach();
+    detach = null;
+    await context.close();
+  }
+});
 
-test('a same-address navigation supersedes a pending late-document repair', { timeout: 30000 }, async (t) => {
+test('a same-address navigation supersedes a pending late-document repair', async (t) => {
   let detach, release;
   const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
     release?.();
@@ -262,73 +259,69 @@ test('a same-address navigation supersedes a pending late-document repair', { ti
   assert.equal(await page.locator('#draft').inputValue(), 'new document draft');
 });
 
-test(
-  'editing while a corrective response is pending cancels only that repair and preserves the draft',
-  { timeout: 30000 },
-  async (t) => {
-    let detach, release, attaching;
-    const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
-      release?.();
-      if (attaching) detach = await attaching;
-      await detach?.();
+test('editing while a corrective response is pending cancels only that repair and preserves the draft', async (t) => {
+  let detach, release, attaching;
+  const { browser, origin } = await lateInspectionFixture(t, '<!doctype html><input id="draft">', async () => {
+    release?.();
+    if (attaching) detach = await attaching;
+    await detach?.();
+  });
+  const context = await browser.newContext({ serviceWorkers: 'block' }),
+    page = await context.newPage();
+  await page.goto(origin);
+  await page.locator('#draft').focus();
+  let requested, reported, settled, repairRequest;
+  const held = new Promise((resolve) => {
+      requested = resolve;
+    }),
+    warning = new Promise((resolve) => {
+      reported = resolve;
+    }),
+    completed = new Promise((resolve) => {
+      settled = resolve;
     });
-    const context = await browser.newContext({ serviceWorkers: 'block' }),
-      page = await context.newPage();
-    await page.goto(origin);
-    await page.locator('#draft').focus();
-    let requested, reported, settled, repairRequest;
-    const held = new Promise((resolve) => {
-        requested = resolve;
-      }),
-      warning = new Promise((resolve) => {
-        reported = resolve;
-      }),
-      completed = new Promise((resolve) => {
-        settled = resolve;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  page.on('request', (request) => {
+    if (request.isNavigationRequest() && !repairRequest) repairRequest = request;
+  });
+  page.on('requestfailed', (request) => {
+    if (request === repairRequest) settled('cancelled');
+  });
+  page.on('load', () => settled('committed'));
+  attaching = interceptOrigin(
+    context,
+    origin,
+    async (route) => {
+      if (route.request().isNavigationRequest()) {
+        requested();
+        await gate;
+      }
+      await route.fulfill({
+        headers: { 'content-type': 'text/html' },
+        body: '<!doctype html><input id="draft"><script>window.localPreview=true</script>',
       });
-    const gate = new Promise((resolve) => {
-      release = resolve;
-    });
-    page.on('request', (request) => {
-      if (request.isNavigationRequest() && !repairRequest) repairRequest = request;
-    });
-    page.on('requestfailed', (request) => {
-      if (request === repairRequest) settled('cancelled');
-    });
-    page.on('load', () => settled('committed'));
-    attaching = interceptOrigin(
-      context,
-      origin,
-      async (route) => {
-        if (route.request().isNavigationRequest()) {
-          requested();
-          await gate;
-        }
-        await route.fulfill({
-          headers: { 'content-type': 'text/html' },
-          body: '<!doctype html><input id="draft"><script>window.localPreview=true</script>',
-        });
-      },
-      { onError: reported },
-    );
-    await held;
-    await page.keyboard.insertText('draft entered after repair started');
-    release();
-    detach = await attaching;
-    assert.equal(await completed, 'cancelled', 'the old document cannot commit a replacement after accepting an edit');
-    assert.equal(await page.locator('#draft').inputValue(), 'draft entered after repair started');
-    assert.equal((await warning).code, 'reload_required');
-    assert.equal(page.url(), origin + '/');
-    await page.goto(origin);
-    assert.equal(
-      await page.evaluate(() => window.localPreview),
-      true,
-      'explicit navigation still applies the complete overlay',
-    );
-  },
-);
+    },
+    { onError: reported },
+  );
+  await held;
+  await page.keyboard.insertText('draft entered after repair started');
+  release();
+  detach = await attaching;
+  assert.equal(await completed, 'cancelled', 'the old document cannot commit a replacement after accepting an edit');
+  assert.equal(await page.locator('#draft').inputValue(), 'draft entered after repair started');
+  assert.equal((await warning).code, 'reload_required');
+  assert.equal(page.url(), origin + '/');
+  await page.goto(origin);
+  assert.equal(
+    await page.evaluate(() => window.localPreview),
+    true,
+    'explicit navigation still applies the complete overlay',
+  );
+});
 
-test('late repair distinguishes pristine native controls from edited form state', { timeout: 30000 }, async (t) => {
+test('late repair distinguishes pristine native controls from edited form state', async (t) => {
   let detach;
   const html =
     '<!doctype html><input id="text"><input id="check" type="checkbox"><input id="range" type="range"><input id="color" type="color"><input id="file" type="file"><div id="editor" contenteditable>default</div><textarea id="notes">default</textarea><select id="pick"><option>A</option><option>B</option></select><select size="2"><option>A</option><option>B</option></select>';
@@ -439,7 +432,7 @@ test('late repair distinguishes pristine native controls from edited form state'
   }
 });
 
-test('late inspection restores and cleans its current cancellation binding', { timeout: 30000 }, async (t) => {
+test('late inspection restores and cleans its current cancellation binding', async (t) => {
   for (const edited of [false, true])
     await t.test(edited ? 'edited document' : 'pristine document', async (t) => {
       let detach, bindingName;
@@ -502,7 +495,7 @@ test('late inspection restores and cleans its current cancellation binding', { t
     });
 });
 
-test('cancelled and superseded repairs release their navigation ownership', { timeout: 30000 }, async (t) => {
+test('cancelled and superseded repairs release their navigation ownership', async (t) => {
   for (const mode of ['superseded', 'aborted'])
     await t.test(mode, async (t) => {
       let detach, attaching, control;

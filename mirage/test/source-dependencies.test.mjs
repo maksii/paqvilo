@@ -10,9 +10,10 @@ import {
   runtimeDependencyPaths,
   injectRuntimeDependencies,
 } from '../lib/source-dependencies.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('source dependency discovery selects local globals only for authored uses', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-dependencies-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'source-dependencies-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const script = path.join(root, 'app.js');
   await fs.writeFile(
@@ -110,7 +111,7 @@ test('runtime dependency tags load before authored inline scripts', () => {
 });
 
 test('standard portal page, form, list, and advanced step JavaScript contribute runtime dependencies', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'source-dependency-import-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'source-dependency-import-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Test',

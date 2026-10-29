@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
@@ -46,7 +47,7 @@ test('ordered mapper bounds work, preserves iterables and explicit adapter limit
 });
 
 test('directory policy preserves import order and exact fingerprint bytes', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-traversal-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-traversal-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'z.txt': 'z',
@@ -113,7 +114,7 @@ test('synthetic metadata identity policy and live environment overrides preserve
 });
 
 test('owned shutdown is idempotent and removes discovery and listeners even when close rejects', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shutdown-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-shutdown-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const fails of [false, true]) {
     const discovery = path.join(root, 'owned.json'),
@@ -151,7 +152,7 @@ test('owned shutdown is idempotent and removes discovery and listeners even when
 });
 
 test('shutdown preserves both runtime close and discovery removal failures', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shutdown-failure-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-shutdown-failure-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const owner = new EventEmitter(),
     input = new EventEmitter();
@@ -173,7 +174,7 @@ test('shutdown preserves both runtime close and discovery removal failures', asy
 });
 
 test('signals and stdin stop close only once and report shutdown failures', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shutdown-trigger-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-shutdown-trigger-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const trigger of ['SIGINT', 'SIGTERM', 'stop', 'fail']) {
     const owner = new EventEmitter(),

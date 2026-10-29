@@ -13,10 +13,10 @@ import {
 } from '../lib/storage-provider.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
 import { azuriteDescriptor, create as createAzurite, preflight } from '../lib/storage-azurite.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function tempRoot(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'storage-router-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'storage-router-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return root;
 }

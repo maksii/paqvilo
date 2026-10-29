@@ -146,7 +146,7 @@ test('SAS download of a Unicode name answers 200 with filename*', async (t) => {
     await f.request('GET', `/GetFileSasUrl(Target=@t,FileAttributeName='x_file')?@t=${alias}`),
     200,
   );
-  const down = await fetch(sas.Result.SasUrl, { signal: AbortSignal.timeout(10000) });
+  const down = await fetch(sas.Result.SasUrl);
   assert.equal(down.status, 200);
   assert.equal(await down.text(), 'hello');
   assert.match(down.headers.get('content-disposition'), /^attachment; filename="___\.txt"; /);

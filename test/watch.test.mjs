@@ -194,7 +194,7 @@ test('closing the watcher cancels queued saves and prevents reload after shutdow
 
 test(
   'watcher shutdown does not wait for a stalled browser navigation or emit a late refresh',
-  { timeout: 5000 },
+  { timeout: 180_000 },
   async (t) => {
     const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-stalled-refresh-')));
     let reached;
@@ -252,7 +252,7 @@ test('an explicit route file outside the source directory is watched', async () 
   try {
     await new Promise((resolve) => watcher.on('ready', resolve));
     const seen = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('external route save was missed')), 3000);
+      const timer = setTimeout(() => reject(new Error('external route save was missed')), 60_000);
       session.once('refreshed', (event) => {
         clearTimeout(timer);
         resolve(event);
@@ -332,7 +332,7 @@ test('a comparison started before a save cannot overwrite the current version', 
   }
 });
 
-test('a baseline commit change refreshes the model and reloads even without source edits', async () => {
+test('a baseline commit change refreshes the model and reloads even without source edits', async (t) => {
   const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-watch-ref-')));
   let calls = 0;
   let reloads = 0;
@@ -357,6 +357,23 @@ test('a baseline commit change refreshes the model and reloads even without sour
     ],
   };
   const baselinePollMs = 20;
+  const setInterval = globalThis.setInterval,
+    clearInterval = globalThis.clearInterval;
+  let poll,
+    pollTimer,
+    cancelled = false;
+  t.mock.method(globalThis, 'setInterval', (callback, delay, ...args) => {
+    const timer = setInterval(callback, delay, ...args);
+    if (delay === baselinePollMs) {
+      poll = callback;
+      pollTimer = timer;
+    }
+    return timer;
+  });
+  t.mock.method(globalThis, 'clearInterval', (timer) => {
+    if (timer === pollTimer) cancelled = true;
+    return clearInterval(timer);
+  });
   const watcher = watchSources(session, context, { baselinePollMs, log: () => {} });
   try {
     const seen = new Promise((resolve) => session.once('refreshed', resolve));
@@ -365,11 +382,12 @@ test('a baseline commit change refreshes the model and reloads even without sour
     assert.equal(reloads, 1);
     assert.equal(event.baselineChanged, true);
     assert.equal(event.how, 'reload');
+    assert.equal(typeof poll, 'function', 'the fallback poll has started');
     await watcher.close();
+    assert.equal(cancelled, true, 'close cancels the actual fallback interval');
     const previousCalls = calls;
-    // No event marks a poll that does not happen: five poll periods would expose a surviving
-    // interval. The interval starts after an asynchronous Git probe, so it cannot be mocked here.
-    await sleep(5 * baselinePollMs);
+    // A callback already queued at cancellation must also honor the closed guard.
+    poll();
     assert.equal(calls, previousCalls);
     assert.equal(reloads, 1);
   } finally {

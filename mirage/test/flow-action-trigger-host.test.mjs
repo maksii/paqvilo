@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FLOW = '77777777-7777-4777-8777-0000000000e1',
   CLIENT = '77777777-7777-4777-8777-0000000000e2';
@@ -45,7 +45,7 @@ test(
   'a committed custom API action starts one run; the same action in a rolled-back changeset starts none',
   { timeout: 60000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-action-host-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-action-host-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     for (const [name, text] of Object.entries(files)) {
       await fs.mkdir(path.dirname(path.join(root, 'solution', name)), { recursive: true });

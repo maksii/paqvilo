@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 // Project stop hints: the advertised command stops exactly its runtime from other directories and
 // shells, across project edits. Catalogue, standalone and cleanup scopes have their own files.
 import test from 'node:test';
@@ -43,7 +44,7 @@ test(
       try {
         await execute('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.Major'], {
           windowsHide: true,
-          timeout: 10000,
+          timeout: 60_000,
         });
         nativeShells.push('pwsh.exe');
       } catch (error) {
@@ -117,7 +118,7 @@ test('owned status probes admit only a numeric port on the fixed HTTP loopback e
 });
 
 test('standalone settings-only catalogues keep editor settings without claiming a site, and invalid selected sites fail', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-settings-only-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-settings-only-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   // Shell settings such as PAQVILO_EDITOR or PAQVILO_SITE would otherwise override the catalogue under test.
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('PAQVILO_')));

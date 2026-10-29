@@ -339,50 +339,46 @@ test('no-profile pin restores source values, removes owned seeds only and preser
 const SHUTDOWN_PROBE_MS = 40;
 const LATE_WRITE_WINDOW_MS = 200 + 250;
 
-test(
-  'shutdown drains an in-flight source reload before fixture removal and rejects later reloads',
-  { timeout: 15000 },
-  async (t) => {
-    const fixture = await profileFixture(t);
-    const app = await createSimulator({ ...fixture, watch: true });
-    let release, entered;
-    const blocked = new Promise((resolve) => {
-      release = resolve;
-    });
-    const started = new Promise((resolve) => {
-      entered = resolve;
-    });
-    fixture.onCleanup(() => {
-      release();
-      return app.close();
-    });
-    const replace = app.store.replaceState.bind(app.store);
-    let replacements = 0;
-    app.store.replaceState = async (state) => {
-      replacements++;
-      entered();
-      await blocked;
-      return replace(state);
-    };
-    const pending = app.reload();
-    await started;
-    let closed = false;
-    const shutdown = app.close().then(() => {
-      closed = true;
-    });
-    // Nothing signals "close is waiting", so a bounded window proves close has not finished while the reload is held.
-    await new Promise((resolve) => setTimeout(resolve, SHUTDOWN_PROBE_MS));
-    assert.equal(closed, false, 'shutdown must wait for the accepted reload');
+test('shutdown drains an in-flight source reload before fixture removal and rejects later reloads', async (t) => {
+  const fixture = await profileFixture(t);
+  const app = await createSimulator({ ...fixture, watch: true });
+  let release, entered;
+  const blocked = new Promise((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  fixture.onCleanup(() => {
     release();
-    await Promise.all([pending, shutdown]);
-    await app.reload();
-    assert.equal(replacements, 1, 'a closed runtime cannot schedule another source write');
-    await fs.rm(fixture.root, { recursive: true, force: true, maxRetries: 5 });
-    // No late writer may recreate the removed fixture: wait out one watcher write-stability and debounce window.
-    await new Promise((resolve) => setTimeout(resolve, LATE_WRITE_WINDOW_MS));
-    await assert.rejects(fs.stat(fixture.root), { code: 'ENOENT' });
-  },
-);
+    return app.close();
+  });
+  const replace = app.store.replaceState.bind(app.store);
+  let replacements = 0;
+  app.store.replaceState = async (state) => {
+    replacements++;
+    entered();
+    await blocked;
+    return replace(state);
+  };
+  const pending = app.reload();
+  await started;
+  let closed = false;
+  const shutdown = app.close().then(() => {
+    closed = true;
+  });
+  // Nothing signals "close is waiting", so a bounded window proves close has not finished while the reload is held.
+  await new Promise((resolve) => setTimeout(resolve, SHUTDOWN_PROBE_MS));
+  assert.equal(closed, false, 'shutdown must wait for the accepted reload');
+  release();
+  await Promise.all([pending, shutdown]);
+  await app.reload();
+  assert.equal(replacements, 1, 'a closed runtime cannot schedule another source write');
+  await fs.rm(fixture.root, { recursive: true, force: true, maxRetries: 5 });
+  // No late writer may recreate the removed fixture: wait out one watcher write-stability and debounce window.
+  await new Promise((resolve) => setTimeout(resolve, LATE_WRITE_WINDOW_MS));
+  await assert.rejects(fs.stat(fixture.root), { code: 'ENOENT' });
+});
 
 test('unused PAC connection references are reported without dropping connected entries', async (t) => {
   const fixture = await profileFixture(t),

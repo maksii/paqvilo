@@ -9,7 +9,7 @@ import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
 import { describe as serverLogicDescribe } from '../lib/exported-operations.mjs';
 import { platformChangeDiagnostics } from '../lib/platform-changes.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-777777777761',
   CASE = '77777777-7777-4777-8777-777777777760',
@@ -29,7 +29,7 @@ const siteSettings = (settings) =>
     .join('\n') || '[]';
 
 async function host(t, { files = {}, settings = [], initial = {}, authorization = 0 }) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-host-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-host-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(root, {
     'solution/Other/Solution.xml':

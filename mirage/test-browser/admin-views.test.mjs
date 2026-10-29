@@ -173,7 +173,6 @@ async function open(t, origin, hash) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   t.after(() => context.close());
   const page = await context.newPage();
-  page.setDefaultTimeout(10_000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`${origin}/__sim/${hash}`);

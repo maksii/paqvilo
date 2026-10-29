@@ -13,7 +13,7 @@ import {
   readLookupView,
 } from '../lib/platform.mjs';
 import { createWebFormSessions } from '../lib/form-service.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('exported advanced redirect steps retain an omitted record query name when rendered directly', async () => {
   const id = 'd6300000-0000-4000-8000-000000000001';
@@ -244,7 +244,7 @@ test('editable hidden lookups retain native navigation bindings without reading 
 });
 
 test('rich text adapters fetch source-bound configuration URLs and reject malformed source JSON', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rte-config-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'rte-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'configuration.js');
   await fs.writeFile(file, JSON.stringify({ defaultSupportedProps: { height: 195 } }));
@@ -1274,7 +1274,7 @@ test('basic forms without exported form XML render an approximated native sectio
 
 test('FormXml section labels become fieldset aria-labels; legends follow showlabel', async (t) => {
   const { createSimulator } = await import('../server.mjs');
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'formxml-sections-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'formxml-sections-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portal = path.join(root, 'portal'),
     solution = path.join(root, 'solution');

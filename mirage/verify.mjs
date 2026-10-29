@@ -47,11 +47,15 @@ export async function verifyParity({
   outputDir,
   viewport = { width: 1440, height: 1000 },
   timeout = 30_000,
+  // Bounds the post-load readiness waits (required selectors, fonts, network idle) separately from the page load.
+  readinessTimeout = Math.min(timeout, 5000),
   settleMs = 500,
   allowLoopbackLive = false,
   sessionStorageSeeds = {},
   requiredSelectors = [],
 } = {}) {
+  if (!Number.isFinite(readinessTimeout) || readinessTimeout <= 0)
+    throw new Error('readinessTimeout must be a positive finite number.');
   const local = new URL(localUrl);
   const live = new URL(origin);
   const cdp = new URL(cdpUrl);
@@ -278,7 +282,7 @@ export async function verifyParity({
                   .first()
                   .waitFor({
                     state: 'visible',
-                    timeout: Math.min(timeout, 5000),
+                    timeout: readinessTimeout,
                   })
                   .then(() => true)
                   .catch(() => false),
@@ -290,7 +294,7 @@ export async function verifyParity({
         );
         const fonts = await page
           .waitForFunction(() => !document.fonts || document.fonts.status === 'loaded', undefined, {
-            timeout: Math.min(timeout, 5000),
+            timeout: readinessTimeout,
           })
           .then(() => true)
           .catch(() => false);
@@ -298,7 +302,7 @@ export async function verifyParity({
         if (!fonts) observation.readinessFailures.push('Document fonts did not settle within the bounded wait.');
         try {
           await page.waitForLoadState('networkidle', {
-            timeout: Math.min(timeout, 5000),
+            timeout: readinessTimeout,
           });
           observation.networkIdleReached = true;
         } catch {

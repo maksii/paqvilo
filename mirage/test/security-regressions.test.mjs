@@ -15,6 +15,7 @@ import { DataStore } from '../lib/data.mjs';
 import { csvCell } from '../lib/csv.mjs';
 import { derivePersona, __testing, HOSTED_RESOURCES, loadSourceCorpus } from '../parity-suite.mjs';
 import { businessRuleClientData } from '../../examples/project/baseline/business-rules.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('generated business rule strings survive script embedding without becoming HTML or code', () => {
   const hostile = '</script><img src=x onerror="globalThis.injected=true">\\\'\n]]>';
@@ -219,7 +220,7 @@ test('native CSV exports neutralize spreadsheet formulas while preserving signed
 });
 
 test('source-corpus entity decoding never promotes double-encoded markup into source-derived reveal matches', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-corpus-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-corpus-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'page.html'), '&amp;lt;Double encoded&amp;gt; &lt;Once encoded&gt;');
   const corpus = await loadSourceCorpus(root);

@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   rootId = '20000000-0000-0000-0000-000000000001',
   childId = '20000000-0000-0000-0000-000000000002',
@@ -220,7 +221,7 @@ test(
   'Original DLL uses typed relationship calls, named responses and stage-context with rollback',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-sdk-associate-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sdk-associate-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'AssociationOriginal.cs'),

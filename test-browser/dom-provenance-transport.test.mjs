@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -29,7 +30,7 @@ const scope = {
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 
 async function fixture(t, { sourceMaps = false, acknowledge = true, inline = false, bulk = 0 } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-dom-response-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dom-response-'));
   const file = path.join(directory, 'widget.js');
   const source =
     '\ufeff// Invented unicode \ud83e\uddea\r\n' +
@@ -100,7 +101,6 @@ async function fixture(t, { sourceMaps = false, acknowledge = true, inline = fal
   await once(server, 'listening');
   const origin = `http://127.0.0.1:${server.address().port}`;
   const context = await browser.newContext();
-  context.setDefaultTimeout(6000);
   const page = await context.newPage();
   const transport = createInspectionProvenanceTransport(context, [{ origin }]);
   const diagnostics = {

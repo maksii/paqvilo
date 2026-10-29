@@ -10,6 +10,7 @@ import { DataStore } from '../lib/data.mjs';
 import { prepareClrRuntime, recordToSdkEntity, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { sdkValueToRecord } from '../lib/local-organization-service.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001',
   rowid = '20000000-0000-0000-0000-000000000002';
@@ -66,7 +67,7 @@ test(
   'Actual original DLL casts Double Targets/images/SDK reads and preserves integral shared/output values and SDK writes',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-double-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-double-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       source = path.join(root, 'DoubleValues.cs'),

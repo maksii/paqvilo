@@ -1939,6 +1939,7 @@ function xrayBrowserImpl(data) {
     renderProgress();
     const focused =
       preserve && root.activeElement && card.contains(root.activeElement) ? { ...root.activeElement.dataset } : null;
+    const feedback = preserve ? (card.querySelector('.status')?.textContent ?? '') : '';
     const scroll = preserve ? (card.querySelector('.content')?.scrollTop ?? 0) : 0,
       open = preserve
         ? [...card.querySelectorAll('details[open]')].map(
@@ -1967,7 +1968,7 @@ function xrayBrowserImpl(data) {
       )
       .join(
         '',
-      )}${selected.localName === 'iframe' ? '<p class="note">Frame boundary: inner inspection requires an accessible same-origin document; cross-origin and sandbox restrictions are preserved.</p>' : ''}</details></div><div class="status" role="status"></div><div class="foot"><button data-action="parent" ${!parent(selected) || own(parent(selected)) ? 'disabled' : ''}>↑ Parent</button><button data-action="child" ${!child(selected) ? 'disabled' : ''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
+      )}${selected.localName === 'iframe' ? '<p class="note">Frame boundary: inner inspection requires an accessible same-origin document; cross-origin and sandbox restrictions are preserved.</p>' : ''}</details></div><div class="status" role="status">${esc(feedback)}</div><div class="foot"><button data-action="parent" ${!parent(selected) || own(parent(selected)) ? 'disabled' : ''}>↑ Parent</button><button data-action="child" ${!child(selected) ? 'disabled' : ''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
     // New content already starts at zero. Writing scrollTop=0 would force its first
     // layout during selection even though there is no scroll position to restore.
     card.querySelector('.status').textContent = statusMessage;

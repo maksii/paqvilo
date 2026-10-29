@@ -94,7 +94,7 @@ test('a modal opens on .modal() without arguments and through the data API, as w
       modalOpen: document.body.classList.contains('modal-open'),
     }));
   await page.locator('#nav-btn-signIn').click();
-  await signIn.waitFor({ timeout: 5000 });
+  await signIn.waitFor();
   assert.equal(await page.locator('#SignInModal').evaluate((node) => node.classList.contains('in')), true);
   assert.deepEqual(await state(), { backdrops: 1, modalOpen: true });
   // data-keyboard="false" and data-backdrop="static": Escape and a click beside the dialog keep it open.

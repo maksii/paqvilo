@@ -8,7 +8,7 @@ import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { PAGES_CLIENT_API_SCRIPT } from '../lib/platform.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-777777777701';
 const CONTACT = '77777777-7777-4777-8777-777777777702';
@@ -55,7 +55,7 @@ after(() => browser?.close());
 
 // One x_item list (page size 3) included twice on the home page, as a modern and a classic list.
 async function launch(t, { operations = ['read'], features = false, spacer = false, beforeNavigation } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'modern-list-browser-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'modern-list-browser-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const solutionDir = path.join(dir, 'solution');
   if (features)

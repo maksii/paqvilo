@@ -1,4 +1,5 @@
-import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+
 // Two loopback portals exercise the selector.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,12 +19,13 @@ test(
   { timeout: 60_000 },
   async (t) => {
     const fixture = createFixture();
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-targets-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-targets-'));
     const servers = [];
     const panels = [];
     const sessions = new Map();
     const requests = [[], []];
-    let browser;
+    let browser, context;
+    ownedFixture(t).add(() => context?.unrouteAll({ behavior: 'wait' }));
     ownedFixture(t).add(async () => {
       await drainFixture(
         panels.map((panel) => () => panel.dispose()),
@@ -77,8 +79,7 @@ test(
         '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost',
       ],
     });
-    const context = await browser.newContext({ serviceWorkers: 'block' });
-    context.setDefaultTimeout(10_000);
+    context = await browser.newContext({ serviceWorkers: 'block' });
     await context.route('**/__paqvilo/api/**', (route) => {
       const url = new URL(route.request().url());
       return sessions.get(url.origin).api(route, url.pathname.split('/').at(-1));

@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -11,7 +12,7 @@ import { saveProtectedState, loadProtectedState } from '../lense/dataverse/index
 import { protectSecret } from '../lense/dataverse/connection.mjs';
 test('protected JSON validates private location, bounded purpose and JSON without revealing values', async (t) => {
   // A private directory: a regressed validation would otherwise write into the shared temporary folder.
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protected-json-invalid-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'protected-json-invalid-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await assert.rejects(
     saveProtectedState(path.join(dir, 'outside.json'), { password: 'sample' }, { purpose: 'fixture' }),
@@ -25,7 +26,7 @@ test('protected JSON validates private location, bounded purpose and JSON withou
   await assert.rejects(fs.access(path.dirname(file)), { code: 'ENOENT' });
 });
 test('protected state has encrypted durable roundtrip, purpose binding and exclusive writes or explicit platform refusal', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'protected-json-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'protected-json-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, '.paqvilo', 'identity.json'),
     value = {

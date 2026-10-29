@@ -11,7 +11,7 @@ import { createSimulator } from '../server.mjs';
 import { createFrameReadiness } from '../lib/frame-readiness.mjs';
 import { DataError } from '../lib/data.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -84,7 +84,7 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
 });
 
 async function fixture(t, transport, errorMarkup = 'inline') {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'frame-save-feedback-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'frame-save-feedback-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: invented-site\nadx_name: Invented frame',

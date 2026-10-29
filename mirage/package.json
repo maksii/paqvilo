@@ -8,7 +8,7 @@
     "start": "node cli.mjs serve",
     "inspect": "node cli.mjs inspect",
     "test": "node --test --test-concurrency=4 --test-timeout=180000 test/*.test.mjs",
-    "test:browser": "node --test --test-concurrency=2 --test-timeout=300000 test-browser/*.test.mjs",
+    "test:browser": "node --test --import=../test/browser-bootstrap.mjs --test-concurrency=2 --test-timeout=300000 test-browser/*.test.mjs",
     "validate": "npm test && npm run test:browser"
   },
   "engines": {

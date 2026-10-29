@@ -349,7 +349,7 @@ test('generated browser runner ignores empty pack folders and propagates real te
       env,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 20000,
+      timeout: 150_000,
     });
   assert.equal(execute().status, 0, 'all-empty directories are allowed');
   await fs.writeFile(

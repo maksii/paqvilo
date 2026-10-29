@@ -16,6 +16,7 @@ import { FILTER_SIGNATURES, createFilters } from '../lib/liquid-filters.mjs';
 import { retainedResponseBody } from '../lib/render-sweep-body.mjs';
 import { expressionPaths, inventoryPortal, scanTokens } from '../liquid-inventory.mjs';
 import { ciSummary, classifyResponse, idParameterTable, renderSweep, resolveTarget } from '../render-sweep.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '9a4d1c2e-0000-4000-8000-000000000001';
 const HOME = '9a4d1c2e-0000-4000-8000-000000000010';
@@ -95,7 +96,7 @@ const files = {
 };
 
 async function fixturePortal(t, extra = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-parity-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-parity-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, content] of Object.entries({ ...files, ...extra })) {
     const file = path.join(dir, name);
@@ -1237,7 +1238,7 @@ test("user web-role relationship and enhanced attribute aliases follow the site'
   );
   // Enhanced model: powerpagecomponent_mspp_webrole_contact lists powerpagecomponent rows, and
   // bare content columns are readable with adx_ and mspp_ prefixes.
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-enhanced-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-enhanced-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const component = (id, type, name, content) =>
     `<powerpagecomponent powerpagecomponentid="${id}"><content>${JSON.stringify(content).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</content><name>${name}</name><powerpagecomponenttype>${type}</powerpagecomponenttype><statecode>0</statecode></powerpagecomponent>`;
@@ -1290,7 +1291,7 @@ test("user web-role relationship and enhanced attribute aliases follow the site'
 });
 
 test('render sweep resolves export directories and Mirage projects and summarises each persona for CI', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'render-sweep-target-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'render-sweep-target-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.mkdir(path.join(dir, 'portal'));
   await fs.mkdir(path.join(dir, 'solution'));
@@ -1345,7 +1346,7 @@ test('render sweep resolves export directories and Mirage projects and summarise
 });
 
 test("render sweep personas change only the identity and keep the state's rows", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'render-sweep-personas-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'render-sweep-personas-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const portalFiles = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Personas`,

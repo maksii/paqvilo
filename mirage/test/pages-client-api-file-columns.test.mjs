@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-777777777771';
 const ITEM = '77777777-7777-4777-8777-777777777772';
@@ -14,7 +15,7 @@ const OTHER = '77777777-7777-4777-8777-777777777773';
 const CONTACT = '77777777-7777-4777-8777-777777777774';
 
 async function simulator(t, { images = false, applicationUser } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-file-columns-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-file-columns-'));
   let app;
   // One owner hook: Node stops subsequent after hooks when an earlier one throws.
   // Drain the current runtime (including a restarted instance and its blob flush)

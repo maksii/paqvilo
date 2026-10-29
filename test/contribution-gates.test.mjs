@@ -159,7 +159,7 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
   assert.equal(ci.jobs.gate.name, 'CI gate');
   assert.equal(ci.jobs.gate.if, 'always()');
-  assert.deepEqual(ci.jobs.gate.needs, ['changes', 'checks', 'test', 'browser', 'windows', 'package']);
+  assert.deepEqual(ci.jobs.gate.needs, ['changes', 'checks', 'test', 'browser', 'windows', 'sdk-linux', 'package']);
   const command = ci.jobs.gate.steps.find((step) => step.name === 'Require every job to succeed').run;
   assert.match(command, /^node -e ".*"$/);
   const script = command.slice('node -e "'.length, -1);
@@ -169,10 +169,12 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
     PACKAGE: 'true',
     RUNTIME: 'true',
     SMOKE_REQUIRED: 'true',
+    SDK_REQUIRED: 'true',
     CHECKS: 'success',
     TESTS: 'success',
     BROWSER: 'success',
     WINDOWS: 'success',
+    SDK: 'success',
     SMOKE: 'success',
   };
   const run = (env) => {
@@ -185,7 +187,7 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
     return result.status;
   };
   assert.equal(run(required), 0);
-  for (const lane of ['SCOPE_RESULT', 'CHECKS', 'TESTS', 'BROWSER', 'WINDOWS', 'SMOKE'])
+  for (const lane of ['SCOPE_RESULT', 'CHECKS', 'TESTS', 'BROWSER', 'WINDOWS', 'SDK', 'SMOKE'])
     for (const result of ['failure', 'cancelled', 'skipped'])
       assert.equal(run({ ...required, [lane]: result }), 1, `${lane} cannot qualify with ${result}`);
   assert.equal(
@@ -195,10 +197,12 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
       PACKAGE: 'false',
       RUNTIME: 'false',
       SMOKE_REQUIRED: 'false',
+      SDK_REQUIRED: 'false',
       CHECKS: 'skipped',
       TESTS: 'skipped',
       BROWSER: 'skipped',
       WINDOWS: 'skipped',
+      SDK: 'skipped',
       SMOKE: 'skipped',
     }),
     0,
@@ -333,7 +337,10 @@ function hookFixture(t, { classifier, readyDependencies = false } = {}) {
   }
   if (classifier) write('.github/scripts/change-scope.mjs', classifier);
   if (readyDependencies)
-    write('scripts/ensure-dependencies.mjs', 'export const dependencyReadiness = () => ({ ready: true });');
+    write(
+      'scripts/ensure-dependencies.mjs',
+      'export const dependencyReadiness = () => ({ ready: true }); export const browserExecutable = async () => ({ path: null });',
+    );
   write('package.json', '{"type":"module"}');
   write('README.md', 'original');
   write('SECURITY.md', 'original');
@@ -861,17 +868,17 @@ test('Windows examples require the verified CLR fixture independently of Mirage 
   );
 });
 
-test('full Windows runs require locked SDK client gates without expanding ordinary PRs', async () => {
+test('full and applicable scoped PR runs require locked SDK clients on Windows and Linux', async () => {
   const { fullSdkGate } = await import('../scripts/ci.mjs');
   assert.equal(fullSdkGate(completeScope([], { full: true }), 'win32'), true);
-  assert.equal(fullSdkGate(completeScope([], { full: true }), 'linux'), false);
+  assert.equal(fullSdkGate(completeScope([], { full: true }), 'linux'), true);
   assert.equal(fullSdkGate(completeScope(['lense/panel-ui.mjs']), 'win32'), false);
-  assert.equal(fullSdkGate(completeScope(['package.json']), 'win32'), false);
+  assert.equal(fullSdkGate(completeScope(['package.json']), 'win32'), true);
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
   // Exactly one Mirage leg (the first shard, or the whole suite) prepares and runs the SDK clients.
   const once = "matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/'))";
   const step = ci.jobs.windows.steps.find((step) => step.run === 'node scripts/ci.mjs sdk');
-  assert.equal(step?.if, `${once} && needs.changes.outputs.full == 'true'`);
+  assert.equal(step?.if, `${once} && needs.changes.outputs.sdk == 'true'`);
   const prepare = ci.jobs.windows.steps.find((step) => step.name === 'Release port 80 for the ServiceClient gate');
   assert.equal(prepare?.if, `${step.if} && runner.environment == 'github-hosted'`);
   assert.equal(prepare.shell, 'pwsh');
@@ -880,14 +887,14 @@ test('full Windows runs require locked SDK client gates without expanding ordina
   assert.match(prepare.run, /Port 80 is still held/);
   assert.ok(
     ci.jobs.windows.steps.some((step) =>
-      step.run?.includes(`${once} && needs.changes.outputs.full == 'true' && '--sdk'`),
+      step.run?.includes(`${once} && needs.changes.outputs.sdk == 'true' && '--sdk'`),
     ),
   );
   const { validationSteps } = await import('../scripts/ci.mjs');
   const sdkSteps = (scope, platform) =>
     validationSteps(scope, [], {}, platform).filter((step) => step.label === 'sdk gates');
   assert.deepEqual(sdkSteps(completeScope([], { full: true }), 'win32')[0]?.commands, [['scripts/ci.mjs', 'sdk']]);
-  assert.deepEqual(sdkSteps(completeScope([], { full: true }), 'linux'), []);
+  assert.deepEqual(sdkSteps(completeScope([], { full: true }), 'linux')[0]?.commands, [['scripts/ci.mjs', 'sdk']]);
   assert.deepEqual(sdkSteps(completeScope(['lense/panel-ui.mjs']), 'win32'), []);
   const source = fs.readFileSync(new URL('../scripts/ci.mjs', import.meta.url), 'utf8');
   assert.match(source, /cert-auth\/Gate\/Gate\.csproj', '--locked-mode'/);

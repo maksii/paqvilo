@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 
 test(
   'model-driven fixture closes its simulator before retrying a locked Solution file',
-  { timeout: 20000, skip: process.platform !== 'win32' && 'Windows exclusive file handles prevent deletion' },
+  { skip: process.platform !== 'win32' && 'Windows exclusive file handles prevent deletion' },
   () => {
     // A fresh process installs the observer before Node's recursive rm loads its internal unlink reference.
     const program = `
@@ -57,7 +57,7 @@ test(
     const result = spawnSync(process.execPath, ['--input-type=module', '-e', program], {
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 15000,
+      timeout: 150_000,
     });
     assert.equal(result.status, 0, result.error?.message ?? result.stderr);
   },

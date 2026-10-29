@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { parseArgs } from 'node:util';
 import { classifyChanges, suitesForScope } from '../.github/scripts/change-scope.mjs';
-import { dependencyReadiness } from './ensure-dependencies.mjs';
+import { dependencyReadiness, browserExecutable } from './ensure-dependencies.mjs';
 import { downloadVerifiedArchive } from './verified-download.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -254,12 +254,13 @@ export async function prepareLane(
   suite,
   { browser = false, unit = true, quality = false, sdk = false, shard = null } = {},
 ) {
-  if (!['lense', 'mirage', 'examples', 'all', 'quality'].includes(suite)) throw new Error(`Unknown CI suite: ${suite}`);
+  if (!['lense', 'mirage', 'examples', 'all', 'quality', 'sdk'].includes(suite))
+    throw new Error(`Unknown CI suite: ${suite}`);
   if (!['lense', 'quality'].includes(suite)) requireDotnet();
   quality ||= suite === 'quality';
   npm(['ci', '--ignore-scripts', '--no-audit', '--no-fund']);
   npm(['ci', '--prefix', 'mirage', '--ignore-scripts', '--no-audit', '--no-fund']);
-  if (suite === 'mirage' || suite === 'all' || quality) {
+  if (suite === 'mirage' || suite === 'all' || quality || sdk) {
     npm(['ci', '--prefix', 'mirage/test-sdk/tds', '--ignore-scripts', '--no-audit', '--no-fund']);
   }
   if (requiresClrFixture(suite)) await clrFixture();
@@ -312,6 +313,10 @@ export async function prepareLane(
     }
   }
   if (browser) installChromium();
+  if (sdk || suite === 'all' || suite === 'sdk') {
+    const { prepareSdkFixtures } = await import('./sdk-preparation.mjs');
+    await prepareSdkFixtures({ root, execute });
+  }
 }
 
 // System libraries need root. Use passwordless sudo when available (GitHub-hosted Linux);
@@ -363,6 +368,7 @@ function requireQualityDependencies() {
 function requireFixtures(suite, { unit = true, browser = true, shard = null } = {}) {
   if (suite !== 'lense') requireDotnet();
   if (suite === 'mirage') {
+    if (unit) environment('PAQ_TEST_REQUIRE_TLS_TOOLS', '1');
     if (!fs.existsSync(path.join(root, 'mirage/test-sdk/tds/node_modules/tedious/lib/tedious.js')))
       throw new Error('Incomplete CI validation: install the locked TDS fixture with ci:prepare.');
   }
@@ -394,23 +400,80 @@ function requireFixtures(suite, { unit = true, browser = true, shard = null } = 
         throw new Error('Incomplete CI validation: SDK projection driver build missing; run ci:prepare.');
     }
   }
-  if (browser) environment('PAQVILO_BROWSER', 'chromium');
+  if (browser) environment('PAQVILO_BROWSER', ciBrowser());
+}
+
+/** Recheck mutable prerequisites before reusing evidence for an otherwise identical source tree. */
+export async function verificationFixturesReady(
+  scope,
+  suites,
+  { unit = true, browser = true, shard = null, quality = true, platform = process.platform } = {},
+  checks = {},
+) {
+  try {
+    if (quality && scope.quality) (checks.quality ?? requireQualityDependencies)();
+    for (const selected of suites) (checks.suite ?? requireFixtures)(selected, { unit, browser, shard });
+    if (unit && suites.includes('mirage')) {
+      const requireTls =
+        checks.tls ??
+        (async () => {
+          const { tlsTools } = await import('../mirage/test/tls-tools-fixture.mjs');
+          tlsTools({ required: true });
+        });
+      await requireTls();
+    }
+    if (fullSdkGate(scope, platform)) {
+      const requireSdk =
+        checks.sdk ??
+        (async () => {
+          const { requireSdkFixtures } = await import('./sdk-preparation.mjs');
+          requireSdkFixtures(root);
+        });
+      await requireSdk();
+    }
+    return true;
+  } catch {
+    return false; // A missing or modified fixture requires preparation and fresh verification.
+  }
+}
+
+export function ciBrowser(env = process.env, platform = process.platform) {
+  const channel = env.PAQ_CI_BROWSER || 'chromium';
+  if (!['chromium', 'msedge'].includes(channel) || (channel === 'msedge' && platform !== 'win32'))
+    throw new Error('PAQ_CI_BROWSER must select chromium, or msedge on Windows.');
+  return channel;
 }
 
 export function fullSdkGate(scope, platform = process.platform) {
-  return Boolean(scope.full) && platform === 'win32';
+  return Boolean(scope.full || scope.sdk) && ['win32', 'linux'].includes(platform);
 }
 
-function verifySdkGates() {
+async function verifySdkGates() {
   requireDotnet();
   requireSdkClients();
+  const { requireSdkFixtures, auditServiceClientDependencies } = await import('./sdk-preparation.mjs');
+  await requireSdkFixtures(root);
+  environment('PAQ_TEST_REQUIRE_SDK_GATES', '1');
   execute('dotnet', ['restore', 'mirage/test-sdk/cert-auth/Gate/Gate.csproj', '--locked-mode']);
   for (const project of ['tds', 'dynamics-web-api', 'cert-auth'])
     npm(['--prefix', 'mirage/test-sdk/' + project, 'test']);
   execute('dotnet', ['restore', 'mirage/test-sdk/serviceclient/Gate/Gate.csproj', '--locked-mode']);
+  await auditServiceClientDependencies({ root, execute });
   execute(process.execPath, ['--test', '--test-timeout=600000', 'mirage/test-sdk/serviceclient/gate.test.mjs'], {
     env: { ...process.env, PAQ_TEST_REQUIRE_SDK_GATES: '1' },
   });
+  execute(
+    process.execPath,
+    [
+      '--test',
+      '--test-timeout=600000',
+      'mirage/test-sdk/python-dataverse/gate.test.mjs',
+      'mirage/test-sdk/webapi-samples/gate.test.mjs',
+    ],
+    {
+      env: { ...process.env, PAQ_TEST_REQUIRE_SDK_GATES: '1' },
+    },
+  );
   // The shipped verify-storage check: 600,000 rows past the engine string limit, about 1 GiB of temporary disk.
   execute(process.execPath, ['--expose-gc', '--max-old-space-size=4096', 'mirage/test-volume/state-storage.mjs']);
 }
@@ -587,21 +650,52 @@ export function validationTree({ allowStaged = false, directory = root } = {}) {
   return tree.status === 0 ? tree.stdout.trim() : null;
 }
 
-function verificationIdentity(allowStaged = false) {
+function chromiumHeadlessExecutable() {
+  try {
+    const require = createRequire(path.join(root, 'package.json'));
+    return (
+      require('playwright-core/lib/coreBundle')
+        .registry.registry.findExecutable('chromium-headless-shell')
+        ?.executablePath() ?? null
+    );
+  } catch {
+    return null; // Preparation installs the pinned registry and browser cache.
+  }
+}
+
+/** Qualify receipts against the selected channel and both Chromium launch modes. */
+export async function verificationBrowser({
+  env = process.env,
+  platform = process.platform,
+  locate = browserExecutable,
+  locateHeadless = chromiumHeadlessExecutable,
+} = {}) {
+  const channel = ciBrowser(env, platform);
+  const located = await locate(channel, { env, platform });
+  const fingerprint = (executable) => {
+    const browser = executable && fs.existsSync(executable) ? fs.statSync(executable) : null;
+    return browser ? `${fs.realpathSync(executable)}:${browser.size}:${browser.mtimeMs}` : null;
+  };
+  return {
+    channel,
+    executable: fingerprint(located.path),
+    headlessShell: channel === 'chromium' ? fingerprint(await locateHeadless()) : null,
+  };
+}
+
+async function verificationIdentity(allowStaged = false) {
   const tree = validationTree({ allowStaged });
   if (!tree) return null;
   const cli = process.env.npm_execpath || path.join(path.dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js');
   const npmVersion = spawnSync(process.execPath, [cli, '--version'], { encoding: 'utf8', windowsHide: true });
   if (npmVersion.status !== 0) return null;
   const require = createRequire(path.join(root, 'package.json'));
-  let playwright;
   try {
-    playwright = require('playwright-core');
+    require('playwright-core');
   } catch {
     return null; /* Preparation installs the locked package before validation. */
   }
-  const executable = playwright.chromium.executablePath();
-  const browser = fs.existsSync(executable) ? fs.statSync(executable) : null;
+  const selectedBrowser = await verificationBrowser();
   const readPackageVersion = (file) => {
     try {
       return JSON.parse(fs.readFileSync(file, 'utf8')).version;
@@ -621,7 +715,9 @@ function verificationIdentity(allowStaged = false) {
     arch: process.arch,
     nodeOptions: process.env.NODE_OPTIONS ?? '',
     playwright: require('playwright-core/package.json').version,
-    chromium: browser ? `${executable}:${browser.size}:${browser.mtimeMs}` : null,
+    browserChannel: selectedBrowser.channel,
+    browserExecutable: selectedBrowser.executable,
+    browserHeadlessShell: selectedBrowser.headlessShell,
     tedious: readPackageVersion(path.join(root, 'mirage/test-sdk/tds/node_modules/tedious/package.json')),
     clrSdk: fs.existsSync(sdk) ? createHash('sha256').update(fs.readFileSync(sdk)).digest('hex') : null,
     dotnet: dotnet.status === 0 ? dotnet.stdout.trim() : null,
@@ -657,6 +753,8 @@ function saveVerificationReceipt(file, receipt) {
 
 async function main() {
   const [command, ...args] = process.argv.slice(2);
+  const receiptFile = path.join(root, '.paqvilo/ci/verification.json');
+  const receipt = ['verify', 'sdk'].includes(command) ? consumeVerificationReceipt(receiptFile) : undefined;
   const { values } = parseArgs({
     args,
     options: {
@@ -687,7 +785,7 @@ async function main() {
       values.quality ||
       values.base)
   )
-    throw new Error('--sdk prepares full Windows client gates; combine only with prepare --suite mirage --unit.');
+    throw new Error('--sdk prepares full client gates; combine only with prepare --suite mirage --unit.');
   if (values.unit && values.browser)
     throw new Error('--unit and --browser are mutually exclusive. Omit both to run both.');
   if (values.full && (values.unit || values.browser))
@@ -707,6 +805,10 @@ async function main() {
   if (command === 'sdk') {
     if (Object.values(values).some(Boolean)) throw new Error('The SDK gate command takes no options.');
     return verifySdkGates();
+  }
+  if (command === 'sdk-prepare') {
+    if (Object.values(values).some(Boolean)) throw new Error('SDK preparation takes no options.');
+    return prepareLane('sdk', { unit: false, browser: false, sdk: true });
   }
   if (command === 'browser') {
     if (Object.values(values).some(Boolean)) throw new Error('The browser installation command takes no options.');
@@ -757,9 +859,7 @@ async function main() {
     throw new Error(
       'Validation requires worktree files to match the index and no untracked files; stage the full tree for --full, or commit before scoped validation.',
     );
-  const identity = verificationIdentity(Boolean(full));
-  const receiptFile = path.join(root, '.paqvilo/ci/verification.json');
-  const receipt = consumeVerificationReceipt(receiptFile);
+  const identity = await verificationIdentity(Boolean(full));
   let securityChecked = false;
   const onlineChecks = () => {
     npmScript('audit:dependencies');
@@ -769,13 +869,12 @@ async function main() {
   };
   const ready = dependencyReadiness(root).ready;
   if (!suite && ready) onlineChecks();
-  let fixturesReady = true;
-  try {
-    if (!suite && scope.quality) requireQualityDependencies();
-    for (const selected of suites) requireFixtures(selected, { unit, browser, shard: values.shard });
-  } catch {
-    fixturesReady = false; /* Missing fixtures require preparation, never a cached pass. */
-  }
+  const fixturesReady = await verificationFixturesReady(scope, suites, {
+    unit,
+    browser,
+    shard: values.shard,
+    quality: !suite,
+  });
   if (
     !suite &&
     process.env.GITHUB_ACTIONS !== 'true' &&
@@ -785,7 +884,7 @@ async function main() {
     fixturesReady &&
     matchingVerification(receipt, identity, scope)
   ) {
-    if (!matchingVerification(receipt, verificationIdentity(Boolean(full)), scope))
+    if (!matchingVerification(receipt, await verificationIdentity(Boolean(full)), scope))
       throw new Error('Source, toolchain or fixtures changed during dependency audits; rerun validation.');
     saveVerificationReceipt(receiptFile, receipt);
     console.log(
@@ -799,8 +898,9 @@ async function main() {
       unit,
       quality: !suite && Boolean(scope.quality),
       shard: values.shard,
+      sdk: !suite && fullSdkGate(scope),
     });
-  const baselineIdentity = verificationIdentity(Boolean(full));
+  const baselineIdentity = await verificationIdentity(Boolean(full));
   if (!suite && !baselineIdentity)
     throw new Error('Source or toolchain changed during preparation; review the staged tree and rerun validation.');
   if (suite) verifyLane(suite, { unit, browser, shard: values.shard });
@@ -808,7 +908,7 @@ async function main() {
     if (!securityChecked) onlineChecks();
     await runSteps(validationSteps(scope, suites, { unit, browser }), validationJobs());
   }
-  const completedIdentity = verificationIdentity(Boolean(full));
+  const completedIdentity = await verificationIdentity(Boolean(full));
   if (!suite && JSON.stringify(baselineIdentity) !== JSON.stringify(completedIdentity))
     throw new Error('Source, toolchain or fixtures changed during validation; review the tree and rerun.');
   if (!suite && unit && browser && baselineIdentity && completedIdentity) {

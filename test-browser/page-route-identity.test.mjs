@@ -3,7 +3,7 @@ import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { once } from 'node:events';
+import { listenOwnedServer } from './helpers/owned-server.mjs';
 import { chromium } from 'playwright-core';
 import { OverlaySession } from '../lense/session.mjs';
 import { attachSession, refreshPages } from '../lense/browser.mjs';
@@ -38,9 +38,6 @@ test(
           `<!doctype html><html><head><style>${original}</style></head><body><p class="hero">Fixture</p></body></html>`,
         ),
     );
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    const origin = `http://127.0.0.1:${server.address().port}`;
     let browser, panel, detach;
     ownedFixture(t).add(async () => {
       panel?.dispose();
@@ -51,15 +48,10 @@ test(
     ownedFixture(t).add(async () => {
       await browser?.close();
     });
-    ownedFixture(t).add(async () => {
-      server.closeAllConnections();
-    });
-    ownedFixture(t).add(async () => {
-      await new Promise((resolve) => server.close(resolve));
-    });
     ownedFixture(t).remove(async () => {
       fx.cleanup();
     });
+    const origin = await listenOwnedServer(t, server);
     const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
     browser = await chromium.launch({
       channel: channel === 'chromium' ? undefined : channel,

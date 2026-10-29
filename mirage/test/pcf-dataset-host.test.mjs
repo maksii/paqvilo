@@ -11,6 +11,7 @@ import {
 import { pcfAdmission, renderCodeComponent } from '../lib/code-components.mjs';
 import { importModelDrivenResources } from '../lib/model-driven-resources.mjs';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const table = {
   entity: 'x_child',
@@ -209,7 +210,7 @@ test('Power Pages and model-driven hosts share one PCF admission rule', () => {
 });
 
 test('clientSources library files become platform libraries served under /_apps/controls/platform/', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pcf-platform-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pcf-platform-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.writeFile(path.join(root, 'React@16.14.0.js'), 'window.React = { createElement() {} };');
   await fs.writeFile(path.join(root, 'react.min.js'), '');

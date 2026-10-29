@@ -1,20 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import fs from 'node:fs/promises';
 import { codeAppsWorkbenchHtml } from '../lib/code-apps-workbench.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, loopbackServer } from './shared-browser.mjs';
 const browser = sharedBrowser();
 async function listen(t, handler) {
-  const server = http.createServer(handler);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => {
-    return new Promise((resolve) => {
-      server.close(resolve);
-      server.closeAllConnections();
-    });
-  });
-  return `http://127.0.0.1:${server.address().port}`;
+  return (await loopbackServer(t, handler)).origin;
 }
 test('workbench switches local apps, keeps parameters separate and accepts only selected frame events', async (t) => {
   const app1 = await listen(t, (_req, res) => res.end('<p>First local app</p>'));

@@ -7,7 +7,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import http from 'node:http';
-import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -33,7 +33,7 @@ async function openPortal(t, app) {
 }
 
 test('standard PCF host loads only declared local resources and preserves lifecycle, bound output and disabled context', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-pcf-browser-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-pcf-browser-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const id = 'd0000000-0000-4000-8000-000000000001';
   const portal = path.join(root, 'portal'),
@@ -141,7 +141,7 @@ async function hostFixture(t) {
 }
 
 test('PCF classic SDK bundle resolves its declared export after repeated whitespace and block comments', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-pcf-classic-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-pcf-classic-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portal = path.join(root, 'portal'),
     solution = path.join(root, 'solution');
@@ -648,7 +648,7 @@ test('native form scripts update PCF context without feedback recursion, removed
 });
 
 test('exported dataset PCF renders real local rows with paging, sorting, filtering, selection and explicit unsupported-filter errors', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-pcf-dataset-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-pcf-dataset-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const viewId = 'd0000000-0000-4000-8000-000000000003';
   const portal = path.join(root, 'portal'),

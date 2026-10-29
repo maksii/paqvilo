@@ -5,11 +5,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { createPortalSession, runSessionMatrix, connectRuntime } from '../testing.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const guid = (index) => `10000000-0000-0000-0000-${String(index).padStart(12, '0')}`;
 async function fixture(t, { liveBridge, template } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-many-visitors-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-many-visitors-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const sources = {
     'website.yml': 'adx_name: Concurrent fixture\nadx_websiteid: site',

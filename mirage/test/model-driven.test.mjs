@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { scanSolutionSources } from '../lib/solution-schema.mjs';
 import { solutionApps, appCatalogue } from '../lib/model-driven/catalogue.mjs';
@@ -24,7 +24,7 @@ after(async () => {
 // Tests that only import edited Solution sources change a private copy of the shared fixture's Solution, without
 // starting a runtime for it.
 async function solutionCopy(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-solution-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-solution-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const solutionDir = path.join(root, 'solution');
   await fs.cp(shared.solutionDir, solutionDir, { recursive: true });
@@ -568,7 +568,7 @@ test('sparse customization overlays retain later source changes to untouched sib
 });
 
 test('monolithic solution metadata imports app forms, views and navigation with no portal-form dependency', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-embedded-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-embedded-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'embedded.xml');
   await fs.writeFile(

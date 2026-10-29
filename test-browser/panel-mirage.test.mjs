@@ -162,7 +162,6 @@ test(
       args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
     });
     const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1400, height: 1000 } });
-    context.setDefaultTimeout(12_000);
     await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: app.url });
     await context.route('**/*', async (route) =>
       new URL(route.request().url()).origin === app.url ? route.fallback() : route.abort(),
@@ -485,7 +484,6 @@ test(
       args: ['--disable-background-networking', '--disable-component-update', '--disable-sync'],
     });
     const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 1400, height: 1000 } });
-    context.setDefaultTimeout(15_000);
     // Only the Mirage and its local identity provider (both on loopback) are reachable.
     await context.route('**/*', async (route) =>
       [app.url, idp.origin].includes(new URL(route.request().url()).origin) ? route.fallback() : route.abort(),

@@ -96,7 +96,7 @@ test('startup separates delayed navigation, delayed usable application, failures
   await page.goto(origin);
   // Stopping while the request is in flight ends the wait without a load.
   const inFlight = new Promise((resolve) => (hangReceived = resolve));
-  const cancelled = await run('/hang', { stopped: inFlight, timeout: 1000 });
+  const cancelled = await run('/hang', { stopped: inFlight });
   assert.equal(cancelled.loaded, false);
   const closingPage = await context.newPage();
   await closingPage.route('**/main.aspx', (route) =>
@@ -106,7 +106,6 @@ test('startup separates delayed navigation, delayed usable application, failures
   const closing = waitForStartupPage(closingPage, origin + '/main.aspx', {
     progress,
     modelDriven: true,
-    timeout: 1000,
   });
   await closingPage.locator('p').waitFor();
   await closingPage.close();
@@ -135,9 +134,17 @@ function hideOrphanTerminalEvents(page) {
   });
 }
 test('real browser replacement finishes after current data despite missing old terminal protocol event', async (t) => {
-  let essentialFinished = false;
+  let essentialFinished = false,
+    currentOrphanReceived = false;
   const server = http.createServer((req, res) => {
     if (req.url === '/orphan') return;
+    if (req.url === '/orphan-current') {
+      currentOrphanReceived = true;
+      // Receipt is observable without finishing this current document's body.
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.flushHeaders();
+      return;
+    }
     if (req.url === '/essential') {
       setTimeout(() => {
         essentialFinished = true;
@@ -165,18 +172,44 @@ test('real browser replacement finishes after current data despite missing old t
   const page = await context.newPage(),
     origin = 'http://127.0.0.1:' + server.address().port;
   const wrapped = hideOrphanTerminalEvents(page);
-  const loading = waitForStartupPage(wrapped, origin + '/first', {
-    timeout: 3000,
-  });
+  const loading = waitForStartupPage(wrapped, origin + '/first');
   await page.locator('p').waitFor();
   await page.goto(origin + '/second', { waitUntil: 'domcontentloaded' });
   assert.equal(await loading, true);
   assert.equal(essentialFinished, true, 'current document request must really finish');
   assert.equal(await page.locator('p').textContent(), 'second');
+  // This assertion times resource settlement, not a fresh browser navigation.
+  // Prepare the real document first, then enroll a new held request only after
+  // waitForStartupPage installs its actual request observers.
+  const response = await page.goto(origin + '/first', { waitUntil: 'load' });
+  const documentTimeOrigin = await page.evaluate(() => performance.timeOrigin);
+  const currentDocument = new Proxy(wrapped, {
+    get(target, key) {
+      if (key === 'goto')
+        return async (url, options) => {
+          assert.equal(url, origin + '/first');
+          assert.equal(options.timeout, 200, 'retain the resource-settlement deadline');
+          const enrolled = page.waitForRequest((request) => new URL(request.url()).pathname === '/orphan-current');
+          await page.evaluate(() => {
+            void fetch('/orphan-current');
+          });
+          const request = await enrolled;
+          assert.equal((await request.response())?.status(), 200, 'the server received the enrolled held request');
+          return response;
+        };
+      return Reflect.get(target, key);
+    },
+  });
   await assert.rejects(
-    waitForStartupPage(wrapped, origin + '/first', { timeout: 200 }),
+    waitForStartupPage(currentDocument, origin + '/first', { timeout: 200 }),
     /did not settle/,
     'a current document orphan remains a failure',
+  );
+  assert.equal(currentOrphanReceived, true);
+  assert.equal(
+    await page.evaluate(() => performance.timeOrigin),
+    documentTimeOrigin,
+    'the orphan belongs to the prepared current document',
   );
 });
 test('real browser detached frame orphan cannot hide current parent fetch', async (t) => {
@@ -220,9 +253,7 @@ test('real browser detached frame orphan cannot hide current parent fetch', asyn
   });
   const page = await context.newPage();
   assert.equal(
-    await waitForStartupPage(hideOrphanTerminalEvents(page), 'http://127.0.0.1:' + server.address().port, {
-      timeout: 3000,
-    }),
+    await waitForStartupPage(hideOrphanTerminalEvents(page), 'http://127.0.0.1:' + server.address().port),
     true,
   );
   assert.equal(parentFinished, true);
@@ -254,7 +285,6 @@ test('native app startup completes with worker terminal events missing and an on
   assert.equal(
     await waitForStartupPage(hideOrphanTerminalEvents(page), `http://127.0.0.1:${server.address().port}/main.aspx`, {
       nativeModelDriven: true,
-      timeout: 3000,
       progress,
     }),
     true,

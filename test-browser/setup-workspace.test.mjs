@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory, drainFixture, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -40,14 +41,32 @@ async function newPage(t, options) {
   return context.newPage();
 }
 async function temporary(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-setup-browser-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-setup-browser-'));
   t.resources = [];
   t.after(async () => {
-    for (const dispose of t.resources.reverse()) await dispose();
+    await drainFixture(t.resources.toReversed());
     await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   });
   return directory;
 }
+
+test('setup fixture drains its browser after a sibling resource close fails and retains its directory', async (t) => {
+  const hooks = [],
+    context = { after: (hook) => hooks.push(hook) },
+    owner = ownedFixture(t);
+  let page, directory;
+  owner.add(() => page?.context().close());
+  owner.remove(() => directory && fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  directory = await temporary(context);
+  page = await newPage(context);
+  const failure = Error('Invented setup sibling close failure');
+  context.resources.push(() => {
+    throw failure;
+  });
+  await assert.rejects(hooks[0](), (error) => error === failure);
+  assert.equal(page.isClosed(), true);
+  assert.equal((await fs.stat(directory)).isDirectory(), true, 'failed draining retains fixture state');
+});
 async function localGit(directory, source) {
   await fs.cp(source, directory, { recursive: true });
   const git = (...args) =>

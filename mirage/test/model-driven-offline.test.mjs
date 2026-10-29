@@ -20,7 +20,7 @@ import {
 import { DataStore } from '../lib/data.mjs';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
 import { createModelDrivenHandler } from '../lib/model-driven/http.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const PROFILE = '77777777-7777-4777-8777-777777777791',
   APP = '77777777-7777-4777-8777-777777777790';
@@ -269,7 +269,7 @@ const entity = (name, set, attributes) =>
   `<Entity><Name>${name}</Name><EntityInfo><entity Name="${name}"><EntitySetName>${set}</EntitySetName><OwnershipTypeMask>UserOwned</OwnershipTypeMask><PrimaryIdAttribute>${name}id</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes>${field(`${name}id`, 'primarykey')}${field('x_name')}${attributes}</attributes></entity></EntityInfo></Entity>`;
 
 async function organization(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-offline-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-offline-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'Other/Solution.xml':
@@ -722,7 +722,7 @@ test('profile filters name the condition operators and joins the offline downloa
 });
 
 test('the offline queue and copy persist in the private state and survive a restart per staff user and app', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-offline-state-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-offline-state-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'state.json');
   const first = await new DataStore({ file }).init();

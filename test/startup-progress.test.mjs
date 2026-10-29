@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
@@ -35,7 +36,7 @@ test('native model-driven dev emits startup before project configuration fails',
 });
 
 test('runtime log progress is incremental and bounded without forwarding arbitrary log fields', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-startup-progress-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-startup-progress-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'startup.log');
   await fs.writeFile(

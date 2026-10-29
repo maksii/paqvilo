@@ -7,6 +7,7 @@ import { createSimulator } from '../server.mjs';
 import { createPortalRenderer } from '../lib/liquid.mjs';
 import { renderComponent } from '../lib/platform.mjs';
 import { observedChartMarkup } from '../lib/liquid-service-observations.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const WEBSITE = '10000000-0000-4000-8000-000000000001';
 function fixture(observed, extra = {}) {
@@ -138,7 +139,7 @@ test('observed missing server logic is404, existing unhandled stays501, and adap
 });
 
 test('observed service failures retain HTTP200 and server logic404 through the loopback renderer', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'liquid-service-host-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'liquid-service-host-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const source =
     "A{% webform name:'Missing' %}|{% entitylist name:'Missing' %}hidden{% endentitylist %}|{% entityview name:'Missing' %}hidden{% endentityview %}|{% searchindex name:'Missing' %}hidden{% endsearchindex %}|{% chart id:'chart' viewid:'view' %}|{% serverlogic name:'Missing', operation:'probe', output:result %}{{ result.success }}:{{ result.status_code }}Z";

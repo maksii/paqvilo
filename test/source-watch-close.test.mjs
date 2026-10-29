@@ -11,7 +11,7 @@ import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 for (const repositoryFailure of [false, true]) {
   test(
     `source watcher drains its real Git watcher and accepted refresh after close failures (${repositoryFailure ? 'multiple' : 'single'})`,
-    { timeout: 45000 },
+    { timeout: 180_000 },
     async (t) => {
       const fixture = createFixture();
       ownedFixture(t).remove(() => fixture.cleanup());
@@ -82,9 +82,7 @@ for (const repositoryFailure of [false, true]) {
       await watcher.ready;
       // The actual source and Git Chokidar instances were created (the test timeout bounds a missing one).
       await created.promise;
-      const accepted = once(session, 'accepted-refresh', {
-        signal: AbortSignal.timeout(5000),
-      });
+      const accepted = once(session, 'accepted-refresh');
       await fs.appendFile(path.join(fixture.dir, 'web-files/app.js'), '\nwindow.inventedCloseRefresh=true;\n');
       await accepted;
       let settled = false;

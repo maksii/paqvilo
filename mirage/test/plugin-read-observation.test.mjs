@@ -9,6 +9,7 @@ import { clrContext, dispatchSdkCall, prepareClrRuntime, recordToSdkEntity } fro
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const writer = '10000000-0000-0000-0000-000000000002',
   user = '10000000-0000-0000-0000-000000000001',
@@ -393,7 +394,7 @@ test(
   'Original CLR read recorder sees portal context in all three stages and records through SDK with nested identity cleared',
   { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-read-observation-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-read-observation-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
       assembly = path.join(root, 'Recorder.dll'),

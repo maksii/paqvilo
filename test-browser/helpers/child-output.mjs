@@ -18,26 +18,17 @@ export function childOutput(child, { limit = Infinity } = {}) {
     get text() {
       return text;
     },
-    /** Resolves with the first match of `pattern`; `timeoutMs` bounds the whole wait. */
-    async waitFor(pattern, { timeoutMs = 60_000, label = String(pattern) } = {}) {
-      const signal = AbortSignal.timeout(timeoutMs);
+    /** Resolves with the first match of `pattern`; only the test's own timeout bounds a silent child. */
+    async waitFor(pattern, { label = String(pattern) } = {}) {
       for (;;) {
         const match = pattern.exec(text);
         if (match) return match;
-        const next = await Promise.race([
-          once(printed, 'data', { signal }).then(
-            () => 'data',
-            () => 'timeout',
-          ),
-          exited.then(() => 'exited'),
-        ]);
+        const next = await Promise.race([once(printed, 'data').then(() => 'data'), exited.then(() => 'exited')]);
         if (next === 'data') continue;
         const late = pattern.exec(text);
         if (late) return late;
         // Long opaque runs are redacted so a failure report never repeats a printed credential.
-        throw new Error(
-          `${label}: child ${next === 'exited' ? 'exited' : `printed nothing matching within ${timeoutMs} ms`}:\n${text.replace(/[A-Za-z0-9+/_=-]{32,}/g, '[redacted]')}`,
-        );
+        throw new Error(`${label}: child exited:\n${text.replace(/[A-Za-z0-9+/_=-]{32,}/g, '[redacted]')}`);
       }
     },
   };

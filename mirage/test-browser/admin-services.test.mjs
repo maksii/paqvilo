@@ -244,7 +244,6 @@ test(
     t.after(() => browser.close());
     const context = await browser.newContext({ serviceWorkers: 'block', viewport: { width: 390, height: 900 } });
     const page = await context.newPage();
-    page.setDefaultTimeout(10_000);
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     const noOverflow = async () =>

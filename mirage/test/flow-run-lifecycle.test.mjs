@@ -13,7 +13,7 @@ import { createScheduler, fixedClock, sequentialIds } from '../lib/runtime-clock
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { createHostFlowRuns, flowRunsOf } from '../lib/flow-runs.mjs';
 import { runTrackedFlow } from '../lib/flow-runtime.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { whenScheduled } from './support/scheduler-gates.mjs';
 
 const FLOW = '77777777-7777-4777-8777-0000000000f1';
@@ -109,7 +109,7 @@ test('an approval wait timeout resumes with TimedOut and the runAfter TimedOut b
 });
 
 test('after a restart rearm() schedules the recorded wait again and the replay runs from the state file', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-run-lifecycle-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-run-lifecycle-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'state.json');
   const flows = {
@@ -456,7 +456,7 @@ test('without a run store a waiting action keeps answering 501 FlowSuspendNotWir
 // ---- Standalone runtime: ExecuteWorkflow -> Waiting -> /_sim/api/flow-waits -> Succeeded; CancelAllCloudFlowRuns
 
 async function standalone(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-run-lifecycle-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-run-lifecycle-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const definition = {
@@ -551,7 +551,6 @@ async function standalone(t) {
         ...(body ? { 'content-type': 'application/json', prefer: 'return=representation' } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(10000),
     });
   const simApi = (method, suffix, body) =>
     fetch(sim.url + '/_sim/api' + suffix, {

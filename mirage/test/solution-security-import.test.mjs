@@ -12,6 +12,7 @@ import { ensureSecurityModel, createPrincipals } from '../lib/dataverse-security
 import { scanSolutionSources, buildSolutionSchema, readSolutionZip } from '../lib/solution-schema.mjs';
 import { securityDefinitions, inventoryEntry } from '../lib/solution-inventory.mjs';
 import { zipOf } from '../lib/dataverse-solutions.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ROLE = '77777777-7777-4777-8777-777777777781';
 const FSP = '77777777-7777-4777-8777-777777777782';
@@ -38,7 +39,7 @@ async function layer(root, name, files) {
 
 // The schema the organization seeds from: the Solution tables plus the security definitions of the inventory.
 async function sourceSchema(t, layers) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-security-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-security-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const dirs = [];
   for (const [name, files] of layers) dirs.push(await layer(root, name, files));

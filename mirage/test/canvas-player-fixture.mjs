@@ -4,7 +4,7 @@ import path from 'node:path';
 import { stringify } from 'yaml';
 import { createSimulator } from '../api.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, removeFixtureDirectory } from '../testing/owned-fixture.mjs';
 
 const control = (name, type, properties, children = []) => ({
   [name]: { Control: type, Properties: properties, ...(children.length ? { Children: children } : {}) },
@@ -201,9 +201,9 @@ export async function canvasPlayerFixture(t, format, { gaps = false, watch = fal
     );
     sources['Src/HomeScreen.pa.yaml'] = stringify(home);
   }
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-player-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'canvas-player-')));
   const cleanup = ownedFixture(t);
-  cleanup.remove(() => fs.rm(root, { recursive: true, force: true }));
+  cleanup.remove(() => removeFixtureDirectory(root));
   const write = async (name, body) => {
     const target = path.join(root, name);
     await fs.mkdir(path.dirname(target), { recursive: true });

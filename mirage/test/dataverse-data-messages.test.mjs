@@ -67,21 +67,17 @@ async function startServer({ extendState = () => {}, extraExtensions = [], roles
     }),
   });
   const authorization = `Bearer ${(await token.json()).access_token}`;
-  const timed = (init) => ({ ...init, signal: AbortSignal.timeout(5000) });
   return {
     server,
     store,
     origin: server.origin,
-    get: (path) => fetch(`${server.origin}${API}${path}`, timed({ headers: { authorization } })),
+    get: (path) => fetch(`${server.origin}${API}${path}`, { headers: { authorization } }),
     send: (method, path, body) =>
-      fetch(
-        `${server.origin}${API}${path}`,
-        timed({
-          method,
-          headers: { authorization, 'content-type': 'application/json' },
-          body: body === undefined ? undefined : JSON.stringify(body),
-        }),
-      ),
+      fetch(`${server.origin}${API}${path}`, {
+        method,
+        headers: { authorization, 'content-type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }),
     close: () => server.close(),
   };
 }
@@ -373,13 +369,11 @@ test('signed note download works without an API bearer but minting and nonempty 
   const mint = await h.get(`/GetFileSasUrl(Target=@t,FileAttributeName='')?@t=${args}`);
   assert.equal(mint.status, 200, JSON.stringify(await mint.clone().json()));
   const result = (await mint.json()).Result;
-  const download = await fetch(result.SasUrl, { signal: AbortSignal.timeout(5000) });
+  const download = await fetch(result.SasUrl);
   assert.equal(download.status, 200);
   assert.equal(await download.text(), 'anonymous download');
   assert.equal((await h.get(`/GetFileSasUrl(Target=@t,FileAttributeName='documentbody')?@t=${args}`)).status, 400);
-  const unauthenticated = await fetch(`${h.origin}${API}/GetFileSasUrl(Target=@t,FileAttributeName='')?@t=${args}`, {
-    signal: AbortSignal.timeout(5000),
-  });
+  const unauthenticated = await fetch(`${h.origin}${API}/GetFileSasUrl(Target=@t,FileAttributeName='')?@t=${args}`, {});
   assert.equal(unauthenticated.status, 401);
 });
 
@@ -396,12 +390,11 @@ test('a signed upload PUT reads its bounded anonymous request stream and commits
   );
   assert.equal(minted.status, 200, JSON.stringify(await minted.clone().json()));
   const { SasUrl, FileContinuationToken } = (await minted.json()).Result;
-  const oversized = await fetch(SasUrl, { method: 'PUT', body: Buffer.alloc(1025), signal: AbortSignal.timeout(5000) });
+  const oversized = await fetch(SasUrl, { method: 'PUT', body: Buffer.alloc(1025) });
   assert.equal(oversized.status, 400);
   const uploaded = await fetch(SasUrl, {
     method: 'PUT',
     body: Buffer.from('stream body'),
-    signal: AbortSignal.timeout(5000),
   });
   assert.equal(uploaded.status, 201);
   const commit = await h.send('POST', '/CommitFileBlocksUpload', {

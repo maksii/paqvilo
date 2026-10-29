@@ -15,7 +15,7 @@ import {
   signInContent,
 } from '../lib/auth-session.mjs';
 import { signInHeaders } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const page = (id, name, partial, parent = 'home') =>
   [
@@ -133,7 +133,7 @@ const initialState = (identity = { contactId: 'alex', roleSource: 'memberships',
 });
 
 async function simulator(t, initial = initialState()) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-auth-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-auth-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });

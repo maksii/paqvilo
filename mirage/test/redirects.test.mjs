@@ -20,7 +20,7 @@ import {
 } from '../lib/redirects.mjs';
 import { siteHeaders, sitePolicy, webFileHeaders, webFileDisposition, notModified } from '../lib/response-headers.mjs';
 import { signInHeaders } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const page = (id, name, partial, parent = 'home') =>
   [
@@ -80,7 +80,7 @@ const files = {
 };
 
 async function exportDir(t, overrides = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-routing-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-routing-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries({ ...files, ...overrides })) {
     if (body === null) continue;
@@ -649,7 +649,7 @@ test('web files are served inline or as attachments from their Content-Dispositi
     ),
     [`powerpagecomponents/${id}/filecontent/${name}`]: name,
   });
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-enhanced-disposition-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-enhanced-disposition-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     [`powerpagecomponents/${HOME}/powerpagecomponent.xml`]: component(HOME, 2, 'Home', { partialurl: '/' }),
@@ -825,7 +825,7 @@ test('site header settings: one header per HTTP/* setting, nonce policies and co
 });
 
 test('enhanced-model redirect components (type 30) import and route like adx_redirect records', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-enhanced-redirects-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-enhanced-redirects-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const xmlText = (value) =>
     value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

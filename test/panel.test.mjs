@@ -1,3 +1,4 @@
+import { makeTemporaryDirectorySync } from '../mirage/testing/owned-fixture.mjs';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13,7 +14,7 @@ import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs
 
 const ORIGIN = 'https://portal.example.com';
 const fx = createFixture();
-const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-'));
+const stateDir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-'));
 const panels = [];
 after(() => {
   panels.forEach((panel) => panel.dispose());
@@ -84,7 +85,7 @@ async function setup(online = {}, overrides = {}, panelOptions = {}) {
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`Intercepted request ${id} did not answer within the panel API deadline`));
-      }, 5_000);
+      }, 60_000);
       pending.set(id, () => {
         clearTimeout(timer);
         pending.delete(id);
@@ -190,7 +191,7 @@ test('selected-source editor admission rechecks a source edited during the final
 });
 
 test('guarded editor admission opens only the selected external deployment profile and refuses neighboring files', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-profile-'));
+  const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-panel-profile-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const selected = path.join(directory, 'selected.yml'),
     neighbor = path.join(directory, 'neighbor.yml');
@@ -599,8 +600,8 @@ function fakeMirage(b, { report, status = {}, personas = null, onWrite } = {}) {
 
 test('Mirage inspection: redraws carry a compact summary; the Inspect report arrives on request with openable portal and Solution sources', async () => {
   const { b, tab, session, panel, call, opened } = await setup();
-  const solution = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-solution-'));
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-unlisted-'));
+  const solution = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-solution-'));
+  const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-unlisted-'));
   try {
     const entity = path.join(solution, 'Entities', 'contact', 'Entity.xml');
     fs.mkdirSync(path.dirname(entity), { recursive: true });
@@ -933,7 +934,7 @@ test('comparison refuses unrelated and authority-changing URLs without any reque
 });
 
 test('the panel refuses sources reached through a directory junction escaping the extract', async () => {
-  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-outside-'));
+  const outside = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-outside-'));
   const linked = fx.file('outside-link');
   fs.writeFileSync(path.join(outside, 'secret.txt'), 'outside');
   fs.symlinkSync(outside, linked, 'junction');

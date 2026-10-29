@@ -13,7 +13,7 @@ import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { committedJobs, encodeEvent } from '../lib/committed-work.mjs';
 import { defaultSchedule } from '../lib/dataverse-async.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const stepId = '77777777-7777-4777-8777-000000000001',
   flowId = '77777777-7777-4777-8777-000000000002',
@@ -140,7 +140,7 @@ async function runtime(t, { file, scheduler = null, log = [], fresh = false, han
 }
 
 async function stateFile(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'durable-async-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'durable-async-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   return path.join(root, 'state.json');
 }

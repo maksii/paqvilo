@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
@@ -23,7 +23,7 @@ const CASES = [
 ];
 
 async function fixture(t, extraFields = [], contextOptions = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'input-roundtrip-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'input-roundtrip-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: input-site\nadx_name: Input fixture',

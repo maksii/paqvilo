@@ -11,7 +11,7 @@ import { buildSiteTables } from '../lib/site-tables.mjs';
 import { loadProjectConfig, bootstrapProject } from '../lib/project-config.mjs';
 import { serverLogicName } from '../lib/server-logic.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // The short-key .powerpages-site dialect imports like any other export: the synthetic code site
 // test-browser/fixtures/code-site follows the layout of the MIT-licensed
@@ -127,7 +127,7 @@ test('the data model of a YAML source can be set: standard turns the short-key s
 });
 
 async function tree(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-component-types-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-component-types-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });
@@ -221,7 +221,7 @@ test('server logic paths are recognised by name', () => {
 });
 
 test('serve treats a code site like any export, and discovered server logic enforces roles and verification before simulation', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-code-site-serve-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-code-site-serve-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const calls = [];
   const liveBridge = {
@@ -322,7 +322,7 @@ test('inspect and project files carry the data model; --data-model is validated 
       (result) => ({ code: 0, ...result }),
       (error) => error,
     );
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-code-site-project-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-code-site-project-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'mirage.project.yml');
   await fs.writeFile(
@@ -381,7 +381,7 @@ test('cloud flows import with their trigger, flow and roles; source operations d
     portal.cloudFlows.map((flow) => [flow.name, flow.path, flow.processId, flow.roleIds]),
     [['Request Callback', `/_api/cloudflow/v1.0/trigger/${g(82)}`, g(82), [ID.roleAuth]]],
   );
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-cloud-flow-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-cloud-flow-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const app = await createSimulator({
     sourceDir: PROJECT,

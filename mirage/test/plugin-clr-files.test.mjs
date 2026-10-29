@@ -9,8 +9,9 @@ import os from 'node:os';
 import { canonicalClrDirectory, readClrDependency, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-files-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-files-'));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
   return fs.realpath(root);
 }

@@ -6,7 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const PACK = `export default {
   id: 'invented-pack', name: 'Invented pack', description: 'Invented fixture pack',
@@ -97,7 +97,7 @@ test('standalone /packs lists an invented pack with exports, presets provenance 
 });
 
 test('Power Pages /packs reports the portal match of every registered pack', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-packs-pp-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-packs-pp-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await writeFiles(dir, {
     'portal/website.yml':

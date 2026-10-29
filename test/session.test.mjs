@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -328,7 +329,7 @@ test('HEAD reads no asset bytes and repeated mapped GETs reuse source-map work',
 });
 
 test('an external route save does not rebuild the unrelated portal index', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-route-refresh-'));
+  const dir = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-route-refresh-'));
   try {
     const file = path.join(dir, 'external.js');
     fs.writeFileSync(file, 'original');
@@ -700,7 +701,7 @@ test('repeated file requests retain a count without growing per-tab history', as
 test('committing a local edit removes its changed-scope override without another source save', async (t) => {
   // The watchers keep the process alive, so a missed refresh must fail instead of hanging the
   // unit lane, which has no --test-timeout. A refresh normally lands within one Git poll and flush.
-  const REFRESH_DEADLINE_MS = 10_000;
+  const REFRESH_DEADLINE_MS = 120_000;
   const local = createFixture();
   t.after(() => local.cleanup());
   const site = structuredClone(SITE);

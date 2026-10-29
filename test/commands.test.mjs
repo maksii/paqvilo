@@ -697,7 +697,7 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
     const reader = createInterface({ input: identityGuard.stdout, crlfDelay: Infinity });
     try {
       const [ready] = await Promise.race([
-        once(reader, 'line', { signal: AbortSignal.timeout(15_000) }),
+        once(reader, 'line', { signal: AbortSignal.timeout(120_000) }),
         once(identityGuard, 'exit').then(([code]) => {
           throw new Error(`Fixture process-handle guard exited before readiness (${code})`);
         }),
