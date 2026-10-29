@@ -23,6 +23,7 @@ const RECORD_MAGIC = '{"$paqvilo":"mirage-state-journal-v2"}\n';
 const DEFAULT_JOURNAL_THRESHOLD = 16 * 1024 * 1024;
 const REPLAY_BUFFER_ENTRIES = 4096;
 const REPLAY_BUFFER_BYTES = 8 * 1024 * 1024;
+const TABLE_OPERATION = /^\{"op":"(table|table-value|remove-table|insert|set|delete)","table":/;
 const conflict = () =>
   new DataError(
     'Local state changed outside this runtime; restart the simulator from the updated state file before writing',
@@ -166,11 +167,15 @@ export class StateStorage {
   }
   async load({ sections } = {}) {
     this.skippedFragmentEntries = 0;
+    this.skippedTableEntries = 0;
     this.peakReplayBufferEntries = 0;
     this.streamedReplayTransactions = 0;
     const retainText = createJsonTextCoalescer();
     const selected = sections ? new Set(sections) : null;
     const wanted = (entry) => !selected || selected.has(entry.key ?? 'tables');
+    // The writer puts a table operation's name first. Without the tables section
+    // those lines are checksummed but not parsed.
+    const skipTables = selected && !selected.has('tables');
     const before = await fileSignature(this.file);
     const handle = await open(this.file, 'r');
     let prefix;
@@ -232,7 +237,11 @@ export class StateStorage {
           }
           let entry;
           try {
-            entry = JSON.parse(line);
+            const table = skipTables && TABLE_OPERATION.exec(line);
+            if (table) {
+              entry = { op: table[1] };
+              this.skippedTableEntries++;
+            } else entry = JSON.parse(line);
           } catch (cause) {
             if (!committed) throw cause;
             await verifyTornTail();

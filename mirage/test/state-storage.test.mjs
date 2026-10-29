@@ -320,6 +320,26 @@ test('fragment records embed JSON unescaped and restore exact shapes, selections
   assert.equal(recovered.recoveredTail, true);
 });
 
+test('section reads checksum table operations without parsing them', async (t) => {
+  const initial = seed();
+  initial.tables.item = Array.from({ length: 500 }, (_, i) => ({ itemid: 'row-' + i, name: 'Invented ' + i }));
+  const { store, file } = await workspace(t, initial);
+  await store.update('items', 'row-7', { name: 'Changed' });
+  const selected = new StateStorage(file);
+  assert.deepEqual(await selected.load({ sections: ['settings', 'mappings'] }), {
+    settings: store.state.settings,
+    mappings: store.state.mappings,
+  });
+  assert.equal(selected.skippedTableEntries, 502, 'The table, its rows and the later edit are not parsed.');
+  const full = new StateStorage(file);
+  assert.equal((await full.load()).tables.item[7].name, 'Changed');
+  assert.equal(full.skippedTableEntries, 0);
+  // Skipped bytes still count toward the checksum of their transaction.
+  const text = await fs.readFile(file, 'utf8');
+  await fs.writeFile(file, text.replace('"name":"Invented 9"', '"name":"Invented 8"'));
+  await assert.rejects(new StateStorage(file).load({ sections: ['settings'] }), { code: 'StateIntegrity' });
+});
+
 test('journals written with escaped chunk fragments still load, select and verify', async (t) => {
   const root = await makeTemporaryDirectory(join(tmpdir(), 'mirage-legacy-fragments-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
