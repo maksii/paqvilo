@@ -55,12 +55,13 @@ test(
       await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name, type: 'module' }));
       await fs.writeFile(
         path.join(dir, 'index.html'),
-        '<!doctype html><html><body><p id="context"></p><label>Item name<input id="name"></label><button id="create">Create</button><p id="items"></p><script type="module">window.preamble=true;</script>' +
+        '<!doctype html><html><body><p id="context"></p><label>Item name<input id="name"></label><button id="create">Create</button><p id="items"></p><script type="module">import "./preamble.js";</script>' +
           (name === 'beta'
             ? `<script type="module">${application}</script>`
             : '<script type="module" src="/main.js"></script>') +
           '</body></html>',
       );
+      await fs.writeFile(path.join(dir, 'preamble.js'), 'window.preamble=true;');
       await fs.writeFile(path.join(dir, 'main.js'), application);
       await fs.writeFile(path.join(dir, 'label.js'), `export const label=${JSON.stringify(name)};`);
     }
@@ -144,6 +145,30 @@ test(
       }
       await route.continue();
     });
+    // The preamble's dependency arrives after the application module. Document order must still hold: had the
+    // application been requested first, it is let evaluate before the preamble is released.
+    let applicationRequested = false,
+      preambleHeld = false,
+      evaluatedEarly;
+    const failedEarly = new Promise((resolve) => (evaluatedEarly = resolve));
+    page.on('pageerror', evaluatedEarly);
+    await page.route(
+      (url) => url.origin === servers.alpha && url.pathname === '/main.js',
+      async (route) => {
+        applicationRequested = true;
+        await route.continue();
+      },
+    );
+    await page.route(
+      (url) => url.origin === servers.alpha && url.pathname === '/preamble.js',
+      async (route) => {
+        if (!preambleHeld) {
+          preambleHeld = true;
+          if (applicationRequested) await failedEarly;
+        }
+        await route.continue();
+      },
+    );
     await page.goto(origin + '/_apps/code/?app=alpha');
     await arrived;
     // An edit made while SDK initialization is held must be the first visible application source.

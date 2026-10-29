@@ -8,6 +8,7 @@ import { readFileSync } from 'node:fs';
 const BOOTSTRAP = 'virtual:paqvilo-code-app-bootstrap';
 const APP = 'virtual:paqvilo-code-app-context';
 const ENTRY = 'virtual:paqvilo-code-app-entry/';
+const ORDER = 'virtual:paqvilo-code-app-order';
 const INLINE = 'virtual:paqvilo-code-app-inline/';
 const source = (name) => fileURLToPath(new URL(name, import.meta.url)).replaceAll('\\', '/');
 const browserFile = (name) => '/@fs/' + source(name);
@@ -155,7 +156,8 @@ export function codeApps(options = {}) {
     },
     resolveId(id, importer) {
       if (id === '@microsoft/power-apps/app') return '\0' + APP;
-      if (id === BOOTSTRAP || id === APP || id.startsWith(ENTRY) || id.startsWith(INLINE)) return '\0' + id;
+      if (id === BOOTSTRAP || id === APP || id === ORDER || id.startsWith(ENTRY) || id.startsWith(INLINE))
+        return '\0' + id;
       if (importer?.startsWith('\0' + INLINE) && /^\.{1,2}\//.test(id)) {
         const inline = inlineSources.get(importer.slice(1));
         return this.resolve(id, inline.file, { skipSelf: true });
@@ -199,10 +201,16 @@ import ${JSON.stringify(BOOTSTRAP)};
 export { getContext } from ${JSON.stringify(browserFile('./code-apps-client.js'))};
 export { setConfig } from ${JSON.stringify('/@fs/' + nativeApp)};
 `;
+      // Entries start in document order, but each awaits the bootstrap, so their own imports would evaluate in
+      // network order. One queue keeps the page's module scripts in document order; a failed script does not
+      // stop later ones.
+      // ponytail: an entry waits until its predecessor settles, including top-level await, not only its synchronous part.
+      if (id === '\0' + ORDER)
+        return 'let tail=Promise.resolve();export function inOrder(load){const run=tail.then(load);tail=run.catch(()=>{});return run;}';
       if (id.startsWith('\0' + ENTRY)) {
         const target = entries.get(id.slice(1));
         if (!target) throw new Error('Unknown Code Apps module entry. Reload the application.');
-        return `await import(${JSON.stringify(BOOTSTRAP)}); await import(${JSON.stringify(target)});`;
+        return `import { inOrder } from ${JSON.stringify(ORDER)}; await inOrder(async () => { await import(${JSON.stringify(BOOTSTRAP)}); await import(${JSON.stringify(target)}); });`;
       }
       if (id.startsWith('\0' + INLINE)) return inlineSources.get(id.slice(1))?.code;
     },

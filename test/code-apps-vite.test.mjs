@@ -72,7 +72,7 @@ test('Vite proxy guards Host, Origin and origin-form paths and rewrites approved
   assert.equal(server.ws.listenerCount('paqvilo:config-check'), 0);
 });
 
-test('Vite module entry wrappers install bootstrap before the application entry', () => {
+test('Vite module entry wrappers install bootstrap before the application entry', async () => {
   const plugin = codeApps({ app: 'invented', mirageUrl: 'http://localhost:8787' });
   plugin.config();
   const { html } = plugin.transformIndexHtml.handler('<script type="module" src="./src/main.js"></script>', {
@@ -80,7 +80,27 @@ test('Vite module entry wrappers install bootstrap before the application entry'
   });
   const encoded = html.match(/src="\/@id\/__x00__(.*?)"/)[1];
   const module = plugin.load('\0' + encoded);
-  assert.match(module, /^await import\("virtual:paqvilo-code-app-bootstrap"\); await import\("\/src\/main.js"\);/);
+  assert.match(
+    module,
+    /^import \{ inOrder \} from "virtual:paqvilo-code-app-order"; await inOrder\(async \(\) => \{ await import\("virtual:paqvilo-code-app-bootstrap"\); await import\("\/src\/main.js"\); \}\);$/,
+  );
+  // Entries share one queue, so the page's module scripts evaluate in document order.
+  const order = plugin.load(plugin.resolveId('virtual:paqvilo-code-app-order'));
+  const { inOrder } = await import('data:text/javascript,' + encodeURIComponent(order));
+  const evaluated = [];
+  let releaseFirst;
+  const first = inOrder(async () => {
+    await new Promise((resolve) => (releaseFirst = resolve));
+    evaluated.push('first');
+    throw new Error('Invented failing script');
+  });
+  const second = inOrder(async () => evaluated.push('second'));
+  await Promise.resolve();
+  assert.deepEqual(evaluated, []);
+  releaseFirst();
+  await assert.rejects(first, /Invented failing script/);
+  await second;
+  assert.deepEqual(evaluated, ['first', 'second']);
 });
 
 test('published Vite and browser client declarations typecheck a consumer', async () => {
@@ -145,7 +165,7 @@ test('external module scripts remain external but run after bootstrap', () => {
   const id = transformed.match(/src="\/@id\/__x00__(.*?)"/)[1];
   assert.match(
     plugin.load('\0' + id),
-    /^await import\("virtual:paqvilo-code-app-bootstrap"\); await import\("https:\/\/cdn\.example\.test\/app\.js"\);/,
+    /await inOrder\(async \(\) => \{ await import\("virtual:paqvilo-code-app-bootstrap"\); await import\("https:\/\/cdn\.example\.test\/app\.js"\); \}\);$/,
   );
 });
 
