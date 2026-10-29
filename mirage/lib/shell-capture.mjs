@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { validateLivePath } from './live.mjs';
-import { isResourceManagerPath, isAspNetResourcePath, isPcfWebResourcePath } from './asset-cache.mjs';
+import { cssText, isResourceManagerPath, isAspNetResourcePath, isPcfWebResourcePath } from './asset-cache.mjs';
 import { parse } from 'parse5';
 import { footerLogoClasses } from './extensions.mjs';
 import { observedFooterLogos, observedFooterLayout } from './footer-capture.mjs';
@@ -168,18 +168,14 @@ const runtimeScript = (path) => {
     /(?:^|\/)(?:jquery(?:[-.]|$)|bootstrap(?:[-.]|$))/i.test(pathname)
   );
 };
+// An @import (a string or url()) names a stylesheet; other url() values name fonts and images.
 const cssDependencies = (css) => [
-  ...[...css.matchAll(/url\(\s*(?:(["'])(.*?)\1|([^)]*))\s*\)/gi)].map((m) => (m[2] ?? m[3]).trim()),
-  ...[...css.matchAll(/@import\s+(["'])(.*?)\1/gi)].map((m) => m[2]),
+  ...[...css.matchAll(/(@import\s+)?url\(\s*(?:(["'])(.*?)\2|([^)]*))\s*\)/gi)].map((m) => ({
+    value: (m[3] ?? m[4]).trim(),
+    style: Boolean(m[1]),
+  })),
+  ...[...css.matchAll(/@import\s+(["'])(.*?)\1/gi)].map((m) => ({ value: m[2], style: true })),
 ];
-
-// PAC preserves attachment bytes. Some exported stylesheets use a UTF-16 BOM,
-// which browsers decode correctly but a UTF-8-only dependency scan would miss.
-const cssText = (bytes) => {
-  const encoding =
-    bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le' : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8';
-  return new TextDecoder(encoding).decode(bytes);
-};
 
 /** Capture only opaque script resources declared by one read-only native HTML response. */
 export async function capturePortalAspNetResources(cache, live, { path } = {}) {
@@ -681,7 +677,7 @@ async function capturePortalShellImpl(cache, live, { path = '/', portal, onObser
       };
     }
     if (css != null)
-      for (const value of cssDependencies(css)) {
+      for (const { value, style } of cssDependencies(css)) {
         if (!value || value.startsWith('data:') || value.startsWith('#')) continue;
         try {
           const target = new URL(value, resource.url);
@@ -702,7 +698,7 @@ async function capturePortalShellImpl(cache, live, { path = '/', portal, onObser
             continue;
           }
           const dependency = resolveResource(target.href, resource.url, origin);
-          pending.push(dependency);
+          pending.push(style ? { ...dependency, kind: 'style' } : dependency);
         } catch (error) {
           issue(resource.path, error);
         }

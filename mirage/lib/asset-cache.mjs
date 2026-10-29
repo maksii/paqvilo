@@ -138,6 +138,31 @@ const failurePath = (value) =>
   typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') && !value.includes('@')
     ? value.split('?')[0].slice(0, 300)
     : '<invalid asset path>';
+// PAC preserves attachment bytes. Some exported stylesheets use a UTF-16 BOM,
+// which browsers decode correctly but a UTF-8-only reading would garble.
+export const cssText = (bytes) => {
+  const encoding =
+    bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le' : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8';
+  return new TextDecoder(encoding).decode(bytes);
+};
+// A stylesheet starts with a rule, an at-rule or a comment. Control characters
+// mark binary bytes; a leading markup tag, statement, call or assignment marks a
+// document or script served under a stylesheet content type.
+// This is a leading-token check, not a CSS parser.
+const cssLeading =
+  /^(?:<[!?a-z/]|\/\/|\/(?!\*)|[("'`!;~+=]|(?:var|let|const|function|class|import|export|return|if|for|while|switch|try|throw|new|typeof|void|async|await|this|window|document|self|globalThis)(?![-\w])|[\w$]+(?:\.[\w$]+)*\s*(?:\(|=(?!=)))/i;
+function plausibleStylesheet(bytes) {
+  const text = cssText(bytes);
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code <= 0x08 || (code >= 0x0e && code <= 0x1f)) return false;
+  }
+  const start = text
+    .slice(0, 4096)
+    .replace(/^\uFEFF/, '')
+    .replace(/^(?:\s+|\/\*[\s\S]*?\*\/|<!--|-->)*/, '');
+  return !cssLeading.test(start);
+}
 function verifyAsset(bytes, type, extension, { observedEmpty = false } = {}) {
   const contentType = mediaType(type);
   if (!types[extension]?.includes(contentType))
@@ -152,6 +177,8 @@ function verifyAsset(bytes, type, extension, { observedEmpty = false } = {}) {
   if (!bytes.length && !observedEmpty) throw fail('Empty assets cannot be captured.', 502, 'ASSET_EMPTY');
   if (bytes.length > 20 * 1024 * 1024)
     throw fail('Static asset exceeds the 20 MiB cache limit.', 413, 'ASSET_TOO_LARGE');
+  if (contentType === 'text/css' && !plausibleStylesheet(bytes))
+    throw fail('The stylesheet response body is not CSS and was not cached.', 502, 'ASSET_CONTENT_TYPE');
   if (
     ['.js', '.mjs', '.css', '.json', '.map', '.pcf'].includes(extension) &&
     /(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|__requestverificationtoken|authorization)["']?\s*[:=]\s*["'](?:Bearer\s+)?[^"'\s]{12,}["']/i.test(

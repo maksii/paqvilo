@@ -291,6 +291,35 @@ test('observed extensionless managed styles require CSS bytes and retain capture
       'failed replacement retains verified bytes',
     );
   }
+  // A stylesheet content type does not admit script, markup or binary bytes.
+  for (const body of [
+    'window.bad=1;',
+    '(function(){document.title="bad"})();',
+    '"use strict";var editor={};',
+    '/* banner */\nexport const editor = 1;',
+    'Editor.render({target:".editor"});',
+    '<div class="editor">Wrong</div>',
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]),
+  ]) {
+    const rejected = await capture(style, { type: 'text/css; charset=utf-8', body });
+    assert.equal(rejected.report.ready, false, String(body));
+    assert.equal(rejected.report.failures[0].code, 'ASSET_CONTENT_TYPE');
+    assert.equal((await cache.get(style)).body.toString(), '.editor{color:blue}');
+  }
+  for (const body of [
+    '/* banner */\n@charset "utf-8";\n.editor{color:green}',
+    '<!-- .editor{color:green} -->',
+    '[hidden]{display:none}',
+    ':root{--editor:green}',
+    '*{box-sizing:border-box}',
+    'editor-toolbar{display:block}',
+    Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('.editor{color:green}', 'utf16le')]),
+  ]) {
+    const accepted = await capture(style, { type: 'text/css', body });
+    assert.equal(accepted.report.ready, true, String(body));
+    assert.deepEqual((await cache.get(style)).body, Buffer.from(body));
+  }
+  assert.equal((await capture(style, { type: 'text/css', body: '.editor{color:blue}' })).report.ready, true);
   const missing = await capture(style, undefined);
   assert.equal(missing.report.failures[0].code, 'NATIVE_ASSET_HTTP');
   assert.equal(missing.report.failures[0].originStatus, 404);
@@ -309,6 +338,39 @@ test('observed extensionless managed styles require CSS bytes and retain capture
     assert.equal(rejected.live.calls.length, 2, 'only the document and jQuery are fetched');
     assert.ok(!JSON.stringify(rejected.report).includes('DO_NOT_LOG'));
   }
+});
+
+test('stylesheet @import dependencies are captured only as verified CSS, including extensionless managed resources', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-import-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const imported = '/_pcfwebresource/11111111-1111-1111-1111-111111111111';
+  const quoted = '/_pcfwebresource/22222222-2222-2222-2222-222222222222';
+  const scripted = '/_pcfwebresource/33333333-3333-3333-3333-333333333333';
+  const disguised = '/_pcfwebresource/44444444-4444-4444-4444-444444444444';
+  const cache = await new AssetCache({ directory, origin }).init();
+  const live = livePage(page('<link rel="stylesheet" href="/theme.css"><script src="/jquery.js"></script>'), {
+    '/theme.css': {
+      type: 'text/css',
+      body: `@import url("${imported}");@import '${quoted}';@import url(${scripted});@import "${disguised}";body{}`,
+    },
+    [imported]: { type: 'text/css; charset=utf-8', body: '.imported{color:blue}' },
+    [quoted]: { type: 'text/css', body: '.quoted{color:blue}' },
+    [scripted]: { type: 'application/javascript', body: 'window.editor={};' },
+    [disguised]: { type: 'text/css', body: 'window.editor={};' },
+    '/jquery.js': { type: 'application/javascript', body: 'window.jQuery={};' },
+  });
+  const report = await capturePortalShell(cache, live, { path: '/workspace/' });
+  assert.equal((await cache.get(imported)).body.toString(), '.imported{color:blue}');
+  assert.equal((await cache.get(quoted)).body.toString(), '.quoted{color:blue}');
+  for (const path of [scripted, disguised]) {
+    const failure = report.failures.find((item) => item.path === path);
+    assert.equal(failure?.code, 'ASSET_CONTENT_TYPE', path);
+    assert.equal(failure.dependency, true);
+    assert.equal(await cache.get(path), null, path);
+  }
+  assert.ok(
+    report.captured.every((item) => !item.path.startsWith('/_pcfwebresource/') || item.contentType === 'text/css'),
+  );
 });
 
 test('a failed shell refresh retains previous asset bytes and the on-disk manifest, including valid siblings', async (t) => {
