@@ -57,5 +57,4 @@ stream record values with backpressure instead of retaining one proxy per row.
 preserves held rows, ordering, aliases and active private snapshots. File leases
 protect active readers; collection checks the state publication lock and directory
 ownership. An unverified directory is retained. Close the runtime to release its
-handles and leases. Measurements and outstanding qualification are recorded in
-[consumer feedback](../../docs/consumer-feedback.md).
+handles and leases.

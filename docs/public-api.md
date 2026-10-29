@@ -279,6 +279,16 @@ An incomplete cached editor uses the compatibility control, including when a par
 managed-control definition was captured. Native editing requires a qualified capture or a
 legacy core plus language resources; merely caching `ckeditor.js` is insufficient.
 
+The compatibility control is a local stand-in, labelled `Compatibility editor`, not the native
+CKEditor. It sanitizes content with DOMPurify's HTML profile when it loads the stored value, on
+`setData` and whenever it serializes the editor body into the hidden field. Scripts, event-handler
+attributes, `javascript:` URLs, embedded frames and objects, and SVG or MathML markup are removed;
+ordinary formatting, lists, links, images and tables remain. Its output wraps inline-only content
+in a paragraph and keeps paragraphs, tables and preformatted blocks stable across repeated
+save/reopen. Unchanged content writes neither the hidden value nor a change event, and read-only
+fields keep the editor body read-only and its formatting buttons disabled. A captured native editor uses
+CKEditor's own content filtering instead and does not run DOMPurify.
+
 Evidenced platform defaults are accepted in catalogue `defaults.mirage.platform` and
 `sites.<id>.mirage.platform`, or a Mirage project's root/portal `platform` object:
 `{ QueryLinkEntityLimit: 50, evidence: 'Recorded sandbox organization setting' }`.

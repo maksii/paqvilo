@@ -53,8 +53,9 @@ test('release counts distinct archive entries whose GUID paths npm masks identic
   assert.equal(validateReleaseFiles([...required, masked, masked]), required.length + 2);
 });
 
-test('release checks nested user guides and example documentation links', (t) => {
-  const root = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-doc-links-'));
+/** A temporary checkout with the root guides and ignore entries the documentation check requires. */
+function documentationRoot(t, prefix) {
+  const root = makeTemporaryDirectorySync(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const write = (name, text) => {
     const file = path.join(root, name);
@@ -64,6 +65,11 @@ test('release checks nested user guides and example documentation links', (t) =>
   for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'SECURITY.md', 'mirage/README.md'])
     write(name, '# Guide\n');
   write('.gitignore', '.env\npaqvilo.config.local.yml\n');
+  return { root, write };
+}
+
+test('release checks nested user guides and example documentation links', (t) => {
+  const { root, write } = documentationRoot(t, 'paqvilo-doc-links-');
   write('mirage/docs/baseline/rerun.md', '[Input](./scenario%20inputs.md#fields)');
   assert.throws(() => checkDocumentation(root), /Broken documentation link.*rerun\.md/);
   write('mirage/docs/baseline/scenario inputs.md', '# Fields\n');
@@ -71,6 +77,27 @@ test('release checks nested user guides and example documentation links', (t) =>
   assert.throws(() => checkDocumentation(root), /Broken documentation link.*README\.md/);
   write('missing.md', '# Site\n');
   write('mirage/docs/node_modules/private/README.md', '[Ignore](absent.md)');
+  assert.doesNotThrow(() => checkDocumentation(root));
+});
+
+test('release rejects evidence ledgers and test receipts among shipped guides', (t) => {
+  const { root, write } = documentationRoot(t, 'paqvilo-doc-ledgers-');
+  write('docs/guide.md', '# Guide\n\nA calendar view from 2026-01-01 and a receipt ID returned by the collector.\n');
+  assert.doesNotThrow(() => checkDocumentation(root));
+  for (const [name, text] of [
+    ['docs/consumer-feedback.md', '# Consumer\n'],
+    ['mirage/docs/startup-receipt.md', '# Startup\n'],
+    [
+      'docs/timeouts.md',
+      '| File | Git blob |\n| --- | --- |\n| `a.mjs` | `a23dc1fcbe74aec9c4d52e4f710b29d8d7629ba6` |\n',
+    ],
+    ['docs/startup.md', 'Local Windows / Node 24 x64 results on 2026-10-28:\n'],
+    ['mirage/docs/browser.md', 'Local verification on 2026-10-28: Windows, Edge.\n'],
+  ]) {
+    write(name, text);
+    assert.throws(() => checkDocumentation(root), new RegExp('Evidence ledger or receipt.*' + path.basename(name)));
+    fs.rmSync(path.join(root, name));
+  }
   assert.doesNotThrow(() => checkDocumentation(root));
 });
 

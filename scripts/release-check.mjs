@@ -526,6 +526,14 @@ export function checkDocumentation(root) {
   // Template-relative links are checked after generation by installed-package smoke.
   for (const name of names) {
     const text = fs.readFileSync(path.join(root, name), 'utf8');
+    // Guides describe current behaviour. Evidence ledgers, benchmark results and
+    // test receipts belong in ignored storage or a private project.
+    if (
+      /-(?:feedback|receipts?|ledger|qualification)\.md$/.test(name) ||
+      /\b[0-9a-f]{40}\b/.test(text) ||
+      /\b(?:results?|verification|measurements?|receipts?|runs?)\b[^\n]{0,40}\bon 20\d\d-\d\d-\d\d\b/i.test(text)
+    )
+      throw new Error(`Evidence ledger or receipt in documentation: ${name}`);
     for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
       const target = match[1].split('#')[0];
       if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;

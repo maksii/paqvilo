@@ -44,8 +44,12 @@ This capability applies only with site evidence and both `observed.webApiErrorDe
 Presets can return bodies or `{ name, description, load() }` descriptors. Body generation is memoized and listing does not generate rows. Stored builtin descriptors resolve using the explicitly supplied portal library. An unavailable project descriptor is reported, never silently replaced. Do not import `data.mjs` or `presets.mjs` at pack module top level if that creates a registry cycle; generators may import runtime utilities lazily.
 
 For large generated presets, `{ name, description, createOwned() }` is an explicit ownership-transfer alternative.
-Its context also supplies [`records.table()` for streamed JSON records](record-storage.md).
-It must synchronously return a new private plain preset body on every call. Do not retain or reuse its mutable
+It receives one context argument, `{ records }`, whose [`records.table()` streams JSON records](record-storage.md).
+When a runtime applies the preset, `records` comes from that runtime's store and its tables are kept in paged
+record storage; a read without a store, such as a direct `library[id]` preview, receives a default
+`records` whose tables become ordinary arrays. The factory must return synchronously: an `async` factory, or any
+returned promise, is rejected as a preset that did not load an object. It must return a new private plain preset
+body on every call. Do not retain or reuse its mutable
 rows, arrays, mappings or other objects after returning; immutable strings may be shared. Keep the body compatible
 with persisted JSON state. Register executable handlers through the pack's extension exports.
 The toolkit can adopt this body without retaining and cloning a second complete dataset. Column defaults,
