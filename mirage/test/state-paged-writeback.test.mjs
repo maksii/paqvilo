@@ -21,8 +21,11 @@ const pack = {
           for (let i = 0; i < 3000; i++) yield { itemid: 'row-' + i, name: 'Invented ' + i };
         }
         return {
-          mappings: { item: { idColumn: 'itemid', entitySet: 'items', nameColumn: 'name' } },
-          tables: { item: records.table(rows(), { primaryKey: 'itemid' }) },
+          mappings: {
+            item: { idColumn: 'itemid', entitySet: 'items', nameColumn: 'name' },
+            note: { idColumn: 'noteid', entitySet: 'notes', nameColumn: 'name' },
+          },
+          tables: { item: records.table(rows(), { primaryKey: 'itemid' }), note: [] },
         };
       },
     },
@@ -65,4 +68,48 @@ test('settings-only presets keep paged tables on their pages, at runtime and at 
   assert.ok(pagedRecordsOf(restarted.store.state.tables.item), 'The startup preset path keeps pages too.');
   assert.equal(restarted.store.get('items', 'row-0', admin).name, 'Invented 0');
   assert.ok(await storedItemIsPaged(stateFile));
+});
+
+test('reference enrichment of one table keeps other paged tables on their pages', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-paged-enrichment-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented enrichment');
+  const liveBridge = {
+    origin: 'https://reference.example.test',
+    connected: true,
+    configure() {},
+    status() {
+      return { connected: this.connected, origin: this.origin };
+    },
+    async connect() {
+      return this.status();
+    },
+    async close() {},
+    async request() {
+      throw new Error('No live requests in this test');
+    },
+    async fetchXml() {
+      return { entities: [{ noteid: 'reference-note', name: 'Reference note' }], more_records: false };
+    },
+  };
+  const sim = await createSimulator({
+    sourceDir: root,
+    stateFile: path.join(root, 'state.json'),
+    watch: false,
+    packs: [pack],
+    preset: 'pagedItems',
+    liveBridge,
+  });
+  t.after(() => sim.close());
+  assert.ok(pagedRecordsOf(sim.store.state.tables.item));
+  const response = await fetch(sim.url + '/_sim/api/reference/enrich', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
+    body: JSON.stringify({
+      plan: [{ entity: 'note', fetchXml: '<fetch><entity name="note"><attribute name="name"/></entity></fetch>' }],
+    }),
+  });
+  assert.equal(response.status, 200, await response.text());
+  assert.equal(sim.store.get('notes', 'reference-note', admin).name, 'Reference note');
+  assert.ok(pagedRecordsOf(sim.store.state.tables.item), 'Enriching another table must not materialize pages.');
 });
