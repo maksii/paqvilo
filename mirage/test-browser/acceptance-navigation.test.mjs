@@ -272,6 +272,10 @@ const TESTS_IN_PARALLEL = 4;
 // A hang guard, not a product budget: a browser launch, a flow bounded by its own action timeout (at most 15 s,
 // asserted through its error or reserve), evidence capture and close. A loaded runner can spend seconds on each.
 const HANG_GUARD = { timeout: 60_000 };
+// A deliberately hanging read never settles, so these flows fail at their action deadline whatever its length.
+// The same deadline also bounds the cold browser's first document load, which a loaded Windows Edge runner can
+// spend several seconds on.
+const HANGING_READ_TIMEOUT = 8000;
 describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL }, () => {
   for (const history of ['hash', 'pushState'])
     test(`same-document ${history} does not consume a pending document replacement`, HANG_GUARD, async (t) => {
@@ -293,7 +297,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       `a hash change cannot retire a hanging read (${noNavigation ? 'no navigation' : '204 navigation'})`,
       HANG_GUARD,
       async (t) => {
-        const flow = await navigationFixture(t, { noCommit: true, noNavigation, timeout: 2500 });
+        const flow = await navigationFixture(t, { noCommit: true, noNavigation, timeout: HANGING_READ_TIMEOUT });
         assert.equal(flow.passed, false);
         assert.match(flow.error, /Portal requests did not settle.*GET.*never/);
         assert.equal(flow.navigationCancelledRequests?.length ?? 0, 0);
@@ -307,7 +311,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       let releaseDocumentResponse;
       const flow = await navigationFixture(t, {
         noCommit: true,
-        timeout: 2500,
+        timeout: HANGING_READ_TIMEOUT,
         scheduleDocumentResponse: (callback) => {
           releaseDocumentResponse = callback;
         },
@@ -417,7 +421,7 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
     );
 
   test('replacement document requests remain pending after retiring its predecessor', HANG_GUARD, async (t) => {
-    const flow = await navigationFixture(t, { replacementRead: true, late: true, timeout: 2500 });
+    const flow = await navigationFixture(t, { replacementRead: true, late: true, timeout: HANGING_READ_TIMEOUT });
     assert.equal(flow.passed, false);
     assert.match(flow.error, /Portal requests did not settle.*GET.*never/);
     assert.equal(flow.navigationCancelledRequests?.length, 2);

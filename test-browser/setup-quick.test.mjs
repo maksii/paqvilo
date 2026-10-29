@@ -38,9 +38,11 @@ async function ownPorts(config, t) {
   return { occupied, port };
 }
 // Waits for the started preview, or fails at once with the reason the page shows when it could not start.
+// A status poll that times out on a loaded host shows a recoverable notice and keeps trying; it is not a failure.
 async function started(run) {
   const running = run.getByText(/Your preview is running on this computer/);
-  await running.or(run.getByRole('alert')).first().waitFor({ timeout: 180_000 });
+  const failed = run.getByRole('alert').filter({ hasText: /The preview could not start/ });
+  await running.or(failed).first().waitFor({ timeout: 180_000 });
   assert.equal(await running.count(), 1, await run.innerText());
 }
 let browser;
