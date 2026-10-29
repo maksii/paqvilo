@@ -167,8 +167,11 @@ test('large streamed JSON scans segments across every scalar escape boundary and
 });
 
 test('stream consumers can coalesce completed objects before later input is read and still receive full data', async () => {
+  // A document beyond the native-parser budget streams: each object completes
+  // before later input is read.
   const completed = [];
   async function* chunks() {
+    yield ' '.repeat(8 * 1024 * 1024 + 1);
     yield '{"first":{"text":"one"},';
     assert.equal(completed.length, 1);
     yield '"second":{"text":"two"}}';
@@ -176,6 +179,26 @@ test('stream consumers can coalesce completed objects before later input is read
   const value = await parseJsonStream(chunks(), { onObject: (item) => completed.push(item) });
   assert.deepEqual(value, { first: { text: 'one' }, second: { text: 'two' } });
   assert.deepEqual(completed, [value.first, value.second, value]);
+});
+
+test('bounded documents parse natively and still report every completed object, children first', async () => {
+  const completed = [];
+  let reads = 0;
+  function* chunks() {
+    yield '{"first":{"text":"one","rows":[{"a":1},[{"b":2}]]},';
+    // A native parse reads the whole bounded document before any callback.
+    assert.equal(completed.length, 0);
+    reads++;
+    yield '"second":{"text":"two"},"list":[1,null,"x"]}';
+  }
+  const value = await parseJsonStream(chunks(), { onObject: (item) => completed.push(item) });
+  assert.equal(reads, 1);
+  assert.deepEqual(value, {
+    first: { text: 'one', rows: [{ a: 1 }, [{ b: 2 }]] },
+    second: { text: 'two' },
+    list: [1, null, 'x'],
+  });
+  assert.deepEqual(completed, [value.first.rows[0], value.first.rows[1][0], value.first, value.second, value]);
 });
 
 test('legacy JSON loads, large checkpoints stream, and digests cover exact committed bytes', async (t) => {

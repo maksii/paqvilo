@@ -58,17 +58,21 @@ function flatJson(item, budget, sortKeys, shapes) {
 // Bound intermediate strings to one JSON scalar, rather than the document size.
 // Chunk boundaries may fall inside UTF-8, escapes, numbers or property names.
 export async function parseJsonStream(chunks, { onObject } = {}) {
-  // Source caches can coalesce immutable text as each entry completes, before
-  // the rest of a large cache is resident. Ordinary state reads keep the fast path.
-  if (onObject) return parseLargeJsonStream(chunks, onObject);
   // Most individual journal entries fit in a bounded native parse. Keep the
   // streaming fallback for documents larger than this fixed allocation budget.
+  // `onObject` sees every completed object, children first: after a native
+  // parse in document order, or while a larger document streams, so consumers
+  // can coalesce immutable text before the rest of that document is resident.
   const iterator = chunks[Symbol.asyncIterator] ? chunks[Symbol.asyncIterator]() : chunks[Symbol.iterator]();
   const prefix = [];
   let length = 0;
   while (length <= 8 * 1024 * 1024) {
     const next = await iterator.next();
-    if (next.done) return JSON.parse(prefix.join(''));
+    if (next.done) {
+      const value = JSON.parse(prefix.join(''));
+      if (onObject) visitObjects(value, onObject);
+      return value;
+    }
     const chunk = String(next.value);
     prefix.push(chunk);
     length += chunk.length;
@@ -85,7 +89,29 @@ export async function parseJsonStream(chunks, { onObject } = {}) {
       await iterator.return?.();
     }
   }
-  return parseLargeJsonStream(remaining());
+  return parseLargeJsonStream(remaining(), onObject);
+}
+
+// Children before their parent, as the streaming parser completes them. An
+// explicit stack keeps deeply nested documents off the call stack; arrays are
+// walked by index rather than through a key list.
+function visitObjects(root, onObject) {
+  const enter = (value) => {
+    const array = Array.isArray(value);
+    return { value, array, keys: array ? null : Object.keys(value), length: array ? value.length : 0, index: 0 };
+  };
+  if (root === null || typeof root !== 'object') return;
+  const stack = [enter(root)];
+  while (stack.length) {
+    const frame = stack.at(-1);
+    if (frame.index < (frame.array ? frame.length : frame.keys.length)) {
+      const item = frame.array ? frame.value[frame.index++] : frame.value[frame.keys[frame.index++]];
+      if (item !== null && typeof item === 'object') stack.push(enter(item));
+      continue;
+    }
+    stack.pop();
+    if (!frame.array) onObject(frame.value);
+  }
 }
 
 async function parseLargeJsonStream(chunks, onObject) {
