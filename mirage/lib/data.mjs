@@ -836,6 +836,23 @@ function normalizeState(
   return reconcilePermissionDiagnostics(applyPlatformConfig(result, platform));
 }
 
+// Temporary record directories of stores without a state file, by directory.
+// closeRecordStorage() removes an entry; process exit removes what remains.
+const temporaryRecordDirectories = new Map();
+const ownedTemporaryRecordDirectory = (directory) =>
+  dirname(directory) === fsSync.realpathSync.native(tmpdir()) &&
+  basename(directory).startsWith('paqvilo-record-state-');
+function removeTemporaryRecordDirectories() {
+  for (const [directory, session] of temporaryRecordDirectories)
+    try {
+      session.deref()?.close();
+      if (ownedTemporaryRecordDirectory(directory)) fsSync.rmSync(directory, { recursive: true, force: true });
+    } catch {
+      // Best effort: the process is exiting and an open handle keeps the files.
+    }
+  temporaryRecordDirectories.clear();
+}
+
 function traceRetentionError(original, persistence) {
   const failure = new AggregateError([original, persistence], persistence.message, { cause: original });
   failure.code = persistence.code ?? 'PluginTracePersistenceFailed';
@@ -973,7 +990,11 @@ export class DataStore {
         ? resolve(this.file) + '.records'
         : fsSync.mkdtempSync(join(tmpdir(), 'paqvilo-record-state-'));
       this.recordSession = new RecordPageSession(directory, { stateOwner: this.file ?? undefined });
-      if (!this.file) this.temporaryRecordDirectory = this.recordSession.directory;
+      if (!this.file) {
+        this.temporaryRecordDirectory = this.recordSession.directory;
+        if (!temporaryRecordDirectories.size) process.once('exit', removeTemporaryRecordDirectories);
+        temporaryRecordDirectories.set(this.temporaryRecordDirectory, new WeakRef(this.recordSession));
+      }
     }
     return this.recordSession;
   }
@@ -999,14 +1020,17 @@ export class DataStore {
     this.recordSession = null;
     if (this.temporaryRecordDirectory) {
       const directory = this.temporaryRecordDirectory;
-      if (
-        dirname(directory) !== fsSync.realpathSync.native(tmpdir()) ||
-        !basename(directory).startsWith('paqvilo-record-state-')
-      )
+      if (!ownedTemporaryRecordDirectory(directory))
         throw Error('Temporary record directory is outside its owned root');
       fsSync.rmSync(directory, { recursive: true, force: true });
       this.temporaryRecordDirectory = null;
+      temporaryRecordDirectories.delete(directory);
+      if (!temporaryRecordDirectories.size) process.off('exit', removeTemporaryRecordDirectories);
     }
+  }
+  /** Release record pages and remove a temporary record directory (closeRecordStorage). */
+  close() {
+    this.closeRecordStorage();
   }
   snapshot(projection, options) {
     if (projection === undefined) {
@@ -1102,10 +1126,18 @@ export class DataStore {
     const recordDirectory = fsSync.existsSync(intendedRecords)
       ? fsSync.realpathSync.native(intendedRecords)
       : join(fsSync.realpathSync.native(dirname(intendedRecords)), basename(intendedRecords));
+    // A store that created pages before a state file was bound (an in-memory
+    // session) moves them next to the file on its first save.
     if (this.recordSession && this.recordSession.directory !== recordDirectory) {
       await this.storage.assertUnchanged();
       const migrated = await compactRecordGraph(selectedState, recordDirectory, { stateOwner: this.file });
-      if (migrated) {
+      if (!migrated) {
+        // No published table uses the foreign session. Later tables start in
+        // the file's own directory instead of being migrated on every save.
+        (this.retiredRecordSessions ??= new Set()).add(this.recordSession);
+        this.recordSession = null;
+        this.scheduleRecordRetirement();
+      } else {
         const previous = this.recordSession;
         // Point the manager at its unpublished destination for this recursive
         // save; the state graph itself remains on the preceding live pages.
@@ -1117,7 +1149,7 @@ export class DataStore {
           published = true;
           this.storage.recordSession = migrated.session;
           (this.retiredRecordSessions ??= new Set()).add(previous);
-          this.retireRecordSessions();
+          this.scheduleRecordRetirement();
           return;
         } finally {
           if (!published) {
@@ -1531,10 +1563,8 @@ export class DataStore {
         this.sectionSnapshot = null;
         this.initializationFingerprintCache = null;
         (this.retiredRecordSessions ??= new Set()).add(oldSession);
-        this.retireRecordSessions();
+        this.scheduleRecordRetirement();
         await this.collectRecordStorage();
-        this.recordRetirementTimer ??= setInterval(() => this.retireRecordSessions(), 2000);
-        this.recordRetirementTimer.unref();
       } finally {
         if (!published) {
           compacted.session.close();
@@ -1555,6 +1585,18 @@ export class DataStore {
         this.recordCleanupError = error;
       }
     }
+    if (!this.retiredRecordSessions?.size) {
+      clearInterval(this.recordRetirementTimer);
+      this.recordRetirementTimer = null;
+    }
+  }
+  /** Close retired sessions now; recheck the ones that still back live tables
+   * every 2 s (without holding the process open) until none remain. */
+  scheduleRecordRetirement() {
+    this.retireRecordSessions();
+    if (!this.retiredRecordSessions?.size || this.recordRetirementTimer) return;
+    this.recordRetirementTimer = setInterval(() => this.retireRecordSessions(), 2000);
+    this.recordRetirementTimer.unref();
   }
   async collectRecordStorage() {
     const session = this.recordSession;

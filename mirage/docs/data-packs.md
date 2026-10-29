@@ -57,6 +57,15 @@ editing that preview does not edit the factory. Customize a saved preset or repl
 Existing `load()` retains its memoization and detached-copy behavior, and takes precedence if both methods exist.
 Ownership transfer is opt-in because an arbitrary existing loader may retain its returned graph.
 
+Project tests and generators that construct a `DataStore` directly own its record storage. A store with a
+state file keeps streamed records in `<state file>.records`; a store without one creates a
+`paqvilo-record-state-*` directory under the operating system's temporary directory when it first stores
+streamed records. Call `store.close()` (the same as `store.closeRecordStorage()`) when the store is no longer
+used: it closes every record session, releases their leases and removes that temporary directory. If any
+session fails to close, the call throws, keeps the remaining owners and files, and can be retried. A
+temporary directory still open when the process exits is removed on a best-effort basis; do not rely on
+that for long-running processes. `createSimulator()` and the offline `data` commands close their own stores.
+
 ```js
 presets() {
   return {
