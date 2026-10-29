@@ -521,22 +521,30 @@ export function injectRuntime(html, token, revision, identity = {}, traceId = nu
   return /<head\b[^<>]*>/i.test(html) ? html.replace(/<head\b[^<>]*>/i, (head) => head + script) : script + html;
 }
 
-/** Use the observed managed CKEditor bytes, binding HTML as the native JSON input. */
+/**
+ * Use the observed managed CKEditor bytes, binding HTML as the native JSON input.
+ * The compatibility editor's DOMPurify factory runs with its own module/exports
+ * and no AMD define, so its instance is private to the editor: it neither
+ * replaces a page's DOMPurify global nor registers with a page's AMD loader.
+ */
 let compatibilitySanitizerSource;
 function clientRichTextRuntime(settings) {
   const data = JSON.stringify(settings).replace(/</g, '\\u003c');
   const compatibility = Object.values(settings).some((setting) => setting.compatibility);
   if (compatibility)
-    compatibilitySanitizerSource ??= readFileSync(
-      createRequire(import.meta.url).resolve('dompurify/purify.min.js'),
-      'utf8',
-    ).replace(/<\/script/gi, '<\\/script');
+    compatibilitySanitizerSource ??=
+      '(function(){var module={exports:{}},exports=module.exports,define;\n' +
+      readFileSync(createRequire(import.meta.url).resolve('dompurify/purify.min.js'), 'utf8').replace(
+        /<\/script/gi,
+        '<\\/script',
+      ) +
+      '\nreturn module.exports;})()';
   return (
-    (compatibility ? compatibilitySanitizerSource + '\n' : '') +
     '(' +
     mountRichTextEditors.toString() +
     ')(' +
     data +
+    (compatibility ? ',' + compatibilitySanitizerSource : '') +
     ');'
   );
 }

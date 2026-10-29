@@ -306,7 +306,10 @@ function observePortalNodeImpl(
         ['modal-form-edit', 'EditAction'],
         ['modal-form-details', 'DetailsAction'],
       ].filter(([name]) => modal.classList.contains(name));
-      let owners = [];
+      // Exact ownership needs a rendered list/subgrid identity or a page-referenced
+      // list; other exported lists sharing the rendered view only supply candidates.
+      let owners = [],
+        candidateOwners = null;
       const subgrid = grid.closest('.subgrid[id]');
       let placementConflict = false;
       if (subgrid) {
@@ -332,25 +335,36 @@ function observePortalNodeImpl(
         const listId = explicitId || nativeId || (wrapper?.id === 'EntityListControl' ? bindings.pageListId : '');
         const viewId = attribute(grid, 'data-selected-view');
         placementConflict = !!(explicitId && nativeId && norm(explicitId) !== norm(nativeId));
-        owners = lists.filter((list) =>
-          listId
-            ? componentId(list) === norm(listId)
-            : !wrapper && viewId && (list.viewIds ?? []).some((id) => norm(id) === norm(viewId)),
-        );
+        if (listId) owners = lists.filter((list) => componentId(list) === norm(listId));
+        else if (!wrapper && viewId) {
+          candidateOwners = lists.filter((list) => (list.viewIds ?? []).some((id) => norm(id) === norm(viewId)));
+          owners = candidateOwners.filter((list) => list.pageReferenced === true);
+        }
         if (listId && viewId && owners.some((list) => !(list.viewIds ?? []).some((id) => norm(id) === norm(viewId))))
           placementConflict = true;
       }
-      const actions = owners.flatMap((owner) =>
-        (owner.actions ?? [])
-          .filter((action) => action.formId && kinds.length === 1 && action.name === kinds[0][1])
-          .map((action) => ({ owner, action })),
-      );
-      modalCandidates = forms.filter(
-        (form) =>
-          formKind(form) === 'basic-form' && actions.some(({ action }) => norm(action.formId) === norm(form.id)),
-      );
-      if (!placementConflict && owners.length === 1 && actions.length === 1 && modalCandidates.length === 1) {
-        const target = modalCandidates[0];
+      const actionsOf = (rows, names) =>
+        rows.flatMap((owner) =>
+          (owner.actions ?? [])
+            .filter((action) => action.formId && names.includes(action.name))
+            .map((action) => ({ owner, action })),
+        );
+      const formsOf = (rows) =>
+        forms.filter(
+          (form) => formKind(form) === 'basic-form' && rows.some(({ action }) => norm(action.formId) === norm(form.id)),
+        );
+      const actions = kinds.length === 1 ? actionsOf(owners, [kinds[0][1]]) : [];
+      // Candidate context: the declared action forms of the modal's kinds (all kinds
+      // when the container names none) on the rendered layout table.
+      modalCandidates = formsOf(
+        actionsOf(
+          candidateOwners ?? owners,
+          kinds.length ? kinds.map(([, name]) => name) : ['CreateAction', 'EditAction', 'DetailsAction'],
+        ),
+      ).filter((form) => !form.entity || form.entity.toLowerCase() === declaredTable);
+      const targets = formsOf(actions);
+      if (!placementConflict && owners.length === 1 && actions.length === 1 && targets.length === 1) {
+        const target = targets[0];
         const params = definitionQuery(new URL(doc.URL));
         const disagree = params.some(([key, value]) =>
           ['entityformid', 'formid'].includes(key)

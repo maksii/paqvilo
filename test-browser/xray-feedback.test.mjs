@@ -270,6 +270,199 @@ test('native generic modal layouts join only their rendered list or subgrid acti
   assert.doesNotMatch(JSON.stringify(await inspect(field('edit'))), /recordid|Field values must not/);
 });
 
+test('view-only modal placements are exact only for a page-referenced list and otherwise surface table-filtered action forms', async (t) => {
+  const modalPath = '/_portal/modal-form-template-path/invented';
+  const { page, inspect, data, report } = await fixture(
+    t,
+    '<div class="entity-grid" data-selected-view="shared-view">' +
+      `<section class="modal-form modal-form-edit"><iframe id="edit" data-page="${modalPath}" src="${modalPath}"></iframe></section>` +
+      `<section class="modal-form"><iframe id="unclassed" data-page="${modalPath}" src="${modalPath}"></iframe></section>` +
+      `<section class="modal-form modal-form-insert modal-form-edit"><iframe id="both" data-page="${modalPath}" src="${modalPath}"></iframe></section>` +
+      '</div>',
+  );
+  const target = (id, entity) => ({ id, name: id, kind: 'basic-form', entity, formXml: { id: 'xml-' + id } });
+  const index = {
+    forms: [
+      ...forms,
+      target('create', 'x_first'),
+      target('edit', 'x_first'),
+      target('details', 'x_first'),
+      target('other-table', 'x_second'),
+    ],
+    lists: [
+      {
+        id: 'exported',
+        entity: 'x_first',
+        viewIds: ['shared-view'],
+        actions: [
+          { name: 'CreateAction', formId: 'create' },
+          { name: 'EditAction', formId: 'edit' },
+          { name: 'DetailsAction', formId: 'details' },
+          { name: 'CreateAction', formId: 'other-table' },
+        ],
+      },
+    ],
+  };
+  const update = (components) =>
+    page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
+      data,
+      report: { ...report, componentIndex: index, components },
+    });
+  for (const id of ['edit', 'unclassed', 'both'])
+    await page.locator('#' + id).evaluate((frame) => {
+      frame.contentDocument.body.innerHTML =
+        '<div id="EntityFormControl"><div id="EntityFormPanel"><div id="EntityFormControl_EntityFormView"><span data-form-layout></span><input id="x_title"></div></div></div>';
+      frame.contentDocument
+        .querySelector('[data-form-layout]')
+        .setAttribute(
+          'data-form-layout',
+          JSON.stringify({ Id: '00000000-0000-0000-0000-000000000000', EntityName: 'x_first' }),
+        );
+    });
+  const field = (id) => page.frameLocator('#' + id).locator('#x_title');
+  const candidates = (evidence) =>
+    evidence.enclosing
+      .filter((row) => row.component?.kind === 'basic-form' && row.status === 'candidate')
+      .map((row) => row.component.id)
+      .sort();
+  // An exported list that this page does not reference shares the rendered view.
+  await update([]);
+  const unreferenced = await inspect(field('edit'));
+  assert.notEqual(unreferenced.owner.status, 'exact', 'a shared view alone cannot prove the opener');
+  assert.ok(!unreferenced.enclosing.some((row) => row.component?.id === 'edit' && row.status === 'exact'));
+  assert.deepEqual(candidates(unreferenced), ['edit']);
+  assert.ok(
+    unreferenced.enclosing.some((row) => row.component?.kind === 'table' && row.component.entity === 'x_first'),
+  );
+  // Without exactly one action kind, the declared action forms of the modal's kinds (all kinds when
+  // it names none) on the layout table are candidate context.
+  for (const id of ['unclassed', 'both']) {
+    const evidence = await inspect(field(id));
+    assert.notEqual(evidence.owner.status, 'exact', id);
+    assert.deepEqual(candidates(evidence), id === 'both' ? ['create', 'edit'] : ['create', 'details', 'edit'], id);
+  }
+  // The page references the list: its rendered view and single edit action are exact.
+  await update([{ kind: 'list', recordId: 'exported', name: 'Exported', entity: 'x_first' }]);
+  const referenced = await inspect(field('edit'));
+  exactColumn(referenced, 'x_first', 'x_title');
+  assert.ok(referenced.enclosing.some((row) => row.component?.id === 'edit' && row.status === 'exact'));
+  assert.notEqual((await inspect(field('unclassed'))).owner.status, 'exact');
+});
+
+test('crowded native pages keep picked native fields and unknown elements ahead of bounded context while the card avoids each pick', async (t) => {
+  const names = Array.from({ length: 240 }, (_, index) => 'x_field' + index);
+  const { page, inspect, data, report } = await fixture(
+    t,
+    '<div id="EntityFormControl_basica"><div id="EntityFormControl_basica_EntityFormView" style="display:grid;grid-template-columns:repeat(6,1fr);gap:4px">' +
+      names.map((name) => `<div class="control"><input id="${name}" aria-label="${name}"></div>`).join('') +
+      '</div></div>' +
+      Array.from(
+        { length: 240 },
+        (_, index) => `<invented-widget id="unknown${index}">Unknown ${index}</invented-widget>`,
+      ).join(''),
+  );
+  const crowded = {
+    ...report,
+    columns: [...report.columns, ...names.map((name) => ({ entity: 'x_first', name }))],
+    sourceRefs: [
+      ...report.sourceRefs,
+      ...names.map((name) => ({
+        id: 'x_first:' + name,
+        key: 'x_first:' + name,
+        componentKey: 'column:x_first:' + name,
+        kind: 'column',
+        ref: 'invented/x_first.xml',
+        sourceRevision: 'feedback-1',
+        contentRevision: 'invented-current-bytes',
+        relationship: 'definition',
+      })),
+    ],
+    apiReferences: Array.from({ length: 300 }, (_, index) => ({
+      name: 'x_firsts' + index,
+      entity: 'x_first',
+      ref: 'invented/api' + index + '.js',
+    })),
+    permissionRules: Array.from({ length: 1000 }, (_, index) => ({
+      name: 'Invented rule ' + index,
+      entity: 'x_first',
+      scope: 'Global',
+      ref: 'invented/rule' + index + '.yml',
+    })),
+  };
+  await page.evaluate(({ data, report }) => document.getElementById('paqvilo-xray').__px.update(data, report), {
+    data,
+    report: crowded,
+  });
+  // Picks never read or change the underlying controls.
+  await page.evaluate(() => {
+    window.valueReads = 0;
+    for (const input of document.querySelectorAll('input'))
+      Object.defineProperty(input, 'value', {
+        get() {
+          window.valueReads++;
+          return '';
+        },
+        set() {
+          window.valueReads++;
+        },
+      });
+  });
+  const markup = () => page.locator('#EntityFormControl_basica').evaluate((node) => node.outerHTML);
+  const before = await markup();
+  const card = page.locator('#paqvilo-xray .card');
+  const context = card.locator('.api-context');
+  const pick = async (selector) => {
+    await page.evaluate(
+      (selector) => document.getElementById('paqvilo-xray').__px.select(document.querySelector(selector)),
+      selector,
+    );
+    const [picked, shown] = await Promise.all([page.locator(selector).boundingBox(), card.boundingBox()]);
+    const overlaps =
+      picked.x < shown.x + shown.width &&
+      shown.x < picked.x + picked.width &&
+      picked.y < shown.y + shown.height &&
+      shown.y < picked.y + picked.height;
+    assert.equal(overlaps, false, selector + ' stays visible beside the card');
+    const order = await card.evaluate((node) => {
+      const html = node.innerHTML;
+      return html.indexOf('data-inspection-evidence') < html.indexOf('api-context');
+    });
+    assert.equal(order, true, selector + ' identity precedes secondary context');
+    assert.ok((await context.locator('.source').count()) <= 8 * 9, 'secondary context stays bounded');
+  };
+  // A native field in the right-hand column, then one on the left.
+  for (const selector of ['#x_field5', '#x_field6']) {
+    exactColumn(await inspect(page.locator(selector)), 'x_first', selector.slice(1));
+    await pick(selector);
+    assert.equal(await context.getAttribute('open'), null, 'secondary context starts collapsed');
+  }
+  await context.locator('summary').click();
+  // A table's permission rules page inside its API context.
+  assert.match(await context.innerText(), /1 \/ 125 · 1000 entries/);
+  await context.locator('button[data-context="api-permissions:x_first"]', { hasText: 'Next' }).first().click();
+  assert.match(await context.innerText(), /Invented rule 8\b/);
+  assert.doesNotMatch(await context.innerText(), /Invented rule 0\b/);
+  // An unknown element keeps the explicit disclosure choice and claims no owner.
+  for (const selector of ['invented-widget#unknown120', '#x_field11']) {
+    await pick(selector);
+    assert.equal(await context.getAttribute('open'), '', selector);
+  }
+  assert.notEqual((await inspect(page.locator('#unknown120'))).owner.status, 'exact');
+  // A moved card still steps aside for the next pick.
+  const head = await card.locator('.cardhead').boundingBox();
+  await page.mouse.move(head.x + 40, head.y + head.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(640, 400, { steps: 4 });
+  await page.mouse.up();
+  assert.ok((await card.boundingBox()).x > 400, 'the header drag moved the card');
+  for (const selector of ['#x_field0', '#x_field235', 'invented-widget#unknown3']) await pick(selector);
+  await context.locator('summary').click();
+  await pick('#x_field1');
+  assert.equal(await context.getAttribute('open'), null);
+  assert.equal(await markup(), before);
+  assert.equal(await page.evaluate(() => window.valueReads), 0);
+});
+
 test('two declared grids retain exact declared columns across clones, reordering and redraw without data access', async (t) => {
   const { page, inspect } = await fixture(
     t,

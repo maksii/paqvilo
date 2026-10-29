@@ -31,7 +31,14 @@ const hash = (value) => createHash('sha256').update(value).digest('hex');
 
 async function fixture(
   t,
-  { sourceMaps = false, acknowledge = true, inline = false, bulk = 0, holdResolution = false } = {},
+  {
+    sourceMaps = false,
+    acknowledge = true,
+    inline = false,
+    bulk = 0,
+    holdResolution = false,
+    rejectLimit = false,
+  } = {},
 ) {
   const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-dom-response-'));
   const file = path.join(directory, 'widget.js');
@@ -132,6 +139,12 @@ async function fixture(
     bindingsArrived = resolve;
   });
   const receivedNodes = new Set();
+  // Every page-object call the transport sends after its markLimited call was rejected.
+  const afterRejectedLimit = [];
+  let limitRejected, rejectedObject;
+  const limitRejection = new Promise((resolve) => {
+    limitRejected = resolve;
+  });
   t.after(() => releaseResolution());
   const detach = await interceptOrigin(
     context,
@@ -158,6 +171,15 @@ async function fixture(
           const send = options.cdp.send.bind(options.cdp);
           let held = false;
           options.cdp.send = async (method, params) => {
+            if (method === 'Runtime.callFunctionOn' && params?.functionDeclaration?.includes('this.markLimited')) {
+              if (rejectLimit) {
+                if (rejectedObject === params.objectId) afterRejectedLimit.push(params.functionDeclaration);
+                rejectedObject = params.objectId;
+                limitRejected();
+                throw new Error('Could not find object with given id');
+              }
+            } else if (method === 'Runtime.callFunctionOn' && rejectedObject && rejectedObject === params?.objectId)
+              afterRejectedLimit.push(params.functionDeclaration);
             if (
               resolutionEnabled &&
               !held &&
@@ -290,6 +312,9 @@ async function fixture(
     malformedBinding,
     resolutionHeld,
     bindingsReceived,
+    limitRejection,
+    afterRejectedLimit,
+    receivedNodes,
     releaseResolution,
     holdNextResolution: () => {
       resolutionEnabled = true;
@@ -461,4 +486,26 @@ test('a burst beyond the transport budget remains bounded and reports the omitte
   const packet = await fx.query('created');
   assert.ok(packet.limits.reasons.includes('dom-evidence-transport-limit'));
   assert.equal(await fx.page.locator('#created').count(), 3001, 'instrumentation preserves all native DOM operations');
+});
+
+test('a rejected limit report closes the document record instead of resending to its stale page object', async (t) => {
+  const fx = await fixture(t, { bulk: 3000, holdResolution: true, rejectLimit: true });
+  await fx.proved('created');
+  fx.holdNextResolution();
+  await fx.page.evaluate(() => {
+    for (let index = 0; index < 3000; index++) window.makeWidget();
+  });
+  await fx.resolutionHeld;
+  await fx.bindingsReceived;
+  fx.releaseResolution();
+  await fx.limitRejection;
+  // One more DOM callsite arrives after the rejection; a page round trip then
+  // orders every command the transport issued for both events.
+  const received = fx.receivedNodes.size;
+  await fx.page.evaluate(() => window.makeWidget());
+  await fx.page.waitForFunction(() => document.querySelectorAll('#created').length === 3002);
+  while (fx.receivedNodes.size === received) await fx.page.evaluate(() => 0);
+  await fx.page.evaluate(() => 0);
+  assert.deepEqual(fx.afterRejectedLimit, [], 'no resolution or repeated limit report reaches the stale object');
+  assert.equal(await fx.page.locator('#created').count(), 3002, 'instrumentation preserves all native DOM operations');
 });
