@@ -4,6 +4,7 @@ import { installDomProvenance } from './dom-provenance.mjs';
 import { normalizeInspectionSourceRef } from './inspection-evidence.mjs';
 import { createResponseProofQueue } from './response-proof-queue.mjs';
 
+const unanswered = Symbol('unanswered');
 const digest = (value) => createHash('sha256').update(value).digest('hex');
 const safeURL = (value) =>
   typeof value === 'string' && value.length <= 32768 && /^(?:https?:\/\/|file:\/\/\/)/.test(value)
@@ -40,7 +41,8 @@ export function createDomProvenanceTransport(context, configs) {
         initial = new Map(),
         script,
         closed = false;
-      const command = async (method, params = {}) => {
+      // A rejected command resolves to `rejected`; a command that outlives its deadline resolves to null.
+      const command = async (method, params = {}, rejected = null) => {
         if (
           closed &&
           ![
@@ -65,7 +67,7 @@ export function createDomProvenanceTransport(context, configs) {
           return await Promise.race([
             Promise.resolve()
               .then(() => cdp.send(method, params))
-              .catch(() => null),
+              .catch(() => rejected),
             expired,
           ]);
         } finally {
@@ -200,20 +202,31 @@ export function createDomProvenanceTransport(context, configs) {
         if (record.flushing || !record.objectId || closed || record.closed) return;
         record.flushing = true;
         try {
+          // A rejected call or a page-side exception means the claimed object no
+          // longer answers: the record closes instead of resending to it.
+          const call = async (functionDeclaration, value) => {
+            const result = await command(
+              'Runtime.callFunctionOn',
+              { objectId: record.objectId, functionDeclaration, arguments: [{ value }], returnByValue: true },
+              unanswered,
+            );
+            if (result === unanswered || result?.exceptionDetails) {
+              record.closed = true;
+              record.nodes.clear();
+              clearTimeout(record.retry);
+              return false;
+            }
+            return result !== null;
+          };
           do {
+            record.dirty = false;
+            if (loaders.get(record.frameId) !== record.loaderId) break;
             // New bindings can overflow the pending queue while a preceding
             // batch is awaiting its protocol acknowledgement.
             if (record.limitReason && !record.limitSent) {
-              await command('Runtime.callFunctionOn', {
-                objectId: record.objectId,
-                functionDeclaration: 'function(reason){return this.markLimited(reason)}',
-                arguments: [{ value: record.limitReason }],
-                returnByValue: true,
-              });
+              if (!(await call('function(reason){return this.markLimited(reason)}', record.limitReason))) break;
               record.limitSent = true;
             }
-            record.dirty = false;
-            if (loaders.get(record.frameId) !== record.loaderId) break;
             const batch = [];
             for (const [id, event] of record.nodes) {
               const proof = resolveNode(record, event);
@@ -224,12 +237,8 @@ export function createDomProvenanceTransport(context, configs) {
               if (batch.length >= 64) break;
             }
             if (!batch.length) break;
-            await command('Runtime.callFunctionOn', {
-              objectId: record.objectId,
-              functionDeclaration: 'function(entries){return this.resolveMany(entries)}',
-              arguments: [{ value: batch }],
-              returnByValue: true,
-            });
+            await call('function(entries){return this.resolveMany(entries)}', batch);
+            if (record.closed) break;
             if (record.nodes.size) record.dirty = true;
           } while (record.dirty && !closed && !record.closed);
         } finally {
