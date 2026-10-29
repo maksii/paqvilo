@@ -468,7 +468,11 @@ test('model-driven app catalogue imports solution navigation, forms and views al
   assert.equal(catalogue.tables.x_item.rows, undefined);
   const shell = await fetch(origin + '/main.aspx');
   assert.equal(shell.status, 200);
-  assert.match(await shell.text(), /<title>Mirage Apps<\/title>[\s\S]*<strong>Mirage Apps<\/strong>/);
+  const shellText = await shell.text();
+  assert.match(shellText, /<title>Mirage Apps<\/title>[\s\S]*<strong>Mirage Apps<\/strong>/);
+  // The shell names its own icon (its img-src allows data:), so a browser never asks the portal origin for /favicon.ico.
+  assert.match(shellText, /<link\s+rel="icon"\s+href="data:image\/svg\+xml,/);
+  assert.match(shell.headers.get('content-security-policy'), /img-src 'self' data:/);
   assert.equal(catalogue.apps.find((app) => app.id === 'power-pages-management')?.name, 'Mirage Site Manager');
   assert.equal(
     catalogue.apps.find((app) => app.id === 'power-pages-management')?.uniqueName,
