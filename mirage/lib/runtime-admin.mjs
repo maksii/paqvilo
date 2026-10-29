@@ -109,9 +109,10 @@ export function createRuntimeAdminRouter({
     [
       '/status',
       status &&
-        ((c) => {
+        (async (c) => {
           if (c.method !== 'GET' || c.relative !== '/status') return false;
-          const value = status();
+          // An asynchronous status provider resolves before its chunks are encoded.
+          const value = await status();
           return c.answer(value, statusChunks ? { chunks: statusChunks(value) } : undefined);
         }),
     ],
