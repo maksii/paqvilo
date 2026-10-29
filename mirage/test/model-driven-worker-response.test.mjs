@@ -269,7 +269,6 @@ test('worker HTTP metadata evaluates field permissions in one read and releases 
   let queue = Promise.resolve(),
     held = false,
     allowed = true,
-    revision = 0,
     payload;
   const read = (fn) => {
     const run = queue.then(async () => {
@@ -283,19 +282,17 @@ test('worker HTTP metadata evaluates field permissions in one read and releases 
     queue = run.catch(() => {});
     return run;
   };
-  let admitted = Promise.withResolvers(),
+  const admitted = Promise.withResolvers(),
     resume = Promise.withResolvers();
   t.after(() => resume.resolve());
   const res = new EventEmitter();
   res.destroyed = false;
   res.setHeader = () => {};
-  const catalogueOf = () => source;
-  catalogueOf.revision = () => revision;
   const handler = createModelDrivenHandler({
     streamMetadata: true,
     workerMetadata: true,
     read,
-    catalogue: catalogueOf,
+    catalogue: () => source,
     csrf: () => 'fixture',
     data: {
       capabilities: () => {
@@ -303,8 +300,7 @@ test('worker HTTP metadata evaluates field permissions in one read and releases 
         return { read: allowed };
       },
     },
-    json: async (response, status, _value, headers, { chunks }) => {
-      response.headersSent = true;
+    json: async (_res, status, _value, headers, { chunks }) => {
       assert.equal(status, 200);
       assert.equal(headers['content-encoding'], 'gzip');
       assert.equal(headers.vary, 'Accept-Encoding');
@@ -322,9 +318,11 @@ test('worker HTTP metadata evaluates field permissions in one read and releases 
     },
   });
   t.after(() => handler.close());
-  const request = () =>
-    handler({ method: 'GET', headers: { 'accept-encoding': 'gzip' } }, res, new URL('http://localhost/_apps/api'));
-  let pending = request();
+  const pending = handler(
+    { method: 'GET', headers: { 'accept-encoding': 'gzip' } },
+    res,
+    new URL('http://localhost/_apps/api'),
+  );
   await admitted.promise;
   assert.equal(held, false, 'The read is released before the first byte is sent');
   // A write proceeds while the consumer is gated; the response keeps the rights it read.
@@ -335,21 +333,5 @@ test('worker HTTP metadata evaluates field permissions in one read and releases 
   await pending;
   assert.equal(Object.keys(payload.tables).length, Object.keys(source.tables).length);
   for (const table of Object.values(payload.tables)) assert.equal(table.capabilities.read, true);
-  assert.equal(res.listenerCount('close'), 0);
-  // A metadata commit while the response is gated ends it incomplete instead of mixing two catalogues.
-  admitted = Promise.withResolvers();
-  resume = Promise.withResolvers();
-  payload = undefined;
-  let destroyed;
-  res.destroy = (error) => {
-    destroyed = error;
-  };
-  pending = request();
-  await admitted.promise;
-  revision++;
-  resume.resolve();
-  await pending;
-  assert.equal(destroyed?.code, 'ModelDrivenCatalogueChanged');
-  assert.equal(payload, undefined);
   assert.equal(res.listenerCount('close'), 0);
 });

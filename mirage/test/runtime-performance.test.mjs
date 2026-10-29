@@ -13,10 +13,10 @@ import { runtimePerformance, LARGE_PERFORMANCE_OPTIONS } from '../../scripts/run
 import { createSimulator } from '../server.mjs';
 import { performanceFixture, performanceId } from './runtime-performance-fixture.mjs';
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
-import { appCatalogue, appCatalogueAsync, storeCatalogue } from '../lib/model-driven/catalogue.mjs';
+import { appCatalogue, appCatalogueAsync } from '../lib/model-driven/catalogue.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
-import { createModelDrivenData } from '../lib/model-driven/data.mjs';
+import { createModelDrivenData, storeCatalogue } from '../lib/model-driven/data.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import v8 from 'node:v8';
 import vm from 'node:vm';
@@ -666,6 +666,7 @@ test('the store catalogue survives business-row writes and rebuilds for metadata
   const state = emptyState();
   state.mappings.x_item = { idColumn: 'x_itemid', nameColumn: 'x_name', fields: { x_name: { type: 'text' } } };
   state.mappings.systemform = { idColumn: 'formid', nameColumn: 'name', fields: { name: { type: 'text' } } };
+  state.mappings.x_other = { idColumn: 'x_otherid', nameColumn: 'x_name', fields: { x_name: { label: 'Original' } } };
   state.tables.x_item = [];
   state.tables.systemform = [];
   const store = new DataStore({ state });
@@ -703,6 +704,10 @@ test('the store catalogue survives business-row writes and rebuilds for metadata
   }
   assert.equal(builds, 1 + changes.length);
   assert.ok(previous.tables.x_item.fields.x_added, 'The rebuilt catalogue reads the changed mapping');
+  // Bodies compile after the host's read: a handed-out catalogue compiles from its own copy of the mappings.
+  await store.transact(() => (store.state.mappings.x_other.fields.x_name.label = 'In-place edit'));
+  assert.equal(previous.tables.x_other.fields.x_name.label, 'Original', 'A handed-out catalogue keeps its snapshot');
+  assert.equal(catalogue().tables.x_other.fields.x_name.label, 'In-place edit');
 });
 
 test('lookup formatting reads target tables from the lazy index and recent bodies survive garbage collection', async () => {

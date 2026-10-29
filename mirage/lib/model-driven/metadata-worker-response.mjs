@@ -104,20 +104,20 @@ async function* gzipStream(source) {
 
 /** Compile/encode one table at a time outside the large record heap and
  * transfer its UTF-8 bytes. The host evaluated every table's rights (`rights(name)`)
- * under its read; `check()` throws when the catalogue changed since then. */
+ * under its read. */
 export async function* metadataWorkerResponseChunks(
   source,
   root,
   rights,
   res,
-  { wire = false, gzip = false, workers, check = () => {} } = {},
+  { wire = false, gzip = false, workers } = {},
 ) {
-  const chunks = compiledChunks(source, root, rights, res, { wire, workers, check });
+  const chunks = compiledChunks(source, root, rights, res, { wire, workers });
   if (gzip) yield* gzipStream(chunks);
   else yield* chunks;
 }
 
-async function* compiledChunks(source, root, rights, res, { wire, workers, check }) {
+async function* compiledChunks(source, root, rights, res, { wire, workers }) {
   // Without a host pool the response owns one thread for its duration.
   const pool = workers ?? createMetadataWorkers();
   const entry = pool.acquire(),
@@ -150,7 +150,6 @@ async function* compiledChunks(source, root, rights, res, { wire, workers, check
       if (entry.failure) return reject(entry.failure);
       if (disconnected || res.destroyed) return reject(new Error('Metadata response reader disconnected.'));
       try {
-        check();
         const message = { name, input: source.tableInput(name), capabilities: rights(name), wire };
         pending = { resolve, reject };
         worker.postMessage(message);

@@ -56,11 +56,10 @@ const rootOf = (catalogue, tables, wire) => {
   value.tables = tables;
   return value;
 };
-const metadataOnly = (catalogue, rights, res, { index = false, entity, wire = false, lazy = false, check }) => {
+const metadataOnly = (catalogue, rights, res, { index = false, entity, wire = false, lazy = false }) => {
   const tables = {};
   const project = (name) => {
     if (res.destroyed) throw cancelled();
-    check();
     const { rows: _rows, ...table } = (index ? catalogue.tableIndex?.[name] : undefined) ?? catalogue.tables[name];
     const { entity: logical, label, singular, idColumn, nameColumn, entitySet, kind, source, projected } = table;
     const result = {
@@ -375,24 +374,18 @@ export function createModelDrivenHandler({
             wire = req.headers['x-mirage-provenance-format'] === '1';
           // The read covers the catalogue snapshot and the principal's rights only.
           // Compilation, encoding and transfer run after it: a slow or stalled reader
-          // never holds portal pages, Web API calls, grids or writes behind it.
-          const { source, rights, worker, revision } = await read(async () => {
+          // never holds portal pages, Web API calls, grids or writes behind it. A host
+          // catalogue compiles its bodies from inputs it owns (storeCatalogue), so a
+          // later write never changes a response already admitted.
+          const { source, rights, worker } = await read(async () => {
             const source = await (catalogue.async?.({ cancelled: () => res.destroyed }) ?? catalogue());
             if (entity && !Object.hasOwn(source.tables, entity)) throw fail('Table metadata not found.', 404);
             const worker = Boolean(
               workers && streamMetadata && !api[1] && source.tableInput && Object.keys(source.tables).length >= 128,
             );
             const rights = await tableRights(source, data, actor, res, { index, entity, compact: worker });
-            return { source, rights, worker, revision: catalogue.revision?.() };
+            return { source, rights, worker };
           });
-          // A metadata, mapping or settings commit after the read could change a body
-          // compiled from this snapshot's inputs: the response then ends incomplete.
-          const check = () => {
-            if (catalogue.revision && catalogue.revision() !== revision)
-              throw Object.assign(fail('The catalogue changed while it was sent; request it again.', 409), {
-                code: 'ModelDrivenCatalogueChanged',
-              });
-          };
           if (res.destroyed) return true;
           if (worker) {
             const gzip = acceptsGzip(req);
@@ -407,13 +400,12 @@ export function createModelDrivenHandler({
                   wire,
                   gzip,
                   workers,
-                  check,
                 }),
               },
             );
             return true;
           }
-          const result = metadataOnly(source, rights, res, { index, entity, wire, lazy: streamMetadata, check });
+          const result = metadataOnly(source, rights, res, { index, entity, wire, lazy: streamMetadata });
           const payload = entity ? result.tables[entity] : wire ? rootOf(source, result.tables, true) : result;
           await json(res, 200, payload, {}, { chunks: metadataResponseChunks(payload) });
           return true;

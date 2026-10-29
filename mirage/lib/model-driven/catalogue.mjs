@@ -636,41 +636,6 @@ export const compileTable = (input, context, name) =>
     metadata: { ...input.metadata, sourceRevisions: context.sourceRevisions },
   }).tables[name];
 
-// The rows the solution metadata overlay reads (dataverse-solution-metadata.mjs).
-const SOLUTION_COMPONENT_TABLES = Object.freeze(['systemform', 'savedquery', 'appmodule', 'sitemap']);
-/** A key of everything a store-backed catalogue reads besides its metadata object: it advances with metadata,
- * mapping and settings commits (non-incremental), solution component row writes and a state replacement,
- * and an incremental business-row write keeps it. */
-export const catalogueRevision = (store) => store.tablesRevision(SOLUTION_COMPONENT_TABLES);
-
-/** A host's cached lazy catalogue over a DataStore: catalogue() and catalogue.async({ cancelled })
- * return one value until metadata() returns another object or catalogue.revision() changes. The
- * catalogue reads metadata, mappings and settings, never business rows. options(metadata) builds the input. */
-export function storeCatalogue({ store, metadata, options }) {
-  let cache;
-  const revision = () => catalogueRevision(store);
-  const lookup = () => {
-    const current = metadata(),
-      key = revision();
-    return { current, key, value: cache?.metadata === current && cache.key === key ? cache.value : null };
-  };
-  const catalogue = () => {
-    const { current, key, value } = lookup();
-    if (value) return value;
-    cache = { metadata: current, key, value: appCatalogue(options(current)) };
-    return cache.value;
-  };
-  catalogue.async = async ({ cancelled } = {}) => {
-    const { current, key, value } = lookup();
-    if (value) return value;
-    const built = await appCatalogueAsync(options(current), { cancelled });
-    cache = { metadata: current, key, value: built };
-    return built;
-  };
-  catalogue.revision = revision;
-  return catalogue;
-}
-
 /** The catalogue's `canvasApps` option from an organization host: the canvas host's app names, or null when it is disabled. */
 export const canvasAppNames = (host) => (host?.canvas?.enabled ? host.canvasApps().map((app) => app.uniqueName) : null);
 
