@@ -1,5 +1,6 @@
 import { debugScript, exportFieldFile } from './source-debug.mjs';
 import { decodeXml, portalField } from './importer.mjs';
+import { xmlAttributes } from './xml-text.mjs';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -246,14 +247,14 @@ export function schemaFromFormXml(xml, { entity, title, fieldTypes = {}, lcid = 
   if (!/<form\b/i.test(xml) || !/<\/form>/i.test(xml))
     throw new Error('A complete systemform form XML document is required');
   const attributes = (markup) =>
-    Object.fromEntries([...markup.matchAll(/([\w:-]+)\s*=\s*(["'])([\s\S]*?)\2/g)].map((m) => [m[1], decodeXml(m[3])]));
+    Object.fromEntries(xmlAttributes(markup).map(([name, value]) => [name, decodeXml(value)]));
   const label = (body) => {
-    const labels = [...body.matchAll(/<label\b([^>]*?)\/?\s*>/gi)].map((m) => attributes(m[1]));
+    const labels = [...body.matchAll(/<label\b([^>]*)>/gi)].map((m) => attributes(m[1]));
     return (labels.find((l) => Number(l.languagecode) === Number(lcid)) ?? labels[0])?.description;
   };
   const fields = [];
   for (const cell of xml.matchAll(/<cell\b([^>]*)>([\s\S]*?)<\/cell>/gi)) {
-    const control = /<control\b([^>]*?)\/?\s*>/i.exec(cell[2]);
+    const control = /<control\b([^>]*)>/i.exec(cell[2]);
     if (!control) continue;
     const attrs = attributes(control[1]);
     const name = attrs.datafieldname;

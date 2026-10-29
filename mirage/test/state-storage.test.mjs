@@ -288,9 +288,9 @@ test('fragment records embed JSON unescaped and restore exact shapes, selections
     long: quoted.repeat(80000),
   });
   const expected = JSON.parse(JSON.stringify(value));
-  const before = (await fs.stat(file)).size;
+  const before = (await fs.readFile(file)).length;
   await store.storage.appendChanges([{ op: 'section', key: 'simulator', value }]);
-  const appended = (await fs.readFile(file, 'utf8')).slice(before);
+  const appended = (await fs.readFile(file)).subarray(before).toString('utf8');
   const lines = appended.split('\n');
   assert.ok(lines.includes('{"op":"fragments","encoding":"records"}'));
   assert.ok(lines.some((line) => line.startsWith('["a","wide"]')));

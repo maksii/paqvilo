@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { DataError } from './data.mjs';
 import { csvCell } from './csv.mjs';
+import { xmlAttributes, xmlStartTag, xmlTokens } from './xml-text.mjs';
 import { parseDateValue } from './dataverse-values.mjs';
 import { normalizePortalPath, portalField } from './importer.mjs';
 import { siteSetting } from './redirects.mjs';
@@ -88,7 +89,7 @@ export function parseFetchTree(source) {
   if (/<!DOCTYPE|<!ENTITY/i.test(source)) fail('FetchXML declarations are not supported', 400, 'UnsupportedQuery');
   const root = { name: '#document', attrs: {}, children: [], text: '' };
   const stack = [root];
-  for (const token of String(source).match(/<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<[^>]+>|[^<]+/g) ?? []) {
+  for (const token of xmlTokens(source)) {
     if (token.startsWith('<!--') || token.startsWith('<?')) continue;
     if (token.startsWith('</')) {
       const name = token.slice(2, -1).trim();
@@ -97,13 +98,13 @@ export function parseFetchTree(source) {
       continue;
     }
     if (token.startsWith('<')) {
-      const match = /^<([\w:.-]+)([\s\S]*?)(\/?)\s*>$/.exec(token);
-      if (!match) fail('Malformed FetchXML element', 400, 'UnsupportedQuery');
+      const tag = xmlStartTag(token);
+      if (!tag) fail('Malformed FetchXML element', 400, 'UnsupportedQuery');
       const attrs = {};
-      for (const attr of match[2].matchAll(/([\w:.-]+)\s*=\s*(["'])([\s\S]*?)\2/g)) attrs[attr[1]] = xmlDecode(attr[3]);
-      const node = { name: match[1], attrs, children: [], text: '' };
+      for (const [name, value] of xmlAttributes(tag.markup)) attrs[name] = xmlDecode(value);
+      const node = { name: tag.name, attrs, children: [], text: '' };
       stack.at(-1).children.push(node);
-      if (!match[3]) stack.push(node);
+      if (!tag.selfClosing) stack.push(node);
     } else stack.at(-1).text += xmlDecode(token);
   }
   if (stack.length !== 1 || root.children.length !== 1)

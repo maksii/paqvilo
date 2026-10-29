@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { orderedMap } from '../lense/async-map.mjs';
 import { directoryFiles } from '../lense/directory-files.mjs';
 import { mapLimit, sourceDirectoryDigest } from '../mirage/lib/solution-cache.mjs';
-import { decodeXml } from '../mirage/lib/xml-text.mjs';
+import { decodeXml, xmlAttributes, xmlStartTag, xmlTokens } from '../mirage/lib/xml-text.mjs';
 import { globalMetadataVersion } from '../mirage/lib/metadata-version.mjs';
 import { liveDataverseSettings } from '../mirage/lib/live-dataverse-settings.mjs';
 import { registerRuntimeShutdown } from '../mirage/lib/runtime-shutdown.mjs';
@@ -90,6 +90,43 @@ test('shared XML decoding handles adjacent CDATA and invalid numeric references 
   assert.equal(decodeXml('<![CDATA['.repeat(20000)), '<![CDATA['.repeat(20000));
   assert.equal(decodeXml('&#9999999999999999999999;'), '&#9999999999999999999999;');
   assert.equal(decodeXml(null), '');
+});
+
+test('shared XML scanners match the tag grammar they replace and stay linear on unterminated markup', () => {
+  // The expressions these scanners replace; equal results keep FetchXML and form XML parsing unchanged.
+  const tokens = (source) => source.match(/<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<[^>]+>|[^<]+/g) ?? [];
+  const startTag = (token) => {
+    const match = /^<([\w:.-]+)([\s\S]*?)(\/?)\s*>$/.exec(token);
+    return match && { name: match[1], markup: match[2], selfClosing: Boolean(match[3]) };
+  };
+  const attributes = (markup) =>
+    [...markup.matchAll(/([\w:.-]+)\s*=\s*(["'])([\s\S]*?)\2/g)].map((match) => [match[1], match[3]]);
+  const corpus = [
+    '<fetch top="5"><entity name=\'x_item\'><attribute name="x_name"/><filter type="and"></filter></entity></fetch>',
+    '<?xml version="1.0"?><!-- note > inside --><a b = "1" c=\'2\' d="&amp;" />text<b/><c / >',
+    '<!--> <? unterminated <> a < b > tail <a x="1" y=2 z="open><b/>',
+    '<a name.with:chars-x="v" lone= "w" =" q" x="a>b"></a>',
+    '<a\t\n x\n=\n"multi\nline"\t/>',
+  ];
+  for (const source of corpus) {
+    assert.deepEqual(xmlTokens(source), tokens(source), source);
+    for (const token of tokens(source).filter((item) => item.startsWith('<') && !item.startsWith('</'))) {
+      if (token.startsWith('<!--') || token.startsWith('<?')) continue;
+      assert.deepEqual(xmlStartTag(token), startTag(token), token);
+      if (startTag(token)) assert.deepEqual(xmlAttributes(startTag(token).markup), attributes(startTag(token).markup));
+    }
+  }
+  // Inputs that made the replaced expressions polynomial give the same results and complete in one scan.
+  assert.deepEqual(xmlAttributes('-="a'.repeat(2000)), attributes('-="a'.repeat(2000)));
+  assert.deepEqual(xmlAttributes('a="x b=\'y '.repeat(2000)), attributes('a="x b=\'y '.repeat(2000)));
+  assert.deepEqual(xmlTokens('<!--'.repeat(50000)), Array(50000).fill('!--'));
+  assert.deepEqual(xmlTokens('<?'.repeat(50000)), Array(50000).fill('?'));
+  assert.deepEqual(xmlTokens('<'.repeat(50000)), []);
+  assert.deepEqual(xmlStartTag('<-' + '\t'.repeat(50000) + '>'), { name: '-', markup: '', selfClosing: false });
+  assert.deepEqual(xmlAttributes('-'.repeat(50000)), []);
+  assert.equal(xmlAttributes('-="a'.repeat(50000)).length, 25000);
+  // An unterminated quote and a long run of unquoted values are each scanned once.
+  assert.deepEqual(xmlAttributes('x="' + 'y=a '.repeat(50000)), []);
 });
 
 test('synthetic metadata identity policy and live environment overrides preserve explicit null and false', () => {
