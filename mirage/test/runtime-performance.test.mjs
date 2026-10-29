@@ -1184,3 +1184,35 @@ test(
     }
   },
 );
+
+test('the portal host stops its warm metadata compiler thread when it closes', async (t) => {
+  const fixture = await performanceFixture({ tables: 128, records: 128, formsPerTable: 1 });
+  ownedFixture(t).remove(fixture.cleanup);
+  const threads = [];
+  const created = (worker) => {
+    const thread = { exited: false };
+    worker.once('exit', () => (thread.exited = true));
+    threads.push(thread);
+  };
+  process.on('worker', created);
+  t.after(() => process.off('worker', created));
+  const sim = await createSimulator({
+    sourceDir: fixture.sourceDir,
+    solutionRoots: fixture.solutionRoots,
+    watch: false,
+    packs: [fixture.pack],
+    preset: 'invented-scale',
+    presetMode: 'bootstrap',
+  });
+  ownedFixture(t).add(() => sim.close());
+  const catalogue = await (await fetch(sim.url + '/_apps/api')).json();
+  assert.equal(Object.keys(catalogue.tables).filter((name) => /^x_scale\d+$/.test(name)).length, 128);
+  assert.ok(threads.length > 0, 'A complete catalogue of this size compiles on a metadata thread');
+  await sim.close();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    threads.map((thread) => thread.exited),
+    threads.map(() => true),
+    'No metadata compiler thread outlives the runtime',
+  );
+});

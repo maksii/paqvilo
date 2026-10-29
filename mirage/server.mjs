@@ -1261,7 +1261,9 @@ async function createPowerPagesSimulator({
     closing = false,
     closePromise = null,
     // External sign-in and its local identity provider (lib/sign-in-flow.mjs), set below.
-    externalSignIn = null;
+    externalSignIn = null,
+    // Stops the model-driven handler's warm metadata compiler thread, set once the handler exists.
+    closeModelDriven = null;
   // GET observers may commit SDK writes too. Drain every accepted handler
   // before stopping its services; event-stream handlers finish on registration.
   const activeRequests = new Set();
@@ -1288,6 +1290,7 @@ async function createPowerPagesSimulator({
       while (activeRequests.size) await Promise.all([...activeRequests]);
       await attempt(() => mutation);
       await attempt(() => store.queue);
+      await attempt(() => closeModelDriven?.());
       // One close order (lib/organization-host.mjs): backend (settles committed work, closes CLR hosts), organization, API, managed identity.
       await attempt(() => organizationHost.close());
       await attempt(() => store.closeRecordStorage());
@@ -4854,6 +4857,8 @@ async function createPowerPagesSimulator({
     webApi: createModelDrivenWebApi({ organization: () => organization }),
     offlineState: offlineSessionState(store, change),
   });
+  closeModelDriven = () => modelDrivenHandler.close();
+
   // Reserved app surfaces: canvas inventory pages and code apps answer before the model-driven handler.
   // Canvas apps run headlessly (canvas-runtime.mjs) as the staff session's user or, for a signed-in portal visitor, the
   // Dataverse user enhanced authorization maps the contact to (portal-authorization.mjs principal); never SYSTEM.
