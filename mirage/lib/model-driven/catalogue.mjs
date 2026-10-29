@@ -151,6 +151,27 @@ export function solutionApps(scan, { lcid = 1033, projectRoot = null } = {}) {
   }));
 }
 
+// Parsed commands per ribbon document object, reused while its XML and the language stay the same.
+const ribbonCache = new WeakMap();
+const ribbonCommands = (document, lcid) => {
+  const cached = ribbonCache.get(document);
+  if (cached?.xml === document.xml && cached.lcid === lcid) return cached.commands;
+  const commands = parseRibbonCommands(document.xml, { lcid });
+  ribbonCache.set(document, { xml: document.xml, lcid, commands });
+  return commands;
+};
+// Items grouped by their entity once, in source order: a per-table filter over every form and view is O(tables × items).
+const byEntity = (items) => {
+  const grouped = new Map();
+  for (const item of items ?? []) {
+    const list = grouped.get(item.entity);
+    if (list) list.push(item);
+    else grouped.set(item.entity, [item]);
+  }
+  return grouped;
+};
+const NONE = Object.freeze([]);
+
 /** Stable JSON contract consumed by the shell. */
 function* catalogueSteps({
   portal,
@@ -175,6 +196,10 @@ function* catalogueSteps({
     },
     { sourceRevision: 'render' },
   );
+  const formsOf = byEntity(metadata.forms),
+    viewsOf = byEntity(metadata.views),
+    ribbonsOf = byEntity(metadata.modelDrivenRibbonDocuments),
+    actionsOf = byEntity(metadata.modelDrivenAppActions);
   const tables = Object.assign(
     {},
     ...providers.filter(Boolean).map((provider) => copyPlainGraph(provider.tables ?? {})),
@@ -232,18 +257,17 @@ function* catalogueSteps({
       validForUpdate: false,
     };
     table.fields[table.nameColumn] ??= { name: table.nameColumn, label: 'Name', type: 'text' };
-    const forms = (lazy ? [] : (metadata.forms ?? [])).filter(
+    const forms = (lazy ? NONE : (formsOf.get(table.entity) ?? NONE)).filter(
       (form) =>
-        form.entity === table.entity &&
         form.active !== false &&
         (form.systemFormType === undefined || form.systemFormType === 2) &&
         (!form.formType || form.formType === 'main'),
     );
     table.forms = forms.map((form) => compileForm(form, table.fields, metadata.lcid)).filter(Boolean);
-    table.commands = (metadata.modelDrivenRibbonDocuments ?? [])
-      .filter((document) => document.entity === table.entity)
-      .flatMap((document) => parseRibbonCommands(document.xml, { lcid: metadata.lcid }));
-    table.commands.push(...(metadata.modelDrivenAppActions ?? []).filter((command) => command.entity === table.entity));
+    table.commands = (ribbonsOf.get(table.entity) ?? NONE).flatMap((document) =>
+      ribbonCommands(document, metadata.lcid),
+    );
+    table.commands.push(...(actionsOf.get(table.entity) ?? NONE));
     table.commands = [...new Map(table.commands.map((command) => [command.id, command])).values()];
     if (!table.forms.length && !lazy)
       table.forms = [
@@ -268,8 +292,9 @@ function* catalogueSteps({
           ],
         },
       ];
-    table.views = (metadata.views ?? [])
-      .filter((view) => view.entity === table.entity && view.queryType === 0)
+    const views = viewsOf.get(table.entity) ?? NONE;
+    table.views = views
+      .filter((view) => view.queryType === 0)
       .map((view) => ({
         id: view.id,
         name: view.name,
@@ -278,8 +303,8 @@ function* catalogueSteps({
         fetchXml: view.fetchXml,
         source: 'solution',
       }));
-    table.lookupViews = (metadata.views ?? [])
-      .filter((view) => view.entity === table.entity && view.queryType === 64)
+    table.lookupViews = views
+      .filter((view) => view.queryType === 64)
       .map((view) => ({
         id: view.id,
         name: view.name,
@@ -540,7 +565,8 @@ function* catalogueSteps({
   if (lazy) {
     const index = tables,
       bodies = {},
-      cached = new Map();
+      cached = new Map(),
+      recent = new Map();
     const compilationContext = {
       clientExtensions,
       settings: {
@@ -549,8 +575,6 @@ function* catalogueSteps({
       },
       canvasApps,
       sourceRevisions: metadata.sourceRevisions,
-      modelDrivenRibbonDocuments: metadata.modelDrivenRibbonDocuments,
-      modelDrivenAppActions: metadata.modelDrivenAppActions,
     };
     const tableInput = (name) => ({
       rootProvenance: false,
@@ -563,8 +587,10 @@ function* catalogueSteps({
       metadata: {
         lcid: metadata.lcid,
         entities: Object.hasOwn(metadata.entities ?? {}, name) ? { [name]: metadata.entities[name] } : {},
-        forms: (metadata.forms ?? []).filter((form) => form.entity === name),
-        views: (metadata.views ?? []).filter((view) => view.entity === name),
+        forms: formsOf.get(name) ?? [],
+        views: viewsOf.get(name) ?? [],
+        modelDrivenRibbonDocuments: ribbonsOf.get(name) ?? [],
+        modelDrivenAppActions: actionsOf.get(name) ?? [],
         modelDrivenApps: [],
       },
     });
@@ -576,29 +602,18 @@ function* catalogueSteps({
         enumerable: true,
         configurable: true,
         get() {
-          const previous = cached.get(name)?.deref();
-          if (previous) return previous;
-          const input = tableInput(name);
-          const value = appCatalogue({
-            // This nested call returns one table body. The outer catalogue
-            // already owns root resources/app references; reopening every
-            // resource here makes a complete response O(tables × resources).
-            ...input,
-            ...compilationContext,
-            metadata: {
-              ...input.metadata,
-              sourceRevisions: compilationContext.sourceRevisions,
-              modelDrivenRibbonDocuments: compilationContext.modelDrivenRibbonDocuments,
-              modelDrivenAppActions: compilationContext.modelDrivenAppActions,
-            },
-          }).tables[name];
           // Retain identity while a caller holds the body, without retaining all
-          // compiled forms after a complete streamed catalogue has passed.
-          cached.set(name, new WeakRef(value));
+          // compiled forms after a complete streamed catalogue has passed. The
+          // few most recent bodies stay strongly held across garbage collection.
+          let value = recent.get(name) ?? cached.get(name)?.deref();
+          if (!value) {
+            value = compileTable(tableInput(name), compilationContext, name);
+            cached.set(name, new WeakRef(value));
+          }
+          recent.delete(name);
+          recent.set(name, value);
+          if (recent.size > RECENT_BODIES) recent.delete(recent.keys().next().value);
           return value;
-        },
-        set(value) {
-          Object.defineProperty(bodies, name, { value, enumerable: true, configurable: true, writable: true });
         },
       });
     Object.defineProperty(result, 'tableIndex', { value: index });
@@ -608,6 +623,18 @@ function* catalogueSteps({
   }
   return result;
 }
+
+// Strongly held compiled bodies per catalogue: grids, records and lookups reopen the same few tables.
+const RECENT_BODIES = 16;
+
+/** One table body of a lazy catalogue from its tableInput and compilationContext. This nested
+ * call does not reopen root resources or apps: that would make a complete response O(tables × resources). */
+export const compileTable = (input, context, name) =>
+  appCatalogue({
+    ...input,
+    ...context,
+    metadata: { ...input.metadata, sourceRevisions: context.sourceRevisions },
+  }).tables[name];
 
 /** The catalogue's `canvasApps` option from an organization host: the canvas host's app names, or null when it is disabled. */
 export const canvasAppNames = (host) => (host?.canvas?.enabled ? host.canvasApps().map((app) => app.uniqueName) : null);

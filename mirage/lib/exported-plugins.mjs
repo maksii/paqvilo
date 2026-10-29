@@ -18,6 +18,18 @@ import {
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
 import { pluginFailure } from './plugin-fault.mjs';
+
+// A plug-in record is mostly scalar columns: copy those directly and clone only structured values.
+const detachedRecord = (value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.getPrototypeOf(value) !== Object.prototype)
+    return cloneStateData(value);
+  const copy = {};
+  for (const key of Object.keys(value)) {
+    const column = value[key];
+    copy[key] = column !== null && typeof column === 'object' ? cloneStateData(column) : column;
+  }
+  return copy;
+};
 const executionFrames = new WeakMap();
 // The message name a plug-in sees for an operation (IPluginExecutionContext.MessageName).
 export const messageNameOf = (operation) =>
@@ -446,7 +458,7 @@ function typedContext({
         .filter((spec) => types.includes(spec.type) && source)
         .map((spec) => [
           spec.alias || spec.name,
-          cloneStateData(
+          detachedRecord(
             spec.attributes.length
               ? Object.fromEntries(
                   spec.attributes.filter((name) => Object.hasOwn(source, name)).map((name) => [name, source[name]]),
@@ -474,13 +486,13 @@ function typedContext({
       'onexternaldeleted',
     ].includes(operation)
       ? {
-          Target: cloneStateData(target),
+          Target: detachedRecord(target),
           ...(operation === 'onexternalupdated'
-            ? { PreImage: cloneStateData(previous), ChangedFields: [...changedAttributes] }
+            ? { PreImage: detachedRecord(previous), ChangedFields: [...changedAttributes] }
             : {}),
         }
       : ['createmultiple', 'updatemultiple'].includes(operation)
-        ? { Targets: cloneStateData(targets) }
+        ? { Targets: Array.isArray(targets) ? targets.map(detachedRecord) : cloneStateData(targets) }
         : {},
     OutputParameters: stage === 40 && operation === 'create' && idColumn ? { id: record[idColumn] } : {},
     PreEntityImages: images([0, 2], previous),

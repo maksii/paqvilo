@@ -330,7 +330,7 @@ export async function importSolutionMetadata(
     diagnostics,
     filesRead: candidates.length,
     fingerprint: fingerprint.digest('hex'),
-    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid, files: candidates }),
+    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid, files: candidates, cache: scan.cache }),
   };
   if (portal) {
     const applied = applySolutionMetadata(portal, metadata);

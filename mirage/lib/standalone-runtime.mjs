@@ -20,10 +20,10 @@ import { solutionWatchFilter } from './solution-roots.mjs';
 import { dataverseSettings, dataverseStatus } from './dataverse-settings.mjs';
 import { createModelDrivenRecordService, createModelDrivenWebApi } from './dataverse-model-driven.mjs';
 import { createStaffSessions, createStaffSessionHandler } from './staff-session.mjs';
-import { createModelDrivenData } from './model-driven/data.mjs';
+import { createModelDrivenData, storeCatalogue } from './model-driven/data.mjs';
 import { createModelDrivenHandler, routes as MODEL_DRIVEN_ROUTES } from './model-driven/http.mjs';
 import { offlineSessionState } from './model-driven/offline.mjs';
-import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './model-driven/catalogue.mjs';
+import { canvasAppNames, solutionApps } from './model-driven/catalogue.mjs';
 import { createSolutionMetadataOverlay } from './dataverse-solution-metadata.mjs';
 import { createSourceSolutionComponentStorage } from './dataverse-source-components.mjs';
 import { applySolutionData } from './solution-data.mjs';
@@ -273,7 +273,7 @@ export async function createStandaloneRuntime(options = {}) {
     stateFile,
     simulation,
     sources: {
-      readMetadata: (fn) => overlay.withReadEpoch(fn),
+      readMetadata: (fn, options) => overlay.withReadEpoch(fn, options),
       plugins: () => sources.metadata.plugins,
       workflows: () => sources.workflows,
       layers: () => sources.solutionData.layers,
@@ -443,6 +443,7 @@ export async function createStandaloneRuntime(options = {}) {
     ['/model-driven/offline', () => ({ items: offlineSessions() })],
   ];
   let offlineSessions = () => [];
+  let model;
   const HOST_API_ROUTES = HOST_API.map(([prefix]) => prefix);
   const close = () =>
     (closing ??= (async () => {
@@ -464,6 +465,7 @@ export async function createStandaloneRuntime(options = {}) {
       await Promise.allSettled([...requests]);
       await cleanup(() => mutation);
       await cleanup(() => sourceComponents?.close());
+      await cleanup(() => model?.close());
       // One close order (organization-host.mjs): backend, organization, API, managed identity.
       await cleanup(() => organizationHost.close());
       await cleanup(() => store.closeRecordStorage());
@@ -529,47 +531,20 @@ export async function createStandaloneRuntime(options = {}) {
       port: () => server?.address()?.port ?? port,
     });
     const sessionHandler = createStaffSessionHandler({ sessions, csrf: () => csrf, json, readBody });
-    let catalogueCache;
-    const catalogue = () => {
-      const current = metadata();
-      if (catalogueCache?.metadata !== current || catalogueCache?.revision !== store.revision)
-        catalogueCache = {
-          metadata: current,
-          revision: store.revision,
-          value: appCatalogue({
-            lazy: true,
-            metadata: current,
-            mappings: store.state.mappings,
-            providers: [],
-            defaultApp: runtime.defaultApp,
-            settings: store.state.settings,
-            clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven),
-            canvasApps: canvasAppNames(organizationHost),
-          }),
-        };
-      return catalogueCache.value;
-    };
-    catalogue.async = async ({ cancelled } = {}) => {
-      const current = metadata(),
-        revision = store.revision;
-      if (catalogueCache?.metadata !== current || catalogueCache?.revision !== revision) {
-        const value = await appCatalogueAsync(
-          {
-            lazy: true,
-            metadata: current,
-            mappings: store.state.mappings,
-            providers: [],
-            defaultApp: runtime.defaultApp,
-            settings: store.state.settings,
-            clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven),
-            canvasApps: canvasAppNames(organizationHost),
-          },
-          { cancelled },
-        );
-        catalogueCache = { metadata: current, revision, value };
-      }
-      return catalogueCache.value;
-    };
+    const catalogue = storeCatalogue({
+      store,
+      metadata,
+      options: (current) => ({
+        lazy: true,
+        metadata: current,
+        mappings: store.state.mappings,
+        providers: [],
+        defaultApp: runtime.defaultApp,
+        settings: store.state.settings,
+        clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven),
+        canvasApps: canvasAppNames(organizationHost),
+      }),
+    });
     // Validate an explicitly selected app before opening any listener.
     if (caps.modelDriven && runtime.defaultApp) catalogue();
     const recordService = createModelDrivenRecordService({ organization, origin: () => localOrigin });
@@ -631,7 +606,7 @@ export async function createStandaloneRuntime(options = {}) {
       csrf: () => csrf,
       diagnostic,
     });
-    const model = createModelDrivenHandler({
+    model = createModelDrivenHandler({
       streamMetadata: true,
       workerMetadata: true,
       sourceMaps: options.sourceMaps ?? true,

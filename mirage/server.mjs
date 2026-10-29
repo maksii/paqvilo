@@ -148,8 +148,8 @@ import { pageAccess } from './lib/page-access.mjs';
 import { cachedImplementationSourceFingerprint, observedEvidence, implementationEvidence } from './lib/evidence.mjs';
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata, portalMetadataEntities } from './lib/solution-metadata.mjs';
-import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './lib/model-driven/catalogue.mjs';
-import { createModelDrivenData } from './lib/model-driven/data.mjs';
+import { canvasAppNames, solutionApps } from './lib/model-driven/catalogue.mjs';
+import { createModelDrivenData, storeCatalogue } from './lib/model-driven/data.mjs';
 import { createModelDrivenHandler, routes as MODEL_DRIVEN_ROUTES } from './lib/model-driven/http.mjs';
 import { offlineSessionState } from './lib/model-driven/offline.mjs';
 import { modelDrivenSettings } from './lib/model-driven-settings.mjs';
@@ -919,7 +919,7 @@ async function createPowerPagesSimulator({
     stateFile,
     simulation,
     sources: {
-      readMetadata: (fn) => solutionMetadataOverlay.withReadEpoch(fn),
+      readMetadata: (fn, options) => solutionMetadataOverlay.withReadEpoch(fn, options),
       plugins: () => solutionMetadata.plugins,
       workflows: () => operationWorkflows,
       layers: () => solutionData?.layers ?? [],
@@ -4795,58 +4795,21 @@ async function createPowerPagesSimulator({
     renderPage: renderAccountPage,
     readBody: rawBody,
   });
-  let modelDrivenCache;
-  const modelDrivenCatalogue = () => {
-    const metadata = modelMetadata();
-    if (
-      modelDrivenCache?.portal !== portal ||
-      modelDrivenCache?.metadata !== metadata ||
-      modelDrivenCache?.storeRevision !== store.revision
-    ) {
-      modelDrivenCache = {
-        portal,
-        metadata,
-        storeRevision: store.revision,
-        value: appCatalogue({
-          lazy: true,
-          portal,
-          metadata,
-          mappings: store.state.mappings,
-          defaultApp: runtimeOption.defaultApp,
-          settings: store.state.settings,
-          clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue),
-          canvasApps: canvasAppNames(organizationHost),
-        }),
-      };
-    }
-    return modelDrivenCache.value;
-  };
-  modelDrivenCatalogue.async = async ({ cancelled } = {}) => {
-    const metadata = modelMetadata(),
-      source = portal,
-      storeRevision = store.revision;
-    if (
-      modelDrivenCache?.portal !== source ||
-      modelDrivenCache?.metadata !== metadata ||
-      modelDrivenCache?.storeRevision !== storeRevision
-    ) {
-      const value = await appCatalogueAsync(
-        {
-          lazy: true,
-          portal: source,
-          metadata,
-          mappings: store.state.mappings,
-          defaultApp: runtimeOption.defaultApp,
-          settings: store.state.settings,
-          clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue),
-          canvasApps: canvasAppNames(organizationHost),
-        },
-        { cancelled },
-      );
-      modelDrivenCache = { portal: source, metadata, storeRevision, value };
-    }
-    return modelDrivenCache.value;
-  };
+  const modelDrivenCatalogue = storeCatalogue({
+    store,
+    metadata: modelMetadata,
+    source: () => portal,
+    options: (metadata) => ({
+      lazy: true,
+      portal,
+      metadata,
+      mappings: store.state.mappings,
+      defaultApp: runtimeOption.defaultApp,
+      settings: store.state.settings,
+      clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue),
+      canvasApps: canvasAppNames(organizationHost),
+    }),
+  });
   const modelDrivenData = createModelDrivenData({
     store,
     catalogue: modelDrivenCatalogue,

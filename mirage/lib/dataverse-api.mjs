@@ -1320,6 +1320,16 @@ async function route(d, c) {
   return dataApi(d, c, parsed);
 }
 
+// One solution metadata epoch per request (api.readMetadata forwards these options to the overlay's withReadEpoch):
+// per-column field security and record checks resolve the overlay once. A resolution is reused only outside store
+// transactions or inside an unmodified read, and expires at every commit.
+const requestMetadata = (d, fn) =>
+  d.api?.readMetadata && d.store
+    ? d.api.readMetadata(fn, {
+        valid: () => !d.store.inTransaction() || d.store.isUnmodifiedRead(),
+        revision: () => d.store.revision,
+      })
+    : fn();
 const DATA_PLANE = /^\/api\/data\/v\d+(?:\.\d+)*(?:\/|$)/i;
 export function createDataverseHandler(deps) {
   const limits =
@@ -1402,7 +1412,7 @@ export function createDataverseHandler(deps) {
             correlationId: req.headers['x-ms-correlation-request-id'] ?? requestId,
             requestId,
           });
-          result = await runWithRequest(context, () => route(d, c));
+          result = await runWithRequest(context, () => requestMetadata(d, () => route(d, c)));
         }
       }
     } catch (error) {

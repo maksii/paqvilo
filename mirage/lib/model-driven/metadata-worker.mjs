@@ -1,28 +1,24 @@
-import { parentPort, workerData } from 'node:worker_threads';
-import { appCatalogue } from './catalogue.mjs';
+import { parentPort } from 'node:worker_threads';
+import { compileTable } from './catalogue.mjs';
 import { encodeModelDrivenProvenance } from './provenance-transport.mjs';
 import { stringifyExactJson } from '../exact-numeric.mjs';
-import { gzipSync } from 'node:zlib';
 
-// A request sends immutable global source identity once, then one table at a
-// time. No business dataset, principal, token or runtime store enters this worker.
-parentPort.on('message', ({ name, input, capabilities, wire, gzip }) => {
+// A response sends its immutable global source identity once ({ context }), then
+// one table at a time; { context: null } releases it before the thread idles. No
+// business dataset, principal, token or runtime store enters this worker.
+let context = null;
+parentPort.on('message', (message) => {
+  if (Object.hasOwn(message, 'context')) {
+    context = message.context;
+    return;
+  }
+  const { name, input, capabilities, wire } = message;
   try {
-    const context = workerData;
-    const compiled = appCatalogue({
-      ...input,
-      ...context,
-      metadata: {
-        ...input.metadata,
-        sourceRevisions: context.sourceRevisions,
-        modelDrivenRibbonDocuments: context.modelDrivenRibbonDocuments,
-        modelDrivenAppActions: context.modelDrivenAppActions,
-      },
-    }).tables[name];
-    const { rows: _rows, ...table } = compiled;
+    const { rows: _rows, ...table } = compileTable(input, context, name);
     const projected = { ...table, capabilities };
-    const text = stringifyExactJson(wire ? encodeModelDrivenProvenance(projected) : projected);
-    const encoded = gzip ? Uint8Array.from(gzipSync(text, { level: 1 })) : new TextEncoder().encode(text);
+    const encoded = new TextEncoder().encode(
+      stringifyExactJson(wire ? encodeModelDrivenProvenance(projected) : projected),
+    );
     parentPort.postMessage({ bytes: encoded.buffer }, [encoded.buffer]);
   } catch (error) {
     parentPort.postMessage({ error: { message: error.message, stack: error.stack } });

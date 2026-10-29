@@ -16,6 +16,11 @@ import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadat
 import { appCatalogue, appCatalogueAsync } from '../lib/model-driven/catalogue.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { createModelDrivenData, storeCatalogue } from '../lib/model-driven/data.mjs';
+import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import v8 from 'node:v8';
+import vm from 'node:vm';
+import { setImmediate as setImmediatePromise } from 'node:timers/promises';
 
 test('paged FetchXML projects only returned rows while preserving counts, cookies, ordering and detached values', () => {
   const payload = 'Invented large payload'.repeat(16);
@@ -26,41 +31,47 @@ test('paged FetchXML projects only returned rows while preserving counts, cookie
           x_itemid: performanceId(i + 1),
           x_name: String(i).padStart(4, '0'),
           x_payload: payload,
+          x_details: { invented: [i] },
         })),
       },
       mappings: {
         x_item: {
           idColumn: 'x_itemid',
           entitySet: 'x_items',
-          fields: { x_name: { type: 'text' }, x_payload: { type: 'text' } },
+          fields: { x_name: { type: 'text' }, x_payload: { type: 'text' }, x_details: { type: 'text' } },
         },
       },
     },
   });
-  const original = globalThis.structuredClone;
+  // Count projection through the live rows: sorting and paging read x_name, only returned rows read x_payload.
   let projected = 0;
-  globalThis.structuredClone = (value) => {
-    if (value === payload) projected++;
-    return original(value);
-  };
-  try {
-    const xml = (page, cookie = '') =>
-      `<fetch count="25" page="${page}" returntotalrecordcount="true"${cookie ? ' paging-cookie="' + cookie.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;') + '"' : ''}><entity name="x_item"><attribute name="x_name"/><attribute name="x_payload"/><order attribute="x_name" descending="true"/></entity></fetch>`;
-    const second = store.fetchXml(xml(2), { admin: true });
-    assert.equal(projected, 25, 'Off-page values are neither copied nor projected');
-    assert.equal(second.total_record_count, 1500);
-    assert.equal(second.more_records, true);
-    assert.equal(second.entities[0].x_name, '1474');
-    assert.equal(second.entities.at(-1).x_name, '1450');
-    assert.ok(second.paging_cookie);
-    const third = store.fetchXml(xml(3, second.paging_cookie), { admin: true });
-    assert.equal(projected, 50);
-    assert.equal(third.entities[0].x_name, '1449');
-    third.entities[0].x_payload = 'local response edit';
-    assert.equal(store.tableRows('x_item')[1449].x_payload, payload);
-  } finally {
-    globalThis.structuredClone = original;
-  }
+  for (const row of store.tableRows('x_item'))
+    Object.defineProperty(row, 'x_payload', {
+      enumerable: true,
+      configurable: true,
+      get() {
+        projected++;
+        return payload;
+      },
+    });
+  const xml = (page, cookie = '') =>
+    `<fetch count="25" page="${page}" returntotalrecordcount="true"${cookie ? ' paging-cookie="' + cookie.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;') + '"' : ''}><entity name="x_item"><attribute name="x_name"/><attribute name="x_payload"/><attribute name="x_details"/><order attribute="x_name" descending="true"/></entity></fetch>`;
+  const second = store.fetchXml(xml(2), { admin: true });
+  assert.equal(projected, 25, 'Off-page values are neither copied nor projected');
+  assert.equal(second.total_record_count, 1500);
+  assert.equal(second.more_records, true);
+  assert.equal(second.entities[0].x_name, '1474');
+  assert.equal(second.entities.at(-1).x_name, '1450');
+  assert.equal(second.entities[0].x_payload, payload);
+  assert.ok(second.paging_cookie);
+  const third = store.fetchXml(xml(3, second.paging_cookie), { admin: true });
+  assert.equal(projected, 50);
+  assert.equal(third.entities[0].x_name, '1449');
+  third.entities[0].x_payload = 'local response edit';
+  third.entities[0].x_details.invented.push('local response edit');
+  const stored = store.tableRows('x_item')[1449];
+  assert.equal(stored.x_payload, payload);
+  assert.deepEqual(stored.x_details, { invented: [1449] }, 'Structured values are detached copies');
 });
 import { settleFileTimes } from './support/file-times.mjs';
 
@@ -467,6 +478,281 @@ test('overlay invalidates column metadata, component presence and same-ID soluti
     /integrity/,
     'cached parsed assets cannot conceal a same-ID integrity failure',
   );
+});
+
+test('unchanged overlay resolutions outside a read epoch scan mapping metadata once until a metadata change', () => {
+  let reads = 0;
+  const counted = (value) => {
+    const field = { dataverseType: 'nvarchar' };
+    Object.defineProperty(field, 'columnMetadata', {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads++;
+        return value;
+      },
+    });
+    return field;
+  };
+  const entities = {},
+    mappings = {};
+  for (let table = 0; table < 32; table++) {
+    const fields = {};
+    for (let column = 0; column < 16; column++) fields['x_f' + column] = counted(undefined);
+    entities['x_t' + table] = { fields: { x_f0: { label: 'Exported' } } };
+    mappings['x_t' + table] = { idColumn: 'x_t' + table + 'id', fields };
+  }
+  const base = { entities, forms: [] },
+    state = { mappings, dataverse: { metadataLog: [] } },
+    overlay = createSolutionMetadataOverlay();
+  assert.equal(overlay(base, state), base);
+  const scan = reads;
+  assert.equal(scan, 32 * 16, 'The first resolution reads every mapping field once');
+  for (let call = 0; call < 64; call++) assert.equal(overlay(base, state), base);
+  assert.equal(reads, scan, 'Unchanged resolutions read no mapping field again');
+  // A metadata writer changes the column and appends to the metadata log: the next resolution applies it.
+  Object.defineProperty(mappings.x_t0.fields, 'x_f0', {
+    value: { dataverseType: 'nvarchar', columnMetadata: { labels: { 1033: 'Changed' } } },
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  state.dataverse.metadataLog.push({ seq: 1, kind: 'attribute', change: 'change' });
+  assert.equal(overlay(base, state).entities.x_t0.fields.x_f0.label, 'Changed');
+  // A new mapping set (state replacement) is scanned again.
+  const replaced = { ...state, mappings: { x_t1: mappings.x_t1 } };
+  reads = 0;
+  assert.equal(overlay(base, replaced), base);
+  assert.equal(reads, 16);
+});
+
+test('one Dataverse Web API request resolves the solution metadata overlay once across per-column checks', async (t) => {
+  const appId = '55555555-5555-4555-8555-555555555555',
+    variable = `PAQ_OVERLAY_SECRET_${process.pid}`;
+  process.env[variable] = 'invented-secret';
+  const state = emptyState();
+  state.mappings.x_item = {
+    logicalName: 'x_item',
+    entitySet: 'x_items',
+    idColumn: 'x_itemid',
+    nameColumn: 'x_name',
+    fields: Object.fromEntries(
+      ['x_name', ...Array.from({ length: 24 }, (_, i) => 'x_value' + i)].map((name) => [
+        name,
+        { dataverseType: 'nvarchar' },
+      ]),
+    ),
+  };
+  state.tables.x_item = Array.from({ length: 8 }, (_, i) => ({
+    x_itemid: performanceId(i + 1),
+    x_name: 'Invented ' + i,
+    ...Object.fromEntries(Array.from({ length: 24 }, (_, c) => ['x_value' + c, 'v' + c])),
+  }));
+  state.tables.systemform = [{ formid: 'f-0', name: 'Invented form' }];
+  state.dataverse = { sourceSolutionComponents: { baseline: { 'systemform/f-0': {} } } };
+  const store = await new DataStore({ state }).init();
+  const overlay = createSolutionMetadataOverlay(),
+    base = { entities: { x_item: { fields: state.mappings.x_item.fields } }, forms: [] };
+  const settings = dataverseSettings({
+    enabled: true,
+    tds: { enabled: false },
+    applications: [
+      { appId, displayName: 'Invented', secretEnvironmentVariable: variable, roles: ['System Administrator'] },
+    ],
+  });
+  const organization = await createOrganizationRuntime({
+    store,
+    settings,
+    metadataFields: (logical) => overlay(base, store.state).entities?.[logical]?.fields,
+    readMetadata: (fn, options) => overlay.withReadEpoch(fn, options),
+  });
+  const api = await startDataverseApi({ store, settings, organization, log: () => {} });
+  t.after(async () => {
+    delete process.env[variable];
+    await api.close();
+    await organization.close();
+  });
+  const token = (
+    await (
+      await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
+        method: 'POST',
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: appId,
+          client_secret: 'invented-secret',
+          scope: `${api.origin}/.default`,
+        }),
+      })
+    ).json()
+  ).access_token;
+  const get = async () => {
+    const response = await fetch(`${api.origin}/api/data/v9.2/x_items`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 200);
+    return (await response.json()).value;
+  };
+  await get();
+  // Every full overlay resolution compares the component rows: count reads of the live row's name.
+  let scans = 0;
+  Object.defineProperty(store.state.tables.systemform[0], 'name', {
+    enumerable: true,
+    get() {
+      scans++;
+      return 'Invented form';
+    },
+  });
+  const rows = await get();
+  assert.equal(rows.length, 8);
+  assert.equal(rows[0].x_value23, 'v23');
+  assert.equal(scans, 1, 'One overlay resolution per request, not one per checked column');
+});
+
+test('catalogue construction groups forms, views and ribbons by table once and reuses parsed ribbon commands', () => {
+  const ribbon = `<RibbonDiffXml><Button Id="x.Form.Review" Command="x.Review" LabelText="Review"/><CommandDefinitions><CommandDefinition Id="x.Review"><Actions><JavaScriptFunction Library="$webresource:x_/review.js" FunctionName="Invented.review"/></Actions></CommandDefinition></CommandDefinitions></RibbonDiffXml>`;
+  let entityReads = 0;
+  const xmlReads = new Map();
+  const counted = ({ entity, ...item }) =>
+    Object.defineProperty(item, 'entity', {
+      enumerable: true,
+      get() {
+        entityReads++;
+        return entity;
+      },
+    });
+  const tables = 64,
+    mappings = {},
+    forms = [],
+    views = [],
+    modelDrivenRibbonDocuments = [];
+  for (let index = 0; index < tables; index++) {
+    const entity = 'x_table' + index;
+    mappings[entity] = { idColumn: entity + 'id', nameColumn: 'x_name', fields: { x_name: { type: 'nvarchar' } } };
+    for (let form = 0; form < 2; form++) forms.push(counted({ id: `${entity}-f${form}`, entity, xml: '<form/>' }));
+    for (let view = 0; view < 4; view++)
+      views.push(counted({ id: `${entity}-v${view}`, entity, name: 'View ' + view, queryType: view === 3 ? 64 : 0 }));
+    const document = counted({ entity });
+    Object.defineProperty(document, 'xml', {
+      enumerable: true,
+      get() {
+        xmlReads.set(entity, (xmlReads.get(entity) ?? 0) + 1);
+        return ribbon;
+      },
+    });
+    modelDrivenRibbonDocuments.push(document);
+  }
+  const items = forms.length + views.length + modelDrivenRibbonDocuments.length;
+  const metadata = { forms, views, modelDrivenRibbonDocuments };
+  const lazy = appCatalogue({ lazy: true, mappings, metadata });
+  assert.ok(entityReads <= items * 2, `${entityReads} entity reads for ${items} items across ${tables} tables`);
+  entityReads = 0;
+  xmlReads.clear();
+  const body = lazy.tables.x_table0;
+  assert.equal(body.commands[0].id, 'x.Form.Review');
+  assert.equal(body.views.length, 3);
+  assert.equal(body.lookupViews.length, 1);
+  assert.ok(entityReads <= 7 * 4, `${entityReads} entity reads compile one table of 7 items`);
+  assert.deepEqual([...xmlReads.keys()], ['x_table0'], 'One body never reads another table ribbon');
+  const rebuilt = appCatalogue({ lazy: true, mappings, metadata });
+  assert.equal(rebuilt.tables.x_table0.commands[0], body.commands[0], 'An unchanged ribbon document is parsed once');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(appCatalogue({ mappings, metadata }))),
+    JSON.parse(JSON.stringify(lazy)),
+    'Grouped construction keeps the complete catalogue contract',
+  );
+});
+
+test('the store catalogue survives business-row writes and rebuilds for metadata, mapping, settings and component changes', async () => {
+  const state = emptyState();
+  state.mappings.x_item = { idColumn: 'x_itemid', nameColumn: 'x_name', fields: { x_name: { type: 'text' } } };
+  state.mappings.systemform = { idColumn: 'formid', nameColumn: 'name', fields: { name: { type: 'text' } } };
+  state.mappings.x_other = { idColumn: 'x_otherid', nameColumn: 'x_name', fields: { x_name: { label: 'Original' } } };
+  state.tables.x_item = [];
+  state.tables.systemform = [];
+  const store = new DataStore({ state });
+  let metadata = { entities: {}, forms: [] },
+    builds = 0;
+  const catalogue = storeCatalogue({
+    store,
+    metadata: () => metadata,
+    options: (current) => {
+      builds++;
+      return { lazy: true, metadata: current, mappings: store.state.mappings, settings: store.state.settings };
+    },
+  });
+  const first = catalogue();
+  assert.equal(await catalogue.async(), first);
+  const revision = catalogue.revision();
+  const created = await store.create('x_item', { x_name: 'Invented row' }, { admin: true });
+  await store.update('x_item', created.x_itemid, { x_name: 'Invented edit' }, { admin: true });
+  assert.equal(catalogue(), first, 'Business-row writes keep the catalogue');
+  assert.equal(catalogue.revision(), revision);
+  assert.equal(builds, 1);
+  const changes = [
+    ['mapping', () => store.transact(() => (store.state.mappings.x_item.fields.x_added = { type: 'text' }))],
+    ['settings', () => store.transact(() => (store.state.settings.permissionMode = 'enforce'))],
+    ['component row', () => store.create('systemform', { name: 'Invented form' }, { admin: true })],
+    ['metadata', () => (metadata = { ...metadata })],
+  ];
+  let previous = first;
+  for (const [label, change] of changes) {
+    await change();
+    const next = catalogue();
+    assert.notEqual(next, previous, `A ${label} change rebuilds the catalogue`);
+    assert.equal(catalogue(), next, `The rebuilt catalogue is reused after the ${label} change`);
+    previous = next;
+  }
+  assert.equal(builds, 1 + changes.length);
+  assert.ok(previous.tables.x_item.fields.x_added, 'The rebuilt catalogue reads the changed mapping');
+  // Bodies compile after the host's read: a handed-out catalogue compiles from its own copy of the mappings.
+  await store.transact(() => (store.state.mappings.x_other.fields.x_name.label = 'In-place edit'));
+  assert.equal(previous.tables.x_other.fields.x_name.label, 'Original', 'A handed-out catalogue keeps its snapshot');
+  assert.equal(catalogue().tables.x_other.fields.x_name.label, 'In-place edit');
+});
+
+test('lookup formatting reads target tables from the lazy index and recent bodies survive garbage collection', async () => {
+  const reads = new Map();
+  const form = (entity) => ({
+    id: entity + '-form',
+    entity,
+    get xml() {
+      reads.set(entity, (reads.get(entity) ?? 0) + 1);
+      return '<form><tabs><tab name="main"><columns><column><sections><section><rows><row><cell><control datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>';
+    },
+  });
+  const targetId = '22222222-2222-4222-8222-222222222222';
+  const mappings = {
+    x_item: {
+      idColumn: 'x_itemid',
+      nameColumn: 'x_name',
+      fields: { x_name: { dataverseType: 'nvarchar' }, x_target: { dataverseType: 'lookup', targets: ['x_target'] } },
+    },
+    x_target: { idColumn: 'x_targetid', nameColumn: 'x_name', fields: { x_name: { dataverseType: 'nvarchar' } } },
+  };
+  const store = new DataStore({
+    state: {
+      mappings: structuredClone(mappings),
+      tables: {
+        x_item: [{ x_itemid: performanceId(1), x_name: 'Invented item', x_target: targetId }],
+        x_target: [{ x_targetid: targetId, x_name: 'Invented target' }],
+      },
+    },
+  });
+  const lazy = appCatalogue({ lazy: true, mappings, metadata: { forms: [form('x_item'), form('x_target')] } });
+  const data = createModelDrivenData({ store, catalogue: () => lazy });
+  const { rows } = await data.list('x_item', { scope: 'table' });
+  assert.equal(rows[0]['x_target@OData.Community.Display.V1.FormattedValue'], 'Invented target');
+  assert.deepEqual([...reads.keys()], ['x_item'], 'The lookup target body is never compiled to format a lookup');
+  const compiled = reads.get('x_item');
+  // Recent bodies are held strongly: a collection between two record reads does not recompile the form.
+  v8.setFlagsFromString('--expose-gc');
+  const collect = vm.runInNewContext('gc');
+  for (let round = 0; round < 3; round++) {
+    await setImmediatePromise();
+    collect();
+  }
+  await data.list('x_item', { scope: 'table' });
+  assert.equal(reads.get('x_item'), compiled, 'One compilation of the reopened table');
 });
 
 test('lazy catalogue inventories every table without reading unrelated form bodies and preserves the complete contract', async () => {
