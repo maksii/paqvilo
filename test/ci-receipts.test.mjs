@@ -172,6 +172,9 @@ test(
           browserChannel: 'chromium',
           browserExecutable: null,
           browserHeadlessShell: null,
+          localBrowsers: (process.platform === 'win32' ? ['chromium', 'msedge'] : ['chromium'])
+            .map((channel) => `${channel}:null:null`)
+            .join('|'),
           tedious: null,
           clrSdk: null,
           dotnet: dotnet.status === 0 ? dotnet.stdout.trim() : null,

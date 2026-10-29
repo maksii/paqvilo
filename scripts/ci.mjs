@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { availableParallelism, totalmem } from 'node:os';
+import { availableParallelism, tmpdir, totalmem } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -444,6 +444,33 @@ export function ciBrowser(env = process.env, platform = process.platform) {
   return channel;
 }
 
+/** Local validation covers every hosted browser lane of its platform: Windows runs both Chromium and Edge. */
+export const localBrowserChannels = (platform = process.platform) =>
+  platform === 'win32' ? ['chromium', 'msedge'] : ['chromium'];
+
+/**
+ * Hosted Windows runners expose TEMP through an 8.3 alias (C:\Users\RUNNER~1\...), so os.tmpdir() differs from its
+ * real path there. Local Windows validation runs under the short alias of a long-named directory to reproduce that;
+ * a volume without 8.3 names keeps the long path.
+ */
+export function runnerTemporaryDirectory({ platform = process.platform, env = process.env, base = tmpdir() } = {}) {
+  if (platform !== 'win32' || env.GITHUB_ACTIONS === 'true') return null;
+  const directory = path.join(base, 'paqvilo-validation-temporary');
+  fs.mkdirSync(directory, { recursive: true });
+  const result = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:PAQ_CI_TEMPORARY).ShortPath',
+    ],
+    { env: { ...process.env, PAQ_CI_TEMPORARY: directory }, encoding: 'utf8', windowsHide: true },
+  );
+  const short = result.status === 0 ? result.stdout.trim() : '';
+  return short || directory;
+}
+
 export function fullSdkGate(scope, platform = process.platform) {
   return Boolean(scope.full || scope.sdk) && ['win32', 'linux'].includes(platform);
 }
@@ -523,21 +550,58 @@ export function verifyLane(suite, { unit = true, browser = true, shard = null } 
  * The independent steps of a scoped or full run, longest first so a parallel run ends on short steps. Each lane is
  * its own `ci.mjs verify --suite` process, so it runs exactly as the matching hosted job does.
  */
-export function validationSteps(scope, suites, { unit = true, browser = true } = {}, platform = process.platform) {
+export function validationSteps(
+  scope,
+  suites,
+  { unit = true, browser = true, changed = [], repeat = 0, env = process.env } = {},
+  platform = process.platform,
+) {
   const npmRun = (script) => [npmCli(), 'run', script];
-  const lane = (suite, kind) => ({
-    label: kind ? `${suite} ${kind}` : suite,
-    commands: [['scripts/ci.mjs', 'verify', '--suite', suite, ...(kind ? [`--${kind}`] : []), '--prepared']],
+  const verify = (suite, kind, channel = 'chromium') => ({
+    args: ['scripts/ci.mjs', 'verify', '--suite', suite, ...(kind ? [`--${kind}`] : []), '--prepared'],
+    env: { PAQ_CI_BROWSER: channel },
   });
+  const channels = browser ? localBrowserChannels(platform) : [];
   const steps = [];
+  // The Security workflow's CodeQL analysis, the longest step, so a parallel run starts it first.
+  if (scope.codeql && env.GITHUB_ACTIONS !== 'true')
+    steps.push({ label: 'codeql', commands: [['scripts/codeql.mjs']] });
   for (const suite of ['mirage', 'lense'].filter((suite) => suites.includes(suite))) {
-    if (unit) steps.push(lane(suite, 'unit'));
-    if (browser) steps.push(lane(suite, 'browser'));
+    if (unit)
+      steps.push({
+        label: `${suite} unit`,
+        commands: [verify(suite, 'unit'), ...changedTests(changed, repeat, suite)],
+      });
+    for (const channel of channels)
+      steps.push({
+        label: channel === 'chromium' ? `${suite} browser` : `${suite} browser ${channel}`,
+        commands: [
+          verify(suite, 'browser', channel),
+          ...(channel === 'chromium' ? changedTests(changed, repeat, suite, true) : []),
+        ],
+      });
   }
   // Example unit and browser tests share one installed project, so they stay in one ordered step.
-  if (suites.includes('examples')) steps.push(lane('examples', unit && browser ? null : unit ? 'unit' : 'browser'));
+  if (suites.includes('examples'))
+    steps.push({
+      label: unit && browser ? 'examples' : unit ? 'examples unit' : 'examples browser',
+      commands: [
+        verify('examples', unit && browser ? null : unit ? 'unit' : 'browser'),
+        ...channels.slice(1).map((channel) => verify('examples', 'browser', channel)),
+      ],
+    });
   if (fullSdkGate(scope, platform)) steps.push({ label: 'sdk gates', commands: [['scripts/ci.mjs', 'sdk']] });
-  if (scope.smoke) steps.push({ label: 'package smoke', commands: [npmRun('cache:package'), npmRun('release:smoke')] });
+  // Hosted runners start from a lockfile-keyed npm cache; a contributor's warm cache would hide a missing prime.
+  if (scope.smoke)
+    steps.push({
+      label: 'package smoke',
+      env: { npm_config_cache: path.join(root, '.paqvilo', 'ci', 'npm-cache-smoke') },
+      commands: [
+        ['-e', "require('node:fs').rmSync(process.env.npm_config_cache, { recursive: true, force: true })"],
+        npmRun('cache:package'),
+        npmRun('release:smoke'),
+      ],
+    });
   if (scope.quality) {
     const parts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
       .scripts.quality.split('&&')
@@ -549,6 +613,44 @@ export function validationSteps(scope, suites, { unit = true, browser = true } =
   if (scope.package) steps.push({ label: 'release:check', commands: [npmRun('release:check')] });
   if (scope.site) steps.push({ label: 'site:build', commands: [npmRun('site:build')] });
   return steps;
+}
+
+/**
+ * Changed test files of one package script, rerun `repeat` more times after their lane passes, so a timing-dependent
+ * test fails locally before the hosted matrix runs it on slower runners.
+ */
+export function changedTests(changed, repeat, suite, browser = false) {
+  if (!repeat) return [];
+  const directory = suite === 'mirage' ? 'mirage' : '';
+  const { flags, files } = packageTests(directory, browser ? 'test:browser' : 'test');
+  const selected = files.filter((file) => changed.includes(path.posix.join(directory, file.replaceAll('\\', '/'))));
+  if (!selected.length) return [];
+  return Array.from({ length: repeat }, () => ({
+    args: ['--test', ...flags, ...selected],
+    cwd: path.join(root, directory),
+    env: browser ? { PAQVILO_BROWSER: 'chromium' } : {},
+  }));
+}
+
+/**
+ * Files changed by commits no remote branch contains: what a push introduces. The suite selection compares with the
+ * base branch instead, which on a release branch spans nearly every test.
+ */
+export function unpushedFiles(directory = root) {
+  const log = spawnSync(
+    'git',
+    ['--no-optional-locks', 'log', '--format=', '--name-only', '--no-renames', '-z', 'HEAD', '--not', '--remotes'],
+    { cwd: directory, encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+  );
+  if (log.status !== 0) throw new Error('Cannot list unpushed changes.', { cause: log.error });
+  return [...new Set(log.stdout.split(/[\0\n]/).filter(Boolean))];
+}
+
+/** Extra runs of changed test files: PAQ_CI_REPEAT, else `git config paqvilo.ci.repeat`, else 2; 0 disables. */
+export function validationRepeat(env = process.env, configured = gitConfig('paqvilo.ci.repeat')) {
+  const value = env.PAQ_CI_REPEAT || configured || '2';
+  if (!/^\d+$/.test(value)) throw new Error('PAQ_CI_REPEAT or paqvilo.ci.repeat must be a non-negative integer.');
+  return Number(value);
 }
 
 function gitConfig(key) {
@@ -596,8 +698,15 @@ export async function runSteps(steps, jobs, { cwd = root, logs = path.join(root,
       const output = parallel ? fs.openSync(log, 'w') : 'inherit';
       let code = 0;
       try {
-        for (const args of step.commands) {
-          const child = spawn(process.execPath, args, { cwd, stdio: ['ignore', output, output], windowsHide: true });
+        for (const command of step.commands) {
+          // A command is node arguments, or { args, env, cwd } for one lane's browser channel or package directory.
+          const { args, env = {}, cwd: directory = cwd } = Array.isArray(command) ? { args: command } : command;
+          const child = spawn(process.execPath, args, {
+            cwd: directory,
+            env: { ...process.env, ...step.env, ...env },
+            stdio: ['ignore', output, output],
+            windowsHide: true,
+          });
           code = await new Promise((resolve) => {
             child.once('error', () => resolve('spawn error'));
             child.once('close', (status, signal) => resolve(status ?? signal));
@@ -696,6 +805,17 @@ async function verificationIdentity(allowStaged = false) {
     return null; /* Preparation installs the locked package before validation. */
   }
   const selectedBrowser = await verificationBrowser();
+  // Local validation runs every channel of this platform, so a changed Edge also requires a fresh pass.
+  const localBrowsers = [];
+  for (const channel of localBrowserChannels()) {
+    let browser;
+    try {
+      browser = await verificationBrowser({ env: { ...process.env, PAQ_CI_BROWSER: channel } });
+    } catch {
+      browser = { channel, executable: null, headlessShell: null };
+    }
+    localBrowsers.push(`${browser.channel}:${browser.executable}:${browser.headlessShell}`);
+  }
   const readPackageVersion = (file) => {
     try {
       return JSON.parse(fs.readFileSync(file, 'utf8')).version;
@@ -718,6 +838,7 @@ async function verificationIdentity(allowStaged = false) {
     browserChannel: selectedBrowser.channel,
     browserExecutable: selectedBrowser.executable,
     browserHeadlessShell: selectedBrowser.headlessShell,
+    localBrowsers: localBrowsers.join('|'),
     tedious: readPackageVersion(path.join(root, 'mirage/test-sdk/tds/node_modules/tedious/package.json')),
     clrSdk: fs.existsSync(sdk) ? createHash('sha256').update(fs.readFileSync(sdk)).digest('hex') : null,
     dotnet: dotnet.status === 0 ? dotnet.stdout.trim() : null,
@@ -830,6 +951,7 @@ async function main() {
       'Use prepare or verify, with --suite lense|mirage|examples, --unit, --browser, --prepared, --base <ref>, or --full.',
     );
   let scope;
+  let changed = [];
   if (suite) {
     if (!['lense', 'mirage', 'examples'].includes(suite)) throw new Error(`Unknown CI suite: ${suite}`);
     scope = { [suite]: true };
@@ -849,6 +971,7 @@ async function main() {
     if (checkedGitStatus(root))
       throw new Error('Scoped pre-push validation requires a clean checkout; commit changes or use --full.');
     scope = classifyChanges(diff.stdout.split('\0').filter(Boolean));
+    changed = unpushedFiles();
   }
   const suites = suitesForScope(scope);
   console.log(
@@ -906,7 +1029,17 @@ async function main() {
   if (suite) verifyLane(suite, { unit, browser, shard: values.shard });
   else {
     if (!securityChecked) onlineChecks();
-    await runSteps(validationSteps(scope, suites, { unit, browser }), validationJobs());
+    // Repeated changed tests run outside their lane process, so this process carries the lane fixture settings.
+    for (const selected of suites) requireFixtures(selected, { unit, browser, shard: values.shard });
+    const temporary = runnerTemporaryDirectory();
+    if (temporary) {
+      process.env.TEMP = process.env.TMP = temporary;
+      console.log(`[ci] Temporary files use ${temporary}, as hosted Windows runners use an 8.3 TEMP alias.`);
+    }
+    await runSteps(
+      validationSteps(scope, suites, { unit, browser, changed, repeat: validationRepeat() }),
+      validationJobs(),
+    );
   }
   const completedIdentity = await verificationIdentity(Boolean(full));
   if (!suite && JSON.stringify(baselineIdentity) !== JSON.stringify(completedIdentity))
