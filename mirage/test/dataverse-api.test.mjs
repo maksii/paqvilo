@@ -600,6 +600,9 @@ describe('dataverse API router', () => {
       (await get(apiPath('widgets'), { 'accept-encoding': 'identity' })).headers.get('content-encoding'),
       null,
     );
+    const refused = await get(apiPath('widgets'), { 'accept-encoding': 'gzip;q=0, *;q=1' });
+    assert.equal(refused.headers.get('content-encoding'), null);
+    assert.equal((await refused.json()).echo, 'collection');
     const empty = await get(apiPath('widgets?empty'), { 'accept-encoding': 'gzip' });
     assert.equal(empty.status, 204);
     assert.equal(empty.headers.get('content-encoding'), null);

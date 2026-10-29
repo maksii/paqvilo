@@ -1,13 +1,22 @@
 const $ = (id) => document.getElementById(id);
 const select = $('app'),
-  frame = $('preview'),
   status = $('connection'),
   error = $('error');
-let apps = [],
+let frame = $('preview'),
+  apps = [],
   selected = null,
   selectedOrigin = null;
 const parameters = new Map();
 const clear = (element) => element.replaceChildren();
+// Every launch gets a new frame element: a reload the previous document starts while the next launch is
+// in flight (a dev server's full-reload broadcast) would otherwise replace that launch with its own URL.
+function resetFrame() {
+  const next = frame.cloneNode(false);
+  next.removeAttribute('src');
+  next.hidden = true;
+  frame.replaceWith(next);
+  frame = next;
+}
 const text = (parent, tag, value) => {
   const node = document.createElement(tag);
   node.textContent = value;
@@ -41,8 +50,7 @@ function renderList(id, values, empty) {
 }
 function launch() {
   if (!selected?.localAppUrl) {
-    frame.hidden = true;
-    frame.removeAttribute('src');
+    resetFrame();
     selectedOrigin = null;
     status.textContent = 'No local app URL';
     return;
@@ -64,14 +72,14 @@ function launch() {
     const opened = new URL(selected.launchUrl, location.origin);
     opened.search = lines($('parameters').value).toString();
     $('open').href = opened.href;
+    resetFrame();
     frame.src = target.href;
     frame.hidden = false;
     status.textContent = 'Waiting for bridge';
     error.textContent = '';
   } catch (problem) {
     selectedOrigin = null;
-    frame.hidden = true;
-    frame.removeAttribute('src');
+    resetFrame();
     error.textContent = problem.message;
   }
 }
@@ -82,8 +90,7 @@ function choose(name, { keepFrame = false } = {}) {
     selectedOrigin = null;
     clear($('events'));
     status.textContent = 'Not connected';
-    frame.hidden = true;
-    frame.removeAttribute('src');
+    resetFrame();
   }
   $('reload').disabled = !selected;
   $('apply').disabled = !selected;

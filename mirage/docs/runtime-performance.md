@@ -16,7 +16,9 @@ An embedding caller can pass `onStartup({ phase, elapsedMs })` to observe phase 
 
 ## Model-driven catalogue
 
-The model-driven shell requests `/_apps/api/index` for apps, navigation and table identities, then `/_apps/api/metadata/<logical-name>` for the selected table. Forms, views, fields and relationships travel only for that table and for requested lookup or subgrid targets. The complete catalogue is still available at `/_apps/api`. API-only runtimes do not build a model-driven catalogue.
+The model-driven shell requests `/_apps/api/index` for apps, navigation and table identities, then `/_apps/api/metadata/<logical-name>` for the selected table. Forms, views, fields and relationships travel only for that table and for requested lookup or subgrid targets. The complete catalogue is still available at `/_apps/api` with every table, form, view and field; it streams one table at a time, and a large catalogue is gzip-compressed when the request accepts gzip (`gzip;q=0` keeps it uncompressed). Read it incrementally rather than as one string when a Solution has thousands of tables. API-only runtimes do not build a model-driven catalogue.
+
+Grids and subgrids keep the native 5,000-record count limit for saved views and FetchXML: a larger result shows its total as `5000+`, and next-page navigation continues past the limit. Smaller filtered results show their exact count.
 
 Every response evaluates the current staff principal and field security; staff grants and field-security results are never cached across requests. Within one read, imported metadata is resolved once per table and reused for grid and record reads until a read plug-in that may write captures its rollback snapshot. Catalogue construction yields between tables after about 8 ms of work, so status requests stay responsive while a large catalogue builds. Disconnecting the client stops the remaining work.
 

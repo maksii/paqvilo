@@ -36,6 +36,13 @@ Startup reports configuration, source discovery, process ownership/import, brows
 
 Model-driven Lense has its own [startup deadline and paired local panel workflow](../mirage/docs/model-driven-customizations.md#pair-the-panel-with-a-standalone-local-app). In a multi-tab Power Pages session, failure to install interception on a newly opened target closes only that failed owned tab. An attached-browser target shows an explicit local failure page. Healthy tabs, drafts, source watchers and agent endpoints remain active; open a fresh tab to retry. A lost shared browser connection still ends the session. A failed target is never reported as a working local preview.
 
+In a toolkit source checkout,
+`node --test --import=./test/browser-bootstrap.mjs test-browser/dev-session-close-errors.test.mjs` exercises this
+isolation with a disposable owned browser profile on loopback. An independent proxy withholds the browser's answers
+to interception setup for a new tab, a popup and a tab closed before setup finished. Only those tabs close; two
+healthy tabs keep their unsaved drafts, the agent endpoints keep answering, the watcher applies a later source save
+in a retried tab, and losing the shared browser connection stops the session.
+
 ## What can I preview?
 
 | Change                                                   | What to expect                                                                          |
@@ -87,6 +94,14 @@ The same evidence summary appears in the panel and X-ray. **Owner** describes th
 
 For a Power Pages field, read the available hierarchy in order: **column → Solution form (FormXml) → table → basic form → host webpage**. Enclosing components opens before Local source so you can see the field's form and table before choosing a file. The selected field and its rendered form receive separate outlines. Each component keeps its own evidence state; a host webpage supplies context without becoming the field's owner. Missing definitions remain unavailable rather than being filled from another form or table with the same field name.
 
+A generic native list/subgrid modal with an all-zero layout form ID can resolve through its same-origin `data-page`
+frame, platform modal action class, independently identified opener component, exported action form and layout table.
+The opener is a rendered list or subgrid ID, or a list this page references whose view matches the rendered grid; an
+exported list that only shares the rendered view is candidate context. Only a unique consistent join establishes the
+current form; URL hints only reject conflicts. Missing or ambiguous joins retain the rendered table and, as candidates,
+the declared action forms of the modal's action kinds (every kind when the modal names none) on that table, without
+promoting unrelated markup to a field source.
+
 For script-created elements, an observed JavaScript callsite can link the actual node to verified local implementation bytes. The evidence labels **creation**, **clone** and **attachment** separately. Attachment identifies the code that moved or inserted a node; it does not replace that node's original creation source. The link requires the acknowledged response bytes and the browser's actual parsed script version to agree. Serving or parsing code alone does not establish that it executed, and one observed DOM operation does not prove every branch, handler or component mount ran. Anonymous evaluation, custom stack formatting and ambiguous script versions remain unavailable rather than borrowing an older caller's source.
 
 **Open source** uses the admitted semantic source identity and revisions. **Open candidate** explicitly opens a candidate under the same validation. The selected node, source identity and current revisions are checked again before opening. Stale, conflicting and unavailable source actions are disabled. If the source changed, refresh inspection and select again rather than relying on an old line or record. **Copy reference** copies the displayed source reference when an absolute path is unavailable. **Search export markup** offers static suggestions separately; **Browse file** opens their container without asserting an exact rendered source or line.
@@ -108,7 +123,7 @@ X-ray opens immediately with a scanning status while local metadata and rendered
 
 The movable card starts with the selected evidence summary, followed by source and page context. **Web API context**, **Page dependencies**, **Page code components** and **Element & ancestry** remain secondary disclosures. Context lists have eight entries per page, with Previous/Next controls; permission and source lists have their own pages. Use **↑ Parent / ↓ Child**, or cycle overlapping elements under the pointer with **[ / ]**. **Reveal** scrolls a selection into view; **Details** hides the card when it covers a target. **Tab / Shift+Tab** visits the inspector's visible controls, including disclosure summaries. Disclosure choices, focus and scroll survive evidence redraws. **Escape** releases a selection, then exits X-ray. Refresh rereads sources and newly rendered component bindings. X-ray is temporary to the current document and is removed when the session detaches.
 
-**Exported code component bindings** includes the declared schema, manifest properties, parameters, native column bindings, portal enablement, resources and datasets. **Exported native controls** and **Exported form / view definitions** keep their configuration relationships visible separately from selected ownership. When no rendered host identifies the component, its exported page references remain under **Page code components**. **Web API context** shows literal or observed entity sets, their exported tables and permission rules. API-derived columns can match custom form identifiers, but remain candidates when the table context is missing. Neither a page reference nor an observed request proves which element owns a request or what access the live user has.
+**Exported code component bindings** includes the declared schema, manifest properties, parameters, native column bindings, portal enablement, resources and datasets. **Exported native controls** and **Exported form / view definitions** keep their configuration relationships visible separately from selected ownership. When no rendered host identifies the component, its exported page references remain under **Page code components**. **Web API context** shows literal or observed entity sets, their exported tables and permission rules; long entry and permission-rule lists page eight at a time. API-derived columns can match custom form identifiers, but remain candidates when the table context is missing. Neither a page reference nor an observed request proves which element owns a request or what access the live user has.
 
 PCF constructor and mount details appear when the runtime actually observes them. A manifest, configured binding, namespace or served bundle does not by itself establish that a particular constructor mounted the selected control. Local definitions and observed local mounts remain separate from the deployed revision, which is unverified without independent evidence.
 

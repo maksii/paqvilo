@@ -3,6 +3,7 @@
 // backend, the Dataverse API with managed identity, operation-mode selection (CLR prepared on demand), settle and close.
 // Host-specific parts (portal renderer, personas, live bridge, watcher, status payloads) stay in the hosts.
 import path from 'node:path';
+import { immutableStatus } from './immutable-status.mjs';
 import { pluginHandlers, pluginCatalogue } from './exported-plugins.mjs';
 import { pluginRuntimeDescriptors, prepareClrRuntime, closeClrHostPool } from './plugin-clr.mjs';
 import { overlayRegisteredSteps } from './dataverse-plugin-registration.mjs';
@@ -849,7 +850,13 @@ export async function composeOrganizationHost(options) {
     /** Canvas apps for /_apps/canvas/: Solution inventory and project canvas.sources records. */
     canvasApps: () => canvasAppsOf(c.allInventory()),
     /** The host's capability registry (memoised with the catalogues). */
-    capabilities: c.registry,
+    capabilities: () => {
+      const current = c.registry();
+      // Once exposed, callers may add records or edit add()'s returned record.
+      // That registry must keep fresh reports even without a store revision.
+      (c.exposedRegistries ??= new WeakSet()).add(current);
+      return current;
+    },
     ...hostLifecycle(c),
     ...hostReports(c),
   };
@@ -1212,11 +1219,12 @@ function hostLifecycle(c) {
       c.epoch++;
       return result;
     },
-    async createOrganization({ settings, change, schema, metadataFields, log = () => {} }) {
+    async createOrganization({ settings, change, schema, metadataFields, log = () => {}, initializing = false }) {
       await lifecycle.loadExtensions();
       c.installed = c.extensions;
       c.organization = await createOrganizationRuntime({
         store,
+        initializing,
         settings,
         change,
         schema,
@@ -1349,6 +1357,7 @@ async function applyOperationOverrides(c, next, commit) {
 /** Step 5: the read-side reports: simulation report, dashboard topology, capability status, preflight and note bodies. */
 function hostReports(c) {
   const { store, providers, canvas } = c;
+  let statusRegistry, statusSnapshot;
   return {
     /**
      * A simulation report (simulation-persistence.mjs report) with the private blob directory listed as a target when an
@@ -1404,17 +1413,24 @@ function hostReports(c) {
       return structuredClone(c.topologyMemo.value);
     },
     /** Status payload fields: the legacy boolean summary and the registry report. */
-    capabilityStatus: () =>
+    capabilityStatus: ({ reuse = false } = {}) =>
       (c.sources.readMetadata ?? ((fn) => fn()))(() => {
-        const current = c.registry(),
-          capabilities = current.summary();
+        const current = c.registry();
+        const exposed = c.exposedRegistries?.has(current);
+        if (current === statusRegistry && !exposed) return reuse ? statusSnapshot : structuredClone(statusSnapshot);
+        const capabilities = current.summary();
         // The app surfaces report their fidelity level under their legacy keys, not a boolean.
         // A surface switched off in the configuration (canvas.enabled false) reports 'disabled'.
         for (const name of Object.keys(APP_SURFACES)) {
           const record = current.get(name);
           capabilities[name] = record?.enabled === false ? 'disabled' : (record?.level ?? capabilities[name]);
         }
-        return { capabilities, capabilityReport: current.report() };
+        const result = { capabilities, capabilityReport: current.report() };
+        if (exposed) return result;
+        if (!immutableStatus(result.capabilities) || !immutableStatus(result.capabilityReport)) return result;
+        statusRegistry = current;
+        statusSnapshot = Object.freeze(result);
+        return reuse ? result : structuredClone(result);
       }),
     /**
      * The preflight report (capability-report.mjs) of this running host: its live operations (with /_sim/ overrides), packs,

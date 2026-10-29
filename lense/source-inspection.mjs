@@ -222,6 +222,19 @@ function exportIndex(portal, metadata, indexStore = null) {
   const forms = [...(portal.forms ?? []), ...(portal.advancedForms ?? [])].map((form) => {
     const schema = metadata.componentSchemas?.[form.id] ?? metadata.componentSchemas?.[form.name],
       advanced = form.metadata?.kind === 'advancedform';
+    const formLayouts = [];
+    const collectLayouts = (current, depth = 0) => {
+      if (!current || depth > 5) return;
+      if (current.formId && current.entity && !formLayouts.some((layout) => norm(layout.id) === norm(current.formId)))
+        formLayouts.push({
+          id: current.formId,
+          entity: current.entity.toLowerCase(),
+          name: current.formName,
+          sourceFile: current.sourceFile,
+        });
+      for (const step of current.steps ?? []) collectLayouts(step, depth + 1);
+    };
+    if (advanced) collectLayouts(schema);
     return {
       id: form.id,
       name: form.name,
@@ -229,6 +242,7 @@ function exportIndex(portal, metadata, indexStore = null) {
       entity: form.entityName ?? schema?.entity,
       ...(advanced
         ? {
+            formLayouts,
             configuredEntities: [
               ...new Set(
                 [form.entityName, schema?.entity, ...(schema?.steps ?? []).map((step) => step.entity)]
@@ -267,6 +281,7 @@ function exportIndex(portal, metadata, indexStore = null) {
     sourceFile: list.metadata?._file,
     pageReferenced: false,
     evidenceLabel: 'Exported list; not referenced by this page’s sources',
+    ...listInspectionBindings(list),
   }));
   index = {
     metadata,
@@ -289,6 +304,57 @@ function exportIndex(portal, metadata, indexStore = null) {
     for (const key of indexStore.keys()) if (!languages.has(key)) indexStore.delete(key);
   }
   return index;
+}
+
+function listInspectionBindings(list) {
+  let settings;
+  try {
+    settings = JSON.parse(portalField(list.metadata ?? {}, 'settings', '{}'));
+  } catch {
+    settings = {};
+  }
+  const actions = [
+    ...(Array.isArray(settings?.ViewActions) ? settings.ViewActions : []),
+    ...(Array.isArray(settings?.ItemActions) ? settings.ItemActions : []),
+  ].filter(
+    (action) =>
+      action &&
+      ['CrmEntityFormView-CreateAction', 'CrmEntityFormView-EditAction', 'CrmEntityFormView-DetailsAction'].includes(
+        action.Type,
+      ),
+  );
+  const viewIds = [];
+  for (let value of [portalField(list.metadata ?? {}, 'view'), portalField(list.metadata ?? {}, 'views')]) {
+    if (typeof value === 'string') {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        value = value
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+    }
+    const values = value?.Views ?? value?.views ?? value;
+    for (const view of Array.isArray(values) ? values : values ? [values] : []) {
+      const id = typeof view === 'object' ? (view.ViewId ?? view.viewId ?? view.id ?? view.value) : view;
+      if (id) viewIds.push(String(id));
+    }
+  }
+  return {
+    viewIds: [...new Set(viewIds)],
+    actions: actions.map((action) => ({
+      name: action.Type.replace('CrmEntityFormView-', ''),
+      formId:
+        action.EntityFormId &&
+        (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0)
+          ? norm(action.EntityFormId)
+          : null,
+      targetType: action.TargetType ?? null,
+      conditional: Boolean(action.FilterCriteria),
+      evidence: 'exported-action',
+    })),
+  };
 }
 const indexedMarkupHints = (body, source, index) => {
   const entry = index.hintsBySource.get(markupKey(source));
@@ -1357,28 +1423,7 @@ export async function enrichInspection(
         component.customization = { name: 'List custom JavaScript', sourceFile: component.sourceFile };
       component.sourceFile = definition.metadata?._file ?? component.sourceFile;
       component.fieldPath = null;
-      const viewIds = [];
-      for (let value of [
-        portalField(definition.metadata ?? {}, 'view'),
-        portalField(definition.metadata ?? {}, 'views'),
-      ]) {
-        if (typeof value === 'string') {
-          try {
-            value = JSON.parse(value);
-          } catch {
-            value = value
-              .split(',')
-              .map((item) => item.trim())
-              .filter(Boolean);
-          }
-        }
-        const values = value?.Views ?? value?.views ?? value;
-        for (const view of Array.isArray(values) ? values : values ? [values] : []) {
-          const id = typeof view === 'object' ? (view.ViewId ?? view.viewId ?? view.id ?? view.value) : view;
-          if (id) viewIds.push(String(id));
-        }
-      }
-      component.viewIds = [...new Set(viewIds)];
+      Object.assign(component, listInspectionBindings(definition));
       for (const viewId of component.viewIds) {
         const view = metadata.views?.find(
           (row) => norm(row.id) === norm(viewId) && (!component.entity || row.entity === component.entity),

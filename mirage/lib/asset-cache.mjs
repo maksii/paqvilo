@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { inflateSync } from 'node:zlib';
@@ -72,7 +73,7 @@ function safeOrigin(origin) {
 }
 export const isResourceManagerPath = (value) =>
   /^\/_portal\/[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}\/Resources\/ResourceManager$/i.test(value);
-const isPcfWebResourcePath = (value) =>
+export const isPcfWebResourcePath = (value) =>
   /^\/_pcfwebresource\/[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(value);
 export const isAspNetResourcePath = (value) => {
   try {
@@ -137,6 +138,31 @@ const failurePath = (value) =>
   typeof value === 'string' && value.startsWith('/') && !value.startsWith('//') && !value.includes('@')
     ? value.split('?')[0].slice(0, 300)
     : '<invalid asset path>';
+// PAC preserves attachment bytes. Some exported stylesheets use a UTF-16 BOM,
+// which browsers decode correctly but a UTF-8-only reading would garble.
+export const cssText = (bytes) => {
+  const encoding =
+    bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le' : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8';
+  return new TextDecoder(encoding).decode(bytes);
+};
+// A stylesheet starts with a rule, an at-rule or a comment. Control characters
+// mark binary bytes; a leading markup tag, statement, call or assignment marks a
+// document or script served under a stylesheet content type.
+// This is a leading-token check, not a CSS parser.
+const cssLeading =
+  /^(?:<[!?a-z/]|\/\/|\/(?!\*)|[("'`!;~+=]|(?:var|let|const|function|class|import|export|return|if|for|while|switch|try|throw|new|typeof|void|async|await|this|window|document|self|globalThis)(?![-\w])|[\w$]+(?:\.[\w$]+)*\s*(?:\(|=(?!=)))/i;
+function plausibleStylesheet(bytes) {
+  const text = cssText(bytes);
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    if (code <= 0x08 || (code >= 0x0e && code <= 0x1f)) return false;
+  }
+  const start = text
+    .slice(0, 4096)
+    .replace(/^\uFEFF/, '')
+    .replace(/^(?:\s+|\/\*[\s\S]*?\*\/|<!--|-->)*/, '');
+  return !cssLeading.test(start);
+}
 function verifyAsset(bytes, type, extension, { observedEmpty = false } = {}) {
   const contentType = mediaType(type);
   if (!types[extension]?.includes(contentType))
@@ -151,6 +177,8 @@ function verifyAsset(bytes, type, extension, { observedEmpty = false } = {}) {
   if (!bytes.length && !observedEmpty) throw fail('Empty assets cannot be captured.', 502, 'ASSET_EMPTY');
   if (bytes.length > 20 * 1024 * 1024)
     throw fail('Static asset exceeds the 20 MiB cache limit.', 413, 'ASSET_TOO_LARGE');
+  if (contentType === 'text/css' && !plausibleStylesheet(bytes))
+    throw fail('The stylesheet response body is not CSS and was not cached.', 502, 'ASSET_CONTENT_TYPE');
   if (
     ['.js', '.mjs', '.css', '.json', '.map', '.pcf'].includes(extension) &&
     /(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|__requestverificationtoken|authorization)["']?\s*[:=]\s*["'](?:Bearer\s+)?[^"'\s]{12,}["']/i.test(
@@ -401,10 +429,91 @@ export class AssetCache {
   }
   async save() {
     const temporary = path.join(this.directory, `${randomUUID()}.tmp`);
-    await fs.writeFile(temporary, JSON.stringify(this.manifest(), null, 2) + '\n');
-    await fs.rename(temporary, path.join(this.directory, 'manifest.json'));
+    try {
+      await fs.writeFile(temporary, JSON.stringify(this.manifest(), null, 2) + '\n');
+      await fs.rename(temporary, path.join(this.directory, 'manifest.json'));
+    } finally {
+      await fs.rm(temporary, { force: true });
+    }
   }
-  async capture(paths, bridge, { observedAspNetScripts } = {}) {
+  /** Stage a complete capture before publishing its manifest and optional state.
+   * Immutable blobs are copied by digest; readers keep the previous manifest
+   * until publication succeeds. Failed captures never replace active bytes. */
+  async transaction(fn, { accept = () => true, publish } = {}) {
+    if (this.staging) {
+      const result = await fn(this);
+      if (accept(result)) await publish?.(result);
+      return result;
+    }
+    const run = this.queue.then(async () => {
+      const directory = path.join(this.directory, 'staging-' + randomUUID());
+      if (path.dirname(directory) !== this.directory) throw fail('Invalid cache staging directory.');
+      await fs.mkdir(directory);
+      const staged = Object.create(this);
+      Object.assign(staged, {
+        directory,
+        entries: structuredClone(this.entries),
+        queue: Promise.resolve(),
+        staging: true,
+        save: async () => {},
+      });
+      const readThrough = Object.create(staged);
+      readThrough.directory = this.directory;
+      staged.get = async (...args) =>
+        (await AssetCache.prototype.get.call(staged, ...args)) ?? AssetCache.prototype.get.call(readThrough, ...args);
+      const manifest = path.join(this.directory, 'manifest.json');
+      let previous;
+      let published = false;
+      const copied = [];
+      try {
+        try {
+          previous = await fs.readFile(manifest);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+        const result = await fn(staged);
+        if (!accept(result)) return result;
+        for (const file of await fs.readdir(directory)) {
+          if (!/^[\da-f]{64}\.bin$/.test(file)) throw fail('Unexpected staged asset file.');
+          try {
+            await fs.copyFile(path.join(directory, file), path.join(this.directory, file), constants.COPYFILE_EXCL);
+            copied.push(file);
+          } catch (error) {
+            if (error.code !== 'EEXIST') throw error;
+          }
+        }
+        const publication = Object.create(staged);
+        publication.directory = this.directory;
+        await this.save.call(publication);
+        published = true;
+        await publish?.(result);
+        this.entries = staged.entries;
+        return result;
+      } catch (error) {
+        if (published) {
+          try {
+            if (previous === undefined) await fs.rm(manifest, { force: true });
+            else {
+              const rollback = path.join(this.directory, randomUUID() + '.tmp');
+              await fs.writeFile(rollback, previous);
+              await fs.rename(rollback, manifest);
+            }
+          } catch (rollback) {
+            throw new AggregateError([error, rollback], 'Asset publication and rollback failed.', { cause: rollback });
+          }
+        }
+        const retained = new Set(Object.values(this.entries).map((entry) => entry.sha256 + '.bin'));
+        for (const file of copied)
+          if (!retained.has(file)) await fs.rm(path.join(this.directory, file), { force: true });
+        throw error;
+      } finally {
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    });
+    this.queue = run.catch(() => {});
+    return run;
+  }
+  async capture(paths, bridge, { observedAspNetScripts, expectedContentType } = {}) {
     if (!Array.isArray(paths) || !paths.length || paths.length > 100)
       throw fail('Provide between 1 and 100 static asset paths.');
     const origin = safeOrigin(bridge?.origin);
@@ -476,6 +585,8 @@ export class AssetCache {
               requested.extension,
               { observedEmpty },
             );
+            if (expectedContentType && contentType !== expectedContentType)
+              throw fail('Static asset response does not match its observed resource role.', 400, 'ASSET_CONTENT_TYPE');
           } catch (error) {
             Object.assign(error, {
               originStatus: response.status,

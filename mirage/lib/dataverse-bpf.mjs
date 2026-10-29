@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 // Business process flows (workflow category 4) in the Dataverse API: an inventory of the definitions and the creation of instance rows.
 //
 // A flow's definition is a workflow row of category 4, primaryentity = the table it runs on. Its instance table is named by the
@@ -223,7 +224,7 @@ export async function createInstance(api, workflowid, targetId) {
           },
           { authorized: true },
         );
-        return structuredClone(row);
+        return cloneStateData(row);
       },
       { nested: true },
     ),

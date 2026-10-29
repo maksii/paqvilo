@@ -1,4 +1,6 @@
 import { liveDataverseSettings } from './live-dataverse-settings.mjs';
+import { createRecordCapabilitiesSummary } from './record-capabilities-summary.mjs';
+import { statusResponseChunks } from './status-response.mjs';
 // Solution-only composition. Power Pages imports, contact sessions and live bridges are absent.
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -18,10 +20,10 @@ import { solutionWatchFilter } from './solution-roots.mjs';
 import { dataverseSettings, dataverseStatus } from './dataverse-settings.mjs';
 import { createModelDrivenRecordService, createModelDrivenWebApi } from './dataverse-model-driven.mjs';
 import { createStaffSessions, createStaffSessionHandler } from './staff-session.mjs';
-import { createModelDrivenData } from './model-driven/data.mjs';
+import { createModelDrivenData, storeCatalogue } from './model-driven/data.mjs';
 import { createModelDrivenHandler, routes as MODEL_DRIVEN_ROUTES } from './model-driven/http.mjs';
 import { offlineSessionState } from './model-driven/offline.mjs';
-import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './model-driven/catalogue.mjs';
+import { canvasAppNames, solutionApps } from './model-driven/catalogue.mjs';
 import { createSolutionMetadataOverlay } from './dataverse-solution-metadata.mjs';
 import { createSourceSolutionComponentStorage } from './dataverse-source-components.mjs';
 import { applySolutionData } from './solution-data.mjs';
@@ -181,6 +183,7 @@ export async function createStandaloneRuntime(options = {}) {
   // Host clock/ids/scheduler (runtime-clock.mjs) drive the store, the organization and its backend; defaults are wall time.
   const clock = typeof options.clock === 'function' ? { now: options.clock } : (options.clock ?? undefined);
   const store = new DataStore({
+    unpublished: true,
     file: stateFile,
     state: options.initial
       ? {
@@ -270,7 +273,7 @@ export async function createStandaloneRuntime(options = {}) {
     stateFile,
     simulation,
     sources: {
-      readMetadata: (fn) => overlay.withReadEpoch(fn),
+      readMetadata: (fn, options) => overlay.withReadEpoch(fn, options),
       plugins: () => sources.metadata.plugins,
       workflows: () => sources.workflows,
       layers: () => sources.solutionData.layers,
@@ -342,17 +345,11 @@ export async function createStandaloneRuntime(options = {}) {
     connectionReferences: profile?.connectionReferences ?? [],
     presetLibrary: boot.presetLibrary,
   });
-  const recordCapabilities = () =>
-    Object.fromEntries(
-      Object.keys(store.state.mappings).map((name) => [
-        name,
-        store.storageAdapter?.recordCapabilities(name) ?? { create: true, update: true, delete: true },
-      ]),
-    );
-  const status = () => ({
+  const recordCapabilities = createRecordCapabilitiesSummary(store);
+  const status = ({ reuseCapabilities = false } = {}) => ({
     csrf,
     runtime,
-    ...organizationHost.capabilityStatus(),
+    ...organizationHost.capabilityStatus({ reuse: reuseCapabilities }),
     links: links(),
     simulation: policy(),
     sourceDir: null,
@@ -362,7 +359,7 @@ export async function createStandaloneRuntime(options = {}) {
     services: organizationHost.providers.serviceFixtures?.describe() ?? [],
     startupPreset,
     bootstrap: { timings: { ...bootstrapTimings } },
-    recordCapabilities: recordCapabilities(),
+    recordCapabilities: recordCapabilities({ reuse: reuseCapabilities }),
     stateFile: simulation?.level === 'dry-run' ? null : (stateFile ?? null),
     revision: store.revision,
     mode: 'local',
@@ -446,6 +443,7 @@ export async function createStandaloneRuntime(options = {}) {
     ['/model-driven/offline', () => ({ items: offlineSessions() })],
   ];
   let offlineSessions = () => [];
+  let model;
   const HOST_API_ROUTES = HOST_API.map(([prefix]) => prefix);
   const close = () =>
     (closing ??= (async () => {
@@ -467,8 +465,10 @@ export async function createStandaloneRuntime(options = {}) {
       await Promise.allSettled([...requests]);
       await cleanup(() => mutation);
       await cleanup(() => sourceComponents?.close());
+      await cleanup(() => model?.close());
       // One close order (organization-host.mjs): backend, organization, API, managed identity.
       await cleanup(() => organizationHost.close());
+      await cleanup(() => store.closeRecordStorage());
       server?.closeAllConnections();
       await stopped;
       if (errors.length) throw new AggregateError(errors, 'Standalone runtime cleanup failed.');
@@ -487,11 +487,19 @@ export async function createStandaloneRuntime(options = {}) {
     startupPhase('state-composition');
     profile = await loadProfile();
     await organizationHost.loadCanvas();
-    await store.replaceState(applySolutionData(store.state, sources.solutionData, solutionDataOptions(sources)), {
-      returnSnapshot: false,
-      cloneInput: false,
-      skipSaveIfUnchanged: true,
-    });
+    await store.initialize(() =>
+      store.replaceState(
+        applySolutionData(store.state, sources.solutionData, {
+          ...solutionDataOptions(sources),
+          owned: store.isInitializing(),
+        }),
+        {
+          returnSnapshot: false,
+          cloneInput: false,
+          skipSaveIfUnchanged: true,
+        },
+      ),
+    );
     bootstrapTimings.stateCompositionMs = Math.round(performance.now() - stageAt);
     stageAt = performance.now();
     startupPhase('preset');
@@ -500,6 +508,7 @@ export async function createStandaloneRuntime(options = {}) {
     stageAt = performance.now();
     startupPhase('organization');
     organization = await organizationHost.createOrganization({
+      initializing: true,
       settings: liveSettings,
       change,
       schema: () => sources.schema,
@@ -513,7 +522,7 @@ export async function createStandaloneRuntime(options = {}) {
       entityId: (logical, state) =>
         state.mappings[logical] ? uuidV5(organization.organizationId, `entity:${logical}`) : null,
     });
-    await store.transact(() => {
+    await store.initialize(() => {
       sourceComponents.materialize();
     });
     backend = await organizationHost.createBackend();
@@ -522,45 +531,20 @@ export async function createStandaloneRuntime(options = {}) {
       port: () => server?.address()?.port ?? port,
     });
     const sessionHandler = createStaffSessionHandler({ sessions, csrf: () => csrf, json, readBody });
-    let catalogueCache;
-    const catalogue = () => {
-      const current = metadata();
-      if (catalogueCache?.metadata !== current || catalogueCache?.revision !== store.revision)
-        catalogueCache = {
-          metadata: current,
-          revision: store.revision,
-          value: appCatalogue({
-            metadata: current,
-            mappings: store.state.mappings,
-            providers: [],
-            defaultApp: runtime.defaultApp,
-            settings: store.state.settings,
-            clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven),
-            canvasApps: canvasAppNames(organizationHost),
-          }),
-        };
-      return catalogueCache.value;
-    };
-    catalogue.async = async ({ cancelled } = {}) => {
-      const current = metadata(),
-        revision = store.revision;
-      if (catalogueCache?.metadata !== current || catalogueCache?.revision !== revision) {
-        const value = await appCatalogueAsync(
-          {
-            metadata: current,
-            mappings: store.state.mappings,
-            providers: [],
-            defaultApp: runtime.defaultApp,
-            settings: store.state.settings,
-            clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven),
-            canvasApps: canvasAppNames(organizationHost),
-          },
-          { cancelled },
-        );
-        catalogueCache = { metadata: current, revision, value };
-      }
-      return catalogueCache.value;
-    };
+    const catalogue = storeCatalogue({
+      store,
+      metadata,
+      options: (current) => ({
+        lazy: true,
+        metadata: current,
+        mappings: store.state.mappings,
+        providers: [],
+        defaultApp: runtime.defaultApp,
+        settings: store.state.settings,
+        clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven),
+        canvasApps: canvasAppNames(organizationHost),
+      }),
+    });
     // Validate an explicitly selected app before opening any listener.
     if (caps.modelDriven && runtime.defaultApp) catalogue();
     const recordService = createModelDrivenRecordService({ organization, origin: () => localOrigin });
@@ -622,7 +606,9 @@ export async function createStandaloneRuntime(options = {}) {
       csrf: () => csrf,
       diagnostic,
     });
-    const model = createModelDrivenHandler({
+    model = createModelDrivenHandler({
+      streamMetadata: true,
+      workerMetadata: true,
       sourceMaps: options.sourceMaps ?? true,
       diagnostic,
       catalogue,
@@ -666,7 +652,8 @@ export async function createStandaloneRuntime(options = {}) {
       jsonObjectBody: readBody,
       change,
       csrf: () => csrf,
-      status,
+      status: () => status({ reuseCapabilities: true }),
+      statusChunks: (value) => statusResponseChunks(value, recordCapabilities),
       state: exposed,
       configuration: config,
       simulation: policy,
@@ -880,6 +867,7 @@ export async function createStandaloneRuntime(options = {}) {
       task.finally(() => requests.delete(task)).catch(() => {});
     });
     storageAdapter?.activate(store.state);
+    store.completeInitialization();
     startupPhase('listener');
     await new Promise((resolve, reject) => {
       server.once('error', reject);

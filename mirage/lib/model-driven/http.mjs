@@ -4,6 +4,8 @@ import { createOfflineSessions } from './offline.mjs';
 import { encodeModelDrivenProvenance } from './provenance-transport.mjs';
 import { withFileSourceMap, identityMapUrl, hasSourceMap, fileSourceMapEstimate } from '../../../lense/source-map.mjs';
 import { metadataResponseChunks } from './metadata-response.mjs';
+import { metadataWorkerResponseChunks, createMetadataWorkers, indexFields } from './metadata-worker-response.mjs';
+import { acceptsGzip } from '../http-content-encoding.mjs';
 
 const assets = {
   'app.mjs': 'text/javascript; charset=utf-8',
@@ -25,14 +27,42 @@ const assets = {
   'controls.css': 'text/css; charset=utf-8',
 };
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
-const metadataOnly = async (catalogue, data, actor, res, { index = false, entity } = {}) => {
-  const tables = {};
+const cancelled = () => fail('Catalogue request was cancelled.', 499);
+// Under the host's read: the principal's rights for every requested table. Rights
+// are small; table bodies are compiled and encoded after the read is released.
+const tableRights = async (catalogue, data, actor, res, { index, entity, compact }) => {
+  const rights = new Map();
+  if (!data.capabilities) return rights;
   let yieldedAt = performance.now();
-  for (const [name, { rows: _rows, ...table }] of Object.entries(catalogue.tables)) {
-    if (entity && name !== entity) continue;
-    if (res.destroyed) throw fail('Catalogue request was cancelled.', 499);
+  for (const name of entity ? [entity] : Object.keys(catalogue.tables)) {
+    if (res.destroyed) throw cancelled();
+    const fields = index
+      ? {}
+      : !entity && catalogue.tableIndex
+        ? indexFields(catalogue, name)
+        : catalogue.tables[name].fields;
+    rights.set(name, data.capabilities(name, actor, undefined, fields, compact ? { compact } : undefined));
+    if (performance.now() - yieldedAt >= 8) {
+      await setImmediate();
+      yieldedAt = performance.now();
+    }
+  }
+  return rights;
+};
+// The 0.9.8 root: every catalogue key in its own order, `tables` in place.
+const rootOf = (catalogue, tables, wire) => {
+  const root = { ...catalogue, tables: undefined };
+  const value = wire ? encodeModelDrivenProvenance(root) : root;
+  value.tables = tables;
+  return value;
+};
+const metadataOnly = (catalogue, rights, res, { index = false, entity, wire = false, lazy = false }) => {
+  const tables = {};
+  const project = (name) => {
+    if (res.destroyed) throw cancelled();
+    const { rows: _rows, ...table } = (index ? catalogue.tableIndex?.[name] : undefined) ?? catalogue.tables[name];
     const { entity: logical, label, singular, idColumn, nameColumn, entitySet, kind, source, projected } = table;
-    tables[name] = {
+    const result = {
       ...(index
         ? {
             entity: logical,
@@ -47,16 +77,15 @@ const metadataOnly = async (catalogue, data, actor, res, { index = false, entity
             metadata: 'lazy',
           }
         : table),
-      capabilities: data.capabilities?.(name, actor, undefined, index ? {} : table.fields),
+      capabilities: rights.get(name),
     };
-    // Keep the serialized read epoch across yields: writes cannot change the
-    // principal or field security halfway through the resulting catalogue.
-    if (performance.now() - yieldedAt >= 8) {
-      await setImmediate();
-      yieldedAt = performance.now();
-    }
+    return wire ? encodeModelDrivenProvenance(result) : result;
+  };
+  for (const name of entity ? [entity] : Object.keys(catalogue.tables)) {
+    if (!index && !entity && lazy) Object.defineProperty(tables, name, { enumerable: true, get: () => project(name) });
+    else tables[name] = project(name);
   }
-  return { ...catalogue, tables };
+  return rootOf(catalogue, tables, false);
 };
 
 // Admin-adjacent route, listed in status `adminAdjacentRoutes` on both hosts (status `routes` holds /_sim/api prefixes only): any Web API request as the selected staff user, or as the
@@ -81,6 +110,10 @@ export function createModelDrivenHandler({
   sourceMapLimits = {},
   webApi = null,
   offlineState = null,
+  // Hosts whose JSON writer consumes chunks can compile/project one table at a
+  // time. Custom complete-value writers retain cooperative eager preparation.
+  streamMetadata = false,
+  workerMetadata = false,
 }) {
   const mapLimits = { assetBytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 };
   for (const [key, value] of Object.entries(sourceMapLimits)) {
@@ -88,6 +121,16 @@ export function createModelDrivenHandler({
       throw new Error(`Invalid model-driven debugger map limit ${key}.`);
     mapLimits[key] = value;
   }
+  const workers = workerMetadata ? createMetadataWorkers() : null;
+  workers?.events.on('exit', ({ code, reason, error }) => {
+    if (error)
+      diagnostic({
+        code: 'MODEL_METADATA_COMPILER_EXIT',
+        reason,
+        exitCode: code,
+        message: `The metadata compiler thread stopped: ${error.message}`,
+      });
+  });
   let debugAssets = new WeakMap(),
     debugCatalogue;
   let remainingMapBytes = mapLimits.totalBytes;
@@ -326,18 +369,45 @@ export function createModelDrivenHandler({
         const tableMetadata = /^metadata\/([a-z][\w]*)$/i.exec(api[1] ?? '');
         if (!api[1] || api[1] === 'index' || tableMetadata) {
           if (method !== 'GET') throw fail('Catalogue requires GET.', 405);
-          const result = await read(async () => {
+          const entity = tableMetadata?.[1],
+            index = api[1] === 'index',
+            wire = req.headers['x-mirage-provenance-format'] === '1';
+          // The read covers the catalogue snapshot and the principal's rights only.
+          // Compilation, encoding and transfer run after it: a slow or stalled reader
+          // never holds portal pages, Web API calls, grids or writes behind it. A host
+          // catalogue compiles its bodies from inputs it owns (storeCatalogue), so a
+          // later write never changes a response already admitted.
+          const { source, rights, worker } = await read(async () => {
             const source = await (catalogue.async?.({ cancelled: () => res.destroyed }) ?? catalogue());
-            const entity = tableMetadata?.[1];
             if (entity && !Object.hasOwn(source.tables, entity)) throw fail('Table metadata not found.', 404);
-            const result = await metadataOnly(source, data, actor, res, { index: api[1] === 'index', entity });
-            return entity ? result.tables[entity] : result;
+            const worker = Boolean(
+              workers && streamMetadata && !api[1] && source.tableInput && Object.keys(source.tables).length >= 128,
+            );
+            const rights = await tableRights(source, data, actor, res, { index, entity, compact: worker });
+            return { source, rights, worker };
           });
-          if (!res.destroyed) {
-            const payload =
-              req.headers['x-mirage-provenance-format'] === '1' ? encodeModelDrivenProvenance(result) : result;
-            await json(res, 200, payload, {}, { chunks: metadataResponseChunks(payload) });
+          if (res.destroyed) return true;
+          if (worker) {
+            const gzip = acceptsGzip(req);
+            const root = rootOf(source, source.tables, wire);
+            await json(
+              res,
+              200,
+              root,
+              { vary: 'Accept-Encoding', ...(gzip ? { 'content-encoding': 'gzip' } : {}) },
+              {
+                chunks: metadataWorkerResponseChunks(source, root, (name) => rights.get(name), res, {
+                  wire,
+                  gzip,
+                  workers,
+                }),
+              },
+            );
+            return true;
           }
+          const result = metadataOnly(source, rights, res, { index, entity, wire, lazy: streamMetadata });
+          const payload = entity ? result.tables[entity] : wire ? rootOf(source, result.tables, true) : result;
+          await json(res, 200, payload, {}, { chunks: metadataResponseChunks(payload) });
           return true;
         }
         const route = /^tables\/([a-z][\w]*)(?:\/([^/]+))?$/i.exec(api[1]);
@@ -377,6 +447,10 @@ export function createModelDrivenHandler({
       }
       return true;
     },
-    { offlineSessions: () => offline.list() },
+    {
+      offlineSessions: () => offline.list(),
+      // Stops the warm metadata compiler thread, if any.
+      close: () => workers?.close(),
+    },
   );
 }

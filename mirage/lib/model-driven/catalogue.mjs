@@ -1,3 +1,4 @@
+import { copyPlainGraph, plainDataObject } from '../state-clone.mjs';
 import { compileForm, parseRibbonCommands, dashboardPage, customPageResolution } from './solution.mjs';
 import { powerPagesProvider } from './providers.mjs';
 import { controlDescriptor } from './control-descriptors.mjs';
@@ -150,6 +151,27 @@ export function solutionApps(scan, { lcid = 1033, projectRoot = null } = {}) {
   }));
 }
 
+// Parsed commands per ribbon document object, reused while its XML and the language stay the same.
+const ribbonCache = new WeakMap();
+const ribbonCommands = (document, lcid) => {
+  const cached = ribbonCache.get(document);
+  if (cached?.xml === document.xml && cached.lcid === lcid) return cached.commands;
+  const commands = parseRibbonCommands(document.xml, { lcid });
+  ribbonCache.set(document, { xml: document.xml, lcid, commands });
+  return commands;
+};
+// Items grouped by their entity once, in source order: a per-table filter over every form and view is O(tables × items).
+const byEntity = (items) => {
+  const grouped = new Map();
+  for (const item of items ?? []) {
+    const list = grouped.get(item.entity);
+    if (list) list.push(item);
+    else grouped.set(item.entity, [item]);
+  }
+  return grouped;
+};
+const NONE = Object.freeze([]);
+
 /** Stable JSON contract consumed by the shell. */
 function* catalogueSteps({
   portal,
@@ -160,10 +182,12 @@ function* catalogueSteps({
   clientExtensions,
   settings = {},
   canvasApps = null,
+  lazy = false,
+  rootProvenance = true,
 } = {}) {
   const provenanceIndex = createModelDrivenMetadataIndex(
     {
-      metadata,
+      metadata: lazy ? { ...metadata, entities: {}, forms: [], views: [] } : metadata,
       apps: metadata.modelDrivenApps ?? [],
       pcf: clientExtensions?.pcf,
       resources: clientExtensions?.resources,
@@ -172,14 +196,18 @@ function* catalogueSteps({
     },
     { sourceRevision: 'render' },
   );
+  const formsOf = byEntity(metadata.forms),
+    viewsOf = byEntity(metadata.views),
+    ribbonsOf = byEntity(metadata.modelDrivenRibbonDocuments),
+    actionsOf = byEntity(metadata.modelDrivenAppActions);
   const tables = Object.assign(
     {},
-    ...providers.filter(Boolean).map((provider) => structuredClone(provider.tables ?? {})),
+    ...providers.filter(Boolean).map((provider) => copyPlainGraph(provider.tables ?? {})),
   );
   for (const [entity, mapping] of Object.entries(mappings)) {
     if (tables[entity]) continue;
     const exported = metadata.entities?.[entity];
-    const fields = { ...mapping.fields, ...mapping.fieldMetadata };
+    const fields = plainDataObject(mapping.fields, mapping.fieldMetadata);
     for (const name of Object.keys(mapping.fieldMetadata ?? {}))
       if (mapping.fields?.[name] && typeof mapping.fields[name] === 'object')
         fields[name] = { ...mapping.fieldMetadata[name], ...mapping.fields[name] };
@@ -189,7 +217,7 @@ function* catalogueSteps({
       singular: exported?.label ?? friendly(entity),
       idColumn: mapping.idColumn ?? `${entity}id`,
       nameColumn: mapping.nameColumn ?? exported?.primaryNameAttribute ?? mapping.idColumn ?? `${entity}id`,
-      fields: { ...fields, ...exported?.fields },
+      fields: plainDataObject(fields, exported?.fields),
       source: exported ? 'solution' : 'local-mapping',
       projected: false,
     };
@@ -201,22 +229,24 @@ function* catalogueSteps({
     if (exported?.grid) table.grid = structuredClone(exported.grid);
     const mapping = mappings[table.entity];
     if (mapping?.entitySet) table.entitySet = mapping.entitySet;
-    if (mapping?.relationships) table.relationships = structuredClone(mapping.relationships);
-    table.fields = Object.fromEntries(
-      Object.entries(table.fields).map(([name, field]) => [
-        name,
-        typeof field === 'object' && field
-          ? { name, label: friendly(name), ...field }
-          : { name, label: friendly(name), dataverseType: field },
-      ]),
-    );
-    for (const field of Object.values(table.fields)) {
-      field.control = controlDescriptor(field);
-      field.type = field.control.type;
-      const mask = String(field.columnMetadata?.displayMask ?? '').trim();
-      if (field.columnMetadata?.isLogical === true || mask)
-        field.validForGrid =
-          field.columnMetadata?.isLogical !== true && /(?:^|\|)\s*ValidForGrid\s*(?:\||$)/i.test(mask);
+    if (mapping?.relationships && !lazy) table.relationships = copyPlainGraph(mapping.relationships);
+    if (!lazy) {
+      table.fields = Object.fromEntries(
+        Object.entries(table.fields).map(([name, field]) => [
+          name,
+          typeof field === 'object' && field
+            ? { name, label: friendly(name), ...field }
+            : { name, label: friendly(name), dataverseType: field },
+        ]),
+      );
+      for (const field of Object.values(table.fields)) {
+        field.control = controlDescriptor(field);
+        field.type = field.control.type;
+        const mask = String(field.columnMetadata?.displayMask ?? '').trim();
+        if (field.columnMetadata?.isLogical === true || mask)
+          field.validForGrid =
+            field.columnMetadata?.isLogical !== true && /(?:^|\|)\s*ValidForGrid\s*(?:\||$)/i.test(mask);
+      }
     }
     table.fields[table.idColumn] ??= {
       name: table.idColumn,
@@ -227,20 +257,19 @@ function* catalogueSteps({
       validForUpdate: false,
     };
     table.fields[table.nameColumn] ??= { name: table.nameColumn, label: 'Name', type: 'text' };
-    const forms = (metadata.forms ?? []).filter(
+    const forms = (lazy ? NONE : (formsOf.get(table.entity) ?? NONE)).filter(
       (form) =>
-        form.entity === table.entity &&
         form.active !== false &&
         (form.systemFormType === undefined || form.systemFormType === 2) &&
         (!form.formType || form.formType === 'main'),
     );
     table.forms = forms.map((form) => compileForm(form, table.fields, metadata.lcid)).filter(Boolean);
-    table.commands = (metadata.modelDrivenRibbonDocuments ?? [])
-      .filter((document) => document.entity === table.entity)
-      .flatMap((document) => parseRibbonCommands(document.xml, { lcid: metadata.lcid }));
-    table.commands.push(...(metadata.modelDrivenAppActions ?? []).filter((command) => command.entity === table.entity));
+    table.commands = (ribbonsOf.get(table.entity) ?? NONE).flatMap((document) =>
+      ribbonCommands(document, metadata.lcid),
+    );
+    table.commands.push(...(actionsOf.get(table.entity) ?? NONE));
     table.commands = [...new Map(table.commands.map((command) => [command.id, command])).values()];
-    if (!table.forms.length)
+    if (!table.forms.length && !lazy)
       table.forms = [
         {
           id: 'generated',
@@ -263,8 +292,9 @@ function* catalogueSteps({
           ],
         },
       ];
-    table.views = (metadata.views ?? [])
-      .filter((view) => view.entity === table.entity && view.queryType === 0)
+    const views = viewsOf.get(table.entity) ?? NONE;
+    table.views = views
+      .filter((view) => view.queryType === 0)
       .map((view) => ({
         id: view.id,
         name: view.name,
@@ -273,8 +303,8 @@ function* catalogueSteps({
         fetchXml: view.fetchXml,
         source: 'solution',
       }));
-    table.lookupViews = (metadata.views ?? [])
-      .filter((view) => view.entity === table.entity && view.queryType === 64)
+    table.lookupViews = views
+      .filter((view) => view.queryType === 64)
       .map((view) => ({
         id: view.id,
         name: view.name,
@@ -305,12 +335,14 @@ function* catalogueSteps({
           .filter((name) => ![table.nameColumn, table.idColumn].includes(name))
           .slice(0, 5),
       ].map((name) => ({ name, width: 180 }));
-    const sourceKeys = [
-      modelDrivenKey('table', table.entity),
-      ...Object.keys(table.fields).map((name) => modelDrivenKey('column', `${table.entity}:${name}`)),
-      ...[...table.views, ...table.lookupViews].map((view) => modelDrivenKey('view', view.id)),
-      ...table.commands.map((command) => modelDrivenKey('command', `${table.entity}:${command.id}`)),
-    ];
+    const sourceKeys = lazy
+      ? []
+      : [
+          modelDrivenKey('table', table.entity),
+          ...Object.keys(table.fields).map((name) => modelDrivenKey('column', `${table.entity}:${name}`)),
+          ...[...table.views, ...table.lookupViews].map((view) => modelDrivenKey('view', view.id)),
+          ...table.commands.map((command) => modelDrivenKey('command', `${table.entity}:${command.id}`)),
+        ];
     for (const form of table.forms) {
       sourceKeys.push(modelDrivenKey('form', form.id));
       for (const tab of form.tabs ?? []) {
@@ -329,7 +361,7 @@ function* catalogueSteps({
       for (const control of form.regionControls ?? [])
         sourceKeys.push(modelDrivenControlKey(form.id, control.sourceControl ?? control.id, control.region));
     }
-    table.provenanceRefs = provenanceIndex.sourceRefsFor(sourceKeys);
+    table.provenanceRefs = lazy ? [] : provenanceIndex.sourceRefsFor(sourceKeys);
     yield;
   }
   const imported = structuredClone(metadata.modelDrivenApps ?? []);
@@ -473,30 +505,33 @@ function* catalogueSteps({
           item.title ??= destination?.label ?? item.entity ?? item.id;
         }
   }
-  return {
+  const result = {
     version: 1,
     defaultApp: defaultApp?.id ?? null,
     apps,
     tables,
-    provenanceRefs: provenanceIndex.sourceRefsFor([
-      ...(clientExtensions?.resources ?? []).map((resource) => modelDrivenKey('resource', resource.name)),
-      ...apps.flatMap((app) =>
-        (app.dashboards ?? []).flatMap((dashboard) => [
-          modelDrivenKey('dashboard', dashboard.id),
-          ...(dashboard.components ?? []).map(
-            (component) => `dashboard-${modelDrivenControlKey(dashboard.id, component.sourceControl ?? component.id)}`,
+    provenanceRefs: rootProvenance
+      ? provenanceIndex.sourceRefsFor([
+          ...(clientExtensions?.resources ?? []).map((resource) => modelDrivenKey('resource', resource.name)),
+          ...apps.flatMap((app) =>
+            (app.dashboards ?? []).flatMap((dashboard) => [
+              modelDrivenKey('dashboard', dashboard.id),
+              ...(dashboard.components ?? []).map(
+                (component) =>
+                  `dashboard-${modelDrivenControlKey(dashboard.id, component.sourceControl ?? component.id)}`,
+              ),
+            ]),
           ),
-        ]),
-      ),
-      ...apps.flatMap((app) => [
-        modelDrivenKey('app', app.id),
-        ...(app.navigation ?? []).flatMap((area) =>
-          area.groups.flatMap((group) =>
-            group.items.map((item) => modelDrivenKey('navigation', `${app.id ?? app.uniqueName}:${item.id}`)),
-          ),
-        ),
-      ]),
-    ]),
+          ...apps.flatMap((app) => [
+            modelDrivenKey('app', app.id),
+            ...(app.navigation ?? []).flatMap((area) =>
+              area.groups.flatMap((group) =>
+                group.items.map((item) => modelDrivenKey('navigation', `${app.id ?? app.uniqueName}:${item.id}`)),
+              ),
+            ),
+          ]),
+        ])
+      : [],
     ...(clientExtensions ? { clientExtensions } : {}),
     capabilityRecords: MODEL_DRIVEN_CAPABILITY_RECORDS,
     ...(Number.isInteger(settings.timeZoneOffsetMinutes) &&
@@ -527,7 +562,79 @@ function* catalogueSteps({
       offline: true,
     },
   };
+  if (lazy) {
+    const index = tables,
+      bodies = {},
+      cached = new Map(),
+      recent = new Map();
+    const compilationContext = {
+      clientExtensions,
+      settings: {
+        timeZoneOffsetMinutes: settings.timeZoneOffsetMinutes,
+        formattedValueTimeZone: settings.formattedValueTimeZone,
+      },
+      canvasApps,
+      sourceRevisions: metadata.sourceRevisions,
+    };
+    const tableInput = (name) => ({
+      rootProvenance: false,
+      providers: providers.filter(Boolean).map((provider) => ({
+        id: provider.id,
+        apps: [],
+        tables: Object.hasOwn(provider.tables ?? {}, name) ? { [name]: provider.tables[name] } : {},
+      })),
+      mappings: Object.hasOwn(mappings, name) ? { [name]: mappings[name] } : {},
+      metadata: {
+        lcid: metadata.lcid,
+        entities: Object.hasOwn(metadata.entities ?? {}, name) ? { [name]: metadata.entities[name] } : {},
+        forms: formsOf.get(name) ?? [],
+        views: viewsOf.get(name) ?? [],
+        modelDrivenRibbonDocuments: ribbonsOf.get(name) ?? [],
+        modelDrivenAppActions: actionsOf.get(name) ?? [],
+        modelDrivenApps: [],
+      },
+    });
+    // The lightweight index retains every table and navigation item. A table
+    // body is compiled on first access, including data/lookup access; a complete
+    // API response still enumerates and compiles every body cooperatively.
+    for (const name of Object.keys(index))
+      Object.defineProperty(bodies, name, {
+        enumerable: true,
+        configurable: true,
+        get() {
+          // Retain identity while a caller holds the body, without retaining all
+          // compiled forms after a complete streamed catalogue has passed. The
+          // few most recent bodies stay strongly held across garbage collection.
+          let value = recent.get(name) ?? cached.get(name)?.deref();
+          if (!value) {
+            value = compileTable(tableInput(name), compilationContext, name);
+            cached.set(name, new WeakRef(value));
+          }
+          recent.delete(name);
+          recent.set(name, value);
+          if (recent.size > RECENT_BODIES) recent.delete(recent.keys().next().value);
+          return value;
+        },
+      });
+    Object.defineProperty(result, 'tableIndex', { value: index });
+    Object.defineProperty(result, 'tableInput', { value: tableInput });
+    Object.defineProperty(result, 'compilationContext', { value: compilationContext });
+    result.tables = bodies;
+  }
+  return result;
 }
+
+// Strongly held compiled bodies per catalogue: grids, records and lookups reopen the same few tables.
+const RECENT_BODIES = 16;
+
+/** One table body of a lazy catalogue from its tableInput and compilationContext. This nested
+ * call does not reopen root resources or apps: that would make a complete response O(tables × resources). */
+export const compileTable = (input, context, name) =>
+  appCatalogue({
+    ...input,
+    ...context,
+    metadata: { ...input.metadata, sourceRevisions: context.sourceRevisions },
+  }).tables[name];
 
 /** The catalogue's `canvasApps` option from an organization host: the canvas host's app names, or null when it is disabled. */
 export const canvasAppNames = (host) => (host?.canvas?.enabled ? host.canvasApps().map((app) => app.uniqueName) : null);

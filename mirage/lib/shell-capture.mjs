@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { validateLivePath } from './live.mjs';
-import { isResourceManagerPath, isAspNetResourcePath } from './asset-cache.mjs';
+import { cssText, isResourceManagerPath, isAspNetResourcePath, isPcfWebResourcePath } from './asset-cache.mjs';
 import { parse } from 'parse5';
 import { footerLogoClasses } from './extensions.mjs';
 import { observedFooterLogos, observedFooterLayout } from './footer-capture.mjs';
@@ -168,18 +168,14 @@ const runtimeScript = (path) => {
     /(?:^|\/)(?:jquery(?:[-.]|$)|bootstrap(?:[-.]|$))/i.test(pathname)
   );
 };
+// An @import (a string or url()) names a stylesheet; other url() values name fonts and images.
 const cssDependencies = (css) => [
-  ...[...css.matchAll(/url\(\s*(?:(["'])(.*?)\1|([^)]*))\s*\)/gi)].map((m) => (m[2] ?? m[3]).trim()),
-  ...[...css.matchAll(/@import\s+(["'])(.*?)\1/gi)].map((m) => m[2]),
+  ...[...css.matchAll(/(@import\s+)?url\(\s*(?:(["'])(.*?)\2|([^)]*))\s*\)/gi)].map((m) => ({
+    value: (m[3] ?? m[4]).trim(),
+    style: Boolean(m[1]),
+  })),
+  ...[...css.matchAll(/@import\s+(["'])(.*?)\1/gi)].map((m) => ({ value: m[2], style: true })),
 ];
-
-// PAC preserves attachment bytes. Some exported stylesheets use a UTF-16 BOM,
-// which browsers decode correctly but a UTF-8-only dependency scan would miss.
-const cssText = (bytes) => {
-  const encoding =
-    bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le' : bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8';
-  return new TextDecoder(encoding).decode(bytes);
-};
 
 /** Capture only opaque script resources declared by one read-only native HTML response. */
 export async function capturePortalAspNetResources(cache, live, { path } = {}) {
@@ -239,7 +235,14 @@ export async function capturePortalAspNetResources(cache, live, { path } = {}) {
  * Read one observed live page (by default the site home page, "/") and persist only static shell
  * resources, never HTML or inline code.
  */
-export async function capturePortalShell(cache, live, { path = '/', portal, onObservedHtml } = {}) {
+export async function capturePortalShell(cache, live, options = {}) {
+  if (cache?.transaction)
+    return cache.transaction((staged) => capturePortalShellImpl(staged, live, options), {
+      accept: (report) => report.ready,
+    });
+  return capturePortalShellImpl(cache, live, options);
+}
+async function capturePortalShellImpl(cache, live, { path = '/', portal, onObservedHtml } = {}) {
   validateLivePath(path);
   if (!cache || !live?.origin || !live.context)
     throw fail('Shell capture requires a persisted cache and connected live portal browser.', 409);
@@ -288,6 +291,7 @@ export async function capturePortalShell(cache, live, { path = '/', portal, onOb
   const owned = new Map((portal?.webFiles ?? []).map((f) => [f.url.split('?')[0], f])),
     embedded = new Set([...embeddedReferences(portal, path, origin)].map((p) => p.split('?')[0])),
     seen = new Set(),
+    originsByPath = new Map(),
     pending = [],
     required = new Set();
   for (const record of portal?.records ?? [])
@@ -497,7 +501,9 @@ export async function capturePortalShell(cache, live, { path = '/', portal, onOb
         !isResourceManagerPath(new URL(resource.url).pathname) &&
         !isAspNetResourcePath(resource.path) &&
         !/\.m?js$/i.test(new URL(resource.url).pathname)) ||
-      (ref.kind === 'style' && !/\.css$/i.test(new URL(resource.url).pathname))
+      (ref.kind === 'style' &&
+        !/\.css$/i.test(new URL(resource.url).pathname) &&
+        !(resource.sourceOrigin === origin && isPcfWebResourcePath(new URL(resource.url).pathname)))
     ) {
       issue(
         resource.path,
@@ -506,8 +512,10 @@ export async function capturePortalShell(cache, live, { path = '/', portal, onOb
       continue;
     }
     if (ref.kind === 'style') hasStyles = true;
-    if (seen.has(resource.path)) continue;
-    seen.add(resource.path);
+    // Stylesheet occurrence and media are part of cascade semantics. Fetches
+    // are deduplicated below, but A/B/A must retain its final A occurrence.
+    if (ref.kind !== 'style' && seen.has(resource.sourceOrigin + resource.path)) continue;
+    seen.add(resource.sourceOrigin + resource.path);
     if (!embedded.has(resource.path.split('?')[0])) {
       // Native Power Pages emits these managed body dependencies at the content
       // boundaries. Keep their phase instead of moving every body script ahead
@@ -537,7 +545,8 @@ export async function capturePortalShell(cache, live, { path = '/', portal, onOb
                 ...(ref.type ? { type: ref.type } : {}),
               }
             : resource.path;
-      shellProfile[key].push(attributes);
+      if (ref.kind !== 'style' || JSON.stringify(shellProfile[key].at(-1)) !== JSON.stringify(attributes))
+        shellProfile[key].push(attributes);
     } else
       diagnostics.push({
         code: 'SHELL_LOCAL_SOURCE_REFERENCE',
@@ -556,13 +565,26 @@ export async function capturePortalShell(cache, live, { path = '/', portal, onOb
         message: 'The local exported asset supplies these bytes.',
       });
     required.add(resource.sourceOrigin + resource.path);
-    pending.push(resource);
+    pending.push({ ...resource, kind: ref.kind });
   }
   if (!hasStyles) issue(path, fail('No shell stylesheet references were observed.', 422, 'SHELL_STYLES_MISSING'));
   const dependencySeen = new Set();
   while (pending.length) {
     const resource = pending.shift();
     const identity = resource.sourceOrigin + resource.path;
+    const previousOrigin = originsByPath.get(resource.path);
+    if (previousOrigin && previousOrigin !== resource.sourceOrigin) {
+      issue(
+        resource.path,
+        fail(
+          'Distinct asset origins share a local resource path; the previous shell is retained.',
+          409,
+          'SHELL_RESOURCE_COLLISION',
+        ),
+      );
+      continue;
+    }
+    originsByPath.set(resource.path, resource.sourceOrigin);
     if (dependencySeen.has(identity)) continue;
     dependencySeen.add(identity);
     if (dependencySeen.size > 200) {
@@ -573,6 +595,7 @@ export async function capturePortalShell(cache, live, { path = '/', portal, onOb
     let script = null;
     let scriptSha256 = null;
     let local = resource.sourceOrigin === origin ? owned.get(resource.path.split('?')[0]) : null;
+    if (resource.kind === 'style' && isPcfWebResourcePath(new URL(resource.url).pathname)) local = null;
     // PAC may export a web-file record without its attachment. Metadata alone
     // cannot supply bytes; capture the observed static URL in that case.
     if (local) {
@@ -608,6 +631,7 @@ export async function capturePortalShell(cache, live, { path = '/', portal, onOb
             })
           : await cache.capture([resource.path], live, {
               observedAspNetScripts,
+              ...(resource.kind === 'style' ? { expectedContentType: 'text/css' } : {}),
             });
       captured.push(...result.captured);
       failures.push(
@@ -653,7 +677,7 @@ export async function capturePortalShell(cache, live, { path = '/', portal, onOb
       };
     }
     if (css != null)
-      for (const value of cssDependencies(css)) {
+      for (const { value, style } of cssDependencies(css)) {
         if (!value || value.startsWith('data:') || value.startsWith('#')) continue;
         try {
           const target = new URL(value, resource.url);
@@ -674,7 +698,7 @@ export async function capturePortalShell(cache, live, { path = '/', portal, onOb
             continue;
           }
           const dependency = resolveResource(target.href, resource.url, origin);
-          pending.push(dependency);
+          pending.push(style ? { ...dependency, kind: 'style' } : dependency);
         } catch (error) {
           issue(resource.path, error);
         }

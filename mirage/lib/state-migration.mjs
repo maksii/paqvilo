@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { isDeepStrictEqual } from 'node:util';
 import { createHash } from 'node:crypto';
 import { compactBuiltinPresets } from './data.mjs';
@@ -11,7 +12,7 @@ export function mergeAssetManifests(current, baseline) {
     for (const entry of manifest.assets) {
       if (typeof entry.origin !== 'string' || typeof entry.path !== 'string')
         throw Error('Migration asset entry requires origin and path.');
-      entries.set(entry.origin + '\0' + entry.path, structuredClone(entry));
+      entries.set(entry.origin + '\0' + entry.path, cloneStateData(entry));
     }
   }
   return { version: 1, assets: [...entries.values()] };
@@ -29,7 +30,7 @@ export function migrateScenarioState(
     presetLibrary,
   } = {},
 ) {
-  const result = structuredClone({
+  const result = cloneStateData({
       ...current,
       presets: compactBuiltinPresets(current.presets ?? {}, presetLibrary),
     }),
@@ -63,7 +64,7 @@ export function migrateScenarioState(
           preservedDeletions++;
           continue;
         }
-        currentRows.push(structuredClone(fresh));
+        currentRows.push(cloneStateData(fresh));
         rows.set(id, currentRows.at(-1));
         inserted++;
         continue;
@@ -75,7 +76,7 @@ export function migrateScenarioState(
           (prior && isDeepStrictEqual(row[field], prior[field])) ||
           (!Object.hasOwn(row, field) && !Object.hasOwn(prior ?? {}, field))
         ) {
-          row[field] = structuredClone(value);
+          row[field] = cloneStateData(value);
           changed = true;
         } else {
           preservedEdits++;
@@ -97,7 +98,7 @@ export function migrateScenarioState(
     });
   }
   for (const [entity, mapping] of Object.entries(latest.mappings ?? {})) {
-    result.mappings[entity] ??= structuredClone(mapping);
+    result.mappings[entity] ??= cloneStateData(mapping);
     // An edited mapping may retain its original inference provenance.
     if (
       result.mappings[entity].inferred === true &&
@@ -112,14 +113,14 @@ export function migrateScenarioState(
     if (mapping.relationships) {
       result.mappings[entity].relationships ??= {};
       for (const [name, relationship] of Object.entries(mapping.relationships))
-        result.mappings[entity].relationships[name] ??= structuredClone(relationship);
+        result.mappings[entity].relationships[name] ??= cloneStateData(relationship);
     }
   }
   const oldPlugins = new Map((legacy?.plugins ?? []).map((plugin) => [plugin.id, plugin])),
     plugins = new Map((result.plugins ?? []).map((plugin) => [plugin.id, plugin]));
   for (const fresh of latest.plugins ?? []) {
     const saved = plugins.get(fresh.id);
-    if (!saved || isDeepStrictEqual(saved, oldPlugins.get(fresh.id))) plugins.set(fresh.id, structuredClone(fresh));
+    if (!saved || isDeepStrictEqual(saved, oldPlugins.get(fresh.id))) plugins.set(fresh.id, cloneStateData(fresh));
     else report.preservedCustomPlugins.push(fresh.id);
   }
   result.plugins = [...plugins.values()];
@@ -139,7 +140,7 @@ export function migrateScenarioState(
     const rules = new Map((result.permissions ?? []).map((rule) => [rule.id, rule]));
     for (const fresh of latest.permissions ?? []) {
       const saved = rules.get(fresh.id);
-      if (!saved || isDeepStrictEqual(saved, previousRules.get(fresh.id))) rules.set(fresh.id, structuredClone(fresh));
+      if (!saved || isDeepStrictEqual(saved, previousRules.get(fresh.id))) rules.set(fresh.id, cloneStateData(fresh));
       else report.preservedCustomPermissions.push(fresh.id);
     }
     result.permissions = [...rules.values()];
@@ -149,7 +150,7 @@ export function migrateScenarioState(
     const configuredControls = result.simulator.shellProfile?.managedControls;
     result.simulator.shellProfile = {
       ...result.simulator.shellProfile,
-      ...structuredClone(shellProfile),
+      ...cloneStateData(shellProfile),
     };
     if (configuredControls != null) result.simulator.shellProfile.managedControls = configuredControls;
   }
@@ -171,7 +172,7 @@ export function migrateScenarioState(
       throw Error('Invalid managed control migration baseline.');
     result.simulator ??= {};
     if (result.simulator.managedControls == null && result.simulator.shellProfile?.managedControls == null)
-      result.simulator.managedControls = structuredClone(managedControls);
+      result.simulator.managedControls = cloneStateData(managedControls);
   }
   return { state: result, report };
 }

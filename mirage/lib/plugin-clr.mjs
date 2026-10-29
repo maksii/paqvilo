@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import fs from 'node:fs/promises';
 import syncFs from 'node:fs';
 import path from 'node:path';
@@ -499,7 +500,7 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
       };
     } else if (['datetime', 'date'].includes(type)) attributes[key] = typed('DateTime', value);
     else if (type === 'uniqueidentifier' || key === mapping.idColumn) attributes[key] = typed('Guid', value);
-    else attributes[key] = structuredClone(value);
+    else attributes[key] = cloneStateData(value);
     if (attributes[key]?.$type === 'EntityReference' && typeof attributes[key].name === 'string')
       formattedValues[key] = attributes[key].name;
   }
@@ -602,7 +603,7 @@ export function dispatchSdkCall(args) {
       Buffer.byteLength(JSON.stringify(message.parentContext)) > 4 * 1024 * 1024
     )
       fail('SDK ParentContext is invalid or excessive.', 'LocalPluginInputLimit', 413);
-    store.pluginParentContext = structuredClone(message.parentContext);
+    store.pluginParentContext = cloneStateData(message.parentContext);
   }
   try {
     return dispatchSdkCallCore(args);
@@ -790,7 +791,7 @@ function invokeSdkMethod({ store, service, message }, namedResponse) {
               : {};
   const results = captured.results ?? defaults;
   if (namedResponse) {
-    const mapped = structuredClone(results),
+    const mapped = cloneStateData(results),
       aliases =
         method === 'Retrieve'
           ? [['BusinessEntity', 'Entity']]

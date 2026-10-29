@@ -14,6 +14,7 @@ import { createOrganizationRuntime } from './dataverse-organization.mjs';
 import { createModelDrivenRecordService } from './dataverse-model-driven.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { gzipSync } from 'node:zlib';
+import { acceptsGzip } from './http-content-encoding.mjs';
 import { DataError } from './data-error.mjs';
 import { createAuthority, verifySecret } from './dataverse-auth.mjs';
 import { executeBatch, parseBatch } from './dataverse-batch.mjs';
@@ -211,7 +212,6 @@ const wantsCors = (req, origin) =>
   req.headers.origin !== undefined &&
   (String(req.headers.origin).toLowerCase() !== origin.toLowerCase() ||
     (req.method === 'OPTIONS' && req.headers['access-control-request-method'] !== undefined));
-const acceptsGzip = (req) => /gzip/i.test(String(req.headers['accept-encoding'] ?? ''));
 
 // Every write to res happens here; a throw (for example ERR_INVALID_CHAR from a header value) is the caller's to answer.
 // The fallback answer passes no options: no CORS and no gzip.
@@ -1320,6 +1320,16 @@ async function route(d, c) {
   return dataApi(d, c, parsed);
 }
 
+// One solution metadata epoch per request (api.readMetadata forwards these options to the overlay's withReadEpoch):
+// per-column field security and record checks resolve the overlay once. A resolution is reused only outside store
+// transactions or inside an unmodified read, and expires at every commit.
+const requestMetadata = (d, fn) =>
+  d.api?.readMetadata && d.store
+    ? d.api.readMetadata(fn, {
+        valid: () => !d.store.inTransaction() || d.store.isUnmodifiedRead(),
+        revision: () => d.store.revision,
+      })
+    : fn();
 const DATA_PLANE = /^\/api\/data\/v\d+(?:\.\d+)*(?:\/|$)/i;
 export function createDataverseHandler(deps) {
   const limits =
@@ -1402,7 +1412,7 @@ export function createDataverseHandler(deps) {
             correlationId: req.headers['x-ms-correlation-request-id'] ?? requestId,
             requestId,
           });
-          result = await runWithRequest(context, () => route(d, c));
+          result = await runWithRequest(context, () => requestMetadata(d, () => route(d, c)));
         }
       }
     } catch (error) {

@@ -2,6 +2,33 @@
 
 ## 0.9.8
 
+- Load model-driven apps with only the navigation index and the selected table's metadata. Forms, views and fields
+  of other tables arrive when a lookup or subgrid needs them. The complete catalogue at `/_apps/api` still returns
+  every table, form, view and field, and a large catalogue is gzip-compressed when the client accepts gzip. See [startup and responsiveness](../mirage/docs/runtime-performance.md#model-driven-catalogue).
+- Derive column metadata once per request for wide records and FetchXML pages instead of once per row and column.
+  Edited labels and field security appear on the next request.
+- Add `createOwned()` preset factories, which hand a freshly generated dataset to the runtime without a retained
+  copy. Inside a factory, `records.table()` streams rows into checksummed paged record storage beside the state
+  file, with bounded read caches and a primary-key index. Snapshots, exports and record results remain ordinary
+  data, and existing `load()` presets keep their memoized, detached copies. See [data packs](../mirage/docs/data-packs.md)
+  and [generated record storage](../mirage/docs/record-storage.md).
+- Reduce memory and copying on large datasets during startup, journal replay, checkpoint restore and status polling.
+  Unchanged restarts journal only changed sections and tables, and still detect edits made between restarts. A
+  failed startup initialization is discarded instead of persisted.
+- Show a count above the native 5,000-record limit as `5000+` in model-driven grids and subgrids. Next-page
+  navigation continues past the limit, and smaller filtered results keep their exact count.
+- Keep scripts and PCF controls in very large Solution trees: source discovery and client-asset discovery have
+  separate budgets. Source edits to column labels or security, component presence and same-name solution assets
+  reach the served metadata even when no record changed.
+- Capture observed same-origin `/_pcfwebresource/<guid>` stylesheets, which have no file extension, after verifying
+  that the response is CSS; origin, credential, path and size checks still apply. Duplicate observations fetch once
+  and keep their media and cascade order. Two origins that would share one local path fail explicitly. A failed
+  capture or refresh keeps the previous shell, including its valid stylesheets.
+- Sanitize the local rich-text compatibility editor's content with DOMPurify: scripts, event handlers, `javascript:`
+  URLs, frames, objects and SVG/MathML markup are removed. A captured native CKEditor keeps its own filtering. See
+  [public API](public-api.md). Both editors keep paragraphs, tables and preformatted blocks across save and reopen,
+  store native-style JSON hidden values, skip writes and change events for unchanged content (so authored mutation
+  observers cannot loop) and report ready only after the editor's own document loads. Read-only fields stay read-only.
 - Admit each shared model-driven source file once per synchronous metadata projection, retaining fresh filesystem
   validation for subsequent queries and source-opening actions. Keep the source-byte cache bounded.
 - Use native Windows path resolution during source-index construction, preserving root confinement, file identity,
@@ -14,7 +41,11 @@
   beyond the bounded page scan, and keep those tables admitted when the sources reload, so Open source still finds
   them after an edit. Unbound columns retain candidates; API requests and cell values supply no ownership.
 - Accept a verified native basic-form wrapper when its optional layout reports an all-zero form ID. Explicit
-  unknown form declarations and generic wrappers remain unresolved.
+  unknown form declarations remain unresolved. A generic native modal can join its same-origin `data-page`
+  placement, rendered list/subgrid, exported action type/form and layout table when the join is unique and consistent.
+  Definition URL hints can reject conflicts; unresolved joins retain table and declared-form context without field ownership.
+- Reject modal list/view contradictions and retain subgrid ownership when the grid is its own subgrid wrapper.
+  Join rendered advanced-form layouts only to matching configured steps, including subsequent step replacements.
 - Join native quick-view iframe declarations to a verified parent form and exported QuickForms target. Check
   the current document path and conflicting navigation hints; retain unknown or conflicting boundaries.
 - Read only approved form/table query hints for definition context, leaving row and unrelated query values unread.
@@ -31,8 +62,10 @@
 - Remove verification's temporary copy asynchronously, so queued Windows directory-handle releases can finish, and retry
   a profile file the exited browser still holds with a linear backoff of up to 11 s.
 - Extend regressions for crowded cards, frame shortcuts, dynamic modal/quick-view identities, nested editors and
-  owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy,
-  covering tab/popup deadlines, cancellation, retry, watcher/agent continuity and shared transport loss.
+  owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy:
+  a tab or popup whose interception setup fails or is cancelled closes alone, healthy tabs keep their drafts, watchers
+  and agent endpoints continue, a retried tab applies current sources, and losing the shared browser connection ends
+  the session. See [Lense](lense.md).
 
 Synthetic and native qualification are distinct. Loopback passes establish the exercised contracts; they do not
 establish native control coverage, a deployed source revision or production readiness.

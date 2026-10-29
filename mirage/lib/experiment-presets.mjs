@@ -2,6 +2,7 @@ import { DataError } from './data-error.mjs';
 import { createHash } from 'node:crypto';
 import { validatePlatformOverrides } from './platform-settings.mjs';
 import { validatePortalOverrides } from './portal-overrides.mjs';
+import { cloneStateData } from './state-clone.mjs';
 const fail = (message) => {
   throw new DataError(message, 400, 'InvalidExperimentPreset');
 };
@@ -93,7 +94,7 @@ export function experimentPresets(state, portal, packPresets = []) {
   ];
 }
 export function applyExperiment(state, p) {
-  const next = structuredClone(state);
+  const next = cloneStateData(state);
   next.simulator ??= {};
   next.simulator.platformOverrides = structuredClone(p.platformOverrides ?? {});
   next.simulator.portalOverrides = {

@@ -1051,12 +1051,44 @@ export function createMetadataService({
     return managedMembers(shaped, ['AttributeMetadata', `${stem}AttributeMetadata`]);
   }
 
+  // Lookup companion inference needs presence of two target names, not the
+  // bodies of every column on every target. Retain source/standard/custom
+  // precedence from source(), without normalizing unrelated target columns.
+  function targetHasPhonetic(name) {
+    const logical = String(name ?? '').toLowerCase();
+    const phonetic = ['yominame', 'yomifullname'];
+    const standard = standardFields(logical);
+    if (phonetic.some((column) => Object.hasOwn(standard, column))) return true;
+    const s = own(schemaRoot()?.tables, logical);
+    const m = mappingOf(logical) ?? own(virtualRoot().tables, logical)?.mapping;
+    if (s && Object.values(s.attributes ?? {}).some((attribute) => phonetic.includes(attribute.name))) return true;
+    const declaresColumns = s?.schemaComplete || s?.completeFile || Object.keys(s?.attributes ?? {}).length > 0;
+    return phonetic.some((column) => {
+      const fields = m?.fields ?? {},
+        metadata = m?.fieldMetadata ?? {};
+      const fieldPresent = Object.prototype.propertyIsEnumerable.call(fields, column);
+      const metadataPresent = Object.prototype.propertyIsEnumerable.call(metadata, column);
+      if (!fieldPresent && !metadataPresent) return false;
+      if (!s || !declaresColumns) return true;
+      let field = metadataPresent ? metadata[column] : fields[column];
+      if (metadataPresent && fields[column] && typeof fields[column] === 'object')
+        field = { ...metadata[column], ...fields[column] };
+      return field?.columnMetadata?.isManaged === false && field?.columnMetadata?.isCustomizable === true;
+    });
+  }
+
   function recordFieldsOf(src) {
     const defaults = src.isVirtual ? {} : { ...SYSTEM_COLUMNS, ...(src.ownership === 'user' ? OWNER_COLUMNS : {}) };
+    const targets = new Map();
     return implicitAttributes(
       src,
       { [src.idColumn]: { dataverseType: 'primarykey' }, ...defaults, ...src.fields },
-      { targetFields: (logical) => source(logical)?.fields ?? standardFields(logical) },
+      {
+        targetHasPhonetic: (logical) => {
+          if (!targets.has(logical)) targets.set(logical, targetHasPhonetic(logical));
+          return targets.get(logical);
+        },
+      },
     );
   }
 

@@ -575,7 +575,13 @@ function xrayBrowserImpl(data) {
     ];
     const pageLists = (report?.components ?? []).filter((item) => item.kind === 'list'),
       allLists = [
-        ...pageLists,
+        ...pageLists.map((list) => ({
+          ...(report?.componentIndex?.lists ?? []).find(
+            (item) => norm(item.id ?? item.recordId) === norm(list.id ?? list.recordId),
+          ),
+          ...list,
+          pageReferenced: true,
+        })),
         ...(report?.componentIndex?.lists ?? []).filter(
           (list) => !pageLists.some((known) => norm(known.id ?? known.recordId) === norm(list.id ?? list.recordId)),
         ),
@@ -1347,6 +1353,8 @@ function xrayBrowserImpl(data) {
               views: report?.views ?? [],
               columns: report?.columns ?? b.fields,
               quickForms: (report?.nativeComponents ?? []).filter((component) => component.kind === 'quickform'),
+              subgrids: (report?.nativeComponents ?? []).filter((component) => component.kind === 'subgrid'),
+              pageListId: report?.page?.listId,
             },
             sourceRefs: index.rows,
             sourceRefsByComponent: index.byComponent,
@@ -1862,14 +1870,20 @@ function xrayBrowserImpl(data) {
                 (item.evidence === 'observed-api-request' ? 'Observed request' : 'Literal source reference') +
                 '</p></div>' +
                 sourceRows([item, ...(item.sources ?? [])], 'Web API reference') +
-                sourceRows(
-                  (report?.permissionRules ?? [])
-                    .filter((rule) => item.entity && norm(rule.entity) === norm(item.entity))
-                    .map((rule) => ({
-                      ...rule,
-                      kind: 'permission',
-                      evidenceLabel: rule.scope + ' · effective access ' + (rule.effective ?? 'unknown'),
-                    })),
+                // A table's permission rules page like other context, once per table.
+                pageRows(
+                  'api-permissions:' + norm(item.entity),
+                  (report?.permissionRules ?? []).filter(
+                    (rule) => item.entity && norm(rule.entity) === norm(item.entity),
+                  ),
+                  (rules) =>
+                    sourceRows(
+                      rules.map((rule) => ({
+                        ...rule,
+                        kind: 'permission',
+                        evidenceLabel: rule.scope + ' · effective access ' + (rule.effective ?? 'unknown'),
+                      })),
+                    ),
                 ),
             )
             .join(''),

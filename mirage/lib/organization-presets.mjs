@@ -1,4 +1,8 @@
+import { copyPlainGraph as copyPlain, cloneStateData } from './state-clone.mjs';
+import { pagedRecordsOf, rawRecordOf } from './record-tables.mjs';
 import { isOrganizationTable, uuidV5 } from './dataverse-security.mjs';
+const copyPlainGraph = (value) =>
+  pagedRecordsOf(value)?.fork() ?? (rawRecordOf(value) ? cloneStateData(value) : copyPlain(value));
 
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object ?? {}, key);
 const key = (value) =>
@@ -20,9 +24,9 @@ export function preserveOrganizationPresetSections(previous, preset, next) {
       mapping.modelDrivenSource === true;
     const ownsSchema =
       ownsRows || mapping.metadataSources?.length || mapping.dataverseMetadata?.createdByMetadataApi === true;
-    if (ownsSchema && !own(preset.mappings, name)) next.mappings[name] = structuredClone(mapping);
+    if (ownsSchema && !own(preset.mappings, name)) next.mappings[name] = copyPlainGraph(mapping);
     if (ownsRows && !own(preset.tables, name) && own(previous.tables, name))
-      next.tables[name] = structuredClone(previous.tables[name]);
+      next.tables[name] = copyPlainGraph(previous.tables[name]);
   }
   // Rows the Solution sources seeded (previous.dataverse.sourceSeeded) stay when a preset replaces their table, as the next
   // source refresh re-seeds them: the preset's rows win by id and keep their place; the Solution's other rows keep theirs.
@@ -42,7 +46,7 @@ export function preserveOrganizationPresetSections(previous, preset, next) {
         byId.delete(id);
         return [replaced];
       }
-      return seeded.has(id) ? [structuredClone(row)] : [];
+      return seeded.has(id) ? [copyPlainGraph(row)] : [];
     });
     next.tables[name] = [...merged, ...byId.values()];
   }
@@ -57,7 +61,7 @@ export function preserveOrganizationPresetSections(previous, preset, next) {
     if (!system) continue;
     const retain = (table, idColumn, row) => {
       const rows = (next.tables[table] ??= []);
-      if (!rows.some((existing) => key(existing[idColumn]) === key(row[idColumn]))) rows.push(structuredClone(row));
+      if (!rows.some((existing) => key(existing[idColumn]) === key(row[idColumn]))) rows.push(copyPlainGraph(row));
     };
     retain('systemuser', 'systemuserid', system);
     const adminRoleId = uuidV5(org, 'role:System Administrator');

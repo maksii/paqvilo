@@ -1,6 +1,7 @@
 import { DataError } from './data-error.mjs';
 import { foldText, fieldKind, parseDateValue, guidKey } from './dataverse-values.mjs';
 import { decimalParts } from './exact-numeric.mjs';
+import { readRecordValues } from './record-tables.mjs';
 
 const scalar = (value) => (value && typeof value === 'object' ? (value.id ?? value.value ?? value) : value);
 const field = (row, name) =>
@@ -81,7 +82,7 @@ export function assertDatasetAlternateKeys(mappings, tables, selected, collation
       const attributes = alternateKeyAttributes(key),
         keyOf = alternateKeyOf(attributes, collation, alternateKeyKinds(mapping, attributes)),
         seen = new Map();
-      for (const row of rows) {
+      for (const row of readRecordValues(rows)) {
         const tuple = keyOf(row);
         if (tuple === null) continue;
         const identity = alternateKeyScalar(row[mapping.idColumn ?? `${table}id`], 'CI_AS');

@@ -1,4 +1,12 @@
-import { isDeepStrictEqual } from 'node:util';
+import { cloneStateData } from './state-clone.mjs';
+import {
+  assignRecordValues,
+  materializeRecord,
+  pagedRecordsOf,
+  recordIdOf,
+  restoreRecordRow,
+} from './record-tables.mjs';
+import { privateRecordEqual, privateRecordEqualAsync } from './record-clone.mjs';
 
 export function validateRowIndex(rows, index, insertion = false) {
   if (
@@ -11,6 +19,7 @@ export function validateRowIndex(rows, index, insertion = false) {
     throw new RangeError('Row index must identify an own array element.');
 }
 export function assignRowValues(row, values) {
+  if (assignRecordValues(row, values)) return;
   for (const [key, value] of Object.entries(values))
     Object.defineProperty(row, key, { value, enumerable: true, configurable: true, writable: true });
 }
@@ -50,7 +59,7 @@ export class RowTransaction {
       if (hit && hit.value === value) reused[key] = hit.copy;
       else fresh[key] = value;
     }
-    const copies = structuredClone(fresh);
+    const copies = cloneStateData(fresh, { forkTables: true });
     // Keep the state's section order (rollback re-adds removed sections in this order).
     this.metadata = Object.fromEntries(
       Object.keys(store.state)
@@ -61,48 +70,74 @@ export class RowTransaction {
     this.compared = false;
     this.tables = new Set(Object.keys(store.state.tables));
     this.lengths = new Map(Object.entries(store.state.tables).map(([table, rows]) => [table, rows?.length]));
+    this.snapshots = new Map();
+    this.comparison = { visited: 0, pauses: 0 };
+  }
+  /** One private snapshot per paged table and transaction. Its single undo entry
+   * restores every later operation on that table; row facades restore separately. */
+  snapshot(table, rows) {
+    const paged = pagedRecordsOf(rows);
+    if (!paged) return false;
+    if (!this.snapshots.has(paged)) {
+      const snapshot = paged.fork();
+      this.snapshots.set(paged, snapshot);
+      this.undo.push((target) =>
+        pagedRecordsOf(target === this.state ? rows : tableRows(target, table)).restore(snapshot),
+      );
+    }
+    return true;
   }
   set(table, rows, index, row) {
     validateRowIndex(rows, index);
     const previous = rows.at(index);
-    this.undo.push((target) =>
-      replaceRow(
-        target === this.state ? rows : tableRows(target, table),
-        index,
-        target === this.state ? previous : structuredClone(previous),
-      ),
-    );
+    if (!this.snapshot(table, rows))
+      this.undo.push((target) =>
+        replaceRow(
+          target === this.state ? rows : tableRows(target, table),
+          index,
+          target === this.state ? previous : materializeRecord(previous),
+        ),
+      );
     replaceRow(rows, index, row);
     this.entries.push({ op: 'set', table, index, row });
   }
   mutate(table, rows, index, values) {
     validateRowIndex(rows, index);
     const row = rows.at(index),
-      previous = structuredClone(row);
-    this.undo.push((target) => {
-      const destination = target === this.state ? row : tableRows(target, table).at(index);
-      for (const key of Object.keys(destination)) delete destination[key];
-      assignRowValues(destination, target === this.state ? previous : structuredClone(previous));
-    });
+      previous = materializeRecord(row);
+    if (this.snapshot(table, rows)) {
+      // The facade keeps its identity: its value and record version return with the table.
+      const version = recordIdOf(row);
+      this.undo.push((target) => {
+        if (target === this.state) restoreRecordRow(rows, row, previous, version);
+      });
+    } else
+      this.undo.push((target) => {
+        const destination = target === this.state ? row : tableRows(target, table).at(index);
+        for (const key of Object.keys(destination)) delete destination[key];
+        assignRowValues(destination, target === this.state ? previous : materializeRecord(previous));
+      });
     assignRowValues(row, values);
     this.entries.push({ op: 'set', table, index, row });
   }
   insert(table, rows, index, row) {
     validateRowIndex(rows, index, true);
-    this.undo.push((target) => (target === this.state ? rows : tableRows(target, table)).splice(index, 1));
+    if (!this.snapshot(table, rows))
+      this.undo.push((target) => (target === this.state ? rows : tableRows(target, table)).splice(index, 1));
     rows.splice(index, 0, row);
     this.entries.push({ op: 'insert', table, index, row });
   }
   remove(table, rows, index) {
     validateRowIndex(rows, index);
     const previous = rows.at(index);
-    this.undo.push((target) =>
-      (target === this.state ? rows : tableRows(target, table)).splice(
-        index,
-        0,
-        target === this.state ? previous : structuredClone(previous),
-      ),
-    );
+    if (!this.snapshot(table, rows))
+      this.undo.push((target) =>
+        (target === this.state ? rows : tableRows(target, table)).splice(
+          index,
+          0,
+          target === this.state ? previous : materializeRecord(previous),
+        ),
+      );
     rows.splice(index, 1);
     this.entries.push({ op: 'delete', table, index });
   }
@@ -117,7 +152,10 @@ export class RowTransaction {
     for (const table of this.tables) if (!Object.hasOwn(this.state.tables, table)) tables.add(table);
     return tables;
   }
-  *changes() {
+  /** Journal entries, then changed sections. Section comparison yields to the
+   * event loop after each bounded quantum of visited objects (`comparison`
+   * accumulates that work); the journal consumes this as an async iterable. */
+  async *changes({ quantum } = {}) {
     // New tables may have been allocated before their first row operation.
     for (const table of Object.keys(this.state.tables)) if (!this.tables.has(table)) yield { op: 'table', table };
     for (const entry of this.entries) yield entry;
@@ -125,7 +163,13 @@ export class RowTransaction {
       if (!Object.hasOwn(this.state, key)) yield { op: 'remove-section', key };
     for (const [key, value] of Object.entries(this.state)) {
       if (key === 'tables') continue;
-      if (!isDeepStrictEqual(value, this.metadata[key])) yield { op: 'section', key, value };
+      // Section copies come from cloneStateData, which never defines symbol keys.
+      const equal = await privateRecordEqualAsync(value, this.metadata[key], {
+        quantum,
+        stats: this.comparison,
+        symbolFreeRight: true,
+      });
+      if (!equal) yield { op: 'section', key, value };
       else this.unchanged.add(key);
     }
     this.compared = true;
@@ -148,7 +192,8 @@ export class RowTransaction {
       if (key !== 'tables' && !Object.hasOwn(this.metadata, key)) delete target[key];
     for (const [key, value] of Object.entries(this.metadata)) {
       if (restoreSection && Object.hasOwn(target, key)) {
-        if (!isDeepStrictEqual(target[key], value)) target[key] = restoreSection(target[key], value);
+        if (!privateRecordEqual(target[key], value, { symbolFreeRight: true }))
+          target[key] = restoreSection(target[key], value);
         continue;
       }
       Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });

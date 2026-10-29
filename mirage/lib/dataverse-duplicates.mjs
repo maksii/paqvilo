@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse duplicate detection: duplicate rules (duplicaterule and duplicaterulecondition
 // tables), the create and update check gated by MSCRM.SuppressDuplicateDetection, and the
@@ -126,7 +127,7 @@ function formatRow(api, user, mapping, row) {
   const out = {};
   for (const [column, value] of Object.entries(visible)) {
     if (mapping.fields[column]?.dataverseType !== LOOKUP) {
-      out[column] = structuredClone(value);
+      out[column] = cloneStateData(value);
       continue;
     }
     const id = valueOf(value);

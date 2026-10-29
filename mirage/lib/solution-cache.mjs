@@ -1,12 +1,65 @@
+import { createJsonTextCoalescer } from './json-text.mjs';
 import { orderedMap } from '../../lense/async-map.mjs';
 import { directoryFiles } from '../../lense/directory-files.mjs';
 import { recordedStamp } from '../../lense/file-cache.mjs';
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { assertProjectOutput } from './project-output.mjs';
+import { types } from 'node:util';
 
-const FORMAT = 2;
+// One header line, then one line per entry: `[file, entry]` JSON, or `D<key>\t<json>` for one
+// part of a derived value (kept as text until it is read). Every line is parsed natively and
+// independently, so loading never builds the complete document in one string.
+const FORMAT = 3;
+const HEADER = JSON.stringify({ format: FORMAT });
+const DERIVED = 'D';
+
+/** The lines of a cache file; nothing when it does not start with this format's header. */
+async function* cacheLines(file) {
+  let rest = null;
+  for await (const chunk of createReadStream(file, { encoding: 'utf8', highWaterMark: 1024 * 1024 })) {
+    let start = 0,
+      end;
+    const text = rest === null ? chunk : rest + chunk;
+    if (rest === null) {
+      if (!text.startsWith(HEADER + '\n')) return;
+      start = HEADER.length + 1;
+    }
+    while ((end = text.indexOf('\n', start)) !== -1) {
+      if (end > start) yield text.slice(start, end);
+      start = end + 1;
+    }
+    rest = text.slice(start);
+  }
+  if (rest) yield rest;
+}
+
+// Different readers of one source file retain independent result objects, but
+// often contain identical form XML. Share only immutable string values within
+// that file; the pool itself dies immediately and never retains other sources.
+function coalesceSourceText(results) {
+  const strings = new Map(),
+    visited = new WeakSet(),
+    pending = [results];
+  while (pending.length) {
+    const item = pending.pop();
+    if (!item || typeof item !== 'object' || types.isProxy(item) || visited.has(item)) continue;
+    const prototype = Object.getPrototypeOf(item);
+    if (!Array.isArray(item) && prototype !== Object.prototype && prototype !== null) continue;
+    visited.add(item);
+    for (const key of Object.keys(item)) {
+      const descriptor = Object.getOwnPropertyDescriptor(item, key);
+      if (!descriptor || !Object.hasOwn(descriptor, 'value')) continue;
+      const value = descriptor.value;
+      if (typeof value === 'string' && value.length >= 256) {
+        if (!strings.has(value)) strings.set(value, value);
+        else if (descriptor.writable) Object.defineProperty(item, key, { ...descriptor, value: strings.get(value) });
+      } else if (value && typeof value === 'object') pending.push(value);
+    }
+  }
+}
 
 /** Run an async mapper with bounded concurrency while preserving input order. */
 export async function mapLimit(items, limit, mapper) {
@@ -117,6 +170,9 @@ export class SolutionFileCache {
     this.file = file ? path.resolve(file) : null;
     this.entries = new Map();
     this.used = new Set();
+    // Derived values (deriveValue): key -> JSON text parts.
+    this.derived = new Map();
+    this.usedDerived = new Set();
     this.dirty = false;
     this.stats = { hits: 0, misses: 0 };
     // Hits served from another cache of this process (shareSolutionParses).
@@ -126,12 +182,27 @@ export class SolutionFileCache {
     const cache = new SolutionFileCache(file);
     if (!cache.file) return cache;
     try {
-      const raw = JSON.parse(await fs.readFile(cache.file, 'utf8'));
-      if (raw?.format === FORMAT && raw.entries && typeof raw.entries === 'object')
-        for (const [name, entry] of Object.entries(raw.entries))
-          if (entry && typeof entry.stamp === 'string' && entry.results) cache.entries.set(name, entry);
+      const retainText = createJsonTextCoalescer();
+      for await (const line of cacheLines(cache.file)) {
+        if (line.startsWith(DERIVED)) {
+          const tab = line.indexOf('\t');
+          if (tab < 0) throw new SyntaxError('Invalid derived cache line');
+          const key = line.slice(DERIVED.length, tab);
+          if (!cache.derived.has(key)) cache.derived.set(key, []);
+          cache.derived.get(key).push(line.slice(tab + 1));
+          continue;
+        }
+        const [name, entry] = JSON.parse(line);
+        if (typeof name === 'string' && entry && typeof entry.stamp === 'string' && entry.results) {
+          retainText(entry);
+          coalesceSourceText(entry.results);
+          cache.entries.set(name, entry);
+        }
+      }
     } catch {
-      // A missing or unreadable cache is rebuilt from sources.
+      // A missing, unreadable or older-format cache is rebuilt from sources.
+      cache.entries.clear();
+      cache.derived.clear();
     }
     return cache;
   }
@@ -176,6 +247,7 @@ export class SolutionFileCache {
         ? { ...entry, results: { ...entry.results, [parserId]: value } }
         : { stamp, hash, results: { [parserId]: value } };
     this.entries.set(file, next);
+    coalesceSourceText(next.results);
     shareEntry(file, next, parserId);
     this.dirty = true;
     return { value, hash, cached: false };
@@ -218,25 +290,112 @@ export class SolutionFileCache {
     return value;
   }
   /**
+   * The SHA-256 of `file`'s bytes, reused while its `stamp` (fileStamp) is unchanged;
+   * otherwise `compute()` hashes the file. Synchronous, for synchronous fingerprints.
+   */
+  knownHash(file, stamp, compute) {
+    this.used.add(file);
+    const entry = this.entries.get(file);
+    if (entry?.stamp === stamp && typeof entry.hash === 'string') return entry.hash;
+    const hash = compute();
+    this.entries.set(file, entry?.hash === hash ? { ...entry, stamp } : { stamp, hash, results: {} });
+    this.dirty = true;
+    return hash;
+  }
+  /**
+   * A plain-JSON value derived from `file` (`resultId`), reused while its stamp is unchanged.
+   * Synchronous; other results of the same stamp are kept.
+   */
+  knownResult(file, stamp, resultId, compute) {
+    this.used.add(file);
+    const entry = this.entries.get(file);
+    if (entry?.stamp === stamp && Object.hasOwn(entry.results, resultId)) return entry.results[resultId];
+    const value = compute();
+    this.entries.set(
+      file,
+      entry?.stamp === stamp
+        ? { ...entry, results: { ...entry.results, [resultId]: value } }
+        : { stamp, hash: null, results: { [resultId]: value } },
+    );
+    this.dirty = true;
+    return value;
+  }
+  /**
+   * A plain-JSON value computed from inputs that `key` identifies completely (a content
+   * fingerprint). It is stored as the JSON text of `split(value)` parts and rebuilt by
+   * `join(parts)`, so no single string holds the whole value; every call returns its own value.
+   */
+  deriveValue(key, compute, { split = (value) => [value], join = ([value]) => value } = {}) {
+    if (/[\t\n]/.test(key)) throw new TypeError('A derived cache key is one line without tabs.');
+    this.usedDerived.add(key);
+    const parts = this.derived.get(key);
+    if (parts) return join(parts.map((part) => JSON.parse(part)));
+    const value = compute();
+    if (this.file) {
+      this.derived.set(
+        key,
+        split(value).map((part) => JSON.stringify(part)),
+      );
+      this.dirty = true;
+    }
+    return value;
+  }
+  /**
+   * Drop every parsed and derived result once a load has saved them. A scan keeps its cache for later reads, so an
+   * unreleased cache would hold every source file's parse for the life of the runtime. Later reads parse again, and a
+   * released cache is never saved, so it cannot overwrite the complete file with the few entries read afterwards.
+   */
+  release() {
+    this.released = true;
+    this.entries.clear();
+    this.used.clear();
+    this.derived.clear();
+    this.usedDerived.clear();
+  }
+  /**
    * Persist the cache; failures leave sources authoritative. With `prune` (default)
    * only entries used in this session are kept, so deleted files leave the cache;
    * partial readers (for example root discovery) keep the other entries.
    */
   async save({ prune = true } = {}) {
-    if (!this.file) return false;
-    const pruned = prune && [...this.entries.keys()].some((key) => !this.used.has(key));
+    if (!this.file || this.released) return false;
+    const pruned =
+      prune &&
+      ([...this.entries.keys()].some((key) => !this.used.has(key)) ||
+        [...this.derived.keys()].some((key) => !this.usedDerived.has(key)));
     if (!this.dirty && !pruned) return false;
-    const entries = {};
-    for (const key of [...(prune ? this.used : this.entries.keys())].sort())
-      if (this.entries.has(key)) entries[key] = this.entries.get(key);
+    const names = [...(prune ? this.used : this.entries.keys())].filter((key) => this.entries.has(key)).sort();
+    const derived = [...(prune ? this.usedDerived : this.derived.keys())].filter((key) => this.derived.has(key)).sort();
+    const temp = `${this.file}.${randomUUID()}.tmp`;
+    let handle;
     try {
       await fs.mkdir(path.dirname(this.file), { recursive: true });
-      const temp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
-      await fs.writeFile(temp, JSON.stringify({ format: FORMAT, entries }));
+      handle = await fs.open(temp, 'wx', 0o600);
+      let batch = HEADER + '\n';
+      const flush = async (limit) => {
+        if (batch.length < limit) return;
+        await handle.writeFile(batch);
+        batch = '';
+      };
+      for (const name of names) {
+        batch += JSON.stringify([name, this.entries.get(name)]) + '\n';
+        await flush(1024 * 1024);
+      }
+      for (const key of derived)
+        for (const part of this.derived.get(key)) {
+          batch += DERIVED + key + '\t' + part + '\n';
+          await flush(1024 * 1024);
+        }
+      await flush(0);
+      await handle.sync();
+      await handle.close();
+      handle = null;
       await fs.rename(temp, this.file);
       this.dirty = false;
       return true;
     } catch {
+      await handle?.close().catch(() => {});
+      await fs.rm(temp, { force: true }).catch(() => {});
       return false;
     }
   }

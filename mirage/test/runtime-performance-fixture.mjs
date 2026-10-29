@@ -2,7 +2,9 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-export const performanceId = (n) => `${n.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
+// Join produces the same GUID bytes without retaining a tree of concatenation
+// fragments for millions of generated identifiers.
+export const performanceId = (n) => [n.toString(16).padStart(8, '0'), '-1111-4111-8111-111111111111'].join('');
 export async function performanceFixture({
   tables = 16,
   columns = 24,
@@ -14,6 +16,7 @@ export async function performanceFixture({
     if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer`);
   if (!Number.isSafeInteger(records) || records < tables)
     throw new TypeError('records must be a safe integer with at least one record per table');
+  const countFor = (i) => Math.floor(records / tables) + (i < records % tables ? 1 : 0);
   const root = await fs.realpath(await fs.mkdtemp(path.join(temporaryRoot, 'paqvilo-performance-')));
   const solutionRoots = [path.join(root, 'solution')],
     sourceDir = path.join(root, 'portal');
@@ -47,8 +50,7 @@ export async function performanceFixture({
     '<ImportExportXml><SolutionManifest><UniqueName>InventedPerformance</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
   );
   const component = [],
-    mappings = {},
-    data = {};
+    mappings = {};
   for (let i = 0; i < tables; i++) {
     const entity = `x_scale${i}`,
       fields = Array.from({ length: columns }, (_, index) => `x_value${index}`);
@@ -67,13 +69,6 @@ export async function performanceFixture({
     }
     component.push(`<AppModuleComponent type="1" schemaName="${entity}"/>`);
     mappings[entity] = { idColumn: `${entity}id`, entitySet: `${entity}s`, nameColumn: 'x_value0' };
-    const tableRecords = Math.floor(records / tables) + (i < records % tables ? 1 : 0);
-    data[entity] = Array.from({ length: tableRecords }, (_, index) => ({
-      [`${entity}id`]: performanceId(10000 + i * 10000 + index),
-      x_value0: `Invented ${i}/${index}`,
-      x_value1: 'Secured invented value',
-      x_value2: 'payload'.repeat(24),
-    }));
   }
   await write(
     path.join(solutionRoots[0], 'AppModules/x_scale/AppModule.xml'),
@@ -90,7 +85,17 @@ export async function performanceFixture({
         name: 'Invented performance dataset',
         load: () => {
           generated++;
-          return { name: 'Invented performance dataset', mappings, tables: structuredClone(data) };
+          const data = {};
+          for (let i = 0; i < tables; i++) {
+            const entity = `x_scale${i}`;
+            data[entity] = Array.from({ length: countFor(i) }, (_, index) => ({
+              [`${entity}id`]: performanceId(10000 + i * Math.ceil(records / tables) + index),
+              x_value0: `Invented ${i}/${index}`,
+              x_value1: 'Secured invented value',
+              x_value2: 'payload'.repeat(24),
+            }));
+          }
+          return { name: 'Invented performance dataset', mappings, tables: data };
         },
       },
     }),

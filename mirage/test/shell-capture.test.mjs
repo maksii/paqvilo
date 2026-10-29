@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { registerShellConventions } from '../lib/extensions.mjs';
 // A neutral footer logo container class (packs declare their own).
 registerShellConventions('test', { footerLogoClass: 'site-footer-logos' });
-import { readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AssetCache } from '../lib/asset-cache.mjs';
@@ -254,6 +254,278 @@ function livePage(html, assets = {}) {
     },
   };
 }
+
+test('observed extensionless managed styles require CSS bytes and retain capture bounds', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-pcf-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const style = '/_pcfwebresource/11111111-1111-1111-1111-111111111111?v=2&locale=en';
+  const cache = await new AssetCache({ directory, origin }).init();
+  const capture = async (href, asset) => {
+    const live = livePage(
+      page(
+        `<link rel="stylesheet" href="${href}"><link rel="stylesheet" href="${href}"><script src="/jquery.js"></script>`,
+      ),
+      { [href]: asset, '/jquery.js': { type: 'application/javascript', body: 'window.jQuery={};' } },
+    );
+    return { report: await capturePortalShell(cache, live, { path: '/workspace/' }), live };
+  };
+  const { report, live } = await capture(style, {
+    type: 'text/css; charset=utf-8',
+    body: '.editor{color:blue}',
+  });
+  assert.equal(report.ready, true);
+  assert.deepEqual(report.shellProfile.stylesheets, [style]);
+  assert.equal(live.calls.filter((call) => call.path === style).length, 1);
+  assert.equal((await cache.get(style)).body.toString(), '.editor{color:blue}');
+  for (const type of ['text/html', 'application/javascript', 'application/json']) {
+    const rejected = await capture(style, {
+      type,
+      body: type === 'text/html' ? '<html>Wrong</html>' : 'window.bad=1;',
+    });
+    assert.equal(rejected.report.ready, false, type);
+    assert.equal(rejected.report.failures.filter((failure) => failure.blocking).length, 1, 'duplicates fetch once');
+    assert.equal(rejected.report.failures[0].code, 'ASSET_CONTENT_TYPE');
+    assert.equal(
+      (await cache.get(style)).body.toString(),
+      '.editor{color:blue}',
+      'failed replacement retains verified bytes',
+    );
+  }
+  // A stylesheet content type does not admit script, markup or binary bytes.
+  for (const body of [
+    'window.bad=1;',
+    '(function(){document.title="bad"})();',
+    '"use strict";var editor={};',
+    '/* banner */\nexport const editor = 1;',
+    'Editor.render({target:".editor"});',
+    '<div class="editor">Wrong</div>',
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d]),
+  ]) {
+    const rejected = await capture(style, { type: 'text/css; charset=utf-8', body });
+    assert.equal(rejected.report.ready, false, String(body));
+    assert.equal(rejected.report.failures[0].code, 'ASSET_CONTENT_TYPE');
+    assert.equal((await cache.get(style)).body.toString(), '.editor{color:blue}');
+  }
+  for (const body of [
+    '/* banner */\n@charset "utf-8";\n.editor{color:green}',
+    '<!-- .editor{color:green} -->',
+    '[hidden]{display:none}',
+    ':root{--editor:green}',
+    '*{box-sizing:border-box}',
+    'editor-toolbar{display:block}',
+    Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from('.editor{color:green}', 'utf16le')]),
+  ]) {
+    const accepted = await capture(style, { type: 'text/css', body });
+    assert.equal(accepted.report.ready, true, String(body));
+    assert.deepEqual((await cache.get(style)).body, Buffer.from(body));
+  }
+  assert.equal((await capture(style, { type: 'text/css', body: '.editor{color:blue}' })).report.ready, true);
+  const missing = await capture(style, undefined);
+  assert.equal(missing.report.failures[0].code, 'NATIVE_ASSET_HTTP');
+  assert.equal(missing.report.failures[0].originStatus, 404);
+  assert.deepEqual(missing.report.shellProfile.stylesheets, []);
+  const large = await capture(style, { type: 'text/css', body: 'a'.repeat(20 * 1024 * 1024 + 1) });
+  assert.equal(large.report.ready, false);
+  assert.equal((await cache.get(style)).body.toString(), '.editor{color:blue}');
+  for (const href of [
+    '/_pcfwebresource/not-a-guid',
+    style + '&access_token=DO_NOT_LOG',
+    'https://user:DO_NOT_LOG@portal.example.test' + style,
+    'https://outside.example.test' + style,
+  ]) {
+    const rejected = await capture(href, { type: 'text/css', body: 'body{}' });
+    assert.ok(rejected.report.failures.length, href.split('?')[0]);
+    assert.equal(rejected.live.calls.length, 2, 'only the document and jQuery are fetched');
+    assert.ok(!JSON.stringify(rejected.report).includes('DO_NOT_LOG'));
+  }
+});
+
+test('stylesheet @import dependencies are captured only as verified CSS, including extensionless managed resources', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-import-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const imported = '/_pcfwebresource/11111111-1111-1111-1111-111111111111';
+  const quoted = '/_pcfwebresource/22222222-2222-2222-2222-222222222222';
+  const scripted = '/_pcfwebresource/33333333-3333-3333-3333-333333333333';
+  const disguised = '/_pcfwebresource/44444444-4444-4444-4444-444444444444';
+  const cache = await new AssetCache({ directory, origin }).init();
+  const live = livePage(page('<link rel="stylesheet" href="/theme.css"><script src="/jquery.js"></script>'), {
+    '/theme.css': {
+      type: 'text/css',
+      body: `@import url("${imported}");@import '${quoted}';@import url(${scripted});@import "${disguised}";body{}`,
+    },
+    [imported]: { type: 'text/css; charset=utf-8', body: '.imported{color:blue}' },
+    [quoted]: { type: 'text/css', body: '.quoted{color:blue}' },
+    [scripted]: { type: 'application/javascript', body: 'window.editor={};' },
+    [disguised]: { type: 'text/css', body: 'window.editor={};' },
+    '/jquery.js': { type: 'application/javascript', body: 'window.jQuery={};' },
+  });
+  const report = await capturePortalShell(cache, live, { path: '/workspace/' });
+  assert.equal((await cache.get(imported)).body.toString(), '.imported{color:blue}');
+  assert.equal((await cache.get(quoted)).body.toString(), '.quoted{color:blue}');
+  for (const path of [scripted, disguised]) {
+    const failure = report.failures.find((item) => item.path === path);
+    assert.equal(failure?.code, 'ASSET_CONTENT_TYPE', path);
+    assert.equal(failure.dependency, true);
+    assert.equal(await cache.get(path), null, path);
+  }
+  assert.ok(
+    report.captured.every((item) => !item.path.startsWith('/_pcfwebresource/') || item.contentType === 'text/css'),
+  );
+});
+
+test('a failed shell refresh retains previous asset bytes and the on-disk manifest, including valid siblings', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-atomic-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const style = '/_pcfwebresource/11111111-1111-1111-1111-111111111111';
+  const cache = await new AssetCache({ directory, origin }).init();
+  const first = livePage(page(`<link rel="stylesheet" href="${style}"><script src="/jquery.js"></script>`), {
+    [style]: { type: 'text/css', body: 'body{color:blue}' },
+    '/jquery.js': { type: 'application/javascript', body: 'window.jQuery={revision:1};' },
+  });
+  assert.equal((await capturePortalShell(cache, first, { path: '/workspace/' })).ready, true);
+  const manifest = await readFile(join(directory, 'manifest.json'));
+  const failed = livePage(
+    page(
+      `<link rel="stylesheet" href="${style}"><script src="/jquery.js"></script><link rel="stylesheet" href="/bad.css?access_token=DO_NOT_LOG">`,
+    ),
+    {
+      [style]: { type: 'text/css', body: 'body{color:red}' },
+      '/jquery.js': { type: 'application/javascript', body: 'window.jQuery={revision:2};' },
+    },
+  );
+  assert.equal((await capturePortalShell(cache, failed, { path: '/workspace/' })).ready, false);
+  assert.equal((await cache.get(style)).body.toString(), 'body{color:blue}');
+  assert.equal((await cache.get('/jquery.js')).body.toString(), 'window.jQuery={revision:1};');
+  assert.deepEqual(await readFile(join(directory, 'manifest.json')), manifest);
+  const reopened = await new AssetCache({ directory, origin }).init();
+  assert.equal((await reopened.get(style)).body.toString(), 'body{color:blue}');
+});
+
+test('asset publication waits for acceptance, rolls back failed state publication and serializes other captures', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-asset-publish-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cache = await new AssetCache({ directory, origin }).init();
+  const bridge = livePage('', {
+    '/one.css': { type: 'text/css', body: 'a{color:blue}' },
+    '/two.css': { type: 'text/css', body: 'b{}' },
+  });
+  await cache.capture(['/one.css'], bridge);
+  const before = await readFile(join(directory, 'manifest.json'));
+  const entered = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  const pending = cache.transaction(
+    async (staged) => {
+      await staged.capture(['/one.css'], livePage('', { '/one.css': { type: 'text/css', body: 'a{color:red}' } }));
+      entered.resolve();
+      await release.promise;
+      return { ready: true };
+    },
+    {
+      publish: () => {
+        throw Error('Invented state persistence failure');
+      },
+    },
+  );
+  await entered.promise;
+  assert.equal((await cache.get('/one.css')).body.toString(), 'a{color:blue}', 'pending bytes are invisible');
+  let secondFinished = false;
+  const secondEntered = Promise.withResolvers(),
+    secondRelease = Promise.withResolvers();
+  t.after(() => secondRelease.resolve());
+  const second = cache
+    .transaction(async (staged) => {
+      secondEntered.resolve();
+      await secondRelease.promise;
+      return staged.capture(['/two.css'], bridge);
+    })
+    .then(() => {
+      secondFinished = true;
+    });
+  assert.equal(secondFinished, false);
+  release.resolve();
+  await assert.rejects(pending, /Invented state persistence failure/);
+  await secondEntered.promise;
+  assert.deepEqual(
+    await readFile(join(directory, 'manifest.json')),
+    before,
+    'The exact prior manifest is durable before the next capture publishes',
+  );
+  assert.equal(
+    (await readdir(directory)).filter((file) => file.startsWith('staging-')).length,
+    1,
+    'Only the independently held second capture retains a staging directory',
+  );
+  secondRelease.resolve();
+  await second;
+  assert.equal((await cache.get('/one.css')).body.toString(), 'a{color:blue}');
+  assert.equal(
+    (await new AssetCache({ directory, origin }).init()).entries[Object.keys(cache.entries)[0]].sha256,
+    cache.entries[Object.keys(cache.entries)[0]].sha256,
+  );
+  assert.equal((await cache.get('/two.css')).body.toString(), 'b{}');
+});
+
+test('failed manifest persistence leaves no new blobs, entries or staging directories', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-manifest-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cache = await new AssetCache({ directory, origin }).init();
+  const live = livePage('', { '/one.css': { type: 'text/css', body: 'a{}' } });
+  await cache.capture(['/one.css'], live);
+  const files = (await readdir(directory)).sort(),
+    manifest = await readFile(join(directory, 'manifest.json'));
+  cache.save = async () => {
+    throw Error('Invented manifest failure');
+  };
+  await assert.rejects(
+    cache.transaction((staged) =>
+      staged.capture(['/one.css'], livePage('', { '/one.css': { type: 'text/css', body: 'a{color:red}' } })),
+    ),
+    /Invented manifest failure/,
+  );
+  assert.deepEqual(await readFile(join(directory, 'manifest.json')), manifest);
+  assert.deepEqual((await readdir(directory)).sort(), files);
+  assert.equal((await cache.get('/one.css')).body.toString(), 'a{}');
+});
+
+test('shell styles retain media and repeated cascade placements while origin collisions roll back', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-cascade-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cache = await new AssetCache({ directory, origin }).init();
+  const live = livePage(
+    page(
+      '<link rel="stylesheet" href="/a.css" media="screen"><link rel="stylesheet" href="/b.css"><link rel="stylesheet" href="/a.css" media="print"><link rel="stylesheet" href="/a.css" media="screen"><script src="/jquery.js"></script>',
+    ),
+    {
+      '/a.css': { type: 'text/css', body: 'a{}' },
+      '/b.css': { type: 'text/css', body: 'b{}' },
+      '/jquery.js': { type: 'text/javascript', body: 'window.jQuery={};' },
+    },
+  );
+  const report = await capturePortalShell(cache, live, { path: '/workspace/' });
+  assert.equal(report.ready, true);
+  assert.deepEqual(report.shellProfile.stylesheets, [
+    { href: '/a.css', media: 'screen' },
+    '/b.css',
+    { href: '/a.css', media: 'print' },
+    { href: '/a.css', media: 'screen' },
+  ]);
+  assert.equal(live.calls.filter((item) => item.path === '/a.css').length, 1);
+  const before = await readFile(join(directory, 'manifest.json'));
+  const collision = '/resource/powerappsportal/collision.css';
+  const conflicting = livePage(
+    page(
+      `<link rel="stylesheet" href="${collision}"><link rel="stylesheet" href="${cdn + collision}"><script src="/jquery.js"></script>`,
+    ),
+    {
+      [collision]: { type: 'text/css', body: 'a{color:red}' },
+      '/jquery.js': { type: 'text/javascript', body: 'window.jQuery={};' },
+    },
+  );
+  const rejected = await capturePortalShell(cache, conflicting, { path: '/workspace/' });
+  assert.equal(rejected.ready, false);
+  assert.ok(rejected.failures.some((item) => item.code === 'SHELL_RESOURCE_COLLISION' && item.blocking));
+  assert.deepEqual(await readFile(join(directory, 'manifest.json')), before);
+});
 
 test('observed shell capture preserves order, source assets and safe platform resources without persisting page or inline data', async () => {
   const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-shell-'));

@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { validateDerivedColumns } from './derived-columns.mjs';
 // Rollup columns (SourceType 2) in the Dataverse API: the state and date columns are maintained, the value is recalculated on demand.
 //
@@ -336,7 +337,7 @@ export async function recalculate(api, table, id, column) {
         if (override) {
           // A pack function is arbitrary code: the write's row journal becomes a full backup first, as a plug-in step does.
           api.store.promoteRowTransaction();
-          const answer = override(structuredClone(row), { table: logical, column: name });
+          const answer = override(cloneStateData(row), { table: logical, column: name });
           if (isThenable(answer))
             report(state, {
               code: 'ROLLUP_UNSUPPORTED',

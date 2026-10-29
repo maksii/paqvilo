@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 // Dataverse data messages: the recycle bin (the delete record hook, Restore, EmptyRecycleBin) and the classic import job
 // (ParseImport, TransformImport, ImportRecordsImport). Assumptions: undocumented error codes and message texts, the
 // privilege names, and the asyncoperation operationtype values chosen below.
@@ -96,9 +97,9 @@ export function binRows(store, logical) {
     .filter((ref) => ref.validforrestore)
     .flatMap((ref) => snapshotsOf(store, ref))
     .filter((entry) => entry.logicalName === logical)
-    .map((entry) => structuredClone(entry.row));
+    .map((entry) => cloneStateData(entry.row));
 }
-const retainedRows = (store, logical) => structuredClone(store.state.dataverse?.retained?.[logical] ?? []);
+const retainedRows = (store, logical) => cloneStateData(store.state.dataverse?.retained?.[logical] ?? []);
 const eligible = (mapping) =>
   !NEVER_RECYCLED.has(mapping.logicalName) &&
   !/^(?:elastic|virtual)$/i.test(mapping.tableType ?? '') &&
@@ -227,7 +228,7 @@ function restore(api) {
                   '0x80049959',
                 );
             }
-            store.insertRow(m.logicalName, rows, structuredClone(row));
+            store.insertRow(m.logicalName, rows, cloneStateData(row));
           }
           dropReference(store, guidKey(ref.deleteditemreferenceid));
         },

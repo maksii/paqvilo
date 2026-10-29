@@ -1324,6 +1324,13 @@ function privilegeMapOf(idx, uid) {
   return map;
 }
 
+function privilegeCountOf(idx, uid) {
+  const { direct, team } = grantsOf(idx, uid);
+  let count = direct.size;
+  for (const name of team.keys()) if (!direct.has(name)) count++;
+  return count;
+}
+
 function chainOf(idx, root) {
   if (!idx.chains.has(root)) {
     const out = new Set(),
@@ -1540,7 +1547,7 @@ function privilegeDenied(idx, settings, user, logical, name, schema) {
   const uid = key(user.systemuserid);
   return privilegeDeniedError(user, name, logical, {
     roleCount: rolesOf(idx, uid).size,
-    privilegeCount: privilegeMapOf(idx, uid).size,
+    privilegeCount: privilegeCountOf(idx, uid),
     objectTypeCode: settings?.objectTypeCode?.(logical) ?? DEFAULT_OTC,
     displayName: schema?.displayName ?? logical,
   });
@@ -1664,7 +1671,12 @@ function parentRowOf(store, logical, row) {
   const find = (table, id) => {
     const idColumn =
       store.state.mappings[table]?.idColumn ?? standardTableDef(table)?.primaryIdAttribute ?? `${table}id`;
-    const hit = (store.state.tables[table] ?? []).find((r) => sameId(r[idColumn], id) || sameId(r.activityid, id));
+    // A row keyed by the id is found through the primary key index; the scan also finds a row by its activityid.
+    const mapping = store.state.mappings[table];
+    const keyed =
+      mapping && typeof id === 'string' ? store.primaryKeySubset({ ...mapping, logicalName: table }, [id]) : null;
+    const hit =
+      keyed?.[0] ?? (store.state.tables[table] ?? []).find((r) => sameId(r[idColumn], id) || sameId(r.activityid, id));
     return hit ? { logical: table, row: hit } : null;
   };
   if (logical === 'activityparty') {

@@ -43,6 +43,44 @@ This capability applies only with site evidence and both `observed.webApiErrorDe
 
 Presets can return bodies or `{ name, description, load() }` descriptors. Body generation is memoized and listing does not generate rows. Stored builtin descriptors resolve using the explicitly supplied portal library. An unavailable project descriptor is reported, never silently replaced. Do not import `data.mjs` or `presets.mjs` at pack module top level if that creates a registry cycle; generators may import runtime utilities lazily.
 
+For large generated presets, `{ name, description, createOwned() }` is an explicit ownership-transfer alternative.
+It receives one context argument, `{ records }`, whose [`records.table()` streams JSON records](record-storage.md).
+When a runtime applies the preset, `records` comes from that runtime's store and its tables are kept in paged
+record storage; a read without a store, such as a direct `library[id]` preview, receives a default
+`records` whose tables become ordinary arrays. The factory must return synchronously: an `async` factory, or any
+returned promise, is rejected as a preset that did not load an object. It must return a new private plain preset
+body on every call. Do not retain or reuse its mutable
+rows, arrays, mappings or other objects after returning; immutable strings may be shared. Keep the body compatible
+with persisted JSON state. Register executable handlers through the pack's extension exports.
+The toolkit can adopt this body without retaining and cloning a second complete dataset. Column defaults,
+autonumbers, configuration-link validation and explicitly saved user presets retain their usual rules.
+
+Applying or resolving this factory creates a fresh body. Use deterministic IDs and a seed when reapplication
+must reproduce the same data. Listing remains body-free. Direct `library[id]` reads memoize a separate preview;
+editing that preview does not edit the factory. Customize a saved preset or replace the library entry instead.
+Existing `load()` retains its memoization and detached-copy behavior, and takes precedence if both methods exist.
+Ownership transfer is opt-in because an arbitrary existing loader may retain its returned graph.
+
+Project tests and generators that construct a `DataStore` directly own its record storage. A store with a
+state file keeps streamed records in `<state file>.records`; a store without one creates a
+`paqvilo-record-state-*` directory under the operating system's temporary directory when it first stores
+streamed records. Call `store.close()` (the same as `store.closeRecordStorage()`) when the store is no longer
+used: it closes every record session, releases their leases and removes that temporary directory. If any
+session fails to close, the call throws, keeps the remaining owners and files, and can be retried. A
+temporary directory still open when the process exits is removed on a best-effort basis; do not rely on
+that for long-running processes. `createSimulator()` and the offline `data` commands close their own stores.
+
+```js
+presets() {
+  return {
+    'invented-volume': {
+      name: 'Invented volume dataset',
+      createOwned: () => buildDataset({ seed: 42 }), // your project's generator
+    },
+  };
+}
+```
+
 Applying a portal's business-data preset preserves omitted organization-owned tables,
 staff grants, credentials and imported schema. Explicit table or mapping entries
 in the preset still replace those targets. Reset remains a separate operation.

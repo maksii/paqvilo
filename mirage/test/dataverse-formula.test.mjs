@@ -78,6 +78,22 @@ test('the default evaluator (the core Power Fx engine) computes formula columns'
   assert.equal(diagnostics.length, 0);
 });
 
+test('formula capability descriptions skip column scans when the evaluator already establishes behaviour', async (t) => {
+  const { installed, store } = await setup(t);
+  const original = store.fieldDefinitions;
+  let reads = 0;
+  store.fieldDefinitions = function (...args) {
+    reads++;
+    return original.apply(this, args);
+  };
+  try {
+    assert.equal(installed.formulaColumns.describe().level, 'behaviour');
+  } finally {
+    store.fieldDefinitions = original;
+  }
+  assert.equal(reads, 0);
+});
+
 test('formula columns read null with one FORMULA_NOT_EVALUATED per column under the disabled engine', async (t) => {
   const { request, json, diagnostics, installed } = await setup(t, {
     evaluator: createPowerFxEvaluator({ engine: false }),

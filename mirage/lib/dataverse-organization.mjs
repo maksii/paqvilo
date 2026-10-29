@@ -5,6 +5,7 @@ import { createMetadataService, objectTypeCode as typeCodeOf } from './dataverse
 import { createChangeLog } from './dataverse-changes.mjs';
 import { hashSecret, verifySecret } from './dataverse-auth.mjs';
 import { seedManagedIdentityRows } from './dataverse-managed-identity.mjs';
+import { pagedRecordsOf } from './record-tables.mjs';
 import { createOperationRegistry } from './dataverse-operations.mjs';
 import { createServiceProtection } from './dataverse-limits.mjs';
 import { standardGlobalOptionSets, fieldsWithStandard } from './dataverse-standard.mjs';
@@ -142,6 +143,11 @@ function extensionDiagnostics(forward) {
 function maxRowVersion(state) {
   let max = 0;
   for (const rows of Object.values(state.tables ?? {})) {
+    const stored = pagedRecordsOf(rows);
+    if (stored) {
+      max = Math.max(max, stored.maximumVersion());
+      continue;
+    }
     for (const row of Array.isArray(rows) ? rows : []) {
       const version = Number(row?.versionnumber);
       if (Number.isSafeInteger(version) && version > max) max = version;
@@ -157,7 +163,9 @@ export async function createOrganizationRuntime(options) {
     // transaction. Otherwise each installer clones and checkpoints the complete
     // business dataset, even during an unchanged-state restart. No listener is
     // published until this commits; failed composition restores the old state.
-    return await options.store.transact(async () => (organization = await composeOrganizationRuntime(options)), {
+    const compose = async () => (organization = await composeOrganizationRuntime(options));
+    if (options.initializing) return await options.store.initialize(compose);
+    return await options.store.transact(compose, {
       isolated: true,
       cloneResult: false,
       skipSaveIfUnchanged: true,

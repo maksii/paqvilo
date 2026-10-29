@@ -37,8 +37,11 @@ test(
   async (t) => {
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'paq-code-app-vite-')));
     ownedFixture(t).remove(() => removeFixtureDirectory(root));
-    let release;
-    ownedFixture(t).add(() => release?.());
+    let release, releaseSocket;
+    ownedFixture(t).add(() => {
+      release?.();
+      releaseSocket?.();
+    });
     await fs.symlink(path.join(toolkit, 'node_modules'), path.join(root, 'node_modules'), 'junction');
     const solution = path.join(root, 'solution');
     await fs.mkdir(path.join(solution, 'Entities/x_item'), { recursive: true });
@@ -76,7 +79,8 @@ test(
     });
     ownedFixture(t).add(() => sim.close());
     const origin = sim.origin ?? sim.url;
-    const servers = {};
+    const servers = {},
+      vites = {};
     for (const name of ['alpha', 'beta']) {
       // Vite treats port 0 as its default port; reserve an OS-selected port before starting it.
       const reservation = net.createServer();
@@ -92,6 +96,7 @@ test(
       });
       ownedFixture(t).add(() => vite.close());
       await vite.listen();
+      vites[name] = vite;
       servers[name] = `http://127.0.0.1:${vite.httpServer.address().port}`;
       await fs.writeFile(
         path.join(root, name, 'power.config.json'),
@@ -182,6 +187,27 @@ test(
       .find((f) => f.url().startsWith(servers.beta))
       .evaluate(() => window.appContext.host.sessionId);
     assert.notEqual(betaSession, alphaSession);
+    let socketArrived;
+    const socketGate = new Promise((resolve) => {
+      releaseSocket = resolve;
+    });
+    const socketPending = new Promise((resolve) => {
+      socketArrived = resolve;
+    });
+    // Hold the new app's HMR transport while its ordinary HTTP modules/context
+    // load. A configuration change before the transport connects must survive.
+    await page.routeWebSocket(
+      (url) => url.port === new URL(servers.alpha).port,
+      async (route) => {
+        let server;
+        const messages = [];
+        route.onMessage((message) => (server ? server.send(message) : messages.push(message)));
+        socketArrived();
+        await socketGate;
+        server = route.connectToServer();
+        for (const message of messages) server.send(message);
+      },
+    );
     await page.getByLabel('App', { exact: true }).selectOption('alpha');
     await frame.locator('#context').filter({ hasText: 'live edit · alpha-id · Invented Developer · first' }).waitFor();
     assert.equal(await page.getByLabel('Parameters', { exact: true }).inputValue(), 'panel=first');
@@ -189,7 +215,18 @@ test(
     const file = path.join(root, 'alpha/power.config.json');
     const config = JSON.parse(await fs.readFile(file, 'utf8'));
     config.appSettings.theme = 'changed-theme';
+    await socketPending;
+    const observedChange = new Promise((resolve) => {
+      const changed = (changedFile) => {
+        if (path.resolve(changedFile) !== file) return;
+        vites.alpha.watcher.off('change', changed);
+        resolve();
+      };
+      vites.alpha.watcher.on('change', changed);
+    });
     await fs.writeFile(file, JSON.stringify(config));
+    await observedChange;
+    releaseSocket();
     await frame.locator('#context').filter({ hasText: 'changed-theme' }).waitFor();
     assert.deepEqual(errors, []);
     const built = await build({

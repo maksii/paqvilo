@@ -49,6 +49,34 @@ function store(rows = [], options = {}) {
   return new DataStore({ state, ...options });
 }
 
+test('unique row-key indexes avoid one retained array per key and retain duplicate/wild mutation ordering', () => {
+  const s = store(Array.from({ length: 10000 }, (_, i) => ({ x_itemid: gid(i), x_code: 'code' + i })));
+  const rows = s.state.tables.x_item;
+  const entry = s.rowKeyIndex(rows, 'invented-codes', (row) => row.x_code, { wild: true });
+  assert.equal(
+    [...entry.map.values()].filter(Array.isArray).length,
+    0,
+    'Unique keys need no retained position arrays.',
+  );
+  assert.deepEqual(entry.get('code0'), [0]);
+  s.mutateRow('x_item', rows, 0, { x_code: 'code1' });
+  assert.deepEqual(entry.get('code1'), [0, 1]);
+  assert.deepEqual(entry.get('code0'), []);
+  s.removeRow('x_item', rows, 0);
+  assert.deepEqual(entry.get('code1'), [0]);
+  assert.deepEqual(entry.get('code9999'), [9998]);
+  s.insertRow('x_item', rows, { x_itemid: gid(10001) });
+  assert.deepEqual(entry.wild, [9999]);
+  s.mutateRow('x_item', rows, 9999, { x_code: 'code1' });
+  assert.deepEqual(entry.get('code1'), [0, 9999]);
+  assert.deepEqual(entry.wild, []);
+  s.writeRow('x_item', rows, 0, { x_itemid: gid(10002), x_code: null });
+  assert.deepEqual(entry.get('code1'), [9999]);
+  s.removeRow('x_item', rows, 9999);
+  assert.deepEqual(entry.get('code1'), []);
+  assert.equal([...entry.map.values()].filter(Array.isArray).length, 0);
+});
+
 test('the primary-key index answers through a validity check after an edit outside the row operations', async () => {
   const s = store([
     { x_itemid: gid(1), x_name: 'one' },

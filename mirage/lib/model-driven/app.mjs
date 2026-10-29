@@ -6,6 +6,8 @@ import { createFormClientRuntime, evaluateRibbonRules, pageRequest, webResourceP
 import { renderPcfDataset } from './pcf-runtime.mjs';
 import { createModelDrivenProvenanceRegistry, modelDrivenKey, modelDrivenControlKey } from './provenance-registry.mjs';
 
+const totalLabel = (result) => `${result.total}${result.totalLimitExceeded ? '+' : ''}`;
+
 const provenance = createModelDrivenProvenanceRegistry(document);
 provenance.install();
 const modelBinding = (kind, id, extra = {}) => ({
@@ -1720,7 +1722,7 @@ function renderGrid() {
   const footer = document.createElement('div');
   footer.className = 'grid-footer';
   const count = document.createElement('span');
-  count.textContent = current.total >= 0 ? `Rows: ${current.total}` : `Rows on this page: ${current.rows.length}`;
+  count.textContent = current.total >= 0 ? `Rows: ${totalLabel(current)}` : `Rows on this page: ${current.rows.length}`;
   const info = document.createElement('span');
   info.className = 'page-info';
   info.textContent = `Page ${current.page}`;
@@ -1739,7 +1741,7 @@ function renderGrid() {
   if (table.grid?.pagination === true) {
     const first = current.rows.length ? (current.page - 1) * (query.pageSize ?? 50) + 1 : 0,
       last = first ? first + current.rows.length - 1 : 0;
-    count.textContent = `Rows: ${first} - ${last}${current.total >= 0 ? ` of ${current.total}` : ''}`;
+    count.textContent = `Rows: ${first} - ${last}${current.total >= 0 ? ` of ${totalLabel(current)}` : ''}`;
     const pager = document.createElement('div');
     pager.className = 'native-grid-pager';
     pager.setAttribute('role', 'group');
@@ -1817,7 +1819,7 @@ function renderGrid() {
         renderRows();
         all.checked = selected.size === current.rows.length;
         all.indeterminate = selected.size > 0 && !all.checked;
-        count.textContent = current.total >= 0 ? `Rows: ${current.total}` : `Rows loaded: ${current.rows.length}`;
+        count.textContent = current.total >= 0 ? `Rows: ${totalLabel(current)}` : `Rows loaded: ${current.rows.length}`;
       } catch (error) {
         if (token !== generation || !scroll.isConnected) return;
         failed = true;
@@ -3617,7 +3619,9 @@ function renderSubgrid(cell) {
         grid.append(body);
         results.append(grid);
       }
-      footer.replaceChildren(document.createTextNode(`Rows: ${result.total >= 0 ? result.total : result.rows.length}`));
+      footer.replaceChildren(
+        document.createTextNode(`Rows: ${result.total >= 0 ? totalLabel(result) : result.rows.length}`),
+      );
       if (result.more || page > 1)
         footer.append(
           button(

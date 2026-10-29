@@ -3938,7 +3938,7 @@ document.addEventListener('click', async (event) => {
       'Reset the workspace?',
       'Restore imported records, configuration, identity and permissions. Local records, overrides and rules are replaced; saved scenarios are kept. Open portal pages reload.',
       async () => {
-        await request('/reset', { method: 'POST', body: '{}' });
+        await request('/reset?summary=1', { method: 'POST', body: '{}' });
         await refresh();
         notify('Workspace reset to imported defaults.');
       },
@@ -3948,7 +3948,7 @@ document.addEventListener('click', async (event) => {
   }
   if (target.dataset.action === 'reload-sources') {
     try {
-      await request('/reload', { method: 'POST', body: '{}' });
+      await request('/reload?summary=1', { method: 'POST', body: '{}' });
       await refresh();
       notify('Sources reloaded.');
     } catch (error) {
@@ -4072,7 +4072,7 @@ document.addEventListener('click', async (event) => {
       'The preset will update simulator records and configuration according to its definition.',
       async () => {
         try {
-          await request(`/presets/${encodeURIComponent(id)}/apply`, {
+          await request(`/presets/${encodeURIComponent(id)}/apply?summary=1`, {
             method: 'POST',
             body: JSON.stringify({ applyConfiguration }),
           });

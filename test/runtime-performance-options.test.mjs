@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { performanceOptionsFromArgs, runtimePerformance } from '../scripts/runtime-performance.mjs';
 
 test('performance workload and per-phase budgets reach the measured report without changing default qualification', async () => {
@@ -58,4 +59,18 @@ test('performance CLI rejects unknown options and invalid budgets before creatin
     ['--records', '1e4'],
   ])
     assert.throws(() => performanceOptionsFromArgs(args), undefined, JSON.stringify(args));
+});
+
+test('the --large workload is the one the runtime performance guide documents', () => {
+  const options = performanceOptionsFromArgs(['--large']);
+  const guide = fs.readFileSync(new URL('../mirage/docs/runtime-performance.md', import.meta.url), 'utf8');
+  const [, tables, forms, xmlFiles, records] = guide.match(
+    /runtime-performance\.mjs --large +# ([\d,]+) tables x ([\d,]+) forms \(([\d,]+) XML files\), ([\d,]+) records/,
+  );
+  const number = (text) => Number(text.replaceAll(',', ''));
+  assert.deepEqual(options.scales, [number(tables)]);
+  assert.equal(options.formsPerTable, number(forms));
+  assert.equal(options.records, number(records));
+  // One Entity.xml and the forms per table, plus the Solution manifest and app module.
+  assert.equal(options.scales[0] * (1 + options.formsPerTable) + 2, number(xmlFiles));
 });

@@ -85,6 +85,8 @@ function observePortalNodeImpl(
   const gridCell = ancestors.find((item) => item.matches('td,th,[data-paqvilo-column]'));
   const gridTable = gridCell?.closest('table');
   let chosenGrid = false;
+  let genericFormBoundary = false,
+    modalCandidates = [];
   for (const current of ancestors) {
     if (current === gridTable && bindings.grid?.name) {
       const cloneId = attribute(current, 'data-paqvilo-grid');
@@ -181,7 +183,11 @@ function observePortalNodeImpl(
       }),
     ].filter(Boolean);
     const declaredForms = formIds.map((formId) =>
-      forms.filter((form) => [form.id, form.formXml?.id].some((id) => norm(id) === norm(formId))),
+      forms.filter((form) =>
+        [form.id, form.formXml?.id, ...(form.formLayouts ?? []).map((layout) => layout.id)].some(
+          (id) => id && norm(id) === norm(formId),
+        ),
+      ),
     );
     const nativeForms = nativeFormsFor(current);
     const outerWrapper = genericView
@@ -234,6 +240,16 @@ function observePortalNodeImpl(
     if (matchingForms.length || matchingLists.length || matchingViews.length) {
       boundary = current;
       chosenForm = matchingForms[0];
+      if (chosenForm && formKind(chosenForm) === 'advanced-form') {
+        const renderedLayouts = (chosenForm.formLayouts ?? []).filter((layout) =>
+          layouts.some((observed) => norm(observed.Id) === norm(layout.id)),
+        );
+        if (renderedLayouts.length === 1) {
+          if (declaredTable && declaredTable !== renderedLayouts[0].entity) conflict = true;
+          chosenForm = { ...chosenForm, formXml: renderedLayouts[0] };
+          declaredTable ||= renderedLayouts[0].entity;
+        }
+      }
       chosenList = matchingLists[0];
       chosenView = matchingViews[0];
       const configuredEntities =
@@ -252,6 +268,118 @@ function observePortalNodeImpl(
       if (chosenForm && formKind(chosenForm) === 'advanced-form' && !declaredTable)
         result.availability.push({ capability: 'current-table', reason: 'advanced-form-active-table-unavailable' });
       break;
+    }
+    if (genericWrapper && expectedKind === 'basic-form' && layouts.length && declaredTable && !formConstraints.length) {
+      // A native modal layout can expose its table while deliberately omitting
+      // the form GUID. Retain that boundary instead of losing all context.
+      boundary = current;
+      genericFormBoundary = true;
+      break;
+    }
+  }
+  if (genericFormBoundary && frameDepth < 16) {
+    let frame, modal, grid;
+    try {
+      const candidate = doc.defaultView.frameElement;
+      const address = candidate?.getAttribute('data-page');
+      const expected = address && new URL(address, candidate.ownerDocument.baseURI);
+      const current = new URL(doc.URL);
+      if (
+        candidate?.isConnected &&
+        !candidate.hasAttribute('sandbox') &&
+        candidate.contentDocument === doc &&
+        candidate.ownerDocument.defaultView.location.origin === current.origin &&
+        expected?.origin === current.origin &&
+        expected.pathname === current.pathname &&
+        /^\/_portal\/modal-form-template-path\//i.test(current.pathname)
+      ) {
+        frame = candidate;
+        modal = frame.closest('.modal-form');
+        grid = modal?.closest('.entity-grid');
+      }
+    } catch {
+      /* Inaccessible or replaced frames cannot establish a placement. */
+    }
+    if (grid && frame.closest('.entity-grid') === grid) {
+      const kinds = [
+        ['modal-form-insert', 'CreateAction'],
+        ['modal-form-edit', 'EditAction'],
+        ['modal-form-details', 'DetailsAction'],
+      ].filter(([name]) => modal.classList.contains(name));
+      // Exact ownership needs a rendered list/subgrid identity or a page-referenced
+      // list; other exported lists sharing the rendered view only supply candidates.
+      let owners = [],
+        candidateOwners = null;
+      const subgrid = grid.closest('.subgrid[id]');
+      let placementConflict = false;
+      if (subgrid) {
+        const parent = observePortalNodeImpl(subgrid.parentElement, {
+          scope,
+          bindings,
+          sourceRefs,
+          sourceRefsByComponent,
+          frameDepth: frameDepth + 1,
+        });
+        const parentForms = parent.facts.filter(
+          (fact) =>
+            fact.proof === 'native-component-id' && ['basic-form', 'advanced-form'].includes(fact.binding?.kind),
+        );
+        if (parentForms.length === 1)
+          owners = (bindings.subgrids ?? []).filter(
+            (component) => component.id === subgrid.id && norm(component.formId) === norm(parentForms[0].binding.id),
+          );
+      } else {
+        const wrapper = grid.closest('[data-listid],[id^=EntityList]');
+        const explicitId = attribute(wrapper, 'data-listid');
+        const nativeId = /^EntityList(?:Control_)?([0-9a-f-]{32,36})(?:$|_)/i.exec(wrapper?.id ?? '')?.[1];
+        const listId = explicitId || nativeId || (wrapper?.id === 'EntityListControl' ? bindings.pageListId : '');
+        const viewId = attribute(grid, 'data-selected-view');
+        placementConflict = !!(explicitId && nativeId && norm(explicitId) !== norm(nativeId));
+        if (listId) owners = lists.filter((list) => componentId(list) === norm(listId));
+        else if (!wrapper && viewId) {
+          candidateOwners = lists.filter((list) => (list.viewIds ?? []).some((id) => norm(id) === norm(viewId)));
+          owners = candidateOwners.filter((list) => list.pageReferenced === true);
+        }
+        if (listId && viewId && owners.some((list) => !(list.viewIds ?? []).some((id) => norm(id) === norm(viewId))))
+          placementConflict = true;
+      }
+      const actionsOf = (rows, names) =>
+        rows.flatMap((owner) =>
+          (owner.actions ?? [])
+            .filter((action) => action.formId && names.includes(action.name))
+            .map((action) => ({ owner, action })),
+        );
+      const formsOf = (rows) =>
+        forms.filter(
+          (form) => formKind(form) === 'basic-form' && rows.some(({ action }) => norm(action.formId) === norm(form.id)),
+        );
+      const actions = kinds.length === 1 ? actionsOf(owners, [kinds[0][1]]) : [];
+      // Candidate context: the declared action forms of the modal's kinds (all kinds
+      // when the container names none) on the rendered layout table.
+      modalCandidates = formsOf(
+        actionsOf(
+          candidateOwners ?? owners,
+          kinds.length ? kinds.map(([, name]) => name) : ['CreateAction', 'EditAction', 'DetailsAction'],
+        ),
+      ).filter((form) => !form.entity || form.entity.toLowerCase() === declaredTable);
+      const targets = formsOf(actions);
+      if (!placementConflict && owners.length === 1 && actions.length === 1 && targets.length === 1) {
+        const target = targets[0];
+        const params = definitionQuery(new URL(doc.URL));
+        const disagree = params.some(([key, value]) =>
+          ['entityformid', 'formid'].includes(key)
+            ? ![target.id, target.formXml?.id].some((id) => id && norm(id) === norm(value))
+            : value.toLowerCase() !== declaredTable,
+        );
+        if (
+          target.entity?.toLowerCase() !== declaredTable ||
+          owners[0].entity?.toLowerCase() !== declaredTable ||
+          disagree
+        ) {
+          conflict = true;
+          conflictReason = 'conflicting-modal-placement';
+        } else chosenForm = target;
+      }
     }
   }
   if (conflict) {
@@ -518,6 +646,23 @@ function observePortalNodeImpl(
         reason: observedTable ? 'rendered-table-identifier' : 'configured-component-table',
       },
     );
+  if (genericFormBoundary && !chosenForm) {
+    for (const form of modalCandidates.slice(0, 32))
+      add(
+        {
+          kind: 'basic-form',
+          key: 'basic-form:' + String(form.id).replace(/[{}]/g, '').toLowerCase(),
+          id: form.id,
+          name: form.name,
+          entity: form.entity,
+        },
+        'enclosing',
+        'declared-modal-form',
+        'export-definition',
+      );
+    result.availability.push({ reason: 'modal-form-placement-unresolved' });
+    return result;
+  }
   for (const [component, kind] of [
     [chosenForm, chosenForm ? formKind(chosenForm) : null],
     [chosenList, 'list'],

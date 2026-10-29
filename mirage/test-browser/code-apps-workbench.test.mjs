@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { codeAppsWorkbenchHtml } from '../lib/code-apps-workbench.mjs';
 import { sharedBrowser, loopbackServer } from './shared-browser.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 const browser = sharedBrowser();
 async function listen(t, handler) {
   return (await loopbackServer(t, handler)).origin;
@@ -151,4 +152,69 @@ test('workbench switches local apps, keeps parameters separate and accepts only 
   await page.frameLocator('#preview').getByText('Second local app').waitFor();
   assert.equal(await page.locator('#parameters').inputValue(), 'record=one');
   assert.match(await page.locator('#server').innerText(), /Server reachable.*readiness is not verified/);
+});
+
+test('a reload from the previous app document cannot replace an applied launch', async (t) => {
+  let release, arrived, opened, closed;
+  const gate = new Promise((resolve) => (release = resolve)),
+    held = new Promise((resolve) => (arrived = resolve)),
+    connected = new Promise((resolve) => (opened = resolve)),
+    disconnected = new Promise((resolve) => (closed = resolve));
+  const streams = new Set(),
+    served = [];
+  ownedFixture(t).add(() => {
+    release();
+    for (const stream of streams) stream.destroy();
+  });
+  // Each document reloads itself on a server event, as a Vite client does on a full-reload broadcast.
+  const app = await listen(t, async (req, res) => {
+    if (req.url === '/events') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(':\n\n');
+      streams.add(res);
+      opened();
+      req.on('close', () => {
+        streams.delete(res);
+        closed();
+      });
+      return;
+    }
+    served.push(req.url);
+    const applied = req.url.includes('record=late');
+    if (applied) {
+      arrived();
+      await gate;
+    }
+    res.setHeader('content-type', 'text/html');
+    res.end(
+      `<p>${applied ? 'Applied launch' : 'Previous launch'}</p><script>new EventSource('/events').onmessage=()=>location.reload()</script>`,
+    );
+  });
+  const js = await fs.readFile(new URL('../lib/code-apps-workbench.js', import.meta.url));
+  const apps = [{ name: 'first', localAppUrl: app + '/', launchUrl: '/_apps/code/first/' }];
+  const origin = await listen(t, (req, res) => {
+    if (new URL(req.url, 'http://fixture').pathname === '/_apps/code/_api/apps') {
+      res.setHeader('content-type', 'application/json');
+      return res.end(JSON.stringify({ mode: 'simulation', apps }));
+    }
+    if (req.url === '/_apps/code/_assets/workbench.js') {
+      res.setHeader('content-type', 'text/javascript');
+      return res.end(js);
+    }
+    res.setHeader('content-type', 'text/html');
+    res.end(codeAppsWorkbenchHtml());
+  });
+  const page = await browser.page(t);
+  await page.goto(origin + '/_apps/code/?app=first');
+  await page.frameLocator('#preview').getByText('Previous launch').waitFor();
+  await connected;
+  await page.locator('#parameters').fill('record=late');
+  await page.getByRole('button', { name: 'Apply parameters' }).click();
+  // The applied document is still in flight when the previous document is told to reload.
+  await held;
+  for (const stream of streams) stream.write('data: reload\n\n');
+  await disconnected;
+  release();
+  await page.frameLocator('#preview').getByText('Applied launch').waitFor();
+  assert.deepEqual(served, ['/', '/?record=late']);
 });

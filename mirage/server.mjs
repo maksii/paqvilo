@@ -3,6 +3,8 @@ import {
   liveDataverseSettings as composeLiveDataverseSettings,
 } from './lib/live-dataverse-settings.mjs';
 import { inspectionSummary } from '../lense/inspection-summary.mjs';
+import { createRecordCapabilitiesSummary } from './lib/record-capabilities-summary.mjs';
+import { statusResponseChunks } from './lib/status-response.mjs';
 import {
   createRuntimeAdminRouter,
   ADMIN_CSP,
@@ -46,7 +48,8 @@ import { StateStorage } from './lib/state-storage.mjs';
 import { nativeRichTextReady } from './lib/richtext-readiness.mjs';
 import { renderSettings } from './lib/render-settings.mjs';
 import { createSetupHandler } from '../lense/setup/server.mjs';
-import { parseExactJson, stringifyExactJson } from './lib/exact-numeric.mjs';
+import { parseExactJson, stringifyExactJson, isExactNumeric } from './lib/exact-numeric.mjs';
+import { jsonChunks } from './lib/state-stream.mjs';
 import {
   attachODataReaderDetails,
   attachODataJsonSource,
@@ -145,8 +148,8 @@ import { pageAccess } from './lib/page-access.mjs';
 import { cachedImplementationSourceFingerprint, observedEvidence, implementationEvidence } from './lib/evidence.mjs';
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata, portalMetadataEntities } from './lib/solution-metadata.mjs';
-import { appCatalogue, appCatalogueAsync, canvasAppNames, solutionApps } from './lib/model-driven/catalogue.mjs';
-import { createModelDrivenData } from './lib/model-driven/data.mjs';
+import { canvasAppNames, solutionApps } from './lib/model-driven/catalogue.mjs';
+import { createModelDrivenData, storeCatalogue } from './lib/model-driven/data.mjs';
 import { createModelDrivenHandler, routes as MODEL_DRIVEN_ROUTES } from './lib/model-driven/http.mjs';
 import { offlineSessionState } from './lib/model-driven/offline.mjs';
 import { modelDrivenSettings } from './lib/model-driven-settings.mjs';
@@ -294,7 +297,7 @@ import { runtimePort } from './lib/runtime-port.mjs';
 import { createFrameReadiness } from './lib/frame-readiness.mjs';
 import { formWriteError } from './lib/form-error-presentation.mjs';
 import { assertPortalSource, portalSourceDir } from './lib/source-dialect.mjs';
-import { discoverPacks } from './lib/preset-registry.mjs';
+import { discoverPacks, OWNED_PRESET } from './lib/preset-registry.mjs';
 import { collectWebApiErrorTemplates } from './lib/webapi-error-templates.mjs';
 import {
   injectRuntime,
@@ -473,16 +476,35 @@ function json(res, status, value, headers = {}, { chunks } = {}) {
   res.end(status === 204 ? undefined : stringifyExactJson(value));
 }
 
+const RECORD_OWNERS = Symbol('owned record storage');
 export async function createSimulator(options = {}) {
   const runtime = runtimeSettings(options.runtime);
   if (runtime.kind !== 'power-pages') {
     const { createStandaloneRuntime } = await import('./lib/standalone-runtime.mjs');
     return createStandaloneRuntime({ ...options, runtime });
   }
-  return createPowerPagesSimulator({ ...options, runtime });
+  const owners = new Set();
+  try {
+    return await createPowerPagesSimulator({ ...options, runtime, [RECORD_OWNERS]: owners });
+  } catch (error) {
+    // Close every owner; a close failure never hides the startup failure.
+    const errors = [];
+    for (const owner of owners)
+      try {
+        owner.closeRecordStorage?.();
+      } catch (closeError) {
+        errors.push(closeError);
+      }
+    if (errors.length)
+      throw new AggregateError([error, ...errors], 'Simulator startup failed and record storage failed to close', {
+        cause: error,
+      });
+    throw error;
+  }
 }
 
 async function createPowerPagesSimulator({
+  [RECORD_OWNERS]: recordOwners,
   runtime: runtimeOption,
   modelDriven: modelDrivenOption,
   sourceDir,
@@ -584,6 +606,7 @@ async function createPowerPagesSimulator({
       if (!simulation) {
         restoredStorage = new StateStorage(stateFile, persistence);
         restoredState = await restoredStorage.load();
+        recordOwners?.add({ closeRecordStorage: () => restoredStorage?.recordSession?.close() });
       }
       persistedPin =
         (restoredState ?? (await readStateFile(stateFile, { sections: ['simulator'] }))).simulator
@@ -632,6 +655,7 @@ async function createPowerPagesSimulator({
       observed,
     );
     await cache.save();
+    cache.release();
     bootstrapTimings.portalCache = { ...cache.stats, file: portalCacheFile };
     bootstrapTimings.portalMs = Math.round(performance.now() - started);
     return imported;
@@ -727,6 +751,7 @@ async function createPowerPagesSimulator({
     solutionMetadata.modelDrivenRibbonDocuments = clientResources.ribbonDocuments;
     solutionMetadata.modelDrivenAppActions = clientResources.appActions;
     await cache.save();
+    cache.release();
     bootstrapTimings.solutionsMs = Math.round(performance.now() - started);
     bootstrapTimings.solutionCache = { ...cache.stats, processHits: cache.processHits, file: solutionCacheFile };
   }
@@ -803,7 +828,11 @@ async function createPowerPagesSimulator({
     state,
     { expectedRevision = store.snapshotRevision(state) ?? store.revision } = {},
   ) => {
-    const candidate = compilePermissions(applySolutions(state, { owned: store.snapshotRevision(state) !== undefined }));
+    const candidate = compilePermissions(
+      applySolutions(state, {
+        owned: store.isInitializing() || store.snapshotRevision(state) !== undefined,
+      }),
+    );
     sourceComponentStorage?.materialize(candidate.state);
     managementStorage?.materialize(candidate.state);
     // Source composition produced this private detached candidate; normalization
@@ -864,6 +893,8 @@ async function createPowerPagesSimulator({
       : (settingOptionsRest.clock ?? undefined);
   let bootstrapStageAt = performance.now();
   const store = new DataStore({
+    unpublished: true,
+    ownedState: true,
     file: stateFile,
     persistence,
     storageAdapter,
@@ -874,6 +905,7 @@ async function createPowerPagesSimulator({
     ...(hostClock ? { clock: hostClock } : {}),
     ...(settingOptionsRest.ids ? { ids: settingOptionsRest.ids } : {}),
   });
+  recordOwners?.add(store);
   bootstrapTimings.stateSeedMs = Math.round(performance.now() - bootstrapStageAt);
   // The shared organization composition (lib/organization-host.mjs): handler maps, memoised catalogues, providers,
   // backend, Dataverse API, operation-mode selection and the one close order.
@@ -900,7 +932,7 @@ async function createPowerPagesSimulator({
     stateFile,
     simulation,
     sources: {
-      readMetadata: (fn) => solutionMetadataOverlay.withReadEpoch(fn),
+      readMetadata: (fn, options) => solutionMetadataOverlay.withReadEpoch(fn, options),
       plugins: () => solutionMetadata.plugins,
       workflows: () => operationWorkflows,
       layers: () => solutionData?.layers ?? [],
@@ -922,10 +954,11 @@ async function createPowerPagesSimulator({
   } = organizationHost;
   const workflowsView = organizationHost.workflows;
   const codeApps = codeAppSettings(settingOptionsRest.codeApps);
+  let startupPresetBody;
   const validateStartupConfiguration = () => {
     if (!startupPreset.applied || presetConfiguration !== 'apply') return;
     const state = store.snapshot({ sections: ['presets', 'mappings', 'simulator'] });
-    const selected = resolvePreset(state, preset, generatedPresets);
+    const selected = resolvePreset(state, preset, generatedPresets, store.recordContext());
     if (!selected) throw error('Preset not found.', 404);
     if (
       selected.configurationPreset &&
@@ -934,6 +967,12 @@ async function createPowerPagesSimulator({
       )
     )
       throw error('Configuration preset not found: ' + selected.configurationPreset, 404);
+    if (
+      Object.getOwnPropertyDescriptor(generatedPresets, preset)?.get?.[OWNED_PRESET] &&
+      state.presets?.[preset]?.builtin === true &&
+      state.presets[preset].userConfigured !== true
+    )
+      startupPresetBody = selected;
   };
   // Validate new state before init writes it, and loaded state before any enrichment saves.
   if (!stateExisted) validateStartupConfiguration();
@@ -1039,7 +1078,7 @@ async function createPowerPagesSimulator({
   bootstrapTimings.dependenciesMs = Math.round(performance.now() - bootstrapStageAt);
   bootstrapStageAt = performance.now();
   startupPhase('state-composition');
-  await replaceCompiledState(store.state);
+  await store.initialize(() => replaceCompiledState(store.state));
   await organizationHost.loadCanvas();
   bootstrapTimings.stateCompositionMs = Math.round(performance.now() - bootstrapStageAt);
   bootstrapTimings.sourceBootstrapMs = Math.round(performance.now() - startedAt);
@@ -1112,7 +1151,7 @@ async function createPowerPagesSimulator({
         origin: live.origin,
       }).init()
     : null;
-  const richTextCompatibility = () => {
+  const richTextCompatibility = (cfg = config()) => {
     const manifest = cache?.manifest();
     const capturedCore = manifest?.assets.some(
       (asset) => asset.origin === live.origin && /\/ckeditor\.js(?:\?|$)/i.test(asset.path ?? ''),
@@ -1120,7 +1159,7 @@ async function createPowerPagesSimulator({
     // An explicit external native provider remains usable in embedded tests.
     // An incomplete captured editor must never activate merely from its core file.
     if (richTextCompatibilityOverride === false && !capturedCore) return false;
-    return richTextCompatibilityOverride === true || !nativeRichTextReady(manifest, config().shellProfile, live.origin);
+    return richTextCompatibilityOverride === true || !nativeRichTextReady(manifest, cfg.shellProfile, live.origin);
   };
   const evidenceDir = stateFile ? path.join(path.dirname(path.resolve(stateFile)), 'evidence/latest') : null;
   let evidence = null;
@@ -1235,7 +1274,9 @@ async function createPowerPagesSimulator({
     closing = false,
     closePromise = null,
     // External sign-in and its local identity provider (lib/sign-in-flow.mjs), set below.
-    externalSignIn = null;
+    externalSignIn = null,
+    // Stops the model-driven handler's warm metadata compiler thread, set once the handler exists.
+    closeModelDriven = null;
   // GET observers may commit SDK writes too. Drain every accepted handler
   // before stopping its services; event-stream handlers finish on registration.
   const activeRequests = new Set();
@@ -1262,8 +1303,10 @@ async function createPowerPagesSimulator({
       while (activeRequests.size) await Promise.all([...activeRequests]);
       await attempt(() => mutation);
       await attempt(() => store.queue);
+      await attempt(() => closeModelDriven?.());
       // One close order (lib/organization-host.mjs): backend (settles committed work, closes CLR hosts), organization, API, managed identity.
       await attempt(() => organizationHost.close());
+      await attempt(() => store.closeRecordStorage());
       for (const event of events) event.end();
       await attempt(() => live.close());
       // The local identity provider lives and ends with its runtime.
@@ -1371,13 +1414,14 @@ async function createPowerPagesSimulator({
       throw cause;
     }
   };
-  const config = () => {
-    const simulator = store.snapshot({ sections: ['simulator'] }).simulator ?? {
-      mode: 'local',
-      pageMode: 'local',
-      identity: { roles: [] },
-      live: { origin },
-    };
+  const config = (selectedSimulator) => {
+    const simulator = selectedSimulator ??
+      store.snapshot({ sections: ['simulator'] }).simulator ?? {
+        mode: 'local',
+        pageMode: 'local',
+        identity: { roles: [] },
+        live: { origin },
+      };
     const matchesDefaults = ['confinePortalPages', 'externalAssets', 'externalFrameOrigins'].every((key) =>
       key === 'externalFrameOrigins'
         ? JSON.stringify([...(simulator[key] ?? [])].sort()) === JSON.stringify([...(policyDefaults[key] ?? [])].sort())
@@ -2028,10 +2072,11 @@ async function createPowerPagesSimulator({
     });
   renderer = buildRenderer();
   let localOrigin;
-  const runtimeState = () => ({
+  const recordCapabilitiesSummary = createRecordCapabilitiesSummary(store);
+  const runtimeState = ({ reuseCapabilities = false } = {}) => ({
     runtime: runtimeOption,
     // capabilities: the registry's legacy summary; capabilityReport: its records, missing prerequisites and gaps.
-    ...organizationHost.capabilityStatus(),
+    ...organizationHost.capabilityStatus({ reuse: reuseCapabilities }),
     inventory: inventorySummary(solutionInventory),
     providers: providerDescriptors(organizationHost.providers),
     services: organizationHost.providers.serviceFixtures?.describe() ?? [],
@@ -2043,15 +2088,38 @@ async function createPowerPagesSimulator({
       dataverseApi: dataverse?.origin ?? null,
     },
     simulation: organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()),
-    recordCapabilities: Object.fromEntries(
-      Object.keys(store.state.mappings).map((name) => [
-        name,
-        storageAdapter?.recordCapabilities(name) ?? { create: true, update: true, delete: true },
-      ]),
-    ),
+    recordCapabilities: recordCapabilitiesSummary({ reuse: reuseCapabilities }),
   });
-  const exposedState = ({ summary = false } = {}) => {
-    const state = summary ? store.summary() : store.snapshot();
+  const exactJsonItem = (item) => (isExactNumeric(item) ? JSON.rawJSON(stringifyExactJson(item)) : item);
+  // Admin responses that return the whole state stream it: stored tables are read page by page instead of becoming one
+  // response string, and ?summary=1 answers with configuration, counts and no table rows.
+  const stateResponse = (req, res) => {
+    if (new URL(req.url, 'http://localhost').searchParams.get('summary') === '1')
+      return json(res, 200, exposedState({ summary: true }));
+    // The forks were taken under the caller's lock; streaming them need not hold it.
+    json(
+      res,
+      200,
+      {},
+      {},
+      { chunks: jsonChunks(exposedState({ pagedTables: true }), { project: exactJsonItem }) },
+    ).catch((cause) => res.destroy(cause));
+  };
+  // pagedTables keeps stored tables as private forks for a streamed response; callers of the public API still get
+  // detached ordinary arrays.
+  const exposedState = ({ summary = false, pagedTables = false } = {}) => {
+    const state = summary ? store.summary() : store.snapshot(undefined, pagedTables ? { forkTables: true } : undefined);
+    return describeState(state, { summary });
+  };
+  // Configuration reads need no table rows.
+  const exposedConfig = () =>
+    describeState(
+      { ...store.snapshot({ sections: Object.keys(store.state).filter((key) => key !== 'tables') }), tables: {} },
+      {
+        summary: false,
+      },
+    ).config;
+  const describeState = (state, { summary }) => {
     const cfg = config();
     const identityModel = buildPermissionModel(portal, state, {
       relationships: solutionData.relationships,
@@ -2070,7 +2138,7 @@ async function createPowerPagesSimulator({
       try {
         // Through the visitor's enhanced-authorization mapping, previewed when no portal request has made it yet (/_sim never
         // provisions it: portal-authorization.mjs filterRules).
-        visibleCounts[entity] = store.rows(entity, { ...countIdentity, mappingPreview: true }).length;
+        visibleCounts[entity] = store.rowCount(entity, { ...countIdentity, mappingPreview: true });
       } catch (err) {
         visibleCounts[entity] = `Unavailable: ${err.code ?? err.message}`;
       }
@@ -2283,7 +2351,7 @@ async function createPowerPagesSimulator({
             sourcePortal = imported;
             portal = nextPortal;
             sourceDependencies = dependencies;
-            await replaceCompiledState(store.snapshot());
+            await replaceCompiledState(store.snapshot(undefined, { forkTables: true }));
             published = true;
           },
           { isolated: true },
@@ -2306,14 +2374,22 @@ async function createPowerPagesSimulator({
     );
   };
   const applySelectedPreset = async (name, adjust, { applyConfiguration = false, returnState = true } = {}) => {
-    const preset = resolvePreset(store.state, name, generatedPresets);
+    const preset =
+      name === startupPreset.name && startupPresetBody
+        ? startupPresetBody
+        : resolvePreset(store.state, name, generatedPresets, store.recordContext());
+    if (preset === startupPresetBody) startupPresetBody = undefined;
     if (!preset) throw error('Preset not found.', 404);
     const replaced = ['mappings', 'tables', 'permissions', 'plugins', 'settings'].filter(
       (key) => preset[key] !== undefined,
     );
     // Preserve all unspecified state, without copying business sections that
     // this preset replaces. Organization-owned rows are retained explicitly.
-    const state = store.snapshot({ sections: Object.keys(store.state).filter((key) => !replaced.includes(key)) });
+    // Paged tables fork their immutable pages instead of materializing rows.
+    const state = store.snapshot(
+      { sections: Object.keys(store.state).filter((key) => !replaced.includes(key)) },
+      { forkTables: true },
+    );
     state.simulator ??= config();
     const organizationSections = {
       mappings: store.state.mappings,
@@ -2754,12 +2830,12 @@ async function createPowerPagesSimulator({
     if (inspectionCache.size > 24) inspectionCache.delete(inspectionCache.keys().next().value);
     return value;
   };
-  const allDiagnostics = () => [
+  const allDiagnostics = (cfg = config()) => [
     ...packConfigurations.diagnostics,
     ...configurationPresetCollisions(store.state, packConfigurations.presets),
     ...(activeProfiles.diagnostics ?? []),
     ...portal.diagnostics,
-    ...(config().importDiagnostics ?? []),
+    ...(cfg.importDiagnostics ?? []),
     ...(appliedPermissionModel?.diagnostics ?? []),
     ...(solutionMetadata.diagnostics ?? []),
     // Source loader failures (unreadable roots, invalid XML/YAML) stay visible in status; serve continues, preflight blocks.
@@ -2768,31 +2844,32 @@ async function createPowerPagesSimulator({
   ];
   /** Cheap runtime status for the toolkit panel and tools; no fingerprints are recomputed. */
   const statusPayload = () => {
-    const state = store.snapshot({ sections: ['settings', 'simulator', 'presets'] });
-    const all = allDiagnostics();
+    const state = store.snapshot({ sections: ['settings', 'simulator'] });
+    const cfg = config(state.simulator);
+    const all = allDiagnostics(cfg);
     return {
       csrf,
-      ...runtimeState(),
+      ...runtimeState({ reuseCapabilities: true }),
       dataverse: dataverseSummary(),
       site: portal.website?.name ?? portal.website?.adx_name ?? null,
       format: portal.format,
       sourceDir: portal.sourceDir,
       solutionRoots,
       stateFile,
-      platformStyles: platformStylesStatus(config().shellProfile),
+      platformStyles: platformStylesStatus(cfg.shellProfile),
       localOverrides,
       startupPreset,
-      activeConfigurationPreset: config().activeExperiment ?? null,
+      activeConfigurationPreset: cfg.activeExperiment ?? null,
       deploymentProfile: portal.deploymentProfile ?? null,
       profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
       render,
       platformSettings: platformSettingEntries(state),
-      observed: config().observed,
+      observed: cfg.observed,
       richText: {
-        mode: richTextCompatibility() ? 'compatibility' : 'native',
-        nativeReady: nativeRichTextReady(cache?.manifest(), config().shellProfile, live.origin),
+        mode: richTextCompatibility(cfg) ? 'compatibility' : 'native',
+        nativeReady: nativeRichTextReady(cache?.manifest(), cfg.shellProfile, live.origin),
       },
-      subgridLabelMarkup: config().observed?.subgridLabelMarkup ?? 'sanitized',
+      subgridLabelMarkup: cfg.observed?.subgridLabelMarkup ?? 'sanitized',
       sourceFingerprint: fingerprint,
       loadedImplementationFingerprint: implementationFingerprint,
       revision,
@@ -2815,12 +2892,12 @@ async function createPowerPagesSimulator({
       },
       // Loopback confinement of local portal pages (opt-in) and its exceptions.
       confinePortalPages: state.simulator?.confinePortalPages === true,
-      contentPolicySource: config().contentPolicySource ?? 'runtime state',
+      contentPolicySource: cfg.contentPolicySource ?? 'runtime state',
       externalAssets: state.simulator?.externalAssets === true,
       externalFrameOrigins: Array.isArray(state.simulator?.externalFrameOrigins)
         ? state.simulator.externalFrameOrigins.length
         : 0,
-      presets: listPresets({ state, library: generatedPresets }),
+      presets: structuredClone(listPresets({ state: { presets: store.state.presets }, library: generatedPresets })),
       scenarios: Array.isArray(state.simulator?.scenarios) ? state.simulator.scenarios : [],
       activeScenario: state.simulator?.activeScenario ?? null,
       live: live.status(),
@@ -3300,14 +3377,14 @@ async function createPowerPagesSimulator({
       definitions: environmentVariableTable,
       profiles: () => deploymentProfilesSummary(profileConfig, activeProfiles),
       setOverride: async (schemaName, value) => {
-        const state = store.snapshot();
+        const state = store.snapshot(undefined, { forkTables: true });
         applyEnvironmentOverride(store, state, schemaName, value, { secrets: organization?.api?.secrets ?? null });
         await saveState(state);
         return environmentVariableTable().definitions.find((item) => item.schemaName === schemaName);
       },
       selectProfile: async (body) => {
         profileSelection(profileConfig, body);
-        const state = store.snapshot();
+        const state = store.snapshot(undefined, { forkTables: true });
         if (body === null) delete state.simulator.deploymentProfilePin;
         else state.simulator.deploymentProfilePin = body;
         await saveState(state);
@@ -3366,6 +3443,7 @@ async function createPowerPagesSimulator({
     change,
     csrf: () => csrf,
     status: statusPayload,
+    statusChunks: (value) => statusResponseChunks(value, recordCapabilitiesSummary),
     dataverseAdmin,
     staffSession,
     simulation: () => organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()),
@@ -3513,19 +3591,25 @@ async function createPowerPagesSimulator({
     if (await environmentRoutes(req, res, url)) return;
     if (method === 'GET' && relative === '/state/export') {
       // Credential material never leaves the runtime: password hashes are dropped and secrets keep only hint and expiry.
-      const snapshot = store.snapshot();
-      if (snapshot.dataverse)
-        snapshot.dataverse = {
-          ...snapshot.dataverse,
-          passwords: undefined,
-          applications: (snapshot.dataverse.applications ?? []).map(({ secrets, ...app }) => ({
-            ...app,
-            secrets: (secrets ?? []).map(({ id, hint, expiresOn }) => ({ id, hint, expiresOn })),
-          })),
-        };
-      return json(res, 200, snapshot, {
-        'content-disposition': 'attachment; filename="simulator-state.json"',
-      });
+      // Plain table rows stream in place under a read lease rather than from a second full copy.
+      return store.exportState(
+        (chunks) =>
+          json(res, 200, {}, { 'content-disposition': 'attachment; filename="simulator-state.json"' }, { chunks }),
+        {
+          adjust: (snapshot) => {
+            if (snapshot.dataverse)
+              snapshot.dataverse = {
+                ...snapshot.dataverse,
+                passwords: undefined,
+                applications: (snapshot.dataverse.applications ?? []).map(({ secrets, ...app }) => ({
+                  ...app,
+                  secrets: (secrets ?? []).map(({ id, hint, expiresOn }) => ({ id, hint, expiresOn })),
+                })),
+              };
+          },
+          project: exactJsonItem,
+        },
+      );
     }
     if (method === 'GET' && relative === '/state') {
       if (evidenceDir)
@@ -3615,7 +3699,7 @@ async function createPowerPagesSimulator({
         // SDK work. Apply this configuration delta to a fresh snapshot afterwards.
         await organizationHost.applyOperationOverrides(next, async () => {
           for (let attempt = 0; ; attempt++) {
-            const state = store.snapshot();
+            const state = store.snapshot(undefined, { forkTables: true });
             state.simulator ??= config();
             state.simulator.operations = { ...(state.simulator.operations ?? {}) };
             if (method === 'DELETE') delete state.simulator.operations[key];
@@ -3680,7 +3764,7 @@ async function createPowerPagesSimulator({
         if (body.contactId !== null && (typeof body.contactId !== 'string' || !body.contactId.trim()))
           throw error('Select a local contact ID, or null for an anonymous visitor.');
         const contactId = body.contactId === null ? null : personaKey(body.contactId);
-        const state = store.snapshot();
+        const state = store.snapshot(undefined, { forkTables: true });
         if (contactId) {
           const idColumn = state.mappings?.contact?.idColumn ?? 'contactid';
           const contact = (state.tables?.contact ?? []).find((row) => personaKey(row[idColumn]) === contactId);
@@ -3730,7 +3814,7 @@ async function createPowerPagesSimulator({
         };
         const created = await store.create(mapping.logicalName, values, { admin: true });
         try {
-          const state = store.snapshot();
+          const state = store.snapshot(undefined, { forkTables: true });
           state.simulator.contactRoles = [
             ...(state.simulator.contactRoles ?? []),
             ...[...new Set(roleIds)].map((roleId) => ({ contactId, roleId })),
@@ -3755,7 +3839,7 @@ async function createPowerPagesSimulator({
           if (!scenario) throw error('Scenario not found.', 404);
           if (scenario.preset) await applySelectedPreset(scenario.preset, scenarioAdjustment(scenario));
           else {
-            const state = store.snapshot();
+            const state = store.snapshot(undefined, { forkTables: true });
             scenarioAdjustment(scenario)(state);
             await saveState(state);
           }
@@ -3789,7 +3873,7 @@ async function createPowerPagesSimulator({
           if (method === 'POST') next.push(value);
           else next[index] = value;
         }
-        const state = store.snapshot();
+        const state = store.snapshot(undefined, { forkTables: true });
         state.simulator.scenarios = next;
         // Scenario definitions do not change rendered output: persist without reloading pages.
         await replaceCompiledState(state);
@@ -3803,7 +3887,7 @@ async function createPowerPagesSimulator({
       return change(async () => {
         const body = await jsonObjectBody(req);
         if (typeof body.origin !== 'string') throw error('Provide the reference origin to use for live routing.');
-        const state = store.snapshot();
+        const state = store.snapshot(undefined, { forkTables: true });
         state.simulator.live = { ...(state.simulator.live ?? {}), origin: body.origin };
         validateConfig(state.simulator);
         await saveState(state);
@@ -3852,7 +3936,8 @@ async function createPowerPagesSimulator({
       return change(async () => {
         const runtimeStore = {
           resolveMapping: (entity) => store.resolveMapping(entity),
-          snapshot: (projection) => store.snapshot(projection),
+          // The plan writes this snapshot back; paged tables stay forked pages.
+          snapshot: (projection) => store.snapshot(projection, { forkTables: true }),
           snapshotDigest: () => store.snapshotDigest(),
           replaceState: async (state, { expectedSnapshot, expectedDigest } = {}) => {
             if (expectedDigest !== undefined && store.snapshotDigest() !== expectedDigest)
@@ -3861,7 +3946,10 @@ async function createPowerPagesSimulator({
                 409,
                 'StateConflict',
               );
-            if (expectedSnapshot !== undefined && JSON.stringify(store.snapshot()) !== expectedSnapshot)
+            if (
+              expectedSnapshot !== undefined &&
+              JSON.stringify(store.snapshot(undefined, { forkTables: true })) !== expectedSnapshot
+            )
               throw error(
                 'Local state changed during reference reads; enrichment was not applied.',
                 409,
@@ -3911,7 +3999,7 @@ async function createPowerPagesSimulator({
     if (relative === '/platform-settings' && method === 'PATCH')
       return change(async () => {
         const patch = validatePlatformOverrides(await jsonObjectBody(req)),
-          state = store.snapshot();
+          state = store.snapshot(undefined, { forkTables: true });
         state.simulator.platformOverrides = { ...state.simulator.platformOverrides, ...patch };
         delete state.simulator.activeExperiment;
         await saveState(state);
@@ -3922,7 +4010,7 @@ async function createPowerPagesSimulator({
         const key = decodeAdminIdentifier(relative.slice('/platform-settings/'.length));
         if (!platformSettingEntries(platformState()).some((x) => x.key === key))
           throw error('Unknown platform setting.', 404);
-        const state = store.snapshot();
+        const state = store.snapshot(undefined, { forkTables: true });
         delete (state.simulator.platformOverrides ?? {})[key];
         delete state.simulator.activeExperiment;
         await saveState(state);
@@ -3942,7 +4030,7 @@ async function createPowerPagesSimulator({
         return json(res, 200, item);
       }
       return change(async () => {
-        const state = store.snapshot(),
+        const state = store.snapshot(undefined, { forkTables: true }),
           presets = experimentPresets(state, sourcePortal, packConfigurations.presets),
           existing = presets.find((p) => p.id === id);
         if (method === 'POST' && experimentRoute[2]) {
@@ -4022,7 +4110,7 @@ async function createPowerPagesSimulator({
           const unknown = (value.roleIds ?? []).filter((roleId) => !roleIds.has(roleId));
           if (unknown.length) throw error(`Unknown web-role IDs: ${unknown.join(', ')}`);
         }
-        const state = store.snapshot();
+        const state = store.snapshot(undefined, { forkTables: true });
         state.simulator.portalOverrides ??= {};
         delete state.simulator.activeExperiment;
         const entries = (state.simulator.portalOverrides[section] ??= {});
@@ -4051,7 +4139,7 @@ async function createPowerPagesSimulator({
     if (relative === '/config' && method === 'PATCH')
       return change(async () => {
         const patch = await jsonObjectBody(req);
-        const state = store.snapshot();
+        const state = store.snapshot(undefined, { forkTables: true });
         const allowed = [
           'mode',
           'pageMode',
@@ -4106,7 +4194,7 @@ async function createPowerPagesSimulator({
             );
         }
         await saveState(state);
-        json(res, 200, exposedState());
+        stateResponse(req, res);
       });
     if (relative === '/assets/capture' && method === 'POST') {
       if (!cache) throw error('Asset capture requires a persisted simulator state directory.', 409);
@@ -4145,7 +4233,7 @@ async function createPowerPagesSimulator({
           parentName: body.parentName,
           childName: body.childName,
         });
-        const state = store.snapshot(),
+        const state = store.snapshot(undefined, { forkTables: true }),
           profile = { ...config().shellProfile };
         profile.snippetCompositions = [
           ...(Array.isArray(profile.snippetCompositions) ? profile.snippetCompositions : []).filter(
@@ -4166,7 +4254,7 @@ async function createPowerPagesSimulator({
           paths: body.paths,
         });
         if (!report.complete) return json(res, 409, { ...report, applied: false });
-        const state = store.snapshot();
+        const state = store.snapshot(undefined, { forkTables: true });
         const profile = { ...config().shellProfile };
         const selected = new Set(report.baselines.map((item) => item.path));
         profile.observedStylesheets = [
@@ -4186,53 +4274,66 @@ async function createPowerPagesSimulator({
         if (typeof body.path !== 'string') throw error('Provide the portal page path to capture.');
         if (body.managedControlPath !== undefined && typeof body.managedControlPath !== 'string')
           throw error('Managed control page path must be a string.');
-        let observedHtml;
-        const report = await capturePortalShell(cache, live, {
-          path: body.path,
-          portal,
-          onObservedHtml: (html) => {
-            observedHtml = html;
-          },
-        });
-        if (!report.ready) return json(res, 409, { ...report, applied: false });
         if (body.richText !== undefined && typeof body.richText !== 'boolean') throw error('richText must be boolean.');
-        const richText =
-          body.richText === false
-            ? {
-                required: false,
-                skipped: 'DISABLED',
-                complete: true,
-                nativeReady: false,
-                managedControls: {},
-                diagnostics: [],
-              }
-            : await captureRichTextAssets(cache, live, {
-                schemas: {
-                  ...solutionMetadata.componentSchemas,
-                  ...config().componentSchemas,
-                },
-                portal,
-                html: observedHtml,
-                managedControls: config().managedControls ?? config().shellProfile?.managedControls,
-                managedControlPath: body.managedControlPath,
-                captureConfigurations: true,
-              });
-        if (Object.keys(richText.managedControls).length)
-          report.shellProfile.managedControls = richText.managedControls;
-        if (richText.configurationBaselines?.length)
-          report.shellProfile.richTextConfigurations = richText.configurationBaselines;
-        report.richText = richText;
-        if (richText.required)
-          report.shellProfile.richTextReadiness = {
-            nativeReady: richText.nativeReady === true,
-            capturedAt: new Date().toISOString(),
-            origin: live.origin,
-          };
-        report.complete = report.complete && richText.complete;
-        const state = store.snapshot();
-        report.shellProfile = mergeShellProfile(config().shellProfile, report.shellProfile, { pagePath: body.path });
-        state.simulator = { ...state.simulator, shellProfile: report.shellProfile };
-        await saveState(state);
+        const report = await cache.transaction(
+          async (capturedCache) => {
+            let observedHtml;
+            const report = await capturePortalShell(capturedCache, live, {
+              path: body.path,
+              portal,
+              onObservedHtml: (html) => {
+                observedHtml = html;
+              },
+            });
+            if (!report.ready) return report;
+            const richText =
+              body.richText === false
+                ? {
+                    required: false,
+                    skipped: 'DISABLED',
+                    complete: true,
+                    nativeReady: false,
+                    managedControls: {},
+                    diagnostics: [],
+                  }
+                : await captureRichTextAssets(capturedCache, live, {
+                    schemas: {
+                      ...solutionMetadata.componentSchemas,
+                      ...config().componentSchemas,
+                    },
+                    portal,
+                    html: observedHtml,
+                    managedControls: config().managedControls ?? config().shellProfile?.managedControls,
+                    managedControlPath: body.managedControlPath,
+                    captureConfigurations: true,
+                  });
+            if (Object.keys(richText.managedControls).length)
+              report.shellProfile.managedControls = richText.managedControls;
+            if (richText.configurationBaselines?.length)
+              report.shellProfile.richTextConfigurations = richText.configurationBaselines;
+            report.richText = richText;
+            if (richText.required)
+              report.shellProfile.richTextReadiness = {
+                nativeReady: richText.nativeReady === true,
+                capturedAt: new Date().toISOString(),
+                origin: live.origin,
+              };
+            report.complete = report.complete && richText.complete;
+            report.shellProfile = mergeShellProfile(config().shellProfile, report.shellProfile, {
+              pagePath: body.path,
+            });
+            return report;
+          },
+          {
+            accept: (report) => report.ready,
+            publish: async (report) => {
+              const state = store.snapshot(undefined, { forkTables: true });
+              state.simulator = { ...state.simulator, shellProfile: report.shellProfile };
+              await saveState(state);
+            },
+          },
+        );
+        if (!report.ready) return json(res, 409, { ...report, applied: false });
         return json(res, report.complete ? 200 : 207, {
           ...report,
           applied: true,
@@ -4264,11 +4365,11 @@ async function createPowerPagesSimulator({
         await organization?.reseed();
         // Advanced form sessions belong to the reset state: a reset ends them.
         webFormSessions.clear();
-        json(res, 200, exposedState());
+        stateResponse(req, res);
       });
     if (relative === '/reload' && method === 'POST') {
       await reload();
-      return json(res, 200, exposedState());
+      return stateResponse(req, res);
     }
     const collection = /^\/(mappings|plugins|permissions|endpoints|presets)(?:\/([^/]+))?(?:\/(apply))?$/.exec(
       relative,
@@ -4282,19 +4383,20 @@ async function createPowerPagesSimulator({
           if (!preset) throw error('Configuration item not found.', 404);
           return json(res, 200, { id, ...preset });
         }
-        const items = exposedState().config[kind];
+        const items = exposedConfig()[kind];
         const item = id ? items.find((x) => x.id === id) : items;
         if (!item) throw error('Configuration item not found.', 404);
         return json(res, 200, item);
       }
       return change(async () => {
-        const state = store.snapshot();
+        const state = store.snapshot(undefined, { forkTables: true });
         state.simulator ??= config();
         if (action === 'apply' && kind === 'presets' && method === 'POST') {
           const options = await jsonObjectBody(req);
           if (options.applyConfiguration !== undefined && typeof options.applyConfiguration !== 'boolean')
             throw error('applyConfiguration must be boolean.', 400);
-          return json(res, 200, await applySelectedPreset(id, undefined, options));
+          await applySelectedPreset(id, undefined, { ...options, returnState: false });
+          return stateResponse(req, res);
         }
         const body = method === 'DELETE' ? null : await jsonObjectBody(req);
         const key = id ?? body?.id ?? body?.logicalName ?? randomUUID();
@@ -4353,7 +4455,7 @@ async function createPowerPagesSimulator({
         json(
           res,
           method === 'POST' ? 201 : 200,
-          exposedState().config[kind].find((x) => x.id === key) ?? {
+          exposedConfig()[kind].find((x) => x.id === key) ?? {
             deleted: key,
           },
         );
@@ -4739,56 +4841,21 @@ async function createPowerPagesSimulator({
     renderPage: renderAccountPage,
     readBody: rawBody,
   });
-  let modelDrivenCache;
-  const modelDrivenCatalogue = () => {
-    const metadata = modelMetadata();
-    if (
-      modelDrivenCache?.portal !== portal ||
-      modelDrivenCache?.metadata !== metadata ||
-      modelDrivenCache?.storeRevision !== store.revision
-    ) {
-      modelDrivenCache = {
-        portal,
-        metadata,
-        storeRevision: store.revision,
-        value: appCatalogue({
-          portal,
-          metadata,
-          mappings: store.snapshot({ sections: ['mappings'] }).mappings,
-          defaultApp: runtimeOption.defaultApp,
-          settings: store.state.settings,
-          clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue),
-          canvasApps: canvasAppNames(organizationHost),
-        }),
-      };
-    }
-    return modelDrivenCache.value;
-  };
-  modelDrivenCatalogue.async = async ({ cancelled } = {}) => {
-    const metadata = modelMetadata(),
-      source = portal,
-      storeRevision = store.revision;
-    if (
-      modelDrivenCache?.portal !== source ||
-      modelDrivenCache?.metadata !== metadata ||
-      modelDrivenCache?.storeRevision !== storeRevision
-    ) {
-      const value = await appCatalogueAsync(
-        {
-          portal: source,
-          metadata,
-          mappings: store.snapshot({ sections: ['mappings'] }).mappings,
-          defaultApp: runtimeOption.defaultApp,
-          settings: store.state.settings,
-          clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue),
-          canvasApps: canvasAppNames(organizationHost),
-        },
-        { cancelled },
-      );
-      modelDrivenCache = { portal: source, metadata, storeRevision, value };
-    }
-    return modelDrivenCache.value;
-  };
+  const modelDrivenCatalogue = storeCatalogue({
+    store,
+    metadata: modelMetadata,
+    source: () => portal,
+    options: (metadata) => ({
+      lazy: true,
+      portal,
+      metadata,
+      mappings: store.state.mappings,
+      defaultApp: runtimeOption.defaultApp,
+      settings: store.state.settings,
+      clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue),
+      canvasApps: canvasAppNames(organizationHost),
+    }),
+  });
   const modelDrivenData = createModelDrivenData({
     store,
     catalogue: modelDrivenCatalogue,
@@ -4804,7 +4871,7 @@ async function createPowerPagesSimulator({
     },
     writeRecord: dataverseConfig.enabled ? (input) => dataverse.writeLocalRecord(input) : null,
     saveOverlay: async (key, value) => {
-      const state = store.snapshot();
+      const state = store.snapshot(undefined, { forkTables: true });
       state.simulator.modelDriven ??= {};
       state.simulator.modelDriven.records = {
         ...state.simulator.modelDriven.records,
@@ -4814,6 +4881,8 @@ async function createPowerPagesSimulator({
     },
   });
   const modelDrivenHandler = createModelDrivenHandler({
+    streamMetadata: true,
+    workerMetadata: true,
     sourceMaps,
     diagnostic: recordDiagnostic,
     catalogue: modelDrivenCatalogue,
@@ -4831,6 +4900,8 @@ async function createPowerPagesSimulator({
     webApi: createModelDrivenWebApi({ organization: () => organization }),
     offlineState: offlineSessionState(store, change),
   });
+  closeModelDriven = () => modelDrivenHandler.close();
+
   // Reserved app surfaces: canvas inventory pages and code apps answer before the model-driven handler.
   // Canvas apps run headlessly (canvas-runtime.mjs) as the staff session's user or, for a signed-in portal visitor, the
   // Dataverse user enhanced authorization maps the contact to (portal-authorization.mjs principal); never SYSTEM.
@@ -6341,7 +6412,9 @@ async function createPowerPagesSimulator({
     if (/^\/_sim(?:\/|$)/.test(url.pathname)) url.pathname = url.pathname.replace(/^\/_sim/, '/__sim');
     // Browser sign-in session of this request (lib/auth-session.mjs).
     const auth = requestAuth(req, url);
-    const cfg = config();
+    // Only synchronous audit classification reads this private configuration.
+    // The handler snapshots its own response before any asynchronous writes.
+    const cfg = config(store.state.simulator);
     const endpoint = (cfg.endpoints ?? []).find((item) => item.enabled !== false && item.path === url.pathname);
     const kind = url.pathname.startsWith('/__sim/forms/')
       ? 'form'
@@ -6437,7 +6510,7 @@ async function createPowerPagesSimulator({
                 // Enhanced authorization maps the visitor to its Dataverse user and roles before any entry point evaluates it. The
                 // /_sim/api administration acts as the local administrator, never as the visitor: it maps nothing and provisions no
                 // site application user, so a refused administration request leaves no side effect.
-                if (config().mode !== 'live' && !/^\/(?:_sim|__sim)\/api\//.test(req.url ?? ''))
+                if (!/^\/(?:_sim|__sim)\/api\//.test(req.url ?? '') && config().mode !== 'live')
                   await store.portalAuthorization?.prepare(currentIdentity());
                 return runWithSourceDebugging(sourceMaps, () => handle(req, res));
               }),
@@ -6514,13 +6587,15 @@ async function createPowerPagesSimulator({
   bootstrapStageAt = performance.now();
   startupPhase('preset');
   if (startupPreset.applied)
-    await applySelectedPreset(preset, undefined, {
-      applyConfiguration: presetConfiguration === 'apply',
-      returnState: false,
-    });
+    await store.initialize(() =>
+      applySelectedPreset(preset, undefined, {
+        applyConfiguration: presetConfiguration === 'apply',
+        returnState: false,
+      }),
+    );
   bootstrapTimings.presetMs = Math.round(performance.now() - bootstrapStageAt);
   if (personaInstance) {
-    const state = store.snapshot();
+    const state = store.snapshot(undefined, { forkTables: true });
     state.simulator ??= {};
     if (personaInstance.deploymentProfile !== undefined)
       state.simulator.deploymentProfilePin = personaInstance.deploymentProfile;
@@ -6545,6 +6620,7 @@ async function createPowerPagesSimulator({
     bootstrapStageAt = performance.now();
     startupPhase('organization');
     organization = await organizationHost.createOrganization({
+      initializing: true,
       change,
       settings: liveDataverseSettings,
       schema: () => solutionData?.schema ?? null,
@@ -6587,6 +6663,7 @@ async function createPowerPagesSimulator({
         });
     }
     bootstrapTimings.organizationMs = Math.round(performance.now() - bootstrapStageAt);
+    store.completeInitialization();
     if (dataverseConfig.enabled) {
       dataverseCertificate = dataverseConfig.tls ? await ensureCertificate(dataverseCertificatePath) : null;
       // The Arc challenge's secret files sit beside the project state (.paqvilo/mirage/); other shapes need no secret directory.
@@ -6672,7 +6749,7 @@ async function createPowerPagesSimulator({
           // The re-registered Solution source modules (custom APIs, duplicate rules, workflows, plug-in registrations) follow in
           // the same change slot and source publication; their own transaction leaves the previous registrations when it fails.
           const publish = async () => {
-            await replaceCompiledState(store.snapshot());
+            await replaceCompiledState(store.snapshot(undefined, { forkTables: true }));
             await organizationHost.refreshSources();
             await organizationHost.loadCanvas();
           };
