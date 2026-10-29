@@ -29,7 +29,7 @@ Local validation reproduces the hosted checks that a contributor's machine would
 - **CodeQL.** `scripts/codeql.mjs` runs the Security workflow's `security-extended` analysis for every language over the validated index, with the CodeQL bundle pinned by the workflow's `codeql-action` and downloaded once (digest-verified) into the main checkout's `.paqvilo/tools/`. Each result is compared by fingerprint with the alerts GitHub dismissed on `main` and open PRs; any other result fails, as it would fail `Security gate`. It needs the GitHub CLI signed in. Fix a finding, or review and dismiss a false positive on GitHub, then rerun.
 - **Browser channels.** On Windows every browser lane runs in Chromium and Edge, as the hosted Windows matrix does.
 - **Runner environment.** Windows lanes see `TEMP` through an 8.3 short alias whose real path differs, as hosted runners do (`C:\Users\RUNNER~1\…`); compare physical paths. The package smoke starts from an empty npm cache, so every offline install must be primed by `cache:package`. Test workspaces may not assume ignored folders such as `.paqvilo/` exist.
-- **Changed tests.** Changed test files rerun twice more after their lane passes, to expose order- or timing-dependent tests before slower hosted runners do. Set `git config paqvilo.ci.repeat <n>` or `PAQ_CI_REPEAT=<n>`; `0` turns it off.
+- **Changed tests.** Test files changed by commits that no remote branch contains yet rerun twice more after their lane passes, to expose order- or timing-dependent tests before slower hosted runners do. Set `git config paqvilo.ci.repeat <n>` or `PAQ_CI_REPEAT=<n>`; `0` turns it off.
 
 Never bypass the hooks with `--no-verify`; a push that skipped them reaches CI unvalidated.
 

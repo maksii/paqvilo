@@ -632,6 +632,20 @@ export function changedTests(changed, repeat, suite, browser = false) {
   }));
 }
 
+/**
+ * Files changed by commits no remote branch contains: what a push introduces. The suite selection compares with the
+ * base branch instead, which on a release branch spans nearly every test.
+ */
+export function unpushedFiles(directory = root) {
+  const log = spawnSync(
+    'git',
+    ['--no-optional-locks', 'log', '--format=', '--name-only', '--no-renames', '-z', 'HEAD', '--not', '--remotes'],
+    { cwd: directory, encoding: 'utf8', windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+  );
+  if (log.status !== 0) throw new Error('Cannot list unpushed changes.', { cause: log.error });
+  return [...new Set(log.stdout.split(/[\0\n]/).filter(Boolean))];
+}
+
 /** Extra runs of changed test files: PAQ_CI_REPEAT, else `git config paqvilo.ci.repeat`, else 2; 0 disables. */
 export function validationRepeat(env = process.env, configured = gitConfig('paqvilo.ci.repeat')) {
   const value = env.PAQ_CI_REPEAT || configured || '2';
@@ -956,8 +970,8 @@ async function main() {
     if (diff.status !== 0) throw new Error(`Cannot compare ${base}; use --full or supply an existing --base.`);
     if (checkedGitStatus(root))
       throw new Error('Scoped pre-push validation requires a clean checkout; commit changes or use --full.');
-    changed = diff.stdout.split('\0').filter(Boolean);
-    scope = classifyChanges(changed);
+    scope = classifyChanges(diff.stdout.split('\0').filter(Boolean));
+    changed = unpushedFiles();
   }
   const suites = suitesForScope(scope);
   console.log(

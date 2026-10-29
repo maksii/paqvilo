@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { classifyChanges } from '../.github/scripts/change-scope.mjs';
@@ -11,6 +12,7 @@ import {
   localBrowserChannels,
   runSteps,
   runnerTemporaryDirectory,
+  unpushedFiles,
   validationRepeat,
   validationSteps,
 } from '../scripts/ci.mjs';
@@ -95,6 +97,35 @@ test('changed test files rerun after their own lane with the package flags, and 
       .filter((step) => step.label.endsWith('msedge'))
       .every((step) => step.commands.length === 1),
   );
+});
+
+test('repeated tests come from commits no remote branch contains, not from the whole base diff', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-ci-unpushed-'));
+  ownedFixture(t).remove(() => fs.promises.rm(directory, { recursive: true, force: true }));
+  const env = { ...process.env };
+  for (const name of Object.keys(env)) if (name.startsWith('GIT_')) delete env[name];
+  const git = (...args) => {
+    const result = spawnSync(
+      'git',
+      ['-c', 'core.hooksPath=.no-hooks', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test', ...args],
+      { cwd: directory, env, encoding: 'utf8', windowsHide: true },
+    );
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const commit = (file, message) => {
+    fs.mkdirSync(path.dirname(path.join(directory, file)), { recursive: true });
+    fs.writeFileSync(path.join(directory, file), message);
+    git('add', '.');
+    git('commit', '-qm', message);
+  };
+  git('init', '-q');
+  commit('test/base.test.mjs', 'base');
+  commit('test/release.test.mjs', 'release work already on the remote');
+  git('update-ref', 'refs/remotes/origin/release', 'HEAD');
+  assert.deepEqual(unpushedFiles(directory), []);
+  commit('test/pushed-next.test.mjs', 'this push');
+  commit('mirage/test/also.test.mjs', 'this push too');
+  assert.deepEqual(unpushedFiles(directory).sort(), ['mirage/test/also.test.mjs', 'test/pushed-next.test.mjs']);
 });
 
 test('the changed-test repeat count is configured like the job count', () => {
