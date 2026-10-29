@@ -655,6 +655,7 @@ async function createPowerPagesSimulator({
       observed,
     );
     await cache.save();
+    cache.release();
     bootstrapTimings.portalCache = { ...cache.stats, file: portalCacheFile };
     bootstrapTimings.portalMs = Math.round(performance.now() - started);
     return imported;
@@ -750,6 +751,7 @@ async function createPowerPagesSimulator({
     solutionMetadata.modelDrivenRibbonDocuments = clientResources.ribbonDocuments;
     solutionMetadata.modelDrivenAppActions = clientResources.appActions;
     await cache.save();
+    cache.release();
     bootstrapTimings.solutionsMs = Math.round(performance.now() - started);
     bootstrapTimings.solutionCache = { ...cache.stats, processHits: cache.processHits, file: solutionCacheFile };
   }

@@ -341,12 +341,24 @@ export class SolutionFileCache {
     return value;
   }
   /**
+   * Drop every parsed and derived result once a load has saved them. A scan keeps its cache for later reads, so an
+   * unreleased cache would hold every source file's parse for the life of the runtime. Later reads parse again, and a
+   * released cache is never saved, so it cannot overwrite the complete file with the few entries read afterwards.
+   */
+  release() {
+    this.released = true;
+    this.entries.clear();
+    this.used.clear();
+    this.derived.clear();
+    this.usedDerived.clear();
+  }
+  /**
    * Persist the cache; failures leave sources authoritative. With `prune` (default)
    * only entries used in this session are kept, so deleted files leave the cache;
    * partial readers (for example root discovery) keep the other entries.
    */
   async save({ prune = true } = {}) {
-    if (!this.file) return false;
+    if (!this.file || this.released) return false;
     const pruned =
       prune &&
       ([...this.entries.keys()].some((key) => !this.used.has(key)) ||

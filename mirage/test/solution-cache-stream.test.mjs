@@ -144,3 +144,27 @@ test('the cache file holds one native JSON line per entry and ignores another fo
   await fs.writeFile(file, JSON.stringify({ format: 2, entries: { [source]: cache.entries.get(source) } }));
   assert.equal((await SolutionFileCache.open(file)).entries.size, 0, 'Another format is rebuilt from sources');
 });
+
+test('a loaded organization releases its parsed source cache and never rewrites it from later reads', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-released-cache-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const solution = path.join(root, 'solution');
+  await fs.mkdir(path.join(solution, 'Entities/x_item'), { recursive: true });
+  await fs.writeFile(
+    path.join(solution, 'Entities/x_item/Entity.xml'),
+    '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><attributes><attribute PhysicalName="x_itemid"><Type>primarykey</Type><LogicalName>x_itemid</LogicalName></attribute></attributes><EntitySetName>x_items</EntitySetName></entity></EntityInfo></Entity>',
+  );
+  settleFileTimes(t);
+  const cacheFile = path.join(root, '.paqvilo/cache/solution-sources.json');
+  const { loadOrganizationSources } = await import('../lib/solution-runtime-source.mjs');
+  const loaded = await loadOrganizationSources({ solutionRoots: [solution], cacheFile });
+  assert.ok(loaded.solutionData.mappings.x_item, 'The organization loaded its source');
+  const saved = await fs.readFile(cacheFile, 'utf8');
+  assert.ok(saved.split('\n').length > 1, 'The cache was saved before it was released');
+  assert.equal(loaded.scan.cache.entries.size, 0, 'The scan no longer retains every parsed source file');
+  assert.equal(loaded.scan.cache.derived.size, 0);
+  assert.equal(await loaded.scan.cache.save(), false, 'A released cache is never written again');
+  assert.equal(await fs.readFile(cacheFile, 'utf8'), saved);
+  const reopened = await SolutionFileCache.open(cacheFile);
+  assert.ok(reopened.entries.size > 0, 'The next start still finds the saved parses');
+});

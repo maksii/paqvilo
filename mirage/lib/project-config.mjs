@@ -849,5 +849,7 @@ export async function bootstrapProject(project, { lcid = project.lcid ?? 1033, c
   const solutionData = await importSolutionData(project.solutionRoots, { ...shared, lcid });
   await cache.save();
   await portalCache.save();
+  cache.release();
+  portalCache.release();
   return { project, portals, solutionData };
 }
