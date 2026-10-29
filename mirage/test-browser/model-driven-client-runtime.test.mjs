@@ -440,6 +440,131 @@ test('form deep links, picker changes, saves and Xrm openForm preserve the selec
   assert.deepEqual(errors, []);
 });
 
+test('known excluded source forms fall back inside the app while genuinely missing source forms refuse', async (t) => {
+  const initial = await modelDrivenFixture(t, { defer: true }),
+    excludedId = '1603bd23-cd05-4ca3-a16f-31503d42359a';
+  const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  await fs.writeFile(
+    path.join(path.dirname(formFile), 'excluded.xml'),
+    (await fs.readFile(formFile, 'utf8'))
+      .replace('{item-form}', `{${excludedId}}`)
+      .replace('description="Information"', 'description="Excluded form"'),
+  );
+  const appFile = path.join(initial.solutionDir, 'AppModules/x_example/AppModule.xml');
+  await fs.writeFile(
+    appFile,
+    (await fs.readFile(appFile, 'utf8')).replace(
+      '</AppModuleComponents>',
+      '<AppModuleComponent type="60" id="{item-form}"/></AppModuleComponents>',
+    ),
+  );
+  const sim = await initial.start(),
+    page = await chrome.page(t),
+    errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const route =
+    sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const ready = () =>
+    page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && window.Xrm?.Page);
+  // Each fresh route hydrates source metadata before deciding app eligibility.
+  for (const requested of [`{${excludedId.toUpperCase()}}`, '{ITEM-FORM}', undefined]) {
+    await page.goto(route + (requested === undefined ? '' : '&formid=' + encodeURIComponent(requested)));
+    await ready();
+    assert.equal(await page.getByRole('tab', { name: 'General', exact: true }).isVisible(), true);
+    assert.equal(new URL(page.url()).searchParams.get('formid'), requested === undefined ? null : 'item-form');
+    assert.equal(await page.evaluate(() => window.Xrm.Page.ui.formSelector.getCurrentItem().getId()), '{item-form}');
+  }
+  await page.evaluate(async (formId) => {
+    const pane = await window.Xrm.App.sidePanes.createPane({ paneId: 'eligible-form', title: 'Eligible form' });
+    await pane.navigate({
+      pageType: 'entityrecord',
+      entityName: 'x_item',
+      entityId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      formId,
+    });
+  }, excludedId);
+  const frame = page.frameLocator('.side-pane[data-pane-id="eligible-form"] iframe');
+  await frame.locator('html[data-mirage-app-state="ready"]').waitFor();
+  assert.equal(await frame.getByRole('tab', { name: 'General', exact: true }).isVisible(), true);
+  assert.equal(
+    await frame.locator('html').evaluate(() => new URL(location.href).searchParams.get('formid')),
+    'item-form',
+  );
+  await page.goto(route + '&formid=missing-source-form');
+  await page.waitForFunction(() => ['ready', 'error'].includes(document.documentElement.dataset.mirageAppState));
+  assert.equal(await page.locator('html').getAttribute('data-mirage-app-state'), 'error');
+  assert.match(await page.locator('#notice').textContent(), /requested form.*unavailable/i);
+  assert.equal(await page.locator('#record-form').count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('switching source forms clears stale explicit tab context before reload and preserves drafts through save', async (t) => {
+  const initial = await modelDrivenFixture(t, { defer: true }),
+    reviewId = 'b1168cab-0940-40f2-a83a-f79675751ade';
+  const formFile = path.join(initial.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
+  await fs.writeFile(
+    path.join(path.dirname(formFile), 'review.xml'),
+    (await fs.readFile(formFile, 'utf8'))
+      .replace('{item-form}', `{${reviewId}}`)
+      .replace('description="Information"', 'description="Review form"')
+      .replace('<tab name="general">', '<tab name="review-tab">')
+      .replace('description="General"', 'description="Review details"'),
+  );
+  const appFile = path.join(initial.solutionDir, 'AppModules/x_example/AppModule.xml');
+  await fs.writeFile(
+    appFile,
+    (await fs.readFile(appFile, 'utf8')).replace(
+      '</AppModuleComponents>',
+      `<AppModuleComponent type="60" id="{item-form}"/><AppModuleComponent type="60" id="{${reviewId}}"/></AppModuleComponents>`,
+    ),
+  );
+  const sim = await initial.start(),
+    page = await chrome.page(t),
+    errors = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  const route =
+    sim.url + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const openReview = async () => {
+    await page.goto(route + `&formid=${reviewId}&tabname=review-tab`);
+    await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && window.Xrm?.Page);
+    assert.equal(
+      await page.getByRole('tab', { name: 'Review details', exact: true }).getAttribute('aria-selected'),
+      'true',
+    );
+  };
+  const choose = async (name) => {
+    await page.getByRole('button', { name: 'Record form', exact: true }).click();
+    await page.getByRole('menuitemradio', { name, exact: true }).click();
+  };
+  await openReview();
+  await choose('Review form');
+  assert.equal(
+    new URL(page.url()).searchParams.get('tabname'),
+    'review-tab',
+    'choosing the current form retains its explicit tab',
+  );
+  await choose('Information');
+  await page.getByRole('tab', { name: 'General', exact: true }).waitFor();
+  await page.reload();
+  await page.waitForFunction(() => ['ready', 'error'].includes(document.documentElement.dataset.mirageAppState));
+  assert.equal(await page.locator('html').getAttribute('data-mirage-app-state'), 'ready');
+  assert.equal(await page.getByRole('tab', { name: 'General', exact: true }).isVisible(), true);
+  assert.equal(new URL(page.url()).searchParams.has('tabname'), false);
+  await openReview();
+  await page.getByLabel('Name', { exact: true }).fill('Draft across form tabs');
+  await choose('Information');
+  await page.getByRole('tab', { name: 'General', exact: true }).waitFor();
+  assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Draft across form tabs');
+  await (await formCommand(page, 'Save')).click();
+  await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+  await page.reload();
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && window.Xrm?.Page);
+  assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Draft across form tabs');
+  assert.equal(new URL(page.url()).searchParams.get('formid'), 'item-form');
+  assert.equal(new URL(page.url()).searchParams.has('tabname'), false);
+  assert.deepEqual(errors, []);
+});
+
 test('a persisted inactive two-state record disables its default UI while explicit client unlocks and SDK saves retain native behavior', async (t) => {
   // A record read is held later; release it before the fixture closes the page (t.after runs first in, first out).
   let releaseRead;

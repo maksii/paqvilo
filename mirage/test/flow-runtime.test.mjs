@@ -360,7 +360,6 @@ const createWidget = {
 
 test('Request trigger settings cannot silently execute an unconditional flow or commit data', () => {
   const settings = [
-    { conditions: [{ expression: '@false' }] },
     { splitOn: "@triggerBody()['values']" },
     { runtimeConfiguration: { concurrency: { runs: 1 } } },
     { runTimeConfiguration: { concurrency: { runs: 1 } } },

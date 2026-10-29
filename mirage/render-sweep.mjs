@@ -34,6 +34,8 @@ import { reportCliError } from './cli-output.mjs';
  * injection (/__sim-static/, data-paqvilo-mirage-runtime, sim-trace-id), which would corrupt JSON or
  * fragment consumers. The static Liquid inventory of the same export is attached, so the
  * per-portal summary (--ci prints one JSON line per persona) also counts unsupported constructs.
+ * Optional retained body samples omit simulator-owned runtime scripts before the 20,000-character
+ * limit; bodyTruncated and bodyOmittedRuntimeScripts describe that sample. Classification uses the full response.
  */
 import { parseToolArgs, toolOptionsHelp } from './tool-options.mjs';
 import fs from 'node:fs/promises';
@@ -43,6 +45,7 @@ import { fileURLToPath } from 'node:url';
 import { createSimulator } from './server.mjs';
 import { portalField } from './lib/importer.mjs';
 import { isHtmlDocument } from './lib/source-dependencies.mjs';
+import { retainedResponseBody } from './lib/render-sweep-body.mjs';
 import { inventoryPortal } from './liquid-inventory.mjs';
 
 /** Diagnostics that mean Power Pages would also print an error into the page. */
@@ -432,7 +435,7 @@ async function sweepPersona(target, persona, options) {
         pageId: request.page.id,
         derivedRecord: request.derived,
         ...(failure ? { failure } : {}),
-        ...(options.keepBodies ? { body: body.slice(0, 20_000) } : {}),
+        ...(options.keepBodies ? retainedResponseBody(body, contentType) : {}),
         ...classified,
         liquidErrors: classified.liquidErrors.map(compactDiagnostic),
         liquidNotices: classified.liquidNotices.map(compactDiagnostic),

@@ -358,7 +358,21 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
     ${clientPortalObjectRuntime(identity, { ...site, traceId })}
     // One stream per portal tab. Parent navigation reloads its managed frames;
     // per-frame streams exhaust the browser's same-origin HTTP connection pool.
-    if(window.parent===window){const connect=()=>{if(simulation.reloadStream&&simulation.reloadStream.readyState!==2)return;const events=simulation.reloadStream=new EventSource('/__sim/events');events.addEventListener('reload',()=>location.reload());};const close=()=>{simulation.reloadStream?.close();simulation.reloadStream=null;};window.addEventListener('pagehide',close);window.addEventListener('pageshow',connect);connect();}
+    if(window.parent===window){
+      const connect=()=>{
+        if(simulation.reloadStream&&simulation.reloadStream.readyState!==2)return;
+        const events=simulation.reloadStream=new EventSource('/__sim/events');
+        // A source change can finish before the initial stream connects, or
+        // while a page is suspended. The ready revision closes that event gap.
+        events.addEventListener('ready',event=>{
+          const rendered=Number(simulation.revision),current=Number(event.data);
+          if(simulation.reloadStream===events&&Number.isSafeInteger(rendered)&&Number.isSafeInteger(current)&&rendered!==current)location.reload();
+        });
+        events.addEventListener('reload',()=>location.reload());
+      };
+      const close=()=>{simulation.reloadStream?.close();simulation.reloadStream=null;};
+      window.addEventListener('pagehide',close);window.addEventListener('pageshow',connect);connect();
+    }
   })();`;
 }
 

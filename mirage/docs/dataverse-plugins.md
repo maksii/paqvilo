@@ -44,6 +44,8 @@ Synchronous JavaScript handlers (step id and plug-in type) and original CLR step
 
 Handlers and CLR runs write plugintracelog rows according to `organization.plugintracelogsetting` (0 off, 1 exceptions, 2 all); the trace lines a handler writes through `trace(text)` form `messageblock`.
 
+System-generated trace facts survive failed business transactions and SDK savepoint rollbacks, as documented by [Microsoft tracing guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/logging-tracing). Only `plugintracelog` facts are retained: target/related writes, events and jobs still follow their existing transaction boundaries. Nested rollbacks deduplicate trace IDs. A trace-only rollback save publishes a checkpoint and invalidates data/query revisions; it cannot replay the aborted business journal. If diagnostic persistence also fails, both failures remain available in an `AggregateError` whose cause is the original business rejection; no speculative state or successful commit is published. Native 10 KB text retention and trace cleanup scheduling are not modelled.
+
 `TriggerServiceEndpointCheck` (bound to serviceendpoint) POSTs a probe to a contract 8 endpoint only when its URL is loopback, and answers 204 for any 2xx. With a messaging provider, a contract 2, 5 or 6 endpoint answers 204 when `providers.messaging.endpoints` maps it (nothing is sent) and 400 when it does not. Other contracts and non-loopback URLs get a 400 and are never contacted. The probe sends no authentication value.
 
 ## Webhooks
@@ -201,3 +203,29 @@ process birth time. A background host watcher terminates that host when its
 exact owner exits, including an abrupt process kill while plugin code loops
 without returning. Reusing a PID with a different birth time cannot keep the
 host alive. Ordinary cleanup still closes owned hosts and verifies their absence.
+
+## Local registration comparison
+
+```js
+import { comparePluginRegistrations } from 'paqvilo/mirage/fixtures';
+
+const report = comparePluginRegistrations(before.plugins, after.plugins);
+```
+
+Pass two parsed `importSolutionPlugins` inventories from explicitly selected
+exports. Stable GUIDs identify assemblies, types and steps. Added, removed and
+changed facts include numeric execution mode, stage/rank, table/message, filtering
+attributes and image alias/type/attribute sets. Attribute-set order and GUID case
+are neutral. Duplicate or missing identities remain diagnostics with
+`complete: false`; no record is matched by its friendly name. Configuration,
+secure configuration and assembly content are never copied into the result.
+This compares exported definitions, not deployed organizations or DLL execution.
+
+The same entry exports `parsePluginDocument(xml)` and
+`importSolutionPlugins(selectedLayers)` to obtain the existing parsed inventories.
+For a single export, `comparePluginRegistrations(parsePluginDocument(beforeXml),
+parsePluginDocument(afterXml))` works directly. Selected layers add source-file
+provenance and existing message/type/assembly resolution; do not substitute a
+runtime catalogue whose `mode` describes its adapter. Full assembly identity and
+source message/filter/handler IDs remain comparison facts even when names are
+unresolved. Inspection uses a shared work budget, including aliased metadata.

@@ -5,6 +5,7 @@ import { racyStat } from './file-cache.mjs';
 import { compileForm, parseRibbonCommands } from '../mirage/lib/model-driven/solution.mjs';
 import { parseSolutionXml } from '../mirage/lib/solution-xml.mjs';
 import { modelDrivenKey, modelDrivenControlKey } from '../mirage/lib/model-driven/provenance-registry.mjs';
+import { createEventRegistrationReader } from './model-driven-event-registrations.mjs';
 
 const norm = (value) =>
   String(value ?? '')
@@ -216,7 +217,7 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
     for (const document of imported.ribbonDocuments ?? []) {
       if (typeof document.xml !== 'string' || Buffer.byteLength(document.xml) > 8 * 1024 * 1024) continue;
       try {
-        for (const command of parseRibbonCommands(document.xml))
+        for (const command of parseRibbonCommands(document.xml, { lcid: metadata.lcid }))
           addCommand(
             { ...command, entity: document.entity, sourceContentRevision: document.sourceContentRevision },
             document.source,
@@ -517,7 +518,7 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
     if (!definition || !form) return null;
     if (!definition.xml || Buffer.byteLength(definition.xml) > 8 * 1024 * 1024) return null;
     try {
-      const compiled = compileForm(definition, entities[definition.entity]?.fields ?? {});
+      const compiled = compileForm(definition, entities[definition.entity]?.fields ?? {}, metadata.lcid);
       if (!compiled) return null;
       const controls = [],
         structure = [];
@@ -955,6 +956,7 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
       ...(includeStructure ? form.structure.map((item) => item.key) : []),
     ]);
   };
+  let eventRegistrations;
   return Object.freeze({
     query: (request) => withSourceReads(() => query(request)),
     resolveOpen,
@@ -965,5 +967,18 @@ export function createModelDrivenMetadataIndex(imported, { sourceRevision = '1' 
     sourceRevision,
     component: (key) => components.get(key),
     counts: () => ({ components: components.size, forms: formDefinitions.size }),
+    eventRegistrations: (request) =>
+      withSourceReads(() => {
+        eventRegistrations ??= createEventRegistrationReader({
+          forms: formDefinitions,
+          compile,
+          component: (key) => components.get(key),
+          sourceRefs: (key) => refsFor(components.get(key), { locations: false }),
+          resources: imported.resources ?? [],
+          sourceRevision,
+          lcid: metadata.lcid,
+        });
+        return eventRegistrations(request);
+      }),
   });
 }

@@ -230,7 +230,7 @@ export function createFlowTriggerRunner({
                 context: { correlationId },
                 diagnostic: (d) => record(d.code, { ...d, operationKey: item.key, chainId: chain.id, correlationId }),
               });
-            record('FLOW_TRIGGER_COMPLETED', {
+            record(answer.status === 'Skipped' ? 'FLOW_TRIGGER_SKIPPED' : 'FLOW_TRIGGER_COMPLETED', {
               operationKey: item.key,
               chainId: chain.id,
               correlationId,
@@ -510,7 +510,7 @@ export function createFlowTriggerRunner({
         wrap,
         diagnostic: (d) => record(d.code, { ...d, operationKey: item.key, correlationId }),
       });
-      record('FLOW_TRIGGER_COMPLETED', {
+      record(answer?.status === 'Skipped' ? 'FLOW_TRIGGER_SKIPPED' : 'FLOW_TRIGGER_COMPLETED', {
         operationKey: item.key,
         trigger: host.kind,
         correlationId,

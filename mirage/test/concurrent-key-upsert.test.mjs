@@ -2,6 +2,7 @@
 // The record handlers run without HTTP.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { exactNumeric, stringifyExactJson } from '../lib/exact-numeric.mjs';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createPrincipals, ensureSecurityModel } from '../lib/dataverse-security.mjs';
 import { parseDataverseRoute, parsePrefer } from '../lib/dataverse-odata.mjs';
@@ -19,7 +20,7 @@ const SETTINGS = {
   users: [{ objectId: ADMIN_OID, upn: 'admin@example.test', displayName: 'Admin', roles: ['System Administrator'] }],
 };
 
-async function setup() {
+async function setup({ collation = 'CI_AI', rows = [], codeType = 'nvarchar' } = {}) {
   const state = emptyState();
   state.mappings.x_item = {
     logicalName: 'x_item',
@@ -30,7 +31,9 @@ async function setup() {
     fields: { x_name: { dataverseType: 'nvarchar' }, x_code: { dataverseType: 'nvarchar' } },
     relationships: {},
   };
-  state.tables.x_item = [];
+  state.settings.collation = collation;
+  state.mappings.x_item.fields.x_code.dataverseType = codeType;
+  state.tables.x_item = rows;
   const store = new DataStore({ state });
   await ensureSecurityModel(store, SETTINGS);
   const principals = createPrincipals(store, SETTINGS);
@@ -111,4 +114,53 @@ test('concurrent delete and update of one row resolve in request order', async (
     [204, 204],
   );
   assert.equal(store.state.tables.x_item.length, 0);
+});
+
+test('accent-sensitive key PATCH changes only the exact addressed row and remains idempotent', async () => {
+  const first = '77777777-7777-4777-8777-000000000001';
+  const second = '77777777-7777-4777-8777-000000000002';
+  const { store, send } = await setup({
+    collation: 'CI_AS',
+    rows: [
+      { x_itemid: first, x_code: 'caf\u00e9', x_name: 'accented' },
+      { x_itemid: second, x_code: 'cafe', x_name: 'plain' },
+    ],
+  });
+  for (let index = 0; index < 2; index++)
+    assert.equal(await send('PATCH', "x_items(x_code='CAFE')", { body: { x_name: 'changed plain' } }), 204);
+  assert.deepEqual(
+    store.state.tables.x_item.map((row) => [row.x_itemid, row.x_name]),
+    [
+      [first, 'accented'],
+      [second, 'changed plain'],
+    ],
+  );
+  assert.equal(await send('GET', "x_items(x_code='CAF\u00c9')"), 200);
+});
+
+test('unquoted exact Int64 key GET/PATCH/upsert preserve every digit and never match the adjacent integer', async () => {
+  const first = '77777777-7777-4777-8777-000000000001';
+  const second = '77777777-7777-4777-8777-000000000002';
+  const { store, send } = await setup({
+    codeType: 'bigint',
+    rows: [
+      { x_itemid: first, x_code: exactNumeric('9007199254740992', 'Int64'), x_name: 'lower' },
+      { x_itemid: second, x_code: exactNumeric('9007199254740993', 'Int64'), x_name: 'higher' },
+    ],
+  });
+  assert.equal(await send('GET', 'x_items(x_code=9007199254740993)'), 200);
+  for (let index = 0; index < 2; index++)
+    assert.equal(await send('PATCH', 'x_items(x_code=9007199254740993)', { body: { x_name: 'changed higher' } }), 204);
+  assert.deepEqual(
+    store.state.tables.x_item.map((row) => [row.x_itemid, row.x_name]),
+    [
+      [first, 'lower'],
+      [second, 'changed higher'],
+    ],
+  );
+  assert.equal(await send('PATCH', 'x_items(x_code=9007199254740995)', { body: { x_name: 'new exact' } }), 204);
+  assert.equal(await send('PATCH', 'x_items(x_code=9007199254740995)', { body: { x_name: 'updated exact' } }), 204);
+  assert.equal(store.state.tables.x_item.length, 3);
+  assert.equal(stringifyExactJson(store.state.tables.x_item[2].x_code), '9007199254740995');
+  assert.equal(store.state.tables.x_item[2].x_name, 'updated exact');
 });
