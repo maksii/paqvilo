@@ -14,6 +14,8 @@ import {
   solutionLayerFiles,
 } from '../lib/solution-content-fingerprint.mjs';
 import { settleFileTimes } from './support/file-times.mjs';
+import { SolutionFileCache } from '../lib/solution-cache.mjs';
+import { scanSolutionSources } from '../lib/solution-schema.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const xml = (name) =>
@@ -131,4 +133,67 @@ test('a ZIP layer listing never inflates entries outside the requested folders a
       .toString(),
     '{"v":22}',
   );
+});
+
+test('side-file hashes persist across restarts and changed, added or removed side files change the fingerprint', async (t) => {
+  const settled = settleFileTimes(t);
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'fingerprint-side-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const solution = path.join(root, 'solution'),
+    cacheFile = path.join(root, '.paqvilo', 'solution-cache.json'),
+    script = path.join(solution, 'WebResources', 'x_', 'script.js'),
+    added = path.join(solution, 'Workflows', 'x_flow.json'),
+    archive = path.join(root, 'invented.zip');
+  await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
+  await fs.mkdir(path.dirname(script), { recursive: true });
+  await fs.writeFile(path.join(solution, 'Other', 'Customizations.xml'), xml('name'));
+  await fs.writeFile(script, 'invented();');
+  await fs.writeFile(
+    archive,
+    writeSolutionAssetEntries([{ name: 'workflows/x_flow.json', data: Buffer.from('{"invented":1}') }]),
+  );
+  const zip = { type: 'zip', dir: archive, solution: { uniqueName: 'archive' } };
+  // One restart: a fresh cache object over the persisted file; the side hashes it supplies, then a save.
+  const restart = async (edit = () => {}) => {
+    const cache = await SolutionFileCache.open(cacheFile);
+    const scan = await scanSolutionSources([solution], { cache });
+    edit(cache);
+    const layers = [...scan.layers, zip];
+    const value = solutionContentFingerprint(layers, { cache });
+    await cache.save();
+    return { value, uncached: solutionContentFingerprint(layers) };
+  };
+  const first = await restart();
+  assert.equal(first.value, first.uncached);
+  assert.equal((await restart()).value, first.value);
+  // A stored hash for an unchanged stamp is used as is: an unchanged side file is stat'ed, never read.
+  const tampered = await restart((cache) => {
+    cache.entries.get(script).hash = 'invented stored hash';
+  });
+  assert.notEqual(tampered.value, first.value);
+  assert.equal(tampered.uncached, first.value);
+  const listing = await restart((cache) => {
+    cache.entries.get(archive).results['side-files@1'] = [['workflows/x_flow.json', 'invented stored hash']];
+  });
+  assert.notEqual(listing.value, first.value, 'An unchanged archive reuses its stored side-file listing');
+  // The tampered entries were saved: restore real hashes by changing the files' stamps.
+  settled.restore();
+  await fs.writeFile(script, 'invented(); // edited');
+  const changed = await restart();
+  assert.equal(changed.value, changed.uncached);
+  assert.notEqual(changed.value, first.value, 'A changed side file changes the fingerprint');
+  await fs.writeFile(script, 'invented();');
+  await fs.writeFile(
+    archive,
+    writeSolutionAssetEntries([{ name: 'workflows/x_flow.json', data: Buffer.from('{"invented":1}') }]),
+  );
+  const restored = await restart();
+  assert.equal(restored.value, first.value);
+  await fs.mkdir(path.dirname(added), { recursive: true });
+  await fs.writeFile(added, '{}');
+  const grown = await restart();
+  assert.equal(grown.value, grown.uncached);
+  assert.notEqual(grown.value, first.value, 'An added side file changes the fingerprint');
+  await fs.rm(added);
+  assert.equal((await restart()).value, first.value, 'A removed side file restores the fingerprint');
 });

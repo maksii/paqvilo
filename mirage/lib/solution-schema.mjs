@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { recordSourceOf, materializeRecordSource } from './record-sources.mjs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -1564,7 +1565,67 @@ const SIMPLE_TYPES = {
 };
 
 /** Combine ordered layers: later layers replace earlier column definitions and table properties they export. */
+// The modules whose code builds a schema from scanned facts: a stored schema is reused only by the same code.
+const SCHEMA_BUILDERS = [
+  'solution-schema.mjs',
+  'solution-standard.mjs',
+  'solution-inventory.mjs',
+  'solution-formulas.mjs',
+  'solution-xml.mjs',
+  'exact-numeric.mjs',
+];
+let schemaBuilderDigest;
+const builderDigest = () => {
+  if (schemaBuilderDigest) return schemaBuilderDigest;
+  const hash = createHash('sha256').update(SCHEMA_PARSER_ID);
+  for (const name of SCHEMA_BUILDERS) hash.update('\0').update(readFileSync(new URL(name, import.meta.url)));
+  return (schemaBuilderDigest = hash.digest('hex'));
+};
+// Everything buildSolutionSchema reads besides the side files of contentFingerprint: the scan order, diagnostics and
+// inventory, each layer's identity, and each document's identity and content hash. Parsed facts are a function of a
+// document's bytes (hash), its classification and SCHEMA_PARSER_ID, so they are covered without being serialized.
+const schemaInputKey = (scan, lcid) => {
+  const hash = createHash('sha256').update(JSON.stringify([builderDigest(), lcid, scan.order ?? null]));
+  hash.update(JSON.stringify(scan.diagnostics ?? [])).update(JSON.stringify(scan.inventory ?? []));
+  for (const layer of scan.layers) {
+    const { files = [], documents = [], ...identity } = layer;
+    hash.update(JSON.stringify([identity, files.length]));
+    for (const document of documents) {
+      for (const key of Object.keys(document)) if (key !== 'facts') hash.update(JSON.stringify([key, document[key]]));
+      hash.update('\0');
+    }
+  }
+  return 'schema:' + hash.digest('hex');
+};
+// Stored parts: the root with empty maps, then one part per table, relationship and option set.
+const SPLIT_SCHEMA_MAPS = ['tables', 'relationships', 'optionSets'];
+const splitSchema = (schema) => {
+  const root = { ...schema };
+  for (const key of SPLIT_SCHEMA_MAPS) root[key] = {};
+  return [
+    root,
+    ...SPLIT_SCHEMA_MAPS.flatMap((key) => Object.entries(schema[key]).map(([name, value]) => [key, name, value])),
+  ];
+};
+const joinSchema = ([root, ...parts]) => {
+  for (const [key, name, value] of parts) root[key][name] = value;
+  return root;
+};
+
+/** The merged schema of a scan. With a persistent scan cache an unchanged scan reuses its stored schema across
+ * restarts (keyed by schemaInputKey); contentFingerprint is always recomputed, as side files are outside the scan. */
 export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
+  if (!scan.cache?.file) return compileSolutionSchema(scan, { lcid });
+  const schema = scan.cache.deriveValue(
+    schemaInputKey(scan, lcid),
+    () => ({ ...compileSolutionSchema(scan, { lcid }), contentFingerprint: null }),
+    { split: splitSchema, join: joinSchema },
+  );
+  schema.contentFingerprint = solutionContentFingerprint(scan.layers, { lcid, cache: scan.cache });
+  return schema;
+}
+
+function compileSolutionSchema(scan, { lcid }) {
   const diagnostics = [...(scan.diagnostics ?? [])];
   const tables = {};
   const relationships = {};
@@ -1965,7 +2026,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
     documentLocationRelationships: documentLocationCount,
     annotationRelationships: annotationCount,
     fingerprint: fingerprint.digest('hex'),
-    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid }),
+    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid, cache: scan.cache }),
     ...securityDefinitions(scan.inventory ?? [], {
       managed: new Set(
         scan.layers.filter((l) => String(l.solution?.managed) === '1').map((l) => String(l.name).toLowerCase()),
