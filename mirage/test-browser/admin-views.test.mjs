@@ -9,6 +9,8 @@ import fs from 'node:fs/promises';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { docsLinks } from '../lib/docs-links.mjs';
+import { createTraceStore } from '../lib/trace-store.mjs';
+import { createTraceRoutes } from '../lib/sim-trace-routes.mjs';
 
 const SHARED = new Set(['persona-search.mjs', 'persona-picker-view.mjs']);
 const docs = docsLinks('0.9.4', 'https://git.example.test/invented/paqvilo');
@@ -88,8 +90,10 @@ const packs = {
   library: [{ id: 'fx-empty', name: 'Empty', pack: 'fx-pack', source: 'builtin' }],
 };
 
-async function host(t, { state, status, failPacks = 0 }) {
+async function host(t, { state, status, failPacks = 0, traces, events = true }) {
   const calls = [];
+  // The real trace routes over a real store; the SSE trace channel streams its events as the host does.
+  const traceRoutes = traces && createTraceRoutes({ traces, csrf: () => state.csrf });
   const live = {
     active: 2,
     waits: [{ id: 'fx-approval', kind: 'approval', runId: 'run-1', processId: 'p1', overdue: false }],
@@ -107,6 +111,14 @@ async function host(t, { state, status, failPacks = 0 }) {
     const url = new URL(req.url, 'http://127.0.0.1');
     calls.push(`${req.method} ${url.pathname}${url.search}`);
     try {
+      if (traceRoutes && (await traceRoutes(req, res, url))) return;
+      if (traces && events && url.pathname === '/__sim/events' && url.searchParams.get('channels') === 'trace') {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store' });
+        res.write(': connected\n\n');
+        const unsubscribe = traces.subscribe((event) => res.write(`event: trace\ndata: ${JSON.stringify(event)}\n\n`));
+        req.on('close', unsubscribe);
+        return;
+      }
       if (url.pathname.startsWith('/__sim/api/')) {
         for await (const chunk of req) void chunk;
         res.setHeader('content-type', 'application/json');
@@ -445,6 +457,383 @@ test(
     assert.equal(await page.locator('.is-landed').count(), 1, 'the outline stays until its timer runs');
     await page.clock.runFor(2500);
     await page.waitForFunction(() => !document.querySelector('.is-landed'));
+    assert.deepEqual(errors, []);
+  },
+);
+
+/** A portal page GET and a portal Web API create, recorded the way the host hooks record them. */
+function recordTraffic(traces, name = 'POST /_api/x_items') {
+  const origin = { host: 'power-pages', portal: 'fx-portal', preset: null };
+  const session = { visitorId: 'visitor-1', sessionKey: 'visitor-1' };
+  const page = traces.start({
+    kind: 'http',
+    name: 'GET /fx-page',
+    module: 'portal',
+    operation: 'get',
+    actor: { kind: 'anonymous', id: null, name: null },
+    session,
+    origin,
+    traceId: null,
+    parentSpanId: null,
+  });
+  traces.run(page, () =>
+    traces.wrap({ kind: 'render', name: '/fx-page', module: 'liquid', operation: 'render' }, () => {}),
+  );
+  page.end({ attributes: { statusCode: 200 } });
+  const api = traces.start({
+    kind: 'http',
+    name,
+    module: 'portal',
+    operation: 'post',
+    actor: { kind: 'contact', id: 'fx-contact', name: 'Invented Contact' },
+    session,
+    origin,
+    traceId: null,
+    parentSpanId: null,
+  });
+  traces.run(api, () =>
+    traces.wrap({ kind: 'webapi', name: 'POST x_items', module: 'webapi', operation: 'create', entity: 'x_item' }, () =>
+      traces.wrap(
+        { kind: 'dataverse', name: 'Create x_item', module: 'dataverse', operation: 'create', entity: 'x_item' },
+        (span) => {
+          span.event('permission', { attributes: { table: 'x_item', operation: 'create', result: 'allow' } });
+          span.set({ recordId: 'fx-item-1' });
+        },
+      ),
+    ),
+  );
+  api.end({ attributes: { statusCode: 201 } });
+  return api;
+}
+
+test(
+  'the trace view lists recorded traffic, opens a waterfall, tree and span, filters, saves settings and follows Live',
+  { timeout: 60_000 },
+  async (t) => {
+    const traces = createTraceStore({ settings: { level: 'summary' } });
+    const api = recordTraffic(traces);
+    const { origin, calls } = await host(t, {
+      state: {
+        csrf: 'fixture-csrf',
+        config: {
+          mappings: [],
+          plugins: [],
+          endpoints: [],
+          permissions: [],
+          presets: [],
+          identity: {},
+          platformSettings: [],
+        },
+        data: {},
+        status: { pages: [], scenarios: [] },
+        diagnostics: [],
+      },
+      status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace'] },
+      traces,
+    });
+    const { page, errors } = await open(t, origin, '#overview');
+    await nav(page, 'Traces');
+    await page.getByRole('heading', { name: 'Traces', exact: true }).waitFor();
+    const rows = page.locator('table[data-table="trace-list"] tbody tr');
+    await rows.nth(1).waitFor();
+    assert.equal(await rows.count(), 2);
+    assert.equal(await page.locator('#breadcrumb-group').innerText(), 'Monitor');
+    assert.deepEqual(await undescribed(page), []);
+
+    // A row opens the trace: the waterfall has one row per span; a span opens its drawer.
+    await rows.filter({ hasText: 'POST /_api/x_items' }).click();
+    const waterfall = page.locator('ol.ui-waterfall > li');
+    await waterfall.nth(2).waitFor();
+    assert.equal(await waterfall.count(), 3);
+    assert.match(await page.evaluate(() => location.hash), new RegExp(`^#trace\\?traceId=${api.traceId}$`));
+    await page.getByRole('button', { name: /^Span Create x_item/ }).click();
+    await page.getByRole('heading', { name: 'Create x_item', level: 3 }).waitFor();
+    await page.locator('#trace-span-drawer').getByText('permission', { exact: true }).waitFor();
+    assert.match(await page.evaluate(() => location.hash), /&spanId=/);
+    // The tree tab by keyboard: the details expand and collapse natively.
+    await page.getByRole('tab', { name: 'Waterfall' }).focus();
+    await page.keyboard.press('ArrowRight');
+    await page.locator('ul.ui-tree').waitFor();
+    assert.equal(await page.getByRole('tab', { name: 'Tree' }).getAttribute('aria-selected'), 'true');
+    const webapi = page.locator('ul.ui-tree details').nth(1);
+    await webapi.locator(':scope > summary').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await webapi.evaluate((node) => node.open), false);
+
+    // A deep link (as the audit Trace link writes it) opens the trace with the span selected.
+    const root = traces.tree(api.traceId).root;
+    await page.evaluate(
+      ([traceId, spanId]) => {
+        location.hash = `trace?traceId=${traceId}&spanId=${spanId}`;
+      },
+      [api.traceId, root.spanId],
+    );
+    await page.getByRole('heading', { name: 'POST /_api/x_items', level: 3 }).waitFor();
+
+    // Filters: one kind narrows the list and lands in the address.
+    await page.getByLabel('Span kind').selectOption('render');
+    await page.getByRole('button', { name: 'Apply filters' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('table[data-table="trace-list"] tbody tr').length === 1);
+    await rows.first().getByText('GET /fx-page').waitFor();
+    assert.equal(await page.evaluate(() => location.hash), '#trace?kind=render');
+    assert.ok(calls.includes('GET /__sim/api/trace?kind=render&page=1&pageSize=10'));
+
+    // Settings: level full is saved with PUT and applies to the store at once.
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('[data-ui-section="trace:settings"]')?.open === true);
+    await page.getByLabel('full', { exact: true }).check();
+    assert.deepEqual(await undescribed(page), []);
+    await page.getByRole('button', { name: 'Save trace settings' }).click();
+    await page.getByText('Tracing level full.').waitFor();
+    assert.equal(traces.settings().level, 'full');
+    assert.ok(calls.includes('PUT /__sim/api/trace/settings'));
+
+    // Live: once the stream is open, a newly ended trace appears without a refresh.
+    await page.getByRole('button', { name: 'Reset filters' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('table[data-table="trace-list"] tbody tr').length === 2);
+    await page.getByRole('button', { name: 'Live: off' }).click();
+    await page.locator('.ui-toolbar').getByText('Streaming').waitFor();
+    recordTraffic(traces, 'POST /_api/x_others');
+    await rows.filter({ hasText: 'POST /_api/x_others' }).waitFor();
+
+    // Clear asks first, then empties the list.
+    await page.getByRole('button', { name: 'Clear traces' }).click();
+    await page.locator('#confirm').getByRole('button', { name: 'Clear traces', exact: true }).click();
+    await page.getByText('No trace matches.', { exact: false }).waitFor();
+    assert.equal(traces.status().retained, 0);
+    assert.deepEqual(errors, []);
+  },
+);
+
+test(
+  'trace Live on a standalone host without the trace stream turns off with a notice',
+  { timeout: 60_000 },
+  async (t) => {
+    const traces = createTraceStore({ settings: { level: 'summary' } });
+    recordTraffic(traces);
+    const { origin, calls } = await host(t, {
+      state: {
+        csrf: 'fixture-csrf',
+        capabilities: { powerPages: false },
+        config: { platformSettings: [] },
+        data: {},
+        docs,
+        status: { routes: ['/dashboard', '/state', '/status', '/trace'] },
+      },
+      traces,
+      events: false,
+    });
+    const { page, errors } = await open(t, origin, '#trace');
+    await page.getByRole('heading', { name: 'Traces', exact: true }).waitFor();
+    // Root percentiles come from the same stats answer: no second depth=0 read.
+    await page
+      .locator('.ui-tile', { hasText: 'Root p50 / p95' })
+      .getByText(/ms \/ /)
+      .waitFor();
+    assert.ok(calls.some((call) => call.startsWith('GET /__sim/api/trace/stats')));
+    assert.equal(
+      calls.some((call) => call.includes('depth=0')),
+      false,
+    );
+    await page.getByRole('button', { name: 'Live: off' }).click();
+    await page.getByText('This host does not serve the live trace stream', { exact: false }).waitFor();
+    await page.getByRole('button', { name: 'Live: off' }).waitFor();
+    assert.ok(calls.includes('GET /__sim/events?channels=trace'));
+    assert.deepEqual(errors, []);
+  },
+);
+
+const TRACE_STATE = {
+  csrf: 'fixture-csrf',
+  config: {
+    mappings: [],
+    plugins: [],
+    endpoints: [],
+    permissions: [],
+    presets: [],
+    identity: {},
+    platformSettings: [],
+  },
+  data: {},
+  status: { pages: [], scenarios: [] },
+  diagnostics: [],
+};
+const listCalls = (calls) => calls.filter((call) => call.startsWith('GET /__sim/api/trace?'));
+
+test(
+  'trace view: Reset and deep links replace typed filters, columns sort, two traces compare, spans are searchable and export follows the format',
+  { timeout: 90_000 },
+  async (t) => {
+    const traces = createTraceStore({ settings: { level: 'summary' } });
+    recordTraffic(traces);
+    recordTraffic(traces, 'POST /_api/x_items');
+    const { origin, calls } = await host(t, {
+      state: structuredClone(TRACE_STATE),
+      status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace'], eventChannels: ['logs', 'trace'] },
+      traces,
+    });
+    const { page, errors } = await open(t, origin, '#trace');
+    const rows = page.locator('table[data-table="trace-list"] tbody tr');
+    await rows.nth(3).waitFor();
+    // A host that lists the logs channel keeps Live logs in the sidebar (F29).
+    await page.locator('#navigation').getByRole('link', { name: 'Live logs', exact: true }).waitFor();
+
+    // R2C-1: a typed but unapplied filter and an applied one are both gone after Reset; the next Apply sends none.
+    await page.getByLabel('Span kind').selectOption('webapi');
+    await page.getByRole('button', { name: 'Apply filters' }).click();
+    await page.waitForFunction(() => location.hash === '#trace?kind=webapi');
+    await page.getByLabel('Table', { exact: true }).fill('account');
+    const listed = (query) => page.waitForResponse((response) => response.url().endsWith(`/__sim/api/trace?${query}`));
+    await Promise.all([listed('page=1&pageSize=10'), page.getByRole('button', { name: 'Reset filters' }).click()]);
+    await rows.nth(3).waitFor();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('#trace-kind')?.value === '' && document.querySelector('#trace-entity')?.value === '',
+    );
+    const before = listCalls(calls).length;
+    await page.getByRole('button', { name: 'Apply filters' }).focus();
+    await Promise.all([listed('page=1&pageSize=10'), page.keyboard.press('Enter')]);
+    assert.equal(await page.evaluate(() => location.hash), '#trace');
+    assert.deepEqual(listCalls(calls).slice(before), ['GET /__sim/api/trace?page=1&pageSize=10']);
+    // R2C-8: the keyboard user stays on Apply after the re-render.
+    await page.waitForFunction(() => document.activeElement?.id === 'trace-apply');
+    // A deep link replaces a typed value too.
+    await page.getByLabel('Table', { exact: true }).fill('account');
+    await page.evaluate(() => {
+      location.hash = 'trace?kind=http';
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelector('#trace-kind')?.value === 'http' &&
+        document.querySelector('#trace-entity')?.value === '',
+    );
+    await page.getByRole('button', { name: 'Remove filter Span kind: http' }).click();
+    await page.waitForFunction(() => location.hash === '#trace');
+    await rows.nth(3).waitFor();
+
+    // Sorting by span count: descending first, then ascending on the second click; focus stays on the heading.
+    // The click updates the hash at once but renders only when the sorted list arrives, and the newest trace
+    // (a POST) already leads the default order: the heading's aria-sort is the signal that the sorted list rendered.
+    const sortedBySpans = (order) =>
+      page.waitForFunction(
+        (value) => document.querySelector('th:has(#trace-sort-spans)')?.getAttribute('aria-sort') === value,
+        order,
+      );
+    await page.locator('#trace-sort-spans').click();
+    await sortedBySpans('descending');
+    assert.equal(await page.evaluate(() => location.hash), '#trace?sort=spans&order=desc');
+    assert.ok((await rows.first().innerText()).includes('POST /_api/x_items'));
+    await page.locator('#trace-sort-spans').click();
+    await sortedBySpans('ascending');
+    assert.equal(await page.evaluate(() => location.hash), '#trace?sort=spans&order=asc');
+    assert.ok((await rows.first().innerText()).includes('GET /fx-page'));
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'trace-sort-spans');
+    assert.ok(calls.includes('GET /__sim/api/trace?sort=spans&order=asc&page=1&pageSize=10'));
+
+    // Compare the two POST traces: every span matches, so the summary counts three matching spans.
+    const posts = rows.filter({ hasText: 'POST /_api/x_items' });
+    await posts.nth(0).getByRole('checkbox').check();
+    await posts.nth(1).getByRole('checkbox').check();
+    assert.deepEqual(await undescribed(page), []);
+    await page.getByRole('button', { name: 'Compare the 2 ticked traces' }).click();
+    const compare = page.locator('[data-ui-section="trace:compare"]');
+    await compare.locator('.ui-compare ul.ui-tree').nth(1).waitFor();
+    assert.match(await page.evaluate(() => location.hash), /&compare=[^&]+%2C[^&]+$/);
+    assert.equal(await compare.locator('dt:text-is("Matching spans") + dd').innerText(), '3');
+    assert.equal(await compare.locator('.ui-compare .ui-badge', { hasText: /^only in/ }).count(), 0);
+    assert.equal(await compare.locator('dt:text-is("Only in B (added)") + dd').innerText(), '0');
+    await compare.getByRole('button', { name: 'Close comparison' }).click();
+    await compare.waitFor({ state: 'detached' });
+
+    // Span search inside a trace: the matching span and its parent stay, the rest is hidden; typing keeps focus.
+    await posts
+      .first()
+      .getByRole('button', { name: /^Open trace/ })
+      .click();
+    const waterfall = page.locator('ol.ui-waterfall > li');
+    await waterfall.nth(2).waitFor();
+    await page.getByLabel('Find spans').pressSequentially('webapi');
+    await page.waitForFunction(() => document.querySelectorAll('ol.ui-waterfall > li').length === 2);
+    assert.equal(await page.evaluate(() => document.activeElement?.id), 'trace-span-search');
+    assert.equal(await page.getByLabel('Find spans').inputValue(), 'webapi');
+    await page.locator('.ui-span-tools').getByText('1 of 3 spans match').waitFor();
+    assert.match(await page.evaluate(() => location.hash), /&spanSearch=webapi/);
+    assert.equal(await page.locator('ol.ui-waterfall > li.is-context').count(), 1);
+    assert.deepEqual(await undescribed(page), []);
+
+    // Export: NDJSON by default (one trace per line), JSON once chosen; both stream from the export route.
+    const download = async () => {
+      const [file] = await Promise.all([
+        page.waitForEvent('download'),
+        page.getByRole('link', { name: 'Export filtered traces' }).click(),
+      ]);
+      return fs.readFile(await file.path(), 'utf8');
+    };
+    const lines = (await download()).trim().split('\n');
+    assert.equal(lines.length, 4);
+    assert.ok(lines.every((line) => JSON.parse(line).trace.traceId));
+    await page.getByLabel('Export as').selectOption('json');
+    await page.waitForFunction(() => document.querySelector('#trace-export')?.href.includes('format=json'));
+    const exported = JSON.parse(await download());
+    assert.equal(exported.traces.length, 4);
+    assert.ok(calls.some((call) => call.startsWith('GET /__sim/api/trace/export?') && call.includes('format=json')));
+    assert.deepEqual(errors, []);
+  },
+);
+
+test(
+  'trace settings show the level saved elsewhere, not the radio clicked before (R2C-1)',
+  { timeout: 60_000 },
+  async (t) => {
+    const traces = createTraceStore({ settings: { level: 'summary' } });
+    recordTraffic(traces);
+    const { origin } = await host(t, {
+      state: structuredClone(TRACE_STATE),
+      status: { docs, routes: [...POWER_PAGES_ROUTES, '/trace'], eventChannels: ['logs', 'trace'] },
+      traces,
+    });
+    const { page, errors } = await open(t, origin, '#trace?panel=settings');
+    await page.waitForFunction(() => document.querySelector('[data-ui-section="trace:settings"]')?.open === true);
+    await page.getByLabel('full', { exact: true }).check();
+    // The level changes through the API (another tab, the CLI), then the view refreshes.
+    traces.configure({ level: 'off' });
+    await page.getByRole('button', { name: 'Refresh traces' }).click();
+    await page.getByText('Tracing is off: new requests are not recorded.', { exact: false }).waitFor();
+    assert.equal(await page.getByLabel('off', { exact: true }).isChecked(), true);
+    assert.equal(await page.getByLabel('full', { exact: true }).isChecked(), false);
+    assert.deepEqual(errors, []);
+  },
+);
+
+test(
+  'a standalone host that lists the trace channel follows Live and hides Live logs (F29, F31)',
+  { timeout: 60_000 },
+  async (t) => {
+    const traces = createTraceStore({ settings: { level: 'summary' } });
+    recordTraffic(traces);
+    const { origin, calls } = await host(t, {
+      state: {
+        csrf: 'fixture-csrf',
+        capabilities: { powerPages: false },
+        config: { platformSettings: [] },
+        data: {},
+        docs,
+        status: { routes: ['/dashboard', '/state', '/status', '/trace'], eventChannels: ['trace'] },
+      },
+      traces,
+    });
+    const { page, errors } = await open(t, origin, '#trace');
+    const rows = page.locator('table[data-table="trace-list"] tbody tr');
+    await rows.nth(1).waitFor();
+    assert.equal(await page.locator('#navigation').getByRole('link', { name: 'Live logs', exact: true }).count(), 0);
+    await page.getByRole('button', { name: 'Live: off' }).click();
+    await page.locator('.ui-toolbar').getByText('Streaming').waitFor();
+    recordTraffic(traces, 'POST /_api/x_standalone');
+    await rows.filter({ hasText: 'POST /_api/x_standalone' }).waitFor();
+    assert.equal(
+      calls.some((call) => call.startsWith('GET /__sim/events?channels=logs')),
+      false,
+    );
     assert.deepEqual(errors, []);
   },
 );

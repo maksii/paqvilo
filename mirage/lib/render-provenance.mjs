@@ -61,10 +61,21 @@ function parsedInlineScript(raw, mappings) {
   return { text, mappings: normalized, mappingsTruncated };
 }
 
-export function createRenderTrace({ sourceRevision = null, renderId = randomUUID(), limits = {} } = {}) {
+// traces / span: the trace store and the page's render span; each invocation then opens a render-template span under the
+// enclosing invocation's span (templateSpan), else under the render span.
+export function createRenderTrace({
+  sourceRevision = null,
+  renderId = randomUUID(),
+  limits = {},
+  traces = null,
+  span = null,
+} = {}) {
   return {
     renderId,
     sourceRevision,
+    traces,
+    span,
+    templateSpan: null,
     source: null,
     node: null,
     invocation: null,
@@ -154,7 +165,15 @@ export function appendRenderFragment(buffer, fragment) {
 export async function withRenderSource(context, source, run) {
   const trace = context.provenance;
   if (!trace) return run();
-  const previous = { source: trace.source, node: trace.node, invocation: trace.invocation };
+  // The slot of the source this context renders (liquid.mjs renderSourceFragment), read by its first invocation only.
+  const slot = context.renderSlot;
+  context.renderSlot = null;
+  const previous = {
+    source: trace.source,
+    node: trace.node,
+    invocation: trace.invocation,
+    templateSpan: trace.templateSpan,
+  };
   const callerSpan = previous.node?.span;
   const callerMap = previous.source?.offsetMap?.find(
     (map) => callerSpan && map.start <= callerSpan.start && map.end >= callerSpan.end,
@@ -178,9 +197,32 @@ export async function withRenderSource(context, source, run) {
   trace.source = source;
   trace.node = null;
   trace.invocation = invocation;
+  // A source without a reference is named by its slot ('snippet Head/Bottom'); an empty source still gets its span (the
+  // slot is real work), marked empty. Under an overflow handle (a full trace: traceId, no spanId) the store refuses the span.
+  const parent = previous.templateSpan ?? trace.span;
+  const span = parent?.traceId
+    ? trace.traces.start({
+        kind: 'render-template',
+        name: source ? [source.kind, source.name].filter(Boolean).join(' ') || source.id : (slot?.name ?? 'template'),
+        module: 'liquid',
+        operation: 'render',
+        parentSpanId: parent.spanId ?? null,
+        traceId: parent.traceId,
+        attributes: {
+          sourceRefId: invocation.sourceRefId,
+          ...(callSite ? { callSite: `${callSite.start}-${callSite.end}` } : {}),
+          ...(slot?.empty ? { empty: true } : {}),
+        },
+      })
+    : null;
+  if (span) trace.templateSpan = span;
   try {
-    return await run();
+    return await (span ? trace.traces.run(span, run) : run());
+  } catch (error) {
+    span?.fail(error);
+    throw error;
   } finally {
+    span?.end();
     Object.assign(trace, previous);
   }
 }

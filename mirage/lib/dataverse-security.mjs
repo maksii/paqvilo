@@ -1734,13 +1734,14 @@ export function createPrincipals(store, settings = {}) {
     const owned = ownershipOf(logical, schema, m) === 'user';
     const grants = names.flatMap((n) => grantsNamed(index, user, n, { hierarchy: (Boolean(row) || filter) && owned }));
     if (!grants.length) throw privilegeDenied(index, settings, user, logical, name, schema);
-    if (!row || ownershipOf(logical, schema, m) === 'org') return { m, grants, depth: deepest(grants) };
+    if (!row || ownershipOf(logical, schema, m) === 'org')
+      return { m, grants, depth: deepest(grants), privilege: name };
     const idColumn = m.idColumn ?? `${logical}id`;
     const admitting = grants.filter((g) => g.admits(row));
-    if (admitting.length) return { m, grants: admitting, depth: deepest(admitting) };
+    if (admitting.length) return { m, grants: admitting, depth: deepest(admitting), privilege: name };
     if (!sharedWith(index, key(user.systemuserid), row, idColumn, OPERATION_RIGHT[operation] ?? operation))
       throw accessDenied(user, operation, row, idColumn, logical);
-    return { m, grants, depth: deepest(grants) };
+    return { m, grants, depth: deepest(grants), privilege: name };
   }
 
   return {
@@ -1803,9 +1804,22 @@ export function createPrincipals(store, settings = {}) {
      * assign with a team `target` also checks that the team can own records (an access team cannot).
      */
     authorize(options) {
-      const { depth } = gate(options.user, options.entity, options.operation, options);
-      if (options.operation === 'assign' && options.target?.logical_name === 'team')
-        assertTeamCanOwn(store, options.target.id);
+      // Tracing: the decision is an event on the current span (docs/design/tracing.md), never a span of its own.
+      const span = store.traces?.current();
+      const decided = (result, facts) =>
+        span?.event('permission', {
+          attributes: { table: options.entity, operation: options.operation, result, model: 'dataverse', ...facts },
+        });
+      let depth, privilege;
+      try {
+        ({ depth, privilege } = gate(options.user, options.entity, options.operation, options));
+        if (options.operation === 'assign' && options.target?.logical_name === 'team')
+          assertTeamCanOwn(store, options.target.id);
+      } catch (error) {
+        decided('deny', { depth: null, privilege: error.details?.privilege ?? null, code: error.code ?? null });
+        throw error;
+      }
+      decided('allow', { depth, privilege: privilege ?? null });
       return depth;
     },
 

@@ -49,6 +49,8 @@ import {
   preferenceApplied,
 } from './dataverse-odata.mjs';
 import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
+import { statusFromHttp } from './trace-store.mjs';
+import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
 
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
 const GLOBAL_DISCO = 'https://globaldisco.crm.dynamics.com';
@@ -65,7 +67,7 @@ const CORS = {
     'Authorization, Content-Type, Accept, Prefer, If-Match, If-None-Match, OData-Version, OData-MaxVersion, MSCRMCallerID, CallerObjectId, *',
   'Access-Control-Allow-Methods': 'GET,POST,PATCH,PUT,DELETE,OPTIONS',
   'Access-Control-Expose-Headers':
-    'OData-EntityId, ETag, Preference-Applied, x-ms-service-request-id, REQ_ID, Retry-After, x-ms-dop-hint, Location',
+    'OData-EntityId, ETag, Preference-Applied, x-ms-service-request-id, REQ_ID, Retry-After, x-ms-dop-hint, Location, X-Trace-Id, X-Sim-Span-Id',
 };
 // The SOAP endpoint with or without /web (SDKClientVersion is a query parameter and never part of the pathname).
 const SOAP_ROUTE = /^\/XRMServices\/2011\/Organization\.svc(?:\/web)?\/?$/i;
@@ -917,6 +919,14 @@ async function authenticated(d, c, handle) {
     const user = impersonation.user ?? caller;
 
     const { identity } = organizationPrincipalContext(d.store, user, { caller, appId: verdict.claims.appid });
+    const actorKind = verdict.claims.appid ? 'app' : 'staff';
+    // The root span opened before the caller was known: it takes the resolved caller as its actor (the actorKind and
+    // actorId filters match it, and the spans it starts inherit it), and the attributes keep the impersonated user.
+    c.span?.setActor({ kind: actorKind, id: caller.systemuserid, name: caller.fullname ?? null }).set({
+      actorKind,
+      actorId: caller.systemuserid,
+      ...(user !== caller ? { impersonatedUserId: user.systemuserid } : {}),
+    });
     const bodyBuffer = BODY_METHODS.has(c.method) ? await readBody(req) : Buffer.alloc(0);
     // The request context names who asked (the caller) and who executes (the impersonated user) from here on.
     const context = currentRequest();
@@ -924,7 +934,7 @@ async function authenticated(d, c, handle) {
     return await (context
       ? runWithRequest(
           context.with({
-            initiator: { kind: verdict.claims.appid ? 'app' : 'staff', id: caller.systemuserid },
+            initiator: { kind: actorKind, id: caller.systemuserid },
             principal: { systemUserId: user.systemuserid, callerId: caller.systemuserid },
           }),
           run,
@@ -1351,7 +1361,44 @@ export function createDataverseHandler(deps) {
     const origin = originOf(req, d.host);
     const meta = { appId: null, userId: null, grant: null, kind: 'data' };
     const prefer = parsePrefer(req.headers.prefer);
-    const c = { req, url: null, origin, requestId, meta, prefer, method: req.method === 'HEAD' ? 'GET' : req.method };
+    // The http span of this handler (docs/design/tracing.md). On its own listener it is a root whose parent comes from the
+    // loopback trace headers only; called in process (the model-driven Xrm.WebApi transport) it nests under the caller's span.
+    // A root (not nested in process) is explicitly anonymous with no session until authentication names its caller
+    // (setActor), so a header-named parent never lends it another caller's actor or session.
+    const traces = d.traces ?? d.store?.traces;
+    const inbound = traces?.fromHeaders(req.headers);
+    const nested = inbound && !inbound.traceId && !inbound.parentSpanId && traces.current();
+    const span = traces?.start({
+      kind: 'http',
+      name: `${req.method} ${String(req.url ?? '/').split('?')[0]}`,
+      module: 'dataverse',
+      operation: req.method,
+      origin: { host: 'dataverse-api', portal: null, preset: null },
+      attributes: { requestId, ...(typeof clientRequestId === 'string' ? { clientRequestId } : {}) },
+      ...(nested ? {} : { ...ANONYMOUS_ROOT, ...inbound }),
+    });
+    // Every traced response names its trace (an overflow handle of a full trace names the trace only).
+    setTraceHeaders(res, span);
+    const c = {
+      req,
+      url: null,
+      origin,
+      requestId,
+      meta,
+      prefer,
+      method: req.method === 'HEAD' ? 'GET' : req.method,
+      span,
+    };
+    let failure = null;
+    // Ends on finish, or on a close before it (an aborted request or a destroyed in-process response, 499); idempotent.
+    const endSpan = (status) =>
+      span?.end({
+        status: statusFromHttp(status),
+        error: status >= 400 ? (failure ?? undefined) : undefined,
+        attributes: { statusCode: status, kind: meta.kind, appId: meta.appId, grant: meta.grant },
+      });
+    res.on('finish', () => endSpan(res.statusCode));
+    res.on('close', () => endSpan(res.writableFinished ? res.statusCode : 499));
     // Dashboard counters (runtime-counters.mjs): dataverseRequests and dataverseRequests.failed count data-plane Web API
     // requests (/api/data/v*, not $metadata); token, discovery, metadata document, SOAP and every other request on this
     // listener count as dataverseRequests.other. TDS has its own listener and is not counted.
@@ -1411,11 +1458,15 @@ export function createDataverseHandler(deps) {
             organization: d.api ? { organizationId: d.organizationId, clock: d.clock, ids: d.api.ids } : null,
             correlationId: req.headers['x-ms-correlation-request-id'] ?? requestId,
             requestId,
+            traceId: span?.traceId ?? null,
+            spanId: span?.spanId ?? null,
           });
-          result = await runWithRequest(context, () => requestMetadata(d, () => route(d, c)));
+          const routed = () => runWithRequest(context, () => requestMetadata(d, () => route(d, c)));
+          result = await (traces ? traces.run(span, routed) : routed());
         }
       }
     } catch (error) {
+      failure = error;
       result = dataverseError(error, {
         prefer,
         requestId,
@@ -1485,6 +1536,7 @@ export async function startDataverseApi({
   managedIdentity = null,
   organization = null,
   beforeListen,
+  traces = null,
 }) {
   const ownsOrganization = !organization;
   organization ??= await createOrganizationRuntime({
@@ -1560,6 +1612,7 @@ export async function startDataverseApi({
       requests,
       managedIdentity,
       limits,
+      traces,
     });
 
     await beforeListen?.(organization);

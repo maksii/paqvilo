@@ -62,9 +62,52 @@ export const TOOL_OPTIONS = {
     strict: flag(),
     help: { ...flag(), short: 'h' },
   },
+  // paqvilo mirage trace (trace.mjs): the runtime selector, the /_sim/api/trace filters, sort, the settings members, the
+  // export format and limit, and the watch --count and --trace-end.
+  trace: {
+    origin: string('LOOPBACK_ORIGIN'),
+    config: string('FILE'),
+    site: string('ID'),
+    from: string('TIME'),
+    to: string('TIME'),
+    kind: string('KIND'),
+    module: string('NAME'),
+    operation: string('NAME'),
+    entity: string('LOGICAL_NAME'),
+    status: string('running|ok|error|denied'),
+    host: string('power-pages|standalone|dataverse-api|job'),
+    'actor-kind': string('KIND'),
+    'actor-id': string('ID'),
+    'session-key': string('KEY'),
+    'visitor-id': string('ID'),
+    portal: string('ID'),
+    search: string('TEXT'),
+    'trace-id': string('ID'),
+    'parent-span-id': string('ID'),
+    depth: string('N'),
+    'min-duration-ms': string('N'),
+    'has-errors': string('true|false'),
+    page: string('N'),
+    'page-size': string('N'),
+    order: string('desc|asc'),
+    sort: string('start|duration|spans|errors'),
+    'bucket-ms': string('N'),
+    level: string('off|summary|full'),
+    persist: string('true|false'),
+    traces: string('N'),
+    'spans-per-trace': string('N'),
+    'payload-bytes': string('N'),
+    format: string('json|ndjson|otlp'),
+    limit: string('N'),
+    count: string('N'),
+    'trace-end': flag(),
+    json: flag(),
+    help: { ...flag(), short: 'h' },
+  },
 };
 
-export function parseToolArgs(name, args) {
+/** The parsed { values, positionals } of a tool that takes positional arguments (allowPositionals). */
+export function parseToolCommand(name, args, { allowPositionals = false } = {}) {
   const options = Object.fromEntries(
     Object.entries(TOOL_OPTIONS[name]).map(([key, { label, ...definition }]) => [key, definition]),
   );
@@ -73,12 +116,14 @@ export function parseToolArgs(name, args) {
     if (options[key]?.type === 'string' && (args[i + 1] == null || args[i + 1].startsWith('--')))
       throw new Error(`--${key} requires a value`);
   }
-  const parsed = parseArgs({ args, options, tokens: true });
+  const parsed = parseArgs({ args, options, tokens: true, allowPositionals });
   for (const token of parsed.tokens)
     if (token.kind === 'option' && options[token.name].type === 'string' && token.value === '')
       throw new Error(`--${token.name} requires a nonempty value`);
-  return parsed.values;
+  return parsed;
 }
+
+export const parseToolArgs = (name, args) => parseToolCommand(name, args).values;
 
 export function toolOptionsHelp(name) {
   return Object.entries(TOOL_OPTIONS[name])

@@ -72,6 +72,7 @@ async function startRun(api, processId, input, { kinds, trigger }) {
   const result = await runTrackedFlow({
     runs,
     processId,
+    name: flow.name ?? null,
     trigger,
     definition: flow.definition,
     input,

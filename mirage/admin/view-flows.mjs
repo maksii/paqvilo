@@ -52,8 +52,11 @@ function runDetail(ctx, d) {
         'No action is journalled yet.',
         `Journal of run ${run.id}`,
       );
+  const trace = run.traceId
+    ? `<p><a class="ui-button ui-small" href="#trace?${e(new URLSearchParams({ traceId: run.traceId, ...(run.traceSpanId ? { spanId: run.traceSpanId } : {}) }))}">Open trace</a></p>`
+    : '';
   return (
-    `<h3>Run <code>${e(run.id ?? d.runId)}</code></h3>${facts}` +
+    `<h3>Run <code>${e(run.id ?? d.runId)}</code></h3>${facts}${trace}` +
     kit.section({
       key: `${ID}:journal`,
       title: 'Action journal',

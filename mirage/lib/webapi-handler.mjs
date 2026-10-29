@@ -33,6 +33,7 @@ import {
   observedODataInnerMessage,
 } from './webapi-error-details.mjs';
 import { appendObservedWebApiErrorTemplate } from './webapi-error-templates.mjs';
+import { statusFromHttp } from './trace-store.mjs';
 
 const WEBAPI_COUNT_LIMIT = 5000;
 const KEY = String.raw`((?:'(?:[^']|'')*'|[^()'/])*)`;
@@ -519,11 +520,59 @@ async function route(req, res, url, deps) {
       'NotImplemented',
     );
   const t = requestContext(req, res, url, deps, target, method);
+  const traces = deps.store.traces;
+  const span = traces?.start({
+    kind: 'webapi',
+    name: `${req.method} ${target.set}`,
+    module: 'webapi',
+    operation: webApiOperation(method, target),
+    entity: t.mapping.logicalName,
+    recordId: target.key ?? null,
+    attributes: { target: target.kind, prefer: req.headers.prefer },
+  });
+  if (!span?.enabled) return routeTarget(t, method, target, url);
+  t.span = span;
+  // The response the handler writes names the outcome: a row count for a collection, the id of a created row.
+  let answered = null;
+  t.deps = {
+    ...deps,
+    json: (out, status, body, headers) => {
+      answered = { body, headers };
+      return deps.json(out, status, body, headers);
+    },
+  };
+  try {
+    await traces.run(span, () => routeTarget(t, method, target, url));
+  } catch (error) {
+    span.fail(error);
+    throw error;
+  }
+  const status = res.statusCode;
+  const rowCount = Array.isArray(answered?.body?.value) ? answered.body.value.length : undefined;
+  const entityId = answered?.headers?.['OData-EntityId'] ?? answered?.headers?.['odata-entityid'];
+  const id = typeof entityId === 'string' ? (/\(([^()]+)\)$/.exec(entityId)?.[1] ?? undefined) : undefined;
+  span.output(() => ({ status, ...(rowCount === undefined ? {} : { rowCount }), ...(id ? { id } : {}) }));
+  span.end({
+    status: statusFromHttp(status),
+    attributes: { statusCode: status, rowCount, id },
+  });
+}
+
+// The span operation of a portal Web API request (docs/design/tracing.md span model).
+function webApiOperation(method, target) {
+  if (method === 'GET')
+    return target.kind === 'collection' || target.kind === 'navcount' ? 'retrievemultiple' : 'retrieve';
+  if (target.kind === 'ref') return method === 'DELETE' ? 'disassociate' : 'associate';
+  if (method === 'POST') return target.kind === 'collection' ? 'create' : 'action';
+  return method === 'DELETE' && target.kind === 'entity' ? 'delete' : 'update';
+}
+
+async function routeTarget(t, method, target, url) {
   // A read observer can issue independently committed SDK writes. Finish the
   // serialized read unit before sending a successful response, including text
   // properties and conditional 304s, so persistence failures remain errors.
   const execute = () =>
-    method === 'GET' && typeof deps.store.readOperation === 'function' ? dispatchRead(t) : dispatch(t);
+    method === 'GET' && typeof t.store.readOperation === 'function' ? dispatchRead(t) : dispatch(t);
   if (method === 'GET' && !(target.kind === 'collection' && url.searchParams.has('fetchXml')))
     try {
       return await execute();
@@ -1162,6 +1211,8 @@ async function getProperty(t, raw) {
 async function readBody(t) {
   const observed = t.deps.portal?.observed?.webApiErrorDetails === 'odata-wrapper';
   const body = await t.deps.jsonBody(t.req, { allowEmpty: false, odataErrorDetails: observed });
+  // The parsed body is the webapi span's input (captured, redacted, only at level full).
+  t.span?.setInput(() => body);
   t.odataNumberLexemes = observed ? odataNumberLexemes(body) : undefined;
   if (!body || typeof body !== 'object' || Array.isArray(body))
     throw attachODataReaderDetails(

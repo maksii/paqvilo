@@ -19,6 +19,7 @@ import {
 } from '../lib/dataverse-workflows.mjs';
 import { createSimulator } from '../server.mjs';
 import { settleCommittedWork } from '../lib/committed-work.mjs';
+import { createTraceStore } from '../lib/trace-store.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { bearerCall } from './support/web-api.mjs';
 
@@ -325,11 +326,22 @@ describe('dataverse workflows: rows, activation and ExecuteWorkflow over HTTP', 
     assert.equal(store.tableRows('contoso_widget')[0].status, 88);
   });
 
-  it('runs an exported cloud flow as a background job that completes', async () => {
-    const { asyncoperationid } = await (await call(executeOf(WF(6)), { method: 'POST', body: widgetRef })).json();
-    const job = await finished(asyncoperationid);
-    assert.equal(job.operationtype, 10);
-    assert.equal(job.statuscode, 30);
+  it('runs an exported cloud flow as a background job that completes; its flow-run span carries the flow name', async () => {
+    // A trace store for this run only (data.mjs and the flow runtime read store.traces per call).
+    store.traces = createTraceStore();
+    try {
+      const { asyncoperationid } = await (await call(executeOf(WF(6)), { method: 'POST', body: widgetRef })).json();
+      const job = await finished(asyncoperationid);
+      assert.equal(job.operationtype, 10);
+      assert.equal(job.statuscode, 30);
+      const runs = store.traces.spans({ kind: 'flow-run' }).items;
+      assert.deepEqual(
+        runs.map((span) => [span.name, span.attributes.trigger]),
+        [['Invented 06', 'ExecuteWorkflow']],
+      );
+    } finally {
+      delete store.traces;
+    }
   });
 
   it('refuses a call from a user with no roles on the workflow privilege', async () => {
@@ -775,11 +787,11 @@ describe('dataverse workflows: a portal write is unchanged by a background trigg
         // Every job the write started has finished once the simulator's committed work is settled.
         await app.settle();
         const started = app.store.tableRows('asyncoperation').some((job) => job.operationtype === 10);
-        // Per-run values only: the Date, the trace id and this run's origin (the port differs between the two runs).
+        // Per-run values only: the Date, the audit and trace ids and this run's origin (the port differs between the two runs).
         return {
           status: response.status,
           headers: [...response.headers]
-            .filter(([key]) => !['date', 'x-sim-trace-id'].includes(key))
+            .filter(([key]) => !['date', 'x-sim-trace-id', 'x-sim-span-id', 'x-trace-id'].includes(key))
             .map(([key, value]) => [key, value.replaceAll(app.url, '<origin>')])
             .sort(),
           body: bytes.toString('base64'),

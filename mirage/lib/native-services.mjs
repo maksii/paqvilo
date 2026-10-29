@@ -38,6 +38,7 @@ import {
   subgridActionUrl,
   deletePortalSubgridRecord,
 } from './subgrid-actions.mjs';
+import { statusFromHttp } from './trace-store.mjs';
 
 /*
  * Local equivalents of the native Power Pages grid, lookup, subgrid, notes and
@@ -2711,6 +2712,27 @@ export async function handleNativeService(req, res, url, context) {
     'entity-form-deletenote',
   ]);
   if (!handled.has(action.toLowerCase())) return false;
+  // One native-service span per service call (docs/design/tracing.md); store reads inside it nest under it.
+  const traces = context.store?.traces;
+  const span = traces?.start({
+    kind: 'native-service',
+    name: `${req.method} ${action}`,
+    module: 'native',
+    operation: action.toLowerCase(),
+  });
+  const call = () => nativeServiceAction(req, res, url, context, action, websiteId, span);
+  try {
+    return await (span ? traces.run(span, call) : call());
+  } finally {
+    const status = res.statusCode;
+    span?.end({
+      status: statusFromHttp(status),
+      attributes: { statusCode: status },
+    });
+  }
+}
+
+async function nativeServiceAction(req, res, url, context, action, websiteId, span) {
   try {
     const normalized = action.toLowerCase();
     if (/^download-as-(csv|excel)$/.test(normalized) && req.method === 'GET') {
@@ -2759,6 +2781,14 @@ export async function handleNativeService(req, res, url, context) {
       }[normalized];
       if (!expected.includes(secure.t)) fail('Invalid_Request', 403, 'Invalid_Request');
       const model = modelFor(secure, context);
+      span?.set({
+        grid: secure.t,
+        listId: secure.list,
+        formId: secure.form,
+        gridId: secure.grid,
+        page: Math.max(1, Number(body.page) || 1),
+        pageSize: Number(body.pageSize) || null,
+      });
       if (model.kind === 'subgrid' && model.definition && secure.parent) {
         if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
           return (sendSubgridAccessDenied(res), true);
@@ -2938,6 +2968,7 @@ export async function handleNativeService(req, res, url, context) {
       );
     return false;
   } catch (error) {
+    span?.fail(error);
     sendError(res, error);
     return true;
   }

@@ -15,7 +15,7 @@ import { descendants, parseSolutionXml } from './solution-xml.mjs';
 import { solutionLayerFiles } from './solution-content-fingerprint.mjs';
 import { contextUrl, dataverseError } from './dataverse-odata.mjs';
 import { ownerColumns, uuidV5 } from './dataverse-security.mjs';
-import { committedJobs, liveJob, stageCommittedJobs } from './committed-work.mjs';
+import { committedJobs, liveJob, stageCommittedJobs, traceJob } from './committed-work.mjs';
 import { runTrackedFlow, inspectFlowTrigger } from './flow-runtime.mjs';
 
 const CATEGORY_WORKFLOW = 0;
@@ -456,10 +456,39 @@ function writeProcessSession(store, api, run, error) {
   });
 }
 
+// One workflow span per run (docs/design/tracing.md). A run a system job starts on a later tick passes the span that queued it
+// as parent (null: a new trace), so it never takes the scheduler's inherited context; without parent the run nests where it runs.
+function tracedRun(api, run, work, { parent, cloud = false } = {}) {
+  const traces = api.store.traces;
+  if (!traces?.enabled) return work();
+  return traces.wrap(
+    {
+      kind: 'workflow',
+      name: run.row?.name ?? bare(run.row?.workflowid),
+      module: cloud ? 'flows' : 'dataverse',
+      operation: 'run',
+      entity: run.regarding?.logicalName ?? run.target?.logicalName ?? null,
+      recordId: run.regarding?.id ?? run.target?.id ?? null,
+      attributes: {
+        workflowId: bare(run.row?.workflowid),
+        cloud,
+        realtime: run.realtime === true,
+        jobId: run.jobId ?? null,
+      },
+      ...(parent === undefined
+        ? {}
+        : { traceId: parent?.traceId ?? null, parentSpanId: parent?.spanId ?? null, async: true }),
+    },
+    () => work(),
+  );
+}
+
 // One run, atomic: the handler's writes commit or roll back with it. A failed run records its log outside the rolled-back work.
 async function attempt(api, config, run) {
   try {
-    return await api.change(() => api.runAtomic(() => runClassic(api, config, run)));
+    return await tracedRun(api, run, () => api.change(() => api.runAtomic(() => runClassic(api, config, run))), {
+      parent: run.traceParent,
+    });
   } catch (error) {
     const choice = classicChoice(config, run.row);
     const logged = choice.mode === 'handler' || choice.mode === 'mock';
@@ -498,6 +527,7 @@ function runCloudFlow(api, config, run) {
   return runTrackedFlow({
     runs: api.flowRuns ?? null,
     processId: bare(run.row.workflowid),
+    name: flow.name ?? run.row.name ?? null,
     trigger: 'ExecuteWorkflow',
     wrap: (fn) => api.change(() => api.store.transact(async () => await fn(), { cloneResult: false })),
     definition: flow.definition,
@@ -542,6 +572,8 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
   const category = Number(row.category);
   const realtime = category === CATEGORY_WORKFLOW && Number(row.mode) === 1;
   const name = row.name;
+  // The span that queues a system job: the job's run parents by it explicitly (tracedRun).
+  const staging = store.traces?.current() ?? null;
   if (category === CATEGORY_WORKFLOW) {
     if (Number(row.statecode) !== STATE_ACTIVATED) throw native('0x80045047', 'Workflow must be in Published state.');
     if (!row.ondemand && !row.subprocess)
@@ -590,7 +622,16 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
           primaryentitytype: regarding.logicalName,
         },
       },
-      () => runCloudFlow(api, config, { row, target: { row: target }, caller, inputs }),
+      () =>
+        tracedRun(
+          api,
+          { row, regarding },
+          () => runCloudFlow(api, config, { row, target: { row: target }, caller, inputs }),
+          {
+            parent: staging,
+            cloud: true,
+          },
+        ),
     );
     return {
       status: 200,
@@ -629,7 +670,9 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
         workflowactivationid: activation ? lookup('workflow', activation.workflowid) : null,
       },
     },
-    inRunContext(store, currentRequest()?.correlationId, caller, () => attempt(api, config, { ...run, jobId })),
+    inRunContext(store, currentRequest()?.correlationId, caller, () =>
+      attempt(api, config, { ...run, jobId, traceParent: staging }),
+    ),
   );
   return {
     status: 200,
@@ -990,7 +1033,7 @@ export function workflowExtension(config = {}) {
       const unstage = api.store.addCommitStager((events) => stageBackgroundRuns(api, settings, events));
       const unregister = jobs.register(
         JOB_KIND,
-        (job) => runBackgroundJob(api, settings, job),
+        (job) => traceJob(api.store, job, () => runBackgroundJob(api, settings, job)),
         settings.diagnostic ? { diagnostic: settings.diagnostic } : {},
       );
       subscriptions.set(api.store, () => {

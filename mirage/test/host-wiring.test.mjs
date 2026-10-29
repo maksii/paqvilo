@@ -212,6 +212,7 @@ const SHARED = [
   '/flow-runs',
   '/flow-waits',
   '/flow-triggers',
+  '/trace',
   '/preflight',
   '/status',
   '/dataverse',

@@ -1,0 +1,1426 @@
+{
+  "settings": {
+    "settings": {
+      "level": "full",
+      "traces": 500,
+      "spansPerTrace": 2000,
+      "payloadBytes": 16384,
+      "persist": false
+    },
+    "status": {
+      "level": "full",
+      "enabled": true,
+      "retained": 2,
+      "spans": 9,
+      "running": 0,
+      "dropped": 0,
+      "droppedSpans": 0,
+      "latestSequence": 9,
+      "memoryBytes": 5545,
+      "listeners": 0,
+      "persist": {
+        "enabled": false,
+        "directory": null,
+        "written": 0,
+        "failures": 0,
+        "lastError": null
+      }
+    }
+  },
+  "query": {
+    "items": [
+      {
+        "traceId": "6e354c10-c74e-45e2-b4fd-a4e3d04530e5",
+        "sequence": 8,
+        "latestSequence": 9,
+        "startedAt": "2026-10-22T09:00:00.100Z",
+        "status": "denied",
+        "ended": true,
+        "durationMs": 3,
+        "totalDurationMs": 3,
+        "spanCount": 2,
+        "droppedSpans": 0,
+        "errorCount": 0,
+        "deniedCount": 2,
+        "pluginCount": 0,
+        "flowCount": 0,
+        "connectorCount": 0,
+        "dataverseCount": 0,
+        "kinds": {
+          "http": 1,
+          "permission": 1
+        },
+        "entities": [
+          "x_secret"
+        ],
+        "modules": [
+          "portal",
+          "security"
+        ],
+        "root": {
+          "traceId": "6e354c10-c74e-45e2-b4fd-a4e3d04530e5",
+          "spanId": "e2250b6c-0947-4758-b351-405c3453d9c5",
+          "parentSpanId": null,
+          "sequence": 8,
+          "kind": "http",
+          "name": "GET /_api/x_secrets",
+          "module": "portal",
+          "operation": "get",
+          "entity": null,
+          "recordId": null,
+          "startedAt": "2026-10-22T09:00:00.100Z",
+          "durationMs": 3,
+          "status": "denied",
+          "depth": 0,
+          "async": false,
+          "actor": {
+            "kind": "anonymous",
+            "id": null,
+            "name": null
+          },
+          "session": {
+            "visitorId": "visitor-2",
+            "sessionKey": "visitor:visitor-2"
+          },
+          "origin": {
+            "host": "power-pages",
+            "portal": "fx-portal",
+            "preset": null
+          },
+          "attributes": {
+            "statusCode": 403
+          },
+          "events": [],
+          "links": []
+        }
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "sequence": 1,
+        "latestSequence": 7,
+        "startedAt": "2026-10-22T09:00:00.000Z",
+        "status": "ok",
+        "ended": true,
+        "durationMs": 21,
+        "totalDurationMs": 55,
+        "spanCount": 7,
+        "droppedSpans": 0,
+        "errorCount": 1,
+        "deniedCount": 0,
+        "pluginCount": 1,
+        "flowCount": 0,
+        "connectorCount": 0,
+        "dataverseCount": 1,
+        "kinds": {
+          "http": 1,
+          "webapi": 1,
+          "dataverse": 1,
+          "plugin-stage": 1,
+          "plugin-step": 1,
+          "sdk-call": 1,
+          "job": 1
+        },
+        "entities": [
+          "x_item",
+          "x_category"
+        ],
+        "modules": [
+          "portal",
+          "webapi",
+          "dataverse",
+          "plugins",
+          "clr",
+          "jobs"
+        ],
+        "root": {
+          "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+          "spanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+          "parentSpanId": null,
+          "sequence": 1,
+          "kind": "http",
+          "name": "POST /_api/x_items",
+          "module": "portal",
+          "operation": "post",
+          "entity": null,
+          "recordId": null,
+          "startedAt": "2026-10-22T09:00:00.000Z",
+          "durationMs": 21,
+          "status": "ok",
+          "depth": 0,
+          "async": false,
+          "actor": {
+            "kind": "contact",
+            "id": "c0ffee00-0000-4000-8000-000000000001",
+            "name": "Invented Contact"
+          },
+          "session": {
+            "visitorId": "visitor-1",
+            "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+          },
+          "origin": {
+            "host": "power-pages",
+            "portal": "fx-portal",
+            "preset": null
+          },
+          "attributes": {
+            "kindHint": "api",
+            "provider": "local",
+            "statusCode": 201
+          },
+          "events": [],
+          "links": []
+        }
+      }
+    ],
+    "total": 2,
+    "page": 1,
+    "pageSize": 25,
+    "pageCount": 1,
+    "retained": 2,
+    "dropped": 0,
+    "latestSequence": 9
+  },
+  "stats": {
+    "count": 9,
+    "overall": {
+      "count": 9,
+      "errors": 1,
+      "p50": 10,
+      "p95": 21,
+      "max": 21
+    },
+    "roots": {
+      "count": 2,
+      "errors": 0,
+      "p50": 3,
+      "p95": 21,
+      "max": 21
+    },
+    "from": "2026-10-22T09:00:00.000Z",
+    "to": "2026-10-22T09:00:00.101Z",
+    "bucketMs": 5,
+    "byKind": {
+      "http": {
+        "count": 2,
+        "errors": 0,
+        "p50": 3,
+        "p95": 21,
+        "max": 21
+      },
+      "webapi": {
+        "count": 1,
+        "errors": 0,
+        "p50": 18,
+        "p95": 18,
+        "max": 18
+      },
+      "dataverse": {
+        "count": 1,
+        "errors": 0,
+        "p50": 14,
+        "p95": 14,
+        "max": 14
+      },
+      "plugin-stage": {
+        "count": 1,
+        "errors": 0,
+        "p50": 10,
+        "p95": 10,
+        "max": 10
+      },
+      "plugin-step": {
+        "count": 1,
+        "errors": 0,
+        "p50": 8,
+        "p95": 8,
+        "max": 8
+      },
+      "sdk-call": {
+        "count": 1,
+        "errors": 0,
+        "p50": 3,
+        "p95": 3,
+        "max": 3
+      },
+      "job": {
+        "count": 1,
+        "errors": 1,
+        "p50": 15,
+        "p95": 15,
+        "max": 15
+      },
+      "permission": {
+        "count": 1,
+        "errors": 0,
+        "p50": 0,
+        "p95": 0,
+        "max": 0
+      }
+    },
+    "byModule": {
+      "portal": {
+        "count": 2,
+        "errors": 0,
+        "p50": 3,
+        "p95": 21,
+        "max": 21
+      },
+      "webapi": {
+        "count": 1,
+        "errors": 0,
+        "p50": 18,
+        "p95": 18,
+        "max": 18
+      },
+      "dataverse": {
+        "count": 1,
+        "errors": 0,
+        "p50": 14,
+        "p95": 14,
+        "max": 14
+      },
+      "plugins": {
+        "count": 1,
+        "errors": 0,
+        "p50": 10,
+        "p95": 10,
+        "max": 10
+      },
+      "clr": {
+        "count": 2,
+        "errors": 0,
+        "p50": 3,
+        "p95": 8,
+        "max": 8
+      },
+      "jobs": {
+        "count": 1,
+        "errors": 1,
+        "p50": 15,
+        "p95": 15,
+        "max": 15
+      },
+      "security": {
+        "count": 1,
+        "errors": 0,
+        "p50": 0,
+        "p95": 0,
+        "max": 0
+      }
+    },
+    "byEntity": {
+      "x_item": {
+        "count": 4,
+        "errors": 0,
+        "p50": 10,
+        "p95": 18,
+        "max": 18
+      },
+      "x_category": {
+        "count": 1,
+        "errors": 0,
+        "p50": 3,
+        "p95": 3,
+        "max": 3
+      },
+      "x_secret": {
+        "count": 1,
+        "errors": 0,
+        "p50": 0,
+        "p95": 0,
+        "max": 0
+      }
+    },
+    "byOperation": {
+      "post": {
+        "count": 1,
+        "errors": 0,
+        "p50": 21,
+        "p95": 21,
+        "max": 21
+      },
+      "create": {
+        "count": 4,
+        "errors": 0,
+        "p50": 10,
+        "p95": 18,
+        "max": 18
+      },
+      "retrieve": {
+        "count": 2,
+        "errors": 0,
+        "p50": 0,
+        "p95": 3,
+        "max": 3
+      },
+      "get": {
+        "count": 1,
+        "errors": 0,
+        "p50": 3,
+        "p95": 3,
+        "max": 3
+      }
+    },
+    "byActor": {
+      "contact:c0ffee00-0000-4000-8000-000000000001": {
+        "count": 5,
+        "errors": 1,
+        "p50": 15,
+        "p95": 21,
+        "max": 21
+      },
+      "plugin:step-1": {
+        "count": 2,
+        "errors": 0,
+        "p50": 3,
+        "p95": 8,
+        "max": 8
+      },
+      "anonymous": {
+        "count": 2,
+        "errors": 0,
+        "p50": 0,
+        "p95": 3,
+        "max": 3
+      }
+    },
+    "byStatus": {
+      "ok": {
+        "count": 6,
+        "errors": 0,
+        "p50": 10,
+        "p95": 21,
+        "max": 21
+      },
+      "error": {
+        "count": 1,
+        "errors": 1,
+        "p50": 15,
+        "p95": 15,
+        "max": 15
+      },
+      "denied": {
+        "count": 2,
+        "errors": 0,
+        "p50": 0,
+        "p95": 3,
+        "max": 3
+      }
+    },
+    "timeline": [
+      {
+        "bucketStart": "2026-10-22T09:00:00.000Z",
+        "count": 3,
+        "errors": 0,
+        "p95": 21
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.005Z",
+        "count": 3,
+        "errors": 0,
+        "p95": 10
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.010Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.015Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.020Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.025Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.030Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.035Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.040Z",
+        "count": 1,
+        "errors": 1,
+        "p95": 15
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.045Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.050Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.055Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.060Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.065Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.070Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.075Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.080Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.085Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.090Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.095Z",
+        "count": 0,
+        "errors": 0,
+        "p95": null
+      },
+      {
+        "bucketStart": "2026-10-22T09:00:00.100Z",
+        "count": 2,
+        "errors": 0,
+        "p95": 3
+      }
+    ],
+    "slowest": [
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+        "parentSpanId": null,
+        "kind": "http",
+        "name": "POST /_api/x_items",
+        "entity": null,
+        "status": "ok",
+        "startedAt": "2026-10-22T09:00:00.000Z",
+        "durationMs": 21
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+        "parentSpanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+        "kind": "webapi",
+        "name": "POST x_items",
+        "entity": "x_item",
+        "status": "ok",
+        "startedAt": "2026-10-22T09:00:00.002Z",
+        "durationMs": 18
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "05fe8769-94ab-4f28-9f38-a586e85af8de",
+        "parentSpanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+        "kind": "job",
+        "name": "Invented.Plugin.PostCreate (async)",
+        "entity": null,
+        "status": "error",
+        "startedAt": "2026-10-22T09:00:00.040Z",
+        "durationMs": 15,
+        "error": {
+          "code": "FX_FAILED",
+          "message": "Invented failure"
+        }
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "547bc840-d755-4a43-b00f-299ac56bd549",
+        "parentSpanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+        "kind": "dataverse",
+        "name": "Create x_item",
+        "entity": "x_item",
+        "status": "ok",
+        "startedAt": "2026-10-22T09:00:00.004Z",
+        "durationMs": 14
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "a741351c-e32e-4bd6-b408-4c4af10258b4",
+        "parentSpanId": "547bc840-d755-4a43-b00f-299ac56bd549",
+        "kind": "plugin-stage",
+        "name": "Create x_item · PreOperation",
+        "entity": "x_item",
+        "status": "ok",
+        "startedAt": "2026-10-22T09:00:00.005Z",
+        "durationMs": 10
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "ca37cdbb-eaac-4c22-ab52-55e7b9e4f6ab",
+        "parentSpanId": "a741351c-e32e-4bd6-b408-4c4af10258b4",
+        "kind": "plugin-step",
+        "name": "Invented.Plugin.PreCreate",
+        "entity": "x_item",
+        "status": "ok",
+        "startedAt": "2026-10-22T09:00:00.006Z",
+        "durationMs": 8
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "d654c55e-1d24-4626-b3e1-bd71be6a08a7",
+        "parentSpanId": "ca37cdbb-eaac-4c22-ab52-55e7b9e4f6ab",
+        "kind": "sdk-call",
+        "name": "Retrieve x_category",
+        "entity": "x_category",
+        "status": "ok",
+        "startedAt": "2026-10-22T09:00:00.009Z",
+        "durationMs": 3
+      },
+      {
+        "traceId": "6e354c10-c74e-45e2-b4fd-a4e3d04530e5",
+        "spanId": "e2250b6c-0947-4758-b351-405c3453d9c5",
+        "parentSpanId": null,
+        "kind": "http",
+        "name": "GET /_api/x_secrets",
+        "entity": null,
+        "status": "denied",
+        "startedAt": "2026-10-22T09:00:00.100Z",
+        "durationMs": 3
+      },
+      {
+        "traceId": "6e354c10-c74e-45e2-b4fd-a4e3d04530e5",
+        "spanId": "1caf6bb2-2471-413c-a68b-3738ae103658",
+        "parentSpanId": "e2250b6c-0947-4758-b351-405c3453d9c5",
+        "kind": "permission",
+        "name": "Read x_secret",
+        "entity": "x_secret",
+        "status": "denied",
+        "startedAt": "2026-10-22T09:00:00.101Z",
+        "durationMs": 0
+      }
+    ],
+    "errors": [
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "05fe8769-94ab-4f28-9f38-a586e85af8de",
+        "parentSpanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+        "kind": "job",
+        "name": "Invented.Plugin.PostCreate (async)",
+        "entity": null,
+        "status": "error",
+        "startedAt": "2026-10-22T09:00:00.040Z",
+        "durationMs": 15,
+        "error": {
+          "code": "FX_FAILED",
+          "message": "Invented failure"
+        }
+      }
+    ]
+  },
+  "tree": {
+    "trace": {
+      "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+      "sequence": 1,
+      "latestSequence": 7,
+      "startedAt": "2026-10-22T09:00:00.000Z",
+      "status": "ok",
+      "ended": true,
+      "durationMs": 21,
+      "totalDurationMs": 55,
+      "spanCount": 7,
+      "droppedSpans": 0,
+      "errorCount": 1,
+      "deniedCount": 0,
+      "pluginCount": 1,
+      "flowCount": 0,
+      "connectorCount": 0,
+      "dataverseCount": 1,
+      "kinds": {
+        "http": 1,
+        "webapi": 1,
+        "dataverse": 1,
+        "plugin-stage": 1,
+        "plugin-step": 1,
+        "sdk-call": 1,
+        "job": 1
+      },
+      "entities": [
+        "x_item",
+        "x_category"
+      ],
+      "modules": [
+        "portal",
+        "webapi",
+        "dataverse",
+        "plugins",
+        "clr",
+        "jobs"
+      ],
+      "root": {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+        "parentSpanId": null,
+        "sequence": 1,
+        "kind": "http",
+        "name": "POST /_api/x_items",
+        "module": "portal",
+        "operation": "post",
+        "entity": null,
+        "recordId": null,
+        "startedAt": "2026-10-22T09:00:00.000Z",
+        "durationMs": 21,
+        "status": "ok",
+        "depth": 0,
+        "async": false,
+        "actor": {
+          "kind": "contact",
+          "id": "c0ffee00-0000-4000-8000-000000000001",
+          "name": "Invented Contact"
+        },
+        "session": {
+          "visitorId": "visitor-1",
+          "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+        },
+        "origin": {
+          "host": "power-pages",
+          "portal": "fx-portal",
+          "preset": null
+        },
+        "attributes": {
+          "kindHint": "api",
+          "provider": "local",
+          "statusCode": 201
+        },
+        "events": [],
+        "links": []
+      }
+    },
+    "root": {
+      "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+      "spanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+      "parentSpanId": null,
+      "sequence": 1,
+      "kind": "http",
+      "name": "POST /_api/x_items",
+      "module": "portal",
+      "operation": "post",
+      "entity": null,
+      "recordId": null,
+      "startedAt": "2026-10-22T09:00:00.000Z",
+      "durationMs": 21,
+      "status": "ok",
+      "depth": 0,
+      "async": false,
+      "actor": {
+        "kind": "contact",
+        "id": "c0ffee00-0000-4000-8000-000000000001",
+        "name": "Invented Contact"
+      },
+      "session": {
+        "visitorId": "visitor-1",
+        "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+      },
+      "origin": {
+        "host": "power-pages",
+        "portal": "fx-portal",
+        "preset": null
+      },
+      "attributes": {
+        "kindHint": "api",
+        "provider": "local",
+        "statusCode": 201
+      },
+      "events": [],
+      "links": []
+    },
+    "spans": [
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+        "parentSpanId": null,
+        "sequence": 1,
+        "kind": "http",
+        "name": "POST /_api/x_items",
+        "module": "portal",
+        "operation": "post",
+        "entity": null,
+        "recordId": null,
+        "startedAt": "2026-10-22T09:00:00.000Z",
+        "durationMs": 21,
+        "status": "ok",
+        "depth": 0,
+        "async": false,
+        "actor": {
+          "kind": "contact",
+          "id": "c0ffee00-0000-4000-8000-000000000001",
+          "name": "Invented Contact"
+        },
+        "session": {
+          "visitorId": "visitor-1",
+          "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+        },
+        "origin": {
+          "host": "power-pages",
+          "portal": "fx-portal",
+          "preset": null
+        },
+        "attributes": {
+          "kindHint": "api",
+          "provider": "local",
+          "statusCode": 201
+        },
+        "events": [],
+        "links": []
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+        "parentSpanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+        "sequence": 2,
+        "kind": "webapi",
+        "name": "POST x_items",
+        "module": "webapi",
+        "operation": "create",
+        "entity": "x_item",
+        "recordId": null,
+        "startedAt": "2026-10-22T09:00:00.002Z",
+        "durationMs": 18,
+        "status": "ok",
+        "depth": 1,
+        "async": false,
+        "actor": {
+          "kind": "contact",
+          "id": "c0ffee00-0000-4000-8000-000000000001",
+          "name": "Invented Contact"
+        },
+        "session": {
+          "visitorId": "visitor-1",
+          "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+        },
+        "origin": {
+          "host": "power-pages",
+          "portal": "fx-portal",
+          "preset": null
+        },
+        "attributes": {
+          "status": 201
+        },
+        "events": [
+          {
+            "offsetMs": 0,
+            "type": "permission",
+            "attributes": {
+              "table": "x_item",
+              "operation": "create",
+              "result": "allow",
+              "model": "table",
+              "permissions": 1
+            }
+          },
+          {
+            "offsetMs": 16,
+            "type": "job-staged",
+            "attributes": {
+              "kind": "plugin",
+              "asyncOperationId": "job-1"
+            }
+          }
+        ],
+        "links": [],
+        "input": {
+          "x_name": "Invented item"
+        },
+        "output": {
+          "status": 201,
+          "id": "item-1"
+        }
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "547bc840-d755-4a43-b00f-299ac56bd549",
+        "parentSpanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+        "sequence": 3,
+        "kind": "dataverse",
+        "name": "Create x_item",
+        "module": "dataverse",
+        "operation": "create",
+        "entity": "x_item",
+        "recordId": null,
+        "startedAt": "2026-10-22T09:00:00.004Z",
+        "durationMs": 14,
+        "status": "ok",
+        "depth": 2,
+        "async": false,
+        "actor": {
+          "kind": "contact",
+          "id": "c0ffee00-0000-4000-8000-000000000001",
+          "name": "Invented Contact"
+        },
+        "session": {
+          "visitorId": "visitor-1",
+          "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+        },
+        "origin": {
+          "host": "power-pages",
+          "portal": "fx-portal",
+          "preset": null
+        },
+        "attributes": {
+          "recordId": "item-1"
+        },
+        "events": [],
+        "links": []
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "a741351c-e32e-4bd6-b408-4c4af10258b4",
+        "parentSpanId": "547bc840-d755-4a43-b00f-299ac56bd549",
+        "sequence": 4,
+        "kind": "plugin-stage",
+        "name": "Create x_item · PreOperation",
+        "module": "plugins",
+        "operation": "create",
+        "entity": "x_item",
+        "recordId": null,
+        "startedAt": "2026-10-22T09:00:00.005Z",
+        "durationMs": 10,
+        "status": "ok",
+        "depth": 3,
+        "async": false,
+        "actor": {
+          "kind": "contact",
+          "id": "c0ffee00-0000-4000-8000-000000000001",
+          "name": "Invented Contact"
+        },
+        "session": {
+          "visitorId": "visitor-1",
+          "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+        },
+        "origin": {
+          "host": "power-pages",
+          "portal": "fx-portal",
+          "preset": null
+        },
+        "attributes": {
+          "stage": 20,
+          "mode": "sync",
+          "matched": 1
+        },
+        "events": [],
+        "links": []
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "ca37cdbb-eaac-4c22-ab52-55e7b9e4f6ab",
+        "parentSpanId": "a741351c-e32e-4bd6-b408-4c4af10258b4",
+        "sequence": 5,
+        "kind": "plugin-step",
+        "name": "Invented.Plugin.PreCreate",
+        "module": "clr",
+        "operation": "create",
+        "entity": "x_item",
+        "recordId": null,
+        "startedAt": "2026-10-22T09:00:00.006Z",
+        "durationMs": 8,
+        "status": "ok",
+        "depth": 4,
+        "async": false,
+        "actor": {
+          "kind": "plugin",
+          "id": "step-1",
+          "name": "Invented.Plugin"
+        },
+        "session": {
+          "visitorId": "visitor-1",
+          "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+        },
+        "origin": {
+          "host": "power-pages",
+          "portal": "fx-portal",
+          "preset": null
+        },
+        "attributes": {
+          "stepId": "step-1",
+          "typeName": "Invented.Plugin",
+          "mode": "sync",
+          "rank": 1
+        },
+        "events": [
+          {
+            "offsetMs": 0,
+            "type": "trace",
+            "message": "Validating the invented item"
+          }
+        ],
+        "links": [],
+        "input": {
+          "Target": {
+            "x_name": "Invented item"
+          }
+        },
+        "output": {
+          "Target": {
+            "x_name": "Invented item",
+            "x_code": "FX-1"
+          }
+        }
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "d654c55e-1d24-4626-b3e1-bd71be6a08a7",
+        "parentSpanId": "ca37cdbb-eaac-4c22-ab52-55e7b9e4f6ab",
+        "sequence": 6,
+        "kind": "sdk-call",
+        "name": "Retrieve x_category",
+        "module": "clr",
+        "operation": "retrieve",
+        "entity": "x_category",
+        "recordId": "cat-1",
+        "startedAt": "2026-10-22T09:00:00.009Z",
+        "durationMs": 3,
+        "status": "ok",
+        "depth": 5,
+        "async": false,
+        "actor": {
+          "kind": "plugin",
+          "id": "step-1",
+          "name": "Invented.Plugin"
+        },
+        "session": {
+          "visitorId": "visitor-1",
+          "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+        },
+        "origin": {
+          "host": "power-pages",
+          "portal": "fx-portal",
+          "preset": null
+        },
+        "attributes": {},
+        "events": [],
+        "links": [],
+        "output": {
+          "x_categoryid": "cat-1"
+        }
+      },
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "05fe8769-94ab-4f28-9f38-a586e85af8de",
+        "parentSpanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+        "sequence": 7,
+        "kind": "job",
+        "name": "Invented.Plugin.PostCreate (async)",
+        "module": "jobs",
+        "operation": null,
+        "entity": null,
+        "recordId": null,
+        "startedAt": "2026-10-22T09:00:00.040Z",
+        "durationMs": 15,
+        "status": "error",
+        "depth": 2,
+        "async": true,
+        "actor": {
+          "kind": "contact",
+          "id": "c0ffee00-0000-4000-8000-000000000001",
+          "name": "Invented Contact"
+        },
+        "session": {
+          "visitorId": "visitor-1",
+          "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+        },
+        "origin": {
+          "host": "power-pages",
+          "portal": "fx-portal",
+          "preset": null
+        },
+        "attributes": {
+          "kind": "plugin",
+          "jobId": "job-1",
+          "attempt": 1
+        },
+        "events": [],
+        "links": [
+          {
+            "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+            "spanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+            "relation": "staged-by"
+          }
+        ],
+        "error": {
+          "code": "FX_FAILED",
+          "message": "Invented failure"
+        }
+      }
+    ],
+    "children": [
+      {
+        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+        "spanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+        "parentSpanId": null,
+        "sequence": 1,
+        "kind": "http",
+        "name": "POST /_api/x_items",
+        "module": "portal",
+        "operation": "post",
+        "entity": null,
+        "recordId": null,
+        "startedAt": "2026-10-22T09:00:00.000Z",
+        "durationMs": 21,
+        "status": "ok",
+        "depth": 0,
+        "async": false,
+        "actor": {
+          "kind": "contact",
+          "id": "c0ffee00-0000-4000-8000-000000000001",
+          "name": "Invented Contact"
+        },
+        "session": {
+          "visitorId": "visitor-1",
+          "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+        },
+        "origin": {
+          "host": "power-pages",
+          "portal": "fx-portal",
+          "preset": null
+        },
+        "attributes": {
+          "kindHint": "api",
+          "provider": "local",
+          "statusCode": 201
+        },
+        "events": [],
+        "links": [],
+        "children": [
+          {
+            "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+            "spanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+            "parentSpanId": "4a6c818d-f625-4d31-a655-55976ebc5fd3",
+            "sequence": 2,
+            "kind": "webapi",
+            "name": "POST x_items",
+            "module": "webapi",
+            "operation": "create",
+            "entity": "x_item",
+            "recordId": null,
+            "startedAt": "2026-10-22T09:00:00.002Z",
+            "durationMs": 18,
+            "status": "ok",
+            "depth": 1,
+            "async": false,
+            "actor": {
+              "kind": "contact",
+              "id": "c0ffee00-0000-4000-8000-000000000001",
+              "name": "Invented Contact"
+            },
+            "session": {
+              "visitorId": "visitor-1",
+              "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+            },
+            "origin": {
+              "host": "power-pages",
+              "portal": "fx-portal",
+              "preset": null
+            },
+            "attributes": {
+              "status": 201
+            },
+            "events": [
+              {
+                "offsetMs": 0,
+                "type": "permission",
+                "attributes": {
+                  "table": "x_item",
+                  "operation": "create",
+                  "result": "allow",
+                  "model": "table",
+                  "permissions": 1
+                }
+              },
+              {
+                "offsetMs": 16,
+                "type": "job-staged",
+                "attributes": {
+                  "kind": "plugin",
+                  "asyncOperationId": "job-1"
+                }
+              }
+            ],
+            "links": [],
+            "input": {
+              "x_name": "Invented item"
+            },
+            "output": {
+              "status": 201,
+              "id": "item-1"
+            },
+            "children": [
+              {
+                "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+                "spanId": "547bc840-d755-4a43-b00f-299ac56bd549",
+                "parentSpanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+                "sequence": 3,
+                "kind": "dataverse",
+                "name": "Create x_item",
+                "module": "dataverse",
+                "operation": "create",
+                "entity": "x_item",
+                "recordId": null,
+                "startedAt": "2026-10-22T09:00:00.004Z",
+                "durationMs": 14,
+                "status": "ok",
+                "depth": 2,
+                "async": false,
+                "actor": {
+                  "kind": "contact",
+                  "id": "c0ffee00-0000-4000-8000-000000000001",
+                  "name": "Invented Contact"
+                },
+                "session": {
+                  "visitorId": "visitor-1",
+                  "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+                },
+                "origin": {
+                  "host": "power-pages",
+                  "portal": "fx-portal",
+                  "preset": null
+                },
+                "attributes": {
+                  "recordId": "item-1"
+                },
+                "events": [],
+                "links": [],
+                "children": [
+                  {
+                    "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+                    "spanId": "a741351c-e32e-4bd6-b408-4c4af10258b4",
+                    "parentSpanId": "547bc840-d755-4a43-b00f-299ac56bd549",
+                    "sequence": 4,
+                    "kind": "plugin-stage",
+                    "name": "Create x_item · PreOperation",
+                    "module": "plugins",
+                    "operation": "create",
+                    "entity": "x_item",
+                    "recordId": null,
+                    "startedAt": "2026-10-22T09:00:00.005Z",
+                    "durationMs": 10,
+                    "status": "ok",
+                    "depth": 3,
+                    "async": false,
+                    "actor": {
+                      "kind": "contact",
+                      "id": "c0ffee00-0000-4000-8000-000000000001",
+                      "name": "Invented Contact"
+                    },
+                    "session": {
+                      "visitorId": "visitor-1",
+                      "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+                    },
+                    "origin": {
+                      "host": "power-pages",
+                      "portal": "fx-portal",
+                      "preset": null
+                    },
+                    "attributes": {
+                      "stage": 20,
+                      "mode": "sync",
+                      "matched": 1
+                    },
+                    "events": [],
+                    "links": [],
+                    "children": [
+                      {
+                        "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+                        "spanId": "ca37cdbb-eaac-4c22-ab52-55e7b9e4f6ab",
+                        "parentSpanId": "a741351c-e32e-4bd6-b408-4c4af10258b4",
+                        "sequence": 5,
+                        "kind": "plugin-step",
+                        "name": "Invented.Plugin.PreCreate",
+                        "module": "clr",
+                        "operation": "create",
+                        "entity": "x_item",
+                        "recordId": null,
+                        "startedAt": "2026-10-22T09:00:00.006Z",
+                        "durationMs": 8,
+                        "status": "ok",
+                        "depth": 4,
+                        "async": false,
+                        "actor": {
+                          "kind": "plugin",
+                          "id": "step-1",
+                          "name": "Invented.Plugin"
+                        },
+                        "session": {
+                          "visitorId": "visitor-1",
+                          "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+                        },
+                        "origin": {
+                          "host": "power-pages",
+                          "portal": "fx-portal",
+                          "preset": null
+                        },
+                        "attributes": {
+                          "stepId": "step-1",
+                          "typeName": "Invented.Plugin",
+                          "mode": "sync",
+                          "rank": 1
+                        },
+                        "events": [
+                          {
+                            "offsetMs": 0,
+                            "type": "trace",
+                            "message": "Validating the invented item"
+                          }
+                        ],
+                        "links": [],
+                        "input": {
+                          "Target": {
+                            "x_name": "Invented item"
+                          }
+                        },
+                        "output": {
+                          "Target": {
+                            "x_name": "Invented item",
+                            "x_code": "FX-1"
+                          }
+                        },
+                        "children": [
+                          {
+                            "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+                            "spanId": "d654c55e-1d24-4626-b3e1-bd71be6a08a7",
+                            "parentSpanId": "ca37cdbb-eaac-4c22-ab52-55e7b9e4f6ab",
+                            "sequence": 6,
+                            "kind": "sdk-call",
+                            "name": "Retrieve x_category",
+                            "module": "clr",
+                            "operation": "retrieve",
+                            "entity": "x_category",
+                            "recordId": "cat-1",
+                            "startedAt": "2026-10-22T09:00:00.009Z",
+                            "durationMs": 3,
+                            "status": "ok",
+                            "depth": 5,
+                            "async": false,
+                            "actor": {
+                              "kind": "plugin",
+                              "id": "step-1",
+                              "name": "Invented.Plugin"
+                            },
+                            "session": {
+                              "visitorId": "visitor-1",
+                              "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+                            },
+                            "origin": {
+                              "host": "power-pages",
+                              "portal": "fx-portal",
+                              "preset": null
+                            },
+                            "attributes": {},
+                            "events": [],
+                            "links": [],
+                            "output": {
+                              "x_categoryid": "cat-1"
+                            },
+                            "children": []
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+                "spanId": "05fe8769-94ab-4f28-9f38-a586e85af8de",
+                "parentSpanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+                "sequence": 7,
+                "kind": "job",
+                "name": "Invented.Plugin.PostCreate (async)",
+                "module": "jobs",
+                "operation": null,
+                "entity": null,
+                "recordId": null,
+                "startedAt": "2026-10-22T09:00:00.040Z",
+                "durationMs": 15,
+                "status": "error",
+                "depth": 2,
+                "async": true,
+                "actor": {
+                  "kind": "contact",
+                  "id": "c0ffee00-0000-4000-8000-000000000001",
+                  "name": "Invented Contact"
+                },
+                "session": {
+                  "visitorId": "visitor-1",
+                  "sessionKey": "contact:c0ffee00-0000-4000-8000-000000000001"
+                },
+                "origin": {
+                  "host": "power-pages",
+                  "portal": "fx-portal",
+                  "preset": null
+                },
+                "attributes": {
+                  "kind": "plugin",
+                  "jobId": "job-1",
+                  "attempt": 1
+                },
+                "events": [],
+                "links": [
+                  {
+                    "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
+                    "spanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
+                    "relation": "staged-by"
+                  }
+                ],
+                "error": {
+                  "code": "FX_FAILED",
+                  "message": "Invented failure"
+                },
+                "children": []
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

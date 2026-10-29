@@ -485,7 +485,25 @@ function typeRegistration(store, row, pluginTypes) {
   return handler ? { handler, pluginType: type.typename } : undefined;
 }
 
-async function invoke(api, name, c, { handlers, pluginTypes = new Map(), timeoutMs: limit }) {
+// One custom-api span per invocation (docs/design/tracing.md): the handler's trace lines are its events, and its writes nest
+// under it; the inputs and outputs are captured only at level full.
+function invoke(api, name, c, options) {
+  const traces = api.store.traces;
+  if (!traces?.enabled) return invokeApi(api, name, c, options, null);
+  return traces.wrap(
+    {
+      kind: 'custom-api',
+      name,
+      module: 'customapi',
+      operation: 'action',
+      entity: c.target?.mapping?.logicalName ?? null,
+      recordId: c.target?.id == null ? null : String(c.target.id),
+    },
+    (span) => invokeApi(api, name, c, options, span),
+  );
+}
+
+async function invokeApi(api, name, c, { handlers, pluginTypes = new Map(), timeoutMs: limit }, span) {
   const { store } = api;
   // The limit may be a function, read per call: the admin Environment settings change it while the simulator runs.
   const timeoutMs = typeof limit === 'function' ? limit() : limit;
@@ -503,6 +521,11 @@ async function invoke(api, name, c, { handlers, pluginTypes = new Map(), timeout
   // Assumed: a function must have a response property, so without one it is absent and its plug-in never runs.
   if (!properties.length && row.isfunction) throw notFound(name);
   const registration = handlers.get(key(name)) ?? typeRegistration(store, row, pluginTypes);
+  span?.set({
+    isFunction: row.isfunction === true,
+    bindingType: Number(row.bindingtype ?? 0),
+    handler: registration ? 'handler' : fxIdOf(row) ? 'powerfx' : 'none',
+  });
   // The plug-in's type (the custom API name when the pack names none) and the trace lines its handler writes.
   const plugin = {
     name: row.uniquename,
@@ -519,7 +542,10 @@ async function invoke(api, name, c, { handlers, pluginTypes = new Map(), timeout
     version: c.version,
     caller: c.caller,
     target: c.target && { logicalName: c.target.mapping?.logicalName, id: c.target.id, row: c.target.row },
-    trace: (text) => plugin.traces.push(String(text)),
+    trace: (text) => {
+      plugin.traces.push(String(text));
+      span?.event('trace', { message: String(text) });
+    },
   };
   // A Function (fxexpressionid, no pack handler) evaluates its Power Fx expression; without an evaluator it answers 501.
   // Neither a handler nor an fxexpression: the platform still runs the API and answers each response property's default.
@@ -544,6 +570,7 @@ async function invoke(api, name, c, { handlers, pluginTypes = new Map(), timeout
     await api.change(() =>
       store.transact(performed, { skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true }),
     );
+  span?.output(() => ({ inputs, outputs }));
   // Assumed: an action with no response properties returns 204.
   if (!properties.length) return { status: 204 };
   return { status: 200, body: responseBody(c, row, properties, outputs) };

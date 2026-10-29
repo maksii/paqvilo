@@ -589,6 +589,495 @@ span.ui-status-dot {
 .ui-rail .is-blocked a {
   border-color: #e7b3ba;
 }
+/* Toolbars and filter grids */
+.ui-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.ui-toolbar .ui-help {
+  margin: 0;
+}
+.ui-filter-grid {
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  max-width: none;
+  align-items: start;
+}
+.ui-filter-grid label {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+}
+.ui-filter-grid input,
+.ui-filter-grid select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  font: inherit;
+}
+.ui-filter-actions {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+}
+
+/* Tabs */
+.ui-tablist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--ui-line);
+}
+.ui-tab {
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: none;
+  color: var(--ui-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.ui-tab[aria-selected='true'] {
+  border-color: var(--ui-line);
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+  font-weight: 600;
+  margin-bottom: -1px;
+}
+.ui-tab:focus-visible {
+  outline: 3px solid var(--ui-focus);
+  outline-offset: 1px;
+}
+.ui-tabpanel {
+  padding: 10px 0 0;
+}
+
+/* Bars: geometry is SVG attributes; colour, status and async marks are classes */
+.ui-bar {
+  display: block;
+  width: 100%;
+  height: 12px;
+}
+.ui-bar-track {
+  fill: var(--ui-neutral-bg);
+}
+.ui-bar-fill {
+  fill: var(--ui-accent);
+}
+.ui-bar-fill.is-error {
+  stroke: var(--ui-bad);
+  stroke-width: 3;
+}
+.ui-bar-fill.is-denied {
+  stroke: var(--ui-warn);
+  stroke-width: 3;
+}
+.ui-bar-fill.is-async {
+  stroke: var(--ui-ink);
+  stroke-width: 2;
+  stroke-dasharray: 8 4;
+}
+.ui-bar-fill.is-running {
+  opacity: 0.55;
+}
+.ui-bar-mark {
+  fill: var(--ui-surface);
+  stroke: var(--ui-ink);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+/* Module colours: one per module in MODULES order (view-trace.mjs), each at least 3.7:1 against the bar track. */
+.ui-series-0 {
+  fill: #4254dc;
+}
+.ui-series-1 {
+  fill: #1f7a4d;
+}
+.ui-series-2 {
+  fill: #b26b00;
+}
+.ui-series-3 {
+  fill: #8e3fb8;
+}
+.ui-series-4 {
+  fill: #0f7c8c;
+}
+.ui-series-5 {
+  fill: #c2410c;
+}
+.ui-series-6 {
+  fill: #2e3440;
+}
+.ui-series-7 {
+  fill: #b02a6b;
+}
+.ui-series-8 {
+  fill: #5c7a00;
+}
+.ui-series-9 {
+  fill: #7c4a21;
+}
+.ui-series-10 {
+  fill: #1b2f6e;
+}
+.ui-series-11 {
+  fill: #0a78b5;
+}
+.ui-series-12 {
+  fill: #7a1f3d;
+}
+.ui-series-13 {
+  fill: #d4145a;
+}
+.ui-series-other {
+  fill: #7b8698;
+}
+
+/* Waterfall */
+.ui-waterfall {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ui-waterfall-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 40%) minmax(120px, 1fr) 110px;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--ui-line);
+}
+.ui-waterfall-row.is-selected,
+.ui-tree .is-selected > .ui-tree-span,
+.ui-tree .is-selected > details > summary .ui-tree-span,
+.ui-table tr.is-selected td {
+  background: var(--ui-info-bg);
+}
+.ui-waterfall-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 4px;
+  border: 0;
+  background: none;
+  color: var(--ui-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ui-waterfall-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-depth-1 > .ui-waterfall-label {
+  padding-left: 18px;
+}
+.ui-depth-2 > .ui-waterfall-label {
+  padding-left: 32px;
+}
+.ui-depth-3 > .ui-waterfall-label {
+  padding-left: 46px;
+}
+.ui-depth-4 > .ui-waterfall-label {
+  padding-left: 60px;
+}
+.ui-depth-5 > .ui-waterfall-label {
+  padding-left: 74px;
+}
+.ui-depth-6 > .ui-waterfall-label {
+  padding-left: 88px;
+}
+.ui-depth-7 > .ui-waterfall-label {
+  padding-left: 102px;
+}
+.ui-depth-8 > .ui-waterfall-label {
+  padding-left: 116px;
+}
+.ui-depth-9 > .ui-waterfall-label {
+  padding-left: 130px;
+}
+.ui-depth-10 > .ui-waterfall-label {
+  padding-left: 144px;
+}
+.ui-depth-11 > .ui-waterfall-label {
+  padding-left: 158px;
+}
+.ui-depth-12 > .ui-waterfall-label {
+  padding-left: 172px;
+}
+.ui-waterfall-duration {
+  font-family: var(--ui-mono);
+  font-size: 0.9em;
+  text-align: right;
+}
+.ui-waterfall-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-left: calc(40% + 8px);
+  margin-right: 118px;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+.ui-waterfall-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+.ui-waterfall-legend li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ui-swatch {
+  width: 10px;
+  height: 10px;
+}
+
+/* Span tree */
+.ui-tree,
+.ui-tree ul {
+  margin: 0;
+  padding-left: 18px;
+  list-style: none;
+}
+.ui-tree {
+  padding-left: 0;
+  overflow-x: auto;
+}
+.ui-tree ul.is-flat {
+  padding-left: 0;
+}
+.ui-tree li {
+  white-space: nowrap;
+}
+.ui-tree .is-context > .ui-tree-head,
+.ui-tree .is-context > details > summary .ui-tree-head,
+.ui-waterfall-row.is-context > .ui-waterfall-label {
+  opacity: 0.55;
+}
+.ui-tree li {
+  margin: 2px 0;
+}
+.ui-tree summary {
+  cursor: pointer;
+}
+.ui-tree-leaf {
+  padding-left: 16px;
+}
+.ui-tree-span {
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--ui-accent);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  /* R2C-11: one line per span, however deep. */
+  max-width: min(40em, 60vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.ui-tree-name {
+  display: inline-block;
+  max-width: min(40em, 60vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.ui-tree-span:hover,
+.ui-link-button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ui-tree-facts {
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+
+/* Histogram */
+.ui-histogram {
+  margin: 8px 0 12px;
+}
+.ui-histogram svg {
+  display: block;
+  width: 100%;
+  height: 80px;
+  border-bottom: 1px solid var(--ui-line);
+}
+.ui-histogram-hit {
+  fill: transparent;
+}
+.ui-histogram-count {
+  fill: var(--ui-accent);
+  opacity: 0.75;
+}
+.ui-histogram-errors {
+  fill: var(--ui-bad);
+}
+.ui-histogram-bucket {
+  cursor: pointer;
+}
+.ui-histogram-bucket:hover .ui-histogram-hit,
+.ui-histogram-bucket:focus .ui-histogram-hit {
+  fill: var(--ui-info-bg);
+}
+.ui-histogram-bucket:focus {
+  outline: none;
+}
+.ui-histogram-bucket:focus-visible .ui-histogram-hit {
+  stroke: var(--ui-focus);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+.ui-histogram-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+.ui-table tr[data-trace-open] {
+  cursor: pointer;
+}
+.ui-badge-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+/* Trace list: compact cells that may wrap, so Status, Duration and the Root button stay in view at desktop widths;
+   the root name, origin and kind counts keep one line each with an ellipsis (the full text is the title). */
+.ui-table[data-table='trace-list'] th,
+.ui-table[data-table='trace-list'] td {
+  padding: 8px 10px;
+}
+.ui-table[data-table='trace-list'] td {
+  max-width: none;
+  white-space: normal;
+}
+.ui-trace-kinds {
+  display: block;
+  max-width: 14em;
+  margin: 2px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ui-accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ui-trace-root {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(24em, 36vw);
+}
+.ui-trace-root .ui-trace-name,
+.ui-trace-origin {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-trace-origin {
+  display: block;
+  max-width: min(24em, 36vw);
+  margin: 2px 0 0;
+}
+.ui-sort {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ui-sort:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ui-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.ui-chip {
+  padding: 2px 10px;
+  border: 1px solid var(--ui-line);
+  border-radius: 999px;
+  background: var(--ui-info-bg);
+  color: var(--ui-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ui-chip:hover {
+  border-color: var(--ui-accent);
+}
+.ui-span-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 16px;
+  margin: 8px 0;
+}
+.ui-span-tools label {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+}
+.ui-span-tools input[type='search'] {
+  padding: 6px 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  font: inherit;
+}
+.ui-span-tools .ui-help {
+  margin: 0;
+}
+.ui-json {
+  max-height: 60vh;
+  overflow: auto;
+}
+.ui-copy-fallback textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--ui-mono);
+}
+.ui-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.ui-compare > section {
+  min-width: 0;
+}
+.ui-payload > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
 @media (min-width: 1100px) {
   .ui-rail {
     position: sticky;
@@ -598,7 +1087,23 @@ span.ui-status-dot {
   }
 }
 
+@media (max-width: 900px) {
+  .ui-compare {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 600px) {
+  .ui-waterfall-row {
+    grid-template-columns: minmax(0, 1fr) 80px;
+  }
+  .ui-waterfall-row .ui-bar {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .ui-waterfall-scale {
+    margin: 0;
+  }
   .ui-kv {
     grid-template-columns: minmax(0, 1fr);
     gap: 2px;

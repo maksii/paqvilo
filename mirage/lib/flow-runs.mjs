@@ -1,5 +1,7 @@
 // Cloud flow run store: one `flowrun` row per run (the standard Dataverse table) plus the replay state in
-// state.simulator.flowRuns[runId] = { processId, definitionHash, input, parameters, steps, journal, wait, notResumable }.
+// state.simulator.flowRuns[runId] = { processId, definitionHash, input, parameters, steps, journal, wait, notResumable,
+// traceSealed? }.
+// Trace ids never enter that state: the trace store remembers a run's first flow-run span as 'flow-run:<runId>'.
 //
 // A run that waits (delay, approval, webhook) is suspended: its row becomes Waiting and the wait is recorded. Resume is
 // deterministic replay: resume() answers the `steps` mock map for executeFlowDefinition, built from the steps configured
@@ -99,6 +101,11 @@ export function createFlowRunStore({
     return { index, row: table()[index], entry };
   };
   const setRow = (index, values) => store.mutateRow('flowrun', table(), index, values);
+  // The trace of a run's first flow-run span, while the trace store remembers it (flow-runtime.mjs runTrackedFlow).
+  const traceOf = (id) => {
+    const first = store.traces?.recall?.('flow-run:' + id);
+    return first?.traceId ? { traceId: first.traceId } : {};
+  };
 
   function view(id, { journal = true } = {}) {
     const row = table()[indexOf(id)],
@@ -116,6 +123,7 @@ export function createFlowRunStore({
       wait: clone(entry.wait),
       notResumable: entry.notResumable ?? null,
       journalPruned: Boolean(entry.journalPruned),
+      ...traceOf(id),
       ...(journal ? { journal: viewJournal(entry.journal) } : {}),
     };
   }
@@ -221,6 +229,7 @@ export function createFlowRunStore({
 
     /** parameters: the run's resolved non-secret flow parameter values (never a Secret one); resume() answers them. */
     /** background: an on-demand run that completes without a Response (resume() answers it back). */
+    /** sealed: the run captures no trace payloads (flow-runtime.mjs flowSealed, or a sealed parent); its resume keeps it. */
     async start({
       processId,
       trigger = null,
@@ -230,6 +239,7 @@ export function createFlowRunStore({
       steps = {},
       parameters = null,
       background = false,
+      sealed = false,
     } = {}) {
       if (typeof processId !== 'string' || !processId)
         throw new DataError('A flow run needs its workflow id.', 400, 'InvalidRequest');
@@ -256,6 +266,7 @@ export function createFlowRunStore({
           wait: null,
           notResumable: null,
           ...(background ? { background: true } : {}),
+          ...(sealed ? { traceSealed: true } : {}),
         };
       });
       return view(id);
@@ -384,6 +395,7 @@ export function createFlowRunStore({
           correlationId: table()[index].correlationid,
           definitionHash: live.definitionHash ?? null,
           background: Boolean(live.background),
+          sealed: live.traceSealed === true,
         };
       });
     },
@@ -545,6 +557,7 @@ export function createHostFlowRuns({
         flowOf,
         resume: { runId, outcome },
         processId: run?.processId,
+        name: flow?.name ?? null,
         wrap: (fn) => change(() => store.transact(fn, { cloneResult: false })),
         definition: flow?.definition,
         store,

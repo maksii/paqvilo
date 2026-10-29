@@ -606,11 +606,52 @@ export function dispatchSdkCall(args) {
     store.pluginParentContext = cloneStateData(message.parentContext);
   }
   try {
-    return dispatchSdkCallCore(args);
+    return store.traces?.enabled
+      ? store.traces.wrap(sdkCallSpan(message), (span) => {
+          const value = dispatchSdkCallCore(args);
+          span.output(() => sdkAnswerSummary(value));
+          return value;
+        })
+      : dispatchSdkCallCore(args);
   } finally {
     store.pluginParentContext = previous;
   }
 }
+// The sdk-call span of one CLR RPC (tracing): it runs on the main thread inside the plugin-step span, so the record entries it
+// calls nest under it. The arguments are captured only at level full.
+function sdkCallSpan(message) {
+  const [first, second] = message.arguments ?? [];
+  const request = first?.$type === 'OrganizationRequest' ? first : null;
+  const target = request ? request.parameters?.values?.Target : first;
+  const name = request?.requestName ?? String(message.method ?? 'Call');
+  return {
+    kind: 'sdk-call',
+    name,
+    module: 'clr',
+    operation: name,
+    entity: typeof target === 'string' ? target : (target?.logicalName ?? null),
+    recordId:
+      typeof target === 'string'
+        ? typeof second === 'string'
+          ? second
+          : null
+        : (target?.id?.value ?? target?.id ?? null),
+    attributes: {
+      method: message.method ?? null,
+      userId: message.userId ?? null,
+      parentContext: message.parentContext ? true : undefined,
+    },
+    input: () => message.arguments ?? [],
+  };
+}
+const sdkAnswerSummary = (value) =>
+  value && typeof value === 'object'
+    ? {
+        type: value.$type ?? null,
+        id: value.id ?? null,
+        ...(Array.isArray(value.entities) ? { count: value.entities.length } : {}),
+      }
+    : (value ?? null);
 function dispatchSdkCallCore({ store, profile, message, callerProfiles = [], diagnostic }) {
   const selected =
     message.userId === null
@@ -1193,6 +1234,8 @@ function executeClrSnapshot(runtime, input, { store, diagnostic }, snapshot, ses
           if (typeof message.message !== 'string' || message.message.length > 16384)
             fail('CLR trace exceeds the local limit.', 'LocalPluginOutputLimit', 413);
           diagnostic({ code: 'PLUGIN_CLR_TRACE', message: message.message });
+          // ITracingService: an event on the current (plugin-step) span.
+          store?.traces?.current()?.event('trace', { message: message.message });
         } else if (message.kind === 'failure') {
           const details = {
             sourceException: {

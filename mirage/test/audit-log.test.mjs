@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AuditLog, auditText } from '../lib/audit-log.mjs';
+import { AuditLog, auditQuery, auditText } from '../lib/audit-log.mjs';
 
 test('audit correlates nested calls, records outcomes, bounds retention and paginates detached entries', () => {
   const audit = new AuditLog({ limit: 3 });
@@ -122,6 +122,32 @@ test('audit does not retain headers, payloads or credential query/error values',
   );
   assert.doesNotMatch(nested, /DO_NOT_STORE|ALSO_PRIVATE/);
   assert.doesNotMatch(auditText('password="' + 'PRIVATE'.repeat(3000) + '"', 30), /PRIVATE/);
+});
+
+test('auditText redacts credential query parameters and the Basic, Digest and SharedAccessSignature schemes', () => {
+  assert.equal(
+    auditText('https://fn.example.test/api/x?code=KEY123&sig=SIG456&name=keep'),
+    'https://fn.example.test/api/x?code=[redacted]&sig=[redacted]&name=keep',
+  );
+  assert.equal(
+    auditText('https://blob.example.test/c/b?sv=2024-01-01&se=2030&sig=abc%2Fdef'),
+    'https://blob.example.test/c/b?sv=2024-01-01&se=2030&sig=[redacted]',
+  );
+  assert.doesNotMatch(auditText('Authorization: Basic dXNlcjpwYXNzd29yZA=='), /dXNl/);
+  assert.equal(auditText('{"value":"Basic dXNlcjpwYXNzd29yZA=="}'), '{"value":"Basic [redacted]"}');
+  assert.equal(
+    auditText('SharedAccessSignature sr=https%3A%2F%2Fx&sig=SIGNATURE&se=1&skn=policy'),
+    'SharedAccessSignature [redacted]',
+  );
+  assert.equal(auditText('Digest username="u", realm="r", nonce="n", response="HASH"'), 'Digest [redacted]');
+  assert.equal(auditText('Basic plan for the Digest of changes'), 'Basic plan for the Digest of changes');
+  assert.equal(auditText('statuscode=1&barcode=7'), 'statuscode=1&barcode=7', 'only whole parameter names');
+  assert.deepEqual(auditQuery(new URLSearchParams('code=KEY&sig=S&page=2')), {
+    code: '[redacted]',
+    sig: '[redacted]',
+    page: '2',
+  });
+  assert.deepEqual(auditQuery({ code: 'KEY', page: 2 }), { code: '[redacted]', page: 2 });
 });
 
 test('audit filters by path, entity, status class, method and correlation, lists kinds and notifies observers', () => {

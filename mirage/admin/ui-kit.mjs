@@ -77,6 +77,7 @@ const attributes = (values) =>
     .map(([name, value]) => (value === true ? ` ${name}` : ` ${name}="${e(value)}"`))
     .join('');
 
+// A column's `head` is header markup the caller built and escaped (a sort button); `sort` becomes its aria-sort.
 export function table({
   key,
   columns = [],
@@ -95,7 +96,7 @@ export function table({
   const cls = (column) => (column.className ? ` class="${e(column.className)}"` : '');
   return (
     `${tools}<div class="ui-table-wrap"><table class="ui-table" data-table="${e(key)}">${caption ? `<caption class="ui-sr-only">${e(caption)}</caption>` : ''}` +
-    `<thead><tr>${columns.map((column) => `<th scope="col"${cls(column)}>${e(column.label)}${column.info ? info({ label: `About ${column.label}`, text: column.info }) : ''}</th>`).join('')}</tr></thead>` +
+    `<thead><tr>${columns.map((column) => `<th scope="col"${cls(column)}${column.sort ? ` aria-sort="${e(column.sort)}"` : ''}>${column.head ?? e(column.label)}${column.info ? info({ label: `About ${column.label}`, text: column.info }) : ''}</th>`).join('')}</tr></thead>` +
     `<tbody>${rows.map((item) => `<tr${attributes(rowAttrs?.(item))}>${columns.map((column) => `<td${cls(column)}>${column.render(item) ?? ''}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
   );
 }
@@ -208,4 +209,37 @@ export function docLink(path, docs) {
     label: entry?.label ?? titleCase(file),
     path: text,
   };
+}
+
+/**
+ * Tabs: a tablist of buttons (`data-tab="<key>" data-tab-id="<id>"`, roving tabindex) over one panel holding
+ * `panelHtml` (trusted markup) for the selected tab. The caller switches tabs on click and arrow keys.
+ */
+export function tabs({ key, label, items = [], selected, panelHtml = '' }) {
+  const k = e(key),
+    current = items.some((item) => item.id === selected) ? selected : items[0]?.id;
+  return (
+    `<div class="ui-tabs"><div class="ui-tablist" role="tablist" aria-label="${e(label)}">${items
+      .map(
+        (item) =>
+          `<button type="button" role="tab" class="ui-tab" id="${k}-tab-${e(item.id)}" aria-selected="${item.id === current}" aria-controls="${k}-panel" tabindex="${item.id === current ? 0 : -1}" data-tab="${k}" data-tab-id="${e(item.id)}">${e(item.label)}</button>`,
+      )
+      .join('')}</div>` +
+    `<div class="ui-tabpanel" role="tabpanel" id="${k}-panel" aria-labelledby="${k}-tab-${e(current)}">${panelHtml}</div></div>`
+  );
+}
+
+const unit = (value) => Math.min(1, Math.max(0, Number(value) || 0));
+/**
+ * A horizontal bar on a track: `offset` and `width` are fractions (0..1) of the track and become SVG geometry
+ * (1000 units wide), never inline styles; `marks` are fractions drawn as ticks; `className` colours the fill.
+ */
+export function bar({ offset = 0, width = 0, className = '', marks = [], label = '' }) {
+  const w = Math.max(3, Math.round(unit(width) * 1000)),
+    x = Math.min(Math.round(unit(offset) * 1000), 1000 - w);
+  return (
+    `<svg class="ui-bar" viewBox="0 0 1000 12" preserveAspectRatio="none" role="img" aria-label="${e(label)}" focusable="false">` +
+    `<rect class="ui-bar-track" width="1000" height="12"></rect><rect class="ui-bar-fill${className ? ` ${e(className)}` : ''}" x="${x}" y="1" width="${w}" height="10"></rect>` +
+    `${marks.map((mark) => `<rect class="ui-bar-mark" x="${Math.min(998, Math.round(unit(mark) * 1000))}" y="0" width="2" height="12"></rect>`).join('')}</svg>`
+  );
 }

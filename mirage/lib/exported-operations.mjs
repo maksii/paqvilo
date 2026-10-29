@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { DataError } from './data.mjs';
 import { parseSolutionXml, descendants, childText } from './solution-xml.mjs';
-import { executeFlowDefinition, runTrackedFlow } from './flow-runtime.mjs';
+import { executeFlowDefinition, runTrackedFlow, traceFlowRun } from './flow-runtime.mjs';
 import { flowRunsOf } from './flow-runs.mjs';
 import { validateServiceProfile } from './local-organization-service.mjs';
 import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
@@ -205,6 +205,19 @@ export async function runExportedServerLogic({
       severity: 'info',
       message: `ServerLogic/TimeoutInSeconds is ${seconds} s; the local run is bounded at ${bound} ms.`,
     });
+  // Tracing: one workflow span around the worker run. No span context crosses into the Worker; its RPC requests are answered
+  // here on the main thread inside the span (traces.run), so their Dataverse operations and bridges nest under it, and its
+  // HttpClient requests carry the span's trace headers.
+  const traces = store?.traces?.enabled ? store.traces : null,
+    span =
+      traces?.start({
+        kind: 'workflow',
+        name: 'Server logic ' + record.name,
+        module: 'portal',
+        operation: String(context.FunctionName).toLowerCase(),
+        attributes: { serverLogic: record.name, method, activityId: context.ActivityId },
+      }) ?? null,
+    inSpan = (fn) => (span ? traces.run(span, fn) : fn());
   const unavailable = (bridge, code) => {
     note({ code, severity: 'warning', message: `${bridge} has no local service in this host.` });
     return envelope(501, '', {}, `${bridge} is not available in this local host.`);
@@ -271,14 +284,14 @@ export async function runExportedServerLogic({
       if (message.contentType) headers['content-type'] = message.contentType;
       const response = await loopbackFetch(target, {
         method: message.method,
-        headers,
+        headers: { ...headers, ...traces?.headers(span) },
         body: message.body ?? undefined,
         signal: AbortSignal.timeout(bound),
       });
       return envelope(response.status, await response.text(), Object.fromEntries(response.headers));
     },
   };
-  return new Promise((resolve, reject) => {
+  const running = new Promise((resolve, reject) => {
     const user =
       identity?.id || identity?.contactId
         ? { ...identity, contactid: identity.contactId ?? identity.id, fullname: identity.name ?? null }
@@ -331,7 +344,8 @@ export async function runExportedServerLogic({
     worker.on('exit', (code) => {
       if (!complete) finish(failure(`Server-logic worker stopped before returning a result (${code}).`));
     });
-    worker.on('message', async (message) => {
+    worker.on('message', (message) => inSpan(() => answerMessage(message)));
+    const answerMessage = async (message) => {
       if (complete) return;
       if (message.kind === 'ready') {
         clearTimeout(timer);
@@ -430,8 +444,19 @@ export async function runExportedServerLogic({
         };
       }
       reply(message, answer);
-    });
+    };
   });
+  if (!span) return running;
+  return running.then(
+    (value) => {
+      span.end();
+      return value;
+    },
+    (error) => {
+      span.fail(error);
+      throw error;
+    },
+  );
 }
 
 /**
@@ -647,13 +672,24 @@ export function runExportedCloudFlow({
   const runs = flowRunsOf(store);
   const skipped = (answer) =>
     answer?.status === 'Skipped' ? { status: 202, body: { status: 'Skipped', reason: answer.reason } } : answer;
+  // The flow-run span nests under the portal request's current span (trace-store.mjs AsyncLocalStorage).
   if (!runs) {
-    const answer = executeFlowDefinition(args);
+    const answer = traceFlowRun(
+      store,
+      { processId: record.processId, name: record.name ?? workflow.name ?? null, trigger: 'PowerPages', input },
+      () => executeFlowDefinition(args),
+    );
     return typeof answer?.then === 'function' ? answer.then(skipped) : skipped(answer);
   }
   // The native answer of a Power Pages flow request whose run waits before its Response is a guess (natively the request
   // waits for the Response until the portal times out), as is the flowrun triggertype text.
-  return runTrackedFlow({ runs, processId: record.processId, trigger: 'PowerPages', ...args }).then((answer) =>
+  return runTrackedFlow({
+    runs,
+    processId: record.processId,
+    name: record.name ?? workflow.name ?? null,
+    trigger: 'PowerPages',
+    ...args,
+  }).then((answer) =>
     answer?.status === 'Waiting'
       ? (answer.response ?? { status: 202, body: { runId: answer.runId, status: 'Waiting' } })
       : skipped(answer),

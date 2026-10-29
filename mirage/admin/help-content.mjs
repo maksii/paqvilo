@@ -16,6 +16,7 @@ const EXPERIMENTS = 'mirage/docs/configuration-experiments.md';
 const EVIDENCE = 'mirage/docs/runtime-evidence.md';
 const DATAVERSE = 'mirage/docs/dataverse-api.md';
 const STACK = 'mirage/docs/platform-stack.md';
+const TRACING = 'mirage/docs/tracing.md';
 const SETUP = 'docs/setup.md';
 const CONFIG = 'docs/configuration.md';
 
@@ -448,6 +449,101 @@ const HELP = {
     intro:
       'Webhook service endpoints (contract 8) are called only when their host is on this computer (loopback); other hosts are never contacted. Hosts are shown by name only, never with a URL query or auth value.',
     doc: `${MESSAGING}#service-endpoint-delivery`,
+  },
+
+  trace: {
+    intro:
+      'What this runtime did for each request and job, as one trace of nested spans: the HTTP request, Web API and Dataverse operations, permission decisions, plug-in stages and steps, SDK calls, secrets, outbound HTTP, async jobs, flows, connectors and renders. Filter traces, read the timeline and breakdown, then open a trace for its waterfall, tree and span details. Only the newest traces are kept (500 by default); payloads are captured only at level full, always redacted.',
+    steps: [
+      'Run the portal page or API call you want to understand.',
+      'Narrow the list with filters or a timeline bucket.',
+      'Open the trace and select a span for its attributes, events and payloads.',
+      'Follow Related links to the same session, actor, table or parent request.',
+    ],
+    doc: `${TRACING}#reading-a-trace`,
+    fields: {
+      exportFormat:
+        'The file Export downloads: NDJSON (one trace per line, streamed), JSON (one document) or OTLP JSON (resourceSpans for an OpenTelemetry viewer). The export follows the filters, up to 200 traces.',
+    },
+  },
+  'trace.filters': {
+    intro:
+      'Every filter narrows the traces, the overview and the export; a trace matches when one of its spans meets all span filters. The filters are part of the address, so a filtered view can be bookmarked or shared as a link.',
+    doc: `${TRACING}#api`,
+    fields: {
+      range: 'Only traces with a span that started in this window before now; From and To set an exact window instead.',
+      from: 'Only traces with a span that started at or after this local time.',
+      to: 'Only traces with a span that started at or before this local time.',
+      kind: 'Only traces with a span of this kind, such as http, dataverse, plugin-step or flow-run.',
+      module: 'Only traces with a span from this part of the runtime, such as portal, dataverse, plugins or flows.',
+      operation: 'Only traces with a span of this operation, such as create, retrieve or render (lower case).',
+      entity: 'Only traces with a span on this table logical name.',
+      status: 'Only traces with a span in this status: running, ok, error or denied (a permission decision).',
+      host: 'Only traces started by this host: Power Pages, standalone, the Dataverse API listener or a job.',
+      actorKind: 'Only traces with a span run as this kind of caller, such as contact, staff, app or plugin.',
+      actorId: 'Only traces with a span run by this caller id; braces and case are ignored.',
+      sessionKey:
+        'Only traces of this browser session: contact:<id> once a contact signed in, visitor:<id> before (the visitor cookie).',
+      visitorId: 'Only traces of this visitor cookie id.',
+      portal: 'Only traces of this portal (site) name.',
+      search: 'Free text over span names, tables, error codes and messages, and attribute values.',
+      minDurationMs: 'Only traces that lasted at least this many milliseconds from their first to their last span.',
+      hasErrors: 'Only traces with, or without, a span that ended in error.',
+    },
+  },
+  'trace.overview': {
+    intro:
+      'Counts and durations of the matching spans. Root p50 / p95 are the median and 95th percentile durations of the root spans of the matching traces, whatever span the filters matched; Root p95 vs before compares it with the same filters over the equal-length window just before the chosen time range. Select a timeline bucket to narrow the time range to it (arrow keys move between buckets); Filter in the breakdown narrows to that kind, module, table, operation or actor. Times are local, with the UTC offset under the timeline.',
+    doc: `${TRACING}#reading-a-trace`,
+  },
+  'trace.list': {
+    intro:
+      'Traces, newest first, one row per trace: when its root started, its status and duration, the root span with its host, actor and session, span and error counts and tables. Select a column heading to sort by it; select it again to reverse. Select a row to open the trace, or tick two rows and choose Compare. Live reloads the list as traces end, on hosts that stream traces.',
+    doc: `${TRACING}#reading-a-trace`,
+    fields: {
+      pick: 'Tick two traces, then choose Compare to see their span trees side by side with the duration differences.',
+    },
+  },
+  'trace.detail': {
+    intro:
+      'One trace: its facts, then every span as a waterfall, a nested tree or the raw JSON. Select a span for its attributes, events (permission decisions, trace lines, staged jobs), redacted input and output, links and related traces. Copy id and Copy link put the trace id or a link to this view on the clipboard.',
+    doc: `${TRACING}#reading-a-trace`,
+    fields: {
+      spanSearch:
+        'Shows only spans whose name, kind, module, operation, table, error or attribute values contain this text; their parents stay visible, dimmed.',
+      errorsOnly: 'Shows only spans that ended in error or were denied, with their parents dimmed.',
+      copyFallback:
+        'The browser refused clipboard access. The text is selected: press Ctrl+C (Cmd+C on a Mac) to copy it.',
+    },
+  },
+  'trace.waterfall': {
+    intro:
+      'Bars start where the span started and last as long as it ran, against the whole trace; colour shows the module, a red outline an error, an amber one a denial and a dashed one an async job segment. Ticks on a bar mark its events.',
+    doc: `${TRACING}#reading-a-trace`,
+  },
+  'trace.tree': {
+    intro:
+      'Every span nested under its parent, in start order: expand or collapse a span with its children, and select a name for its details. Very deep traces stop indenting after 12 levels and show the depth as a d-number.',
+    doc: `${TRACING}#reading-a-trace`,
+  },
+  'trace.json': {
+    intro:
+      'The whole trace as the runtime answers it: summary, root, flat spans and nested children. Download trace saves the same JSON as a file; Copy JSON puts it on the clipboard.',
+    doc: `${TRACING}#api`,
+  },
+  'trace.compare': {
+    intro:
+      'Two traces side by side. Spans match by their kind and name path from the root; the right tree shows how much longer (+) or shorter (−) each matching span ran, and which spans only one trace has.',
+    doc: `${TRACING}#reading-a-trace`,
+  },
+  'trace.settings': {
+    intro:
+      'The tracing level applies at once, without a restart: off records nothing, summary records every span without payloads, full also captures redacted payloads at extra cost. Persisting appends each ended trace to a file under the runtime’s .paqvilo state folder.',
+    doc: `${TRACING}#levels`,
+    fields: {
+      persist:
+        'Appends each ended trace as one JSON line to <state folder>/traces/<date>.ndjson; secrets, tokens and cookies are never written.',
+    },
   },
 
   capabilities: {

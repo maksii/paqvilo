@@ -7,6 +7,7 @@ import { view as servicesView } from './view-services.mjs';
 import { view as flowsView } from './view-flows.mjs';
 import { view as capabilitiesView } from './view-capabilities.mjs';
 import { view as packsView } from './view-packs.mjs';
+import { view as traceView } from './view-trace.mjs';
 let personaCatalogue, selectedPersonaKey;
 const API = '/__sim/api';
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -21,7 +22,7 @@ const badge = (text, tone = '') => `<span class="badge ${tone}">${escape(text)}<
 // objects, plus the optional hooks `mounted(ctx)` (after each render) and `leave(ctx)` (when the view closes).
 // Wiring another module is one import and one entry in this array.
 const BOTH = ['power-pages', 'standalone'];
-const modules = [dashboardModule(), servicesView, flowsView, capabilitiesView, packsView];
+const modules = [dashboardModule(), servicesView, flowsView, capabilitiesView, packsView, traceView];
 // Built-in views: a view without `requires` exists on every host; otherwise its first route decides. When the
 // host publishes `status.routes` (its mounted admin routes) the list answers without a request; otherwise built-in
 // routes are probed on standalone hosts only (Power Pages hosts serve every built-in route) and module routes everywhere.
@@ -45,11 +46,11 @@ const builtInViews = [
   { id: 'runtime', label: 'Runtime state', icon: '⟳' },
   { id: 'evidence', label: 'Render & diagnostics', icon: '◎', requires: ['/_sim/api/diagnostics'] },
   { id: 'audit', label: 'Request audit', icon: '≋', requires: ['/_sim/api/audit'] },
-  { id: 'logs', label: 'Live logs', icon: '☰', requires: ['/_sim/events'] },
+  { id: 'logs', label: 'Live logs', icon: '☰', requires: ['/_sim/events?channels=logs'] },
 ];
 const views = [...modules.map((module) => ({ ...module, module })), ...builtInViews];
 const NAV_GROUPS = [
-  ['Monitor', ['dashboard', 'overview', 'logs', 'audit', 'evidence']],
+  ['Monitor', ['dashboard', 'overview', 'logs', 'audit', 'trace', 'evidence']],
   ['Data', ['records', 'packs', 'plugins', 'mappings', 'endpoints']],
   ['Platform', ['services', 'flows', 'capabilities', 'operations', 'environment', 'platform', 'overrides', 'portal']],
   ['Identity', ['access', 'dataverse', 'scenarios']],
@@ -70,6 +71,7 @@ const probeUrl = (route) => String(route).replace(/^\/_{1,2}sim\//, '/__sim/');
 const probing = new Map();
 const API_ROOT = '/__sim/api';
 // Portal-only routes: a standalone host (powerPages === false) never serves them, so they are never probed there.
+// /_sim/events is listed for hosts that do not publish `status.eventChannels`; a host that does answers from that list.
 const PORTAL_ONLY =
   /^\/__sim\/(?:api\/(?:personas|session|scenarios|presets|portal-[a-z-]+|page-resources|audit|experiments)|events)(?:[/?]|$)/;
 // `status.routes`: the mounted /_sim/api route prefixes ("/dashboard", "/flow-runs", …; full "/_sim/api/…" paths work too).
@@ -82,8 +84,18 @@ const publishedRoutes = () => {
       })
     : null;
 };
-/** What the host says without a request: the published list for /_sim/api routes, `false` for portal-only routes on a standalone host; else undefined. */
+/** The /_sim/events channels the host streams (`status.eventChannels`), or null when it does not say. */
+const eventChannels = () => {
+  const channels = state?.status?.eventChannels ?? state?.eventChannels ?? statusExtra?.eventChannels;
+  return Array.isArray(channels) ? channels : null;
+};
+/** What the host says without a request: the published list for /_sim/api routes and /_sim/events channels, `false` for portal-only routes on a standalone host; else undefined. */
 const declared = (url) => {
+  const channels = eventChannels();
+  if (channels && /^\/__sim\/events(?:\?|$)/.test(url)) {
+    const wanted = new URLSearchParams(url.split('?')[1] ?? '').get('channels');
+    return wanted ? wanted.split(',').every((name) => channels.includes(name)) : channels.length > 0;
+  }
   const list = publishedRoutes();
   if (list && url.startsWith(`${API_ROOT}/`))
     return list.some((prefix) => url === prefix || url.startsWith(`${prefix}/`));
@@ -215,6 +227,16 @@ const ctx = {
   reveal: (selector) => {
     landing = { view: activeView, selector };
   },
+  /** Forget the unsaved input of form `formId`: the view's state (a reset, a pivot, a deep link, a save) replaced it.
+   * The live form is reset too, so the change event a focused control fires when the next render removes it cannot
+   * remember the replaced value again. */
+  forgetDraft: (formId) => {
+    drafts.delete(formId);
+    const form = document.getElementById(formId);
+    if (form?.localName === 'form') form.reset();
+  },
+  /** The /_sim/events channels this host streams, or null when it does not publish them. */
+  eventChannels: () => eventChannels(),
 };
 // An (i) tooltip inside a scrolling table would be clipped by the table frame: while it shows, it is placed in the
 // viewport under its button instead.
@@ -2308,7 +2330,7 @@ function audit() {
       'Inspect bounded, sanitized API, Liquid FetchXML, form, and page activity.',
       '<button class="button" data-audit-action="refresh">Refresh audit</button>',
     ) +
-    `${legend('audit', 'Kinds and outcomes')}<section class="panel">${panelHelp('audit.filters')}<div class="toolbar audit-filters">${select('kind', 'Kind', [...new Set(['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query', ...(Array.isArray(result.kinds) ? result.kinds : []), ...(auditFilters.kind ? [auditFilters.kind] : [])])])}${select('provider', 'Provider', ['local', 'live'])}${select('outcome', 'Outcome', ['success', 'error', 'denied', 'pending'])}${select('status', 'Status', ['2xx', '3xx', '4xx', '5xx', 'pending'])}<input type="search" id="audit-filter-path" data-audit-filter="path" aria-label="Filter audit by path" aria-describedby="audit-filter-path-help" placeholder="Path contains…" value="${escape(auditFilters.path)}"><input type="search" id="audit-filter-entity" data-audit-filter="entity" aria-label="Filter audit by table" aria-describedby="audit-filter-entity-help" placeholder="Table logical name" value="${escape(auditFilters.entity)}"><input type="search" id="audit-filter-search" data-audit-filter="search" aria-label="Search audit" aria-describedby="audit-filter-search-help" placeholder="Contact, table, path or error…" value="${escape(auditFilters.search)}">${auditFilters.correlationId ? `<button class="button small" data-audit-action="uncorrelate">Correlation ${escape(auditFilters.correlationId.slice(0, 8))} ×</button>` : ''}<button class="button small" data-audit-action="export">Export filtered JSON</button><button class="button small" data-audit-action="copy">Copy filtered JSON</button><button class="button small quiet" data-audit-action="clear">Clear audit</button></div><details class="field-hints"><summary>What these fields do</summary><p>${['kind', 'provider', 'outcome', 'status', 'path', 'entity', 'search'].map((name) => controlHelp(`audit-filter-${name}`, 'audit.filters', name)).join(' ')}</p></details><p class="muted">${escape(result.retained ?? 0)} kept · ${escape(result.dropped ?? 0)} dropped as the oldest beyond the limit.</p>${auditError ? `<div class="notice warning">${escape(auditError)}</div>` : ''}${auditLoading ? '<p role="status" class="muted">Loading request audit…</p>' : ''}${tableTools('audit', result.total, result.pageCount || 1, { search: false })}${panelHelp('audit.table')}<div class="table-wrap"><table data-table="audit"><thead><tr><th>Sequence / time${kit.info({ label: 'About Sequence / time', text: 'The order number given when the request started, and its start time.' })}</th><th>Request${kit.info({ label: 'About Request', text: 'The kind (Kinds and outcomes above explains each), method, path and table.' })}</th><th>Provider / contact${kit.info({ label: 'About Provider / contact', text: 'local: answered by this runtime; live: passed to the connected environment. Below it, the contact the request ran as, or Anonymous.' })}</th><th>Status / duration</th><th>Rows / outcome${kit.info({ label: 'About Rows / outcome', text: 'How many rows the request returned, then success, error, denied (a permission decision) or pending.' })}</th><th>Details</th></tr></thead><tbody>${result.items.map((item) => `<tr><td>${escape(item.sequence)}<div class="row-detail">${escape(item.startedAt)}</div></td><td><strong>${escape(item.kind)}</strong><div class="row-detail">${escape(item.method)} ${escape(item.path)}</div><code>${escape(item.entity || '')}</code></td><td>${badge(item.provider)}<div class="row-detail">${escape(item.identity?.contactId || 'Anonymous')}</div></td><td>${badge(item.status, item.status >= 400 ? 'red' : 'green')}<div class="row-detail">${escape(Number(item.durationMs || 0).toFixed(1))} ms</div></td><td>${escape(item.rowCount ?? '—')} · ${escape(item.outcome)}${item.error ? `<div class="row-detail">${escape(item.error.code)}${item.error.portalCode ? ` · portal ${escape(item.error.portalCode)}` : ''}</div>` : ''}</td><td>${inspectButton(item)}</td></tr>`).join('') || '<tr><td colspan="6">No matching requests have been recorded.</td></tr>'}</tbody></table></div></section>`
+    `${legend('audit', 'Kinds and outcomes')}<section class="panel">${panelHelp('audit.filters')}<div class="toolbar audit-filters">${select('kind', 'Kind', [...new Set(['api', 'liquid-fetchxml', 'form', 'page', 'entity-read', 'entity-query', ...(Array.isArray(result.kinds) ? result.kinds : []), ...(auditFilters.kind ? [auditFilters.kind] : [])])])}${select('provider', 'Provider', ['local', 'live'])}${select('outcome', 'Outcome', ['success', 'error', 'denied', 'pending'])}${select('status', 'Status', ['2xx', '3xx', '4xx', '5xx', 'pending'])}<input type="search" id="audit-filter-path" data-audit-filter="path" aria-label="Filter audit by path" aria-describedby="audit-filter-path-help" placeholder="Path contains…" value="${escape(auditFilters.path)}"><input type="search" id="audit-filter-entity" data-audit-filter="entity" aria-label="Filter audit by table" aria-describedby="audit-filter-entity-help" placeholder="Table logical name" value="${escape(auditFilters.entity)}"><input type="search" id="audit-filter-search" data-audit-filter="search" aria-label="Search audit" aria-describedby="audit-filter-search-help" placeholder="Contact, table, path or error…" value="${escape(auditFilters.search)}">${auditFilters.correlationId ? `<button class="button small" data-audit-action="uncorrelate">Correlation ${escape(auditFilters.correlationId.slice(0, 8))} ×</button>` : ''}<button class="button small" data-audit-action="export">Export filtered JSON</button><button class="button small" data-audit-action="copy">Copy filtered JSON</button><button class="button small quiet" data-audit-action="clear">Clear audit</button></div><details class="field-hints"><summary>What these fields do</summary><p>${['kind', 'provider', 'outcome', 'status', 'path', 'entity', 'search'].map((name) => controlHelp(`audit-filter-${name}`, 'audit.filters', name)).join(' ')}</p></details><p class="muted">${escape(result.retained ?? 0)} kept · ${escape(result.dropped ?? 0)} dropped as the oldest beyond the limit.</p>${auditError ? `<div class="notice warning">${escape(auditError)}</div>` : ''}${auditLoading ? '<p role="status" class="muted">Loading request audit…</p>' : ''}${tableTools('audit', result.total, result.pageCount || 1, { search: false })}${panelHelp('audit.table')}<div class="table-wrap"><table data-table="audit"><thead><tr><th>Sequence / time${kit.info({ label: 'About Sequence / time', text: 'The order number given when the request started, and its start time.' })}</th><th>Request${kit.info({ label: 'About Request', text: 'The kind (Kinds and outcomes above explains each), method, path and table.' })}</th><th>Provider / contact${kit.info({ label: 'About Provider / contact', text: 'local: answered by this runtime; live: passed to the connected environment. Below it, the contact the request ran as, or Anonymous.' })}</th><th>Status / duration</th><th>Rows / outcome${kit.info({ label: 'About Rows / outcome', text: 'How many rows the request returned, then success, error, denied (a permission decision) or pending.' })}</th><th>Details</th></tr></thead><tbody>${result.items.map((item) => `<tr><td>${escape(item.sequence)}<div class="row-detail">${escape(item.startedAt)}</div></td><td><strong>${escape(item.kind)}</strong><div class="row-detail">${escape(item.method)} ${escape(item.path)}</div><code>${escape(item.entity || '')}</code></td><td>${badge(item.provider)}<div class="row-detail">${escape(item.identity?.contactId || 'Anonymous')}</div></td><td>${badge(item.status, item.status >= 400 ? 'red' : 'green')}<div class="row-detail">${escape(Number(item.durationMs || 0).toFixed(1))} ms</div></td><td>${escape(item.rowCount ?? '—')} · ${escape(item.outcome)}${item.error ? `<div class="row-detail">${escape(item.error.code)}${item.error.portalCode ? ` · portal ${escape(item.error.portalCode)}` : ''}</div>` : ''}</td><td>${inspectButton(item)}${item.traceId ? ` <a class="button small" href="#trace?${escape(new URLSearchParams({ traceId: item.traceId, ...(item.spanId ? { spanId: item.spanId } : {}) }))}" aria-label="Trace of request ${escape(item.sequence)}">Trace</a>` : ''}</td></tr>`).join('') || '<tr><td colspan="6">No matching requests have been recorded.</td></tr>'}</tbody></table></div></section>`
   );
 }
 
@@ -3428,7 +3450,9 @@ function render() {
       ? `#${CSS.escape(focused.id)}`
       : focused?.dataset?.tableSearch
         ? `[data-table-search="${CSS.escape(focused.dataset.tableSearch)}"]`
-        : null;
+        : focused?.dataset?.tablePage && $('#content').contains(focused)
+          ? `[data-table-page="${CSS.escape(focused.dataset.tablePage)}"][data-delta="${CSS.escape(focused.dataset.delta ?? '')}"]`
+          : null;
   const selection = {
     start: focused?.selectionStart,
     end: focused?.selectionEnd,

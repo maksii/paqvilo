@@ -10,6 +10,7 @@ import { dataverseSettings } from './dataverse-settings.mjs';
 import { modelDrivenSettings } from './model-driven-settings.mjs';
 import { platformConfig } from './platform-config.mjs';
 import { renderSettings } from './render-settings.mjs';
+import { traceSettings } from './trace-settings.mjs';
 import { personaContextSettings } from './persona-context-settings.mjs';
 import { identityProviderSettings } from './identity-provider-settings.mjs';
 import { resolveDeploymentProfiles } from './deployment-profiles.mjs';
@@ -327,6 +328,13 @@ export const MIRAGE_SETTINGS = Object.freeze({
     identity: true,
     doc: 'Liquid render limits.',
     parse: (value) => renderSettings(value),
+  },
+  // No identity: the level and caps change at run time (`_sim` trace settings), so a running runtime is reused.
+  trace: {
+    scopes: ['catalogue', 'project'],
+    option: 'trace',
+    doc: 'Local request tracing: level (off, summary or full), retained traces, spans per trace, payload bytes, persist.',
+    parse: (value, label) => traceSettings(value, label),
   },
   sourceMaps: {
     scopes: ['catalogue', 'project', 'portal'],

@@ -39,6 +39,7 @@ import { ensureCertificate } from './dataverse-tls.mjs';
 import { platformSettingEntries } from './platform-settings.mjs';
 import {
   composeOrganizationHost,
+  traceMethods,
   providerDescriptors,
   inventorySummary,
   codeAppDataverse,
@@ -58,6 +59,9 @@ import { codeAppSettings, loadCodeApps } from './code-apps-config.mjs';
 import { createRequestContext, runWithRequest, correlationOf } from './request-context.mjs';
 import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './sim-messaging-routes.mjs';
 import { createFlowRoutes, routes as FLOW_ROUTES } from './sim-flow-routes.mjs';
+import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './sim-trace-routes.mjs';
+import { statusFromHttp } from './trace-store.mjs';
+import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
 import { buildSourceGraph } from './source-graph.mjs';
 import { scenarioSettings } from './capability-report.mjs';
 import { ADMIN_CSP, adminAssetFile, adminAssetType, diagnosticsByCode as byCode } from './runtime-admin.mjs';
@@ -286,8 +290,9 @@ export async function createStandaloneRuntime(options = {}) {
     clock,
     ids: options.ids,
     scheduler: options.scheduler,
+    trace: options.trace,
   });
-  const { operations } = organizationHost;
+  const { operations, traces } = organizationHost;
   const codeApps = codeAppSettings(options.codeApps);
   const links = () => ({
     administration: '/_sim/',
@@ -374,6 +379,7 @@ export async function createStandaloneRuntime(options = {}) {
     routes: simApiRoutes(
       MESSAGING_ROUTES,
       FLOW_ROUTES,
+      TRACE_ROUTES,
       DASHBOARD_ROUTES,
       PACK_ROUTES,
       ENVIRONMENT_ROUTES,
@@ -382,6 +388,8 @@ export async function createStandaloneRuntime(options = {}) {
     ),
     // Admin-adjacent routes outside /_sim/api (model-driven/http.mjs routes): full paths, never probed by the admin app.
     adminAdjacentRoutes: MODEL_DRIVEN_ROUTES,
+    // The /_sim/events?channels=... channels this host streams.
+    eventChannels: ['trace'],
   });
   const exposed = () => ({
     csrf,
@@ -686,6 +694,8 @@ export async function createStandaloneRuntime(options = {}) {
     // /_sim/api/messages and /_sim/api/outbox (sim-messaging-routes.mjs) answer before the generic admin router.
     const messagingRoutes = createMessagingRoutes({ api: organization.api, csrf: () => csrf });
     const flowRoutes = createFlowRoutes({ api: organization.api, csrf: () => csrf });
+    const traceRoutes = createTraceRoutes({ traces, csrf: () => csrf, json });
+    const traceChannel = createTraceChannel(traces);
     // GET /_sim/api/dashboard (sim-dashboard-routes.mjs): the shared topology plus this host's listener and request count.
     const dashboardRoutes = createDashboardRoutes({
       host: organizationHost,
@@ -815,9 +825,26 @@ export async function createStandaloneRuntime(options = {}) {
           throw fail('Cross-site writes are not allowed.', 403);
         const url = new URL(req.url, localOrigin);
         if (await setup(req, res)) return;
+        // GET /_sim/events?channels=trace: the trace channel, with the frames the Power Pages host streams.
+        if (/^\/(?:_sim|__sim)\/events$/.test(url.pathname)) {
+          if (req.method !== 'GET') throw fail('Method not allowed.', 405, 'MethodNotAllowed');
+          // The client may have gone while setup awaited: a closed response joins no channel.
+          if (res.destroyed) return;
+          if (!(url.searchParams.get('channels') ?? '').split(',').includes('trace'))
+            throw fail('This host streams the trace channel only (channels=trace).', 400, 'UnsupportedEventChannel');
+          res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache',
+            connection: 'keep-alive',
+          });
+          res.write(`event: ready\ndata: ${store.revision}\n\n`);
+          traceChannel(res);
+          return;
+        }
         if (
           (await messagingRoutes(req, res, url)) ||
           (await flowRoutes(req, res, url)) ||
+          (await traceRoutes(req, res, url)) ||
           (await dashboardRoutes(req, res, url)) ||
           (await packRoutes(req, res, url))
         )
@@ -850,14 +877,43 @@ export async function createStandaloneRuntime(options = {}) {
         }
         throw fail('Resource not found.', 404);
       };
+      // The http root span of this host (docs/design/tracing.md); administration and setup traffic opens none. The root is
+      // explicitly anonymous with no session (this host has no visitor sign-in), so a header-named parent never lends it
+      // another visitor's actor or session; in-process Dataverse calls under it set their own caller after authentication.
+      const pathname = String(req.url ?? '/').split('?')[0];
+      const span = /^\/(?:_sim|__sim|_setup)(?:\/|$)/.test(pathname)
+        ? null
+        : traces.start({
+            kind: 'http',
+            name: `${req.method} ${pathname}`,
+            module: null,
+            operation: req.method,
+            origin: { host: 'standalone', portal: null, preset: null },
+            ...ANONYMOUS_ROOT,
+            attributes: { routeFamily: pathname.split('/')[1] || 'root' },
+            ...traces.fromHeaders(req.headers),
+          });
+      setTraceHeaders(res, span);
+      let failure;
+      res.on('close', () => {
+        const status = res.writableFinished ? res.statusCode : 499;
+        span?.end({
+          status: statusFromHttp(status),
+          error: status >= 400 ? failure : undefined,
+          attributes: { statusCode: status },
+        });
+      });
       // One request context per call (x-ms-correlation-request-id when given) inside this runtime's pack registries.
       const context = createRequestContext({
         organization,
         correlationId: correlationOf(req.headers['x-ms-correlation-request-id']) ?? undefined,
+        traceId: span?.traceId ?? null,
+        spanId: span?.spanId ?? null,
       });
       const task = organizationHost
-        .run(() => runWithRequest(context, handle))
+        .run(() => traces.run(span, () => runWithRequest(context, handle)))
         .catch((error) => {
+          failure = error;
           diagnostic({ code: error.code ?? 'RuntimeError', message: error.message });
           if (!res.headersSent)
             json(res, error.status ?? 500, { error: { code: error.code ?? 'RuntimeError', message: error.message } });
@@ -1040,6 +1096,8 @@ export async function createStandaloneRuntime(options = {}) {
       close,
       preflight,
       settle: () => organizationHost.settle(),
+      // The trace store's read and settings methods (docs/design/tracing.md).
+      trace: traceMethods(traces),
       live: { status: () => ({ enabled: false, connected: false, liveWrites: 'disabled' }) },
       identityProvider: { available: false, origin: null, port: null },
     };

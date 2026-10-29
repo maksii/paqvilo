@@ -97,6 +97,18 @@ const clone = cloneStateData;
 const cloneInternal = (value) => cloneStateData(value, { forkTables: true });
 // Per async context, the transaction frame of each DataStore (see DataStore#transact).
 const transactionFrames = new AsyncLocalStorage();
+// Tracing (trace-store.mjs): a read inside one of these spans is already covered and opens no store span of its own.
+const COVERED_READS = new Set(['dataverse', 'store', 'read', 'bulk']);
+const READ_LABEL = { retrieve: 'Retrieve', retrievemultiple: 'RetrieveMultiple', fetchxml: 'FetchXml' };
+const FETCH_ENTITY = /<entity\s+name\s*=\s*["']([^"']{1,128})["']/;
+const rowCountOf = (value) =>
+  Array.isArray(value?.value)
+    ? value.value.length
+    : Array.isArray(value?.entities)
+      ? value.entities.length
+      : value == null
+        ? 0
+        : 1;
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const formattedAnnotation = '@OData.Community.Display.V1.FormattedValue';
 const lookupAnnotation = '@Microsoft.Dynamics.CRM.lookuplogicalname';
@@ -1387,6 +1399,17 @@ export class DataStore {
     this.ensureStorage();
     return this.storage.persistedDigest();
   }
+  /** The tracing of one commit (docs/design/tracing.md): a commit event on the current span; end(...) records the staged
+   * events and the save. null without a current span: a commit outside any span (job bookkeeping, startup) opens none. */
+  traceCommit() {
+    const current = this.traces?.enabled ? this.traces.current() : null;
+    if (!current) return null;
+    return {
+      fail: (error) =>
+        current.event('commit', { message: 'Save failed', attributes: { error: error?.code ?? 'Error' } }),
+      end: ({ attributes }) => current.event('commit', { attributes }),
+    };
+  }
   /** Serialize reads that may invoke backend plugin writes. Pure reads do not
    * change the persisted state or its revision. Invoke this only at a request
    * boundary; nested SDK reads already use their caller's synchronous frame. */
@@ -1556,7 +1579,20 @@ export class DataStore {
           (boundary.backup !== null && !privateRecordEqual(this.state, boundary.backup))
         ) {
           frame.committing = true;
-          await this.save();
+          const commit = this.traceCommit();
+          try {
+            await this.save();
+          } catch (error) {
+            commit?.fail(error);
+            throw error;
+          }
+          commit?.end({
+            attributes: {
+              eventsStaged: this.committedEventCandidates.length,
+              saveMs: this.lastSave?.durationMs ?? null,
+              saveMode: this.lastSave?.mode ?? null,
+            },
+          });
           this.committed(
             rowTransaction && !rowTransaction.promoted && !isolated ? rowTransaction.touchedTables() : null,
           );
@@ -2064,6 +2100,10 @@ export class DataStore {
     this.deleteGuards.add(fn);
     return () => this.deleteGuards.delete(fn);
   }
+  /** The span (or request-context ids) current when `event` was recorded (tracing), or null. */
+  stagingSpan(event) {
+    return (event && typeof event === 'object' && this.stagingSpans?.get(event)) || null;
+  }
   recordCommittedEvent(entity, operation, row, attributes, details = {}) {
     if (
       !this.mutationObservers?.size &&
@@ -2082,6 +2122,10 @@ export class DataStore {
       chain: this.flowChain ? clone(this.flowChain) : null,
       correlationId: currentRequest()?.correlationId ?? null,
     };
+    // The staging span (tracing): kept beside the event, never in it (the event is persisted in asyncoperation.data), so a
+    // job staged from it remembers it as its parent (committed-work.mjs stage, stagingSpan).
+    const staging = this.traces?.enabled ? (this.traces.current() ?? currentRequest()) : null;
+    if (staging?.traceId) (this.stagingSpans ??= new WeakMap()).set(event, staging);
     for (const observer of this.mutationObservers ?? []) {
       const matched = observer.matches ? observer.matches(clone(event)) : true;
       if (matched && typeof matched.then === 'function') {
@@ -2545,7 +2589,10 @@ export class DataStore {
     return result;
   }
   assertAllowed(entity, operation, row, identity, related) {
-    if (!this.allowed(entity, operation, row, identity)) {
+    const memo = this.permissionMemo();
+    if (this.allowed(entity, operation, row, identity, new Set(), null, memo))
+      this.tracePermission(entity, operation, identity, memo, { result: 'allow' });
+    else {
       const permissions = this.rules(entity, operation, identity).map((grant) => {
         const permission = { id: grant.id, name: grant.name ?? grant.id, scope: grant.scope ?? 'global' };
         for (const key of ['field', 'relationship', 'relationshipName', 'parentPermissionId'])
@@ -2573,6 +2620,8 @@ export class DataStore {
       const message =
         `Table permission denies ${operation} on ${entity}` +
         (descriptions.length ? ': ' + descriptions.join('; ') : '');
+      const model = this.portalAuthorization?.describe().model ?? 'standard';
+      this.traceDenial({ table: entity, operation, model, permissions, message });
       throw new DataError(message, 403, 'PermissionDenied', {
         operation,
         table: entity,
@@ -2584,16 +2633,69 @@ export class DataStore {
           table: entity,
           permissions,
           message,
-          model: this.portalAuthorization?.describe().model ?? 'standard',
+          model,
         },
         ...(related ? { related } : {}),
       });
     }
   }
+  /** A table permission denial (tracing): an event on the current span, else a dedicated permission span with status denied. */
+  traceDenial({ table, operation, model, permissions, message }) {
+    const traces = this.traces;
+    if (!traces?.enabled) return;
+    const attributes = {
+      table,
+      operation,
+      result: 'deny',
+      model,
+      permissions: permissions.map((grant) => grant.name),
+      code: 'TABLE_PERMISSION_DENIED',
+    };
+    const current = traces.current();
+    if (current) current.event('permission', { message, attributes });
+    else
+      traces
+        .start({ kind: 'permission', name: `Deny ${operation} ${table}`, module: 'security', operation, entity: table })
+        .event('permission', { message, attributes })
+        .end({ status: 'denied', error: { code: 'PermissionDenied', message } });
+  }
+  /**
+   * One permission event on the current span (tracing, docs/design/tracing.md): an allowed assertAllowed decision
+   * (facts { result: 'allow' }; a denial is traceDenial) or one permission-filtering read call (facts { result: 'filtered',
+   * rows, allowed }), never one per row. The table's rules come from `memo`, so a call that evaluated them computes them once.
+   */
+  tracePermission(entity, operation, identity, memo, facts) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    if (!span) return;
+    const table = this.resolveMapping(entity).logicalName;
+    span.event('permission', {
+      attributes: {
+        table,
+        operation,
+        ...facts,
+        model: this.portalAuthorization?.describe().model ?? 'standard',
+        permissions: memo.rules(table, operation, identity ?? {}).map((grant) => grant.name ?? grant.id),
+      },
+    });
+  }
+  /** tracePermission for a filtering read: `rows` were considered, `allowed` of them are visible (admin and permissive record none). */
+  traceFiltered(entity, identity, rows, allowed, memo) {
+    if (!this.traces?.enabled || identity?.admin || this.state.settings.permissionMode === 'permissive') return;
+    this.tracePermission(entity, 'read', identity, memo, {
+      result: 'filtered',
+      rows: pagedRecordsOf(rows)?.present ?? rows.length,
+      allowed,
+    });
+  }
   rows(entity, identity = {}, subset) {
     const m = this.resolveMapping(entity);
     const memo = this.permissionMemo();
     const rows = subset ?? this.tableRows(m.logicalName);
+    const kept = this.permittedRows(m, rows, identity, memo);
+    this.traceFiltered(m.logicalName, identity, rows, kept.length, memo);
+    return kept;
+  }
+  permittedRows(m, rows, identity, memo) {
     if (this.allowed === DataStore.prototype.allowed) {
       if (identity.admin || this.state.settings.permissionMode === 'permissive') return rows.filter(() => true);
       const length = rows.length;
@@ -2610,12 +2712,17 @@ export class DataStore {
     }
     return rows.filter((r) => this.allowed(m.logicalName, 'read', r, identity, new Set(), null, memo));
   }
-  /** Exact permission-filtered count without materializing the visible rows. */
+  /** Exact permission-filtered count without materializing the visible rows; one `filtered` permission event per call. */
   rowCount(entity, identity = {}, subset) {
     const m = this.resolveMapping(entity);
     const rows = subset ?? this.tableRows(m.logicalName);
     const unrestricted = identity.admin || this.state.settings.permissionMode === 'permissive';
     const memo = unrestricted ? null : this.permissionMemo();
+    const count = this.permittedCount(m, rows, identity, unrestricted, memo);
+    this.traceFiltered(m.logicalName, identity, rows, count, memo);
+    return count;
+  }
+  permittedCount(m, rows, identity, unrestricted, memo) {
     const length = rows.length;
     const storedCount = pagedRecordsOf(rows)?.present;
     if (storedCount === 0 || (unrestricted && storedCount !== undefined)) return storedCount;
@@ -2705,6 +2812,46 @@ export class DataStore {
     return out;
   }
   get(entity, id, identity = {}, options = {}) {
+    return this.tracedRead(
+      'retrieve',
+      entity,
+      () => ({ id }),
+      options,
+      () => this.readRecord(entity, id, identity, options),
+    );
+  }
+  /**
+   * One store span per read call that no Dataverse, store or Liquid read span already covers (docs/design/tracing.md):
+   * entity, operation, rowCount and portalRequest; the query is captured only at level full. A FetchXML read is operation
+   * retrievemultiple with attribute query: 'fetchxml' (the label stays FetchXml).
+   */
+  tracedRead(operation, entity, input, options, read) {
+    const traces = this.traces;
+    if (!traces?.enabled || COVERED_READS.has(traces.current()?.kind)) return read();
+    return traces.wrap(
+      {
+        kind: 'store',
+        name: `${READ_LABEL[operation]} ${entity ?? ''}`.trim(),
+        module: 'dataverse',
+        operation: operation === 'fetchxml' ? 'retrievemultiple' : operation,
+        entity,
+        attributes: {
+          portalRequest: options.portalRequest === true,
+          ...(operation === 'fetchxml' ? { query: 'fetchxml' } : {}),
+        },
+        input,
+      },
+      (span) => {
+        const result = read();
+        const count = (value) => {
+          span.set({ rowCount: rowCountOf(value) });
+          return value;
+        };
+        return typeof result?.then === 'function' ? result.then(count) : count(result);
+      },
+    );
+  }
+  readRecord(entity, id, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
     const rows = this.tableRows(m.logicalName);
     let row = rows[this.rowIndex(m, rows, id, options)];
@@ -2979,13 +3126,18 @@ export class DataStore {
       let unrestricted = identity.admin || this.state.settings.permissionMode === 'permissive';
       if (!unrestricted && paged.present) {
         const rules = memo.rules(name, 'read', identity);
-        if (!rules.length) return [];
+        if (!rules.length) {
+          this.traceFiltered(name, identity, source, 0, memo);
+          return [];
+        }
         unrestricted = (rules[0].scope ?? 'global') === 'global';
       }
-      const rows = readCopies(source);
-      return unrestricted
-        ? rows
-        : rows.filter((row) => this.allowed(name, 'read', row, identity, new Set(), null, memo));
+      const rows = readCopies(source),
+        kept = unrestricted
+          ? rows
+          : rows.filter((row) => this.allowed(name, 'read', row, identity, new Set(), null, memo));
+      this.traceFiltered(name, identity, source, kept.length, memo);
+      return kept;
     };
     const readRows = (logical, node, subset) => {
       const name = this.resolveMapping(logical).logicalName;
@@ -3248,6 +3400,15 @@ export class DataStore {
    * Web API grammar; the default "extended" dialect serves internal reads.
    */
   query(entity, params = {}, identity = {}, paging, options = {}) {
+    return this.tracedRead(
+      'retrievemultiple',
+      entity,
+      () => params,
+      options,
+      () => this.queryRecords(entity, params, identity, paging, options),
+    );
+  }
+  queryRecords(entity, params = {}, identity = {}, paging, options = {}) {
     const p = params instanceof URLSearchParams ? Object.fromEntries(params) : params;
     if (p.fetchXml || p.fetchxml) return this.queryCore(entity, params, identity, paging, options);
     // Column security of the reading principal on every returned row (portal-authorization.mjs maskRow), as get() and fetchXml().
@@ -3892,11 +4053,14 @@ export class DataStore {
           this.evaluate(value, context),
         ]);
         if (!matches.length) throw new DataError('Plugin find requires explicit matching fields', 400, 'InvalidPlugin');
-        const record = this.tableRows(mapping.logicalName).find(
-          (row) =>
-            matches.every(([key, value]) => equal(field(row, key), value)) &&
-            this.allowed(mapping.logicalName, 'read', row, context.identity),
-        );
+        const memo = this.permissionMemo(),
+          candidates = this.tableRows(mapping.logicalName).filter((row) =>
+            matches.every(([key, value]) => equal(field(row, key), value)),
+          ),
+          record = candidates.find((row) =>
+            this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
+          );
+        this.traceFiltered(mapping.logicalName, context.identity, candidates, record ? 1 : 0, memo);
         return clone(record ? (args[1] ? field(record, safeName(String(args[1]))) : record) : null);
       }
       case 'findMany': {
@@ -3907,14 +4071,18 @@ export class DataStore {
         ]);
         if (!matches.length)
           throw new DataError('Plugin findMany requires explicit matching fields', 400, 'InvalidPlugin');
-        const records = this.tableRows(mapping.logicalName).filter(
-          (row) =>
+        const memo = this.permissionMemo(),
+          candidates = this.tableRows(mapping.logicalName).filter((row) =>
             matches.every(([key, value]) =>
               Array.isArray(value)
                 ? value.some((candidate) => equal(field(row, key), candidate))
                 : equal(field(row, key), value),
-            ) && this.allowed(mapping.logicalName, 'read', row, context.identity),
-        );
+            ),
+          ),
+          records = candidates.filter((row) =>
+            this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
+          );
+        this.traceFiltered(mapping.logicalName, context.identity, candidates, records.length, memo);
         if (records.length > 1024) throw new DataError('Plugin findMany exceeds 1024 records', 400, 'InvalidPlugin');
         return clone(records.map((row) => (args[1] ? field(row, safeName(String(args[1]))) : row)));
       }
@@ -5059,6 +5227,15 @@ export class DataStore {
     return preview;
   }
   fetchXml(xml, identity = {}, options = {}) {
+    return this.tracedRead(
+      'fetchxml',
+      this.traces?.enabled && typeof xml === 'string' ? (FETCH_ENTITY.exec(xml)?.[1] ?? null) : null,
+      () => xml,
+      options,
+      () => this.fetchXmlRecords(xml, identity, options),
+    );
+  }
+  fetchXmlRecords(xml, identity = {}, options = {}) {
     // Column security of the reading principal on every returned row, link-entity and aliased column included
     // (portal-authorization.mjs maskRow), as get() and query().
     // A condition, order, aggregate or distinct over a column it reads masked is refused first (assertOperands, 0x80041155).

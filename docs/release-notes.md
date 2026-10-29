@@ -76,6 +76,25 @@
   Chromium and Edge; an 8.3 `TEMP` alias and an empty npm cache for the package smoke, as on hosted runners; and two
   extra runs of each changed test file. See [CONTRIBUTING](../CONTRIBUTING.md).
 - Write the code app bootstrap specifier as an inert module string literal, as page script URLs already are.
+- Trace each local request as a tree of spans: the HTTP request, portal Web API call, Dataverse operation, permission
+  decisions, plug-in stages and steps with their SDK calls and trace lines, secrets, web hooks, asynchronous jobs, cloud
+  flow runs and actions, connector calls and page renders. Loopback calls and staged jobs join the trace of the request
+  that caused them, and each audit entry links to its trace. `mirage.trace` sets the level (`off`, `summary` by
+  default, or `full` with redacted inputs and outputs), retention and optional persistence under the state folder; the
+  level also changes at run time. Read traces in the `_sim` **Traces** view, through `/_sim/api/trace`, with
+  `paqvilo mirage trace list|show|spans|stats|settings|clear|export|watch` or with `connectRuntime().trace`. See
+  [request tracing](../mirage/docs/tracing.md).
+- Sort the trace list by start, duration, span count or errors; search the spans of a trace, keep only its errors and
+  denials, read it as JSON, copy its id or link, and compare two traces side by side with the duration delta of each
+  matched span. The overview compares the root p95 with the previous range of the same length, and times show in local
+  time with the UTC offset.
+- Export traces as JSON, NDJSON or OTLP JSON (`resourceSpans`), streamed one trace at a time and bounded by `limit`
+  (200 by default, at most 2000). `trace watch` takes the list filters and `--trace-end`, and ends with exit 0 when the
+  runtime stops; every `trace --json` action prints one envelope, and failures name a code such as `TraceNotFound` or
+  `RuntimeUnreachable`. `connectRuntime().trace` adds `ancestry` and `subscribe`.
+- A trace that reaches `spansPerTrace` stays one trace and counts the refused spans; trace ids from headers must be
+  UUIDs, and `/_sim/api/trace/id/<traceId>` reads any trace id. Persisted traces are written as delta lines after the
+  response, a runtime without a state folder reports `NoStateDirectory`, and trace ids stay out of the state file.
 
 Synthetic and native qualification are distinct. Loopback passes establish the exercised contracts; they do not
 establish native control coverage, a deployed source revision or production readiness.

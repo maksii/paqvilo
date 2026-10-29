@@ -1,4 +1,5 @@
 import { organizationRecord } from './organization-context.mjs';
+import { statusFromHttp } from './trace-store.mjs';
 // Webhooks. A plug-in step whose eventhandler is a service endpoint with contract 8 (Webhook) POSTs the
 // RemoteExecutionContext JSON to the endpoint URL, with the documented headers and authentication.
 //
@@ -469,7 +470,54 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
           ? 'webhooks.delivered'
           : 'webhooks.failed',
     );
-  const notContacted = (facts, reason, host) =>
+  // Tracing (docs/design/tracing.md): one http-out span per POST, named by the URL path only (never the query, which can carry
+  // the WebhookKey code, nor the authentication value); the request forwards the span as X-Sim-Parent-Trace/X-Sim-Trace-Id so
+  // a loopback receiver joins the trace. post(request) answers { status } or a status, synchronously or as a promise.
+  const outbound = (facts, request, post) => {
+    const traces = store.traces;
+    if (!traces?.enabled) return post(request);
+    const url = new URL(request.url);
+    const span = traces.start({
+      kind: 'http-out',
+      name: `POST ${url.pathname}`,
+      module: 'webhooks',
+      operation: 'post',
+      entity: facts.entity ?? null,
+      attributes: {
+        host: url.hostname,
+        path: url.pathname,
+        contract: WEBHOOK_CONTRACT,
+        stepId: facts.item?.id ?? null,
+      },
+    });
+    const answered = (answer) => {
+      const status = typeof answer === 'number' ? answer : answer?.status;
+      // A delivery succeeds only with a 2xx answer; 401/403 are denied (statusFromHttp), any other answer an error.
+      span.end({
+        status: status >= 200 && status < 300 ? 'ok' : statusFromHttp(status) === 'denied' ? 'denied' : 'error',
+        attributes: { statusCode: status ?? null, ...(answer?.indeterminate ? { indeterminate: true } : {}) },
+      });
+      return answer;
+    };
+    let answer;
+    try {
+      answer = post({ ...request, headers: { ...request.headers, ...traces.headers(span) } });
+    } catch (error) {
+      span.fail(error);
+      throw error;
+    }
+    return typeof answer?.then === 'function'
+      ? answer.then(answered, (error) => {
+          span.fail(error);
+          throw error;
+        })
+      : answered(answer);
+  };
+  const notContacted = (facts, reason, host) => {
+    store.traces?.current()?.event('webhook', {
+      message: 'Endpoint not contacted (loopback webhooks only).',
+      attributes: { code: 'WEBHOOK_NOT_CONTACTED', reason, host },
+    });
     facts.diagnostic?.({
       code: 'WEBHOOK_NOT_CONTACTED',
       severity: 'warning',
@@ -483,6 +531,7 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
       message:
         'The simulator contacts only loopback webhook endpoints. The endpoint was not called and nothing was delivered; the operation continues.',
     });
+  };
   const notDelivered = (facts, reason) =>
     facts.diagnostic?.({
       code: 'WEBHOOK_NOT_DELIVERED',
@@ -669,7 +718,7 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
       }
       const request = requestFor(facts);
       if (!request) return undefined;
-      return postAsync(request).then((status) => webhookAnswered(facts, request, status));
+      return outbound(facts, request, postAsync).then((status) => webhookAnswered(facts, request, status));
     },
     /** A synchronous step on the synchronous SDK drive: the post runs on the I/O bridge and this call returns when it answered. */
     sync(facts) {
@@ -716,7 +765,7 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
       }
       const request = requestFor(facts);
       if (!request) return;
-      webhookAnswered(facts, request, postSync(request));
+      webhookAnswered(facts, request, outbound(facts, request, postSync));
     },
     async afterCommit(delivered) {
       const facts = { ...delivered, asyncExecution: true }; // after commit: the asynchronous delivery (Mode 1, no transaction)
@@ -732,7 +781,7 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
       }
       const request = requestFor(facts);
       if (!request) return { canceled: NOT_CONTACTED };
-      const status = await deliver(withAuth(request), loopbackFetch).catch((error) => {
+      const status = await outbound(facts, request, (sent) => deliver(withAuth(sent), loopbackFetch)).catch((error) => {
         count(-1);
         throw error;
       });

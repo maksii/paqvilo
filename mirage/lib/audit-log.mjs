@@ -2,31 +2,41 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 
 const secret = /(?:password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|signature)/i;
+// URL query parameters that carry a credential on their own (Azure Functions keys, SAS signatures, OAuth codes).
+const queryCredential = /^(?:code|sig)$/i;
+const secretQueryKey = (key) => secret.test(key) || queryCredential.test(key);
 const limitText = (value, limit = 12000) => String(value ?? '').slice(0, limit);
 
 /** Keep query structure useful while excluding credential values and headers. */
 export function auditText(value, limit = 12000) {
-  return String(value ?? '')
-    .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
-    .replace(
-      /((?:password|passwd|[\w-]*secret|[\w-]*token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi,
-      '$1[redacted]',
-    )
-    .replace(/<condition\b[^>]*(?:\/>|>[\s\S]*?<\/condition>)/gi, (tag) => {
-      const attribute = /\battribute\s*=\s*(["'])(.*?)\1/i.exec(tag)?.[2];
-      return secret.test(attribute ?? '')
-        ? tag
-            .replace(/\bvalue\s*=\s*(["'])(.*?)\1/gi, 'value="[redacted]"')
-            .replace(/(<value>)[\s\S]*?(<\/value>)/gi, '$1[redacted]$2')
-        : tag;
-    })
-    .slice(0, limit);
+  return (
+    String(value ?? '')
+      .replace(/Bearer\s+[^\s"'<>]+/gi, 'Bearer [redacted]')
+      .replace(/\bSharedAccessSignature\s+[^\s"'<>]+/gi, 'SharedAccessSignature [redacted]')
+      // A Basic credential is base64: a token holding a digit, + or / or ending in = (so "Basic plan" stays readable).
+      .replace(/\bBasic\s+(?=[A-Za-z0-9+/]*[0-9+/=])[A-Za-z0-9+/]{4,}={0,2}/gi, 'Basic [redacted]')
+      .replace(/\bDigest\s+[\w-]+=[^\r\n<>]*/gi, 'Digest [redacted]')
+      .replace(/([?&](?:code|sig)=)[^&#\s"'<>]*/gi, '$1[redacted]')
+      .replace(
+        /((?:password|passwd|[\w-]*secret|[\w-]*token|authorization|cookie|credential|api[_-]?key|signature)["']?\s*(?:=|:|\beq\b)\s*)(?:"[^"]*"|'[^']*'|[^\s&<>;,]+)/gi,
+        '$1[redacted]',
+      )
+      .replace(/<condition\b[^>]*(?:\/>|>[\s\S]*?<\/condition>)/gi, (tag) => {
+        const attribute = /\battribute\s*=\s*(["'])(.*?)\1/i.exec(tag)?.[2];
+        return secret.test(attribute ?? '')
+          ? tag
+              .replace(/\bvalue\s*=\s*(["'])(.*?)\1/gi, 'value="[redacted]"')
+              .replace(/(<value>)[\s\S]*?(<\/value>)/gi, '$1[redacted]$2')
+          : tag;
+      })
+      .slice(0, limit)
+  );
 }
 
 export function auditQuery(value) {
   if (value instanceof URLSearchParams)
     return Object.fromEntries(
-      [...value].map(([key, item]) => [key, secret.test(key) ? '[redacted]' : auditText(item)]),
+      [...value].map(([key, item]) => [key, secretQueryKey(key) ? '[redacted]' : auditText(item)]),
     );
   if (typeof value === 'string') return auditText(value);
   if (!value || typeof value !== 'object') return undefined;
@@ -35,7 +45,7 @@ export function auditQuery(value) {
       .slice(0, 40)
       .map(([key, item]) => [
         key,
-        secret.test(key)
+        secretQueryKey(key)
           ? '[redacted]'
           : typeof item === 'string'
             ? auditText(item)
@@ -73,9 +83,15 @@ export class AuditLog {
   constructor({ limit = 1000 } = {}) {
     this.limit = positive(limit, 1000, 10000);
     this.entries = [];
+    this.index = new Map(); // id -> retained entry, kept in sync with eviction and clear
     this.sequence = 0;
     this.dropped = 0;
     this.listeners = new Set();
+  }
+
+  /** The retained entry with this id (the live record, not a copy), or null. */
+  byId(id) {
+    return (typeof id === 'string' && this.index.get(id)) || null;
   }
 
   /** Observe completed entries (sanitized copies); returns an unsubscribe function. */
@@ -95,6 +111,8 @@ export class AuditLog {
     query,
     correlationId,
     parentId,
+    traceId,
+    spanId,
     activeConfigurationPreset,
   } = {}) {
     const started = performance.now();
@@ -104,6 +122,9 @@ export class AuditLog {
       sequence: ++this.sequence,
       correlationId: correlationId || id,
       parentId: parentId ?? null,
+      // The trace-store root span of this request (docs/design/tracing.md), so the audit view links to the trace.
+      traceId: traceId ? limitText(traceId, 128) : null,
+      spanId: spanId ? limitText(spanId, 128) : null,
       ...(activeConfigurationPreset
         ? {
             activeConfigurationPreset: {
@@ -130,8 +151,9 @@ export class AuditLog {
       durationMs: null,
     };
     this.entries.push(entry);
+    this.index.set(id, entry);
     if (this.entries.length > this.limit) {
-      this.entries.splice(0, this.entries.length - this.limit);
+      for (const evicted of this.entries.splice(0, this.entries.length - this.limit)) this.index.delete(evicted.id);
       this.dropped++;
     }
     let completed = false;
@@ -273,6 +295,7 @@ export class AuditLog {
   }
   clear() {
     this.entries = [];
+    this.index.clear();
     this.dropped = 0;
     return this.list();
   }

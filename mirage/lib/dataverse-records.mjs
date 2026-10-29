@@ -313,6 +313,30 @@ function keyViolation(mapping, data, error) {
   );
 }
 
+// Span names and operations of the dataverse spans (tracing): the message a route or internal entry runs.
+const OPERATION_LABEL = {
+  create: 'Create',
+  update: 'Update',
+  delete: 'Delete',
+  retrieve: 'Retrieve',
+  retrievemultiple: 'RetrieveMultiple',
+  associate: 'Associate',
+  disassociate: 'Disassociate',
+  action: 'Action',
+};
+const WEB_API_OPERATION = {
+  collection: { GET: 'retrievemultiple', POST: 'create' },
+  count: { GET: 'retrievemultiple' },
+  entity: { GET: 'retrieve', PATCH: 'update', DELETE: 'delete' },
+  property: { GET: 'retrieve', PUT: 'update', DELETE: 'update' },
+  member: { GET: 'retrieve', PUT: 'update', DELETE: 'update' },
+  value: { GET: 'retrieve' },
+  navigationCount: { GET: 'retrievemultiple' },
+  ref: { GET: 'retrieve', POST: 'associate', PUT: 'associate', DELETE: 'disassociate' },
+  navigationRef: { DELETE: 'disassociate' },
+  boundAction: { POST: 'action' },
+};
+
 // changeTrackingEnabled(logical) overrides the table's metadata flag; without it the flag is read from the mapping,
 // and an undefined flag keeps tracking allowed.
 // fieldSecurity is a getter for api.fieldSecurity (dataverse-fls): the extension installs after the handlers exist. Absent or
@@ -331,6 +355,57 @@ export function createRecordHandlers({
 }) {
   const authorize = (c, entity, operation, mapping, row) =>
     principals.authorize({ user: c.user, entity, operation, row, mapping });
+  // One dataverse span per internal entry and per Web API dispatch (docs/design/tracing.md); a plug-in step's nested SDK
+  // writes run on the same stack, so their spans nest under the step. c is the resolved context (internalContext).
+  const traced = (c, operation, entity, recordId, { sync, authorized } = {}, input, run) => {
+    const traces = store.traces;
+    const current = traces?.enabled ? traces.current() : null;
+    // A bulk message has one span; its per-row writes open none (plugin-bulk.mjs). A flow Dataverse connector call is one
+    // dataverse span too (connector-runtime.mjs dataverseProvider): the entries it drives open none.
+    if (
+      !traces?.enabled ||
+      current?.kind === 'bulk' ||
+      (current?.kind === 'dataverse' && current.module === 'connectors')
+    )
+      return run();
+    const user = c.portal ? null : c.user;
+    return traces.wrap(
+      {
+        kind: 'dataverse',
+        name: `${OPERATION_LABEL[operation] ?? operation} ${entity}`,
+        module: 'dataverse',
+        operation,
+        entity,
+        recordId: recordId == null ? null : String(recordId),
+        ...(user
+          ? {
+              actor: {
+                kind: user.applicationid ? 'app' : 'staff',
+                id: user.systemuserid ?? null,
+                name: user.fullname ?? null,
+              },
+            }
+          : {}),
+        attributes: {
+          sync: sync === true,
+          authorized: authorized === true,
+          method: c.method ?? null,
+          portal: c.portal ? true : undefined,
+          impersonatedBy: user?.impersonator?.systemuserid,
+          sdkUserId: c.method === 'SDK' ? (c.userId ?? undefined) : undefined,
+        },
+        input,
+      },
+      (span) => {
+        const result = run(span);
+        const done = (value) => {
+          span.output(() => ({ id: value?.[store.resolveMapping(entity).idColumn] ?? null }));
+          return value;
+        };
+        return typeof result?.then === 'function' ? result.then(done) : done(result);
+      },
+    );
+  };
   const hookList = (name) => hooks.list?.(name) ?? [];
   const runHooks = (name, ...args) => {
     for (const hook of hookList(name)) hook(...args);
@@ -2550,7 +2625,16 @@ export function createRecordHandlers({
    * - no store transaction of its own and no If-None-Match unless writeOptions carries it.
    */
   function createInternal(c, logical, data, options = {}) {
-    return drive(createSteps(internalContext(c), logical, data, options), options);
+    const context = internalContext(c);
+    return traced(
+      context,
+      'create',
+      logical,
+      null,
+      options,
+      () => data,
+      () => drive(createSteps(context, logical, data, options), options),
+    );
   }
   function* createSteps(c, logical, data, { authorized = false, writeOptions: extra = {}, sync = false }) {
     const mapping = store.resolveMapping(logical);
@@ -2582,7 +2666,16 @@ export function createRecordHandlers({
    * Returns the stored row. Same context, options and differences as createInternal; the primary key column is never written.
    */
   function updateInternal(c, logical, id, data, options = {}) {
-    return drive(updateSteps(internalContext(c), logical, id, data, options), options);
+    const context = internalContext(c);
+    return traced(
+      context,
+      'update',
+      logical,
+      id,
+      options,
+      () => data,
+      () => drive(updateSteps(context, logical, id, data, options), options),
+    );
   }
   function* updateSteps(
     c,
@@ -2619,7 +2712,10 @@ export function createRecordHandlers({
 
   /** Deletes one row through the Web API delete rules: delete authorization, the hooks, updateOptions (cascaded rows). */
   function removeInternal(c, logical, id, options = {}) {
-    return drive(removeSteps(internalContext(c), logical, id, options), options);
+    const context = internalContext(c);
+    return traced(context, 'delete', logical, id, options, undefined, () =>
+      drive(removeSteps(context, logical, id, options), options),
+    );
   }
   function* removeSteps(c, logical, id, { authorized = false, writeOptions: extra = {}, partitionId, sync = false }) {
     const mapping = store.resolveMapping(logical);
@@ -2658,16 +2754,28 @@ export function createRecordHandlers({
    * Signature: associateInternal(c, logical, id, navigation, relatedIds, options) -> null (or a promise of null without sync).
    */
   function associateInternal(c, logical, id, navigation, relatedIds, options = {}) {
-    return drive(
-      associationSteps(internalContext(c), logical, id, navigation, [relatedIds].flat(), true, options),
+    const context = internalContext(c);
+    return traced(
+      context,
+      'associate',
+      logical,
+      id,
       options,
+      () => ({ navigation, relatedIds }),
+      () => drive(associationSteps(context, logical, id, navigation, [relatedIds].flat(), true, options), options),
     );
   }
   /** The Disassociate counterpart of associateInternal: same context, arguments, options and rules. */
   function disassociateInternal(c, logical, id, navigation, relatedIds, options = {}) {
-    return drive(
-      associationSteps(internalContext(c), logical, id, navigation, [relatedIds].flat(), false, options),
+    const context = internalContext(c);
+    return traced(
+      context,
+      'disassociate',
+      logical,
+      id,
       options,
+      () => ({ navigation, relatedIds }),
+      () => drive(associationSteps(context, logical, id, navigation, [relatedIds].flat(), false, options), options),
     );
   }
   function* associationSteps(
@@ -2787,9 +2895,14 @@ export function createRecordHandlers({
    */
   // A virtual table is never read from its local mirror here: handlers.virtualProviders (set by
   // dataverse-virtual-providers.mjs) answers the provider's synchronous retrieveSync or refuses with 501.
-  function readInternal(c, logical, id, { unmask = false, partitionId, ...getOptions } = {}) {
-    const context = internalContext(c),
-      mapping = store.resolveMapping(logical);
+  function readInternal(c, logical, id, options = {}) {
+    const context = internalContext(c);
+    return traced(context, 'retrieve', logical, id, { sync: true }, undefined, () =>
+      readRow(context, logical, id, options),
+    );
+  }
+  function readRow(context, logical, id, { unmask = false, partitionId, ...getOptions } = {}) {
+    const mapping = store.resolveMapping(logical);
     const virtual = handlers.virtualProviders?.readSync(context, mapping.logicalName, { single: true, id });
     if (virtual)
       return virtual.rows[0]
@@ -2899,7 +3012,12 @@ export function createRecordHandlers({
           (ctx.method === 'GET' || ctx.method === 'DELETE' ? parameter : ctx.body?.partitionid) ??
           null;
       }
-      const response = await dispatch(c);
+      const operation = WEB_API_OPERATION[c.route.kind]?.[ctx.method] ?? String(ctx.method).toLowerCase();
+      const response = await traced(c, operation, mapping.logicalName, null, {}, undefined, async (span) => {
+        const answer = await dispatch(c);
+        span?.set({ statusCode: answer?.status ?? null });
+        return answer;
+      });
       if (isElastic(mapping) && ctx.method !== 'GET' && ctx.method !== 'DELETE' && response?.status < 400)
         response.headers = {
           ...response.headers,

@@ -35,6 +35,7 @@ import { createScriptHost, SDK_MISSING, UNTRUSTED } from './custom-connector-scr
 import { flowVault } from './flow-vault.mjs';
 import { packFlowActions } from './flow-actions.mjs';
 import { effectiveEnvironmentVariables } from './secret-resolver.mjs';
+import { statusFromHttp } from './trace-store.mjs';
 
 export const DATAVERSE_CONNECTOR = 'shared_commondataserviceforapps';
 const CODES = {
@@ -220,6 +221,29 @@ const selected = (store, logical, row, select, navigations) => {
 // and plug-in stages as its write (plugin-association.mjs executeAssociationAsync); without one, executeAssociationAsync alone,
 // so a synchronous service endpoint step's post is awaited in process. Files and bound/unbound actions need organization entries
 // (store.recordPipeline.fileContentInternal, executeMessageInternal); without them they answer OperationUnsupported (501).
+// The span operation of a Dataverse connector call (docs/design/tracing.md span model).
+const DATAVERSE_SPAN_OPERATION = Object.freeze({
+  CreateRecord: 'create',
+  UpdateRecord: 'upsert',
+  UpdateOnlyRecord: 'update',
+  DeleteRecord: 'delete',
+  GetItem: 'retrieve',
+  ListRecords: 'retrievemultiple',
+  AssociateEntities: 'associate',
+  DisassociateEntities: 'disassociate',
+  GetEntityFileImageFieldContent: 'retrieve',
+  UpdateEntityFileImageFieldContent: 'update',
+  ExecuteChangeset: 'changeset',
+});
+// The logical name of a connector entityName (an entity set name), or null when it names no table.
+function dataverseLogicalName(store, entityName) {
+  if (typeof entityName !== 'string') return null;
+  try {
+    return store.resolveMapping(entityName).logicalName ?? null;
+  } catch {
+    return null;
+  }
+}
 function dataverseProvider(store, diagnostic) {
   const notWired = (what) => {
     throw new DataError(
@@ -438,11 +462,25 @@ function dataverseProvider(store, diagnostic) {
       for (const key of Object.keys(p))
         if (!spec.allowed(key))
           throw new DataError(`Unsupported Dataverse parameter ${operationId}/${key}.`, 501, 'LocalFlowUnsupported');
-      return run(
-        localOrganizationService(store, context.principal, undefined, { diagnostic }),
-        operationId,
-        p,
-        context,
+      const call = () =>
+        run(localOrganizationService(store, context.principal, undefined, { diagnostic }), operationId, p, context);
+      const traces = store?.traces;
+      if (!traces?.enabled) return call();
+      // Tracing (docs/design/tracing.md): one dataverse span per call, under the connector span. Its store reads (pre-images,
+      // projections) and the organization's internal entries it drives open none of their own (data.mjs COVERED_READS,
+      // dataverse-records.mjs traced), so a changeset or an upsert is one span too.
+      const entity = dataverseLogicalName(store, p.entityName);
+      return traces.wrap(
+        {
+          kind: 'dataverse',
+          name: `${operationId}${entity ? ' ' + entity : ''}`,
+          module: 'connectors',
+          operation: DATAVERSE_SPAN_OPERATION[operationId] ?? 'action',
+          entity,
+          recordId: p.recordId == null ? null : String(p.recordId),
+          attributes: { operationId },
+        },
+        call,
       );
     },
   };
@@ -500,7 +538,7 @@ async function sendLoopback({ method, url, headers, body }, context) {
   try {
     response = await loopbackFetch(url, {
       method,
-      headers,
+      headers: { ...headers, ...context.traceHeaders },
       ...(body === undefined || ['GET', 'HEAD'].includes(method) ? {} : { body }),
       signal,
     });
@@ -783,6 +821,9 @@ function customConnectorProvider(connector, fixtures, store, { tokens, scripts, 
     async invoke({ operationId, parameters, nextLink }, context) {
       const { req, connection } = await request(operationId, parameters, nextLink, context);
       // The script replaces the backend request; Context.SendAsync goes through the same rewrites, fixtures and loopback rule.
+      // Tracing: the script runs in a dotnet child process, which no span context crosses; the connector span (current here)
+      // is marked script: true, and the script's SendAsync requests carry its trace headers (sendLoopback).
+      if (scripted(operationId) && !nextLink) store?.traces?.current()?.set({ script: true });
       const answer =
         scripted(operationId) && !nextLink
           ? await scripts.run({
@@ -1360,7 +1401,7 @@ export function createConnectorRuntime({
     });
   // Retries a provider call on ProviderUnavailable/ProviderTimeout or an HTTP 429/5xx answer; each attempt is reported
   // through context.onAttempt and the waits run on the scheduler (the store's one by default), never a bare timer.
-  async function retried(call, policy, ctx) {
+  async function retried(call, policy, ctx, span = null) {
     for (let attempt = 1; ; attempt++) {
       if (ctx.signal?.aborted) throw aborted(ctx.signal);
       let answer, error;
@@ -1373,10 +1414,17 @@ export function createConnectorRuntime({
         attempt,
         ...(error ? { code: error.code ?? 'ProviderFailed' } : { statusCode: answer?.statusCode ?? null }),
       });
+      span?.set({ attempts: attempt });
       if (!transient(answer, error) || attempt > policy.count) {
         if (error) throw error;
         return answer;
       }
+      span?.event('retry', {
+        attributes: {
+          attempt,
+          ...(error ? { code: error.code ?? 'ProviderFailed' } : { statusCode: answer?.statusCode ?? null }),
+        },
+      });
       await pause(
         policy.type === 'exponential' ? policy.intervalMs * 2 ** (attempt - 1) : policy.intervalMs,
         ctx.signal,
@@ -1578,6 +1626,30 @@ export function createConnectorRuntime({
     const started = now();
     syncCustom();
     let resolved;
+    // Tracing (docs/design/tracing.md): one connector span per call (never per page or attempt); the provider runs inside it, so
+    // Dataverse provider writes nest under it. context.secure (a sealed flow run) captures no parameters or result.
+    const traces = store?.traces?.enabled ? store.traces : null,
+      span =
+        traces?.start({
+          kind: 'connector',
+          name: connectorId + '/' + (operationId ?? [method, path].filter(Boolean).join(' ')),
+          module: 'connectors',
+          operation: 'invoke',
+          attributes: {
+            connectorId: connectorId ?? null,
+            operationId: operationId ?? null,
+            caller: context.caller ?? null,
+            runId: context.runId ?? null,
+            actionPath: context.actionPath ?? null,
+          },
+          ...(context.secure ? {} : { input: () => parameters }),
+        }) ?? null;
+    const facts = (status) => ({
+      operationId: operationId ?? null,
+      provider: resolved?.provider ?? null,
+      connectionId: resolved?.connectionId ?? null,
+      status,
+    });
     const note = (status, error) =>
       diagnostic({
         code: 'CONNECTOR_INVOKE',
@@ -1601,10 +1673,15 @@ export function createConnectorRuntime({
             ? connectorError('ProviderTimeout', 'The connector provider timed out.')
             : connectorError('ProviderFailed', 'The connector provider failed.');
       note(mapped.status, mapped.code);
+      span?.set(facts(mapped.status)).fail(mapped);
       throw mapped;
     };
     const finish = (answer) => {
       note(answer?.statusCode ?? null);
+      if (span) {
+        if (!context.secure) span.output(() => answer);
+        span.end({ status: statusFromHttp(answer?.statusCode), attributes: facts(answer?.statusCode ?? null) });
+      }
       return answer;
     };
     let answer;
@@ -1632,6 +1709,7 @@ export function createConnectorRuntime({
         settings: resolved.settings ?? {},
         clock: clock ?? { now },
         connectionId: resolved.connectionId ?? null,
+        ...(span ? { traceHeaders: traces.headers(span) } : {}),
       };
       const request = { connectorId, operationId, parameters };
       const once =
@@ -1639,12 +1717,14 @@ export function createConnectorRuntime({
           ? () =>
               Promise.resolve(provider.invoke(request, ctx)).then((first) => followAsync(provider, request, ctx, first))
           : () => provider.invoke(request, ctx);
-      answer = retry?.count ? retried(once, retry, ctx) : once();
-      if (pagination?.minimumItemCount)
-        answer =
-          typeof answer?.then === 'function'
-            ? answer.then((first) => paginate(provider, request, ctx, first, pagination))
-            : paginate(provider, request, ctx, answer, pagination);
+      const dispatch = () => {
+        const first = retry?.count ? retried(once, retry, ctx, span) : once();
+        if (!pagination?.minimumItemCount) return first;
+        return typeof first?.then === 'function'
+          ? first.then((value) => paginate(provider, request, ctx, value, pagination, span))
+          : paginate(provider, request, ctx, first, pagination, span);
+      };
+      answer = span ? traces.run(span, dispatch) : dispatch();
     } catch (error) {
       return failed(error);
     }
@@ -1652,7 +1732,7 @@ export function createConnectorRuntime({
   }
 
   // Follow nextLink until minimumItemCount items or maxPages pages; a first page without nextLink stays synchronous.
-  function paginate(provider, request, ctx, first, { minimumItemCount, maxPages = 10 }) {
+  function paginate(provider, request, ctx, first, { minimumItemCount, maxPages = 10 }, span = null) {
     if (!first?.nextLink || !Array.isArray(first.body?.value)) return first;
     return (async () => {
       const items = [...first.body.value];
@@ -1677,6 +1757,7 @@ export function createConnectorRuntime({
         if (!Array.isArray(last?.body?.value)) fail('ProviderFailed', 'A later page has no value array.');
         items.push(...last.body.value);
         pages++;
+        span?.event('page', { attributes: { page: pages, items: items.length } }).set({ pages });
       }
       const { nextLink, ...rest } = first;
       return { ...rest, body: linked(first.body, items, null) };

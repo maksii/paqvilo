@@ -193,6 +193,7 @@ import {
   hostSurfaces,
   graphBindings,
   simApiRoutes,
+  traceMethods,
   modelDrivenAppsOf,
 } from './lib/organization-host.mjs';
 import { createCanvasHandler } from './lib/canvas-http.mjs';
@@ -203,6 +204,9 @@ import { codeAppSettings, loadCodeApps } from './lib/code-apps-config.mjs';
 import { createRequestContext, currentRequest, runWithRequest, correlationOf } from './lib/request-context.mjs';
 import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './lib/sim-messaging-routes.mjs';
 import { createFlowRoutes, routes as FLOW_ROUTES } from './lib/sim-flow-routes.mjs';
+import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './lib/sim-trace-routes.mjs';
+import { statusFromHttp } from './lib/trace-store.mjs';
+import { setTraceHeaders, sseClients, traceSessionKey } from './lib/trace-hosts.mjs';
 import { buildSourceGraph } from './lib/source-graph.mjs';
 import { scenarioSettings } from './lib/capability-report.mjs';
 import { environmentVariablePayload } from './lib/secret-resolver.mjs';
@@ -477,6 +481,8 @@ function json(res, status, value, headers = {}, { chunks } = {}) {
 }
 
 const RECORD_OWNERS = Symbol('owned record storage');
+// A persona runtime records into its parent's trace store (D-R2-18): one #trace view, one set of run-time settings.
+const SHARED_TRACES = Symbol('shared trace store');
 export async function createSimulator(options = {}) {
   const runtime = runtimeSettings(options.runtime);
   if (runtime.kind !== 'power-pages') {
@@ -505,6 +511,7 @@ export async function createSimulator(options = {}) {
 
 async function createPowerPagesSimulator({
   [RECORD_OWNERS]: recordOwners,
+  [SHARED_TRACES]: sharedTraces = null,
   runtime: runtimeOption,
   modelDriven: modelDrivenOption,
   sourceDir,
@@ -947,6 +954,8 @@ async function createPowerPagesSimulator({
     clock: hostClock,
     ids: settingOptionsRest.ids,
     scheduler: settingOptionsRest.scheduler,
+    trace: settingOptionsRest.trace,
+    traces: sharedTraces,
   });
   const {
     handlers: { operations: registeredOperations },
@@ -1307,7 +1316,7 @@ async function createPowerPagesSimulator({
       // One close order (lib/organization-host.mjs): backend (settles committed work, closes CLR hosts), organization, API, managed identity.
       await attempt(() => organizationHost.close());
       await attempt(() => store.closeRecordStorage());
-      for (const event of events) event.end();
+      events.end();
       await attempt(() => live.close());
       // The local identity provider lives and ends with its runtime.
       await attempt(() => externalSignIn?.close());
@@ -1322,7 +1331,8 @@ async function createPowerPagesSimulator({
     });
     return closePromise;
   };
-  const events = new Set(),
+  // /__sim/events clients (reload frames); trace-hosts.mjs sseClients drops closed and stalled ones.
+  const events = sseClients(),
     diagnostics = [],
     requests = [];
   // Portal requests since start; the ring above keeps the last 300 only. Kept out of store.counters so portal traffic never
@@ -1337,6 +1347,8 @@ async function createPowerPagesSimulator({
   };
   const audit = new AuditLog(),
     trace = new AsyncLocalStorage();
+  // The organization host's trace store (docs/design/tracing.md): every portal request opens an http root span in it.
+  const traces = organizationHost.traces;
   store.onSave = ({ durationMs, mode }) => {
     const context = trace.getStore();
     if (context) {
@@ -1357,13 +1369,16 @@ async function createPowerPagesSimulator({
     }
   // Admin live log stream: `log` events on /__sim/events?channels=logs. Nothing is
   // serialized while no administrator is subscribed.
-  const logClients = new Set();
+  const logClients = sseClients();
   let logSequence = 0;
   const publishLog = (type, payload = {}) => {
     if (!logClients.size) return;
-    const message = `event: log\ndata: ${JSON.stringify({ sequence: ++logSequence, type, time: new Date().toISOString(), ...payload })}\n\n`;
-    for (const client of logClients) client.write(message);
+    logClients.send(
+      `event: log\ndata: ${JSON.stringify({ sequence: ++logSequence, type, time: new Date().toISOString(), ...payload })}\n\n`,
+    );
   };
+  // Admin trace stream: `trace` events on /__sim/events?channels=trace (sim-trace-routes.mjs createTraceChannel).
+  const traceChannel = createTraceChannel(traces);
   audit.subscribe((entry) =>
     publishLog(
       entry.kind === 'liquid-fetchxml'
@@ -1569,24 +1584,37 @@ async function createPowerPagesSimulator({
       path: context?.path,
       correlationId: context?.correlationId,
       parentId: context?.spanId,
+      traceId: context?.traceSpan?.traceId,
+      spanId: context?.traceSpan?.spanId,
+    });
+    // The query is captured (redacted) only at level full.
+    const read = traces.start({
+      kind: 'read',
+      name: entity ? `${kind} ${entity}` : kind,
+      module: 'liquid',
+      operation: kind,
+      entity,
+      attributes: { provider },
+      input: () => query,
     });
     try {
-      const result = await fn();
-      span.finish({
-        rowCount: Array.isArray(result?.entities)
-          ? result.entities.length
-          : Array.isArray(result?.value)
-            ? result.value.length
-            : result
-              ? 1
-              : 0,
-      });
+      const result = await traces.run(read, fn);
+      const rowCount = Array.isArray(result?.entities)
+        ? result.entities.length
+        : Array.isArray(result?.value)
+          ? result.value.length
+          : result
+            ? 1
+            : 0;
+      span.finish({ rowCount });
+      read.end({ attributes: { rowCount } });
       return result;
     } catch (cause) {
       span.finish({
         status: cause.status ?? cause.statusCode ?? 500,
         error: cause,
       });
+      read.fail(cause);
       throw cause;
     }
   };
@@ -1933,6 +1961,7 @@ async function createPowerPagesSimulator({
   const buildRenderer = (source = portal) =>
     createPortalRenderer(source, {
       provenance: false,
+      traces,
       metadata: solutionMetadata,
       codeCatalogue: codeComponents,
       render,
@@ -2328,7 +2357,7 @@ async function createPowerPagesSimulator({
     if (reload) {
       renderer = buildRenderer();
       revision++;
-      for (const event of events) event.write(`event: reload\ndata: ${revision}\n\n`);
+      events.send(`event: reload\ndata: ${revision}\n\n`);
     }
     appliedManagementRecords = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
   };
@@ -2364,7 +2393,7 @@ async function createPowerPagesSimulator({
       appliedManagementRecords = records;
       renderer = buildRenderer();
       revision++;
-      for (const event of events) event.write(`event: reload\ndata: ${revision}\n\n`);
+      events.send(`event: reload\ndata: ${revision}\n\n`);
       return;
     }
     throw error(
@@ -2624,6 +2653,7 @@ async function createPowerPagesSimulator({
         platform: platformOption,
         dataModel,
         personaInstance: { ...definition, ownerOrigin: localOrigin },
+        [SHARED_TRACES]: organizationHost.traces,
         preset: definition.preset,
         presetMode: 'always',
       }),
@@ -2913,12 +2943,15 @@ async function createPowerPagesSimulator({
         PACK_ROUTES,
         MESSAGING_ROUTES,
         FLOW_ROUTES,
+        TRACE_ROUTES,
         coreAdmin.routes,
         PORTAL_ADMIN_ROUTES,
         ENVIRONMENT_ROUTES,
       ),
       // Admin-adjacent routes outside /_sim/api (model-driven/http.mjs routes): full paths, never probed by the admin app.
       adminAdjacentRoutes: MODEL_DRIVEN_ROUTES,
+      // The /_sim/events?channels=... channels this host streams (reloads always come with the stream).
+      eventChannels: ['logs', 'trace'],
     };
   };
   const SCENARIO_FIELDS = ['id', 'name', 'description', 'preset', 'persona', 'permissionMode', 'permissionSource'];
@@ -3356,8 +3389,11 @@ async function createPowerPagesSimulator({
     simulation: () => organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()),
     portal: () => sourcePortal ?? portal ?? null,
   });
+  // /_sim/api/trace (sim-trace-routes.mjs): the trace store's queries, settings and clear.
+  const traceRoutes = createTraceRoutes({ traces, csrf: () => csrf, json });
   const messaging = async (req, res, url) =>
     (await dashboardRoutes(req, res, url)) ||
+    (await traceRoutes(req, res, url)) ||
     (await packRoutes(req, res, url)) ||
     (organization
       ? (await (messagingRoutes ??= createMessagingRoutes({ api: organization.api, csrf: () => csrf }))(
@@ -4711,7 +4747,15 @@ async function createPowerPagesSimulator({
     if (rendered.isDocument !== false) {
       html = injectRuntimeDependencies(html, sourceDependencies);
       html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
-      html = injectRuntime(html, csrf, renderedRevision, identity, trace.getStore()?.spanId, siteLanguageCodes());
+      html = injectRuntime(
+        html,
+        csrf,
+        renderedRevision,
+        identity,
+        trace.getStore()?.spanId,
+        siteLanguageCodes(),
+        trace.getStore()?.traceSpan?.traceId,
+      );
     }
     res.writeHead(status, {
       'content-type': 'text/html; charset=utf-8',
@@ -5113,6 +5157,8 @@ async function createPowerPagesSimulator({
     if (/^\/__sim\/api\/session(?:\/|$)/.test(url.pathname)) return sessionApi(req, res, url);
     if (url.pathname.startsWith('/__sim/api')) return admin(req, res, url);
     if (url.pathname === '/__sim/events') {
+      // The client may have gone while this request awaited the handlers above: a closed response joins no channel.
+      if (res.destroyed) return;
       res.writeHead(200, {
         'content-type': 'text/event-stream',
         'cache-control': 'no-cache',
@@ -5121,17 +5167,12 @@ async function createPowerPagesSimulator({
       res.write(`event: ready\ndata: ${revision}\n\n`);
       events.add(res);
       // Administrators opt into the runtime log channel; portal pages only receive reloads.
-      const logs = (url.searchParams.get('channels') ?? '').split(',').includes('logs');
-      if (logs) {
-        logClients.add(res);
+      const channels = (url.searchParams.get('channels') ?? '').split(',');
+      if (channels.includes('logs') && logClients.add(res))
         res.write(
           `event: log\ndata: ${JSON.stringify({ sequence: ++logSequence, type: 'connected', time: new Date().toISOString(), level: 'info', revision })}\n\n`,
         );
-      }
-      req.on('close', () => {
-        events.delete(res);
-        logClients.delete(res);
-      });
+      if (channels.includes('trace')) traceChannel(res);
       return;
     }
     if (url.pathname === '/__sim/sign-in') {
@@ -5954,6 +5995,7 @@ async function createPowerPagesSimulator({
           formIdentity,
           trace.getStore()?.spanId,
           siteLanguageCodes(),
+          trace.getStore()?.traceSpan?.traceId,
         ),
       );
     }
@@ -6376,7 +6418,15 @@ async function createPowerPagesSimulator({
       if (rendered.provenance) headers['x-paqvilo-provenance'] = rendered.provenance.proofId;
     }
     const responseBody = isDocument
-      ? injectRuntime(html, csrf, renderedSource.revision, pageIdentity, trace.getStore()?.spanId, siteLanguageCodes())
+      ? injectRuntime(
+          html,
+          csrf,
+          renderedSource.revision,
+          pageIdentity,
+          trace.getStore()?.spanId,
+          siteLanguageCodes(),
+          trace.getStore()?.traceSpan?.traceId,
+        )
       : html;
     if (rendered.provenance) {
       const entry = renderProofs.get(rendered.provenance.proofId);
@@ -6425,47 +6475,99 @@ async function createPowerPagesSimulator({
     const staticPath =
       /\.(?:js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|pdf|json)$/i.test(url.pathname) ||
       /^\/(?:resource|_pcfwebresource|webresources|_webresource)\//.test(url.pathname);
-    const parentHeader = req.headers['x-sim-parent-trace'];
-    const parent =
-      typeof parentHeader === 'string' && /^[\da-f-]{36}$/i.test(parentHeader)
-        ? audit.entries.find((item) => item.id === parentHeader)
-        : null;
-    const span =
-      tracked && (!staticPath || kind !== 'page')
-        ? audit.begin({
-            kind,
-            method: req.method,
-            path: url.pathname,
-            query: url.searchParams,
-            provider: endpoint?.mode ?? (kind === 'page' ? cfg.pageMode : cfg.mode),
-            identity: trace.run({ auth }, currentIdentity),
-            entity: /^\/_api\/([\w]+)/.exec(url.pathname)?.[1],
-            activeConfigurationPreset: cfg.activeExperiment,
-            parentId: parent?.id,
-            correlationId: parent?.correlationId,
-          })
-        : null;
+    // The parent header names an audit entry (the page's audit id the browser runtime forwards) or a trace span
+    // (loopback callers forward traces.headers()); an audit parent joins the trace of its root span.
+    const parent = audit.byId(req.headers['x-sim-parent-trace']);
+    const audited = tracked && (!staticPath || kind !== 'page');
+    const identity = audited ? trace.run({ auth }, currentIdentity) : null;
+    const provider = endpoint?.mode ?? (kind === 'page' ? cfg.pageMode : cfg.mode);
+    const visitor = readVisitor(req.headers.cookie, visitorName());
+    let rootSpan = null;
+    if (audited) {
+      // X-Trace-Id (else X-Sim-Trace-Id) names the trace and X-Sim-Parent-Trace the parent span. An audit id in either
+      // (the response's X-Sim-Trace-Id echoed back, or the browser runtime's parent) stands for its entry's root span;
+      // an entry recorded while tracing was off names no span and starts a new trace.
+      const inbound = traces.fromHeaders(req.headers);
+      const linked = parent ?? (inbound.parentSpanId ? null : audit.byId(req.headers['x-sim-trace-id']));
+      if (linked) Object.assign(inbound, { traceId: linked.traceId ?? null, parentSpanId: linked.spanId ?? null });
+      const contactId = identity?.contactId ?? identity?.id ?? null;
+      rootSpan = traces.start({
+        kind: 'http',
+        name: `${req.method} ${url.pathname}`,
+        module: 'portal',
+        operation: req.method,
+        actor: {
+          kind: contactId ? 'contact' : 'anonymous',
+          id: contactId,
+          name: identity?.fullname ?? identity?.name ?? null,
+          roles: identity?.roles,
+        },
+        // The auth cookie is stateless: the signed-in contact names the session, else the visitor cookie (D-R2-13).
+        session: { visitorId: visitor, sessionKey: traceSessionKey(contactId, visitor) },
+        origin: {
+          host: 'power-pages',
+          portal: portal.website?.name ?? portal.website?.adx_name ?? null,
+          preset: cfg.activeExperiment?.id ?? null,
+        },
+        attributes: { kindHint: kind, provider },
+        ...inbound,
+      });
+    }
+    const span = audited
+      ? audit.begin({
+          kind,
+          method: req.method,
+          path: url.pathname,
+          query: url.searchParams,
+          provider,
+          identity,
+          entity: /^\/_api\/([\w]+)/.exec(url.pathname)?.[1],
+          activeConfigurationPreset: cfg.activeExperiment,
+          parentId: parent?.id,
+          correlationId: parent?.correlationId,
+          traceId: rootSpan?.traceId,
+          spanId: rootSpan?.spanId,
+        })
+      : null;
     const context = {
       spanId: span?.id,
       correlationId: span?.correlationId,
+      // A recorded root, or the overflow handle of a full trace (its traceId only, spanId null): either keeps the
+      // request's descendants in the root's trace.
+      traceSpan: rootSpan?.traceId ? rootSpan : null,
       method: req.method,
       path: url.pathname,
       auth,
       localOnly: req.headers['x-paqvilo-local-only'] === 'true',
-      visitor: readVisitor(req.headers.cookie, visitorName()),
+      visitor,
     };
+    // X-Sim-Trace-Id keeps naming the audit entry; X-Sim-Span-Id and X-Trace-Id name the trace store's root span (an
+    // overflow handle names its trace only).
     if (span) res.setHeader('X-Sim-Trace-Id', span.id);
+    setTraceHeaders(res, rootSpan);
     res.on('close', () => {
-      if (!res.writableFinished)
-        span?.finish({
-          status: 499,
-          error: {
-            code: 'REQUEST_ABORTED',
-            message: 'The client closed the request before completion.',
-          },
-        });
+      if (!res.writableFinished) {
+        const aborted = {
+          code: 'REQUEST_ABORTED',
+          message: 'The client closed the request before completion.',
+        };
+        span?.finish({ status: 499, error: aborted });
+        rootSpan?.end({ status: statusFromHttp(499), error: aborted, attributes: { statusCode: 499 } });
+      }
     });
     res.on('finish', () => {
+      const status = res.statusCode;
+      rootSpan?.end({
+        status: statusFromHttp(status),
+        error: status >= 400 ? (context.error ?? res[auditResponse]?.error ?? undefined) : undefined,
+        attributes: {
+          statusCode: status,
+          provider: context.provider,
+          entity: context.entity,
+          saveMs: context.saveMs,
+          saveMode: context.saveMode,
+        },
+      });
       span?.finish({
         status: res.statusCode,
         ...res[auditResponse],
@@ -6500,20 +6602,24 @@ async function createPowerPagesSimulator({
       organization,
       correlationId: correlationOf(req.headers['x-ms-correlation-request-id']) ?? context.correlationId ?? undefined,
       initiator: auth?.identity ? { kind: 'contact', id: auth.identity.id ?? null } : { kind: 'anonymous', id: null },
+      traceId: context.traceSpan?.traceId ?? null,
+      spanId: context.traceSpan?.spanId ?? null,
     });
     const invocation = organizationHost
       .run(() =>
         solutionMetadataOverlay.withReadEpoch(
           () =>
             runWithRequest(requestContext, () =>
-              trace.run(context, async () => {
-                // Enhanced authorization maps the visitor to its Dataverse user and roles before any entry point evaluates it. The
-                // /_sim/api administration acts as the local administrator, never as the visitor: it maps nothing and provisions no
-                // site application user, so a refused administration request leaves no side effect.
-                if (!/^\/(?:_sim|__sim)\/api\//.test(req.url ?? '') && config().mode !== 'live')
-                  await store.portalAuthorization?.prepare(currentIdentity());
-                return runWithSourceDebugging(sourceMaps, () => handle(req, res));
-              }),
+              traces.run(rootSpan, () =>
+                trace.run(context, async () => {
+                  // Enhanced authorization maps the visitor to its Dataverse user and roles before any entry point evaluates it. The
+                  // /_sim/api administration acts as the local administrator, never as the visitor: it maps nothing and provisions no
+                  // site application user, so a refused administration request leaves no side effect.
+                  if (!/^\/(?:_sim|__sim)\/api\//.test(req.url ?? '') && config().mode !== 'live')
+                    await store.portalAuthorization?.prepare(currentIdentity());
+                  return runWithSourceDebugging(sourceMaps, () => handle(req, res));
+                }),
+              ),
             ),
           { valid: () => !store.inTransaction() || store.isUnmodifiedRead(), revision: () => store.dataRevision() },
         ),
@@ -6770,7 +6876,7 @@ async function createPowerPagesSimulator({
             message: `Reloaded portal and solution sources (${changed.length} changed path(s)); mappings, schemas and the permission model were recompiled.`,
           });
           if (watch && watchedLayers !== layerSignature()) await restartWatcher();
-          for (const event of events) event.write(`event: reload\ndata: ${revision}\n\n`);
+          events.send(`event: reload\ndata: ${revision}\n\n`);
         } catch (err) {
           portal = previous.portal;
           sourcePortal = previous.sourcePortal;
@@ -6920,6 +7026,8 @@ async function createPowerPagesSimulator({
         identity: describeSession(session),
       };
     },
+    // The trace store's read and settings methods (docs/design/tracing.md), as the testing client exposes them.
+    trace: traceMethods(traces),
     reload,
     close,
   };

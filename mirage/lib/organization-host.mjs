@@ -58,6 +58,7 @@ import { MODEL_DRIVEN_CAPABILITY_RECORDS } from './model-driven/catalogue.mjs';
 import { customConnectorsOf } from './custom-connector.mjs';
 import { describe as flowTriggersDescribe } from './flow-triggers.mjs';
 import { DataStore, emptyState } from './data.mjs';
+import { createTraceStore } from './trace-store.mjs';
 import { buildSourceGraph, canvasRequirementRows } from './source-graph.mjs';
 import { describeCanvasRuntime } from './canvas-runtime.mjs';
 import { hostnameOf, isLoopbackUrl } from './dataverse-webhooks.mjs';
@@ -359,7 +360,10 @@ function buildProviders(
       stateDirectory,
       trustedScripts: config.connectorScripts ?? [],
     }),
-    secrets: config.secrets ? createSecretResolver({ secrets: config.secrets, clock: now, diagnostic }) : null,
+    // The secret spans go to the host's trace store (store.traces is set once the host composes, so read per call).
+    secrets: config.secrets
+      ? createSecretResolver({ secrets: config.secrets, clock: now, diagnostic, traces: () => store.traces })
+      : null,
     serviceFixtures: createServiceFixtureRegistry({ packs, diagnostic }),
     powerFx: createPowerFxEvaluator(powerFxAdapter === undefined ? {} : { adapter: powerFxAdapter }),
     localServices:
@@ -672,6 +676,23 @@ export async function activeDeploymentProfile({
 
 /** Status `routes`: the /_sim/api prefixes of the routers a host mounts (each router's `routes` export), in mounting order, unique. */
 export const simApiRoutes = (...lists) => [...new Set(lists.flat())];
+// The public trace-store methods an in-process runtime exposes as `simulator.trace` (docs/design/tracing.md).
+const TRACE_METHODS = [
+  'query',
+  'spans',
+  'tree',
+  'span',
+  'ancestry',
+  'stats',
+  'export',
+  'clear',
+  'settings',
+  'configure',
+  'status',
+  'subscribe',
+];
+export const traceMethods = (traces) =>
+  Object.freeze(Object.fromEntries(TRACE_METHODS.map((name) => [name, traces[name]])));
 /** Status `modelDrivenApps`: the imported model-driven apps of the Solution metadata as { id, uniqueName, name }. */
 export const modelDrivenAppsOf = (metadata) =>
   (metadata?.modelDrivenApps ?? []).map(({ id, uniqueName, name }) => ({ id, uniqueName, name }));
@@ -817,6 +838,9 @@ export function codeAppConnectors(connectors, connections = {}) {
  *   runtime (runtimeSettings output), surfaces(): the host surfaces as { legacyKey: enabled } (capability summary keys),
  *   inventory(): the Solution inventory records, localOrigin(): the host's own origin once it listens, codeApps(): the loaded
  *   code app records (code-apps-config.mjs loadCodeApps) that topology() counts; projectRoot: the base of the relative pack paths it reports.
+ *   trace: the mirage.trace settings (trace-settings.mjs) of the one trace store (docs/design/tracing.md) the host creates,
+ *   exposes as host.traces and sets as store.traces; every host of the runtime shares it. traces: an existing trace store to
+ *   share instead (a persona runtime records into its parent's store; trace is then ignored).
  * The host builds handler maps and providers at once; createBackend, createOrganization and startApi run when the host is
  * ready for them (the portal host creates its backend before its organization). The steps below share one context `c`:
  * hostContext (inputs, handler maps, providers, canvas, flow runs, lifecycle state), hostCatalogues, hostRegistry,
@@ -824,6 +848,12 @@ export function codeAppConnectors(connectors, connections = {}) {
  */
 export async function composeOrganizationHost(options) {
   const c = await hostContext(options);
+  // One trace store per organization host; deep layers reach it as store.traces. Persisted traces go under the state folder;
+  // a memory-only runtime (dry-run, no state file) passes null and the store reports why it writes nothing.
+  c.traces =
+    options.traces ??
+    createTraceStore({ settings: options.trace ?? {}, stateDirectory: () => c.stateDirectory ?? null });
+  options.store.traces = c.traces;
   hostCatalogues(c);
   c.registry = hostRegistry(c);
   const host = {
@@ -837,6 +867,7 @@ export async function composeOrganizationHost(options) {
     workflows: c.workflows,
     operations: c.operations,
     cloudFlow: c.cloudFlow,
+    traces: c.traces,
     /**
      * Runs fn with this runtime's pack registries (expression operators, shell conventions) and query resolvers in scope:
      * hierarchy operators of portal FetchXML, Liquid and Web API queries resolve through this store's hierarchy module.
@@ -1043,6 +1074,8 @@ function hostCatalogues(c) {
       .operations()
       .find((entry) => entry.kind === 'cloud-flow' && canonical(entry.processId) === canonical(id));
     return {
+      // The flow's display name (the flow-run span name, docs/design/tracing.md).
+      name: workflow.name ?? null,
       definition: definitionOf(workflow),
       mode: item?.mode ?? 'placeholder',
       steps: item?.configuration?.steps,
@@ -1255,6 +1288,7 @@ function hostLifecycle(c) {
     }) {
       c.dataverse = await startDataverseApi({
         organization: c.organization,
+        traces: c.traces,
         host: listenHost,
         tls,
         beforeListen,
@@ -1920,6 +1954,25 @@ function orgNodes({
     },
     { link: '#flows' },
   );
+  // The trace store of this host (docs/design/tracing.md): its level and what it retains, linking to the trace view.
+  const trace = store.traces ? attempt(() => store.traces.status(), null) : null;
+  if (trace)
+    node(
+      'org:trace',
+      'org',
+      'Tracing',
+      trace.enabled ? 'ready' : 'disabled',
+      {
+        level: trace.level,
+        retained: trace.retained,
+        spans: trace.spans,
+        dropped: trace.dropped,
+        droppedSpans: trace.droppedSpans,
+        persist: trace.persist?.enabled ?? false,
+        persistError: trace.persist?.lastError ?? null,
+      },
+      { link: '#trace' },
+    );
   edge('org:store', 'org:plugins', 'process', 'ready', 'pipeline');
   edge('org:plugins', 'org:store', 'process', 'ready', 'SDK calls');
   edge('org:plugins', 'org:jobs', 'process', 'ready', 'async steps');

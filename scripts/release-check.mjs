@@ -326,6 +326,11 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/lib/flow-runtime.mjs',
   'mirage/lib/flow-triggers.mjs',
   'mirage/lib/committed-work.mjs',
+  'mirage/trace.mjs',
+  'mirage/lib/trace-store.mjs',
+  'mirage/lib/trace-settings.mjs',
+  'mirage/lib/trace-hosts.mjs',
+  'mirage/lib/sim-trace-routes.mjs',
   'mirage/lib/local-organization-service.mjs',
   'mirage/lib/bootstrap-plugins-compat.js',
   'mirage/lib/datetimepicker-compat.js',
@@ -347,6 +352,7 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/admin/view-flows.mjs',
   'mirage/admin/view-capabilities.mjs',
   'mirage/admin/view-packs.mjs',
+  'mirage/admin/view-trace.mjs',
   'mirage/admin/dashboard-map.mjs',
   'mirage/admin/dashboard-icons.mjs',
   'mirage/admin/dashboard.css',
@@ -372,6 +378,7 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/docs/code-components.md',
   'mirage/docs/operations.md',
   'mirage/docs/dataverse-plugins.md',
+  'mirage/docs/tracing.md',
   'mirage/testing/session.mjs',
   'docs/project-extensions.md',
   'docs/architecture.md',
@@ -429,6 +436,7 @@ export function validateReleaseFiles(files) {
     'docs/design/power-pages-permission-test-harness.md',
     'docs/design/dataverse-plugin-observation.md',
     'docs/design/dataverse-api.md',
+    'docs/design/tracing.md',
   ]);
   const demoSources =
     /^examples\/project\/(?:portal|solution|code-solution|metadata|components|deployment)\/[a-zA-Z0-9/_.{}, +()-]+\.(?:yml|html|css|js|mjs|ts|xml|json|resx|md|sl|pcfproj|cdsproj)$/;
