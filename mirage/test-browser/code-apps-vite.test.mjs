@@ -158,7 +158,21 @@ test(
       .evaluate(() => window.appContext.host.sessionId);
     await page.getByLabel('Parameters', { exact: true }).fill('panel=first');
     await page.getByRole('button', { name: 'Apply parameters', exact: true }).click();
-    await frame.locator('#context').filter({ hasText: 'first · alpha-theme' }).waitFor();
+    await frame
+      .locator('#context')
+      .filter({ hasText: 'first · alpha-theme' })
+      .waitFor()
+      .catch(async (cause) => {
+        t.diagnostic(
+          `Applied parameters: ${JSON.stringify({
+            preview: await page.locator('#preview').getAttribute('src'),
+            context: await frame.locator('#context').allTextContents(),
+            status: await page.locator('#connection').textContent(),
+            error: await page.locator('#error').textContent(),
+          })}`,
+        );
+        throw cause;
+      });
     const cdp = await page.context().newCDPSession(page);
     const scripts = [];
     cdp.on('Debugger.scriptParsed', (script) => scripts.push(script));

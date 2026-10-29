@@ -116,8 +116,9 @@ export async function awaitWritesBeforeDocument(
  * Wait until a loaded page's own requests are done: none of the current documents' requests
  * (or a pending navigation) is open and nothing started or ended for `quietMs`. Exported
  * pages chain their load-time work (ready handlers, then anti-forgery token, then reads and
- * writes), so a user acts once the page has finished loading. Event streams never end and
- * `ignore(row)` excludes further records. Bounded by `timeout`; never fails the caller.
+ * writes), so a user acts once the page has finished loading. Event streams never end, a
+ * `handedOff` record completes in another CDP target and `ignore(row)` excludes further
+ * records. Bounded by `timeout`; never fails the caller.
  * Returns { waitedMs, settled, pending? }.
  */
 export async function awaitNetworkQuiet(
@@ -135,6 +136,7 @@ export async function awaitNetworkQuiet(
         row.type !== 'EventSource' &&
         row.finishedTimestamp === undefined &&
         !row.failure &&
+        !row.handedOff &&
         !ignore(row) &&
         (row.type === 'Document' ? !state.detached.has(row.frameId) : ofCurrentDocument(row, state)),
     );

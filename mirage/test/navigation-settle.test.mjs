@@ -183,4 +183,12 @@ test('a pending document of a frame whose parent document was replaced no longer
     10,
   );
   assert.deepEqual([busy.settled, busy.pending], [false, ['GET /next/']]);
+  // Once the frame swaps to its own renderer, the document's end reaches only that target.
+  records.at(-1).handedOff = true;
+  const swapped = await onMockedClock(
+    t,
+    awaitNetworkQuiet(() => records, { frames: state, timeout: 2000, quietMs: 50, poll: 10 }),
+    10,
+  );
+  assert.deepEqual([swapped.settled, swapped.waitedMs], [true, 50]);
 });

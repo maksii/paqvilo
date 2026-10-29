@@ -378,6 +378,14 @@ export async function runAcceptance({
         });
         await cdp.send('Fetch.enable', { patterns: [DOCUMENT_REQUEST_PATTERN] });
       }
+      // Edge isolates a cross-origin loopback child into its own renderer: this session sees its document
+      // request, then a "swap" detach, and the request's end reaches only the child's own target.
+      cdp.on('Page.frameDetached', ({ frameId, reason }) => {
+        if (reason !== 'swap') return;
+        for (const record of cdpRecords.values())
+          if (record.frameId === frameId && record.type === 'Document' && record.finishedTimestamp === undefined)
+            record.handedOff = true;
+      });
       for (const event of ['frameAttached', 'frameDetached', 'frameNavigated'])
         cdp.on('Page.' + event, (value) =>
           frameEvents.push({
