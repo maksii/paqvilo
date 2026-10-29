@@ -1356,7 +1356,7 @@ export class DataStore {
             ? this.initializationFingerprintCache?.file === this.file &&
               this.initializationFingerprintCache.digest === this.persistedDigest
               ? this.initializationFingerprintCache.value
-              : initializationFingerprint(this._state)
+              : await initializationFingerprint(this._state)
             : stateDigest(this._state, { sortKeys: true });
       } catch (error) {
         frame.closed = true;
@@ -1411,7 +1411,7 @@ export class DataStore {
         const staged = this.stageOnCommit(this.committedEventCandidates);
         const journalInitialization = initializationDigest && typeof initializationDigest === 'object';
         if (journalInitialization) {
-          const delta = initializationDelta(initializationDigest, this.state);
+          const delta = await initializationDelta(initializationDigest, this.state);
           frame.initializationDelta = delta.changes;
           frame.initializationFingerprint = delta.fingerprint;
         }
