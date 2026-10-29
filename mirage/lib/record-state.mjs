@@ -143,7 +143,15 @@ export async function restoreRecordReferences(state, directory, options) {
     for (const key of Object.keys(value)) pending.push({ value: value[key], parent: value, key });
   }
   if (!sites.length) return { state, session: null };
-  const session = new RecordPageSession(directory, options);
+  // Stored descriptors name the random owner key of their directory. Those
+  // written before keys existed verify against its files instead.
+  const owners = new Set(sites.map((site) => site.descriptor?.owner).filter((owner) => owner !== undefined));
+  if (owners.size > 1) throw Error('Record directory belongs to a different state');
+  const [ownerKey] = owners;
+  const session = new RecordPageSession(
+    directory,
+    ownerKey === undefined ? { ...options, adoptOwner: true } : { ...options, ownerKey },
+  );
   try {
     const tables = await session.restoreMany(sites.map((site) => site.descriptor));
     sites.forEach((site, index) => {

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { RecordPageSession, pagedRecordsOf, materializeRecord, assignRecordValues } from '../lib/record-tables.mjs';
 import { exactNumeric, stringifyExactJson } from '../lib/exact-numeric.mjs';
+import { compactRecordGraph } from '../lib/record-compaction.mjs';
 
 function session(t, options) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-paged-records-'));
@@ -125,18 +126,38 @@ test('lookup and ordinary edits avoid target-table decoding and index rebuilds',
   };
   for (let i = 0; i < 200; i++) assert.deepEqual(data.primaryPositions('id', 'id-' + i * 397), [i * 397]);
   assert.equal(reads, 0, 'Lookup follows key pages and numeric positions without decoding any target record.');
-  store.flushRecords();
-  const count = () =>
-    store.files.reduce((sum, file) => sum + file.store.entries.filter((entry) => entry?.kind >= 4).length, 0);
-  let before = count();
-  table.push({ id: 'added' });
-  assert.ok(count() - before <= 8, 'Create path-copies a few nodes rather than rebuilding the table index.');
-  before = count();
+  // Published pages of the given kinds, after staged key pages are written.
+  const count = (kinds) => {
+    store.flushRecords();
+    return store.files.reduce(
+      (sum, file) => sum + file.store.entries.filter((entry) => entry && kinds.includes(entry.kind)).length,
+      0,
+    );
+  };
+  const keys = [4, 5],
+    ordinals = [2, 3];
+  store.describe(table);
+  const chunks = [...data.chunks];
+  let before = count(keys),
+    indexes = count(ordinals);
+  // The store's create path (RowTransaction.insert) splices at the end.
+  table.splice(table.length, 0, { id: 'added' });
+  store.describe(table);
+  assert.ok(count(keys) - before <= 4, 'Create path-copies one key path rather than rebuilding the table index.');
+  assert.equal(count(ordinals) - indexes, 1, 'Create writes the ordinal page of the extended chunk only.');
+  assert.ok(data.chunks.slice(0, -1).every((chunk, index) => chunk === chunks[index]));
+  before = count(keys);
+  indexes = count(ordinals);
   table.splice(1000, 1);
-  assert.ok(count() - before <= 8, 'Delete retains immutable payload identities across shifted positions.');
-  before = count();
+  store.describe(table);
+  assert.ok(count(keys) - before <= 8, 'Delete retains immutable payload identities across shifted positions.');
+  assert.equal(count(ordinals) - indexes, 1, 'Later positions shift without copying or rewriting their chunks.');
+  assert.ok(data.chunks.slice(1, -1).every((chunk, index) => chunk === chunks[index + 1]));
+  assert.deepEqual(data.primaryPositions('id', 'id-1001'), [1000]);
+  assert.deepEqual(data.primaryPositions('id', 'added'), [79999]);
+  before = count([1, 4, 5]);
   table.reverse();
-  assert.equal(count(), before, 'Reordering needs no new record or key pages.');
+  assert.equal(count([1, 4, 5]), before, 'Reordering needs no new record or key pages.');
   assert.deepEqual(data.primaryPositions('id', 'added'), [0]);
 });
 
@@ -422,4 +443,200 @@ test('a sparse table stores only ordinal holes and cannot masquerade as generate
   const invalid = new RecordPageSession(store.directory);
   t.after(() => invalid.close());
   await assert.rejects(invalid.restoreMany([{ ...descriptor, records: 100000 }]), /count disagrees/);
+});
+
+const pageCount = (store, kinds) => {
+  store.flushRecords();
+  return store.files.reduce(
+    (sum, file) => sum + file.store.entries.filter((entry) => entry && kinds.includes(entry.kind)).length,
+    0,
+  );
+};
+const keyed = (store, length) =>
+  store.from(
+    Array.from({ length }, (_, i) => ({ id: 'id-' + i, value: i })),
+    { primaryKey: 'id' },
+  );
+
+test('restarting after edits keeps distinct records unaliased and a real alias across publication', async (t) => {
+  const store = session(t),
+    table = keyed(store, 9000);
+  table[5].value = 'edited';
+  table[8000].value = 'edited';
+  table.splice(100, 1);
+  const first = new RecordPageSession(store.directory);
+  t.after(() => first.close());
+  const [restored] = await first.restoreMany([store.describe(table)]);
+  const data = pagedRecordsOf(restored);
+  assert.equal(data.aliases, false, 'Out-of-order record versions are not aliases.');
+  const scanned = data.scannedChunks;
+  restored[7].value = 'after restart';
+  assert.ok(data.scannedChunks - scanned <= 1, 'An update finds its row without scanning the table.');
+  assert.deepEqual(data.primaryPositions('id', 'id-7'), [7]);
+  restored.push(restored[0]);
+  assert.equal(data.aliases, true);
+  const second = new RecordPageSession(store.directory);
+  t.after(() => second.close());
+  const [again] = await second.restoreMany([first.describe(restored)]);
+  assert.equal(pagedRecordsOf(again).aliases, true);
+  again[0].value = 'shared';
+  assert.equal(again[again.length - 1].value, 'shared');
+});
+
+test('primary-key lookups after scattered edits search only the chunks holding the version', (t) => {
+  const store = session(t),
+    table = keyed(store, 80000),
+    data = pagedRecordsOf(table);
+  for (let i = 0; i < 400; i++) table[(i * 7919) % 80000].value = 'edited ' + i;
+  for (const index of [0, 7919, 40000, 79999]) {
+    const scanned = data.scannedChunks;
+    assert.deepEqual(data.primaryPositions('id', 'id-' + index), [index]);
+    assert.equal(data.scannedChunks - scanned, 1);
+  }
+});
+
+test('sort, shift, unshift, fill and copyWithin reorder record versions with Array semantics', (t) => {
+  const store = session(t),
+    count = 6000,
+    table = keyed(store, count),
+    data = pagedRecordsOf(table),
+    shadow = Array.from({ length: count }, (_, i) => 'id-' + i);
+  const ids = () => Array.from({ length: table.length }, (_, i) => (i in table ? table[i].id : undefined));
+  const check = () => {
+    assert.deepEqual(
+      ids(),
+      Array.from({ length: shadow.length }, (_, i) => (i in shadow ? shadow[i] : undefined)),
+    );
+    for (const key of new Set(shadow.filter(Boolean).slice(0, 50)))
+      assert.deepEqual(
+        data.primaryPositions('id', key),
+        shadow.flatMap((value, index) => (value === key ? [index] : [])),
+      );
+  };
+  delete table[3];
+  delete shadow[3];
+  const before = pageCount(store, [1, 4, 5]);
+  const order = (a, b) => (a.value % 7) - (b.value % 7) || b.value - a.value;
+  assert.equal(table.sort(order), table);
+  const values = new Map(Array.from({ length: count }, (_, i) => ['id-' + i, i]));
+  shadow.sort((a, b) => order({ value: values.get(a) }, { value: values.get(b) }));
+  assert.equal(pageCount(store, [1, 4, 5]), before, 'Sorting stores no record or key pages.');
+  assert.equal(3 in table, true);
+  assert.equal(5999 in table, false, 'The hole moves to the end.');
+  check();
+  assert.throws(() => table.sort(1), TypeError);
+  assert.equal(table.shift().id, shadow.shift());
+  check();
+  assert.equal(table.unshift({ id: 'first' }, { id: 'second' }), shadow.unshift('first', 'second'));
+  check();
+  assert.equal(table.copyWithin(10, 0, 3), table);
+  shadow.copyWithin(10, 0, 3);
+  check();
+  assert.equal(data.aliases, true);
+  assert.equal(table.fill({ id: 'filled' }, -3, -1), table);
+  shadow.fill('filled', -3, -1);
+  check();
+  assert.equal(table[shadow.length - 3], table[shadow.length - 2], 'One stored record fills every position.');
+  assert.equal(table.pop(), shadow.pop(), 'The trailing hole pops as undefined.');
+  assert.equal(table.pop().id, shadow.pop());
+  assert.equal(table.push({ id: 'last' }), shadow.push('last'));
+  check();
+  const empty = store.from([]);
+  assert.equal(empty.shift(), undefined);
+  assert.equal(empty.pop(), undefined);
+  assert.equal(empty.unshift(), 0);
+  assert.deepEqual(empty.fill({ id: 'none' }).length, 0);
+});
+
+test('keyed updates fill record pages and write each changed key path once', (t) => {
+  const store = session(t),
+    table = keyed(store, 20000);
+  const records = pageCount(store, [1]),
+    keys = pageCount(store, [4, 5]);
+  for (let i = 0; i < 50; i++) table[i * 397].value = 'updated ' + i;
+  store.describe(table);
+  assert.ok(pageCount(store, [1]) - records <= 1, 'Fifty updated rows share one record page.');
+  assert.ok(pageCount(store, [4, 5]) - keys <= 50 * 2, 'Each update persists one leaf-to-root path.');
+  for (let i = 0; i < 50; i++) assert.equal(table[i * 397].value, 'updated ' + i);
+});
+
+test('a writer rolls over to a new file before its page numbers run out', async (t) => {
+  const store = session(t, { pagesPerFile: 3 }),
+    table = keyed(store, 3000);
+  for (let i = 0; i < 40; i++) table[i * 71].value = 'rolled ' + i;
+  table.push({ id: 'appended', value: -1 });
+  const descriptor = store.describe(table);
+  assert.ok(descriptor.files.length > 10);
+  assert.ok(store.files.every((file) => file.store.entries.length - 1 <= 3));
+  const restored = new RecordPageSession(store.directory);
+  t.after(() => restored.close());
+  const [again] = await restored.restoreMany([descriptor]);
+  assert.equal(again[71].value, 'rolled 1');
+  assert.equal(again[2999].value, 2999);
+  assert.deepEqual(pagedRecordsOf(again).primaryPositions('id', 'appended'), [3000]);
+  assert.throws(() => new RecordPageSession(store.directory, { pagesPerFile: 2 ** 23 }), TypeError);
+});
+
+test('internal key nodes stay cached while leaves are evicted within the key budget', (t) => {
+  const store = session(t, { keyBytes: 400 * 1024 }),
+    table = keyed(store, 80000),
+    data = pagedRecordsOf(table);
+  for (let i = 0; i < 300; i++) data.primaryPositions('id', 'id-' + i * 263);
+  assert.ok(store.info().keyBytes <= 400 * 1024);
+  assert.ok(store.keyBranches.size >= 2, 'Every internal node remains cached.');
+});
+
+test('compaction copies stored bytes, and an adopted table never shares writable chunks with its copy', async (t) => {
+  const store = session(t),
+    rows = keyed(store, 5000);
+  rows[1].value = 'changed';
+  const target = new RecordPageSession(store.directory);
+  t.after(() => target.close());
+  store.readRow = () => {
+    throw Error('Copying parses no stored record');
+  };
+  const copy = await target.copyTable(rows);
+  delete store.readRow;
+  assert.equal(target.recordText(pagedRecordsOf(copy).id(1)), store.recordText(pagedRecordsOf(rows).id(1)));
+  pagedRecordsOf(rows).adopt(copy);
+  rows[2].value = 'after adoption';
+  rows[4999] = { id: 'replaced' };
+  assert.equal(copy[2].value, 2);
+  assert.equal(copy[4999].id, 'id-4999');
+  assert.deepEqual(pagedRecordsOf(rows).primaryPositions('id', 'replaced'), [4999]);
+});
+
+test('streamed rows index the key that JSON serialization stored', (t) => {
+  const store = session(t),
+    table = store.from(
+      [
+        { id: 'plain', versionnumber: 4 },
+        { id: 'ignored', toJSON: () => ({ id: 'serialized', versionnumber: 9 }) },
+        { id: new String('boxed') },
+      ],
+      { primaryKey: 'id' },
+    ),
+    data = pagedRecordsOf(table);
+  assert.deepEqual(data.primaryPositions('id', 'serialized'), [1]);
+  assert.deepEqual(data.primaryPositions('id', 'boxed'), [2]);
+  assert.deepEqual(data.primaryPositions('id', 'ignored'), []);
+  assert.equal(data.maximumVersion(), 9);
+});
+
+test('a table changed after its compacted copy was made keeps its live versions at publication', async (t) => {
+  const store = session(t),
+    rows = keyed(store, 100),
+    state = { tables: { item: rows } };
+  const stale = await compactRecordGraph(state, store.directory, store.ownerKey);
+  t.after(() => stale.session.close());
+  // A write lands while the compacted checkpoint is being saved.
+  rows[5].value = 'written during the save';
+  assert.equal(stale.publish(), false);
+  assert.equal(pagedRecordsOf(rows).session, store);
+  assert.equal(rows[5].value, 'written during the save');
+  const current = await compactRecordGraph(state, store.directory, store.ownerKey);
+  t.after(() => current.session.close());
+  assert.equal(current.publish(), true);
+  assert.equal(pagedRecordsOf(rows).session, current.session);
+  assert.equal(rows[5].value, 'written during the save');
 });

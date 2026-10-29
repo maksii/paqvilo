@@ -16,7 +16,6 @@ import { pagedRecordsOf, recordTablesCreated } from './record-tables.mjs';
 import { hasRecordGraph } from './record-clone.mjs';
 import { encodeRecordReferences, decodeRecordReferences, restoreRecordReferences } from './record-state.mjs';
 import { cloneStateData } from './state-clone.mjs';
-import { stateRecordOwner } from './record-file-lease.mjs';
 
 const MAGIC = '{"$paqvilo":"mirage-state-journal-v1"}\n';
 const RECORD_MAGIC = '{"$paqvilo":"mirage-state-journal-v2"}\n';
@@ -457,7 +456,7 @@ export class StateStorage {
         const result = await append(handle, checkpoint(state), createHash('sha256'), 0, {
           header: true,
           recordReferences: true,
-          recordStorage: { directory: this.file + '.records', ownerKey: stateRecordOwner(this.file) },
+          recordStorage: { directory: this.file + '.records' },
         });
         return { ...result, digest: result.hash.copy().digest('hex'), journal: true, recordReferences: true };
       } finally {
@@ -540,9 +539,7 @@ export class StateStorage {
       }
       result = await append(positioned, collapsed(), hash, previousBytes, {
         recordReferences,
-        recordStorage: recordReferences
-          ? { directory: this.file + '.records', ownerKey: stateRecordOwner(this.file) }
-          : undefined,
+        recordStorage: recordReferences ? { directory: this.file + '.records' } : undefined,
       });
       const written = await handle.stat({ bigint: true });
       if ((await fileSignature(this.file)) !== signature(written) || written.size !== BigInt(result.committedBytes))

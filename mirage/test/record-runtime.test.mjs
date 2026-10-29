@@ -349,3 +349,49 @@ test('public preset previews stay ordinary arrays and loopback startup keeps str
   assert.match(text, /"exact":9223372036854775807/);
   assert.equal(JSON.parse(text).tables.item[0].name, 'Invented');
 });
+
+test('a project folder moved with its state and record directory restarts with its records', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-relocation-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'before'));
+  const store = new DataStore({ file: path.join(root, 'before', 'state.json'), presetLibrary: library() });
+  await store.init();
+  await store.applyPreset('invented', { returnSnapshot: false });
+  await store.update('items', 'row-10', { name: 'Before moving' }, admin);
+  store.closeRecordStorage();
+  await fs.rename(path.join(root, 'before'), path.join(root, 'after'));
+  const moved = new DataStore({ file: path.join(root, 'after', 'state.json'), presetLibrary: library() });
+  t.after(() => moved.closeRecordStorage());
+  await moved.init();
+  assert.equal(moved.get('items', 'row-10', admin).name, 'Before moving');
+  await moved.update('items', 'row-11', { name: 'After moving' }, admin);
+  await moved.compact();
+  assert.equal(typeof moved.recordGarbageCollection.removed, 'number', 'The moved directory is still owned.');
+  assert.equal((await readStateFile(path.join(root, 'after', 'state.json'))).tables.item[11].name, 'After moving');
+});
+
+test('a write made while the compacted checkpoint is saved survives in memory and on disk', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-record-compaction-race-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'state.json'),
+    store = new DataStore({ file, presetLibrary: library() });
+  t.after(() => store.closeRecordStorage());
+  await store.init();
+  await store.applyPreset('invented', { returnSnapshot: false });
+  const prepare = store.storage.prepareCheckpoint.bind(store.storage);
+  let raced = false;
+  store.storage.prepareCheckpoint = async (...args) => {
+    if (!raced) {
+      raced = true;
+      store.state.tables.item[300].name = 'Written during compaction';
+    }
+    return prepare(...args);
+  };
+  await store.compact();
+  assert.equal(raced, true);
+  assert.equal(store.get('items', 'row-300', admin).name, 'Written during compaction');
+  const restarted = new DataStore({ file, presetLibrary: library() });
+  t.after(() => restarted.closeRecordStorage());
+  await restarted.init();
+  assert.equal(restarted.get('items', 'row-300', admin).name, 'Written during compaction');
+});

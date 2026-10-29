@@ -1,6 +1,9 @@
 // Immutable compressed pages; existing published prefixes are
 // never edited. Restored files are read-only, so independent runtimes cannot
-// race while appending to a shared data file.
+// race while appending to a shared data file. A prefix descriptor (format 2)
+// names the digest of the magic and every page header; each header carries the
+// digest of its payload, which every read verifies. Format 1 descriptors name a
+// digest of the complete prefix and are verified in full when opened.
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
@@ -25,15 +28,26 @@ function readExactly(fd, size, position) {
   return bytes;
 }
 
+const readAt = (io, fd, bytes, offset, length, position) =>
+  new Promise((resolve, reject) =>
+    io.read(fd, bytes, offset, length, position, (error, read) => (error ? reject(error) : resolve(read))),
+  );
+async function readExactlyAsync(io, fd, size, position) {
+  const bytes = Buffer.allocUnsafe(size);
+  let done = 0;
+  while (done < size) {
+    const count = await readAt(io, fd, bytes, done, size - done, position + done);
+    if (!count) throw damaged('Published record page prefix is truncated');
+    done += count;
+  }
+  return bytes;
+}
+
 async function* prefixChunks(fd, length, io = fs) {
   const bytes = Buffer.allocUnsafe(Math.min(1024 * 1024, length));
   let position = 0;
   while (position < length) {
-    const count = await new Promise((resolve, reject) =>
-      io.read(fd, bytes, 0, Math.min(bytes.length, length - position), position, (error, read) =>
-        error ? reject(error) : resolve(read),
-      ),
-    );
+    const count = await readAt(io, fd, bytes, 0, Math.min(bytes.length, length - position), position);
     if (!count) throw damaged('Published record page prefix is truncated');
     yield bytes.subarray(0, count);
     position += count;
@@ -51,8 +65,9 @@ export class RecordPageFile {
     this.writable = writable;
     this.io = io;
     this.bytes = 0;
+    this.synced = 0;
     this.entries = [null];
-    this.hash = createHash('sha256');
+    this.headers = createHash('sha256');
     this.cache = new Map();
     this.cacheLimit = cacheBytes;
     this.cacheSize = 0;
@@ -66,7 +81,7 @@ export class RecordPageFile {
     try {
       result = new RecordPageFile(file, fd, { ...options, writable: true });
       result.write(MAGIC);
-      result.hash.update(MAGIC);
+      result.headers.update(MAGIC);
       return result;
     } catch (error) {
       fs.closeSync(fd);
@@ -77,112 +92,139 @@ export class RecordPageFile {
   static async open(file, descriptor, options = {}) {
     const requested = new Map();
     for (const prefix of [descriptor, ...(options.prefixes ?? [])]) {
+      const digest = prefix?.format === 1 ? prefix.sha256 : prefix?.format === 2 ? prefix.headers : undefined;
       if (
-        prefix?.format !== 1 ||
+        !/^[a-f0-9]{64}$/.test(digest ?? '') ||
         !Number.isSafeInteger(prefix.bytes) ||
         prefix.bytes < MAGIC.length ||
         !Number.isSafeInteger(prefix.pages) ||
         prefix.pages < 0 ||
-        !/^[a-f0-9]{64}$/.test(prefix.sha256 ?? '') ||
         prefix.bytes > descriptor.bytes
       )
         throw damaged('Invalid record page prefix descriptor');
-      const previous = requested.get(prefix.bytes);
-      if (previous && (previous.sha256 !== prefix.sha256 || previous.pages !== prefix.pages))
+      const key = prefix.format + ':' + prefix.bytes,
+        previous = requested.get(key);
+      if (previous && (previous.digest !== digest || previous.pages !== prefix.pages))
         throw damaged('Contradictory record page prefix descriptors');
-      requested.set(prefix.bytes, prefix);
+      requested.set(key, { format: prefix.format, bytes: prefix.bytes, pages: prefix.pages, digest });
     }
     const prefixes = [...requested.values()].sort((a, b) => a.bytes - b.bytes);
+    const io = options.io ?? fs;
     const fd = openRecordReader(file);
     try {
       const before = fs.fstatSync(fd, { bigint: true });
       if (before.size < BigInt(descriptor.bytes)) throw damaged('Published record page prefix is missing');
       const result = new RecordPageFile(file, fd, { ...options, writable: false });
-      // Parse headers from the same bytes that advance the prefix hash. A
-      // second header-reading pass could admit a changed header after hashing.
       let position = 0,
-        magicRead = 0,
-        headerUsed = 0,
-        payloadRemaining = 0;
-      let header = Buffer.alloc(HEADER);
-      const consume = (chunk) => {
-        let cursor = 0;
-        while (cursor < chunk.length) {
-          if (magicRead < MAGIC.length) {
-            const length = Math.min(MAGIC.length - magicRead, chunk.length - cursor);
-            if (!chunk.subarray(cursor, cursor + length).equals(MAGIC.subarray(magicRead, magicRead + length)))
-              throw damaged('Invalid record page file header');
-            magicRead += length;
-            cursor += length;
-            position += length;
-          } else if (payloadRemaining) {
-            const length = Math.min(payloadRemaining, chunk.length - cursor);
-            payloadRemaining -= length;
-            cursor += length;
-            position += length;
-          } else {
-            const copied = Math.min(HEADER - headerUsed, chunk.length - cursor);
-            chunk.copy(header, headerUsed, cursor, cursor + copied);
-            headerUsed += copied;
-            cursor += copied;
-            position += copied;
-            if (headerUsed !== HEADER) continue;
-            const kind = header.readUInt32LE(0),
-              count = header.readUInt32LE(4),
-              rawLength = header.readUInt32LE(8),
-              length = header.readUInt32LE(12);
-            if (
-              ![1, 2, 3, 4, 5].includes(kind) ||
-              !validCount(kind, count) ||
-              !rawLength ||
-              rawLength > MAX_BYTES ||
-              !length ||
-              length > MAX_BYTES ||
-              position + length > descriptor.bytes
-            )
-              throw damaged('Invalid record page bounds');
-            if ([2, 3].includes(kind) && rawLength !== count * (kind === 2 ? 4 : 8))
-              throw damaged('Invalid record index page size');
-            result.entries.push({
-              kind,
-              count,
-              offset: position,
-              length,
-              rawLength,
-              digest: Buffer.from(header.subarray(16)),
-            });
-            payloadRemaining = length;
-            headerUsed = 0;
-            header = Buffer.alloc(HEADER);
-          }
+        prefixIndex = 0;
+      // Every requested prefix ends at a page boundary with its inventory and digest.
+      const boundary = (full) => {
+        while (prefixIndex < prefixes.length && prefixes[prefixIndex].bytes <= position) {
+          const expected = prefixes[prefixIndex++],
+            digest = (expected.format === 1 ? full : result.headers)?.copy().digest('hex');
+          if (expected.bytes !== position || result.entries.length - 1 !== expected.pages || digest !== expected.digest)
+            throw damaged('Record page prefix checksum or inventory mismatch');
         }
       };
-      let prefixIndex = 0;
-      for await (const chunk of prefixChunks(fd, descriptor.bytes, options.io ?? fs)) {
-        let cursor = 0;
-        while (cursor < chunk.length) {
-          const expected = prefixes[prefixIndex];
-          const length = Math.min(chunk.length - cursor, expected.bytes - position);
-          const part = chunk.subarray(cursor, cursor + length);
-          result.hash.update(part);
-          consume(part);
-          cursor += length;
-          if (position === expected.bytes) {
-            if (
-              magicRead !== MAGIC.length ||
-              payloadRemaining ||
-              headerUsed ||
-              result.entries.length - 1 !== expected.pages ||
-              result.hash.copy().digest('hex') !== expected.sha256
-            )
-              throw damaged('Record page prefix checksum or inventory mismatch');
-            prefixIndex++;
+      const admit = (header) => {
+        const kind = header.readUInt32LE(0),
+          count = header.readUInt32LE(4),
+          rawLength = header.readUInt32LE(8),
+          length = header.readUInt32LE(12);
+        if (
+          ![1, 2, 3, 4, 5].includes(kind) ||
+          !validCount(kind, count) ||
+          !rawLength ||
+          rawLength > MAX_BYTES ||
+          !length ||
+          length > MAX_BYTES ||
+          position + length > descriptor.bytes
+        )
+          throw damaged('Invalid record page bounds');
+        if ([2, 3].includes(kind) && rawLength !== count * (kind === 2 ? 4 : 8))
+          throw damaged('Invalid record index page size');
+        result.headers.update(header);
+        result.entries.push({
+          kind,
+          count,
+          offset: position,
+          length,
+          rawLength,
+          digest: Buffer.from(header.subarray(16)),
+        });
+        return length;
+      };
+      if (prefixes.every((prefix) => prefix.format === 2)) {
+        // Read the magic and the header chain only.
+        if (!(await readExactlyAsync(io, fd, MAGIC.length, 0)).equals(MAGIC))
+          throw damaged('Invalid record page file header');
+        result.headers.update(MAGIC);
+        position = MAGIC.length;
+        boundary();
+        while (position < descriptor.bytes) {
+          if (position + HEADER > descriptor.bytes) throw damaged('Invalid record page bounds');
+          const header = await readExactlyAsync(io, fd, HEADER, position);
+          position += HEADER;
+          position += admit(header);
+          boundary();
+        }
+      } else {
+        // Parse headers from the same bytes that advance the prefix hash. A
+        // second header-reading pass could admit a changed header after hashing.
+        const full = createHash('sha256');
+        let magicRead = 0,
+          headerUsed = 0,
+          payloadRemaining = 0;
+        let header = Buffer.alloc(HEADER);
+        const consume = (chunk) => {
+          let cursor = 0;
+          while (cursor < chunk.length) {
+            if (magicRead < MAGIC.length) {
+              const length = Math.min(MAGIC.length - magicRead, chunk.length - cursor);
+              if (!chunk.subarray(cursor, cursor + length).equals(MAGIC.subarray(magicRead, magicRead + length)))
+                throw damaged('Invalid record page file header');
+              magicRead += length;
+              cursor += length;
+              position += length;
+              if (magicRead === MAGIC.length) result.headers.update(MAGIC);
+            } else if (payloadRemaining) {
+              const length = Math.min(payloadRemaining, chunk.length - cursor);
+              payloadRemaining -= length;
+              cursor += length;
+              position += length;
+            } else {
+              const copied = Math.min(HEADER - headerUsed, chunk.length - cursor);
+              chunk.copy(header, headerUsed, cursor, cursor + copied);
+              headerUsed += copied;
+              cursor += copied;
+              position += copied;
+              if (headerUsed !== HEADER) continue;
+              payloadRemaining = admit(header);
+              headerUsed = 0;
+              header = Buffer.alloc(HEADER);
+            }
+          }
+        };
+        for await (const chunk of prefixChunks(fd, descriptor.bytes, io)) {
+          let cursor = 0;
+          while (cursor < chunk.length) {
+            const length = Math.min(chunk.length - cursor, prefixes[prefixIndex].bytes - position);
+            const part = chunk.subarray(cursor, cursor + length);
+            full.update(part);
+            consume(part);
+            cursor += length;
+            if (position === prefixes[prefixIndex].bytes) {
+              if (magicRead !== MAGIC.length || payloadRemaining || headerUsed)
+                throw damaged('Record page prefix checksum or inventory mismatch');
+              boundary(full);
+            }
           }
         }
+        if (magicRead !== MAGIC.length || payloadRemaining || headerUsed)
+          throw damaged('Incomplete record page prefix');
       }
-      if (position !== descriptor.bytes || magicRead !== MAGIC.length || payloadRemaining || headerUsed)
+      if (position !== descriptor.bytes || prefixIndex !== prefixes.length)
         throw damaged('Incomplete record page prefix');
-      if (result.hash.copy().digest('hex') !== descriptor.sha256) throw damaged('Record page prefix checksum mismatch');
       if (result.entries.length - 1 !== descriptor.pages) throw damaged('Record page inventory mismatch');
       const after = fs.fstatSync(fd, { bigint: true });
       if (
@@ -192,7 +234,7 @@ export class RecordPageFile {
         (after.size === before.size && signature(before) !== signature(after))
       )
         throw damaged('Record page file changed during verification');
-      result.bytes = descriptor.bytes;
+      result.bytes = result.synced = descriptor.bytes;
       return result;
     } catch (error) {
       fs.closeSync(fd);
@@ -229,12 +271,10 @@ export class RecordPageFile {
     header.writeUInt32LE(raw.length, 8);
     header.writeUInt32LE(compressed.length, 12);
     digest.copy(header, 16);
-    const previousBytes = this.bytes,
-      previousHash = this.hash.copy();
+    const previousBytes = this.bytes;
     try {
       this.write(header);
       this.write(compressed);
-      this.hash.update(header).update(compressed);
     } catch (error) {
       try {
         this.io.ftruncateSync(this.fd, previousBytes);
@@ -243,9 +283,9 @@ export class RecordPageFile {
         throw this.failure;
       }
       this.bytes = previousBytes;
-      this.hash = previousHash;
       throw error;
     }
+    this.headers.update(header);
     this.entries.push({
       kind,
       count,
@@ -307,13 +347,22 @@ export class RecordPageFile {
   descriptor() {
     if (this.failure) throw this.failure;
     if (this.closed) throw Error('Record page file is closed');
-    if (this.writable) this.io.fsyncSync(this.fd);
+    // Several tables published from one writer by one commit sync it once.
+    if (this.writable && this.synced !== this.bytes) {
+      this.io.fsyncSync(this.fd);
+      this.synced = this.bytes;
+    }
     return Object.freeze({
-      format: 1,
+      format: 2,
       bytes: this.bytes,
       pages: this.entries.length - 1,
-      sha256: this.hash.copy().digest('hex'),
+      headers: this.headers.copy().digest('hex'),
     });
+  }
+  /** End appends: the pages become durable and the file reopens on demand like a reader. */
+  seal() {
+    this.descriptor();
+    this.writable = false;
   }
   cacheInfo() {
     return { bytes: this.cacheSize, entries: this.cache.size, hits: this.hits, misses: this.misses };

@@ -1,7 +1,7 @@
 // Bounded external sort for immutable record-key indexes.
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { temporaryRecordName } from './record-file-lease.mjs';
 
 export const compareKeyPair = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : Math.sign(a[1] - b[1]));
 
@@ -109,7 +109,7 @@ export class KeySorter {
     this.peakBytes = Math.max(this.peakBytes, this.bytes);
   }
   write(iterable) {
-    const file = path.join(this.directory, randomUUID() + '.sort');
+    const file = path.join(this.directory, temporaryRecordName('sort'));
     const fd = fs.openSync(file, 'wx', 0o600);
     this.files.add(file);
     let pending = '',

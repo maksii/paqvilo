@@ -36,8 +36,12 @@ export async function compactRecordGraph(state, directory, owner) {
     return {
       state: encoded.value,
       session,
+      /** Adopt the copies unless a table changed after it was copied; then the
+       * live tables stay as they are, false is returned, and the caller persists them. */
       publish() {
+        if (sources.some(({ source, fingerprint }) => source.fingerprint() !== fingerprint)) return false;
         for (const { source, replacement } of sources) source.adopt(replacement);
+        return true;
       },
     };
   } catch (error) {
