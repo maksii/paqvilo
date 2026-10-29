@@ -49,6 +49,7 @@ import { nativeRichTextReady } from './lib/richtext-readiness.mjs';
 import { renderSettings } from './lib/render-settings.mjs';
 import { createSetupHandler } from '../lense/setup/server.mjs';
 import { parseExactJson, stringifyExactJson, isExactNumeric } from './lib/exact-numeric.mjs';
+import { jsonChunks } from './lib/state-stream.mjs';
 import {
   attachODataReaderDetails,
   attachODataJsonSource,
@@ -2087,8 +2088,36 @@ async function createPowerPagesSimulator({
     simulation: organizationHost.simulationReport(storageAdapter?.report(store.state) ?? simulationReport()),
     recordCapabilities: recordCapabilitiesSummary({ reuse: reuseCapabilities }),
   });
-  const exposedState = ({ summary = false } = {}) => {
-    const state = summary ? store.summary() : store.snapshot();
+  const exactJsonItem = (item) => (isExactNumeric(item) ? JSON.rawJSON(stringifyExactJson(item)) : item);
+  // Admin responses that return the whole state stream it: stored tables are read page by page instead of becoming one
+  // response string, and ?summary=1 answers with configuration, counts and no table rows.
+  const stateResponse = (req, res) => {
+    if (new URL(req.url, 'http://localhost').searchParams.get('summary') === '1')
+      return json(res, 200, exposedState({ summary: true }));
+    // The forks were taken under the caller's lock; streaming them need not hold it.
+    json(
+      res,
+      200,
+      {},
+      {},
+      { chunks: jsonChunks(exposedState({ pagedTables: true }), { project: exactJsonItem }) },
+    ).catch((cause) => res.destroy(cause));
+  };
+  // pagedTables keeps stored tables as private forks for a streamed response; callers of the public API still get
+  // detached ordinary arrays.
+  const exposedState = ({ summary = false, pagedTables = false } = {}) => {
+    const state = summary ? store.summary() : store.snapshot(undefined, pagedTables ? { forkTables: true } : undefined);
+    return describeState(state, { summary });
+  };
+  // Configuration reads need no table rows.
+  const exposedConfig = () =>
+    describeState(
+      { ...store.snapshot({ sections: Object.keys(store.state).filter((key) => key !== 'tables') }), tables: {} },
+      {
+        summary: false,
+      },
+    ).config;
+  const describeState = (state, { summary }) => {
     const cfg = config();
     const identityModel = buildPermissionModel(portal, state, {
       relationships: solutionData.relationships,
@@ -3576,7 +3605,7 @@ async function createPowerPagesSimulator({
                 })),
               };
           },
-          project: (item) => (isExactNumeric(item) ? JSON.rawJSON(stringifyExactJson(item)) : item),
+          project: exactJsonItem,
         },
       );
     }
@@ -4163,7 +4192,7 @@ async function createPowerPagesSimulator({
             );
         }
         await saveState(state);
-        json(res, 200, exposedState());
+        stateResponse(req, res);
       });
     if (relative === '/assets/capture' && method === 'POST') {
       if (!cache) throw error('Asset capture requires a persisted simulator state directory.', 409);
@@ -4334,11 +4363,11 @@ async function createPowerPagesSimulator({
         await organization?.reseed();
         // Advanced form sessions belong to the reset state: a reset ends them.
         webFormSessions.clear();
-        json(res, 200, exposedState());
+        stateResponse(req, res);
       });
     if (relative === '/reload' && method === 'POST') {
       await reload();
-      return json(res, 200, exposedState());
+      return stateResponse(req, res);
     }
     const collection = /^\/(mappings|plugins|permissions|endpoints|presets)(?:\/([^/]+))?(?:\/(apply))?$/.exec(
       relative,
@@ -4352,7 +4381,7 @@ async function createPowerPagesSimulator({
           if (!preset) throw error('Configuration item not found.', 404);
           return json(res, 200, { id, ...preset });
         }
-        const items = exposedState().config[kind];
+        const items = exposedConfig()[kind];
         const item = id ? items.find((x) => x.id === id) : items;
         if (!item) throw error('Configuration item not found.', 404);
         return json(res, 200, item);
@@ -4364,7 +4393,8 @@ async function createPowerPagesSimulator({
           const options = await jsonObjectBody(req);
           if (options.applyConfiguration !== undefined && typeof options.applyConfiguration !== 'boolean')
             throw error('applyConfiguration must be boolean.', 400);
-          return json(res, 200, await applySelectedPreset(id, undefined, options));
+          await applySelectedPreset(id, undefined, { ...options, returnState: false });
+          return stateResponse(req, res);
         }
         const body = method === 'DELETE' ? null : await jsonObjectBody(req);
         const key = id ?? body?.id ?? body?.logicalName ?? randomUUID();
@@ -4423,7 +4453,7 @@ async function createPowerPagesSimulator({
         json(
           res,
           method === 'POST' ? 201 : 200,
-          exposedState().config[kind].find((x) => x.id === key) ?? {
+          exposedConfig()[kind].find((x) => x.id === key) ?? {
             deleted: key,
           },
         );

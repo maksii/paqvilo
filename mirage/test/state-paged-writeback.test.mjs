@@ -113,3 +113,37 @@ test('reference enrichment of one table keeps other paged tables on their pages'
   assert.equal(sim.store.get('notes', 'reference-note', admin).name, 'Reference note');
   assert.ok(pagedRecordsOf(sim.store.state.tables.item), 'Enriching another table must not materialize pages.');
 });
+
+test('state-returning admin routes stream stored tables and answer summaries without rows', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'invented-paged-response-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.writeFile(path.join(root, 'website.yml'), 'adx_websiteid: invented\nadx_name: Invented responses');
+  const sim = await createSimulator({
+    sourceDir: root,
+    stateFile: path.join(root, 'state.json'),
+    watch: false,
+    packs: [pack],
+    preset: 'pagedItems',
+    presetMode: 'always',
+  });
+  t.after(() => sim.close());
+  const post = (route) =>
+    fetch(sim.url + '/_sim/api' + route, {
+      method: 'POST',
+      headers: { 'x-sim-csrf': sim.csrf, 'content-type': 'application/json' },
+      body: '{}',
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+  const summary = await post('/presets/settingsOnly/apply?summary=1');
+  assert.equal(summary.status, 200);
+  assert.equal(summary.body.data, undefined, 'A summary carries no table rows');
+  assert.equal(summary.body.status.tableCounts.item, 3000);
+  assert.equal(summary.body.config.permissionMode, 'permissive');
+  const full = await post('/reload');
+  assert.equal(full.status, 200);
+  assert.equal(full.body.data.item.length, 3000);
+  assert.deepEqual(full.body.data.item[2999], sim.store.state.tables.item[2999]);
+  assert.equal(full.body.status.tableCounts.item, 3000);
+  assert.ok(pagedRecordsOf(sim.store.state.tables.item), 'Streaming a response leaves the table on its pages');
+  const presets = await fetch(sim.url + '/_sim/api/presets').then((response) => response.json());
+  assert.ok(presets.some((preset) => preset.id === 'pagedItems'));
+});
