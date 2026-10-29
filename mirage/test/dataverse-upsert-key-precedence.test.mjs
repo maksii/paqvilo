@@ -11,7 +11,7 @@ import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 const APP = '77777777-7777-4777-8777-777777777777';
 const A = '77777777-7777-4777-8777-7777777777c1';
 
-async function start(t) {
+async function start(t, { codeType = 'nvarchar', initial } = {}) {
   const secret = `PAQVILO_UPSERT_KEYS_${process.pid}`;
   process.env[secret] = 'invented-secret';
   const state = emptyState();
@@ -24,6 +24,8 @@ async function start(t) {
     alternateKeys: [{ name: 'x_code_key', attributes: ['x_code'] }],
   };
   state.tables.x_item = [{ x_itemid: A, x_name: 'Alpha', x_code: 'A1' }];
+  state.mappings.x_item.fields.x_code.dataverseType = codeType;
+  if (initial) state.tables.x_item = initial;
   const store = await new DataStore({ state }).init();
   const server = await startDataverseApi({
     store,
@@ -76,4 +78,21 @@ test("an upsert that creates keeps the body's key values and copies only missing
   assert.equal(await patch("/x_items(x_code='N1')", { x_code: 'B2', x_name: 'Beta' }), 204);
   assert.equal(await patch("/x_items(x_code='N3')", { x_name: 'Gamma' }), 204);
   assert.deepEqual(rows(), ['Alpha:A1', 'Beta:B2', 'Gamma:N3']);
+});
+
+test('native upsert-create refuses typed datetime and decimal key collisions despite differing source spellings', async (t) => {
+  for (const [codeType, existing, urlKey, bodyValue] of [
+    ['datetime', '2026-01-01', "x_code='2026-01-02T00:00:00Z'", '2026-01-01T02:00:00+02:00'],
+    ['decimal', { value: '1.00' }, 'x_code=2', 1],
+  ]) {
+    await t.test(codeType, async (inner) => {
+      const { rows, patch } = await start(inner, {
+        codeType,
+        initial: [{ x_itemid: A, x_name: 'original', x_code: existing }],
+      });
+      const before = rows();
+      assert.equal(await patch(`/x_items(${urlKey})`, { x_name: 'must not create', x_code: bodyValue }), 412);
+      assert.deepEqual(rows(), before);
+    });
+  }
 });

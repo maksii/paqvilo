@@ -13,6 +13,7 @@ import { createModelDrivenOverlay, importModelDrivenProject } from '../model-dri
 import { modelDrivenTargets, readTargetMappings, modelDrivenTargetSessions } from '../model-driven-targets.mjs';
 import { startupProgress, waitForStartupPage } from '../startup-progress.mjs';
 import { startupDeadline } from '../startup-deadline.mjs';
+import { createModelDrivenMetadataIndex } from '../model-driven-metadata.mjs';
 
 const cleanError = (error) =>
   String(error.message).replace(/https?:\/\/[^\s<>"']+/g, (value) => {
@@ -82,7 +83,18 @@ export function publishModelDrivenReload(overlay, next, mappings) {
 export function validateModelDrivenArguments(args, action = 'dev') {
   if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
   if (action === 'inspect') {
-    const allowed = new Set(['config', 'project', 'env', 'url', 'path', 'resource-map', 'local-simulation', 'json']);
+    const allowed = new Set([
+      'config',
+      'project',
+      'env',
+      'url',
+      'path',
+      'resource-map',
+      'local-simulation',
+      'json',
+      'event-cursor',
+      'include-event-parameters',
+    ]);
     for (const option of Object.keys(args))
       if (!allowed.has(option))
         throw Object.assign(new Error(`--${option} is not supported by model-driven inspect`), {
@@ -107,6 +119,30 @@ export function validateModelDrivenArguments(args, action = 'dev') {
     throw new Error('--timeout must be 1..3600000 milliseconds.');
   if (args.json && action !== 'inspect')
     throw new Error('--json is supported by model-driven inspect. Use --output for a dev session report.');
+  if (action !== 'inspect' && (args['event-cursor'] !== undefined || args['include-event-parameters'] !== undefined))
+    throw new Error('Event report options are supported by model-driven inspect only.');
+}
+
+export function modelDrivenEventPage(imported, args = {}) {
+  let cursor;
+  if (args['event-cursor'] !== undefined) {
+    const text = args['event-cursor'];
+    if (typeof text !== 'string' || !/^[A-Za-z0-9_-]{1,4096}$/.test(text)) throw new Error('Invalid --event-cursor.');
+    try {
+      cursor = JSON.parse(Buffer.from(text, 'base64url').toString('utf8'));
+    } catch {
+      throw new Error('Invalid --event-cursor.');
+    }
+    if (!cursor || typeof cursor !== 'object' || Array.isArray(cursor)) throw new Error('Invalid --event-cursor.');
+  }
+  const page = createModelDrivenMetadataIndex(imported).eventRegistrations({
+    cursor,
+    includeParameters: Boolean(args['include-event-parameters']),
+  });
+  return {
+    ...page,
+    ...(page.nextCursor ? { nextCursorToken: Buffer.from(JSON.stringify(page.nextCursor)).toString('base64url') } : {}),
+  };
 }
 
 export default async function run(_cfg, args, [action = 'dev'] = []) {
@@ -177,6 +213,7 @@ async function runModelDriven(args, action, progress, deadline) {
       targets: targets.map(({ id, origin }) => ({ id, origin })),
       trustedExtensions: project.modelDriven?.trustedExtensions ?? false,
       localSimulation: Boolean(args['local-simulation']),
+      clientEvents: modelDrivenEventPage(imported, args),
     };
     if (args.json) console.log(JSON.stringify(report));
     else

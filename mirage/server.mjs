@@ -4629,6 +4629,7 @@ async function createPowerPagesSimulator({
   /** A platform account page (sign-in, invitation redemption) inside the site's shell. */
   async function renderAccountPage(req, res, url, { status = 200, content, route = 'sign-in-page' }) {
     const shell = signInRenderer();
+    const renderedRevision = revision;
     const identity = currentIdentity();
     const rendered = await shell.value.renderPage(shell.page.url, {
       user: identity,
@@ -4664,7 +4665,7 @@ async function createPowerPagesSimulator({
     if (rendered.isDocument !== false) {
       html = injectRuntimeDependencies(html, sourceDependencies);
       html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
-      html = injectRuntime(html, csrf, revision, identity, trace.getStore()?.spanId, siteLanguageCodes());
+      html = injectRuntime(html, csrf, renderedRevision, identity, trace.getStore()?.spanId, siteLanguageCodes());
     }
     res.writeHead(status, {
       'content-type': 'text/html; charset=utf-8',
@@ -5783,7 +5784,12 @@ async function createPowerPagesSimulator({
         title: 'Portal form',
         metadata: {},
       };
-      const context = renderer.contextForPage(page, url.pathname + url.search, {
+      // A form body and its nested Liquid/styles/layout belong to the source
+      // selected before its first asynchronous read, including a postback's
+      // existing second render. A concurrent reload must not relabel it.
+      const modalRenderer = renderer,
+        renderedRevision = revision;
+      const context = modalRenderer.contextForPage(page, url.pathname + url.search, {
         user: formIdentity,
         languageCode: language?.code ?? null,
       });
@@ -5823,7 +5829,7 @@ async function createPowerPagesSimulator({
             ...solutionMetadata.componentSchemas,
             ...config().componentSchemas,
           },
-          renderLiquid: (source, ctx) => renderer.renderString(source, ctx),
+          renderLiquid: (source, ctx) => modalRenderer.renderString(source, ctx),
         });
       let html = await renderModalForm();
       if (nativeEntries) {
@@ -5876,7 +5882,7 @@ async function createPowerPagesSimulator({
       // capture the Bootstrap slot is the site's bootstrap.min.css web file, else the
       // platform's /css/bootstrap.min.css.
       const bootstrapFile = portal.webFiles.find((f) => /\/bootstrap\.min\.css$/i.test(f.url));
-      const sourceStyles = await renderer.contentStylesheets(
+      const sourceStyles = await modalRenderer.contentStylesheets(
         explicitPage ?? servicePages(portal).home ?? page,
         context,
       );
@@ -5915,7 +5921,7 @@ async function createPowerPagesSimulator({
       const scopedSite = normalizeId(
         portal.website.id ?? portal.website.adx_websiteid ?? portal.website.mspp_websiteid,
       );
-      const layout = await renderer.serviceLayout(url.pathname + url.search, {
+      const layout = await modalRenderer.serviceLayout(url.pathname + url.search, {
         user: formIdentity,
         languageCode: language?.code ?? null,
       });
@@ -5933,7 +5939,7 @@ async function createPowerPagesSimulator({
             observed: config().observed ?? portal.observed,
           }),
           csrf,
-          revision,
+          renderedRevision,
           formIdentity,
           trace.getStore()?.spanId,
           siteLanguageCodes(),
@@ -6231,9 +6237,11 @@ async function createPowerPagesSimulator({
     const nativeContext = trace.getStore();
     if (nativeEntries && (route || !routedPage || !access?.allowed))
       throw error('Native form page is not accessible.', 403);
+    let renderedSource;
     const renderCurrentPage = () => {
       if (nativeContext) nativeContext.nativePostbacks = [];
-      return renderer.renderPage(
+      renderedSource = { renderer, revision };
+      return renderedSource.renderer.renderPage(
         (route ? route.page.url : markerRoute ? markerRoute.page.url : url.pathname) + url.search,
         {
           user: pageIdentity,
@@ -6303,7 +6311,7 @@ async function createPowerPagesSimulator({
     // A bare HTML template may be a native browser navigation or an XHR fragment. Only
     // the document destination establishes parser-node proof; data callers keep original bytes.
     if (contentType.includes('text/html') && req.headers['sec-fetch-dest'] === 'document' && !rendered.provenance) {
-      const traced = renderer.provenanceFor(rendered);
+      const traced = renderedSource.renderer.provenanceFor(rendered);
       if (traced) {
         html = traced.html;
         rendered.provenance = traced.provenance;
@@ -6357,7 +6365,7 @@ async function createPowerPagesSimulator({
       if (rendered.provenance) headers['x-paqvilo-provenance'] = rendered.provenance.proofId;
     }
     const responseBody = isDocument
-      ? injectRuntime(html, csrf, revision, pageIdentity, trace.getStore()?.spanId, siteLanguageCodes())
+      ? injectRuntime(html, csrf, renderedSource.revision, pageIdentity, trace.getStore()?.spanId, siteLanguageCodes())
       : html;
     if (rendered.provenance) {
       const entry = renderProofs.get(rendered.provenance.proofId);

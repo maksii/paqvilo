@@ -644,8 +644,105 @@ test('AddUserToRecordTeam creates one system-managed access team that shares the
     204,
   );
   assert.equal(store.state.tables.teammembership.filter((m) => same(idOf(m.teamid), teamId)).length, 0);
-  assert.equal(store.state.tables.team.filter((t) => t.systemmanaged === true).length, 1);
+  assert.equal(store.state.tables.team.filter((t) => t.systemmanaged === true).length, 0);
+  assert.equal(
+    store.state.tables.principalobjectaccess.some((s) => same(idOf(s.principalid), teamId)),
+    false,
+  );
+  const readded = await call('AddUserToRecordTeam', args);
+  assert.notEqual(readded.body.AccessTeamId, teamId, 'a deleted team identity must not be resurrected');
+  assert.equal((await call('AddUserToRecordTeam', args)).body.AccessTeamId, readded.body.AccessTeamId);
 });
+
+test('record-team removal preserves direct shares, other members and their cached effective access', async () => {
+  const { store, call, principals } = await setup();
+  const admin = userOf(store, ADMIN_OID),
+    basic = userOf(store, BASIC_OID);
+  const widgetId = await makeWidget(store, 'shared-lifecycle', admin.systemuserid);
+  const templateId = await makeTemplate(store, 'Widget lifecycle', { mask: ACCESS_RIGHTS.Read | ACCESS_RIGHTS.Write });
+  const args = (user) => ({
+    user: admin,
+    target: on(store, 'systemuser', 'systemuserid', user.systemuserid),
+    body: {
+      Record: { '@odata.id': `widgets(${widgetId})` },
+      TeamTemplate: { '@odata.id': `teamtemplates(${templateId})` },
+    },
+  });
+  const first = await call('AddUserToRecordTeam', args(basic));
+  const teamId = first.body.AccessTeamId;
+  await call('AddUserToRecordTeam', args(admin));
+  await grantAccess(store, {
+    target: { id: widgetId, logical: 'widget' },
+    principal: { id: basic.systemuserid, logical_name: 'systemuser' },
+    mask: ACCESS_RIGHTS.Read,
+  });
+  const rights = () => principals.principalAccess({ user: basic, entity: 'widget', row: store.tableRows('widget')[0] });
+  assert.match(rights(), /WriteAccess/, 'warm the cached team and share indexes');
+  await call('RemoveUserFromRecordTeam', args(basic));
+  assert.ok(teamRow(store, teamId), 'the remaining member keeps the team alive');
+  assert.equal(store.tableRows('teammembership').filter((row) => same(idOf(row.teamid), teamId)).length, 1);
+  assert.match(rights(), /ReadAccess/, 'the user retains the independent direct share');
+  assert.doesNotMatch(rights(), /WriteAccess/, 'the removed membership no longer grants team write access');
+  await call('RemoveUserFromRecordTeam', args(basic));
+  assert.ok(teamRow(store, teamId), "removing a nonmember does not delete another user's team");
+  await call('RemoveUserFromRecordTeam', args(admin));
+  assert.equal(teamRow(store, teamId), undefined);
+  assert.equal(
+    store.tableRows('principalobjectaccess').some((row) => same(idOf(row.principalid), teamId)),
+    false,
+  );
+  assert.equal(
+    store.tableRows('principalobjectaccess').filter((row) => same(idOf(row.principalid), basic.systemuserid)).length,
+    1,
+  );
+  assert.match(rights(), /ReadAccess/);
+  assert.doesNotMatch(rights(), /WriteAccess/);
+});
+
+for (const teamtype of [0, 1])
+  test(`record-team cleanup preserves manually managed team type ${teamtype} for the same template and record`, async () => {
+    const { store, call } = await setup();
+    const admin = userOf(store, ADMIN_OID),
+      basic = userOf(store, BASIC_OID);
+    const widgetId = await makeWidget(store, 'manual-team-lifecycle', admin.systemuserid);
+    const templateId = await makeTemplate(store, 'Manual team control', { mask: ACCESS_RIGHTS.Read });
+    const manualId = await makeTeam(store, 'Manual control team', { teamtype });
+    await store.transact(() => {
+      Object.assign(teamRow(store, manualId), {
+        systemmanaged: false,
+        teamtemplateid: { id: templateId, logical_name: 'teamtemplate' },
+        regardingobjectid: { id: widgetId, logical_name: 'widget' },
+      });
+    });
+    await call('AddMembersTeam', {
+      user: admin,
+      target: on(store, 'team', 'teamid', manualId),
+      body: { Members: [memberOf(basic)] },
+    });
+    await grantAccess(store, {
+      target: { id: widgetId, logical: 'widget' },
+      principal: { id: manualId, logical_name: 'team' },
+      mask: ACCESS_RIGHTS.Read,
+    });
+    const args = {
+      user: admin,
+      target: on(store, 'systemuser', 'systemuserid', basic.systemuserid),
+      body: {
+        Record: { '@odata.id': `widgets(${widgetId})` },
+        TeamTemplate: { '@odata.id': `teamtemplates(${templateId})` },
+      },
+    };
+    await call('RemoveUserFromRecordTeam', args);
+    const automatic = await call('AddUserToRecordTeam', args);
+    await call('RemoveUserFromRecordTeam', args);
+    assert.equal(teamRow(store, automatic.body.AccessTeamId), undefined);
+    assert.ok(teamRow(store, manualId));
+    assert.equal(store.tableRows('teammembership').filter((row) => same(idOf(row.teamid), manualId)).length, 1);
+    assert.equal(
+      store.tableRows('principalobjectaccess').filter((row) => same(idOf(row.principalid), manualId)).length,
+      1,
+    );
+  });
 
 test('AddUserToRecordTeam refuses a member without Read on the table, a caller without Share, and a template for another table', async () => {
   const { store, call } = await setup();

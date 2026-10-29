@@ -34,6 +34,30 @@ type. An explicit zero-sequence modern form action appears before standard form
 actions; other command positions retain their fallback placement. Unsupported actions, parameters, rules and missing exported libraries leave
 commands disabled with an explanation.
 
+Classic ribbon `$LocLabels:` labels use the imported Solution LCID, matching
+the source-language selection for forms and table labels. If a translation is
+absent, the local parser retains its first-exported-label fallback. The command
+bar and source inspector use the same language selection. This does not add
+per-user language switching to the shell.
+
+Record page inputs retain `formId`, `tabName` and create-form defaults through
+`navigateTo` and side-pane navigation. A source-named visible tab becomes selected
+and focused after the form is ready; an unavailable tab reports an error. Current
+form IDs and native ribbon `SelectedControlSelectedItemIds`/`SelectedEntityTypeName`
+parameters supply record context without a separate pane helper. Reusing a pane
+with `getPane(id).navigate(nextInput)` loads the new context; `select()` expands it.
+Existing-record navigation does not overwrite its values with create defaults.
+A form ID missing from the loaded active Main-form catalogue is refused with
+`FormUnavailable`. A source form excluded from the selected app keeps the existing
+eligible-form fallback; omitting the ID keeps the default or preferred selection.
+These inputs follow Microsoft's [navigateTo contract](https://learn.microsoft.com/en-us/power-apps/developer/model-driven-apps/clientapi/reference/xrm-navigation/navigateto).
+
+List page inputs support imported `savedquery` views. Missing selected saved views
+report their source limitation rather than switching silently to the default.
+`userquery` personal views reject with `PersonalViewUnsupported`: the local
+Dataverse userquery store is separate from this shell's imported saved-view
+catalogue and does not establish access to a personal view here.
+
 ## Bounded client API
 
 | Area           | Supported                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -47,6 +71,48 @@ commands disabled with an explanation.
 | Utility        | `getPageContext().input`: `entityrecord` (table, record ID, form ID) on a record form, `entitylist` (table, view ID) on a list page. A list page has its own client, so a closed form never answers there                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Global context | `getVersion()` (`9.2.0.0`, the Web API version served), local client URL, Web client, client and online state from the session's offline mode (`getClient()` `Web`, or `Mobile` while offline; `getClientState()` `Online` or `Offline`; `isOffline()`), and `userSettings` from the [staff context](#staff-context): `userId`, `userName`, `languageId`, `isRTL`, `roles`, `securityRoles`, `transactionCurrency`, `transactionCurrencyId`, `dateFormattingInfo`, `getTimeZoneOffsetMinutes()`                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | WebApi         | Retrieve one/multiple records, scalar and multiselect writes, imported single-valued lookup bindings, create/update/delete through the local staff pipeline, plus `execute` and `executeMultiple` (also on `Xrm.WebApi.online`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+
+Native Choice and Choices controls support `addOption({ text, value }, index?)`,
+`removeOption(value)` and `clearOptions()`. Options are stored per control,
+including separate controls bound to the same column, and survive form tab
+re-rendering. Mutations update the offered options without changing the column
+value, firing OnChange or modifying exported metadata; `attribute.getOptions()`
+continues to return the source options. Enum values must be safe integers;
+duplicate values and out-of-range indices fail before changing state. PCF and
+read-only text adapters do not support these control mutations.
+
+`formSelector.items.get(id)` resolves the current exported form by its ID,
+accepting GUID casing and brace differences. Attribute and control collections
+continue to resolve strings by their own logical/control names; index and
+predicate collection lookups remain available.
+
+Numeric attributes expose `getMin()`, `getMax()` and `getPrecision()` from imported
+`minValue`, `maxValue` and `precision` metadata. Text and memo attributes expose
+`getMaxLength()` from imported `maxLength`. A missing numeric fact raises the
+named unsupported-API error; the runtime does not infer limits or precision.
+Choice attributes do not expose numeric range methods. These are bounded
+source-metadata reads, rather than a claim to every native attribute subtype.
+An exported empty option list still identifies a Choice attribute as `optionset`;
+adding control options does not change that source type or enable numeric methods.
+
+`data.entity.isValid()` checks the current values of visible, enabled rendered
+controls against their source-derived HTML constraints, including requiredness
+and number bounds, together with active control error notifications.
+`data.isValid()` checks the same data and also reports native field validation
+and updates `aria-invalid`. These checks do not save or clear dirty state.
+Header/footer fields, unsupported controls, non-table form data and
+`attribute.setIsValid` are outside this bounded validator.
+
+Selecting a side pane expands the group and clears its badge unless
+`keepBadgeOnSelect` is true. Creating with `isSelected: false` preserves the
+current selection and collapsed state. `hideHeader` hides the title and close
+button; `canClose: false` hides the close button but still permits the script
+to call `close()`. Closing the selected pane selects the last remaining visible
+pane. A closed pane refuses navigation with `PaneClosed`; closing it also rejects
+pending navigation and releases its load listeners. The pane's `hidden` property hides its content, and changing its `title`
+also updates the accessible label. Badge values are retained as API state;
+the shell does not render a badge or icon switcher, and inactive iframe content
+remains mounted rather than implementing the platform's `alwaysRender` lifecycle.
 
 WebApi reads use the canonical organization query engine and current staff
 identity, including when the public Dataverse HTTP listener is disabled.

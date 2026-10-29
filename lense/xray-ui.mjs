@@ -257,6 +257,9 @@ function xrayBrowserImpl(data) {
     lastIdentity = null,
     lastScope = null,
     anchorQueued = false;
+  let statusMessage = '',
+    statusSelection = null,
+    feedbackEpoch = 0;
   const retainedObserver = new MutationObserver((records) => {
     if (!selected || disposed || !records.some((record) => !own(record.target) && record.attributeName !== 'style'))
       return;
@@ -266,7 +269,10 @@ function xrayBrowserImpl(data) {
       anchorQueued = false;
       if (!selected || disposed) return;
       if (!liveNode(selected)) detachSelection('node-replaced');
-      else if (!enabled) notifySelection(true, 'node-identity-changed');
+      else {
+        if (statusMessage && !statusCurrent(statusSelection)) clearStatus();
+        if (!enabled) notifySelection(true, 'node-identity-changed');
+      }
     });
   });
   const inspectionError = () => {
@@ -1059,9 +1065,57 @@ function xrayBrowserImpl(data) {
   };
   const dispatch = (action, detail = {}) =>
     host.dispatchEvent(new CustomEvent('paqvilo-xray', { bubbles: true, detail: { action, ...detail } }));
-  const setStatus = (message) => {
+  const feedbackIdentity = (evidence) => ({
+    owner: JSON.stringify(
+      evidence?.owner?.component &&
+        Object.fromEntries(
+          ['key', 'kind', 'entity', 'field', 'id', 'name'].map((key) => [key, evidence.owner.component[key]]),
+        ),
+    ),
+    refs: (evidence?.source?.refs ?? []).map((ref) => ({
+      key: ref.sourceKey ?? ref.key ?? ref.id,
+      sourceRevision: ref.sourceRevision,
+      contentRevision: ref.contentRevision,
+      region: ref.region && { start: ref.region.start, end: ref.region.end },
+    })),
+  });
+  const clearStatus = () => {
+    statusMessage = '';
+    statusSelection = null;
     const output = card.querySelector('.status');
-    if (output) output.textContent = message;
+    if (output) output.textContent = '';
+  };
+  const statusCurrent = (expected) => {
+    if (!enabled || disposed || !selected || !liveNode(selected) || !expected) return false;
+    const scope = getSelectionScope(selected);
+    if (
+      expected.anchorGeneration !== selectionGeneration ||
+      expected.feedbackEpoch !== feedbackEpoch ||
+      !['documentId', 'frameId', 'uiEpoch', 'sourceRevision'].every((key) => expected.scope?.[key] === scope[key])
+    )
+      return false;
+    const previous = expected.feedbackIdentity ?? feedbackIdentity(expected.identity?.evidence),
+      current = feedbackIdentity(identify(selected, scope).evidence);
+    return (
+      previous.owner === current.owner &&
+      previous.refs.every((ref) => current.refs.some((candidate) => JSON.stringify(candidate) === JSON.stringify(ref)))
+    );
+  };
+  const setStatus = (message, expected) => {
+    const current = expected ?? {
+      anchorGeneration: selectionGeneration,
+      scope: getSelectionScope(selected),
+      feedbackEpoch,
+      feedbackIdentity: selected ? feedbackIdentity(identify(selected, getSelectionScope(selected)).evidence) : null,
+    };
+    if (!statusCurrent(current)) {
+      if (!statusCurrent(statusSelection)) clearStatus();
+      return;
+    }
+    statusMessage = String(message ?? '');
+    statusSelection = current;
+    const output = card.querySelector('.status');
+    if (output) output.textContent = statusMessage;
   };
   const kindName = (kind) =>
     ({
@@ -1878,6 +1932,10 @@ function xrayBrowserImpl(data) {
   };
   const renderCard = (preserve = false, measuredRect) => {
     if (!enabled) return;
+    if (!statusCurrent(statusSelection)) {
+      statusMessage = '';
+      statusSelection = null;
+    }
     // details.toggle is queued by the browser; capture the actual disclosure
     // state before replacing a card, even if the next pick arrives first.
     for (const item of card.querySelectorAll('details[data-disclosure]'))
@@ -1919,6 +1977,7 @@ function xrayBrowserImpl(data) {
       )}${selected.localName === 'iframe' ? '<p class="note">Frame boundary: inner inspection requires an accessible same-origin document; cross-origin and sandbox restrictions are preserved.</p>' : ''}</details></div><div class="status" role="status"></div><div class="foot"><button data-action="parent" ${!parent(selected) || own(parent(selected)) ? 'disabled' : ''}>↑ Parent</button><button data-action="child" ${!child(selected) ? 'disabled' : ''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
     // New content already starts at zero. Writing scrollTop=0 would force its first
     // layout during selection even though there is no scroll position to restore.
+    card.querySelector('.status').textContent = statusMessage;
     for (const item of card.querySelectorAll('details'))
       if (disclosureState.has(item.dataset.disclosure)) item.open = disclosureState.get(item.dataset.disclosure);
       else if (open.includes(item.dataset.disclosure ?? item.querySelector('summary')?.textContent)) item.open = true;
@@ -2493,6 +2552,9 @@ function xrayBrowserImpl(data) {
       schedule();
       animate();
     } else {
+      statusMessage = '';
+      statusSelection = null;
+      feedbackEpoch++;
       oneShot = false;
       releaseAnimationHook?.();
       releaseAnimationHook = null;
@@ -3038,7 +3100,16 @@ function xrayBrowserImpl(data) {
         anchorId: selected ? opaqueId(anchorIds, selected, 'anchor') : null,
         selectionGeneration,
         anchorGeneration: selectionGeneration,
+        feedbackEpoch,
         identity: lastIdentity,
+      };
+    },
+    feedbackState() {
+      return {
+        scope: getSelectionScope(selected),
+        anchorGeneration: selectionGeneration,
+        feedbackEpoch,
+        feedbackIdentity: selected ? feedbackIdentity(identify(selected, getSelectionScope(selected)).evidence) : null,
       };
     },
     clearSelection,

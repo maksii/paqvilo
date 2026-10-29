@@ -12,7 +12,11 @@ import {
   DATAVERSE_CONNECTOR,
   CHILD_FLOW_CONNECTOR,
 } from './connector-runtime.mjs';
-import { FLOW_ACTIONS, CONTROL_ACTIONS } from './flow-actions.mjs';
+import { FLOW_ACTIONS, CONTROL_ACTIONS, flowValueText } from './flow-actions.mjs';
+import { FLOW_EXPRESSION_ARITY } from './flow-expression-functions.mjs';
+import { flowTicks } from './flow-ticks.mjs';
+import { validateFlowInput } from './flow-input-schema.mjs';
+export { validateFlowInput } from './flow-input-schema.mjs';
 import { WINDOWS_TIME_ZONES } from './windows-time-zones.mjs';
 import { effectiveEnvironmentVariables } from './secret-resolver.mjs';
 import {
@@ -140,7 +144,6 @@ function bindingOf(runtime, call, { connectionReferences, principal } = {}) {
 const unsupportedTriggerSettings = [
   'runtimeConfiguration',
   'runTimeConfiguration',
-  'conditions',
   'splitOn',
   'recurrence',
   'operationOptions',
@@ -320,6 +323,7 @@ export function inspectFlowTrigger(definition, { connectors } = {}) {
   const settingErrors = unsupportedTriggerSettings
     .filter((key) => own(trigger, key) && !(key === 'recurrence' && ownRecurrence))
     .map((key) => 'Unsupported source trigger setting: ' + key);
+  settingErrors.push(...inspectTriggerConditions(trigger));
   const requestInputs = (allowed) => {
     for (const key of Object.keys(trigger.inputs ?? {}))
       if (!allowed.includes(key)) settingErrors.push('Unsupported Request trigger input: ' + key);
@@ -474,6 +478,7 @@ function equivalent(a, b) {
     return Number(a) === Number(b);
   if (a === b) return true;
   if (!a || !b || typeof a !== 'object' || typeof b !== 'object' || Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a) && a.length !== b.length) return false;
   const ak = Object.keys(a),
     bk = Object.keys(b);
   return ak.length === bk.length && ak.every((k) => own(b, k) && equivalent(a[k], b[k]));
@@ -483,7 +488,7 @@ function numericKind(node, state) {
   if (node.kind === 'call') {
     const name = node.name.toLowerCase();
     if (name === 'float') return 'float';
-    if (name === 'int') return 'integer';
+    if (name === 'int' || name === 'ticks') return 'integer';
     if (name === 'variables') return state.variables[evaluate(node.args[0], state)]?.type ?? 'unknown';
     if (['add', 'sub', 'mul', 'div', 'mod'].includes(name))
       return node.args.every((n) => numericKind(n, state) === 'integer') ? 'integer' : 'float';
@@ -494,6 +499,75 @@ function numericKind(node, state) {
   }
   // JSON does not retain whether a numeric source token was 5 or 5.0.
   return 'unknown';
+}
+// Inspect only expression syntax, never evaluate values or access a runtime identity.
+// A dynamic variable name or malformed expression makes its read set unknown.
+function flowVariableReads(value, effects, depth = 0) {
+  if (depth > 64) {
+    effects.unknownReads = true;
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const child of Object.values(value)) flowVariableReads(child, effects, depth + 1);
+    return;
+  }
+  if (typeof value !== 'string' || value.startsWith('@@') || (!value.startsWith('@') && !value.includes('@{'))) return;
+  const visit = (node) => {
+    if (node.kind === 'call') {
+      if (node.name.toLowerCase() === 'variables') {
+        if (node.args.length === 1 && node.args[0].kind === 'literal' && typeof node.args[0].value === 'string')
+          effects.reads.add(node.args[0].value);
+        else effects.unknownReads = true;
+      }
+      for (const arg of node.args) visit(arg);
+    } else if (node.kind === 'property') {
+      visit(node.object);
+      visit(node.key);
+    }
+  };
+  try {
+    if (value.startsWith('@') && !value.startsWith('@{')) {
+      visit(parseFlowExpression(value.slice(1)));
+      return;
+    }
+    let cursor = 0;
+    while (cursor < value.length) {
+      const start = value.indexOf('@{', cursor);
+      if (start < 0) break;
+      const end = flowInterpolationEnd(value, start);
+      if (!(start > cursor && value[start - 1] === '@')) {
+        if (end === value.length) fail('Unterminated interpolated flow expression.');
+        visit(parseFlowExpression(value.slice(start + 2, end)));
+      }
+      cursor = end + 1;
+    }
+  } catch {
+    // An action still reports its ordinary expression failure when executed alone.
+    // With a concurrent writer, an unprovable read set cannot establish determinism.
+    effects.unknownReads = true;
+  }
+}
+// Project structured built-in inputs to the fields their runtime actually resolves.
+// Schema descriptions, table headers/formats and variable declarations are literal metadata.
+function flowReadInputs(action) {
+  const inputs = action.inputs;
+  if (WRITES.has(action.type)) return inputs?.value;
+  switch (action.type) {
+    case 'InitializeVariable':
+      return (inputs?.variables ?? []).map((variable) => variable.value);
+    case 'ParseJson':
+      return inputs?.content;
+    case 'Table':
+      return [inputs?.from, ...(Array.isArray(inputs?.columns) ? inputs.columns.map((column) => column?.value) : [])];
+    case 'Select':
+      return [inputs?.from, inputs?.select];
+    case 'Query':
+      return [inputs?.from, inputs?.where];
+    case 'Join':
+      return [inputs?.from, inputs?.joinWith];
+    default:
+      return inputs;
+  }
 }
 export function inspectFlowDefinition(
   definition,
@@ -786,16 +860,15 @@ export function inspectFlowDefinition(
         ),
       );
     // A branch that reads a variable another concurrent branch writes depends on the interleaving as much as two writers.
-    const effects = (action, key, acc = { vars: new Set(), reads: new Set(), response: false }) => {
+    const effects = (
+      action,
+      key,
+      acc = { vars: new Set(), reads: new Set(), unknownReads: false, response: false },
+    ) => {
       if (!action || typeof action !== 'object' || ['mock', 'disabled'].includes(steps[key]?.mode)) return acc;
       if (WRITES.has(action.type) && typeof action.inputs?.name === 'string') acc.vars.add(action.inputs.name);
       if (action.type === 'Response') acc.response = true;
-      for (const [, name] of JSON.stringify([
-        action.inputs ?? null,
-        action.expression ?? null,
-        action.foreach ?? null,
-      ]).matchAll(/variables\('([^']+)'\)/g))
-        acc.reads.add(name);
+      flowVariableReads([flowReadInputs(action), action.expression, action.foreach], acc);
       const nested = [
         [action.actions, key + '/'],
         [action.else?.actions, key + '/else/'],
@@ -804,6 +877,11 @@ export function inspectFlowDefinition(
       ];
       for (const [child, at] of nested) for (const [n, a] of Object.entries(child ?? {})) effects(a, at + n, acc);
       return acc;
+    };
+    const effectCache = new Map();
+    const effectOf = (name) => {
+      if (!effectCache.has(name)) effectCache.set(name, effects(map[name], prefix + name));
+      return effectCache.get(name);
     };
     for (let a = 0; a < names.length; a++)
       for (let b = a + 1; b < names.length; b++)
@@ -814,10 +892,12 @@ export function inspectFlowDefinition(
           !exclusive(names[a], names[b])
         ) {
           parallel++;
-          const ea = effects(map[names[a]], prefix + names[a]),
-            eb = effects(map[names[b]], prefix + names[b]),
+          const ea = effectOf(names[a]),
+            eb = effectOf(names[b]),
             shared = [...ea.vars].filter((v) => eb.vars.has(v)),
-            read = [...ea.vars].filter((v) => eb.reads.has(v)).concat([...eb.vars].filter((v) => ea.reads.has(v)));
+            read = [...ea.vars]
+              .filter((v) => eb.unknownReads || eb.reads.has(v))
+              .concat([...eb.vars].filter((v) => ea.unknownReads || ea.reads.has(v)));
           if (shared.length || read.length || (ea.response && eb.response))
             errors.push(
               'Concurrent action branches ' +
@@ -826,7 +906,11 @@ export function inspectFlowDefinition(
                   : read.length
                     ? 'write and read the variable ' + [...new Set(read)].join(', ')
                     : 'both answer a Response') +
-                ' and depend on the interleaving; configure an explicit workflow mock: ' +
+                ' and depend on the interleaving' +
+                ((ea.vars.size && eb.unknownReads) || (eb.vars.size && ea.unknownReads)
+                  ? ' (a dynamic or malformed expression has an unknown variable read set)'
+                  : '') +
+                '; configure an explicit workflow mock: ' +
                 prefix +
                 names[a] +
                 ' / ' +
@@ -857,6 +941,15 @@ export function inspectFlowDefinition(
 export function parseFlowExpression(source) {
   let i = 0,
     depth = 0;
+  const nodeDepths = new WeakMap();
+  const checkedNode = (node) => {
+    let height = 1;
+    const children = node.kind === 'call' ? node.args : node.kind === 'property' ? [node.object, node.key] : [];
+    for (const child of children) height = Math.max(height, 1 + (nodeDepths.get(child) ?? 1));
+    if (height > 64) fail('Flow expression nesting exceeds 64.');
+    nodeDepths.set(node, height);
+    return node;
+  };
   const ws = () => {
     while (/\s/.test(source[i] ?? '') && i < source.length) i++;
   };
@@ -895,6 +988,8 @@ export function parseFlowExpression(source) {
           ws();
           if (source[i] === ',') {
             i++;
+            ws();
+            if (source[i] === ')') fail('Flow expression argument is missing.');
             continue;
           }
           if (source[i] !== ')') fail('Flow expression argument separator is missing.');
@@ -910,6 +1005,7 @@ export function parseFlowExpression(source) {
       else if (['true', 'false', 'null'].includes(token[0])) node = { kind: 'literal', value: JSON.parse(token[0]) };
       else fail('Unsupported bare flow expression identifier.');
     }
+    node = checkedNode(node);
     for (;;) {
       ws();
       let optional = false;
@@ -922,13 +1018,13 @@ export function parseFlowExpression(source) {
         const key = parse();
         ws();
         if (source[i++] !== ']') fail('Flow property bracket is missing.');
-        node = { kind: 'property', object: node, key, optional };
+        node = checkedNode({ kind: 'property', object: node, key, optional });
       } else if (source[i] === '.') {
         i++;
         const key = /^[\w]+/.exec(source.slice(i));
         if (!key) fail('Flow property name is missing.');
         i += key[0].length;
-        node = { kind: 'property', object: node, key: { kind: 'literal', value: key[0] }, optional };
+        node = checkedNode({ kind: 'property', object: node, key: { kind: 'literal', value: key[0] }, optional });
       } else {
         if (optional) fail('Optional property operator needs a property.');
         break;
@@ -941,6 +1037,70 @@ export function parseFlowExpression(source) {
   ws();
   if (i !== source.length) fail('Unsupported trailing flow expression syntax.');
   return result;
+}
+
+/** Pure syntax/function diagnostics. Dynamic properties and argument types require an explicit runtime input. */
+export function inspectFlowExpression(source) {
+  try {
+    if (typeof source !== 'string') fail('A flow expression must be a string.');
+    const root = parseFlowExpression(source.startsWith('@') ? source.slice(1) : source),
+      pending = [root];
+    while (pending.length) {
+      const node = pending.pop();
+      if (node.kind === 'call') {
+        const signature =
+          Object.hasOwn(FLOW_EXPRESSION_ARITY, node.name.toLowerCase()) &&
+          FLOW_EXPRESSION_ARITY[node.name.toLowerCase()];
+        if (!signature) fail('Unsupported local flow function: ' + node.name);
+        if (node.args.length < signature[0] || node.args.length > signature[1])
+          fail('Invalid argument count for ' + node.name);
+        pending.push(...node.args);
+      } else if (node.kind === 'property') pending.push(node.object, node.key);
+    }
+    return { supported: true, diagnostics: [] };
+  } catch (error) {
+    return { supported: false, diagnostics: [{ code: error.code ?? 'LocalFlowUnsupported', message: error.message }] };
+  }
+}
+
+function inspectTriggerConditions(trigger) {
+  if (!own(trigger, 'conditions')) return [];
+  if (!Array.isArray(trigger.conditions) || trigger.conditions.length > 100)
+    return ['Trigger conditions must be an array of at most 100 expression objects.'];
+  const errors = [];
+  for (let index = 0; index < trigger.conditions.length; index++) {
+    const condition = trigger.conditions[index];
+    if (
+      !condition ||
+      typeof condition !== 'object' ||
+      Array.isArray(condition) ||
+      Object.keys(condition).some((key) => key !== 'expression') ||
+      typeof condition.expression !== 'string' ||
+      !condition.expression.startsWith('@') ||
+      condition.expression.startsWith('@{') ||
+      condition.expression.startsWith('@@')
+    ) {
+      errors.push('Trigger condition ' + index + ' requires an @expression.');
+      continue;
+    }
+    for (const diagnostic of inspectFlowExpression(condition.expression).diagnostics)
+      errors.push('Trigger condition ' + index + ': ' + diagnostic.message);
+  }
+  return errors;
+}
+
+export function evaluateFlowTriggerConditions(definition, { input, parameters = {} } = {}) {
+  const trigger = Object.values(definition?.triggers ?? {})[0],
+    errors = inspectTriggerConditions(trigger);
+  if (errors.length) fail(errors.join(' '));
+  if (!trigger?.conditions) return true;
+  const state = { input, parameters, variables: {}, results: Object.create(null), items: [] };
+  const results = (trigger.conditions ?? []).map((condition) => {
+    const result = evaluate(parseFlowExpression(condition.expression.slice(1)), state);
+    if (typeof result !== 'boolean') fail('Trigger conditions require boolean results.', 400, 'LocalFlowExpression');
+    return result;
+  });
+  return results.every((value) => value);
 }
 function evaluate(node, state) {
   if (node.kind === 'literal') return node.value;
@@ -959,33 +1119,31 @@ function evaluate(node, state) {
     return object;
   }
   const n = node.name.toLowerCase(),
-    a = node.args.map((arg) => evaluate(arg, state));
-  const arity = (min, max = min) => {
-    if (a.length < min || a.length > max) fail('Invalid argument count for ' + node.name);
-  };
+    signature = Object.hasOwn(FLOW_EXPRESSION_ARITY, n) && FLOW_EXPRESSION_ARITY[n];
+  if (!signature) fail('Unsupported local flow function: ' + node.name);
+  if (node.args.length < signature[0] || node.args.length > signature[1])
+    fail('Invalid argument count for ' + node.name);
+  const a = node.args.map((arg) => evaluate(arg, state));
   const numeric = () => {
     if (a.some((v) => !isExactNumeric(v) && (typeof v !== 'number' || !Number.isFinite(v))))
       fail('Numeric arguments required for ' + node.name, 400, 'LocalFlowExpression');
   };
   switch (n) {
+    case 'ticks':
+      return flowTicks(a[0]);
     case 'triggerbody':
-      arity(0);
       return state.input;
     case 'triggeroutputs':
-      arity(0);
       return { body: state.input };
     case 'variables':
-      arity(1);
       if (!own(state.variables, a[0])) fail('Unknown flow variable.', 400, 'LocalFlowExpression');
       return state.variables[a[0]].value;
     case 'parameters':
-      arity(1);
       if (!own(state.parameters, a[0])) fail('Unknown flow parameter.', 400, 'LocalFlowExpression');
       return state.parameters[a[0]];
     case 'body':
     case 'outputs':
     case 'actions':
-      arity(1);
       if (!hasResult(state.results, a[0])) fail('Action output is unavailable.', 400, 'LocalFlowExpression');
       return n === 'body'
         ? (state.results[a[0]].outputs?.body ?? null)
@@ -993,35 +1151,27 @@ function evaluate(node, state) {
           ? state.results[a[0]].outputs
           : state.results[a[0]];
     case 'item':
-      arity(0);
       if (!state.items.length) fail('item() requires a foreach context.');
       return state.items.at(-1).value;
-    case 'items':
-      arity(1);
-      {
-        const item = state.items.findLast((x) => x.name === a[0]);
-        if (!item) fail('Unknown foreach context.');
-        return item.value;
-      }
+    case 'items': {
+      const item = state.items.findLast((x) => x.name === a[0]);
+      if (!item) fail('Unknown foreach context.');
+      return item.value;
+    }
     case 'concat':
-      arity(2, 1000);
       return a.map((v) => (isExactNumeric(v) ? v.value : typeof v === 'string' ? v : stringifyExactJson(v))).join('');
     case 'equals':
-      arity(2);
       return equivalent(a[0], a[1]);
     case 'and':
     case 'or':
-      arity(2, 1000);
       if (a.some((v) => typeof v !== 'boolean')) fail('Boolean arguments required.');
       return n === 'and' ? a.every((v) => v) : a.some((v) => v);
     case 'not':
-      arity(1);
       if (typeof a[0] !== 'boolean') fail('not() requires a boolean.');
       return !a[0];
     case 'coalesce':
       return a.find((v) => v !== null && v !== undefined) ?? null;
     case 'if':
-      arity(3);
       if (typeof a[0] !== 'boolean') fail('if() requires a boolean.');
       return a[0] ? a[1] : a[2];
     case 'add':
@@ -1029,7 +1179,6 @@ function evaluate(node, state) {
     case 'mul':
     case 'div':
     case 'mod':
-      arity(2);
       numeric();
       if (['div', 'mod'].includes(n) && compareNumeric(a[1], 0) === 0)
         fail('Division by zero.', 400, 'LocalFlowExpression');
@@ -1059,7 +1208,6 @@ function evaluate(node, state) {
     case 'greaterorequals':
     case 'less':
     case 'lessorequals':
-      arity(2);
       numeric();
       {
         const compared = compareNumeric(a[0], a[1]);
@@ -1072,51 +1220,39 @@ function evaluate(node, state) {
               : compared <= 0;
       }
     case 'string':
-      arity(1);
-      return a[0] == null
-        ? ''
-        : isExactNumeric(a[0])
-          ? a[0].value
-          : typeof a[0] === 'string'
-            ? a[0]
-            : stringifyExactJson(a[0]);
+      return flowValueText(a[0]);
     case 'int':
-    case 'float':
-      arity(1);
-      {
-        const raw = isExactNumeric(a[0]) ? a[0].value : a[0];
+    case 'float': {
+      const raw = isExactNumeric(a[0]) ? a[0].value : a[0];
+      if (
+        (typeof raw !== 'string' && typeof raw !== 'number') ||
+        (typeof raw === 'string' && (!raw.trim() || (n === 'int' && !/^[-+]?\d+$/.test(raw))))
+      )
+        fail('Invalid numeric conversion.', 400, 'LocalFlowExpression');
+      if (n === 'int') {
+        const exact = exactNumeric(typeof raw === 'string' ? raw.trim() : raw, 'Int64');
         if (
-          (typeof raw !== 'string' && typeof raw !== 'number') ||
-          (typeof raw === 'string' && (!raw.trim() || (n === 'int' && !/^[-+]?\d+$/.test(raw))))
+          decimalParts(exact).scale ||
+          compareNumeric(exact, '-9223372036854775808') < 0 ||
+          compareNumeric(exact, '9223372036854775807') > 0
         )
-          fail('Invalid numeric conversion.', 400, 'LocalFlowExpression');
-        if (n === 'int') {
-          const exact = exactNumeric(typeof raw === 'string' ? raw.trim() : raw, 'Int64');
-          if (
-            decimalParts(exact).scale ||
-            compareNumeric(exact, '-9223372036854775808') < 0 ||
-            compareNumeric(exact, '9223372036854775807') > 0
-          )
-            fail('Integer conversion exceeds Int64.', 400, 'LocalFlowExpression');
-          return exact;
-        }
-        const value = Number(raw);
-        if (!Number.isFinite(value)) fail('Invalid numeric conversion.', 400, 'LocalFlowExpression');
-        return value;
+          fail('Integer conversion exceeds Int64.', 400, 'LocalFlowExpression');
+        return exact;
       }
+      const value = Number(raw);
+      if (!Number.isFinite(value)) fail('Invalid numeric conversion.', 400, 'LocalFlowExpression');
+      return value;
+    }
     case 'json':
-      arity(1);
       try {
         return parseExactJson(a[0]);
       } catch {
         return fail('Invalid JSON expression value.', 400, 'LocalFlowExpression');
       }
     case 'length':
-      arity(1);
       if (typeof a[0] !== 'string' && !Array.isArray(a[0])) fail('length() requires a string or array.');
       return a[0].length;
     case 'empty':
-      arity(1);
       return (
         a[0] == null ||
         a[0] === '' ||
@@ -1125,7 +1261,6 @@ function evaluate(node, state) {
       );
     // An array contains a value equal to it (exact numerics by value, objects member-wise), a string a substring, an object a key.
     case 'contains':
-      arity(2);
       return typeof a[0] === 'string'
         ? a[0].includes(a[1])
         : Array.isArray(a[0])
@@ -1133,25 +1268,82 @@ function evaluate(node, state) {
           : a[0] && typeof a[0] === 'object' && !isExactNumeric(a[0])
             ? own(a[0], a[1])
             : fail('contains() requires a collection.');
+    case 'startswith':
+    case 'endswith':
+      if (a.some((v) => typeof v !== 'string')) fail(node.name + '() requires strings.', 400, 'LocalFlowExpression');
+      return n === 'startswith'
+        ? a[0].toLowerCase().startsWith(a[1].toLowerCase())
+        : a[0].toLowerCase().endsWith(a[1].toLowerCase());
     case 'createarray':
       return a;
+    case 'split':
+      if (a.some((value) => typeof value !== 'string'))
+        fail('split() requires two strings.', 400, 'LocalFlowExpression');
+      if (!a[1]) fail('split() with an empty delimiter requires native evidence.');
+      return a[0].split(a[1]);
+    case 'join': {
+      if (!Array.isArray(a[0]) || typeof a[1] !== 'string')
+        fail('join() requires an array and a string delimiter.', 400, 'LocalFlowExpression');
+      const parts = a[0].map(flowValueText),
+        length = parts.reduce((sum, part) => sum + part.length, 0) + Math.max(0, parts.length - 1) * a[1].length;
+      if (length > 104857600) fail('join() output exceeds 104857600 characters.', 400, 'LocalFlowExpression');
+      return parts.join(a[1]);
+    }
+    case 'substring': {
+      if (
+        typeof a[0] !== 'string' ||
+        a.slice(1).some((value) => typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0)
+      )
+        fail('substring() requires text and nonnegative safe integer indexes.', 400, 'LocalFlowExpression');
+      const length = a.length === 3 ? a[2] : a[0].length - a[1];
+      if (a[1] > a[0].length || length > a[0].length - a[1])
+        fail('substring() indexes exceed the string bounds.', 400, 'LocalFlowExpression');
+      return a[0].slice(a[1], a[1] + length);
+    }
+    case 'skip':
+    case 'take':
+      if (
+        (!Array.isArray(a[0]) && !(n === 'take' && typeof a[0] === 'string')) ||
+        !Number.isSafeInteger(a[1]) ||
+        a[1] < 0
+      )
+        fail(
+          node.name + '() requires a supported collection and a nonnegative safe integer count.',
+          400,
+          'LocalFlowExpression',
+        );
+      return n === 'skip' ? a[0].slice(a[1]) : a[0].slice(0, a[1]);
     case 'first':
     case 'last':
-      arity(1);
-      return n === 'first' ? (a[0]?.[0] ?? null) : (a[0]?.at(-1) ?? null);
+      if (typeof a[0] !== 'string' && !Array.isArray(a[0]))
+        fail(node.name + '() requires a string or array.', 400, 'LocalFlowExpression');
+      return n === 'first' ? (a[0][0] ?? null) : (a[0].at(-1) ?? null);
     case 'tolower':
     case 'toupper':
     case 'trim':
-      arity(1);
       if (typeof a[0] !== 'string') fail('String argument required.');
       return n === 'tolower' ? a[0].toLowerCase() : n === 'toupper' ? a[0].toUpperCase() : a[0].trim();
     case 'replace':
-      arity(3);
       if (a.some((v) => typeof v !== 'string')) fail('replace() requires strings.');
       return a[0].replaceAll(a[1], a[2]);
     default:
       fail('Unsupported local flow function: ' + node.name);
   }
+}
+function flowInterpolationEnd(value, start) {
+  let end = start + 2,
+    quoted = false;
+  for (; end < value.length; end++) {
+    if (value[end] === "'") {
+      if (quoted && value[end + 1] === "'") {
+        end++;
+        continue;
+      }
+      quoted = !quoted;
+    }
+    if (value[end] === '}' && !quoted) break;
+  }
+  return end;
 }
 export function resolveFlowValue(value, state) {
   if (Array.isArray(value)) return value.map((v) => resolveFlowValue(v, state));
@@ -1174,18 +1366,7 @@ export function resolveFlowValue(value, state) {
       break;
     }
     const escaped = start > cursor && value[start - 1] === '@';
-    let end = start + 2,
-      quoted = false;
-    for (; end < value.length; end++) {
-      if (value[end] === "'") {
-        if (quoted && value[end + 1] === "'") {
-          end++;
-          continue;
-        }
-        quoted = !quoted;
-      }
-      if (value[end] === '}' && !quoted) break;
-    }
+    const end = flowInterpolationEnd(value, start);
     if (escaped) {
       result += value.slice(cursor, start - 1) + value.slice(start, end + 1);
       cursor = end + 1;
@@ -1198,33 +1379,6 @@ export function resolveFlowValue(value, state) {
     cursor = end + 1;
   }
   return result;
-}
-export function validateFlowInput(value, schema = {}, name = 'body', depth = 0) {
-  if (depth > 32) fail('The cloud-flow input schema exceeds the local nesting limit.');
-  const invalid = (message) => fail(`Cloud-flow input ${name} ${message}.`, 400, 'InvalidRequest');
-  const matches = (t) =>
-    t === 'null'
-      ? value === null
-      : t === 'array'
-        ? Array.isArray(value)
-        : t === 'object'
-          ? Boolean(value && typeof value === 'object' && !Array.isArray(value) && !isExactNumeric(value))
-          : t === 'integer'
-            ? Number.isInteger(value) || (isExactNumeric(value) && decimalParts(value).scale === 0)
-            : t === 'number'
-              ? (typeof value === 'number' && Number.isFinite(value)) || isExactNumeric(value)
-              : typeof value === t;
-  if (schema.type && ![schema.type].flat().some(matches)) invalid('has an invalid type');
-  if (schema.enum && !schema.enum.some((v) => equivalent(v, value))) invalid('is not an allowed value');
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    for (const key of schema.required ?? []) if (!own(value, key)) invalid('is missing required property ' + key);
-    for (const [k, v] of Object.entries(value)) {
-      if (schema.properties?.[k]) validateFlowInput(v, schema.properties[k], name + '.' + k, depth + 1);
-      else if (schema.additionalProperties === false) invalid('contains undeclared property ' + k);
-    }
-  }
-  if (Array.isArray(value) && schema.items)
-    value.forEach((v, i) => validateFlowInput(v, schema.items, name + '[' + i + ']', depth + 1));
 }
 // A skipped leaf inherits its predecessor's completion status. A successful
 // error handler therefore resolves the failed branch without rewriting history.
@@ -1344,7 +1498,7 @@ export function executeFlowDefinition({
     );
   if (!trigger.supported) fail(trigger.errors.join(' '));
   const triggers = Object.values(definition?.triggers ?? {});
-  if (!input || typeof input !== 'object' || Array.isArray(input))
+  if (!input || typeof input !== 'object' || Array.isArray(input) || isExactNumeric(input))
     fail('The cloud-flow input must be an object.', 400, 'InvalidRequest');
   validateFlowInput(input, triggers[0].inputs?.schema);
   // A tracked run passes the non-secret parameter values frozen at its start (runTrackedFlow), so a resume replays them.
@@ -1356,6 +1510,8 @@ export function executeFlowDefinition({
       results: Object.create(null),
       items: [],
     };
+  if (!evaluateFlowTriggerConditions(definition, { input, parameters: state.parameters }))
+    return { status: 'Skipped', reason: 'TriggerConditionFalse' };
   if (serviceProfile) validateServiceProfile(serviceProfile);
   const runtime = connectors ?? createConnectorRuntime({ store }),
     correlationId = context.correlationId ?? randomUUID();
@@ -2143,6 +2299,14 @@ export async function runTrackedFlow({
     runId = resume.runId;
   } else {
     parameters = flowParameters(args.definition, args.store).values;
+    if (!evaluateFlowTriggerConditions(args.definition, { input, parameters })) {
+      args.diagnostic?.({
+        code: 'FLOW_TRIGGER_SKIPPED',
+        processId: canonicalId(processId),
+        reason: 'TriggerConditionFalse',
+      });
+      return { status: 'Skipped', reason: 'TriggerConditionFalse' };
+    }
     runId = (
       await runs.start({
         processId: canonicalId(processId),
@@ -2194,6 +2358,12 @@ export async function runTrackedFlow({
       limits: args.limits,
       context: { correlationId, initiatingUserId: args.context?.initiatingUserId ?? null },
     });
+    if (answer?.status === 'Skipped')
+      throw new DataError(
+        'The child flow did not start because its trigger conditions were false.',
+        409,
+        'ChildFlowNotStarted',
+      );
     // The parent action ends with the child's Response (https://learn.microsoft.com/power-automate/create-child-flows): a child
     // that answered before it waits answers the parent now and keeps running. A child that waits before answering suspends the
     // parent on a wait of kind child: flow-runs.mjs records the ownership (parent run, child run) and the child's completion

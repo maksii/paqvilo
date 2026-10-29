@@ -66,6 +66,8 @@ Other
   --mirage          doctor: also gate Sources diagnostics and Mirage configuration
   --lint-profiles   doctor: lint all exported deployment-profiles as warnings
   --json            list/map/status/doctor/audit/resources/verify: machine readable output
+  --event-cursor <token> model-driven inspect: continue its source event registration report
+  --include-event-parameters model-driven inspect: explicitly include source parameter literals
 
 Offline resource discovery
   --page <urlpath>  resources: sources related by indexed metadata to this page
@@ -159,6 +161,8 @@ const options = {
   'sign-in-timeout': { type: 'string' },
   project: { type: 'string' },
   'resource-map': { type: 'string' },
+  'event-cursor': { type: 'string' },
+  'include-event-parameters': { type: 'boolean' },
   runtime: { type: 'string' },
   simulation: { type: 'string' },
   portal: { type: 'string' },
@@ -396,6 +400,8 @@ try {
       'url',
       'path',
       'resource-map',
+      'event-cursor',
+      'include-event-parameters',
       'local-simulation',
       'startup-timeout',
       'headless',

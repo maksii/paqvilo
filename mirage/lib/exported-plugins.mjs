@@ -490,12 +490,11 @@ function typedContext({
 }
 
 // plugintracelog: organization.plugintracelogsetting 1 keeps the rows of failed executions, 2 keeps every execution, 0 keeps none.
-// The row is written in the phase's own transaction, so a rolled-back write takes its trace with it.
-// ponytail: native keeps the trace of a rolled-back execution; this simulator does not.
+// Trace facts survive business rollback independently, as PluginTraceLog does natively.
 function writeTraceLog(store, { item, entity, operation, depth, asyncExecution, traces, started, startedAt, error }) {
   const level = Number(organizationRecord(store)?.plugintracelogsetting ?? 0);
   if (!store?.state?.mappings?.plugintracelog || level === 0 || (level === 1 && !error)) return;
-  store.insertRow('plugintracelog', (store.state.tables.plugintracelog ??= []), {
+  store.appendPluginTraceLog({
     plugintracelogid: (store.ids ?? systemIds).uuid(),
     typename: item.typeName ?? null,
     messagename: messageNameOf(operation),

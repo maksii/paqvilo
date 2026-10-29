@@ -58,9 +58,12 @@ each falls back to a scan when it cannot prove its answer.
   cached position still carries the key, and rebuilds once if it does not, so an edit made outside
   the row operations cannot return a wrong row. Duplicate primary-key checks, alternate-key
   uniqueness and alternate-key lookups (`findByKey`) use indexes that live for one transaction, so a
-  direct edit between transactions is never missed. Alternate-key lookups keep `valuesEqual`
-  semantics: only plain non-date strings are bucketed, and other values stay in a list that every
-  lookup scans. CreateMultiple, UpsertMultiple by key and imports cost O(1) per row within one request.
+  direct edit between transactions is never missed. Alternate-key lookups use the configured
+  collation and known field type with `valuesEqual`: date-shaped text stays text, while datetime
+  fields and unknown date-shaped values retain date comparison. Exact numeric key literals retain
+  their digits. Text/GUID buckets and cache identities use unambiguous tuples, including collation
+  and field kinds. Values that cannot share a safe equality bucket stay in an always-scanned list.
+  Text-key bulk creates, upserts and imports use bounded index checks per row within one request.
 - **Reads by id.** Single-record and id-list reads find their rows through the primary-key index
   before the row-security filter, instead of filtering the whole table. Row filters receive the
   stored row without a copy; the security read filter only reads it, and a backend profile

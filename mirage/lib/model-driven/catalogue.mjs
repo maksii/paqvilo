@@ -242,7 +242,7 @@ function* catalogueSteps({
     table.forms = forms.map((form) => compileForm(form, table.fields, metadata.lcid)).filter(Boolean);
     table.commands = (metadata.modelDrivenRibbonDocuments ?? [])
       .filter((document) => document.entity === table.entity)
-      .flatMap((document) => parseRibbonCommands(document.xml));
+      .flatMap((document) => parseRibbonCommands(document.xml, { lcid: metadata.lcid }));
     table.commands.push(...(metadata.modelDrivenAppActions ?? []).filter((command) => command.entity === table.entity));
     table.commands = [...new Map(table.commands.map((command) => [command.id, command])).values()];
     if (!table.forms.length && !lazy)

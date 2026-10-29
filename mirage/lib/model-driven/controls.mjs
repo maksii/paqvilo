@@ -75,7 +75,7 @@ registerControl('json', (field, value) => {
 });
 registerControl('number', (field, value, context = {}) => {
   if (String(field.format).toLowerCase() === 'duration') return renderDuration(field, value);
-  if (field.options?.length) {
+  if (Array.isArray(field.options)) {
     return renderChoice(field, value);
   }
   const control = input('number', field, value);

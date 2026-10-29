@@ -53,6 +53,40 @@ test('cold native command selectors prioritize full scoped exported declarations
   });
   assert.ok(wrongTable.unavailable.some((item) => item.key === selector));
 });
+
+test('lazy FormXml labels follow the source LCID while form, field and structural identities stay unchanged', () => {
+  const labels = (english, french) =>
+    `<labels><label languagecode="1033" description="${english}"/><label languagecode="1036" description="${french}"/></labels>`;
+  const form = {
+    id: guid(7),
+    entity: 'fixture_item',
+    name: 'Invented form',
+    xml: `<form><tabs><tab name="general">${labels('General EN', 'General FR')}<columns><column><sections><section name="details">${labels('Details EN', 'Details FR')}<rows><row><cell>${labels('Title EN', 'Titre FR')}<control id="title_editor" datafieldname="fixture_title"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>`,
+  };
+  const fields = { fixture_title: { name: 'fixture_title', type: 'text' } };
+  const query = (lcid) =>
+    createModelDrivenMetadataIndex({ metadata: { lcid, entities: { fixture_item: { fields } }, forms: [form] } }).query(
+      { active: { formId: form.id } },
+    ).catalogue.forms[0];
+  const english = query(1033),
+    french = query(1036),
+    compiled = compileForm(form, fields, 1036);
+  assert.deepEqual(
+    [compiled.tabs[0].label, compiled.tabs[0].sections[0].label, compiled.tabs[0].sections[0].fields[0].label],
+    ['General FR', 'Details FR', 'Titre FR'],
+  );
+  assert.equal(english.controls[0].label, 'Title EN');
+  assert.equal(french.controls[0].label, 'Titre FR');
+  assert.equal(french.id, form.id);
+  assert.deepEqual(french.structure, english.structure);
+  assert.deepEqual(
+    french.controls.map(({ key, id, name, tab, section }) => ({ key, id, name, tab, section })),
+    english.controls.map(({ key, id, name, tab, section }) => ({ key, id, name, tab, section })),
+  );
+  assert.equal(french.controls[0].name, 'fixture_title');
+  assert.equal(french.controls[0].id, 'title_editor');
+});
+
 async function fixture(t, count = 3) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-model-metadata-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));

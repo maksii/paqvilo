@@ -41,12 +41,14 @@ export function renderChoice(
     : value == null
       ? []
       : [value];
-  const entries = multiple
-    ? [{ all: true, label: 'Select all' }, ...options]
-    : allowEmpty
-      ? [{ value: null, label: '--Select--' }, ...options]
-      : options;
-  let selected = values,
+  const entriesForOptions = () =>
+    multiple
+      ? [{ all: true, label: 'Select all' }, ...options]
+      : allowEmpty
+        ? [{ value: null, label: '--Select--' }, ...options]
+        : options;
+  let entries = entriesForOptions(),
+    selected = values,
     active = -1,
     outside,
     typed = '',
@@ -221,23 +223,27 @@ export function renderChoice(
     primary.focus();
     notify();
   };
-  for (const [index, entry] of entries.entries()) {
-    const option = document.createElement('div');
-    option.id = `${list.id}-${index}`;
-    option.setAttribute('role', 'option');
-    option.setAttribute('aria-label', entry.label);
-    option.textContent = entry.label;
-    if (entry.all) {
-      option.className = 'choice-select-all';
-      const count = document.createElement('span');
-      count.textContent = `${options.length} items`;
-      count.setAttribute('aria-hidden', 'true');
-      option.append(count);
+  const renderOptions = () => {
+    list.replaceChildren();
+    for (const [index, entry] of entries.entries()) {
+      const option = document.createElement('div');
+      option.id = `${list.id}-${index}`;
+      option.setAttribute('role', 'option');
+      option.setAttribute('aria-label', entry.label);
+      option.textContent = entry.label;
+      if (entry.all) {
+        option.className = 'choice-select-all';
+        const count = document.createElement('span');
+        count.textContent = `${options.length} items`;
+        count.setAttribute('aria-hidden', 'true');
+        option.append(count);
+      }
+      option.addEventListener('pointerdown', (event) => event.preventDefault());
+      option.addEventListener('click', () => choose(index));
+      list.append(option);
     }
-    option.addEventListener('pointerdown', (event) => event.preventDefault());
-    option.addEventListener('click', () => choose(index));
-    list.append(option);
-  }
+  };
+  renderOptions();
   primary.addEventListener('beforeinput', (event) => {
     if (!multiple) event.preventDefault();
   });
@@ -315,6 +321,15 @@ export function renderChoice(
     element,
     primary,
     read: () => (multiple ? (selected.length ? [...selected] : null) : (selected[0] ?? null)),
+    setOptions(next) {
+      options = next.map((option) => ({ ...option }));
+      entries = entriesForOptions();
+      keyboardActive = false;
+      renderOptions();
+      filterOptions(true);
+      update();
+      if (!list.hidden) position();
+    },
     setValue(value) {
       selected = multiple
         ? Array.isArray(value)
