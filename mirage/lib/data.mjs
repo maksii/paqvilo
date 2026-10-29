@@ -36,7 +36,7 @@ import { assertElasticRecord, isElastic, samePartition, recordKey } from './data
 import { relationshipsOf } from './dataverse-standard.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
-import { stateDigest } from './state-stream.mjs';
+import { jsonChunks, stateDigest } from './state-stream.mjs';
 import { initializationFingerprint, initializationDelta, initializationEntries } from './state-initialization.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
 import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } from './platform-settings.mjs';
@@ -1032,6 +1032,131 @@ export class DataStore {
   close() {
     this.closeRecordStorage();
   }
+  /**
+   * Run `fn(lease)` once earlier transactions settle; no transaction starts until
+   * it does. A transaction requested meanwhile first calls `lease.onContention()`
+   * once, synchronously, so `fn` can copy what it still reads from live state
+   * and settle; `lease.contended` is already true if that request preceded `fn`.
+   */
+  readLease(fn) {
+    const lease = { contended: false, onContention: null };
+    (this.readLeases ??= new Set()).add(lease);
+    const run = this.queue.then(() => fn(lease)).finally(() => this.readLeases.delete(lease));
+    this.queue = run.catch(() => {});
+    return run;
+  }
+  contendReadLeases() {
+    for (const lease of this.readLeases ?? [])
+      if (!lease.contended) {
+        lease.contended = true;
+        lease.onContention?.();
+      }
+  }
+  /**
+   * Stream a detached, consistent JSON export to `consume(chunks)` (an iterable of
+   * strings) without a second copy of plain tables. Sections are copied and paged
+   * tables forked; plain rows are encoded in place under a read lease. A
+   * transaction requested meanwhile first copies the rows not yet encoded, then
+   * runs while the export continues from that copy. `adjust(sections)` may edit
+   * the copied sections; `project` is the jsonChunks projection.
+   */
+  exportState(consume, { adjust, project } = {}) {
+    let writing;
+    return this.readLease(async (lease) => {
+      const { tables = {}, ...rest } = this.state,
+        sections = cloneStateData(rest, { forkTables: true }),
+        order = Object.keys(this.state),
+        sources = Object.entries(tables).map(([name, rows]) => ({
+          name,
+          rows: pagedRecordsOf(rows) ? pagedRecordsOf(rows).fork() : rows,
+          live: !pagedRecordsOf(rows),
+          offset: 0,
+        }));
+      (this.snapshotRevisions ??= new WeakMap()).set(sections, this.revision);
+      adjust?.(sections);
+      let table = 0,
+        row = 0,
+        failure = null;
+      // Copy every row not yet encoded: the rest of the current table and all later ones.
+      const detach = () => {
+        for (let index = table; index < sources.length; index++) {
+          const source = sources[index];
+          if (!source.live) continue;
+          const from = index === table ? row : 0;
+          source.rows = cloneStateData(source.rows.slice(from));
+          source.offset = from;
+          source.live = false;
+        }
+      };
+      const options = project ? { project } : {};
+      function* chunks() {
+        let text = '{',
+          first = true;
+        // A copy that failed during contention ends the export at its next chunk.
+        const flush = function* () {
+          yield text;
+          text = '';
+          if (failure) throw failure;
+        };
+        const append = function* (encoded) {
+          for (const chunk of encoded) {
+            text += chunk;
+            if (text.length >= 65536) yield* flush();
+          }
+        };
+        const member = function* (key, value) {
+          const encoded = jsonChunks(value, options),
+            head = encoded.next();
+          // A section that encodes to nothing (undefined) is omitted, as in JSON.
+          if (head.done) return;
+          text += (first ? '' : ',') + JSON.stringify(key) + ':';
+          first = false;
+          yield* append([head.value]);
+          yield* append(encoded);
+        };
+        for (const key of order) {
+          if (key !== 'tables') {
+            if (Object.hasOwn(sections, key)) yield* member(key, sections[key]);
+            continue;
+          }
+          text += (first ? '' : ',') + '"tables":{';
+          first = false;
+          for (table = 0; table < sources.length; table++) {
+            const source = sources[table];
+            text += (table ? ',' : '') + JSON.stringify(source.name) + ':';
+            if (pagedRecordsOf(source.rows)) yield* append(jsonChunks(source.rows, options));
+            else {
+              const length = source.offset + source.rows.length;
+              text += '[';
+              for (row = 0; row < length; row++) {
+                text +=
+                  (row ? ',' : '') + ([...jsonChunks(source.rows[row - source.offset], options)].join('') || 'null');
+                if (text.length >= 65536) yield* flush();
+              }
+              text += ']';
+            }
+          }
+          table = sources.length;
+          text += '}';
+        }
+        yield text + '}';
+      }
+      let released;
+      const contention = new Promise((resolve) => (released = resolve));
+      lease.onContention = () => {
+        // The requesting transaction is unrelated to this export and never sees its failure.
+        try {
+          detach();
+        } catch (error) {
+          failure = error;
+        }
+        released();
+      };
+      if (lease.contended) lease.onContention();
+      writing = consume(chunks());
+      await Promise.race([writing, contention]);
+    }).then(() => writing);
+  }
   snapshot(projection, options) {
     if (projection === undefined) {
       const snapshot = cloneStateData(this.state, options);
@@ -1347,6 +1472,7 @@ export class DataStore {
       })();
     if (privateInitialization && (!this.unpublished || this.initializationFailed))
       throw new Error('Private initialization requires an unpublished, usable store.');
+    this.contendReadLeases();
     const frame = { store: this, working: null, initializing: privateInitialization };
     const run = this.queue.then(async () => {
       let initializationDigest = null;
@@ -1548,6 +1674,7 @@ export class DataStore {
   /** Rewrite a streamed checkpoint without copying the in-memory state. Queued
    * with writes; call during an idle period to bound append-journal disk usage. */
   compact() {
+    this.contendReadLeases();
     const run = this.queue.then(async () => {
       const oldSession = this.recordSession ?? this.storage?.recordSession;
       if (!oldSession) return this.save();

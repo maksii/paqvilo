@@ -49,7 +49,6 @@ import { nativeRichTextReady } from './lib/richtext-readiness.mjs';
 import { renderSettings } from './lib/render-settings.mjs';
 import { createSetupHandler } from '../lense/setup/server.mjs';
 import { parseExactJson, stringifyExactJson, isExactNumeric } from './lib/exact-numeric.mjs';
-import { jsonChunks } from './lib/state-stream.mjs';
 import {
   attachODataReaderDetails,
   attachODataJsonSource,
@@ -3558,27 +3557,23 @@ async function createPowerPagesSimulator({
     if (await environmentRoutes(req, res, url)) return;
     if (method === 'GET' && relative === '/state/export') {
       // Credential material never leaves the runtime: password hashes are dropped and secrets keep only hint and expiry.
-      const snapshot = store.snapshot(undefined, { forkTables: true });
-      if (snapshot.dataverse)
-        snapshot.dataverse = {
-          ...snapshot.dataverse,
-          passwords: undefined,
-          applications: (snapshot.dataverse.applications ?? []).map(({ secrets, ...app }) => ({
-            ...app,
-            secrets: (secrets ?? []).map(({ id, hint, expiresOn }) => ({ id, hint, expiresOn })),
-          })),
-        };
-      return json(
-        res,
-        200,
-        snapshot,
+      // Plain table rows stream in place under a read lease rather than from a second full copy.
+      return store.exportState(
+        (chunks) =>
+          json(res, 200, {}, { 'content-disposition': 'attachment; filename="simulator-state.json"' }, { chunks }),
         {
-          'content-disposition': 'attachment; filename="simulator-state.json"',
-        },
-        {
-          chunks: jsonChunks(snapshot, {
-            project: (item) => (isExactNumeric(item) ? JSON.rawJSON(stringifyExactJson(item)) : item),
-          }),
+          adjust: (snapshot) => {
+            if (snapshot.dataverse)
+              snapshot.dataverse = {
+                ...snapshot.dataverse,
+                passwords: undefined,
+                applications: (snapshot.dataverse.applications ?? []).map(({ secrets, ...app }) => ({
+                  ...app,
+                  secrets: (secrets ?? []).map(({ id, hint, expiresOn }) => ({ id, hint, expiresOn })),
+                })),
+              };
+          },
+          project: (item) => (isExactNumeric(item) ? JSON.rawJSON(stringifyExactJson(item)) : item),
         },
       );
     }
