@@ -42,7 +42,8 @@ export function codeApps(options = {}) {
       return createHash('sha256').update(readFileSync(configFile)).digest('hex');
     } catch (error) {
       if (error.code === 'ENOENT') return 'missing';
-      throw error;
+      // An atomic save, a scanner or a lock can deny the read briefly (EPERM/EBUSY on Windows).
+      return 'unknown';
     }
   };
   const entries = new Map();
@@ -126,12 +127,28 @@ export function codeApps(options = {}) {
       // The document can load before its HMR transport connects. Reconcile the
       // document's configuration with current bytes after that connection, so
       // a full-reload broadcast sent before it existed cannot be lost.
-      const reconcile = (data, client) => {
-        if (typeof data?.stamp === 'string' && data.stamp !== configurationStamp())
-          client.send({ type: 'full-reload', path: '*' });
+      // A document rendered while the configuration was unreadable carries an unknown
+      // stamp and reloads once the bytes are readable; an unreadable read at check
+      // time is retried briefly, after which the watcher's next event still reloads.
+      const rechecks = new Set();
+      const reconcile = (data, client, attempt = 0) => {
+        if (typeof data?.stamp !== 'string') return;
+        const current = configurationStamp();
+        if (current === 'unknown') {
+          if (attempt >= 20) return;
+          const timer = setTimeout(() => {
+            rechecks.delete(timer);
+            reconcile(data, client, attempt + 1);
+          }, 100);
+          rechecks.add(timer);
+          return;
+        }
+        if (data.stamp !== current) client.send({ type: 'full-reload', path: '*' });
       };
       server.ws.on('paqvilo:config-check', reconcile);
       server.httpServer?.once('close', () => {
+        for (const timer of rechecks) clearTimeout(timer);
+        rechecks.clear();
         for (const event of ['change', 'add', 'unlink']) server.watcher.off(event, reload);
         server.ws.off('paqvilo:config-check', reconcile);
       });

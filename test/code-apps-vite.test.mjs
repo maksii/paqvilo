@@ -148,3 +148,53 @@ test('external module scripts remain external but run after bootstrap', () => {
     /^await import\("virtual:paqvilo-code-app-bootstrap"\); await import\("https:\/\/cdn\.example\.test\/app\.js"\);/,
   );
 });
+
+test('an unreadable configuration renders an unknown stamp and reloads once its bytes are readable', async (t) => {
+  const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const root = mkdtempSync(path.join(tmpdir(), 'paqvilo-code-app-config-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // A directory at the configuration path makes every read fail with a non-ENOENT error.
+  const configFile = path.join(root, 'power.config.json');
+  mkdirSync(configFile);
+  const plugin = codeApps({ app: 'invented', mirageUrl: 'http://127.0.0.1:8787' });
+  plugin.config();
+  const watcher = Object.assign(new EventEmitter(), { add() {} });
+  const server = {
+    middlewares: { use() {} },
+    httpServer: Object.assign(new EventEmitter(), { address: () => ({ port: 5173 }) }),
+    config: { root, server: {} },
+    watcher,
+    ws: Object.assign(new EventEmitter(), { send() {} }),
+  };
+  plugin.configureServer(server);
+  t.after(() => server.httpServer.emit('close'));
+  const stamp = (html) => html.tags.find((tag) => tag.attrs.name === 'paqvilo-code-app-config').attrs.content;
+  const rendered = stamp(plugin.transformIndexHtml.handler('<p></p>', { path: '/index.html' }));
+  assert.equal(rendered, 'unknown');
+  const sent = [];
+  let reloaded;
+  const reload = new Promise((resolve) => {
+    reloaded = resolve;
+  });
+  const client = {
+    send(message) {
+      sent.push(message);
+      reloaded();
+    },
+  };
+  // The check arrives while the bytes are still unreadable: nothing is sent yet.
+  server.ws.emit('paqvilo:config-check', { stamp: rendered }, client);
+  assert.deepEqual(sent, []);
+  // The swap completes before the retry timer can run.
+  rmSync(configFile, { recursive: true });
+  writeFileSync(configFile, '{"appId":"invented"}');
+  await reload;
+  assert.deepEqual(sent, [{ type: 'full-reload', path: '*' }]);
+  // A document rendered from the readable bytes is current.
+  const current = stamp(plugin.transformIndexHtml.handler('<p></p>', { path: '/index.html' }));
+  assert.match(current, /^[a-f0-9]{64}$/);
+  server.ws.emit('paqvilo:config-check', { stamp: current }, client);
+  assert.equal(sent.length, 1);
+});
