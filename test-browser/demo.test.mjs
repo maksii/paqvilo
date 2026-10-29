@@ -140,7 +140,30 @@ test(
       .first()
       .click();
     await page.getByRole('link', { name: 'Open the demo', exact: true }).click();
-    await page.locator('[data-account-rows] tr').first().waitFor();
+    await page
+      .locator('[data-account-rows] tr')
+      .first()
+      .waitFor()
+      .catch(async (cause) => {
+        // The workspace reports its own load failures in [data-status]; keep them with the failure.
+        t.diagnostic(
+          `Account list: ${JSON.stringify({
+            path: new URL(page.url()).pathname,
+            status: await page
+              .locator('[data-status]')
+              .textContent()
+              .catch(() => null),
+            empty: await page
+              .locator('[data-account-empty]')
+              .isVisible()
+              .catch(() => null),
+            signInLinks: await page.getByRole('link', { name: 'Sign in to try CRUD', exact: true }).count(),
+            errors,
+          })}`,
+        );
+        await evidence('demo-account-list-failure').catch(() => {});
+        throw cause;
+      });
     assert.equal(await page.locator('[data-account-rows] tr').count(), 8);
     await page.getByRole('link', { name: 'Arcwell Services', exact: true }).click();
     const ready = () =>
