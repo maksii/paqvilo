@@ -2,49 +2,33 @@
 
 ## 0.9.8
 
-- Offer explicit `createOwned()` preset factories for private generated datasets, preserving existing `load()`
-  memoization/copying, user-authored presets, defaults and configuration validation. Reuse the validated startup
-  owned body instead of generating it again. Document ownership and deterministic reapplication.
-- Defer relationship-body copies in the lightweight catalogue index; selected/full metadata retains every
-  relationship. Avoid redundant capability-description column scans and repeated fixed-capability JSON/network
-  allocations during status polling; dynamic adapters and public state snapshots remain fresh.
-- Bound large committed journal replay with private candidates, retaining checksum verification and incomplete-tail
-  recovery without holding every operation object until commit. Count administration visibility without a row list
-  and avoid the redundant offline generation input snapshot.
-- Store unique row-index positions as scalars, allocating lists only for duplicates. Preserve sorted positions,
-  wild/null keys, mutation maintenance and rollback; distinguish a captured undefined key from an omitted argument.
-- Reduce wide-record and FetchXML projection metadata derivation to one request-scoped set, retaining
-  fresh labels/security on subsequent requests. Avoid per-character JSON parsing and duplicate source XML
-  copies; bound recurring-text reuse during checkpoint restore and stream parse-cache persistence.
-- Compose unpublished startup state without full rollback copies, deferring atomic persistence until commit
-  and discarding failed initialization. Keep published transaction isolation and snapshot ownership.
-- Journal only changed startup sections/tables and reuse the preceding durable comparison receipt, retaining
-  detection of intervening edits and external-file conflicts. Avoid an unused full-state return copy during
-  standard-module initialization. Preserve caller-provided reset baselines.
-- Compile large complete metadata responses in a request-owned worker, transferring one encoded table at a
-  time and negotiating gzip without accepting `gzip;q=0`. Retain exact JSON, numeric precision, source
-  references, security epochs, backpressure, cancellation and the uncompressed representation.
-- Carry FetchXML's total-count-limit flag into model-driven grids, paging and subgrids, so a capped count
-  displays as `5000+` while subsequent pages and exact smaller filtered counts remain available.
-- Keep root client-resource provenance out of repeated table-body work, while retaining complete table and
-  root references. Separate source-tree traversal and client-asset budgets so large Solution trees retain
-  their scripts and PCF controls. Record constrained measurements and unresolved large-scale resource
-  failures in [consumer qualification](consumer-feedback.md); larger heaps are not laptop qualification.
-- Admit observed same-origin `/_pcfwebresource/<guid>` stylesheets after verifying CSS response bytes, retaining
-  credential, path, origin and size checks. Duplicate observations fetch once; failed captures keep the prior shell.
-- Preserve paragraphs, tables, preformatted blocks and native-style JSON hidden values in rich-text editors;
-  avoid unchanged synchronization feedback in both adapters. Wait for the actual editor document before readiness,
-  and retain read-only behavior. Exercise repeated postback/reopen and authored jQuery observers; the consumer's
-  exact unseen exception remains unverified in [consumer qualification](consumer-feedback.md).
-- Compare unchanged metadata against retained row stamps without allocating a field-pair tree on every read.
-  Invalidate column metadata, component presence and changed same-ID solution assets independently of row epochs.
-  Report runtime-module and context-preparation phases before listener startup.
-- Construct selected model-driven form bodies lazily while preserving the complete catalogue API. Avoid redundant
-  preset graph clones and off-page FetchXML payload copies, retaining totals, cookies, security and distinct semantics.
-  Qualify 1,000 tables / 1,000,000 rows / three roots across fresh, unchanged, journal and source-change starts,
-  plus a 900,000-row single-table distribution; see [measurements and limits](consumer-feedback.md).
-- Stage shell capture bytes and manifest entries until state publication succeeds. Roll back valid siblings as well
-  as failures, clean rejected staging/blobs, preserve stylesheet media/cascade occurrences, and reject origin collisions.
+- Load model-driven apps with only the navigation index and the selected table's metadata. Forms, views and fields
+  of other tables arrive when a lookup or subgrid needs them. The complete catalogue at `/_apps/api` still returns
+  every table, form, view and field, and a large catalogue is gzip-compressed when the client accepts gzip. See [startup and responsiveness](../mirage/docs/runtime-performance.md#model-driven-catalogue).
+- Derive column metadata once per request for wide records and FetchXML pages instead of once per row and column.
+  Edited labels and field security appear on the next request.
+- Add `createOwned()` preset factories, which hand a freshly generated dataset to the runtime without a retained
+  copy. Inside a factory, `records.table()` streams rows into checksummed paged record storage beside the state
+  file, with bounded read caches and a primary-key index. Snapshots, exports and record results remain ordinary
+  data, and existing `load()` presets keep their memoized, detached copies. See [data packs](../mirage/docs/data-packs.md)
+  and [generated record storage](../mirage/docs/record-storage.md).
+- Reduce memory and copying on large datasets during startup, journal replay, checkpoint restore and status polling.
+  Unchanged restarts journal only changed sections and tables, and still detect edits made between restarts. A
+  failed startup initialization is discarded instead of persisted.
+- Show a count above the native 5,000-record limit as `5000+` in model-driven grids and subgrids. Next-page
+  navigation continues past the limit, and smaller filtered results keep their exact count.
+- Keep scripts and PCF controls in very large Solution trees: source discovery and client-asset discovery have
+  separate budgets. Source edits to column labels or security, component presence and same-name solution assets
+  reach the served metadata even when no record changed.
+- Capture observed same-origin `/_pcfwebresource/<guid>` stylesheets, which have no file extension, after verifying
+  that the response is CSS; origin, credential, path and size checks still apply. Duplicate observations fetch once
+  and keep their media and cascade order. Two origins that would share one local path fail explicitly. A failed
+  capture or refresh keeps the previous shell, including its valid stylesheets.
+- Sanitize the local rich-text compatibility editor's content with DOMPurify: scripts, event handlers, `javascript:`
+  URLs, frames, objects and SVG/MathML markup are removed. A captured native CKEditor keeps its own filtering. See
+  [public API](public-api.md). Both editors keep paragraphs, tables and preformatted blocks across save and reopen,
+  store native-style JSON hidden values, skip writes and change events for unchanged content (so authored mutation
+  observers cannot loop) and report ready only after the editor's own document loads. Read-only fields stay read-only.
 - Admit each shared model-driven source file once per synchronous metadata projection, retaining fresh filesystem
   validation for subsequent queries and source-opening actions. Keep the source-byte cache bounded.
 - Use native Windows path resolution during source-index construction, preserving root confinement, file identity,
@@ -78,9 +62,10 @@
 - Remove verification's temporary copy asynchronously, so queued Windows directory-handle releases can finish, and retry
   a profile file the exited browser still holds with a linear backoff of up to 11 s.
 - Extend regressions for crowded cards, frame shortcuts, dynamic modal/quick-view identities, nested editors and
-  owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy,
-  covering tab/popup deadlines, cancellation, retry, watcher/agent continuity and shared transport loss.
-  Include a [redacted owned-browser test receipt](owned-target-timeout.md) in the installed package.
+  owned-browser target isolation. The latter drops actual CDP requests in an independent loopback WebSocket proxy:
+  a tab or popup whose interception setup fails or is cancelled closes alone, healthy tabs keep their drafts, watchers
+  and agent endpoints continue, a retried tab applies current sources, and losing the shared browser connection ends
+  the session. See [Lense](lense.md).
 
 Synthetic and native qualification are distinct. Loopback passes establish the exercised contracts; they do not
 establish native control coverage, a deployed source revision or production readiness.

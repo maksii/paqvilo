@@ -36,8 +36,12 @@ Startup reports configuration, source discovery, process ownership/import, brows
 
 Model-driven Lense has its own [startup deadline and paired local panel workflow](../mirage/docs/model-driven-customizations.md#pair-the-panel-with-a-standalone-local-app). In a multi-tab Power Pages session, failure to install interception on a newly opened target closes only that failed owned tab. An attached-browser target shows an explicit local failure page. Healthy tabs, drafts, source watchers and agent endpoints remain active; open a fresh tab to retry. A lost shared browser connection still ends the session. A failed target is never reported as a working local preview.
 
-The installed package includes a [redacted disposable owned-browser timeout receipt](owned-target-timeout.md),
-with the source-checkout command for reproducing tab/popup faults, cancellation, retry and shared-transport loss.
+In a toolkit source checkout,
+`node --test --import=./test/browser-bootstrap.mjs test-browser/dev-session-close-errors.test.mjs` exercises this
+isolation with a disposable owned browser profile on loopback. An independent proxy withholds the browser's answers
+to interception setup for a new tab, a popup and a tab closed before setup finished. Only those tabs close; two
+healthy tabs keep their unsaved drafts, the agent endpoints keep answering, the watcher applies a later source save
+in a retried tab, and losing the shared browser connection stops the session.
 
 ## What can I preview?
 
