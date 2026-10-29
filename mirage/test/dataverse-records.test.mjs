@@ -202,6 +202,29 @@ test('wide single-record reads reuse metadata during projection and observe late
   assert.ok(reads <= 2);
 });
 
+test('a single-record read checks only its own row for a stored currency, not every row of the table', async (t) => {
+  const runtime = await setup();
+  t.after(() => runtime.handlers.close());
+  let currencyReads = 0;
+  const counted = (row) =>
+    Object.defineProperty(row, 'transactioncurrencyid', {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        currencyReads++;
+        return null;
+      },
+    });
+  const ids = Array.from({ length: 2000 }, () => randomUUID());
+  for (const id of ids) runtime.store.state.tables.widget.push(counted({ widgetid: id, name: 'Invented' }));
+  const url = `/api/data/${VERSION}/widgets(${ids[1500]})`;
+  assert.equal((await runtime.send('GET', url)).status, 200);
+  currencyReads = 0;
+  const response = await runtime.send('GET', url);
+  assert.equal(response.status, 200);
+  assert.ok(currencyReads <= 4, `One record read the currency of ${currencyReads} rows`);
+});
+
 test('wide FetchXML pages derive record metadata per table and refresh it on the next request', async (t) => {
   const fields = {
     widgetid: { dataverseType: 'primarykey' },

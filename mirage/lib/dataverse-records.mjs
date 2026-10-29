@@ -497,16 +497,27 @@ export function createRecordHandlers({
     String(id ?? '')
       .replace(/[{}]/g, '')
       .toLowerCase();
+  // A keyed table answers each row through its primary key; a table without that index is scanned once per request.
   function currencyHeld(c, mapping, id) {
     const holders = (c.currencyHolders ??= new Map());
-    if (!holders.has(mapping.logicalName)) {
-      const rows = store.state.tables[mapping.logicalName] ?? [];
-      holders.set(
-        mapping.logicalName,
-        new Set(rows.filter((row) => row.transactioncurrencyid != null).map((row) => keyOfId(row[mapping.idColumn]))),
-      );
+    if (!holders.has(mapping.logicalName)) holders.set(mapping.logicalName, { ids: new Map(), all: null });
+    const table = holders.get(mapping.logicalName),
+      key = keyOfId(id);
+    if (!table.all && !table.ids.has(key)) {
+      const stored = typeof id === 'string' ? store.primaryKeySubset(mapping, [id]) : null;
+      if (stored)
+        table.ids.set(
+          key,
+          stored.some((row) => row.transactioncurrencyid != null),
+        );
+      else {
+        const rows = store.state.tables[mapping.logicalName] ?? [];
+        table.all = new Set(
+          rows.filter((row) => row.transactioncurrencyid != null).map((row) => keyOfId(row[mapping.idColumn])),
+        );
+      }
     }
-    return holders.get(mapping.logicalName).has(keyOfId(id));
+    return table.all ? table.all.has(key) : table.ids.get(key);
   }
   // A write that gives a money column a non-null value stores the base currency on the row, once the organization has one.
   // A row never given a money value has no currency lookup; setting a money value supplies one.
