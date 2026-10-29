@@ -97,9 +97,11 @@ Bulk ordinary-data copies avoid the native serialization buffer while
 preserving aliases, cycles and structured-clone fallback behavior. Owned preset
 seeding avoids copying rows whose defaults are already satisfied. Bounded flat
 record encoding retains checkpoint bytes, digests and chunk limits. Complete
-metadata encoding admits one table at a time, retains the security read epoch
-through streaming, and stops on disconnect; custom complete-value writers retain
-cooperative eager preparation. Compiled table bodies are weakly cached.
+metadata encoding admits one table at a time and stops on disconnect; table
+rights are evaluated in the security read, which is released before bodies are
+compiled, encoded and sent. Custom complete-value writers retain cooperative
+eager preparation. Compiled table bodies are weakly cached and the 16 most
+recent are held strongly.
 The bulk copier also covers Solution refresh, dataset merging, configuration
 presets and simulation persistence. Offline data commands adopt their own
 detached output instead of making unused complete input/result copies; their
@@ -173,12 +175,13 @@ qualification. Sampled server/browser/client working sets summed to roughly
 6.2 GiB near the failure; the Windows sum can count shared pages more than once
 and sampling does not establish the instantaneous peak or mobile-i5 performance.
 
-Large complete metadata responses now compile in one request-owned worker and
-transfer one encoded table at a time. Gzip negotiation keeps table buffers
-compressed across the worker and HTTP boundary; identity encoding remains
-available. Byte comparisons cover the complete metadata, source references,
+Large complete metadata responses compile in a metadata worker thread, which
+stays warm for 30 seconds after a response, and transfer one encoded table at a
+time. A negotiated gzip body is one gzip stream compressed off the event loop;
+identity encoding remains available. Byte comparisons cover the complete metadata, source references,
 numeric precision and field permissions, including compact provenance. Errors
-and disconnects terminate the worker and release the serialized read. These
+and disconnects terminate the worker; the serialized read covers only the
+catalogue snapshot and table rights. These
 changes passed a 200-table / 20,000-row fresh browser audit (409,708,979 decoded
 response bytes in 10.6 seconds). Further regressions reduced a 257-field table's
 capability metadata derivations from 258 to two, and removed 102,800 unrelated
