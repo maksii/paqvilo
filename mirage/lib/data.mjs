@@ -36,7 +36,7 @@ import { assertElasticRecord, isElastic, samePartition, recordKey } from './data
 import { relationshipsOf } from './dataverse-standard.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
-import { stateDigest } from './state-stream.mjs';
+import { jsonChunks, stateDigest } from './state-stream.mjs';
 import { initializationFingerprint, initializationDelta, initializationEntries } from './state-initialization.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
 import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } from './platform-settings.mjs';
@@ -836,6 +836,23 @@ function normalizeState(
   return reconcilePermissionDiagnostics(applyPlatformConfig(result, platform));
 }
 
+// Temporary record directories of stores without a state file, by directory.
+// closeRecordStorage() removes an entry; process exit removes what remains.
+const temporaryRecordDirectories = new Map();
+const ownedTemporaryRecordDirectory = (directory) =>
+  dirname(directory) === fsSync.realpathSync.native(tmpdir()) &&
+  basename(directory).startsWith('paqvilo-record-state-');
+function removeTemporaryRecordDirectories() {
+  for (const [directory, session] of temporaryRecordDirectories)
+    try {
+      session.deref()?.close();
+      if (ownedTemporaryRecordDirectory(directory)) fsSync.rmSync(directory, { recursive: true, force: true });
+    } catch {
+      // Best effort: the process is exiting and an open handle keeps the files.
+    }
+  temporaryRecordDirectories.clear();
+}
+
 function traceRetentionError(original, persistence) {
   const failure = new AggregateError([original, persistence], persistence.message, { cause: original });
   failure.code = persistence.code ?? 'PluginTracePersistenceFailed';
@@ -973,7 +990,11 @@ export class DataStore {
         ? resolve(this.file) + '.records'
         : fsSync.mkdtempSync(join(tmpdir(), 'paqvilo-record-state-'));
       this.recordSession = new RecordPageSession(directory, { stateOwner: this.file ?? undefined });
-      if (!this.file) this.temporaryRecordDirectory = this.recordSession.directory;
+      if (!this.file) {
+        this.temporaryRecordDirectory = this.recordSession.directory;
+        if (!temporaryRecordDirectories.size) process.once('exit', removeTemporaryRecordDirectories);
+        temporaryRecordDirectories.set(this.temporaryRecordDirectory, new WeakRef(this.recordSession));
+      }
     }
     return this.recordSession;
   }
@@ -999,14 +1020,142 @@ export class DataStore {
     this.recordSession = null;
     if (this.temporaryRecordDirectory) {
       const directory = this.temporaryRecordDirectory;
-      if (
-        dirname(directory) !== fsSync.realpathSync.native(tmpdir()) ||
-        !basename(directory).startsWith('paqvilo-record-state-')
-      )
+      if (!ownedTemporaryRecordDirectory(directory))
         throw Error('Temporary record directory is outside its owned root');
       fsSync.rmSync(directory, { recursive: true, force: true });
       this.temporaryRecordDirectory = null;
+      temporaryRecordDirectories.delete(directory);
+      if (!temporaryRecordDirectories.size) process.off('exit', removeTemporaryRecordDirectories);
     }
+  }
+  /** Release record pages and remove a temporary record directory (closeRecordStorage). */
+  close() {
+    this.closeRecordStorage();
+  }
+  /**
+   * Run `fn(lease)` once earlier transactions settle; no transaction starts until
+   * it does. A transaction requested meanwhile first calls `lease.onContention()`
+   * once, synchronously, so `fn` can copy what it still reads from live state
+   * and settle; `lease.contended` is already true if that request preceded `fn`.
+   */
+  readLease(fn) {
+    const lease = { contended: false, onContention: null };
+    (this.readLeases ??= new Set()).add(lease);
+    const run = this.queue.then(() => fn(lease)).finally(() => this.readLeases.delete(lease));
+    this.queue = run.catch(() => {});
+    return run;
+  }
+  contendReadLeases() {
+    for (const lease of this.readLeases ?? [])
+      if (!lease.contended) {
+        lease.contended = true;
+        lease.onContention?.();
+      }
+  }
+  /**
+   * Stream a detached, consistent JSON export to `consume(chunks)` (an iterable of
+   * strings) without a second copy of plain tables. Sections are copied and paged
+   * tables forked; plain rows are encoded in place under a read lease. A
+   * transaction requested meanwhile first copies the rows not yet encoded, then
+   * runs while the export continues from that copy. `adjust(sections)` may edit
+   * the copied sections; `project` is the jsonChunks projection.
+   */
+  exportState(consume, { adjust, project } = {}) {
+    let writing;
+    return this.readLease(async (lease) => {
+      const { tables = {}, ...rest } = this.state,
+        sections = cloneStateData(rest, { forkTables: true }),
+        order = Object.keys(this.state),
+        sources = Object.entries(tables).map(([name, rows]) => ({
+          name,
+          rows: pagedRecordsOf(rows) ? pagedRecordsOf(rows).fork() : rows,
+          live: !pagedRecordsOf(rows),
+          offset: 0,
+        }));
+      (this.snapshotRevisions ??= new WeakMap()).set(sections, this.revision);
+      adjust?.(sections);
+      let table = 0,
+        row = 0,
+        failure = null;
+      // Copy every row not yet encoded: the rest of the current table and all later ones.
+      const detach = () => {
+        for (let index = table; index < sources.length; index++) {
+          const source = sources[index];
+          if (!source.live) continue;
+          const from = index === table ? row : 0;
+          source.rows = cloneStateData(source.rows.slice(from));
+          source.offset = from;
+          source.live = false;
+        }
+      };
+      const options = project ? { project } : {};
+      function* chunks() {
+        let text = '{',
+          first = true;
+        // A copy that failed during contention ends the export at its next chunk.
+        const flush = function* () {
+          yield text;
+          text = '';
+          if (failure) throw failure;
+        };
+        const append = function* (encoded) {
+          for (const chunk of encoded) {
+            text += chunk;
+            if (text.length >= 65536) yield* flush();
+          }
+        };
+        const member = function* (key, value) {
+          const encoded = jsonChunks(value, options),
+            head = encoded.next();
+          // A section that encodes to nothing (undefined) is omitted, as in JSON.
+          if (head.done) return;
+          text += (first ? '' : ',') + JSON.stringify(key) + ':';
+          first = false;
+          yield* append([head.value]);
+          yield* append(encoded);
+        };
+        for (const key of order) {
+          if (key !== 'tables') {
+            if (Object.hasOwn(sections, key)) yield* member(key, sections[key]);
+            continue;
+          }
+          text += (first ? '' : ',') + '"tables":{';
+          first = false;
+          for (table = 0; table < sources.length; table++) {
+            const source = sources[table];
+            text += (table ? ',' : '') + JSON.stringify(source.name) + ':';
+            if (pagedRecordsOf(source.rows)) yield* append(jsonChunks(source.rows, options));
+            else {
+              const length = source.offset + source.rows.length;
+              text += '[';
+              for (row = 0; row < length; row++) {
+                text +=
+                  (row ? ',' : '') + ([...jsonChunks(source.rows[row - source.offset], options)].join('') || 'null');
+                if (text.length >= 65536) yield* flush();
+              }
+              text += ']';
+            }
+          }
+          table = sources.length;
+          text += '}';
+        }
+        yield text + '}';
+      }
+      let released;
+      const contention = new Promise((resolve) => (released = resolve));
+      lease.onContention = () => {
+        // The requesting transaction is unrelated to this export and never sees its failure.
+        try {
+          detach();
+        } catch (error) {
+          failure = error;
+        }
+        released();
+      };
+      if (lease.contended) lease.onContention();
+      writing = consume(chunks());
+      await Promise.race([writing, contention]);
+    }).then(() => writing);
   }
   snapshot(projection, options) {
     if (projection === undefined) {
@@ -1102,10 +1251,18 @@ export class DataStore {
     const recordDirectory = fsSync.existsSync(intendedRecords)
       ? fsSync.realpathSync.native(intendedRecords)
       : join(fsSync.realpathSync.native(dirname(intendedRecords)), basename(intendedRecords));
+    // A store that created pages before a state file was bound (an in-memory
+    // session) moves them next to the file on its first save.
     if (this.recordSession && this.recordSession.directory !== recordDirectory) {
       await this.storage.assertUnchanged();
       const migrated = await compactRecordGraph(selectedState, recordDirectory, { stateOwner: this.file });
-      if (migrated) {
+      if (!migrated) {
+        // No published table uses the foreign session. Later tables start in
+        // the file's own directory instead of being migrated on every save.
+        (this.retiredRecordSessions ??= new Set()).add(this.recordSession);
+        this.recordSession = null;
+        this.scheduleRecordRetirement();
+      } else {
         const previous = this.recordSession;
         // Point the manager at its unpublished destination for this recursive
         // save; the state graph itself remains on the preceding live pages.
@@ -1117,7 +1274,7 @@ export class DataStore {
           published = true;
           this.storage.recordSession = migrated.session;
           (this.retiredRecordSessions ??= new Set()).add(previous);
-          this.retireRecordSessions();
+          this.scheduleRecordRetirement();
           return;
         } finally {
           if (!published) {
@@ -1315,6 +1472,7 @@ export class DataStore {
       })();
     if (privateInitialization && (!this.unpublished || this.initializationFailed))
       throw new Error('Private initialization requires an unpublished, usable store.');
+    this.contendReadLeases();
     const frame = { store: this, working: null, initializing: privateInitialization };
     const run = this.queue.then(async () => {
       let initializationDigest = null;
@@ -1324,7 +1482,7 @@ export class DataStore {
             ? this.initializationFingerprintCache?.file === this.file &&
               this.initializationFingerprintCache.digest === this.persistedDigest
               ? this.initializationFingerprintCache.value
-              : initializationFingerprint(this._state)
+              : await initializationFingerprint(this._state)
             : stateDigest(this._state, { sortKeys: true });
       } catch (error) {
         frame.closed = true;
@@ -1379,7 +1537,7 @@ export class DataStore {
         const staged = this.stageOnCommit(this.committedEventCandidates);
         const journalInitialization = initializationDigest && typeof initializationDigest === 'object';
         if (journalInitialization) {
-          const delta = initializationDelta(initializationDigest, this.state);
+          const delta = await initializationDelta(initializationDigest, this.state);
           frame.initializationDelta = delta.changes;
           frame.initializationFingerprint = delta.fingerprint;
         }
@@ -1516,6 +1674,7 @@ export class DataStore {
   /** Rewrite a streamed checkpoint without copying the in-memory state. Queued
    * with writes; call during an idle period to bound append-journal disk usage. */
   compact() {
+    this.contendReadLeases();
     const run = this.queue.then(async () => {
       const oldSession = this.recordSession ?? this.storage?.recordSession;
       if (!oldSession) return this.save();
@@ -1531,10 +1690,8 @@ export class DataStore {
         this.sectionSnapshot = null;
         this.initializationFingerprintCache = null;
         (this.retiredRecordSessions ??= new Set()).add(oldSession);
-        this.retireRecordSessions();
+        this.scheduleRecordRetirement();
         await this.collectRecordStorage();
-        this.recordRetirementTimer ??= setInterval(() => this.retireRecordSessions(), 2000);
-        this.recordRetirementTimer.unref();
       } finally {
         if (!published) {
           compacted.session.close();
@@ -1555,6 +1712,18 @@ export class DataStore {
         this.recordCleanupError = error;
       }
     }
+    if (!this.retiredRecordSessions?.size) {
+      clearInterval(this.recordRetirementTimer);
+      this.recordRetirementTimer = null;
+    }
+  }
+  /** Close retired sessions now; recheck the ones that still back live tables
+   * every 2 s (without holding the process open) until none remain. */
+  scheduleRecordRetirement() {
+    this.retireRecordSessions();
+    if (!this.retiredRecordSessions?.size || this.recordRetirementTimer) return;
+    this.recordRetirementTimer = setInterval(() => this.retireRecordSessions(), 2000);
+    this.recordRetirementTimer.unref();
   }
   async collectRecordStorage() {
     const session = this.recordSession;

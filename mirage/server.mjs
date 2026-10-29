@@ -49,7 +49,6 @@ import { nativeRichTextReady } from './lib/richtext-readiness.mjs';
 import { renderSettings } from './lib/render-settings.mjs';
 import { createSetupHandler } from '../lense/setup/server.mjs';
 import { parseExactJson, stringifyExactJson, isExactNumeric } from './lib/exact-numeric.mjs';
-import { jsonChunks } from './lib/state-stream.mjs';
 import {
   attachODataReaderDetails,
   attachODataJsonSource,
@@ -487,7 +486,18 @@ export async function createSimulator(options = {}) {
   try {
     return await createPowerPagesSimulator({ ...options, runtime, [RECORD_OWNERS]: owners });
   } catch (error) {
-    for (const owner of owners) owner.closeRecordStorage?.();
+    // Close every owner; a close failure never hides the startup failure.
+    const errors = [];
+    for (const owner of owners)
+      try {
+        owner.closeRecordStorage?.();
+      } catch (closeError) {
+        errors.push(closeError);
+      }
+    if (errors.length)
+      throw new AggregateError([error, ...errors], 'Simulator startup failed and record storage failed to close', {
+        cause: error,
+      });
     throw error;
   }
 }
@@ -2344,7 +2354,11 @@ async function createPowerPagesSimulator({
     );
     // Preserve all unspecified state, without copying business sections that
     // this preset replaces. Organization-owned rows are retained explicitly.
-    const state = store.snapshot({ sections: Object.keys(store.state).filter((key) => !replaced.includes(key)) });
+    // Paged tables fork their immutable pages instead of materializing rows.
+    const state = store.snapshot(
+      { sections: Object.keys(store.state).filter((key) => !replaced.includes(key)) },
+      { forkTables: true },
+    );
     state.simulator ??= config();
     const organizationSections = {
       mappings: store.state.mappings,
@@ -3546,27 +3560,23 @@ async function createPowerPagesSimulator({
     if (await environmentRoutes(req, res, url)) return;
     if (method === 'GET' && relative === '/state/export') {
       // Credential material never leaves the runtime: password hashes are dropped and secrets keep only hint and expiry.
-      const snapshot = store.snapshot(undefined, { forkTables: true });
-      if (snapshot.dataverse)
-        snapshot.dataverse = {
-          ...snapshot.dataverse,
-          passwords: undefined,
-          applications: (snapshot.dataverse.applications ?? []).map(({ secrets, ...app }) => ({
-            ...app,
-            secrets: (secrets ?? []).map(({ id, hint, expiresOn }) => ({ id, hint, expiresOn })),
-          })),
-        };
-      return json(
-        res,
-        200,
-        snapshot,
+      // Plain table rows stream in place under a read lease rather than from a second full copy.
+      return store.exportState(
+        (chunks) =>
+          json(res, 200, {}, { 'content-disposition': 'attachment; filename="simulator-state.json"' }, { chunks }),
         {
-          'content-disposition': 'attachment; filename="simulator-state.json"',
-        },
-        {
-          chunks: jsonChunks(snapshot, {
-            project: (item) => (isExactNumeric(item) ? JSON.rawJSON(stringifyExactJson(item)) : item),
-          }),
+          adjust: (snapshot) => {
+            if (snapshot.dataverse)
+              snapshot.dataverse = {
+                ...snapshot.dataverse,
+                passwords: undefined,
+                applications: (snapshot.dataverse.applications ?? []).map(({ secrets, ...app }) => ({
+                  ...app,
+                  secrets: (secrets ?? []).map(({ id, hint, expiresOn }) => ({ id, hint, expiresOn })),
+                })),
+              };
+          },
+          project: (item) => (isExactNumeric(item) ? JSON.rawJSON(stringifyExactJson(item)) : item),
         },
       );
     }
@@ -3895,7 +3905,8 @@ async function createPowerPagesSimulator({
       return change(async () => {
         const runtimeStore = {
           resolveMapping: (entity) => store.resolveMapping(entity),
-          snapshot: (projection) => store.snapshot(projection),
+          // The plan writes this snapshot back; paged tables stay forked pages.
+          snapshot: (projection) => store.snapshot(projection, { forkTables: true }),
           snapshotDigest: () => store.snapshotDigest(),
           replaceState: async (state, { expectedSnapshot, expectedDigest } = {}) => {
             if (expectedDigest !== undefined && store.snapshotDigest() !== expectedDigest)

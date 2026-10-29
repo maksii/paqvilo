@@ -167,8 +167,11 @@ test('large streamed JSON scans segments across every scalar escape boundary and
 });
 
 test('stream consumers can coalesce completed objects before later input is read and still receive full data', async () => {
+  // A document beyond the native-parser budget streams: each object completes
+  // before later input is read.
   const completed = [];
   async function* chunks() {
+    yield ' '.repeat(8 * 1024 * 1024 + 1);
     yield '{"first":{"text":"one"},';
     assert.equal(completed.length, 1);
     yield '"second":{"text":"two"}}';
@@ -176,6 +179,26 @@ test('stream consumers can coalesce completed objects before later input is read
   const value = await parseJsonStream(chunks(), { onObject: (item) => completed.push(item) });
   assert.deepEqual(value, { first: { text: 'one' }, second: { text: 'two' } });
   assert.deepEqual(completed, [value.first, value.second, value]);
+});
+
+test('bounded documents parse natively and still report every completed object, children first', async () => {
+  const completed = [];
+  let reads = 0;
+  function* chunks() {
+    yield '{"first":{"text":"one","rows":[{"a":1},[{"b":2}]]},';
+    // A native parse reads the whole bounded document before any callback.
+    assert.equal(completed.length, 0);
+    reads++;
+    yield '"second":{"text":"two"},"list":[1,null,"x"]}';
+  }
+  const value = await parseJsonStream(chunks(), { onObject: (item) => completed.push(item) });
+  assert.equal(reads, 1);
+  assert.deepEqual(value, {
+    first: { text: 'one', rows: [{ a: 1 }, [{ b: 2 }]] },
+    second: { text: 'two' },
+    list: [1, null, 'x'],
+  });
+  assert.deepEqual(completed, [value.first.rows[0], value.first.rows[1][0], value.first, value.second, value]);
 });
 
 test('legacy JSON loads, large checkpoints stream, and digests cover exact committed bytes', async (t) => {
@@ -244,6 +267,105 @@ test('large metadata and individual records are fragmented without a document-si
   assert.deepEqual(selected, { simulator: store.state.simulator });
   await store.update('items', 'one', { details: [...initial.tables.item[0].details, { key: 'last' }] });
   assert.deepEqual(await readStateFile(file), store.snapshot());
+});
+
+test('fragment records embed JSON unescaped and restore exact shapes, selections and torn tails', async (t) => {
+  const { store, file } = await workspace(t);
+  const sparse = [1];
+  sparse[3] = 'after a hole';
+  const quoted = 'Say "hi" to \\ and \u{1f600} ';
+  const value = JSON.parse('{"__proto__":{"own":true}}');
+  Object.assign(value, {
+    quoted,
+    omitted: undefined,
+    when: new Date(0),
+    boxed: new Number(7),
+    sparse,
+    // Each member exceeds one fragment value, so it is written member by member.
+    wide: Array.from({ length: 30000 }, (_, i) => ({ id: i, label: quoted + i })),
+    nested: { rows: Array.from({ length: 40000 }, (_, i) => [i, quoted]), small: { ok: true } },
+    // A single string longer than a fragment value is written as raw JSON text lines.
+    long: quoted.repeat(80000),
+  });
+  const expected = JSON.parse(JSON.stringify(value));
+  const before = (await fs.stat(file)).size;
+  await store.storage.appendChanges([{ op: 'section', key: 'simulator', value }]);
+  const appended = (await fs.readFile(file, 'utf8')).slice(before);
+  const lines = appended.split('\n');
+  assert.ok(lines.includes('{"op":"fragments","encoding":"records"}'));
+  assert.ok(lines.some((line) => line.startsWith('["a","wide"]')));
+  assert.ok(lines.some((line) => line.startsWith('["o","nested"]')));
+  assert.ok(lines.some((line) => line.startsWith('["r","long"]')));
+  assert.equal(
+    lines.some((line) => line.startsWith('{"chunk"')),
+    false,
+  );
+  // Text is escaped once, as in an ordinary JSON document.
+  assert.ok(appended.includes(JSON.stringify(quoted)));
+  assert.equal(appended.includes(JSON.stringify(JSON.stringify(quoted))), false);
+  const storage = new StateStorage(file);
+  const restored = await storage.load();
+  assert.deepEqual(restored.simulator, expected);
+  assert.equal(Object.hasOwn(restored.simulator, '__proto__'), true);
+  assert.equal(1 in restored.simulator.sparse, true, 'Holes restore as null, as JSON.parse reads them.');
+  const selected = new StateStorage(file);
+  assert.deepEqual(Object.keys(await selected.load({ sections: ['settings'] })), ['settings']);
+  assert.equal(selected.skippedFragmentEntries, 1);
+  // A transaction torn inside its fragment records is discarded on restart.
+  const committed = (await fs.stat(file)).size;
+  await store.storage.appendChanges([{ op: 'section', key: 'simulator', value: { ...value, quoted: 'Torn' } }]);
+  await fs.truncate(file, committed + Math.floor(((await fs.stat(file)).size - committed) / 2));
+  const recovered = new StateStorage(file);
+  assert.deepEqual((await recovered.load()).simulator, expected);
+  assert.equal(recovered.recoveredTail, true);
+});
+
+test('section reads checksum table operations without parsing them', async (t) => {
+  const initial = seed();
+  initial.tables.item = Array.from({ length: 500 }, (_, i) => ({ itemid: 'row-' + i, name: 'Invented ' + i }));
+  const { store, file } = await workspace(t, initial);
+  await store.update('items', 'row-7', { name: 'Changed' });
+  const selected = new StateStorage(file);
+  assert.deepEqual(await selected.load({ sections: ['settings', 'mappings'] }), {
+    settings: store.state.settings,
+    mappings: store.state.mappings,
+  });
+  assert.equal(selected.skippedTableEntries, 502, 'The table, its rows and the later edit are not parsed.');
+  const full = new StateStorage(file);
+  assert.equal((await full.load()).tables.item[7].name, 'Changed');
+  assert.equal(full.skippedTableEntries, 0);
+  // Skipped bytes still count toward the checksum of their transaction.
+  const text = await fs.readFile(file, 'utf8');
+  await fs.writeFile(file, text.replace('"name":"Invented 9"', '"name":"Invented 8"'));
+  await assert.rejects(new StateStorage(file).load({ sections: ['settings'] }), { code: 'StateIntegrity' });
+});
+
+test('journals written with escaped chunk fragments still load, select and verify', async (t) => {
+  const root = await makeTemporaryDirectory(join(tmpdir(), 'mirage-legacy-fragments-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = join(root, 'state.json');
+  const settings = { permissionMode: 'enforce', text: 'Legacy "chunk" text '.repeat(5000) };
+  const entry = JSON.stringify({ op: 'section', key: 'settings', value: settings });
+  const third = Math.ceil(entry.length / 3);
+  const body = [
+    '{"$paqvilo":"mirage-state-journal-v1"}',
+    '{"op":"begin"}',
+    '{"op":"fragments"}',
+    ...[0, 1, 2].map((part) => JSON.stringify({ chunk: entry.slice(part * third, (part + 1) * third) })),
+    '{"op":"end-fragments"}',
+    '{"op":"table","table":"item"}',
+  ]
+    .map((line) => line + '\n')
+    .join('');
+  const { createHash } = await import('node:crypto');
+  const digest = createHash('sha256').update(body).digest('hex');
+  await fs.writeFile(file, body + JSON.stringify({ op: 'commit', digest }) + '\n');
+  const storage = new StateStorage(file);
+  assert.deepEqual(await storage.load(), { tables: { item: [] }, settings });
+  assert.equal(storage.digest, await hashStateFile(file));
+  const selected = new StateStorage(file);
+  assert.deepEqual(await selected.load({ sections: ['simulator'] }), {});
+  assert.equal(selected.skippedFragmentEntries, 1);
 });
 
 test('stale and concurrent runtimes cannot replace committed rows', async (t) => {

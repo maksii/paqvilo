@@ -58,17 +58,21 @@ function flatJson(item, budget, sortKeys, shapes) {
 // Bound intermediate strings to one JSON scalar, rather than the document size.
 // Chunk boundaries may fall inside UTF-8, escapes, numbers or property names.
 export async function parseJsonStream(chunks, { onObject } = {}) {
-  // Source caches can coalesce immutable text as each entry completes, before
-  // the rest of a large cache is resident. Ordinary state reads keep the fast path.
-  if (onObject) return parseLargeJsonStream(chunks, onObject);
   // Most individual journal entries fit in a bounded native parse. Keep the
   // streaming fallback for documents larger than this fixed allocation budget.
+  // `onObject` sees every completed object, children first: after a native
+  // parse in document order, or while a larger document streams, so consumers
+  // can coalesce immutable text before the rest of that document is resident.
   const iterator = chunks[Symbol.asyncIterator] ? chunks[Symbol.asyncIterator]() : chunks[Symbol.iterator]();
   const prefix = [];
   let length = 0;
   while (length <= 8 * 1024 * 1024) {
     const next = await iterator.next();
-    if (next.done) return JSON.parse(prefix.join(''));
+    if (next.done) {
+      const value = JSON.parse(prefix.join(''));
+      if (onObject) visitObjects(value, onObject);
+      return value;
+    }
     const chunk = String(next.value);
     prefix.push(chunk);
     length += chunk.length;
@@ -85,7 +89,29 @@ export async function parseJsonStream(chunks, { onObject } = {}) {
       await iterator.return?.();
     }
   }
-  return parseLargeJsonStream(remaining());
+  return parseLargeJsonStream(remaining(), onObject);
+}
+
+// Children before their parent, as the streaming parser completes them. An
+// explicit stack keeps deeply nested documents off the call stack; arrays are
+// walked by index rather than through a key list.
+function visitObjects(root, onObject) {
+  const enter = (value) => {
+    const array = Array.isArray(value);
+    return { value, array, keys: array ? null : Object.keys(value), length: array ? value.length : 0, index: 0 };
+  };
+  if (root === null || typeof root !== 'object') return;
+  const stack = [enter(root)];
+  while (stack.length) {
+    const frame = stack.at(-1);
+    if (frame.index < (frame.array ? frame.length : frame.keys.length)) {
+      const item = frame.array ? frame.value[frame.index++] : frame.value[frame.keys[frame.index++]];
+      if (item !== null && typeof item === 'object') stack.push(enter(item));
+      continue;
+    }
+    stack.pop();
+    if (!frame.array) onObject(frame.value);
+  }
 }
 
 async function parseLargeJsonStream(chunks, onObject) {
@@ -213,22 +239,26 @@ async function parseLargeJsonStream(chunks, onObject) {
 
 // One generator with an explicit container stack: nested `yield*` would pass every token through each enclosing level,
 // which made hashing and writing deep state the dominant cost of a simulation-level save.
-export function* jsonChunks(value, { sortKeys = false, project, recordVersions = false } = {}) {
+// JSON.stringify's member preparation: stored record views, toJSON(key) and boxed primitives.
+function prepare(item, key) {
+  item = rawRecordOf(item) ?? item;
+  if (item !== null && (typeof item === 'object' || typeof item === 'function' || typeof item === 'bigint')) {
+    const toJSON = item.toJSON;
+    if (typeof toJSON === 'function') item = Reflect.apply(toJSON, item, [key]);
+  }
+  if (types.isNumberObject(item)) item = +item;
+  else if (types.isStringObject(item)) item = String(item);
+  else if (types.isBooleanObject(item)) item = Boolean.prototype.valueOf.call(item);
+  else if (types.isBigIntObject(item)) item = BigInt.prototype.valueOf.call(item);
+  return item;
+}
+const omitted = (item) => item === undefined || typeof item === 'function' || typeof item === 'symbol';
+
+// `prepared` marks a value that prepare() already produced; it is not prepared twice.
+export function* jsonChunks(value, { sortKeys = false, project, recordVersions = false, prepared = false } = {}) {
   const ancestors = new Set(),
     stack = [],
     shapes = sortKeys ? new Map() : null;
-  const prepare = (item, key) => {
-    item = rawRecordOf(item) ?? item;
-    if (item !== null && (typeof item === 'object' || typeof item === 'function' || typeof item === 'bigint')) {
-      const toJSON = item.toJSON;
-      if (typeof toJSON === 'function') item = Reflect.apply(toJSON, item, [key]);
-    }
-    if (types.isNumberObject(item)) item = +item;
-    else if (types.isStringObject(item)) item = String(item);
-    else if (types.isBooleanObject(item)) item = Boolean.prototype.valueOf.call(item);
-    else if (types.isBigIntObject(item)) item = BigInt.prototype.valueOf.call(item);
-    return item;
-  };
   // A scalar's JSON text, or the opening bracket of a container pushed onto the stack.
   const enter = (item) => {
     // Private comparison receipts use an impossible JSON token. A user-authored
@@ -257,8 +287,8 @@ export function* jsonChunks(value, { sortKeys = false, project, recordVersions =
   };
   // Chunks end after the first token that reaches 64 KiB, so every token append is followed by this check.
   let chunk = '';
-  value = prepare(value, '');
-  if (value === undefined || typeof value === 'function' || typeof value === 'symbol') return;
+  if (!prepared) value = prepare(value, '');
+  if (omitted(value)) return;
   for (let token = enter(value); ;) {
     chunk += token;
     if (chunk.length >= 65536) {
@@ -307,6 +337,139 @@ export function* jsonChunks(value, { sortKeys = false, project, recordVersions =
     token = frame.list ? ']' : '}';
   }
   if (chunk) yield chunk;
+}
+
+// Fragment records of one large JSON value. Each line is itself JSON, so values
+// are embedded as JSON text (never escaped into a string) and parse natively:
+//   ["v",key,value]  a complete member: object key string, or null in an array
+//   ["o",key] / ["a",key]  open an object or array member; ["c"] closes it
+//   ["r",key], then ">"-prefixed JSON text lines, then ["e"]  one member too
+//     large to split (a long string or a stored record table), as JSON text
+// The root object itself is implicit: its members follow without an "o".
+const FRAGMENT_VALUE_BUDGET = 1024 * 1024;
+const splittable = (item) =>
+  item !== null &&
+  typeof item === 'object' &&
+  !types.isProxy(item) &&
+  !JSON.isRawJSON?.(item) &&
+  (Array.isArray(item) || [Object.prototype, null].includes(Object.getPrototypeOf(item)));
+function boundedJson(item, budget) {
+  let text = '';
+  for (const chunk of jsonChunks(item, { prepared: true })) {
+    text += chunk;
+    if (text.length > budget) return null;
+  }
+  return text;
+}
+export function* jsonFragmentRecords(value, { budget = FRAGMENT_VALUE_BUDGET } = {}) {
+  const root = prepare(value, '');
+  if (!splittable(root) || Array.isArray(root)) throw new TypeError('Fragment records require an object root');
+  const ancestors = new Set([root]);
+  const frame = (item) => ({
+    item,
+    list: Array.isArray(item),
+    keys: Array.isArray(item) ? null : Object.keys(item),
+    length: item.length,
+    index: 0,
+  });
+  const stack = [frame(root)];
+  while (stack.length) {
+    const top = stack.at(-1);
+    let label, item;
+    if (top.list) {
+      if (top.index < top.length) {
+        const key = String(top.index++);
+        item = prepare(top.item[key], key);
+        if (omitted(item)) item = null;
+        label = 'null';
+      }
+    } else
+      while (top.index < top.keys.length) {
+        const key = top.keys[top.index++];
+        item = prepare(top.item[key], key);
+        if (omitted(item)) continue;
+        label = JSON.stringify(key);
+        break;
+      }
+    if (label === undefined) {
+      stack.pop();
+      ancestors.delete(top.item);
+      if (stack.length) yield '["c"]';
+      continue;
+    }
+    if (splittable(item) && ancestors.has(item)) throw new TypeError('Cannot persist circular state');
+    const text = boundedJson(item, budget);
+    if (text !== null) yield `["v",${label},${text}]`;
+    else if (splittable(item)) {
+      ancestors.add(item);
+      stack.push(frame(item));
+      yield `["${Array.isArray(item) ? 'a' : 'o'}",${label}]`;
+    } else {
+      yield `["r",${label}]`;
+      for (const chunk of jsonChunks(item, { prepared: true })) yield '>' + chunk;
+      yield '["e"]';
+    }
+  }
+}
+
+/** Rebuild the value of jsonFragmentRecords() line by line. `onObject` sees
+ * every completed object, children first, as parseJsonStream() reports them. */
+export function createFragmentAssembler(onObject) {
+  const root = {},
+    stack = [{ value: root, list: false }],
+    invalid = () => new SyntaxError('Invalid state JSON fragment record');
+  let raw = null;
+  const attach = (key, value) => {
+    const top = stack.at(-1);
+    if (top.list) {
+      if (key !== null) throw invalid();
+      top.value.push(value);
+    } else {
+      if (typeof key !== 'string') throw invalid();
+      Object.defineProperty(top.value, key, { value, enumerable: true, configurable: true, writable: true });
+    }
+  };
+  return {
+    root,
+    /** The root's members so far, while it is the open container. */
+    get rootOpen() {
+      return stack.length === 1 && raw === null;
+    },
+    async add(line) {
+      if (raw !== null && line[0] === '>') {
+        raw.parts.push(line.slice(1));
+        return;
+      }
+      const record = JSON.parse(line);
+      if (!Array.isArray(record)) throw invalid();
+      const [kind, key, value] = record;
+      if (raw !== null) {
+        if (kind !== 'e' || record.length !== 1) throw invalid();
+        const parsed = await parseJsonStream(raw.parts, { onObject });
+        const target = raw.key;
+        raw = null;
+        attach(target, parsed);
+      } else if (kind === 'v' && record.length === 3) {
+        if (onObject && value !== null && typeof value === 'object') visitObjects(value, onObject);
+        attach(key, value);
+      } else if ((kind === 'o' || kind === 'a') && record.length === 2) {
+        const container = kind === 'a' ? [] : {};
+        attach(key, container);
+        stack.push({ value: container, list: kind === 'a' });
+      } else if (kind === 'c' && record.length === 1 && stack.length > 1) {
+        const closed = stack.pop();
+        if (!closed.list) onObject?.(closed.value);
+      } else if (kind === 'r' && record.length === 2) {
+        if (key !== null && typeof key !== 'string') throw invalid();
+        raw = { key, parts: [] };
+      } else throw invalid();
+    },
+    finish() {
+      if (raw !== null || stack.length !== 1) throw invalid();
+      onObject?.(root);
+      return root;
+    },
+  };
 }
 
 export async function writeJsonStream(file, state, { stopAtBytes = Infinity } = {}) {

@@ -150,6 +150,56 @@ test('journal initialization persists only changed sections/tables and keeps all
   assert.equal((await fs.stat(file, { bigint: true })).mtimeNs, info.mtimeNs);
 });
 
+test('journal initialization records row-level changes of a large plain table and replays them exactly', async (t) => {
+  const { store, file } = await fixture(t, { journalThresholdBytes: 0 });
+  const row = (i, text = 'Invented record') => ({ itemid: 'item-' + String(i).padStart(6, '0'), text, order: i });
+  await store.initialize(() => {
+    store.state.mappings.item = { idColumn: 'itemid', entitySet: 'items' };
+    store.state.tables.item = Array.from({ length: 20000 }, (_, i) => row(i));
+  });
+  const append = store.storage.appendChanges.bind(store.storage);
+  let observed;
+  store.storage.appendChanges = async (entries, options) => {
+    observed = [...entries];
+    return append(observed, options);
+  };
+  const stage = async (change) => {
+    observed = [];
+    await store.initialize(change);
+    const restarted = await new DataStore({ file }).init();
+    assert.deepEqual(restarted.state.tables.item, store.state.tables.item);
+    return observed;
+  };
+  // One row edited in place, outside the store's row operations.
+  let entries = await stage(() => {
+    store.state.tables.item[12345].text = 'Edited in place';
+  });
+  assert.ok(entries.length > 0 && entries.length <= 2048, `bounded journal, got ${entries.length} entries`);
+  assert.ok(entries.every((entry) => entry.op === 'set'));
+  // A row inserted and another removed in the middle shift every later row.
+  entries = await stage(() => {
+    store.state.tables.item.splice(5000, 0, row(-1, 'Inserted'));
+    store.state.tables.item.splice(15000, 1);
+  });
+  assert.ok(entries.length > 0 && entries.length <= 4 * 2048, `bounded journal, got ${entries.length} entries`);
+  // Appended rows, and a reordered row whose content is unchanged.
+  entries = await stage(() => {
+    const [first] = store.state.tables.item;
+    store.state.tables.item[0] = { order: first.order, text: first.text, itemid: first.itemid };
+    store.state.tables.item.push(row(20000), row(20001));
+  });
+  assert.ok(entries.length >= 2 && entries.length <= 2048, `bounded journal, got ${entries.length} entries`);
+  assert.equal(entries.filter((entry) => entry.index === 0).length, 0, 'A reordered row is unchanged.');
+  // Removing most rows rewrites the table instead of journaling each deletion.
+  entries = await stage(() => {
+    store.state.tables.item.length = 10;
+  });
+  assert.deepEqual(
+    entries.map((entry) => entry.op),
+    ['table', ...Array(10).fill('insert')],
+  );
+});
+
 test('failed private journal publication preserves the previous committed file', async (t) => {
   const { store, file, before } = await fixture(t, { journalThresholdBytes: 0 });
   store.storage.appendChanges = async () => {
