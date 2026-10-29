@@ -4,7 +4,14 @@ import { open, stat, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { DataError } from './data-error.mjs';
-import { jsonChunks, parseJsonStream, hashStateFile, writeJsonStream } from './state-stream.mjs';
+import {
+  createFragmentAssembler,
+  jsonChunks,
+  jsonFragmentRecords,
+  parseJsonStream,
+  hashStateFile,
+  writeJsonStream,
+} from './state-stream.mjs';
 import { pagedRecordsOf, recordTablesCreated } from './record-tables.mjs';
 import { hasRecordGraph } from './record-clone.mjs';
 import { encodeRecordReferences, decodeRecordReferences, restoreRecordReferences } from './record-state.mjs';
@@ -134,11 +141,10 @@ async function append(handle, entries, hash, start, { header = false, recordRefe
     if (second.done) await write(first.value + '\n');
     else {
       // Large metadata sections, custom presets and large individual records
-      // need not fit in one line/string either.
-      await write('{"op":"fragments"}\n');
-      await write(JSON.stringify({ chunk: first.value }) + '\n');
-      await write(JSON.stringify({ chunk: second.value }) + '\n');
-      for (const chunk of chunks) await write(JSON.stringify({ chunk }) + '\n');
+      // need not fit in one line/string either. Fragment records embed bounded
+      // JSON values directly instead of escaping JSON text into strings.
+      await write('{"op":"fragments","encoding":"records"}\n');
+      for (const record of jsonFragmentRecords(entry)) await write(record + '\n');
       await write('{"op":"end-fragments"}\n');
     }
   }
@@ -239,46 +245,76 @@ export class StateStorage {
             bytes += Buffer.byteLength(raw);
             alreadyHashed = true;
             let incomplete = false;
-            async function* fragments() {
+            if (entry.encoding !== undefined && entry.encoding !== 'records')
+              throw new DataError('Unknown state JSON fragment encoding', 500, 'StateIntegrity');
+            const records = entry.encoding === 'records';
+            // Every line up to the end marker is checksummed, parsed or not.
+            async function* lines() {
               while (true) {
                 const part = await iterator.next();
                 if (part.done || bytes + Buffer.byteLength(part.value + '\n') > size) {
                   incomplete = true;
                   return;
                 }
-                const item = JSON.parse(part.value);
                 hash.update(part.value + '\n');
                 bytes += Buffer.byteLength(part.value + '\n');
-                if (item.op === 'end-fragments') return;
-                if (typeof item.chunk !== 'string')
-                  throw new DataError('Invalid state JSON fragment', 500, 'StateIntegrity');
-                yield item.chunk;
+                if (part.value === '{"op":"end-fragments"}') return;
+                yield part.value;
               }
             }
+            const skip = async (parts, descriptor) => {
+              for await (const _part of parts) {
+                /* Integrity hashes advance in lines(). */
+              }
+              this.skippedFragmentEntries = (this.skippedFragmentEntries ?? 0) + 1;
+              return descriptor;
+            };
             try {
-              const chunks = fragments(),
-                first = await chunks.next();
-              // Our journal writer puts operation and section/table identity
-              // before the value. Inspect that bounded prefix, then still read
-              // and checksum every fragment of an unselected operation.
-              const header =
-                !first.done &&
-                /^\{"op":"(section|remove-section|table|table-value|remove-table|insert|set|delete)","(key|table)":("(?:[^"\\]|\\.)*")/.exec(
-                  first.value,
-                );
-              const descriptor = header && { op: header[1], [header[2]]: JSON.parse(header[3]) };
-              if (descriptor && !wanted(descriptor)) {
-                for await (const _chunk of chunks) {
-                  /* Integrity hashes advance in fragments(). */
+              const parts = lines();
+              if (records) {
+                // The writer emits an operation's identity members before its
+                // value, so an unselected operation is skipped without parsing.
+                const assembler = createFragmentAssembler(retainText);
+                entry = undefined;
+                for await (const line of parts) {
+                  await assembler.add(line);
+                  const { op, key, table } = assembler.root;
+                  if (assembler.rootOpen && typeof op === 'string' && (key !== undefined || table !== undefined)) {
+                    const descriptor = { op, ...(key !== undefined ? { key } : { table }) };
+                    if (!wanted(descriptor)) {
+                      entry = await skip(parts, descriptor);
+                      break;
+                    }
+                  }
                 }
-                entry = descriptor;
-                this.skippedFragmentEntries = (this.skippedFragmentEntries ?? 0) + 1;
+                if (!incomplete) entry ??= assembler.finish();
               } else {
-                async function* complete() {
-                  if (!first.done) yield first.value;
-                  yield* chunks;
+                async function* chunks() {
+                  for await (const line of parts) {
+                    const item = JSON.parse(line);
+                    if (typeof item.chunk !== 'string')
+                      throw new DataError('Invalid state JSON fragment', 500, 'StateIntegrity');
+                    yield item.chunk;
+                  }
                 }
-                entry = await parseJsonStream(complete(), { onObject: retainText });
+                const legacy = chunks(),
+                  first = await legacy.next();
+                // The earlier encoding escapes the entry's JSON text into chunk
+                // strings. Its bounded first chunk names the operation.
+                const header =
+                  !first.done &&
+                  /^\{"op":"(section|remove-section|table|table-value|remove-table|insert|set|delete)","(key|table)":("(?:[^"\\]|\\.)*")/.exec(
+                    first.value,
+                  );
+                const descriptor = header && { op: header[1], [header[2]]: JSON.parse(header[3]) };
+                if (descriptor && !wanted(descriptor)) entry = await skip(legacy, descriptor);
+                else {
+                  async function* complete() {
+                    if (!first.done) yield first.value;
+                    yield* legacy;
+                  }
+                  entry = await parseJsonStream(complete(), { onObject: retainText });
+                }
               }
             } catch (cause) {
               if (!incomplete || !committed) throw cause;
