@@ -232,12 +232,15 @@ test('owner publication without hard links creates the marker exclusively once',
   assert.deepEqual(marker(root), { format: 2, key: first.key });
   assert.deepEqual(fs.readdirSync(root), ['.record-owner.json']);
   fs.rmSync(path.join(root, '.record-owner.json'));
+  let published = false;
   const exclusive = {
     ...io,
     openSync(file, flags, mode) {
       // Another runtime publishes between this runtime's listing and its exclusive create.
-      if (flags === 'wx' && file.endsWith('.record-owner.json') && !fs.existsSync(file))
-        fs.writeFileSync(file, JSON.stringify({ format: 2, key: 'a'.repeat(64) }));
+      if (flags === 'wx' && file.endsWith('.record-owner.json') && !published) {
+        published = true;
+        fs.writeFileSync(file, JSON.stringify({ format: 2, key: 'a'.repeat(64) }), { flag: 'wx' });
+      }
       return fs.openSync(file, flags, mode);
     },
   };

@@ -15,6 +15,18 @@ function fixture(t, options) {
   return { root, file, store };
 }
 const integrity = (error) => error.code === 'StateIntegrity';
+// One descriptor reads and rewrites the byte, so the tampered file is the file that was read.
+function patchByte(file, position, change) {
+  const fd = fs.openSync(file, 'r+');
+  try {
+    const byte = Buffer.alloc(1);
+    fs.readSync(fd, byte, 0, 1, position);
+    byte[0] = change(byte[0]);
+    fs.writeSync(fd, byte, 0, 1, position);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 // A format 1 receipt names the digest of the complete published prefix.
 const fullReceipt = (file, { bytes, pages }) => ({
   format: 1,
@@ -73,23 +85,14 @@ test('tampering is rejected during restoration and uncached page reads', async (
     legacy = fullReceipt(file, descriptor);
   const reader = await RecordPageFile.open(file, descriptor, { cacheBytes: 0 });
   t.after(() => reader.close());
-  const target = store.page(id).offset + 5;
-  const fd = fs.openSync(file, 'r+');
-  try {
-    fs.writeSync(fd, Buffer.from([255]), 0, 1, target);
-  } finally {
-    fs.closeSync(fd);
-  }
+  patchByte(file, store.page(id).offset + 5, () => 255);
   assert.throws(() => reader.read(id), integrity);
   await assert.rejects(RecordPageFile.open(file, legacy), integrity);
   // A header-chain receipt reads no payload while opening; the payload digest rejects the first read.
   const reopened = await RecordPageFile.open(file, descriptor, { cacheBytes: 0 });
   t.after(() => reopened.close());
   assert.throws(() => reopened.read(id), integrity);
-  const header = store.page(id).offset - 48;
-  const bytes = fs.readFileSync(file);
-  bytes[header + 20] ^= 1;
-  fs.writeFileSync(file, bytes);
+  patchByte(file, store.page(id).offset - 48 + 20, (byte) => byte ^ 1);
   await assert.rejects(RecordPageFile.open(file, descriptor), integrity);
 });
 
