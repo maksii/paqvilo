@@ -35,7 +35,7 @@ test('SQL LIKE rejects a trailing escape as a match and preserves NOT and NULL s
 test('SQL LIKE requires an escape expression containing exactly one character', async () => {
   for (const escape of ["''", "'!!'"]) {
     await assert.rejects(evaluate(`SELECT 1 AS matched WHERE 'abc' LIKE 'abc' ESCAPE ${escape}`), {
-      number: 22019,
+      number: 506,
     });
   }
   assert.deepEqual(await evaluate("SELECT 1 AS matched WHERE 'abc' LIKE 'abc' ESCAPE NULL"), []);

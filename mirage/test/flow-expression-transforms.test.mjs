@@ -28,7 +28,7 @@ test('split uses literal case-sensitive delimiters and preserves empty segments'
 
 test('join shares string conversion with Join actions and preserves exact numeric digits', () => {
   assert.equal(value("@join(createArray('red', 'blue'), '::')"), 'red::blue');
-  assert.equal(value("@join(createArray(), ',')"), '');
+  assert.equal(value("@join(json('[]'), ',')"), '');
   assert.equal(value("@join(createArray('red'), ',')"), 'red');
   assert.equal(value("@join(createArray('red', 'blue'), '')"), 'redblue');
   assert.equal(
@@ -72,7 +72,7 @@ test('first and last accept only strings or arrays and preserve valid endpoint v
   for (const name of ['first', 'last']) {
     assert.equal(value(`@${name}(createArray(0))`), 0);
     assert.equal(value(`@${name}(createArray(false))`), false);
-    assert.equal(value(`@${name}(createArray())`), null);
+    assert.equal(value(`@${name}(json('[]'))`), null);
     assert.equal(value(`@${name}('')`), null);
     for (const literal of ['null', '1', 'true', 'json(\'{"0":"invented"}\')', '9007199254740993'])
       invalid(`@${name}(${literal})`);

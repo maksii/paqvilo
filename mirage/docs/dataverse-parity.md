@@ -31,13 +31,10 @@ while it has members. Removing its final member deletes the team and its record
 share in the same local transaction; adding a member afterward creates a fresh
 team identity from the runtime's ID source. Other members, independent user
 shares and manually managed teams keep their existing access. This follows the
-lifecycle on page 14 of Microsoft's [Access Teams whitepaper](https://www.microsoft.com/en-us/download/details.aspx?id=41190).
+lifecycle in Microsoft's [Access Teams whitepaper](https://www.microsoft.com/en-us/download/details.aspx?id=41190).
 
-The current `RemoveUserFromRecordTeam` adapter still returns 204 with no body.
-Microsoft's [current action contract](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/removeuserfromrecordteam?view=dataverse-latest)
-declares an `AccessTeamId` response. Qualifying that return value, including the
-case where no team exists, is a separate gap; the lifecycle model does not
-establish complete response parity.
+`RemoveUserFromRecordTeam` returns 204 with no body; it does not return the
+`AccessTeamId` declared by Microsoft's [action contract](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/removeuserfromrecordteam?view=dataverse-latest).
 
 ## Choosing a read-only reference
 

@@ -271,6 +271,8 @@ export function generateDataset({
             (!rule?.source || rule.source === 'any' || row.source === rule.source),
         ),
       };
+      // Dataverse assigns an unset owner to the calling user, so a required owner needs no exported user/team.
+      if (!rule && definition.dataverseType === 'owner' && !candidates.rows.length) continue;
       // Even a zero-row table must not accept malformed configured rules.
       for (let index = 0; index < Math.max(counts[table], rule ? 1 : 0); index++) {
         const value = rule

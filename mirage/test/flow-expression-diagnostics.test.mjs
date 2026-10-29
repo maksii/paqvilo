@@ -31,6 +31,8 @@ test('pure expression diagnostics validate syntax, known functions and arity wit
     ["@concat('x',)", /argument is missing/],
     ['@unknownProvider()', /Unsupported local flow function/],
     ["@endsWith('x')", /argument count/],
+    ['@createArray()', /argument count/],
+    ['@coalesce()', /argument count/],
     ['@constructor()', /Unsupported|Unsafe/],
     [null, /must be a string/],
     ['@triggerBody()' + '.x'.repeat(6000), /nesting/],

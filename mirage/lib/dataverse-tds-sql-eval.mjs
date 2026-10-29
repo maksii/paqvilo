@@ -1685,7 +1685,7 @@ async function evalExpr(node, env, st) {
       if (isNull(value) || isNull(pattern) || (node.escape && isNull(escape))) return null;
       const escapeChar = node.escape ? String(escape) : null;
       if (escapeChar !== null && escapeChar.length !== 1)
-        fail(22019, 'The LIKE ESCAPE expression must contain exactly one character.');
+        fail(506, `The invalid escape character "${escapeChar}" was specified in a LIKE predicate.`);
       const compiled = likeRegex(String(pattern), escapeChar, st.collation);
       const matched = compiled?.test(foldText(value, st.collation)) ?? false;
       return node.negated ? !matched : matched;

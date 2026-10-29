@@ -3800,7 +3800,11 @@ function pageUrl(input) {
     if (input.tabName !== undefined) params.set('tabname', input.tabName);
     if (input.viewId) params.set('viewid', input.viewId);
     if (input.pageType === 'entitylist' && (input.viewId || input.viewType))
-      params.set('viewtype', input.viewType ?? 'savedquery');
+      // main.aspx carries the view's object type code: 1039 savedquery, 4230 userquery.
+      params.set(
+        'viewtype',
+        { savedquery: '1039', userquery: '4230' }[input.viewType ?? 'savedquery'] ?? input.viewType,
+      );
     if (input.data && typeof input.data === 'object')
       params.set(
         'extraqs',
@@ -4334,7 +4338,7 @@ async function loadRoute({ identityChange = false, preserveContent = false } = {
       requestedView = requestedViewId;
     if (
       params.has('viewtype') &&
-      (params.get('viewtype') !== 'savedquery' ||
+      (!['1039', 'savedquery'].includes(params.get('viewtype')) ||
         (requestedView && !availableViews.some((view) => view.id === requestedView)))
     ) {
       loadFailed(new Error('The selected view is not available in the imported saved-view catalogue.'), loadRoute);

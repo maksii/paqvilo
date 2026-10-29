@@ -542,6 +542,8 @@ test('a reused record pane follows current and newly supplied record context, so
     ['entitylist', 'x_item', 'items-view', 'savedquery'],
   );
   const before = await page.locator('.side-pane[data-pane-id="record-context"] iframe').getAttribute('src');
+  // A saved view is addressed by its object type code, as in a native main.aspx URL.
+  assert.equal(new URL(before, origin).searchParams.get('viewtype'), '1039');
   const refused = await page.evaluate(async () => {
     try {
       await window.Xrm.App.sidePanes

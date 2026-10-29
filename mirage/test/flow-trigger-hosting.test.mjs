@@ -473,6 +473,8 @@ test('recurrence and pack conditions skip before tracked-run creation and report
   enable(overrides, HOOKED);
   await runner.syncTriggers();
   await scheduler.advance(3600000);
+  // The tick itself must fire and be skipped by its condition, not merely never arm.
+  assert.ok(notes.some((note) => note.code === 'FLOW_TRIGGER_SKIPPED' && note.trigger === 'recurrence'));
   await subscriptions[0].fire({ enabled: false });
   assert.equal(runs.list().length, 0);
   assert.equal(store.state.tables.flowrun?.length ?? 0, 0);

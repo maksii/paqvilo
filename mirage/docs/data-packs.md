@@ -278,7 +278,9 @@ const { state: next, report } = mergeDataset(state, fragment);
 Only tables listed in `counts` receive generated rows. Required scalar columns
 receive simple synthetic values using exported types, numeric bounds, lengths,
 choice values and defaults. Optional columns are omitted unless a rule supplies
-them. Unsupported required types fail with table/column context. This is a data
+them. A required owner with no `systemuser` or `team` rows in `existing` stays
+unset, as Dataverse assigns the calling user. Unsupported required types fail
+with table/column context. This is a data
 construction helper; it does not run server rules, infer personas or grant access.
 
 | Rule `kind` | Inputs                               | Behavior                                                                              |
@@ -348,7 +350,7 @@ const { fragment: remapped, report } = remapDatasetIdentities(fragment, {
   },
   existing: { sample_group: destinationRows }, // when a rewritten lookup targets existing local data
 });
-const next = mergeDataset(state, remapped);
+const { state: next } = mergeDataset(state, remapped);
 ```
 
 The result contains a cloned `fragment` and a count-only `report` with

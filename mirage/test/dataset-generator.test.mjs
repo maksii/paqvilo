@@ -136,6 +136,9 @@ test('required and optional owner lookups use concrete metadata user/team target
     },
   };
   assert.deepEqual(generateDataset(options).tables.x_item[0].ownerid, { id: id(20), logical_name: 'systemuser' });
+  // Without exported users or teams, a required owner is left to Dataverse's default: the calling user.
+  const ownerless = generateDataset({ ...options, existing: { x_group: options.existing.x_group } });
+  assert.equal(Object.hasOwn(ownerless.tables.x_item[0], 'ownerid'), false);
   metadata.tables.x_item.attributes.ownerid.requiredLevel = 'none';
   assert.equal(Object.hasOwn(generateDataset(options).tables.x_item[0], 'ownerid'), false);
   const selected = generateDataset({
