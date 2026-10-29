@@ -5,12 +5,49 @@ import os from 'node:os';
 import path from 'node:path';
 import { DataStore } from '../lib/data.mjs';
 import { defineLazyPreset } from '../lib/preset-registry.mjs';
-import { pagedRecordsOf } from '../lib/record-tables.mjs';
+import { pagedRecordsOf, RecordPageSession } from '../lib/record-tables.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { createSimulator } from '../server.mjs';
 import { exactNumeric } from '../lib/exact-numeric.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
 
 const admin = { admin: true };
+
+test('one session close failure drains later record sessions and retains owners for retry', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'invented-record-close-')),
+    owner = ownedFixture(t);
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  const first = new RecordPageSession(path.join(root, 'first')),
+    retired = new RecordPageSession(path.join(root, 'retired')),
+    store = new DataStore();
+  owner.add(() => store.closeRecordStorage());
+  store.recordSession = first;
+  store.storage = { recordSession: first };
+  store.retiredRecordSessions = new Set([retired]);
+  first.from([{ id: 'one' }]);
+  retired.from([{ id: 'two' }]);
+  const close = first.close.bind(first);
+  let failure = true,
+    calls = 0;
+  first.close = () => {
+    calls++;
+    close();
+    if (failure) throw Error('Invented close failure');
+  };
+  assert.throws(() => store.closeRecordStorage(), /Invented close failure/);
+  assert.equal(calls, 1, 'The current and storage owners share one session.');
+  assert.equal(retired.closed, true);
+  assert.equal(
+    (await fs.readdir(retired.directory)).some((name) => name.endsWith('.lease')),
+    false,
+  );
+  assert.equal(store.recordSession, first);
+  assert.equal(store.retiredRecordSessions.has(retired), true);
+  failure = false;
+  store.closeRecordStorage();
+  assert.equal(store.recordSession, null);
+  assert.equal(store.retiredRecordSessions.size, 0);
+});
 const library = () => {
   const presets = {};
   defineLazyPreset(presets, 'invented', {

@@ -15,11 +15,16 @@ import { membershipsForRoles } from './permissions.mjs';
 import { assertDatasetAlternateKeys } from './alternate-key-values.mjs';
 import { guidKey } from './dataverse-values.mjs';
 import { cloneStateData } from './state-clone.mjs';
+import { pagedRecordsOf, readRecordValues } from './record-tables.mjs';
+import { compactRecordGraph } from './record-compaction.mjs';
 
 const clone = cloneStateData;
 const own = (value, key) => (value != null && Object.hasOwn(value, key) ? value[key] : undefined);
 const idColumnOf = (state, table) => own(state.mappings, table)?.idColumn ?? `${table}id`;
 const rowKey = (value) => guidKey(value) ?? String(value).toLowerCase();
+function* rowKeys(rows, column) {
+  for (const row of readRecordValues(rows)) yield rowKey(own(row, column));
+}
 const object = (value) =>
   value !== null &&
   typeof value === 'object' &&
@@ -43,7 +48,8 @@ function validateDatasetBody(value, label) {
   for (const [table, rows] of Object.entries(value.tables ?? {})) {
     if (!validName(table) || !Array.isArray(rows))
       throw new Error(`${label}.tables must contain valid table names and row arrays`);
-    for (const row of rows) if (!object(row)) throw new Error(`${label}.tables.${table} rows must be objects`);
+    for (const row of readRecordValues(rows))
+      if (!object(row)) throw new Error(`${label}.tables.${table} rows must be objects`);
   }
   if (value.permissions !== undefined) {
     if (!Array.isArray(value.permissions))
@@ -72,9 +78,9 @@ function mergeRows(state, tables = {}, report) {
   for (const [table, rows] of Object.entries(tables)) {
     const idColumn = idColumnOf(state, table);
     const target = own(state.tables, table) ?? (state.tables[table] = []);
-    const seen = new Set(target.map((row) => rowKey(own(row, idColumn))));
+    const seen = new Set(rowKeys(target, idColumn));
     const entry = own(report, table) ?? (report[table] = { added: 0, alreadyPresent: 0 });
-    for (const row of rows) {
+    for (const row of readRecordValues(rows)) {
       const id = own(row, idColumn);
       if (id == null) throw new Error(`Cannot merge ${table} row without ${idColumn}`);
       if (seen.has(rowKey(id))) {
@@ -92,16 +98,18 @@ function mergeRows(state, tables = {}, report) {
 export function findDanglingLookups(state, tables = Object.keys(state.tables ?? {})) {
   const indexes = new Map();
   const has = (table, id) => {
-    if (!indexes.has(table))
-      indexes.set(
-        table,
-        new Set((own(state.tables, table) ?? []).map((row) => rowKey(own(row, idColumnOf(state, table))))),
-      );
+    const rows = own(state.tables, table) ?? [],
+      column = idColumnOf(state, table),
+      paged = pagedRecordsOf(rows);
+    // The persistent key tree covers all-string tables. A miss still checks the
+    // legacy GUID-whitespace coercion before declaring a lookup unresolved.
+    if (paged?.primaryPositions(column, rowKey(id))?.length) return true;
+    if (!indexes.has(table)) indexes.set(table, new Set(rowKeys(rows, column)));
     return indexes.get(table).has(rowKey(id));
   };
   const dangling = [];
   for (const table of tables)
-    for (const row of own(state.tables, table) ?? [])
+    for (const row of readRecordValues(own(state.tables, table) ?? []))
       for (const [field, value] of Object.entries(row))
         if (
           value &&
@@ -125,10 +133,11 @@ export function findDanglingLookups(state, tables = Object.keys(state.tables ?? 
  * Merge a pack dataset fragment (and its base preset, when named) into a copy
  * of `state`. Returns { state, report }.
  */
-export function mergeDataset(
+function mergeDatasetState(
   state,
   fragment,
   { basePreset, packId, materializePersonaMemberships = false, portal } = {},
+  copy = clone,
 ) {
   if (!state || typeof state !== 'object' || Array.isArray(state))
     throw new Error('state must be a Mirage state object');
@@ -141,7 +150,7 @@ export function mergeDataset(
   if (basePreset !== undefined && basePreset !== null) validateDatasetBody(basePreset, 'Base preset');
   if (typeof materializePersonaMemberships !== 'boolean')
     throw new Error('materializePersonaMemberships must be a boolean');
-  const result = clone(state);
+  const result = copy(state);
   result.tables ??= {};
   const report = { base: {}, generated: {} };
   if (basePreset) {
@@ -254,6 +263,57 @@ export function mergeDataset(
   return { state: result, report: { ...report, addedPermissions, addedMemberships, schemaViolations: 0 } };
 }
 
+export function mergeDataset(state, fragment, options) {
+  return mergeDatasetState(state, fragment, options);
+}
+
+async function withOfflineResources(run) {
+  const closers = [];
+  let failure,
+    result,
+    failed = false;
+  try {
+    result = await run((resource, close = () => resource.closeRecordStorage()) => {
+      closers.push(close);
+      return resource;
+    });
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+  const errors = [];
+  for (const close of closers)
+    try {
+      close();
+    } catch (error) {
+      errors.push(error);
+    }
+  if (errors.length)
+    throw new AggregateError(failed ? [failure, ...errors] : errors, 'Offline data resources failed to close', {
+      cause: failure,
+    });
+  if (failed) throw failure;
+  return result;
+}
+
+async function writeOfflineState(ownResource, source, outputPath, state) {
+  let output = state;
+  if (source && outputPath !== source.file) {
+    const copied = await compactRecordGraph(state, outputPath + '.records', { stateOwner: outputPath });
+    if (copied) {
+      ownResource(copied, () => copied.session.close());
+      output = copied.state;
+    }
+  }
+  const destination =
+    source?.file === outputPath ? source : await ownResource(new DataStore({ file: outputPath, state: output })).init();
+  await destination.replaceState(output, {
+    expectedDigest: destination.snapshotDigest(),
+    cloneInput: false,
+    returnSnapshot: false,
+  });
+}
+
 const parseCount = (value, option) => {
   if (value === undefined) return undefined;
   if (!/^\d+$/.test(String(value))) throw new Error(`--${option} must be a nonnegative integer`);
@@ -349,68 +409,68 @@ async function generateDataCommand({
   source: portalSource,
   dataModel,
 } = {}) {
-  if (!packId) throw new Error('--pack is required');
-  if (!statePath) throw new Error('--state is required');
-  const inputPath = path.resolve(statePath);
-  const outputPath = path.resolve(out ?? statePath);
-  const packs = await discoverPacks({ project, explicit: packModules });
-  const pack = packs.find((candidate) => candidate.id === packId);
-  if (!pack)
-    throw new Error(`Unknown data pack '${packId}'. Available: ${packs.map((p) => p.id).join(', ') || 'none'}`);
-  if (typeof pack.dataset !== 'function') throw new Error(`Data pack '${packId}' does not provide dataset()`);
-  if (pack.profiles && !Object.hasOwn(pack.profiles, profile))
-    throw new Error(`Data pack '${packId}' has no profile '${profile}' (${Object.keys(pack.profiles).join(', ')})`);
-  await assertOfflineState(outputPath);
-  if (outputPath !== inputPath) await assertOfflineState(inputPath);
-  const started = performance.now();
-  const source = await new DataStore({ file: inputPath }).init();
-  // This offline store has no published readers or writers. mergeDataset owns
-  // the one detached result; copying its entire input here duplicated the
-  // existing record heap before that defensive copy even began.
-  const input = source.state;
-  const fragment = await pack.dataset({ profile, seed, counts });
-  validateDatasetBody(fragment, 'Dataset');
-  const library = presetLibrary({ packs: [pack] });
-  const basePreset = fragment.base ? resolvePreset(input, fragment.base, library) : null;
-  if (fragment.base && !basePreset) throw new Error(`Base preset '${fragment.base}' is unavailable`);
-  if (materializePersonaMemberships && !portalSource)
-    throw new Error('Persona memberships require the selected portal source (--source, --site or --project).');
-  const portal = materializePersonaMemberships
-    ? await (await import('./importer.mjs')).importPortal(path.resolve(portalSource), { dataModel })
-    : undefined;
-  const { state: output, report } = mergeDataset(input, fragment, {
-    basePreset,
-    packId,
-    materializePersonaMemberships,
-    portal,
+  return withOfflineResources(async (ownResource) => {
+    if (!packId) throw new Error('--pack is required');
+    if (!statePath) throw new Error('--state is required');
+    const inputPath = path.resolve(statePath);
+    const outputPath = path.resolve(out ?? statePath);
+    const packs = await discoverPacks({ project, explicit: packModules });
+    const pack = packs.find((candidate) => candidate.id === packId);
+    if (!pack)
+      throw new Error(`Unknown data pack '${packId}'. Available: ${packs.map((p) => p.id).join(', ') || 'none'}`);
+    if (typeof pack.dataset !== 'function') throw new Error(`Data pack '${packId}' does not provide dataset()`);
+    if (pack.profiles && !Object.hasOwn(pack.profiles, profile))
+      throw new Error(`Data pack '${packId}' has no profile '${profile}' (${Object.keys(pack.profiles).join(', ')})`);
+    await assertOfflineState(outputPath);
+    if (outputPath !== inputPath) await assertOfflineState(inputPath);
+    const started = performance.now();
+    const source = await ownResource(new DataStore({ file: inputPath })).init();
+    // The command owns this input. The merge makes one private copy, sharing
+    // immutable record pages instead of materializing complete row arrays.
+    const input = source.state;
+    const fragment = await pack.dataset({ profile, seed, counts });
+    validateDatasetBody(fragment, 'Dataset');
+    const library = presetLibrary({ packs: [pack] });
+    const basePreset = fragment.base ? resolvePreset(input, fragment.base, library, source.recordContext()) : null;
+    if (fragment.base && !basePreset) throw new Error(`Base preset '${fragment.base}' is unavailable`);
+    if (materializePersonaMemberships && !portalSource)
+      throw new Error('Persona memberships require the selected portal source (--source, --site or --project).');
+    const portal = materializePersonaMemberships
+      ? await (await import('./importer.mjs')).importPortal(path.resolve(portalSource), { dataModel })
+      : undefined;
+    const { state: output, report } = mergeDatasetState(
+      input,
+      fragment,
+      {
+        basePreset,
+        packId,
+        materializePersonaMemberships,
+        portal,
+      },
+      (value) => cloneStateData(value, { forkTables: true }),
+    );
+    const generatedMs = performance.now() - started;
+    // Re-check immediately before writing; the store applies its own lock and
+    // digest checks (docs/state-write-integrity.md).
+    await assertOfflineState(outputPath);
+    await writeOfflineState(ownResource, source, outputPath, output);
+    return {
+      written: outputPath,
+      pack: packId,
+      profile,
+      seed: fragment.provenance?.seed ?? seed ?? null,
+      base: fragment.base ?? null,
+      rows: Object.fromEntries(
+        Object.entries(report.generated).filter(([, entry]) => entry.added || entry.alreadyPresent),
+      ),
+      baseRowsAdded: Object.values(report.base).reduce((sum, entry) => sum + entry.added, 0),
+      addedPermissions: report.addedPermissions,
+      addedMemberships: report.addedMemberships,
+      measures: fragment.provenance?.measures ?? null,
+      elapsedMs: Math.round(performance.now() - started),
+      generationMs: Math.round(generatedMs),
+    };
   });
-  const generatedMs = performance.now() - started;
-  // Re-check immediately before writing; the store applies its own lock and
-  // digest checks (docs/state-write-integrity.md).
-  await assertOfflineState(outputPath);
-  const destination =
-    outputPath === inputPath ? source : await new DataStore({ file: outputPath, state: output }).init();
-  await destination.replaceState(output, {
-    expectedDigest: destination.snapshotDigest(),
-    cloneInput: false,
-    returnSnapshot: false,
-  });
-  return {
-    written: outputPath,
-    pack: packId,
-    profile,
-    seed: fragment.provenance?.seed ?? seed ?? null,
-    base: fragment.base ?? null,
-    rows: Object.fromEntries(
-      Object.entries(report.generated).filter(([, entry]) => entry.added || entry.alreadyPresent),
-    ),
-    baseRowsAdded: Object.values(report.base).reduce((sum, entry) => sum + entry.added, 0),
-    addedPermissions: report.addedPermissions,
-    addedMemberships: report.addedMemberships,
-    measures: fragment.provenance?.measures ?? null,
-    elapsedMs: Math.round(performance.now() - started),
-    generationMs: Math.round(generatedMs),
-  };
 }
 
 /**
@@ -430,111 +490,106 @@ export async function scaffoldDataCommand({
   resolution,
   dataModel,
 } = {}) {
-  if (!statePath) throw new Error('--state is required');
-  if (!source) throw new Error('A portal source is required (--site/--env, --project or --source)');
-  const [
-    { importPortal },
-    { importSolutionData, applySolutionData },
-    { discoverSolutionRoots },
-    { scaffoldData },
-    { initialState },
-  ] = await Promise.all([
-    import('./importer.mjs'),
-    import('./solution-data.mjs'),
-    import('./solution-roots.mjs'),
-    import('./scaffold-data.mjs'),
-    import('./bootstrap.mjs'),
-  ]);
-  const inputPath = path.resolve(statePath);
-  const outputPath = path.resolve(out ?? statePath);
-  await assertOfflineState(outputPath);
-  if (outputPath !== inputPath) await assertOfflineState(inputPath);
-  const started = performance.now();
-  const sourceDir = path.resolve(source);
-  const portal = await importPortal(sourceDir, { dataModel });
-  const roots = solutionRoots.length
-    ? solutionRoots.map((root) => path.resolve(root))
-    : await discoverSolutionRoots(sourceDir);
-  const metadata = await importSolutionData(roots);
-  const scaffold = scaffoldData({
-    portal,
-    schema: metadata.schema,
-    profile,
-    ...(seed ? { seed } : {}),
-    ...(rowsPerTable !== undefined ? { rowsPerTable } : {}),
+  return withOfflineResources(async (ownResource) => {
+    if (!statePath) throw new Error('--state is required');
+    if (!source) throw new Error('A portal source is required (--site/--env, --project or --source)');
+    const [
+      { importPortal },
+      { importSolutionData, applySolutionData },
+      { discoverSolutionRoots },
+      { scaffoldData },
+      { initialState },
+    ] = await Promise.all([
+      import('./importer.mjs'),
+      import('./solution-data.mjs'),
+      import('./solution-roots.mjs'),
+      import('./scaffold-data.mjs'),
+      import('./bootstrap.mjs'),
+    ]);
+    const inputPath = path.resolve(statePath);
+    const outputPath = path.resolve(out ?? statePath);
+    await assertOfflineState(outputPath);
+    if (outputPath !== inputPath) await assertOfflineState(inputPath);
+    const started = performance.now();
+    const sourceDir = path.resolve(source);
+    const portal = await importPortal(sourceDir, { dataModel });
+    const roots = solutionRoots.length
+      ? solutionRoots.map((root) => path.resolve(root))
+      : await discoverSolutionRoots(sourceDir);
+    const metadata = await importSolutionData(roots);
+    const scaffold = scaffoldData({
+      portal,
+      schema: metadata.schema,
+      profile,
+      ...(seed ? { seed } : {}),
+      ...(rowsPerTable !== undefined ? { rowsPerTable } : {}),
+    });
+    let input, sourceStore;
+    let bootstrapped = false;
+    try {
+      await fs.access(inputPath);
+      sourceStore = await ownResource(new DataStore({ file: inputPath })).init();
+      input = sourceStore.snapshot(undefined, { forkTables: true });
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      input = applySolutionData(initialState(portal, { metadata }), metadata);
+      bootstrapped = true;
+    }
+    // Both bootstrap and snapshot produced a private graph owned by this command.
+    const output = input;
+    output.tables ??= {};
+    output.mappings ??= {};
+    output.permissions ??= [];
+    output.simulator ??= {};
+    const rows = {};
+    for (const [table, generated] of Object.entries(scaffold.tables)) {
+      if (!own(output.mappings, table) && own(metadata.mappings, table)) {
+        const { fieldMetadata: _fields, schemaComplete: _complete, ...mapping } = own(metadata.mappings, table);
+        output.mappings[table] = cloneStateData(mapping);
+      } else if (!own(output.mappings, table))
+        // Tables the solution layers do not define (such as the web role
+        // membership intersect) get the conventional mapping of their rows.
+        output.mappings[table] = {
+          entitySet: `${table}s`,
+          idColumn: own(scaffold.idColumns, table),
+          relationships: {},
+          inferred: true,
+        };
+      const key = own(output.mappings, table)?.idColumn ?? own(scaffold.idColumns, table);
+      const existing = own(output.tables, table) ?? (output.tables[table] = []);
+      const ids = new Set(rowKeys(existing, key));
+      let added = 0;
+      for (const row of generated)
+        if (!ids.has(rowKey(own(row, key)))) {
+          existing.push(cloneStateData(row));
+          added++;
+        }
+      rows[table] = { added, alreadyPresent: generated.length - added };
+    }
+    const memberships = (output.simulator.contactRoles ??= []);
+    const seen = new Set(memberships.map((entry) => `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`));
+    let addedMemberships = 0;
+    for (const entry of scaffold.contactRoles) {
+      const key = `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`;
+      if (seen.has(key)) continue;
+      memberships.push(cloneStateData(entry));
+      seen.add(key);
+      addedMemberships++;
+    }
+    output.provenance = { ...(output.provenance ?? {}), scaffold: { ...scaffold.report, source: sourceDir } };
+    await assertOfflineState(outputPath);
+    await writeOfflineState(ownResource, sourceStore, outputPath, output);
+    return {
+      written: outputPath,
+      bootstrapped,
+      profile,
+      report: scaffold.report,
+      rows,
+      addedMemberships,
+      source: sourceDir,
+      solutionRoots: roots,
+      resolution: resolution ?? { kind: 'source', solutionRoots: solutionRoots.length ? 'explicit' : 'discovered' },
+      elapsedMs: Math.round(performance.now() - started),
+    };
   });
-  let input;
-  let bootstrapped = false;
-  try {
-    await fs.access(inputPath);
-    input = (await new DataStore({ file: inputPath }).init()).snapshot();
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-    input = applySolutionData(initialState(portal, { metadata }), metadata);
-    bootstrapped = true;
-  }
-  // Both bootstrap and snapshot produced a private graph owned by this command.
-  const output = input;
-  output.tables ??= {};
-  output.mappings ??= {};
-  output.permissions ??= [];
-  output.simulator ??= {};
-  const rows = {};
-  for (const [table, generated] of Object.entries(scaffold.tables)) {
-    if (!own(output.mappings, table) && own(metadata.mappings, table)) {
-      const { fieldMetadata: _fields, schemaComplete: _complete, ...mapping } = own(metadata.mappings, table);
-      output.mappings[table] = cloneStateData(mapping);
-    } else if (!own(output.mappings, table))
-      // Tables the solution layers do not define (such as the web role
-      // membership intersect) get the conventional mapping of their rows.
-      output.mappings[table] = {
-        entitySet: `${table}s`,
-        idColumn: own(scaffold.idColumns, table),
-        relationships: {},
-        inferred: true,
-      };
-    const key = own(output.mappings, table)?.idColumn ?? own(scaffold.idColumns, table);
-    const existing = own(output.tables, table) ?? (output.tables[table] = []);
-    const ids = new Set(existing.map((row) => rowKey(own(row, key) ?? '')));
-    let added = 0;
-    for (const row of generated)
-      if (!ids.has(rowKey(own(row, key)))) {
-        existing.push(cloneStateData(row));
-        added++;
-      }
-    rows[table] = { added, alreadyPresent: generated.length - added };
-  }
-  const memberships = (output.simulator.contactRoles ??= []);
-  const seen = new Set(memberships.map((entry) => `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`));
-  let addedMemberships = 0;
-  for (const entry of scaffold.contactRoles) {
-    const key = `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`;
-    if (seen.has(key)) continue;
-    memberships.push(cloneStateData(entry));
-    seen.add(key);
-    addedMemberships++;
-  }
-  output.provenance = { ...(output.provenance ?? {}), scaffold: { ...scaffold.report, source: sourceDir } };
-  await assertOfflineState(outputPath);
-  const destination =
-    outputPath === inputPath && !bootstrapped
-      ? await new DataStore({ file: inputPath }).init()
-      : await new DataStore({ file: outputPath, state: output }).init();
-  await destination.replaceState(output, {
-    expectedDigest: destination.snapshotDigest(),
-    cloneInput: false,
-    returnSnapshot: false,
-  });
-  return {
-    written: outputPath,
-    bootstrapped,
-    profile,
-    report: scaffold.report,
-    rows,
-    addedMemberships,
-    source: sourceDir,
-    solutionRoots: roots,
-    resolution: resolution ?? { kind: 'source', solutionRoots: solutionRoots.length ? 'explicit' : 'discovered' },
-    elapsedMs: Math.round(performance.now() - started),
-  };
 }

@@ -1362,6 +1362,14 @@ class PagedRecords {
 
 export const pagedRecordsOf = (value) => tables.get(value);
 export const rawRecordOf = (value) => rowStates.get(value)?.raw;
+
+/** Plain page values for internal read-only scans, with ordinary array
+ * iteration's hole behavior. Never retain a mutable facade for each record. */
+export function* readRecordValues(rows) {
+  const paged = pagedRecordsOf(rows);
+  if (!paged) yield* rows;
+  else for (let index = 0; index < paged.length; index++) yield paged.id(index) ? paged.raw(index) : undefined;
+}
 /** Core multi-column updates publish one immutable payload and index change. */
 export function assignRecordValues(row, values) {
   const state = rowStates.get(row);

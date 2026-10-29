@@ -258,6 +258,47 @@ The qualification fails above 8,192 MiB server peak RSS by default. An explicit
 in the result; raising it does not establish laptop suitability. The 100-million
 run must use the same resource assessment after the preceding workload passes.
 
+### Paged records and the current constrained audit
+
+Owned preset factories can now stream JSON records into checksummed immutable
+pages, with bounded read caches, persistent primary-key indexes and shared private
+transaction copies. Public snapshots retain their ordinary detached-array
+contract; complete JSON exports stream records. Existing array-based loaders
+retain their behavior. See [record storage](../mirage/docs/record-storage.md).
+Offline generation and scaffolding retain existing paged tables and copy pages
+for a separate output file. Success and failure regressions check reader leases,
+preserved local edits and independent output restoration. Session shutdown drains
+later owners after a close failure and retains owners for retry.
+
+A 16-table / 1,000,000-record fresh control passed continuous status monitoring
+through browser interaction, complete metadata and record-integrity checks on
+four logical CPUs with a 2 GiB heap limit. Initialization took 5.6 seconds; ready
+grid, search and record opening took 931, 611 and 917 ms. Peak server RSS was
+801 MiB. This control has eight wide tables and does not qualify 2,000 tables.
+
+The subsequent 2,000-table / 10,000,000-record fresh attempt used four logical
+CPUs and a 3 GiB heap. Initialization took 101.4 seconds, or 102.6 seconds from
+worker launch. The grid took 2,523 ms, search 184 ms and record opening 968 ms;
+peak server RSS was 2.86 GiB. It failed the unchanged one-second status deadline
+at 320 complete catalogue tables, alongside a 1,037 ms event-loop pause and a
+large heap collection. This is a failed qualification, despite lower memory use.
+
+Allocation sampling isolated excessive descriptor transitions while constructing
+wide maps with different primary-key names. Dictionary storage with the ordinary
+Object prototype preserves descriptors, symbols, enumeration, guarded keys and
+JSON. On the same 512-table diagnostic, sampled server allocation fell from
+approximately 3.9 to 2.1 GiB, with 3,722 and 5,655 status polls respectively.
+Polling and elapsed time vary; these samples are diagnostic evidence. Complete
+metadata and field-security assertions remain intact. Status classification also
+avoids configuration copies for synchronous reads and skipped portal preparation.
+
+The stronger monitor remains active throughout post-startup work, rather than
+only catalogue streaming. The four start modes and a fresh repeat still require
+qualification after these changes. The 100-million-record run has not started.
+Four constrained workstation CPUs do not emulate a mobile i5; server RSS excludes
+the browser and parent client. Fresh full local validation and final hosted gates
+remain required.
+
 ## 232, 234 and 237. X-ray cards and ownership
 
 The browser matrix covers 1,000 secondary API/permission contexts with eight

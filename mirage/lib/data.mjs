@@ -980,9 +980,21 @@ export class DataStore {
   closeRecordStorage() {
     clearInterval(this.recordRetirementTimer);
     this.recordRetirementTimer = null;
-    this.recordSession?.close();
-    this.storage?.recordSession?.close();
-    for (const session of this.retiredRecordSessions ?? []) session.close();
+    const errors = [];
+    for (const session of new Set([
+      this.recordSession,
+      this.storage?.recordSession,
+      ...(this.retiredRecordSessions ?? []),
+    ]))
+      try {
+        session?.close();
+      } catch (error) {
+        errors.push(error);
+      }
+    // Retain every owner for a retry and keep temporary files while any handle
+    // failed to close. One failure must not strand later sessions and leases.
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, 'Record storage sessions failed to close');
     this.retiredRecordSessions?.clear();
     this.recordSession = null;
     if (this.temporaryRecordDirectory) {

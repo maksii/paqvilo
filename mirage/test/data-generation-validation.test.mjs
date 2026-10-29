@@ -1,6 +1,97 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeDataset, findDanglingLookups, runDataCommand } from '../lib/data-generation.mjs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { DataStore } from '../lib/data.mjs';
+import { defineLazyPreset } from '../lib/preset-registry.mjs';
+import { pagedRecordsOf } from '../lib/record-tables.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
+
+test('offline generation preserves paged input, copies a standalone output and closes readers on success and failure', async (t) => {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'invented-paged-generation-')),
+    owner = ownedFixture(t),
+    file = path.join(root, 'state.json'),
+    out = path.join(root, 'copied.json'),
+    dataset = path.join(root, 'dataset.json'),
+    pack = path.join(root, 'pack.mjs'),
+    presets = {};
+  owner.remove(() => fs.rm(root, { recursive: true, force: true }));
+  defineLazyPreset(presets, 'invented', {
+    name: 'Invented records',
+    createOwned({ records }) {
+      function* rows() {
+        for (let index = 0; index < 6000; index++) yield { itemid: 'row-' + index, name: 'Local ' + index };
+      }
+      return {
+        mappings: { item: { idColumn: 'itemid' } },
+        tables: { item: records.table(rows(), { primaryKey: 'itemid' }) },
+      };
+    },
+  });
+  const source = await new DataStore({ file, presetLibrary: presets }).init();
+  owner.add(() => source.closeRecordStorage());
+  await source.applyPreset('invented', { returnSnapshot: false });
+  source.closeRecordStorage();
+  await fs.writeFile(
+    pack,
+    `import fs from 'node:fs'; export default { id: 'fixture', name: 'Fixture', description: 'Invented rows', matches: () => true, presets: () => ({}), dataset: () => JSON.parse(fs.readFileSync(new URL('./dataset.json', import.meta.url), 'utf8')) };`,
+  );
+  await fs.writeFile(
+    dataset,
+    JSON.stringify({
+      tables: {
+        item: [
+          { itemid: 'row-3', name: 'Generated replacement' },
+          { itemid: 'new-row', name: 'Added', related: { logical_name: 'item', id: 'row-0' } },
+        ],
+      },
+    }),
+  );
+  const generate = (output) =>
+    runDataCommand(['generate'], {
+      pack: 'fixture',
+      'pack-module': [pack],
+      state: file,
+      ...(output ? { out: output } : {}),
+    });
+  const leases = async (state) => (await fs.readdir(state + '.records')).filter((name) => name.endsWith('.lease'));
+  assert.equal((await generate()).rows.item.added, 1);
+  assert.deepEqual(await leases(file), []);
+  assert.equal((await generate(out)).rows.item.alreadyPresent, 2);
+  assert.deepEqual(await leases(file), []);
+  assert.deepEqual(await leases(out), []);
+  const portal = path.join(root, 'portal'),
+    scaffolded = path.join(root, 'scaffolded.json');
+  await fs.mkdir(path.join(portal, 'web-pages'), { recursive: true });
+  await fs.writeFile(path.join(portal, 'website.yml'), 'adx_websiteid: site\nadx_name: Invented offline source\n');
+  await runDataCommand(['scaffold'], { state: file, out: scaffolded, source: portal, profile: 'smoke' });
+  assert.deepEqual(await leases(file), []);
+  assert.deepEqual(await leases(scaffolded), []);
+  for (const target of [file, out, scaffolded]) {
+    const restored = await new DataStore({ file: target }).init();
+    owner.add(() => restored.closeRecordStorage());
+    assert.ok(pagedRecordsOf(restored.state.tables.item));
+    assert.equal(restored.state.tables.item.length, 6001);
+    assert.equal(restored.state.tables.item[3].name, 'Local 3');
+    assert.equal(restored.state.tables.item.at(-1).name, 'Added');
+    const preview = mergeDataset(restored.state, { tables: { item: [] } });
+    assert.equal(
+      pagedRecordsOf(preview.state.tables.item),
+      undefined,
+      'The public merge still returns detached ordinary arrays.',
+    );
+    preview.state.tables.item[3].name = 'Preview edit';
+    assert.equal(restored.state.tables.item[3].name, 'Local 3');
+    restored.closeRecordStorage();
+  }
+  const before = await fs.readFile(file);
+  await fs.writeFile(dataset, JSON.stringify({ tables: { item: [null] } }));
+  await assert.rejects(generate(), /rows must be objects/);
+  assert.deepEqual(await fs.readFile(file), before);
+  assert.deepEqual(await leases(file), []);
+});
 
 const id = 'abcdef12-3456-4789-abcd-123456789abc';
 const state = () => ({

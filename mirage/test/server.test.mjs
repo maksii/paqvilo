@@ -237,10 +237,14 @@ test('one status poll shares its detached simulator snapshot across configuratio
     return snapshot.call(this, options);
   };
   const first = await (await call('/_sim/api/status')).json();
-  assert.equal(simulatorCopies, 3, 'One status snapshot plus the two existing request-authentication reads.');
+  assert.equal(
+    simulatorCopies,
+    1,
+    'Synchronous classification and skipped portal authentication do not clone the simulator.',
+  );
   app.store.state.simulator.activeExperiment = 'invented-change';
   const second = await (await call('/_sim/api/status')).json();
-  assert.equal(simulatorCopies, 6);
+  assert.equal(simulatorCopies, 2);
   assert.equal(second.activeConfigurationPreset, 'invented-change');
   assert.notEqual(first.activeConfigurationPreset, second.activeConfigurationPreset);
 });

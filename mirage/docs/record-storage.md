@@ -43,6 +43,11 @@ The administration JSON export is self-contained. Legacy JSON and v1 journal
 files remain readable and retain their existing file format until paged records
 are selected.
 
+Offline `data generate` and `data scaffold` keep paged input while merging their
+generated arrays. A separate output copies referenced pages into its own record
+directory. Public `mergeDataset()` results remain ordinary detached arrays.
+Commands release their readers on success and failure.
+
 Read caches and open handles are bounded independently of record count. Table
 positions use typed buffers, and private transaction copies share immutable pages
 until a write. Key sorting uses bounded runs and temporary files. Public exports

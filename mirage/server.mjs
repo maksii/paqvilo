@@ -6401,7 +6401,9 @@ async function createPowerPagesSimulator({
     if (/^\/_sim(?:\/|$)/.test(url.pathname)) url.pathname = url.pathname.replace(/^\/_sim/, '/__sim');
     // Browser sign-in session of this request (lib/auth-session.mjs).
     const auth = requestAuth(req, url);
-    const cfg = config();
+    // Only synchronous audit classification reads this private configuration.
+    // The handler snapshots its own response before any asynchronous writes.
+    const cfg = config(store.state.simulator);
     const endpoint = (cfg.endpoints ?? []).find((item) => item.enabled !== false && item.path === url.pathname);
     const kind = url.pathname.startsWith('/__sim/forms/')
       ? 'form'
@@ -6497,7 +6499,7 @@ async function createPowerPagesSimulator({
                 // Enhanced authorization maps the visitor to its Dataverse user and roles before any entry point evaluates it. The
                 // /_sim/api administration acts as the local administrator, never as the visitor: it maps nothing and provisions no
                 // site application user, so a refused administration request leaves no side effect.
-                if (config().mode !== 'live' && !/^\/(?:_sim|__sim)\/api\//.test(req.url ?? ''))
+                if (!/^\/(?:_sim|__sim)\/api\//.test(req.url ?? '') && config().mode !== 'live')
                   await store.portalAuthorization?.prepare(currentIdentity());
                 return runWithSourceDebugging(sourceMaps, () => handle(req, res));
               }),
