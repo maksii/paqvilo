@@ -1113,18 +1113,21 @@ export class DataStore {
         let published = false;
         try {
           await this.#saveState(migrated.state);
-          migrated.publish();
-          published = true;
-          this.storage.recordSession = migrated.session;
-          (this.retiredRecordSessions ??= new Set()).add(previous);
-          this.retireRecordSessions();
-          return;
+          published = migrated.publish();
+          if (published) {
+            this.storage.recordSession = migrated.session;
+            (this.retiredRecordSessions ??= new Set()).add(previous);
+            this.retireRecordSessions();
+            return;
+          }
         } finally {
           if (!published) {
             this.recordSession = previous;
             migrated.session.close();
           }
         }
+        // Records changed while the copy was saved: copy the live tables again.
+        return this.#saveState(selectedState);
       }
     }
     const lockPath = `${this.file}.lock`,
@@ -1524,7 +1527,8 @@ export class DataStore {
       let published = false;
       try {
         await this.#saveState(compacted.state);
-        compacted.publish();
+        // Records changed while the checkpoint was written: keep and persist the live tables.
+        if (!compacted.publish()) return await this.#saveState();
         published = true;
         this.recordSession = compacted.session;
         if (this.storage) this.storage.recordSession = compacted.session;
@@ -1558,7 +1562,7 @@ export class DataStore {
   }
   async collectRecordStorage() {
     const session = this.recordSession;
-    if (!session?.ownedDirectory) return { skipped: 'unverified-directory' };
+    if (!session?.ownedDirectory) return (this.recordGarbageCollection = { skipped: 'unverified-directory' });
     if (this.file) {
       const intended = resolve(this.file) + '.records';
       if (fsSync.lstatSync(intended).isSymbolicLink() || fsSync.realpathSync.native(intended) !== session.directory)

@@ -1,6 +1,6 @@
 import { types } from 'node:util';
-import { recordTablesCreated } from './record-tables.mjs';
-import { cloneRecordGraph, hasRecordGraph } from './record-clone.mjs';
+import { pagedRecordsOf, recordTablesCreated } from './record-tables.mjs';
+import { cloneRecordGraph } from './record-clone.mjs';
 
 const BULK_ROWS = 100000;
 const MEMO_PARTITION_LIMIT = 4000000;
@@ -149,11 +149,28 @@ export function copyPlainGraph(value) {
   }
 }
 
+// Runtime state keeps paged tables in `tables`; checking those members is not a graph walk.
+const stateTables = (value) => {
+  const tables =
+    value && typeof value === 'object' && !types.isProxy(value) ? descriptorValue(value, 'tables') : undefined;
+  if (!tables || typeof tables !== 'object' || types.isProxy(tables)) return false;
+  for (const key of Object.keys(tables)) if (pagedRecordsOf(descriptorValue(tables, key))) return true;
+  return false;
+};
+
 // Native cloning is fast for small values. Large JSON state/metadata needs no
-// duplicated scalar strings or deserialized wire buffer.
-export const cloneStateData = (value, options) =>
-  recordTablesCreated && hasRecordGraph(value)
-    ? cloneRecordGraph(value, options)
-    : bulkRows(value) || bulkMetadata(value) || bulkSourceComponents(value)
+// duplicated scalar strings or deserialized wire buffer. Record proxies are not
+// structured-cloneable: a graph holding one elsewhere is detected by that clone
+// failing, and is then copied by the record-aware cloner (which reports every
+// other unsupported value with the same DataCloneError).
+export const cloneStateData = (value, options) => {
+  if (recordTablesCreated && (pagedRecordsOf(value) || stateTables(value))) return cloneRecordGraph(value, options);
+  try {
+    return bulkRows(value) || bulkMetadata(value) || bulkSourceComponents(value)
       ? copyPlainGraph(value)
       : structuredClone(value);
+  } catch (error) {
+    if (!recordTablesCreated || error?.name !== 'DataCloneError') throw error;
+    return cloneRecordGraph(value, options);
+  }
+};

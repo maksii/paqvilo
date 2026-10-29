@@ -6,7 +6,8 @@ import path from 'node:path';
 import { RecordPageSession, pagedRecordsOf } from '../lib/record-tables.mjs';
 import { cloneStateData } from '../lib/state-clone.mjs';
 import { jsonChunks } from '../lib/state-stream.mjs';
-import { privateRecordEqual } from '../lib/record-clone.mjs';
+import { privateRecordEqual, privateRecordEqualAsync } from '../lib/record-clone.mjs';
+import { isDeepStrictEqual } from 'node:util';
 
 test('record state copies preserve public data, held aliases, native types and private page forks', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-clone-'));
@@ -87,4 +88,171 @@ test('private equality retains native metadata types and distinguishes identical
   assert.equal(privateRecordEqual(state, fork), true);
   assert.equal(privateRecordEqual(state, { ...state, tables: { item: other } }), false);
   assert.equal(privateRecordEqual(state, { ...fork, settings: { date: new Date(0).toISOString() } }), false);
+});
+
+test('private equality agrees with isDeepStrictEqual on ordinary and exotic values in one pass', async () => {
+  const symbol = Symbol('invented');
+  const sparse = () => {
+    const values = [1, 2, 3];
+    delete values[1];
+    return values;
+  };
+  const holes = sparse();
+  const extra = Object.assign([1, 2], { note: 1 });
+  const cycle = { a: 1 },
+    otherCycle = { a: 1 };
+  cycle.self = cycle;
+  otherCycle.self = otherCycle;
+  const hidden = Object.defineProperty({}, 'hidden', { value: 1 });
+  class Invented {
+    constructor() {
+      this.a = 1;
+    }
+  }
+  const bare = Object.assign(Object.create(null), { a: 1 });
+  let deep = {},
+    otherDeep = {};
+  for (let i = 0; i < 3000; i++) {
+    deep = { next: deep };
+    otherDeep = { next: otherDeep };
+  }
+  const cases = [
+    [1, 1],
+    [0, -0],
+    [NaN, NaN],
+    [1, '1'],
+    [null, undefined],
+    [{}, []],
+    [
+      { a: 1, b: 2 },
+      { b: 2, a: 1 },
+    ],
+    [{ a: 1 }, { a: 1, b: undefined }],
+    [{ a: undefined }, { b: undefined }],
+    [holes, [1, undefined, 3]],
+    [holes, sparse()],
+    [extra, [1, 2]],
+    [extra, Object.assign([1, 2], { note: 1 })],
+    [{ [symbol]: 1 }, {}],
+    [{ [symbol]: 1 }, { [symbol]: 1 }],
+    [{ [symbol]: 1 }, { [symbol]: 2 }],
+    [cycle, otherCycle],
+    [{ c: cycle }, { c: otherCycle }],
+    [hidden, {}],
+    [
+      {
+        get x() {
+          return 1;
+        },
+      },
+      { x: 1 },
+    ],
+    [new Invented(), { a: 1 }],
+    [new Invented(), new Invented()],
+    [bare, { a: 1 }],
+    [bare, Object.assign(Object.create(null), { a: 1 })],
+    [{ d: new Date(0) }, { d: new Date(0) }],
+    [{ d: new Date(0) }, { d: new Date(1) }],
+    [new Map([[1, { a: 1 }]]), new Map([[1, { a: 1 }]])],
+    [new Set([1, 2]), new Set([2, 1])],
+    [{ s: new Set([{}]) }, { s: new Set([{}]) }],
+    [new Uint8Array([1, 2]), new Uint8Array([1, 2])],
+    [new Uint8Array([1]), new Int8Array([1])],
+    [{ n: new Number(1) }, { n: new Number(1) }],
+    [{ constructor: 'column' }, { constructor: 'column' }],
+    [{ constructor: 'column' }, { constructor: 'other' }],
+    [{}, Object.create({})],
+    [Object.create(Array.prototype), []],
+    [[[1, [2, { x: [3] }]]], [[1, [2, { x: [3] }]]]],
+    [[[1, [2, { x: [3] }]]], [[1, [2, { x: [4] }]]]],
+    [{ r: /a/g }, { r: /a/i }],
+    [{ e: new Error('x') }, { e: new Error('x') }],
+    [{ a: [1, { b: NaN }] }, { a: [1, { b: NaN }] }],
+    [{ a: -0 }, { a: 0 }],
+    [{ f: () => 1 }, { f: () => 1 }],
+    [{ v: 1n }, { v: 1n }],
+    [deep, otherDeep],
+  ];
+  for (const [a, b] of cases)
+    for (const [left, right] of [
+      [a, b],
+      [b, a],
+    ]) {
+      // A graph too deep for native recursion throws the same error from both.
+      const outcome = (compare) => {
+        try {
+          return compare();
+        } catch (error) {
+          return error.name;
+        }
+      };
+      const expected = outcome(() => isDeepStrictEqual(left, right));
+      assert.equal(
+        outcome(() => privateRecordEqual(left, right)),
+        expected,
+      );
+      assert.equal(await privateRecordEqualAsync(left, right, { quantum: 1 }).catch((error) => error.name), expected);
+    }
+});
+
+test('asynchronous private equality yields after each bounded quantum of visited objects', async () => {
+  const section = Object.fromEntries(
+    Array.from({ length: 300 }, (_, i) => ['x_table' + i, { columns: Array.from({ length: 20 }, (_, c) => ({ c })) }]),
+  );
+  const stats = {};
+  let turns = 0;
+  const comparison = privateRecordEqualAsync(section, structuredClone(section), {
+    quantum: 500,
+    stats,
+    pause: async () => {
+      turns++;
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+  });
+  assert.equal(turns, 1, 'The first quantum runs synchronously and then yields.');
+  assert.equal(await comparison, true);
+  assert.equal(stats.visited, 1 + 300 * 22);
+  assert.equal(stats.pauses, Math.ceil(stats.visited / 500) - 1);
+  assert.equal(turns, stats.pauses);
+});
+
+test('private equality compares paged tables by version and facades by value without decoding tables', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-equality-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const session = new RecordPageSession(root);
+  t.after(() => session.close());
+  const rows = session.from([{ id: 'one', nested: { value: 1 } }]);
+  const facade = rows[0];
+  const state = { settings: { rows, held: facade } };
+  const copy = { settings: { rows: pagedRecordsOf(rows).fork(), held: { id: 'one', nested: { value: 1 } } } };
+  session.readRow = () => {
+    throw Error('Unexpected record decoding');
+  };
+  assert.equal(privateRecordEqual(state, copy), true);
+  assert.equal(privateRecordEqual(state, { settings: { rows, held: { id: 'one', nested: { value: 2 } } } }), false);
+  assert.equal(privateRecordEqual(state, { settings: { rows: [], held: facade } }), false);
+  const map = { settings: new Map([['rows', rows]]) };
+  assert.equal(privateRecordEqual(map, { settings: new Map([['rows', pagedRecordsOf(rows).fork()]]) }), true);
+});
+
+test('state copies detect record proxies during the copy instead of walking the graph first', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-record-copy-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const session = new RecordPageSession(root);
+  t.after(() => session.close());
+  const rows = session.from([{ id: 'one' }]);
+  let reads = 0;
+  const metadata = {
+    get counted() {
+      reads++;
+      return { value: 1 };
+    },
+  };
+  const plain = cloneStateData({ metadata });
+  assert.deepEqual(plain, { metadata: { counted: { value: 1 } } });
+  assert.equal(reads, 1, 'A graph without records is read once.');
+  const nested = cloneStateData({ settings: { list: [rows] } }, { forkTables: true });
+  assert.ok(pagedRecordsOf(nested.settings.list[0]));
+  assert.throws(() => cloneStateData({ rows, fn: () => 1 }), { name: 'DataCloneError' });
+  assert.throws(() => cloneStateData({ fn: () => 1 }), { name: 'DataCloneError' });
 });

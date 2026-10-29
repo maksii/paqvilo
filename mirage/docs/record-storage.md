@@ -35,27 +35,46 @@ for a complete JSON file and select tables/sections for smaller snapshots.
 Runtime table arrays provide ordinary reads, insertion, deletion, reordering and
 mutable JSON rows. Their elements are writable enumerable configurable data
 properties. Apply JavaScript property descriptors to a detached snapshot.
+`sort`, `reverse`, `shift`, `unshift`, `fill` and `copyWithin` keep their Array
+results while rearranging stored record versions, without rewriting records or
+key pages. An insert or delete copies only the position chunk it changes.
 
 Persistent pages live beside the state file in `<state-file>.records`. The journal
-references checksummed immutable file prefixes; restored files remain read-only.
-A new runtime writes its own file. Keep this directory with a raw journal backup.
-The administration JSON export is self-contained. Legacy JSON and v1 journal
-files remain readable and retain their existing file format until paged records
-are selected.
+references immutable file prefixes by a digest of their page headers. Each page
+header carries its payload digest, which every read verifies, so a restart reads
+page headers rather than every stored byte. Restored files remain read-only. A
+new runtime writes its own file and starts another before one runs out of page
+numbers. Record pages hold up to 64 KiB of JSON.
+
+The directory's `.record-owner.json` holds a random owner key, which the journal
+also records. A state file and its directory therefore load together after they
+are moved, copied or restored to another folder or drive. A different state
+cannot load the directory, and a new state adopts an existing directory only at
+the location recorded for its owner. Keep this directory with a raw journal
+backup. Directories and journals written before owner keys load, and their marker
+is rewritten in the current form. The administration JSON export is
+self-contained. Legacy JSON and v1 journal files remain readable and retain their
+existing file format until paged records are selected.
 
 Offline `data generate` and `data scaffold` keep paged input while merging their
 generated arrays. A separate output copies referenced pages into its own record
 directory. Public `mergeDataset()` results remain ordinary detached arrays.
 Commands release their readers on success and failure.
 
-Read caches and open handles are bounded independently of record count. Table
-positions use typed buffers, and private transaction copies share immutable pages
-until a write. Key sorting uses bounded runs and temporary files. Public exports
-stream record values with backpressure instead of retaining one proxy per row.
+Read caches and open handles are bounded independently of record count; the key
+index cache keeps internal nodes before leaves. Table positions use typed
+buffers, and a transaction takes one private copy of each table it writes, which
+shares immutable pages until a write. Key sorting uses bounded runs and temporary
+files. Public exports stream record values with backpressure instead of retaining
+one proxy per row. A commit compares its metadata sections in bounded steps and
+yields to the event loop between them.
 
 `DataStore.compact()` queues a checkpoint and rewrites live record versions. It
-preserves held rows, ordering, aliases and active private snapshots. File leases
-protect active readers; collection checks the state publication lock and directory
-ownership. An unverified directory is retained. Close the runtime to release its
-handles and leases. Measurements and outstanding qualification are recorded in
+preserves held rows, ordering, aliases and active private snapshots. A table
+written while the compacted checkpoint is saved keeps its live versions, which
+are saved again. File leases protect active readers; collection checks the state
+publication lock and directory ownership, and removes key-sort runs, lease and
+owner temporaries left by exited processes. A directory that holds files but no
+owner marker is used unowned and reported as `unverified-directory`; nothing in
+it is collected. Close the runtime to release its handles and leases. Measurements and outstanding qualification are recorded in
 [consumer feedback](../../docs/consumer-feedback.md).

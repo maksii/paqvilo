@@ -16,6 +16,42 @@ const pairOf = (key, token) => {
     throw TypeError('Invalid string key or row token');
   return [key, token];
 };
+const validated = new WeakMap();
+// Bounds, size and child depth of a structurally valid node.
+function summarize(node) {
+  const entries = node?.leaf ? node.pairs : node?.children;
+  if (!Array.isArray(entries) || !entries.length) throw Error('Invalid key-tree node');
+  const childDepth = node.leaf ? undefined : entries[0]?.depth;
+  if (!node.leaf && (!Number.isInteger(childDepth) || entries.some((child) => child.depth !== childDepth)))
+    throw Error('Invalid key-tree child depth');
+  let previous,
+    size = 0;
+  for (const entry of entries) {
+    const min = node.leaf ? entry : entry.min,
+      max = node.leaf ? entry : entry.max;
+    if (!Array.isArray(min) || min.length !== 2 || !Array.isArray(max) || max.length !== 2)
+      throw Error('Invalid key-tree bounds');
+    pairOf(...min);
+    pairOf(...max);
+    if (
+      compare(min, max) > 0 ||
+      (previous && compare(previous, min) >= 0) ||
+      (!node.leaf &&
+        (!Number.isSafeInteger(entry.id) || entry.id <= 0 || !Number.isSafeInteger(entry.size) || entry.size <= 0))
+    )
+      throw Error('Invalid key-tree order or child');
+    previous = max;
+    size += node.leaf ? 1 : entry.size;
+  }
+  return {
+    leaf: Boolean(node.leaf),
+    entries: entries.length,
+    childDepth,
+    min: node.leaf ? entries[0] : entries[0].min,
+    max: node.leaf ? entries.at(-1) : entries.at(-1).max,
+    size,
+  };
+}
 
 export class PersistentKeyTree {
   constructor(store, { root = null, files = [], capacity = 256 } = {}) {
@@ -29,41 +65,17 @@ export class PersistentKeyTree {
   node(ref) {
     if (!ref || !Number.isInteger(ref.depth) || ref.depth < 0 || ref.depth > 32) throw Error('Invalid key-tree depth');
     const node = this.store.read(ref.id);
-    const entries = node.leaf ? node.pairs : node.children;
-    if (
-      !Array.isArray(entries) ||
-      !entries.length ||
-      entries.length > this.capacity ||
-      Boolean(node.leaf) !== (ref.depth === 0)
-    )
-      throw Error('Invalid key-tree node');
-    if (!node.leaf && entries.some((child) => child.depth !== ref.depth - 1))
-      throw Error('Invalid key-tree child depth');
-    let previous,
-      size = 0;
-    for (const entry of entries) {
-      const min = node.leaf ? entry : entry.min,
-        max = node.leaf ? entry : entry.max;
-      if (!Array.isArray(min) || min.length !== 2 || !Array.isArray(max) || max.length !== 2)
-        throw Error('Invalid key-tree bounds');
-      pairOf(...min);
-      pairOf(...max);
-      if (
-        compare(min, max) > 0 ||
-        (previous && compare(previous, min) >= 0) ||
-        (!node.leaf &&
-          (!Number.isSafeInteger(entry.id) || entry.id <= 0 || !Number.isSafeInteger(entry.size) || entry.size <= 0))
-      )
-        throw Error('Invalid key-tree order or child');
-      previous = max;
-      size += node.leaf ? 1 : entry.size;
-    }
+    // A node is structurally validated once; each visit checks it against its reference.
+    let summary = validated.get(node);
+    if (!summary) validated.set(node, (summary = summarize(node)));
+    if (summary.entries > this.capacity || summary.leaf !== (ref.depth === 0)) throw Error('Invalid key-tree node');
+    if (!summary.leaf && summary.childDepth !== ref.depth - 1) throw Error('Invalid key-tree child depth');
     if (
       !Array.isArray(ref.min) ||
       !Array.isArray(ref.max) ||
-      compare(ref.min, node.leaf ? entries[0] : entries[0].min) ||
-      compare(ref.max, node.leaf ? entries.at(-1) : entries.at(-1).max) ||
-      ref.size !== size
+      compare(ref.min, summary.min) ||
+      compare(ref.max, summary.max) ||
+      ref.size !== summary.size
     )
       throw Error('Key-tree reference disagrees with node');
     return node;

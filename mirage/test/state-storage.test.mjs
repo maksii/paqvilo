@@ -566,7 +566,7 @@ test('a failed partially flushed append restores its committed prefix and permit
   store.storage.appendChanges = (entries) =>
     append(
       (async function* () {
-        for (const entry of entries)
+        for await (const entry of entries)
           yield entry.row ? { ...entry, row: { ...entry.row, padding: 'x'.repeat(100000) } } : entry;
         throw new Error('Synthetic append failure after flush');
       })(),
