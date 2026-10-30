@@ -1,16 +1,12 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 // Response ordering and history navigation.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter, once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../mirage/lib/browser-launch.mjs';
-import { createFixture, SITE } from '../test/fixture.mjs';
-import { fakeBrowser } from '../test/fake-browser.mjs';
-import { OverlaySession } from '../lense/session.mjs';
-import { enablePanel } from '../lense/panel.mjs';
 import { panelUi } from '../lense/panel-ui.mjs';
 import { xrayUi } from '../lense/xray-ui.mjs';
+import { panelSession } from './helpers/panel-session.mjs';
 
 // Routed entirely by page.route; nothing listens on this loopback port.
 const origin = 'http://127.0.0.1:11111';
@@ -34,30 +30,7 @@ const report = (name) => ({
   ],
 });
 async function fixture(t) {
-  const source = createFixture(),
-    fake = fakeBrowser(),
-    fakeTab = fake.openTab(origin + '/');
-  const session = new OverlaySession({
-    origin,
-    sourceDir: source.dir,
-    site: structuredClone(SITE),
-    siteName: 'Invented',
-    envName: 'loopback',
-    stateDir: source.dir,
-  });
-  const controller = enablePanel(fake.context, session),
-    state = controller.stateFor(fakeTab.page);
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  ownedFixture(t).add(async () => {
-    await controller.dispose();
-  });
-  ownedFixture(t).add(async () => {
-    await context.close();
-  });
-  ownedFixture(t).remove(async () => {
-    source.cleanup();
-  });
-  const page = await context.newPage(),
+  const { state, page } = await panelSession(t, browser, origin),
     pending = [],
     arrivals = new EventEmitter();
   await page.route('**/*', (route) => {
