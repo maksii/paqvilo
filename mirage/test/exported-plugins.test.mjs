@@ -353,8 +353,14 @@ test('synchronous trusted plugin phases sort rank, filter submitted columns, rej
   store.setPluginPipeline((context) =>
     runPluginPhase({ ...context, items: pluginCatalogue({ plugins, handlers: lateHandlers }), handlers: lateHandlers }),
   );
-  await assert.rejects(store.create('fx_widgets', { fx_title: 'Post mutation' }, editor), /PostOperation/);
-  assert.deepEqual(store.snapshot(), targetBefore);
+  const postCreated = await store.create('fx_widgets', { fx_title: 'Post mutation' }, editor);
+  assert.equal(postCreated.fx_title, 'Post mutation');
+  const afterPost = store.snapshot().tables.fx_widget;
+  assert.equal(afterPost.find((record) => record.fx_widgetid === postCreated.fx_widgetid).fx_title, 'Post mutation');
+  assert.deepEqual(
+    afterPost.filter((record) => record.fx_widgetid !== postCreated.fx_widgetid),
+    targetBefore.tables.fx_widget,
+  );
 });
 
 test('automatic plugin placeholders and editable mocks are inventoried, CSRF protected, and prevent bad CRUD writes', async (t) => {

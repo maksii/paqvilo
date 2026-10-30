@@ -49,10 +49,35 @@ test('Named SDK Execute validates parameter contracts before writes and retains 
         store,
         request('Create', { Target: entity({ title: 'Untrusted override' }), BypassCustomPluginExecution: true }),
       ),
-    /Unsupported SDK Execute/,
+    (error) => error.code === 'LocalBackendPermissionDenied' && error.status === 403,
   );
   assert.throws(() => invoke(store, request('ExecuteTransaction', { Requests: [] })), /Unsupported SDK Execute/);
   assert.deepEqual(store.snapshot(), before);
+  const bypassStore = storeOf();
+  let observed = 0;
+  bypassStore.setPluginPipeline(
+    () => {
+      observed++;
+    },
+    (c) => c.operation === 'update',
+  );
+  const bypassed = dispatchSdkCall({
+    store: bypassStore,
+    profile: { ...profile, privileges: ['prvBypassCustomPlugins'] },
+    message: {
+      method: 'Execute',
+      userId: user,
+      arguments: [
+        request('Update', {
+          Target: entity({ title: 'Authorized bypass' }),
+          BypassCustomPluginExecution: true,
+        }),
+      ],
+    },
+  });
+  assert.equal(bypassed.responseName, 'Update');
+  assert.equal(bypassStore.tableRows('secondary')[0].title, 'Authorized bypass');
+  assert.equal(observed, 0);
   const retrieved = invoke(
     store,
     request('Retrieve', {

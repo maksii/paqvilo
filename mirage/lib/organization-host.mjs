@@ -7,6 +7,8 @@ import { immutableStatus } from './immutable-status.mjs';
 import { pluginHandlers, pluginCatalogue } from './exported-plugins.mjs';
 import { pluginRuntimeDescriptors, prepareClrRuntime, closeClrHostPool } from './plugin-clr.mjs';
 import { overlayRegisteredSteps } from './dataverse-plugin-registration.mjs';
+import { bulkMessageAvailabilityRecord } from './bulk-message-availability.mjs';
+import { pluginBypassOwnership } from './plugin-bypass.mjs';
 import { operationHandlers, describe as serverLogicDescribe } from './exported-operations.mjs';
 import { operationCatalogue } from './operation-catalogue.mjs';
 import { workflowHandlers, workflowsWithActivation } from './dataverse-workflows.mjs';
@@ -1090,6 +1092,42 @@ function hostRegistry(c) {
     // Register the actual shared seams before modules and packs can claim their names.
     // The offline description installs the same organization over an in-memory store.
     if (c.store) add({ name: 'store', kind: 'provider', level: 'behaviour', stateOwner: 'DataStore', operations: [] });
+    if (c.store)
+      add(
+        bulkMessageAvailabilityRecord({
+          store: c.store,
+          plugins: c.sources.plugins?.(),
+          profiles: [...c.descriptors.values()].map((descriptor) => descriptor.serviceProfile),
+        }),
+      );
+    const ownership = c.pluginSteps().map((item) => {
+      const classified = pluginBypassOwnership(item);
+      return {
+        id: item.id,
+        kind: classified.kind,
+        qualification: classified.qualification,
+        customizationLevel: item.customizationLevel ?? null,
+        evidencePresent: Boolean(classified.evidence),
+      };
+    });
+    const unknownOwnership = ownership.filter((item) => item.kind === 'unknown').length;
+    add({
+      name: 'source-plugin-bypass-ownership',
+      kind: 'inventory',
+      level: 'contract',
+      operations: [],
+      reason: `${unknownOwnership}/${ownership.length} source plug-in ownership classifications are unqualified. Unknown source extensions retain the explicit local custom-adapter bypass contract; system/Microsoft ownership requires evidence.`,
+      seams: {
+        diagnostic: unknownOwnership ? 'PLUGIN_BYPASS_OWNERSHIP_UNKNOWN' : null,
+        steps: ownership,
+        managedBaseEditGuard: {
+          level: 'contract',
+          condition: 'ismanaged=true and customizationlevel=0',
+          nativeQualified: false,
+          ownershipProof: false,
+        },
+      },
+    });
     if (api?.scheduler)
       add({ name: 'scheduler', kind: 'provider', level: 'behaviour', operations: [], stateOwner: 'organization' });
     if (connectors.some((record) => record.name === 'http'))
@@ -1184,6 +1222,9 @@ function hostLifecycle(c) {
         plugins: () => c.sources.plugins?.(),
         customApis: handlers.customApis,
         pluginHandlers: handlers.plugins,
+        pluginRuntimes: c.descriptors,
+        pluginRuntimeCache: c.runtimes,
+        prepareRuntime: c.prepareRuntime,
         workflowHandlers: handlers.workflows,
         workflowOverrides: c.workflowOverrides,
         cloudFlow: c.cloudFlow,

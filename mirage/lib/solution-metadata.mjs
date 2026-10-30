@@ -295,7 +295,10 @@ export async function importSolutionMetadata(
     return [...map.values()];
   };
   const plugins = await resolvePluginSourceFiles(
-    importSolutionPlugins(scan.layers, { sdkMessages: observed?.sdkMessages }),
+    importSolutionPlugins(scan.layers, {
+      sdkMessages: observed?.sdkMessages,
+      businessLogicOwnership: observed?.businessLogicOwnership,
+    }),
     observed?.pluginSources,
     portal?.sourceDir,
   );

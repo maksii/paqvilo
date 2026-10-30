@@ -163,11 +163,20 @@ export function metadataNumeric(value) {
 export function parseNumericLiteral(text) {
   return exactNumeric(text);
 }
-export function parseExactJson(text) {
+export function parseExactJson(text, { allowFiniteDouble = false } = {}) {
   return JSON.parse(text, (key, value, context) => {
     if (value && typeof value === 'object' && value.$type === marker)
       failure('Internal numeric representations are not accepted as JSON payload objects.');
-    return typeof value === 'number' && context?.source ? parseNumericLiteral(context.source) : value;
+    if (typeof value !== 'number' || !context?.source) return value;
+    try {
+      return parseNumericLiteral(context.source);
+    } catch (error) {
+      // Generic JSON transports also carry IEEE754 Double values beyond the
+      // bounded Decimal/Int64 representation. Dataverse payload readers retain
+      // their stricter default; a transport can preserve an already-finite Double.
+      if (allowFiniteDouble && Number.isFinite(value) && error.code === 'NumericPrecisionUnsupported') return value;
+      throw error;
+    }
   });
 }
 export function stringifyExactJson(value) {

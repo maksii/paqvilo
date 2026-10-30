@@ -14,6 +14,7 @@ import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const VERSION = 'v9.2';
+const ACCOUNT_ID = 'aaaaaaaa-0000-4000-8000-000000000002';
 const ADMIN = { systemuserid: 'aaaaaaaa-0000-4000-8000-000000000001' };
 const LOGICAL = ['customapi', 'customapirequestparameter', 'customapiresponseproperty'];
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
@@ -108,6 +109,9 @@ function harness(files = FILES, options = {}) {
       params,
       body,
       user,
+      ...(op(name).binding === 'entity'
+        ? { target: { mapping: { logicalName: op(name).entity }, id: ACCOUNT_ID, row: { accountid: ACCOUNT_ID } } }
+        : {}),
     });
   return { store, ops, grants, sync, op, call };
 }
@@ -300,6 +304,7 @@ test('a documented deep insert creates the parameter and property rows under the
   const body = {
     uniquename: 'sample_Deep',
     name: 'sample_Deep',
+    description: 'Invented deep insert custom API',
     bindingtype: 0,
     isfunction: false,
     isprivate: false,
@@ -416,7 +421,7 @@ test('Boolean takes JSON booleans and the strings true and false; the handler re
   assert.equal(seen[0].Flag, true);
   assert.equal(seen[0].Count, 3);
   assert.deepEqual(seen[0].Ids, ['a']);
-  assert.equal(seen[0].Text, undefined);
+  assert.equal(seen[0].Text, null, 'an omitted optional String is present as null');
   assert.equal(seen[1].Flag, false);
 });
 
@@ -451,12 +456,12 @@ test('handler outputs fill the response by name; the bound target and caller rea
     params: { Flag: true },
     user: ADMIN,
     caller: { systemuserid: ADMIN.systemuserid },
-    target: { mapping: { logicalName: 'account' }, id: 'acc-1', row: { accountid: 'acc-1' } },
+    target: { mapping: { logicalName: 'account' }, id: ACCOUNT_ID, row: { accountid: ACCOUNT_ID } },
   });
   assert.equal(bound.body.Score, 7);
   assert.deepEqual(bound.body.Labels, ['x']);
   assert.equal(seen[0].target.logicalName, 'account');
-  assert.equal(seen[0].target.id, 'acc-1');
+  assert.equal(seen[0].target.id, ACCOUNT_ID);
   assert.equal(seen[0].caller.systemuserid, ADMIN.systemuserid);
   assert.deepEqual((await call('sample_Echo', { method: 'POST', body: {} })).body, {
     '@odata.context': ECHO_ROW,

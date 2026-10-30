@@ -690,6 +690,7 @@ test('native lookup bindings do not publish target endpoints and enforce source 
     '@odata.id': app.url + '/_api/accounts(company)',
   });
   assert.equal(response.status, 204);
+  assert.equal(app.store.snapshot().tables.account.find((row) => row.accountid === 'company').ownerid, 'person');
   await fs.writeFile(
     path.join(directory, 'Column.columnpermission.yml'),
     'adx_columnpermissionid: no-update\nadx_columnpermissionprofileid: profile\nadx_columnname: contactid\nadx_permissions:\n- 746610001\n',
@@ -703,6 +704,7 @@ test('native lookup bindings do not publish target endpoints and enforce source 
     code: '90040101',
     sim: 'WebApiColumnPermissionDenied',
   });
+  assert.equal(app.store.snapshot().tables.account.find((row) => row.accountid === 'company').ownerid, 'person');
 });
 
 test('HTTP Web API field gates cover projection, selects, filters, expands, FetchXML joins and all writes; Liquid remains table-scoped', async (t) => {

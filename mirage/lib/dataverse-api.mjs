@@ -16,6 +16,8 @@ import { organizationPrincipalContext } from './dataverse-principal-context.mjs'
 import { gzipSync } from 'node:zlib';
 import { acceptsGzip } from './http-content-encoding.mjs';
 import { DataError } from './data-error.mjs';
+import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
+import { withPluginRequestTag } from './plugin-request-tag.mjs';
 import { createAuthority, verifySecret } from './dataverse-auth.mjs';
 import { executeBatch, parseBatch } from './dataverse-batch.mjs';
 import {
@@ -743,6 +745,9 @@ async function recordCall(d, route, common) {
     identity: common.identity,
     requestId: common.requestId,
     bypassCustomPlugins: common.bypassCustomPlugins === true,
+    bypassCustomAsync: common.bypassCustomAsync === true,
+    bypassStepIds: common.bypassStepIds,
+    systemParameters: common.systemParameters,
     dataverseHttpReader: dataverseHttpReaderContext({
       method: common.method,
       route,
@@ -989,7 +994,11 @@ function bodyOf(method, headers, bodyBuffer, route, isRecordSet = () => false) {
 
 // Answers one Web API request for a caller already authenticated. The HTTP path and $batch parts both come through here,
 // and it returns a result rather than writing to the response.
-async function handleDataRequest(
+function handleDataRequest(d, request) {
+  const parameters = request.url.searchParams.has('tag') ? { tag: request.url.searchParams.get('tag') } : {};
+  return withPluginRequestTag(d.store, parameters, () => handleTaggedDataRequest(d, request));
+}
+async function handleTaggedDataRequest(
   d,
   { method, url, route, headers = {}, bodyBuffer = Buffer.alloc(0), user, caller, identity, prefer, origin, requestId },
 ) {
@@ -1013,6 +1022,19 @@ async function handleDataRequest(
   if (logic.length && !holds('prvBypassCustomBusinessLogic'))
     throw privilegeDenied(d, caller, 'prvBypassCustomBusinessLogic');
   const bypassCustomPlugins = plugins || logic.includes('customsync');
+  const bypassCustomAsync = logic.includes('customasync');
+  const bypassStepIds = parseBypassStepIds(d.store, headers['mscrm.bypassbusinesslogicexecutionstepids']);
+  if (bypassStepIds.length && !holds('prvBypassCustomBusinessLogic'))
+    throw privilegeDenied(d, caller, 'prvBypassCustomBusinessLogic');
+  const systemParameters = {
+    ...(Object.hasOwn(headers, 'mscrm.bypasscustompluginexecution') ? { BypassCustomPluginExecution: plugins } : {}),
+    ...(Object.hasOwn(headers, 'mscrm.bypassbusinesslogicexecution')
+      ? { BypassBusinessLogicExecution: headers['mscrm.bypassbusinesslogicexecution'] }
+      : {}),
+    ...(Object.hasOwn(headers, 'mscrm.bypassbusinesslogicexecutionstepids')
+      ? { BypassBusinessLogicExecutionStepIds: headers['mscrm.bypassbusinesslogicexecutionstepids'] }
+      : {}),
+  };
   const body = bodyOf(method, headers, bodyBuffer, route, (set) => entitySetNamed(d.store, set));
 
   const common = {
@@ -1028,6 +1050,9 @@ async function handleDataRequest(
     caller,
     identity,
     bypassCustomPlugins,
+    bypassCustomAsync,
+    bypassStepIds,
+    systemParameters,
   };
   const operated = await operationCall(d, route, common);
   if (operated) return operated;
@@ -1150,6 +1175,10 @@ async function runOperation(d, op, route, paramsText, common, target) {
     identity: common.identity,
     requestId: common.requestId,
     target,
+    bypassCustomPlugins: common.bypassCustomPlugins === true,
+    bypassCustomAsync: common.bypassCustomAsync === true,
+    bypassStepIds: common.bypassStepIds,
+    systemParameters: common.systemParameters,
     api: d.api,
   };
   // A Prefer: respond-async call to a custom API is answered 202 here and runs later; otherwise the operation runs now.

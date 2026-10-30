@@ -10,6 +10,7 @@ import { ProviderError } from './storage-provider.mjs';
 import { CODE, connectAmqp, decodeMessage, described, encodeMessage, sym } from './amqp-client.mjs';
 import { registerSettingParser } from './config-keys.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
+import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
 
 export const QUEUE_MESSAGE_TABLE = 'paqvilo_queuemessage';
 export const DEAD_LETTER_SUFFIX = '/$deadletterqueue';
@@ -85,10 +86,12 @@ const time = (value) => {
   return ms;
 };
 const iso = (ms) => (ms == null ? null : new Date(ms).toISOString());
-function json(value, label) {
+function json(value, label, { exact = true } = {}) {
   if (value === undefined) throw new DataError(`${label} must be JSON`, 400, 'InvalidRequest');
   try {
-    return JSON.parse(JSON.stringify(value));
+    return exact
+      ? parseExactJson(stringifyExactJson(value), { allowFiniteDouble: true })
+      : JSON.parse(JSON.stringify(value));
   } catch {
     throw new DataError(`${label} must be JSON`, 400, 'InvalidRequest');
   }
@@ -108,7 +111,7 @@ function messageInput(entity, body, { messageId, properties = {}, scheduledEnque
     throw new DataError('messageId must be 1-128 characters', 400, 'InvalidRequest');
   return {
     value,
-    properties: json(properties, 'Message properties'),
+    properties: json(properties, 'Message properties', { exact: false }),
     messageId,
     scheduled: time(scheduledEnqueueTime),
   };
@@ -552,7 +555,7 @@ export function createServiceBusEmulatorBus({
     let body = message.body;
     if (Buffer.isBuffer(body) && contentType === 'application/json') {
       try {
-        body = JSON.parse(body.toString('utf8'));
+        body = parseExactJson(body.toString('utf8'), { allowFiniteDouble: true });
       } catch {
         /* kept as bytes */
       }
@@ -613,7 +616,7 @@ export function createServiceBusEmulatorBus({
         annotations,
         properties: [messageId, null, null, null, null, null, sym('application/json')],
         applicationProperties: properties,
-        body: Buffer.from(JSON.stringify(value), 'utf8'),
+        body: Buffer.from(stringifyExactJson(value), 'utf8'),
       });
       if (payload.length > EMULATOR_MAX_MESSAGE)
         throw new ProviderError(

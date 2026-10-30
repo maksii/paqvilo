@@ -11,6 +11,7 @@ import { parseSolutionXml, descendants, child, childText, labelsOf, pickLabel, s
 import { classifyYamlPath, yamlNode, yamlEntityNode, yamlComponentNode, YAML_ROOTS } from './solution-yaml.mjs';
 import { SolutionFileCache, fileStamp, mapLimit } from './solution-cache.mjs';
 import { parsePluginDocument } from './exported-plugins.mjs';
+import { hasStepConstructorSettings, copyStepConstructorSettings } from './plugin-constructor-configuration.mjs';
 import { DataError } from './data-error.mjs';
 import { parseAppDefinitions, embeddedAppComponents, parseDashboards } from './model-driven/solution.mjs';
 import { solutionDocumentComponents } from './dataverse-solution-components.mjs';
@@ -43,6 +44,29 @@ import {
 
 /** Bump when parsed facts change shape so cached results are never reused. */
 export const SCHEMA_PARSER_ID = 'schema@26';
+// Cache JSON and shared structuredClone results deliberately contain no
+// constructor text. Rehydrate just that execution input from the local source;
+// public facts and their cached metadata remain unchanged.
+const needsPluginConstructorSettings = (facts) =>
+  facts?.plugins?.steps?.some((step) => !hasStepConstructorSettings(step));
+const restorePluginConstructorSettings = (facts, text) => {
+  const parsed = new Map(parsePluginDocument(text).steps.map((step) => [step.id, step]));
+  for (const step of facts.plugins.steps) {
+    const source = parsed.get(step.id);
+    if (!source) throw new Error('Cached plug-in registration no longer matches its source.');
+    copyStepConstructorSettings(source, step);
+  }
+};
+const readPluginConstructorSource = async (file, expectedHash) => {
+  const bytes = await fs.readFile(file);
+  if (createHash('sha256').update(bytes).digest('hex') !== expectedHash)
+    throw new DataError(
+      'Solution source changed while restoring private plug-in constructor configuration.',
+      409,
+      'LocalPluginSourceChanged',
+    );
+  return bytes;
+};
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'bin', 'obj', '.paqvilo']);
@@ -1221,6 +1245,14 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
           { stamp: file.stamp },
           { binary: true },
         );
+        if (value.some((entry) => needsPluginConstructorSettings(entry.facts))) {
+          const entries = new Map(
+            readSolutionZip(await readPluginConstructorSource(file.path, hash)).map((entry) => [entry.name, entry]),
+          );
+          for (const entry of value)
+            if (needsPluginConstructorSettings(entry.facts))
+              restorePluginConstructorSettings(entry.facts, entries.get(entry.name)?.xml);
+        }
         return value.map((entry) => ({
           file: `${file.path}!/${entry.name}`,
           kind: entry.kind,
@@ -1234,6 +1266,8 @@ export async function scanSolutionSources(roots = [], { cache, cacheFile, order 
         (text) => parseSchemaDocument(text, file),
         { stamp: file.stamp },
       );
+      if (needsPluginConstructorSettings(value))
+        restorePluginConstructorSettings(value, (await readPluginConstructorSource(file.path, hash)).toString('utf8'));
       return [{ file: file.path, kind: file.kind, facts: value, hash }];
     } catch (error) {
       diagnostics.push({

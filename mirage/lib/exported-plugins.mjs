@@ -1,5 +1,5 @@
 import { cloneStateData } from './state-clone.mjs';
-import { organizationRecord } from './organization-context.mjs';
+import { imageAttributes } from './plugin-images.mjs';
 import { currentRequest } from './request-context.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { createHash } from 'node:crypto';
@@ -14,10 +14,31 @@ import {
   executeClrPlugin,
   leavePluginExecution,
   pluginExecutionDepth,
+  recordToSdkEntity,
 } from './plugin-clr.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
+import {
+  pluginMessageParameters,
+  pluginMessageValues,
+  reconcilePluginMessageParameters,
+  pluginContextValues,
+} from './plugin-message-values.mjs';
+import {
+  pluginExecutionLifetime,
+  pluginInvocationDepth,
+  pluginInvocationParent,
+} from './plugin-execution-lifetime.mjs';
+import { recordPluginTrace } from './plugin-trace.mjs';
+import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
 import { pluginFailure } from './plugin-fault.mjs';
+import { pluginStepBypassed } from './plugin-bypass.mjs';
+import { pluginMessageHasPipeline } from './plugin-message-admission.mjs';
+import {
+  recordStepConstructorSettings,
+  copyStepConstructorSettings,
+  stepConstructorSettings,
+} from './plugin-constructor-configuration.mjs';
 
 // A plug-in record is mostly scalar columns: copy those directly and clone only structured values.
 const detachedRecord = (value) => {
@@ -31,6 +52,23 @@ const detachedRecord = (value) => {
   return copy;
 };
 const executionFrames = new WeakMap();
+function preValidationSnapshot(frame, values, images) {
+  return {
+    $type: 'ExecutionContext',
+    values: {
+      ...cloneStateData(values),
+      InputParameters: cloneStateData(frame.inputParameters),
+      OutputParameters: cloneStateData(frame.outputParameters),
+      SharedVariables: cloneStateData(frame.sharedVariables),
+      ...(images
+        ? {
+            PreEntityImages: { $type: 'EntityImageCollection', values: cloneStateData(images.preImages) },
+            PostEntityImages: { $type: 'EntityImageCollection', values: cloneStateData(images.postImages) },
+          }
+        : {}),
+    },
+  };
+}
 // The message name a plug-in sees for an operation (IPluginExecutionContext.MessageName).
 export const messageNameOf = (operation) =>
   ({
@@ -72,11 +110,21 @@ export function parsePluginDocument(xml) {
   const assemblies = [],
     types = [],
     steps = [],
-    messages = [];
+    messages = [],
+    messageFilters = [];
   for (const message of nodes(root, 'SdkMessage')) {
     const id = canonical(value(message, 'SdkMessageId')),
       name = value(message, 'Name');
-    if (id && name) messages.push({ id, name });
+    const availability = numeric(value(message, 'Availability'));
+    if (id && name) messages.push({ id, name, ...([0, 1, 2].includes(availability) ? { availability } : {}) });
+  }
+  for (const filter of nodes(root, 'SdkMessageFilter')) {
+    const id = canonical(value(filter, 'SdkMessageFilterId')),
+      messageId = lookupId(filter, 'SdkMessageId'),
+      entity = canonical(value(filter, 'PrimaryObjectTypeCode')),
+      availability = numeric(value(filter, 'Availability'));
+    if (id && messageId && entity && [0, 1, 2].includes(availability))
+      messageFilters.push({ id, messageId, entity, availability });
   }
   for (const assembly of nodes(root, 'PluginAssembly')) {
     const id = canonical(value(assembly, 'PluginAssemblyId'));
@@ -139,47 +187,64 @@ export function parsePluginDocument(xml) {
       lookupId(step, 'ServiceEndpointId') ||
       (['4618', 'serviceendpoint'].includes(handlerType) ? handlerId : null) ||
       null;
-    steps.push({
-      id,
-      name: value(step, 'Name') || id,
-      typeId: lookupId(step, 'PluginTypeId') || (serviceEndpointId ? null : handlerId),
-      serviceEndpointId,
-      eventHandlerOnly:
-        !serviceEndpointId &&
-        !lookupId(step, 'PluginTypeId') &&
-        !value(step, 'PluginTypeName') &&
-        !lookupName(step, 'EventHandler') &&
-        !['4602', 'plugintype'].includes(handlerType) &&
-        Boolean(handlerId),
-      typeName:
-        value(step, 'PluginTypeName') || lookupName(step, 'PluginTypeId') || lookupName(step, 'EventHandler') || null,
-      messageId: lookupId(step, 'SdkMessageId') || null,
-      message: value(step, 'SdkMessageName') || lookupName(step, 'SdkMessageId') || value(step, 'MessageName') || null,
-      entity: primary && primary !== 'none' ? primary : null,
-      messageFilterId,
-      unfiltered,
-      stage: numeric(value(step, 'Stage')),
-      rank: numeric(value(step, 'Rank')),
-      mode: numeric(value(step, 'Mode')),
-      supportedDeployment: numeric(value(step, 'SupportedDeployment')),
-      enabled: numeric(value(step, 'StateCode') ?? '0') === 0,
-      filteringAttributes: String(value(step, 'FilteringAttributes') ?? '')
-        .split(',')
-        .map(canonical)
-        .filter(Boolean),
-      impersonatingUserId: lookupId(step, 'ImpersonatingUserId') || null,
-      images: nodes(step, 'SdkMessageProcessingStepImage').map((image) => ({
-        name: value(image, 'Name') || '',
-        alias: value(image, 'EntityAlias') || '',
-        type: numeric(value(image, 'ImageType')),
-        attributes: String(value(image, 'Attributes') ?? '')
-          .split(',')
-          .map(canonical)
-          .filter(Boolean),
-      })),
-    });
+    steps.push(
+      recordStepConstructorSettings(
+        {
+          id,
+          name: value(step, 'Name') || id,
+          typeId: lookupId(step, 'PluginTypeId') || (serviceEndpointId ? null : handlerId),
+          serviceEndpointId,
+          eventHandlerOnly:
+            !serviceEndpointId &&
+            !lookupId(step, 'PluginTypeId') &&
+            !value(step, 'PluginTypeName') &&
+            !lookupName(step, 'EventHandler') &&
+            !['4602', 'plugintype'].includes(handlerType) &&
+            Boolean(handlerId),
+          typeName:
+            value(step, 'PluginTypeName') ||
+            lookupName(step, 'PluginTypeId') ||
+            lookupName(step, 'EventHandler') ||
+            null,
+          messageId: lookupId(step, 'SdkMessageId') || null,
+          message:
+            value(step, 'SdkMessageName') || lookupName(step, 'SdkMessageId') || value(step, 'MessageName') || null,
+          entity: primary && primary !== 'none' ? primary : null,
+          messageFilterId,
+          unfiltered,
+          stage: numeric(value(step, 'Stage')),
+          rank: numeric(value(step, 'Rank')),
+          mode: numeric(value(step, 'Mode')),
+          supportedDeployment: numeric(value(step, 'SupportedDeployment')),
+          ...(numeric(value(step, 'CustomizationLevel')) != null
+            ? { customizationLevel: numeric(value(step, 'CustomizationLevel')) }
+            : {}),
+          enabled: numeric(value(step, 'StateCode') ?? '0') === 0,
+          filteringAttributes: String(value(step, 'FilteringAttributes') ?? '')
+            .split(',')
+            .map(canonical)
+            .filter(Boolean),
+          impersonatingUserId: lookupId(step, 'ImpersonatingUserId') || null,
+          ...(lookupId(step, 'SdkMessageProcessingStepSecureConfigId')
+            ? { secureConfigurationId: lookupId(step, 'SdkMessageProcessingStepSecureConfigId') }
+            : {}),
+          images: nodes(step, 'SdkMessageProcessingStepImage').map((image) => ({
+            name: value(image, 'Name') || '',
+            alias: value(image, 'EntityAlias') || '',
+            type: numeric(value(image, 'ImageType')),
+            attributes: String(value(image, 'Attributes') ?? '')
+              .split(',')
+              .map(canonical)
+              .filter(Boolean),
+          })),
+        },
+        child(step, 'Configuration') || attr(step, 'Configuration') !== undefined
+          ? { unsecureConfiguration: child(step, 'Configuration')?.text ?? attr(step, 'Configuration') }
+          : {},
+      ),
+    );
   }
-  return { assemblies, types, steps, messages };
+  return { assemblies, types, steps, messages, ...(messageFilters.length ? { messageFilters } : {}) };
 }
 
 /**
@@ -196,8 +261,14 @@ export const SDK_MESSAGES = Object.freeze({
 });
 
 /** Selected solution layer order wins, with explicit provenance and no inferred deployed state. */
-export function importSolutionPlugins(layers = [], { sdkMessages = {} } = {}) {
-  const maps = { assemblies: new Map(), types: new Map(), steps: new Map(), messages: new Map() };
+export function importSolutionPlugins(layers = [], { sdkMessages = {}, businessLogicOwnership = {} } = {}) {
+  const maps = {
+    assemblies: new Map(),
+    types: new Map(),
+    steps: new Map(),
+    messages: new Map(),
+    messageFilters: new Map(),
+  };
   const diagnostics = [],
     fingerprint = createHash('sha256');
   for (const layer of layers)
@@ -214,7 +285,7 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {} } = {}) {
               sourceFile: document.file,
               message: 'The last selected solution layer supplies this registration; deployed state is unknown.',
             });
-          maps[kind].set(record.id, { ...record, sourceFile: document.file });
+          maps[kind].set(record.id, copyStepConstructorSettings(record, { ...record, sourceFile: document.file }));
         }
     }
   const steps = [...maps.steps.values()].map((exported) => {
@@ -233,9 +304,16 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {} } = {}) {
         ? { name: SDK_MESSAGES[step.messageId], evidence: 'platform SDK message id' }
         : undefined);
     const message = step.message || sourceMessage?.name || observedMessage?.name || null;
+    const sourceFilter = maps.messageFilters.get(step.messageFilterId);
+    const messageAvailability = sourceMessage?.availability ?? observedMessage?.availability;
+    const filterAvailability =
+      sourceFilter?.availability ?? observedMessage?.filterAvailability?.[step.entity ?? 'none'];
     const resolved = {
       ...step,
+      ...(businessLogicOwnership[step.id] ? { bypassOwnership: businessLogicOwnership[step.id] } : {}),
       message,
+      ...([0, 1, 2].includes(messageAvailability) ? { messageAvailability } : {}),
+      ...([0, 1, 2].includes(filterAvailability) ? { filterAvailability } : {}),
       messageEvidence: step.message
         ? 'exported-step'
         : sourceMessage
@@ -255,7 +333,7 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {} } = {}) {
       assemblySourceFile: assembly?.sourceFile ?? null,
       stageName: stages[step.stage] ?? `Stage ${step.stage ?? 'unknown'}`,
     };
-    return { ...resolved, unsupported: pluginUnsupported(resolved) };
+    return copyStepConstructorSettings(exported, { ...resolved, unsupported: pluginUnsupported(resolved) });
   });
   // A pending EventHandler is reported where it is resolved against the organization rows (PLUGIN_STEP_UNSUPPORTED at run time).
   for (const step of steps)
@@ -267,10 +345,21 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {} } = {}) {
         message: step.unsupported,
       });
   fingerprint.update(JSON.stringify(sdkMessages));
+  fingerprint.update(JSON.stringify(businessLogicOwnership));
   return {
     assemblies: [...maps.assemblies.values()],
     types: [...maps.types.values()],
     steps,
+    ...(maps.messages.size ||
+    Object.values(sdkMessages).some((message) => message.availability != null || message.filterAvailability)
+      ? {
+          messages: [
+            ...Object.entries(sdkMessages).map(([id, message]) => ({ id, ...message })),
+            ...maps.messages.values(),
+          ],
+        }
+      : {}),
+    ...(maps.messageFilters.size ? { messageFilters: [...maps.messageFilters.values()] } : {}),
     diagnostics,
     fingerprint: fingerprint.digest('hex'),
   };
@@ -328,7 +417,9 @@ export async function resolvePluginSourceFiles(plugins, mappings = {}, defaultRo
     });
   }
   plugins.types = plugins.types.map((type) => ({ ...type, ...typeSources.get(type.name) }));
-  plugins.steps = plugins.steps.map((step) => ({ ...step, ...typeSources.get(step.typeName) }));
+  plugins.steps = plugins.steps.map((step) =>
+    copyStepConstructorSettings(step, { ...step, ...typeSources.get(step.typeName) }),
+  );
   plugins.sourceRoots = [...sourceRoots];
   plugins.sourceFiles = [...sourceFiles];
   plugins.fingerprint = createHash('sha256')
@@ -342,45 +433,48 @@ export async function resolvePluginSourceFiles(plugins, mappings = {}, defaultRo
 export function pluginUnsupported(step, { images = false, impersonation = false } = {}) {
   if (![0, 1].includes(step.mode)) return 'Execution mode is missing or unsupported.';
   const external = /^onexternal(created|updated|deleted)$/.test(String(step.message).toLowerCase());
+  const customApi = step.customApi;
+  if (
+    customApi &&
+    (!customApi.allowedCustomProcessingStepType || (customApi.allowedCustomProcessingStepType === 1 && step.mode !== 1))
+  )
+    return 'The custom API does not allow this processing step execution mode.';
   if (external && (step.mode !== 1 || step.stage !== 40))
     return 'External virtual-table events require asynchronous PostOperation execution.';
   if (
     step.mode === 1 &&
     (step.stage !== 40 ||
-      !['create', 'update', 'delete', 'onexternalcreated', 'onexternalupdated', 'onexternaldeleted'].includes(
-        String(step.message).toLowerCase(),
-      ))
+      (!customApi &&
+        ![
+          'create',
+          'update',
+          'delete',
+          'createmultiple',
+          'updatemultiple',
+          'associate',
+          'disassociate',
+          'onexternalcreated',
+          'onexternalupdated',
+          'onexternaldeleted',
+        ].includes(String(step.message).toLowerCase())))
   )
-    return 'Asynchronous execution supports post-commit stage 40 CRUD and external virtual-table event registrations.';
+    return 'Asynchronous execution supports post-commit stage 40 mutation and external virtual-table event registrations.';
   if (!stages[step.stage]) return 'Only synchronous stages 10, 20 and 40 are simulated.';
   if (!step.message)
     return 'The SDK message name is not exported. Add evidence-backed observed.sdkMessages or exported SDK message metadata; the step label is not used to guess behavior.';
-  if (
-    !external &&
-    ![
-      'create',
-      'update',
-      'delete',
-      'retrieve',
-      'retrievemultiple',
-      'createmultiple',
-      'updatemultiple',
-      'associate',
-      'disassociate',
-    ].includes(String(step.message ?? '').toLowerCase())
-  )
-    return 'This message has no configured local execution pipeline.';
+  if (!pluginMessageHasPipeline(step)) return 'This message has no configured local execution pipeline.';
   if (
     step.unfiltered === true &&
     (step.entity ||
       step.messageFilterId ||
-      String(step.message).toLowerCase() !== 'retrievemultiple' ||
-      step.mode !== 0)
+      !['retrievemultiple', 'associate', 'disassociate'].includes(String(step.message).toLowerCase()) ||
+      (String(step.message).toLowerCase() === 'retrievemultiple' && step.mode !== 0))
   )
-    return 'Unfiltered execution requires an explicit null filter on synchronous RetrieveMultiple.';
-  if (step.unfiltered !== true && (!step.entity || !/^[a-z][a-z0-9_]*$/i.test(step.entity)))
+    return 'Unfiltered execution requires an explicit null filter on synchronous RetrieveMultiple or an association message.';
+  if (!customApi && step.unfiltered !== true && (!step.entity || !/^[a-z][a-z0-9_]*$/i.test(step.entity)))
     return 'An explicit logical table binding is required.';
   if (!Number.isInteger(step.rank)) return 'An explicit execution rank is required.';
+  if (step.supportedDeployment === 1) return 'Offline-only client registration is skipped by online/server execution.';
   if (![0, 2].includes(step.supportedDeployment)) return 'Server deployment is missing or unsupported.';
   if (step.impersonatingUserId && !impersonation)
     return 'Impersonated execution requires an explicit identity adapter.';
@@ -402,12 +496,13 @@ export function pluginUnsupported(step, { images = false, impersonation = false 
 
 export function pluginStepMatchesEntity(step, entity) {
   return (
+    (step.customApi && (step.customApi.bindingType === 0 ? !entity || entity === 'none' : step.entity === entity)) ||
     step.entity === entity ||
     (step.unfiltered === true &&
       step.entity == null &&
       step.messageFilterId == null &&
-      String(step.message).toLowerCase() === 'retrievemultiple' &&
-      (step.contract?.mode ?? step.mode) === 0)
+      ['retrievemultiple', 'associate', 'disassociate'].includes(String(step.message).toLowerCase()) &&
+      (String(step.message).toLowerCase() !== 'retrievemultiple' || (step.contract?.mode ?? step.mode) === 0))
   );
 }
 // One handler per plug-in type name (pluginTypes) serves every step of that type, including steps the Dataverse API
@@ -444,83 +539,303 @@ function typedContext({
   stage,
   target,
   targets,
+  previousRecords,
+  records,
   record,
   previous,
   identity,
   depth,
   trace,
+  customApi,
+  messageParameters,
+  frame,
+  associationParameters,
+  query,
+  columns,
+  holder,
   changedAttributes = [],
 }) {
-  const idColumn = store?.resolveMapping(entity)?.idColumn;
+  const idColumn = entity && !(customApi && entity === 'none') ? store?.resolveMapping(entity)?.idColumn : null;
   const images = (types, source) =>
     Object.fromEntries(
       (item.images ?? [])
         .filter((spec) => types.includes(spec.type) && source)
-        .map((spec) => [
-          spec.alias || spec.name,
-          detachedRecord(
-            spec.attributes.length
-              ? Object.fromEntries(
-                  spec.attributes.filter((name) => Object.hasOwn(source, name)).map((name) => [name, source[name]]),
-                )
-              : source,
-          ),
-        ]),
+        .map((spec) => [spec.alias || spec.name, detachedRecord(imageAttributes(source, spec.attributes))]),
     );
-  const initiating = identity?.systemUserId ?? identity?.id ?? null;
-  return {
-    MessageName: messageNameOf(operation),
-    PrimaryEntityName: entity,
-    PrimaryEntityId: idColumn ? (record[idColumn] ?? null) : null,
+  const preValidationParent =
+    stage !== 10 &&
+    (item.contract?.mode ?? 0) === 0 &&
+    ['create', 'update', 'delete'].includes(operation) &&
+    frame?.preValidationContext;
+  const parent =
+    frame?.delegatedParentContext ??
+    (preValidationParent || store?.pluginParentContext || pluginInvocationParent(store));
+  const executing = identity?.systemUserId ?? identity?.id ?? parent?.values?.UserId?.value ?? null;
+  const initiating = parent?.values?.InitiatingUserId?.value ?? executing;
+  const result = {
+    MessageName: customApi?.name ?? messageNameOf(operation),
+    PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
+    PrimaryEntityId: ['associate', 'disassociate'].includes(operation)
+      ? '00000000-0000-0000-0000-000000000000'
+      : idColumn
+        ? (record[idColumn] ?? (customApi ? '00000000-0000-0000-0000-000000000000' : null))
+        : customApi
+          ? '00000000-0000-0000-0000-000000000000'
+          : null,
     Stage: stage,
     Mode: item.contract?.mode ?? 0,
     Depth: depth,
     InitiatingUserId: initiating,
-    UserId: item.impersonatingUserId ?? initiating,
-    InputParameters: [
-      'create',
-      'update',
-      'delete',
-      'onexternalcreated',
-      'onexternalupdated',
-      'onexternaldeleted',
-    ].includes(operation)
-      ? {
-          Target: detachedRecord(target),
-          ...(operation === 'onexternalupdated'
-            ? { PreImage: detachedRecord(previous), ChangedFields: [...changedAttributes] }
-            : {}),
-        }
-      : ['createmultiple', 'updatemultiple'].includes(operation)
-        ? { Targets: Array.isArray(targets) ? targets.map(detachedRecord) : cloneStateData(targets) }
-        : {},
-    OutputParameters: stage === 40 && operation === 'create' && idColumn ? { id: record[idColumn] } : {},
+    UserId: item.impersonatingUserId ?? executing,
+    ParentContext: pluginContextValues(parent, store),
+    InputParameters: customApi
+      ? pluginMessageValues(messageParameters.inputParameters, store)
+      : associationParameters
+        ? pluginMessageValues({ values: associationParameters }, store)
+        : operation === 'retrievemultiple'
+          ? { Query: cloneStateData(query) }
+          : operation === 'retrieve'
+            ? {
+                Target: pluginMessageValues({ values: { value: holder?.target } }, store).value,
+                ColumnSet: cloneStateData(columns),
+              }
+            : ['create', 'update', 'delete', 'onexternalcreated', 'onexternalupdated', 'onexternaldeleted'].includes(
+                  operation,
+                )
+              ? {
+                  Target: detachedRecord(target),
+                  ...(operation === 'onexternalupdated'
+                    ? { PreImage: detachedRecord(previous), ChangedFields: [...changedAttributes] }
+                    : {}),
+                }
+              : ['createmultiple', 'updatemultiple'].includes(operation)
+                ? { Targets: Array.isArray(targets) ? targets.map(detachedRecord) : cloneStateData(targets) }
+                : {},
+    OutputParameters: customApi
+      ? pluginMessageValues(messageParameters.outputParameters, store)
+      : frame?.outputParameters
+        ? pluginMessageValues(frame.outputParameters, store)
+        : stage === 40 && operation === 'create' && idColumn
+          ? { id: record[idColumn] }
+          : {},
+    SharedVariables: pluginMessageValues(frame?.sharedVariables, store),
+    IsInTransaction: store?.pluginInTransaction === true,
     PreEntityImages: images([0, 2], previous),
     PostEntityImages: stage === 40 && operation !== 'delete' ? images([1, 2], record) : {},
     trace,
   };
+  if (['createmultiple', 'updatemultiple'].includes(operation)) {
+    result.PreEntityImagesCollection = (targets ?? []).map((_, index) => images([0, 2], previousRecords?.[index]));
+    result.PostEntityImagesCollection = (targets ?? []).map((_, index) =>
+      stage === 40 ? images([1, 2], records?.[index]) : {},
+    );
+  }
+  if (frame?.requestTag !== undefined) result.InputParameters = { tag: frame.requestTag, ...result.InputParameters };
+  if (frame?.inputParameters) {
+    const extras = pluginMessageValues(frame.inputParameters, store);
+    result.InputParameters = { ...extras, ...result.InputParameters };
+    if (stage === 40 && frame.inputParametersStage === 40) {
+      if (['create', 'update'].includes(operation) && frame.inputParameters.values?.Target?.$type === 'Entity')
+        result.InputParameters.Target = sdkValueToRecord(frame.inputParameters.values.Target);
+      if (
+        ['createmultiple', 'updatemultiple'].includes(operation) &&
+        frame.inputParameters.values?.Targets?.$type === 'EntityCollection'
+      )
+        result.InputParameters.Targets = cloneStateData(frame.inputParameters.values.Targets.entities);
+    }
+  }
+  if (frame?.delegatedSourceOperation) {
+    const source = frame.delegatedSourceOperation;
+    const base = {
+      ...result,
+      PrimaryEntityId: { $type: 'Guid', value: result.PrimaryEntityId },
+      UserId: { $type: 'Guid', value: result.UserId },
+      InitiatingUserId: { $type: 'Guid', value: result.InitiatingUserId },
+      ParentContext: parent,
+    };
+    result.ParentContext = pluginContextValues(
+      delegatedPluginParent(
+        source,
+        base,
+        store?.pluginExecutionUserId ??
+          source.identity?.systemUserId ??
+          (source.identity?.admin ? source.identity.id : null) ??
+          initiating,
+      ),
+      store,
+    );
+  }
+  return result;
+}
+
+function handlerExecutionContext({
+  context,
+  before,
+  frame,
+  store,
+  item,
+  entity,
+  operation,
+  targets,
+  associationParameters,
+  query,
+  columns,
+  holder,
+  record,
+  previous,
+  previousRecords,
+  records,
+  customApi,
+  messageParameters,
+  parent,
+}) {
+  const primary = entity && entity !== 'none' ? store?.resolveMapping(entity).idColumn : null;
+  const rawInputs = customApi
+    ? reconcilePluginMessageParameters(
+        store,
+        customApi.bindingType === 1
+          ? [...(customApi.parameters ?? []), { uniquename: 'Target', type: 5, logicalentityname: entity }]
+          : (customApi.parameters ?? []),
+        messageParameters.inputParameters,
+        before.inputs,
+        context.InputParameters,
+      )
+    : {
+        $type: 'ParameterCollection',
+        values:
+          associationParameters ??
+          (operation === 'retrievemultiple'
+            ? { Query: query }
+            : operation === 'retrieve'
+              ? { Target: holder?.target, ColumnSet: { $type: 'ColumnSet', ...columns } }
+              : ['createmultiple', 'updatemultiple'].includes(operation)
+                ? {
+                    Targets: {
+                      $type: 'EntityCollection',
+                      entities: targets,
+                      moreRecords: false,
+                      totalRecordCount: -1,
+                      pagingCookie: null,
+                    },
+                  }
+                : {
+                    Target:
+                      operation === 'delete'
+                        ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
+                        : {
+                            ...recordToSdkEntity(
+                              store,
+                              entity,
+                              {
+                                ...context.InputParameters.Target,
+                                ...(operation === 'create' &&
+                                context.Stage === 10 &&
+                                Object.hasOwn(context.InputParameters.Target, primary)
+                                  ? {}
+                                  : { [primary]: record[primary] }),
+                              },
+                              operation === 'create' && context.Stage === 10
+                                ? { allColumns: false, columns: Object.keys(context.InputParameters.Target) }
+                                : { allColumns: true },
+                            ),
+                            id: frame.inputParameters?.values?.Target?.id ?? record[primary],
+                          },
+                  }),
+      };
+  const imageCollection = (current, source) => ({
+    $type: 'EntityImageCollection',
+    values: Object.fromEntries(
+      Object.entries(current ?? {}).map(([alias, attributes]) => {
+        if (attributes == null || attributes.$type === 'Entity') return [alias, cloneStateData(attributes)];
+        const spec = (item.images ?? []).find((entry) => (entry.alias || entry.name) === alias);
+        const original = recordToSdkEntity(store, entity, imageAttributes(source), {
+          allColumns: !spec?.attributes?.length,
+          columns: spec?.attributes ?? [],
+        });
+        // Image Entity.Id is independent of its selected/mutable Attributes.
+        // A handler's explicit null edit remains authored data, unlike a null
+        // omitted while constructing the initial image snapshot.
+        return [alias, { ...original, attributes: recordToSdkEntity(store, entity, attributes).attributes }];
+      }),
+    ),
+  });
+  const values = {
+    MessageName: context.MessageName,
+    PrimaryEntityName: context.PrimaryEntityName,
+    Stage: context.Stage,
+    Mode: context.Mode,
+    Depth: context.Depth,
+    IsInTransaction: context.IsInTransaction,
+    InputParameters: rawInputs,
+    OutputParameters: reconcilePluginMessageParameters(
+      store,
+      [],
+      frame.outputParameters,
+      before.outputs,
+      context.OutputParameters,
+    ),
+    SharedVariables: reconcilePluginMessageParameters(
+      store,
+      [],
+      frame.sharedVariables,
+      before.shared,
+      context.SharedVariables,
+    ),
+    ParentContext: parent ?? null,
+    PreEntityImages: imageCollection(context.PreEntityImages, previous),
+    PostEntityImages: imageCollection(context.PostEntityImages, context.Stage === 40 ? record : null),
+  };
+  if (['createmultiple', 'updatemultiple'].includes(operation)) {
+    values.PreEntityImagesCollection = {
+      $type: 'EntityImageCollectionArray',
+      values: (context.PreEntityImagesCollection ?? []).map((images, index) =>
+        imageCollection(images, previousRecords?.[index]),
+      ),
+    };
+    values.PostEntityImagesCollection = {
+      $type: 'EntityImageCollectionArray',
+      values: (context.PostEntityImagesCollection ?? []).map((images, index) =>
+        imageCollection(images, records?.[index]),
+      ),
+    };
+  }
+  for (const name of ['PrimaryEntityId', 'UserId', 'InitiatingUserId'])
+    if (context[name]) values[name] = { $type: 'Guid', value: context[name] };
+  if (item.id)
+    values.OwningExtension = {
+      $type: 'EntityReference',
+      logicalName: 'sdkmessageprocessingstep',
+      id: item.id,
+      name: item.name ?? null,
+    };
+  if (frame.delegatedSourceOperation) {
+    const source = frame.delegatedSourceOperation;
+    values.ParentContext = delegatedPluginParent(
+      source,
+      values,
+      store?.pluginExecutionUserId ??
+        source.identity?.systemUserId ??
+        (source.identity?.admin ? source.identity.id : null) ??
+        context.InitiatingUserId,
+    );
+  }
+  return { $type: 'ExecutionContext', values };
 }
 
 // plugintracelog: organization.plugintracelogsetting 1 keeps the rows of failed executions, 2 keeps every execution, 0 keeps none.
 // Trace facts survive business rollback independently, as PluginTraceLog does natively.
 function writeTraceLog(store, { item, entity, operation, depth, asyncExecution, traces, started, startedAt, error }) {
-  const level = Number(organizationRecord(store)?.plugintracelogsetting ?? 0);
-  if (!store?.state?.mappings?.plugintracelog || level === 0 || (level === 1 && !error)) return;
-  store.appendPluginTraceLog({
-    plugintracelogid: (store.ids ?? systemIds).uuid(),
-    typename: item.typeName ?? null,
-    messagename: messageNameOf(operation),
-    primaryentity: entity,
-    messageblock: traces.length ? traces.join('\n') : null,
-    exceptiondetails: error ? String(error.message ?? error) : null,
+  recordPluginTrace(store, {
+    typeName: item.typeName,
+    stepId: item.id,
+    messageName: item.customApi?.name ?? messageNameOf(operation),
+    entity,
     depth,
     mode: asyncExecution ? 1 : 0,
-    operationtype: 1,
-    pluginstepid: { id: item.id, logical_name: 'sdkmessageprocessingstep' },
-    performanceexecutionduration: Math.round(performance.now() - started),
-    performanceexecutionstarttime: startedAt,
-    correlationid: currentRequest()?.correlationId ?? store.flowChain?.id ?? null,
-    createdon: new Date((store.clock ?? systemClock).now()).toISOString(),
+    traces,
+    started,
+    startedAt,
+    error,
   });
 }
 
@@ -542,7 +857,7 @@ export function pluginCatalogue({
         impersonation: !handlers.has(step.id) && handlers.has(step.typeName),
       });
     const clrAvailable = Boolean((runtime?.descriptor ?? descriptor)?.typeName === step.typeName);
-    return {
+    return copyStepConstructorSettings(step, {
       ...step,
       unsupported,
       key,
@@ -563,6 +878,7 @@ export function pluginCatalogue({
         stageName: step.stageName,
         rank: step.rank,
         mode: step.mode,
+        supportedDeployment: step.supportedDeployment,
         filteringAttributes: step.filteringAttributes,
         assemblyName: step.assemblyName,
         typeName: step.typeName,
@@ -570,23 +886,44 @@ export function pluginCatalogue({
         boundary:
           'Top-level PreValidation SDK requests commit independently; PreOperation/PostOperation and nested PreValidation join the caller transaction. Read observer writes require a serialized readOperation boundary and explicit backend grants; top-level read SDK writes commit independently. CLR requires an explicitly trusted original assembly and a separate project backend security profile.',
       },
-    };
+    });
   });
 }
 
-function matchingPluginSteps(items, { entity, operation, stage, changedAttributes = [], asyncExecution = false }) {
+function matchingPluginSteps(
+  items,
+  {
+    entity,
+    operation,
+    stage,
+    changedAttributes = [],
+    asyncExecution = false,
+    ignoreFiltering = false,
+    bypassStepIds = [],
+    bypassCustomPlugins = false,
+    diagnostic,
+  },
+) {
   const attributes = new Set(changedAttributes.map(canonical));
   return items.filter(
     (item) =>
       item.enabled &&
+      item.contract?.supportedDeployment !== 1 &&
       (item.contract?.mode === 1) === asyncExecution &&
       pluginStepMatchesEntity(item, entity) &&
       String(item.message).toLowerCase() === operation &&
       item.stage === stage &&
-      (!['update', 'updatemultiple'].includes(operation) ||
+      (ignoreFiltering ||
+        !['update', 'updatemultiple'].includes(operation) ||
         !item.filteringAttributes.length ||
-        item.filteringAttributes.some((name) => attributes.has(name))),
+        item.filteringAttributes.some((name) => attributes.has(name))) &&
+      !pluginStepBypassed(item, { bypassStepIds, bypassCustomPlugins }, diagnostic),
   );
+}
+
+/** Metadata admission is shared by synchronous phases and queued delivery. */
+export function pluginPhaseMatches(items, context) {
+  return matchingPluginSteps(items, context).length > 0;
 }
 
 /** Handlers and CLR can make arbitrary backend writes. Mocks only change the tracked target or response. */
@@ -622,24 +959,89 @@ export function runPluginPhase({
   collection,
   columns,
   holder,
+  customApi,
+  messageParameters,
   portalRequest = false,
   asyncExecution = false,
   initialFrame,
+  bypassStepIds,
+  bypassCustomPlugins = false,
+  continuePhase = false,
   awaitIo = false,
   diagnostic = () => {},
+  onStepExecuted,
 }) {
   // A saved row can be reused by a later Delete; its previous request frame
   // must not supply shared variables, correlation or parent context to this one.
-  if (stage === 10 && !asyncExecution && !['retrieve', 'retrievemultiple'].includes(operation))
+  store?.assertPluginTransactionActive?.();
+  if (stage === 10 && !continuePhase && !asyncExecution && !['retrieve', 'retrievemultiple'].includes(operation))
     executionFrames.set(record, {});
   if (initialFrame) executionFrames.set(record, cloneStateData(initialFrame));
+  const phaseFrame = executionFrames.get(record) ?? {};
+  executionFrames.set(record, phaseFrame);
+  if (!Object.hasOwn(phaseFrame, 'requestTag')) {
+    phaseFrame.requestTag = store?.pluginSdkTag;
+    if (phaseFrame.requestTag !== undefined) {
+      phaseFrame.sharedVariables ??= { $type: 'ParameterCollection', values: { tag: phaseFrame.requestTag } };
+      phaseFrame.inputParameters = {
+        $type: 'ParameterCollection',
+        values: { tag: phaseFrame.requestTag, ...(phaseFrame.inputParameters?.values ?? {}) },
+      };
+    }
+  }
+  if (
+    store &&
+    operation === 'create' &&
+    stage === 20 &&
+    phaseFrame?.inputParametersStage === 10 &&
+    phaseFrame?.inputParameters?.values?.Target?.$type === 'Entity'
+  )
+    phaseFrame.inputParameters.values.Target.id = record[store.resolveMapping(entity).idColumn];
+  if (
+    store &&
+    operation === 'update' &&
+    stage === 40 &&
+    phaseFrame?.inputParametersStage !== 40 &&
+    phaseFrame?.inputParameters?.values?.Target?.$type === 'Entity'
+  )
+    phaseFrame.inputParameters.values.Target.id = record[store.resolveMapping(entity).idColumn];
+  if (
+    stage !== 10 &&
+    !asyncExecution &&
+    ['create', 'update', 'delete'].includes(operation) &&
+    phaseFrame?.preValidationContext &&
+    !phaseFrame.preValidationSharedDetached
+  ) {
+    const prior = phaseFrame.sharedVariables?.values ?? {};
+    phaseFrame.sharedVariables = {
+      $type: 'ParameterCollection',
+      values: Object.hasOwn(prior, 'tag') ? { tag: prior.tag } : {},
+    };
+    phaseFrame.preValidationSharedDetached = true;
+  }
+  if (customApi) {
+    const frame = executionFrames.get(record) ?? {};
+    frame.customApi = customApi;
+    messageParameters ??= { inputParameters: frame.inputParameters, outputParameters: frame.outputParameters };
+    frame.inputParameters = messageParameters.inputParameters ?? { $type: 'ParameterCollection', values: {} };
+    frame.outputParameters = messageParameters.outputParameters ?? { $type: 'ParameterCollection', values: {} };
+    executionFrames.set(record, frame);
+  }
   const read = ['retrieve', 'retrievemultiple'].includes(operation),
     multiple = operation === 'retrievemultiple',
     bulk = ['createmultiple', 'updatemultiple'].includes(operation),
     association = ['associate', 'disassociate'].includes(operation);
-  const matched = matchingPluginSteps(items, { entity, operation, stage, changedAttributes, asyncExecution }).sort(
-    (a, b) => a.rank - b.rank || a.id.localeCompare(b.id),
-  );
+  const matched = matchingPluginSteps(items, {
+    entity,
+    operation,
+    stage,
+    changedAttributes,
+    asyncExecution,
+    ignoreFiltering: true,
+    bypassStepIds: bypassStepIds ?? initialFrame?.bypassStepIds ?? [],
+    bypassCustomPlugins,
+    diagnostic,
+  }).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
   // Mock/handler read outputs also belong to the SDK response frame. Ordinary reads
   // without an executing observer keep the plain projection path.
   if (
@@ -654,7 +1056,7 @@ export function runPluginPhase({
     executionFrames.set(record, {});
   if (stage === 40 && store && !asyncExecution && executionFrames.has(record)) {
     const frame = executionFrames.get(record),
-      primary = store.resolveMapping(entity).idColumn;
+      primary = entity && !(customApi && entity === 'none') ? store.resolveMapping(entity).idColumn : null;
     const values =
       operation === 'create'
         ? { id: { $type: 'Guid', value: record[primary] } }
@@ -664,7 +1066,9 @@ export function runPluginPhase({
             ? { BusinessEntity: holder.entity }
             : multiple
               ? { BusinessEntityCollection: collection }
-              : {};
+              : customApi
+                ? (messageParameters?.outputParameters?.values ?? {})
+                : {};
     populatePluginSystemOutputs(frame, values);
     executionFrames.set(record, frame);
   }
@@ -680,10 +1084,51 @@ export function runPluginPhase({
     if (frame?.outputParameters?.values && Object.hasOwn(frame.outputParameters.values, key))
       frame.outputParameters.values[key] = multiple ? collection : holder.entity;
   };
+  const retainsEmptyPrimaryAttribute = (name, value) =>
+    operation === 'create' &&
+    stage === 10 &&
+    name === store?.resolveMapping(entity).idColumn &&
+    value === '00000000-0000-0000-0000-000000000000' &&
+    target[name] === value;
+  const applyTargetEntity = (next) => {
+    if (next?.$type !== 'Entity' || next.logicalName !== entity)
+      throw error('A record operation must retain its typed Target Entity.', 'LocalPluginSdkUnsupported', 501);
+    const attributes = sdkValueToRecord(next),
+      mapping = store?.resolveMapping(entity),
+      saved =
+        operation === 'update' && mapping
+          ? (store
+              .tableRows(entity)
+              .find((row) => canonical(row[mapping.idColumn]) === canonical(record[mapping.idColumn])) ?? previous)
+          : mapping?.recordDefaults;
+    for (const name of Object.keys(target)) {
+      if (Object.hasOwn(attributes, name)) continue;
+      delete target[name];
+      if (stage === 40 || name === mapping?.idColumn) continue;
+      if (saved && Object.hasOwn(saved, name)) record[name] = cloneStateData(saved[name]);
+      else delete record[name];
+    }
+    for (const [name, value] of Object.entries(attributes)) {
+      if (!/^[a-z][a-z0-9_]*$/i.test(name) || ['__proto__', 'prototype', 'constructor'].includes(name.toLowerCase()))
+        throw error('Invalid plugin target column.');
+      const retainsIdentity = retainsEmptyPrimaryAttribute(name, value);
+      target[name] = cloneStateData(value);
+      if (stage !== 40 && !retainsIdentity) record[name] = cloneStateData(value);
+    }
+  };
   // The steps from index `from` on; an awaited post returns the promise of the rest (see awaitIo above).
   const run = (from) => {
     for (let index = from; index < matched.length; index++) {
       const item = matched[index];
+      if (operation === 'update') changedAttributes = Object.keys(target ?? {});
+      else if (operation === 'updatemultiple')
+        changedAttributes = [...new Set((targets ?? []).flatMap((entry) => Object.keys(entry.attributes ?? {})))];
+      if (
+        ['update', 'updatemultiple'].includes(operation) &&
+        item.filteringAttributes.length &&
+        !item.filteringAttributes.some((name) => changedAttributes.some((column) => canonical(column) === name))
+      )
+        continue;
       const note = (code, message) =>
         diagnostic({
           code,
@@ -717,6 +1162,7 @@ export function runPluginPhase({
         if (['clr', 'handler'].includes(item.mode)) throw error(item.unsupported, 'LocalPluginUnsupported', 501);
         continue;
       }
+      if (['handler', 'clr'].includes(item.mode)) store?.ensureReadSnapshot?.();
       // A synchronous web hook posts its context and fails the operation (rolled back) unless the endpoint answers 2xx.
       // Asynchronous web hooks are delivered by plugin-async.mjs after commit.
       if (item.mode === 'webhook') {
@@ -728,6 +1174,16 @@ export function runPluginPhase({
           stage,
           target,
           targets,
+          previousRecords,
+          records,
+          associationParameters,
+          query,
+          columns,
+          holder,
+          customApi,
+          messageParameters,
+          initialFrame: executionFrames.get(record),
+          asyncExecution,
           record,
           previous,
           identity,
@@ -745,12 +1201,16 @@ export function runPluginPhase({
         }
         if (typeof pending?.then === 'function')
           return pending.then(
-            () => run(index + 1),
+            () => {
+              onStepExecuted?.(item);
+              return run(index + 1);
+            },
             (cause) => {
               note('PLUGIN_STEP_REJECTED', cause.message);
               throw cause;
             },
           );
+        onStepExecuted?.(item);
         continue;
       }
       if (item.mode === 'placeholder') {
@@ -761,6 +1221,7 @@ export function runPluginPhase({
         continue;
       }
       let output,
+        completedContext,
         typed = false,
         nested = false,
         handlerDepth = 0;
@@ -776,7 +1237,13 @@ export function runPluginPhase({
           item,
           entity,
           operation,
-          depth: nested ? handlerDepth : pluginExecutionDepth() + 1,
+          depth: nested
+            ? handlerDepth
+            : Math.max(
+                pluginExecutionDepth(),
+                pluginInvocationDepth(store),
+                Number(store?.pluginParentContext?.values?.Depth ?? 0),
+              ) + 1,
           asyncExecution,
           traces,
           started,
@@ -792,16 +1259,7 @@ export function runPluginPhase({
               'LocalPluginClrUnavailable',
               501,
             );
-          let frame = executionFrames.get(record);
-          if (!frame) {
-            frame = {};
-            executionFrames.set(record, frame);
-          }
-          if (!frame.sharedVariables) {
-            const inherited = store.pluginParentContext?.values?.SharedVariables?.values,
-              tag = store.pluginSdkTag ?? inherited?.tag;
-            if (tag !== undefined) frame.sharedVariables = { $type: 'ParameterCollection', values: { tag } };
-          }
+          const frame = executionFrames.get(record);
           frame.portalContactId =
             portalRequest && !store.pluginParentContext && !identity?.admin
               ? (identity?.contactId ?? identity?.id ?? null)
@@ -812,6 +1270,7 @@ export function runPluginPhase({
             frame.collection = collection;
             frame.entity = holder?.entity;
             frame.columns = columns;
+            frame.retrieveTarget = holder?.target;
           }
           if (bulk) {
             frame.targets = targets;
@@ -840,71 +1299,61 @@ export function runPluginPhase({
             });
           const answer = executeClrPlugin(runtime, context, {
             store,
+            constructorConfiguration: stepConstructorSettings(item),
             diagnostic: (entry) => {
               if (entry.code === 'PLUGIN_CLR_TRACE') traces.push(String(entry.message));
               diagnostic({ ...entry, stepId: item.id, entity, operation, stage });
             },
           });
-          if (
-            Object.hasOwn(frame.sharedVariables?.values ?? {}, 'tag') &&
-            answer.sharedVariables?.values?.tag !== frame.sharedVariables.values.tag
-          )
-            throw error('The request tag is immutable.', 'LocalPluginTagImmutable', 409);
           frame.sharedVariables = answer.sharedVariables;
           frame.outputParameters = answer.outputParameters;
+          frame.inputParameters = answer.inputParameters;
+          frame.inputParametersStage = stage;
           // CRUD PreValidation variables belong to the parent context of later
           // stages, while PreOperation and PostOperation share their own collection.
           if (stage === 10 && ['create', 'update', 'delete'].includes(operation))
-            frame.preValidationContext = {
-              $type: 'ExecutionContext',
-              values: {
-                ...cloneStateData(context.context),
-                InputParameters: cloneStateData(answer.inputParameters),
-                OutputParameters: cloneStateData(answer.outputParameters),
-                SharedVariables: cloneStateData(answer.sharedVariables),
-                PreEntityImages: { $type: 'EntityImageCollection', values: cloneStateData(context.preImages) },
-                PostEntityImages: { $type: 'EntityImageCollection', values: cloneStateData(context.postImages) },
-              },
-            };
+            frame.preValidationContext = preValidationSnapshot(frame, context.context, context);
           if (read) {
             if (multiple) {
               const nextQuery = answer.inputParameters?.values?.Query;
-              if (stage !== 40) replace(query, nextQuery);
-              else if (answer.outputParameters?.values?.BusinessEntityCollection != null) {
+              replace(query, nextQuery);
+              if (stage === 40 && answer.outputParameters?.values?.BusinessEntityCollection != null) {
                 replace(collection, answer.outputParameters.values.BusinessEntityCollection);
                 readResultChanged();
               }
-            } else if (stage === 40 && answer.outputParameters?.values?.BusinessEntity != null) {
-              holder.entity = cloneStateData(answer.outputParameters.values.BusinessEntity);
-              readResultChanged();
+            } else {
+              const values = answer.inputParameters?.values;
+              if (
+                values?.Target?.$type !== 'EntityReference' ||
+                typeof values?.ColumnSet?.allColumns !== 'boolean' ||
+                !Array.isArray(values?.ColumnSet?.columns)
+              )
+                throw error('Retrieve must retain a typed Target and ColumnSet.', 'LocalPluginQueryUnsupported', 501);
+              holder.target = cloneStateData(values.Target);
+              replace(columns, { allColumns: values.ColumnSet.allColumns, columns: values.ColumnSet.columns });
+              if (stage === 40 && answer.outputParameters?.values?.BusinessEntity != null) {
+                holder.entity = cloneStateData(answer.outputParameters.values.BusinessEntity);
+                readResultChanged();
+              }
             }
+            output = {};
+          } else if (customApi) {
+            frame.inputParameters = answer.inputParameters;
+            frame.outputParameters = answer.outputParameters;
+            messageParameters.inputParameters = frame.inputParameters;
+            messageParameters.outputParameters = frame.outputParameters;
             output = {};
           } else if (bulk) {
             const next = answer.inputParameters?.values?.Targets;
             if (next?.$type !== 'EntityCollection' || !Array.isArray(next.entities))
               throw error('Bulk plugin must retain a typed Targets EntityCollection.');
-            if (stage !== 40) targets.splice(0, targets.length, ...cloneStateData(next.entities));
+            targets.splice(0, targets.length, ...cloneStateData(next.entities));
             output = {};
           } else if (association) {
-            if (JSON.stringify(answer.inputParameters?.values) !== JSON.stringify(associationParameters))
-              throw error(
-                'Association parameter mutation needs a source-qualified adapter.',
-                'LocalPluginSdkUnsupported',
-                501,
-              );
+            replace(associationParameters, answer.inputParameters?.values);
             output = {};
-          } else if (
-            stage !== 40 &&
-            operation !== 'delete' &&
-            Object.keys(target).some((key) => !Object.hasOwn(answer.target?.attributes ?? {}, key))
-          )
-            throw error(
-              'Original plugin removed a Target attribute; target removal requires an explicit mutation adapter.',
-              'LocalPluginSdkUnsupported',
-              501,
-            );
-          if (!read && !bulk && !association)
-            output = stage === 40 || operation === 'delete' ? {} : { target: sdkValueToRecord(answer.target) };
+          } else if (operation !== 'delete') applyTargetEntity(answer.target);
+          if (!read && !customApi && !bulk && !association) output = {};
           diagnostic({
             code: 'PLUGIN_STEP_CLR_EXECUTED',
             severity: 'info',
@@ -930,7 +1379,14 @@ export function runPluginPhase({
             handler = byStep ?? handlers.get(item.typeName);
           if (!handler) throw error(`No trusted handler for plugin step ${item.id}.`);
           typed = byStep === undefined;
-          handlerDepth = enterPluginExecution();
+          const sourceFrame = executionFrames.get(record);
+          const baseDepth = Math.max(enterPluginExecution(), pluginInvocationDepth(store) + 1);
+          handlerDepth = sourceFrame?.delegatedParentContext
+            ? Math.max(baseDepth, sourceFrame.delegatedDepth ?? 0)
+            : Math.max(
+                baseDepth,
+                Number((store?.pluginParentContext ?? pluginInvocationParent(store))?.values?.Depth ?? 0) + 1,
+              );
           nested = true;
           if (handlerDepth > HANDLER_DEPTH_LIMIT)
             throw new DataError('Plug-in nested execution depth exceeds eight.', 400, 'LocalPluginDepth');
@@ -942,69 +1398,269 @@ export function runPluginPhase({
           const image = (types, source) => {
             const spec = (item.images ?? []).find((entry) => types.includes(entry.type));
             if (!spec || !source) return undefined;
-            return cloneStateData(
-              spec.attributes.length
-                ? Object.fromEntries(
-                    spec.attributes.filter((name) => Object.hasOwn(source, name)).map((name) => [name, source[name]]),
-                  )
-                : source,
-            );
+            return cloneStateData(imageAttributes(source, spec.attributes));
           };
-          output = handler({
-            step: cloneStateData(item),
-            entity,
-            operation,
-            stage,
-            target: cloneStateData(target),
-            record: cloneStateData(record),
-            previous: previous ? cloneStateData(previous) : null,
-            preImage: image([0, 2], previous),
-            postImage: stage === 40 ? image([1, 2], record) : undefined,
-            identity: cloneStateData(identity),
-            changedAttributes: [...changedAttributes],
-            ...(association ? { associationParameters: cloneStateData(associationParameters) } : {}),
-            ...(bulk
-              ? {
-                  targets: cloneStateData(targets),
-                  previousRecords: cloneStateData(previousRecords),
-                  records: cloneStateData(records),
-                }
-              : {}),
-            ...(read
-              ? {
-                  query: cloneStateData(query),
-                  collection: cloneStateData(collection),
-                  columns: cloneStateData(columns),
-                  entityResult: cloneStateData(holder?.entity),
-                }
-              : {}),
-            ...(typed
-              ? {
-                  context: typedContext({
-                    item,
+          const handlerFrame = executionFrames.get(record) ?? {};
+          executionFrames.set(record, handlerFrame);
+          const handlerContext = typed
+            ? typedContext({
+                item,
+                store,
+                entity,
+                operation,
+                stage,
+                target,
+                targets,
+                previousRecords,
+                records,
+                record,
+                previous,
+                identity,
+                depth: handlerDepth,
+                trace,
+                changedAttributes,
+                customApi,
+                messageParameters,
+                frame: handlerFrame,
+                associationParameters,
+                query,
+                columns,
+                holder,
+              })
+            : undefined;
+          const contextBefore = handlerContext
+            ? cloneStateData({
+                inputs: handlerContext.InputParameters,
+                outputs: handlerContext.OutputParameters,
+                shared: handlerContext.SharedVariables,
+              })
+            : undefined;
+          const parent =
+            handlerFrame.delegatedParentContext ??
+            ((stage !== 10 &&
+              !asyncExecution &&
+              ['create', 'update', 'delete'].includes(operation) &&
+              handlerFrame.preValidationContext) ||
+              store?.pluginParentContext ||
+              pluginInvocationParent(store));
+          const execution = pluginExecutionLifetime(
+            store,
+            handlerDepth,
+            handlerContext && store
+              ? () =>
+                  handlerExecutionContext({
+                    context: handlerContext,
+                    before: contextBefore,
+                    frame: handlerFrame,
                     store,
+                    item,
                     entity,
                     operation,
-                    stage,
                     target,
                     targets,
+                    associationParameters,
+                    query,
+                    columns,
+                    holder,
                     record,
                     previous,
-                    identity,
-                    depth: handlerDepth,
-                    trace,
-                    changedAttributes,
-                  }),
-                }
-              : {}),
-            trace,
-            reject: (message) => {
-              throw new DataError(String(message), 400, 'PluginValidation', { declaredValidationMessage: true });
-            },
-          });
+                    previousRecords,
+                    records,
+                    customApi,
+                    messageParameters,
+                    parent,
+                  })
+              : undefined,
+          );
+          if (handlerContext && store)
+            completedContext = () =>
+              handlerExecutionContext({
+                context: handlerContext,
+                before: contextBefore,
+                frame: handlerFrame,
+                store,
+                item,
+                entity,
+                operation,
+                target,
+                targets,
+                associationParameters,
+                query,
+                columns,
+                holder,
+                record,
+                customApi,
+                messageParameters,
+                parent,
+              });
+          try {
+            output = execution.run(() =>
+              handler({
+                step: cloneStateData(item),
+                entity,
+                operation,
+                stage,
+                target: cloneStateData(target),
+                record: cloneStateData(record),
+                previous: previous ? cloneStateData(previous) : null,
+                preImage: image([0, 2], previous),
+                postImage: stage === 40 ? image([1, 2], record) : undefined,
+                identity: cloneStateData(identity),
+                changedAttributes: [...changedAttributes],
+                ...(association ? { associationParameters: cloneStateData(associationParameters) } : {}),
+                ...(bulk
+                  ? {
+                      targets: cloneStateData(targets),
+                      previousRecords: cloneStateData(previousRecords),
+                      records: cloneStateData(records),
+                    }
+                  : {}),
+                ...(read
+                  ? {
+                      query: cloneStateData(query),
+                      collection: cloneStateData(collection),
+                      columns: cloneStateData(columns),
+                      entityResult: cloneStateData(holder?.entity),
+                    }
+                  : {}),
+                ...(typed ? { context: handlerContext } : {}),
+                trace,
+                reject: (message) => {
+                  throw new DataError(String(message), 400, 'PluginValidation', { declaredValidationMessage: true });
+                },
+              }),
+            );
+          } finally {
+            execution.close();
+          }
           if (output?.then) {
             Promise.resolve(output).catch(() => {});
             throw error('Plugin handlers must return synchronously.', 'LocalPluginAsyncHandler');
+          }
+          if (handlerContext) {
+            handlerFrame.sharedVariables = reconcilePluginMessageParameters(
+              store,
+              [],
+              handlerFrame.sharedVariables,
+              contextBefore.shared,
+              handlerContext.SharedVariables,
+            );
+            if (customApi) {
+              const inputSpecs =
+                customApi.bindingType === 1
+                  ? [...(customApi.parameters ?? []), { uniquename: 'Target', type: 5, logicalentityname: entity }]
+                  : (customApi.parameters ?? []);
+              handlerFrame.inputParameters = messageParameters.inputParameters = reconcilePluginMessageParameters(
+                store,
+                inputSpecs,
+                handlerFrame.inputParameters,
+                contextBefore.inputs,
+                handlerContext.InputParameters,
+              );
+              handlerFrame.outputParameters = messageParameters.outputParameters = reconcilePluginMessageParameters(
+                store,
+                customApi.properties ?? [],
+                handlerFrame.outputParameters,
+                contextBefore.outputs,
+                handlerContext.OutputParameters,
+              );
+            } else if (store) {
+              const specs = ['create', 'update'].includes(operation)
+                ? [{ uniquename: 'Target', type: 3, logicalentityname: entity }]
+                : bulk
+                  ? [{ uniquename: 'Targets', type: 4, logicalentityname: entity }]
+                  : association
+                    ? [{ uniquename: 'Target', type: 5 }]
+                    : read && !multiple
+                      ? [{ uniquename: 'Target', type: 5, logicalentityname: entity }]
+                      : [];
+              let priorInputs =
+                handlerFrame.inputParameters ??
+                (read
+                  ? {
+                      $type: 'ParameterCollection',
+                      values: multiple
+                        ? { Query: query }
+                        : {
+                            Target: holder.target,
+                            ColumnSet: cloneStateData(columns),
+                          },
+                    }
+                  : pluginMessageParameters(store, specs, contextBefore.inputs));
+              if (['create', 'update'].includes(operation)) {
+                const primary = store.resolveMapping(entity).idColumn;
+                const current = recordToSdkEntity(
+                  store,
+                  entity,
+                  {
+                    ...contextBefore.inputs.Target,
+                    ...(operation === 'create' && stage === 10 && Object.hasOwn(contextBefore.inputs.Target, primary)
+                      ? {}
+                      : { [primary]: record[primary] }),
+                  },
+                  operation === 'create' && stage === 10
+                    ? { allColumns: false, columns: Object.keys(contextBefore.inputs.Target ?? {}) }
+                    : { allColumns: true },
+                );
+                const priorTarget = handlerFrame.inputParameters?.values?.Target;
+                priorInputs = {
+                  ...priorInputs,
+                  values: {
+                    ...priorInputs.values,
+                    Target: { ...priorTarget, ...current, id: priorTarget?.id ?? record[primary] },
+                  },
+                };
+              }
+              handlerFrame.inputParameters = reconcilePluginMessageParameters(
+                store,
+                specs,
+                priorInputs,
+                contextBefore.inputs,
+                handlerContext.InputParameters,
+              );
+              handlerFrame.inputParametersStage = stage;
+              handlerFrame.outputParameters = reconcilePluginMessageParameters(
+                store,
+                [],
+                handlerFrame.outputParameters,
+                contextBefore.outputs,
+                handlerContext.OutputParameters,
+              );
+              if (['create', 'update'].includes(operation))
+                applyTargetEntity(handlerFrame.inputParameters.values.Target);
+              else if (bulk) {
+                const next = handlerFrame.inputParameters.values.Targets;
+                if (next?.$type !== 'EntityCollection' || !Array.isArray(next.entities))
+                  throw error('Bulk plugin must retain a typed Targets EntityCollection.');
+                targets.splice(0, targets.length, ...cloneStateData(next.entities));
+              } else if (association) replace(associationParameters, handlerFrame.inputParameters.values);
+              else if (read) {
+                const values = handlerFrame.inputParameters.values;
+                if (multiple) replace(query, values.Query);
+                else {
+                  if (
+                    values.Target?.$type !== 'EntityReference' ||
+                    typeof values.ColumnSet?.allColumns !== 'boolean' ||
+                    !Array.isArray(values.ColumnSet?.columns)
+                  )
+                    throw error(
+                      'Retrieve must retain a typed Target and ColumnSet.',
+                      'LocalPluginQueryUnsupported',
+                      501,
+                    );
+                  holder.target = cloneStateData(values.Target);
+                  replace(columns, values.ColumnSet);
+                }
+                if (stage === 40) {
+                  const outputValues = handlerFrame.outputParameters.values;
+                  if (multiple && outputValues.BusinessEntityCollection != null)
+                    replace(collection, outputValues.BusinessEntityCollection);
+                  else if (!multiple && outputValues.BusinessEntity != null)
+                    holder.entity = cloneStateData(outputValues.BusinessEntity);
+                  readResultChanged();
+                }
+              }
+            }
           }
         } else
           throw error(
@@ -1019,23 +1675,44 @@ export function runPluginPhase({
             Object.keys(output).some(
               (key) =>
                 !(
-                  association
-                    ? ['error']
-                    : bulk
-                      ? ['targets', 'error']
-                      : read
-                        ? ['query', 'collection', 'entityResult', 'error']
-                        : ['target', 'error']
+                  customApi
+                    ? ['inputs', 'outputs', 'error']
+                    : association
+                      ? ['error']
+                      : bulk
+                        ? ['targets', 'error']
+                        : read
+                          ? ['query', 'collection', 'entityResult', 'error']
+                          : ['target', 'error']
                 ).includes(key),
             ))
         )
           throw error('Plugin result must contain only supported field/query changes or an error.');
         if (output?.error)
           throw error(String(output.error.message || 'Plugin rejected the write.'), 'PluginValidation');
+        if (customApi) {
+          const frame = executionFrames.get(record);
+          if (output?.inputs !== undefined) {
+            if (stage === 40) throw error('Custom API input changes require a pre-operation stage.');
+            frame.inputParameters = messageParameters.inputParameters = pluginMessageParameters(
+              store,
+              customApi.parameters ?? [],
+              output.inputs,
+            );
+          }
+          if (output?.outputs !== undefined)
+            frame.outputParameters = messageParameters.outputParameters = pluginMessageParameters(
+              store,
+              customApi.properties ?? [],
+              output.outputs,
+            );
+        }
         if (bulk && output?.targets !== undefined) {
-          if (stage === 40 || !Array.isArray(output.targets))
-            throw error('Bulk Targets changes require a pre-operation array.');
+          if (!Array.isArray(output.targets)) throw error('Bulk Targets changes require an array.');
           targets.splice(0, targets.length, ...cloneStateData(output.targets));
+          const frame = executionFrames.get(record);
+          if (frame?.inputParameters?.values?.Targets)
+            frame.inputParameters.values.Targets.entities = cloneStateData(targets);
         }
         if (!multiple && output?.entityResult !== undefined) {
           if (stage !== 40) throw error('Retrieve Entity changes require PostOperation.');
@@ -1043,8 +1720,7 @@ export function runPluginPhase({
           readResultChanged();
         }
         if (read && output?.query !== undefined) {
-          if (!multiple || stage === 40)
-            throw error('Query changes require RetrieveMultiple PreValidation or PreOperation.');
+          if (!multiple) throw error('Query changes require RetrieveMultiple.');
           replace(query, output.query);
         }
         if (read && output?.collection !== undefined) {
@@ -1053,8 +1729,7 @@ export function runPluginPhase({
           readResultChanged();
         }
         if (output?.target !== undefined) {
-          if (stage === 40 || operation === 'delete')
-            throw error('PostOperation and Delete target changes cannot be persisted by this adapter.');
+          if (operation === 'delete') throw error('Delete target field changes require a typed reference.');
           if (!output.target || typeof output.target !== 'object' || Array.isArray(output.target))
             throw error('Plugin target must be a field map.');
           for (const [name, value] of Object.entries(output.target)) {
@@ -1063,11 +1738,21 @@ export function runPluginPhase({
               ['__proto__', 'prototype', 'constructor'].includes(name.toLowerCase())
             )
               throw error('Invalid plugin target column.');
+            const retainsIdentity = retainsEmptyPrimaryAttribute(name, value);
             target[name] = cloneStateData(value);
-            record[name] = cloneStateData(value);
+            if (stage !== 40 && !retainsIdentity) record[name] = cloneStateData(value);
           }
+          const frame = executionFrames.get(record);
+          if (frame?.inputParameters?.values?.Target?.$type === 'Entity')
+            frame.inputParameters.values.Target.attributes = recordToSdkEntity(store, entity, target).attributes;
+        }
+        if (completedContext && stage === 10 && ['create', 'update', 'delete'].includes(operation)) {
+          const frame = executionFrames.get(record),
+            snapshot = completedContext();
+          frame.preValidationContext = preValidationSnapshot(frame, snapshot.values);
         }
         if (executed) journal(null);
+        if (executed || item.mode === 'mock') onStepExecuted?.(item);
         if (item.mode !== 'clr')
           note('PLUGIN_STEP_SIMULATED', `Local ${item.mode} completed; compiled .NET was not executed.`);
       } catch (cause) {

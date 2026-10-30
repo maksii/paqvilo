@@ -9,6 +9,7 @@ import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { queryExpressionToFetch, fetchResultToSdkCollection } from '../lib/plugin-sdk-query.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   rootId = '20000000-0000-0000-0000-000000000001',
   childId = '30000000-0000-0000-0000-000000000001',
@@ -83,6 +84,233 @@ const query = () => ({
 });
 const run = (store, q, p = profile) =>
   dispatchSdkCall({ store, profile: p, message: { method: 'RetrieveMultiple', userId: user, arguments: [q] } });
+
+test('SDK Fetch XML boolean spellings retain distinct and aggregate results with native ordinary identity columns', () => {
+  const store = data();
+  store.state.tables.root.push({ rootid: childId, title: 'Parent' });
+  for (const [lexical, count] of [
+    ['true', 1],
+    ['1', 1],
+    ['TRUE', 1],
+    ['True', 1],
+    [' true ', 1],
+    ['false', 2],
+    ['0', 2],
+  ]) {
+    const xml = `<fetch distinct="${lexical}"><entity name="root"><attribute name="title"/></entity></fetch>`;
+    const direct = store.fetchXml(xml, { admin: true });
+    const sdk = run(store, { $type: 'FetchExpression', query: xml });
+    assert.equal(direct.entities.length, count);
+    assert.equal(sdk.entities.length, count, `SDK distinct=${lexical} must agree with direct execution`);
+    assert.ok(sdk.entities.every((row) => Object.hasOwn(row.attributes, 'rootid') === (count === 2)));
+    assert.ok(
+      sdk.entities.every((row) =>
+        count === 2 ? row.attributes.rootid.value === row.id : row.id === '00000000-0000-0000-0000-000000000000',
+      ),
+    );
+  }
+  for (const lexical of ['true', '1', 'TRUE', 'True', ' true ']) {
+    const xml = `<fetch aggregate="${lexical}"><entity name="root"><attribute name="rootid" alias="records" aggregate="count"/></entity></fetch>`;
+    const direct = store.fetchXml(xml, { admin: true });
+    const sdk = run(store, { $type: 'FetchExpression', query: xml });
+    assert.equal(direct.entities[0].records, 2);
+    assert.equal(sdk.entities[0].attributes.records.value, 2);
+    assert.equal(sdk.entities[0].id, '00000000-0000-0000-0000-000000000000');
+  }
+  for (const lexical of ['true', '1', 'TRUE', 'True', ' true '])
+    assert.throws(
+      () =>
+        fetchResultToSdkCollection(
+          store,
+          'root',
+          {
+            entities: [],
+            executedXml: `<fetch min-active-row-version="${lexical}"><entity name="root"/></fetch>`,
+          },
+          recordToSdkEntity,
+        ),
+      /minimum active row version requires a source-qualified Dataverse provider/,
+    );
+});
+
+test('SDK default queries of an empty declared schema reach post observers without inventing fields', () => {
+  for (const type of ['QueryExpression', 'QueryByAttribute']) {
+    const store = data(),
+      seen = [];
+    store.state.tables.root = [];
+    store.setPluginPipeline(
+      (context) => seen.push({ stage: context.stage, query: structuredClone(context.query) }),
+      (context) => context.operation === 'retrievemultiple',
+    );
+    const query = {
+      $type: type,
+      entityName: 'root',
+      columnSet: { columns: ['title'] },
+      ...(type === 'QueryExpression'
+        ? { criteria: { operatorName: 'And', conditions: [] } }
+        : { attributes: [], values: [] }),
+    };
+    const result = run(store, query);
+    assert.deepEqual(result.entities, []);
+    assert.equal(result.moreRecords, false);
+    assert.deepEqual(
+      seen,
+      [10, 20, 40].map((stage) => ({ stage, query })),
+    );
+    assert.throws(
+      () => run(store, { ...query, columnSet: { columns: ['undeclared'] } }),
+      /doesn't contain attribute/,
+      'The empty schema regression must retain unknown-column validation',
+    );
+  }
+});
+
+test('SDK QueryExpression routes distinct, paging, alternate sources and query hints without dropping facets', () => {
+  const store = data();
+  const base = {
+    $type: 'QueryExpression',
+    entityName: 'root',
+    columnSet: { allColumns: false, columns: ['title'] },
+    criteria: { operatorName: 'And', conditions: [], filters: [] },
+    orders: [],
+    linkEntities: [],
+  };
+  store.state.tables.root.push({ rootid: childId, title: 'Parent' });
+  assert.equal(run(store, { ...base, distinct: true }).entities.length, 1);
+  assert.throws(
+    () => run(store, { ...base, dataSource: 'unsupported' }),
+    /Unsupported FetchXML datasource unsupported/,
+  );
+  store.datasourceRows = () => [
+    { rootid: rootId, title: 'Archived allowed' },
+    { rootid: childId, title: 'Archived denied' },
+  ];
+  assert.equal(run(store, { ...base, dataSource: 'retained' }).entities[0].attributes.title, 'Archived allowed');
+  const constrained = {
+    ...profile,
+    grants: [{ entity: 'root', operations: ['read'], predicate: (row) => row.title === 'Archived allowed' }],
+  };
+  const archived = run(store, { ...base, dataSource: 'retained' }, constrained);
+  assert.equal(archived.entities.length, 1, 'Alternate rows must retain explicit backend row grants');
+  assert.equal(archived.entities[0].attributes.title, 'Archived allowed');
+  const original = store.fetchXml.bind(store),
+    observed = [];
+  store.fetchXml = (xml, ...args) => {
+    observed.push(xml);
+    return original(xml, ...args);
+  };
+  run(store, { ...base, queryHints: 'LoopJoin' });
+  assert.match(observed[0], /options="LoopJoin"/);
+  store.state.tables.root = Array.from({ length: 5003 }, (_, index) => ({
+    rootid: `20000000-0000-0000-0000-${String(index + 1).padStart(12, '0')}`,
+    title: String(index),
+  }));
+  const ordered = {
+    ...base,
+    columnSet: { allColumns: false, columns: ['rootid', 'title'] },
+    orders: [{ attributeName: 'rootid', descending: false }],
+  };
+  const first = run(store, { ...ordered, pageInfo: { count: 2, pageNumber: 1 } });
+  for (const pageInfo of [{ pageNumber: 2 }, { pageNumber: 2, pagingCookie: first.pagingCookie }]) {
+    const query = { ...ordered, pageInfo },
+      direct = store.fetchXml(
+        queryExpressionToFetch(query, store),
+        { admin: true, dataverse: true },
+        { profile: 'sdk' },
+      );
+    const sdk = run(store, query);
+    assert.deepEqual(
+      sdk.entities.map((row) => row.id),
+      direct.entities.map((row) => row.rootid),
+    );
+    assert.equal(sdk.moreRecords, direct.more_records);
+    assert.ok(sdk.entities.length <= 5000);
+  }
+  const byAttribute = run(store, {
+    $type: 'QueryByAttribute',
+    entityName: 'root',
+    columnSet: { allColumns: true },
+    attributes: [],
+    values: [],
+    pageInfo: { pageNumber: 2 },
+  });
+  assert.equal(byAttribute.entities.length, 3);
+});
+
+test('SDK default QueryExpression and QueryByAttribute pages retain every row through continuation', () => {
+  for (const [tableType, limit] of [
+    ['Standard', 5000],
+    ['Elastic', 500],
+  ]) {
+    for (const type of ['QueryExpression', 'QueryByAttribute']) {
+      const store = data(),
+        seen = [];
+      store.state.mappings.root.tableType = tableType;
+      store.state.tables.root = Array.from({ length: limit + 1 }, (_, index) => ({
+        rootid: `20000000-0000-0000-0000-${String(index + 1).padStart(12, '0')}`,
+        title: String(index),
+      }));
+      const query = {
+        $type: type,
+        entityName: 'root',
+        columnSet: { allColumns: false, columns: ['title'] },
+        orders: [{ attributeName: 'rootid', descending: false }],
+        ...(type === 'QueryExpression'
+          ? { criteria: { operatorName: 'And', conditions: [] } }
+          : { attributes: [], values: [] }),
+      };
+      store.setPluginPipeline(
+        (context) => seen.push(structuredClone(context.query)),
+        (context) => context.operation === 'retrievemultiple',
+      );
+      const first = run(store, query);
+      assert.equal(first.entities.length, limit, `${tableType} ${type} default page`);
+      assert.equal(first.moreRecords, true);
+      assert.ok(first.pagingCookie);
+      assert.ok(first.entities.every((row) => row.attributes.rootid?.value === row.id));
+      assert.deepEqual(seen, [query, query, query], 'Execution defaults must not rewrite the source QueryBase');
+      const nextQuery = { ...query, pageInfo: { pageNumber: 2, pagingCookie: first.pagingCookie } };
+      const next = run(store, nextQuery);
+      assert.equal(next.entities.length, 1);
+      assert.equal(next.moreRecords, false);
+      assert.equal(next.entities[0].attributes.title, String(limit));
+      const ids = [...first.entities, ...next.entities].map((row) => row.id);
+      assert.equal(new Set(ids).size, limit + 1, 'Paging must not repeat or silently omit matching rows');
+      assert.deepEqual(
+        ids,
+        store.state.tables.root.map((row) => row.rootid),
+      );
+      assert.deepEqual(seen.slice(3), [nextQuery, nextQuery, nextQuery]);
+    }
+  }
+});
+
+test('SDK default paging retains multi-value and caller-relative condition grammar', () => {
+  const store = data();
+  store.state.mappings.root.fields.ownerid = { type: 'uniqueidentifier' };
+  store.state.mappings.root.fields.amount = { type: 'integer' };
+  store.state.tables.root = [
+    { rootid: rootId, title: 'Allowed', ownerid: user, amount: 2 },
+    { rootid: childId, title: 'Outside range', ownerid: user, amount: 9 },
+    { rootid: leafId, title: 'Another owner', ownerid: childId, amount: 2 },
+  ];
+  const answer = run(store, {
+    $type: 'QueryExpression',
+    entityName: 'root',
+    columnSet: { columns: ['title'] },
+    criteria: {
+      operatorName: 'And',
+      conditions: [
+        { attributeName: 'amount', operatorName: 'Between', values: [1, 3] },
+        { attributeName: 'ownerid', operatorName: 'EqualUserId', values: [] },
+      ],
+    },
+  });
+  assert.deepEqual(
+    answer.entities.map((row) => row.attributes),
+    [{ title: 'Allowed', rootid: { $type: 'Guid', value: rootId } }],
+  );
+});
 test(
   'Original CLR QueryExpression count controls survive both SDK codec directions and provider metadata',
   { skip: CLR_SKIP },
@@ -95,8 +323,8 @@ test(
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented {
- public sealed class Caller:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.OperationCreatedOn.Ticks!=DateTime.Parse("2026-10-13T10:11:12.1234567Z",System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.RoundtripKind).Ticks)throw new Exception("Framework clock precision lost");var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);for(int i=0;i<3;i++){var q=new QueryExpression("sample"){ColumnSet=new ColumnSet("title"),PageInfo=new PagingInfo{Count=5,PageNumber=1}};if(i<2)q.PageInfo.ReturnTotalRecordCount=i==0;var a=s.RetrieveMultiple(q);if(a.Entities.Count!=5||!a.MoreRecords||a.TotalRecordCount!=(i==0?5000:-1)||a.TotalRecordCountLimitExceeded!=(i==0)||a.EntityName!="sample"||a.MinActiveRowVersion!="-1")throw new Exception("Count/provider codec mismatch "+i);}((Entity)c.InputParameters["Target"])["verified"]=true;}}
- public sealed class Observer:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var q=(QueryExpression)c.InputParameters["Query"];if(q.PageInfo.Count!=5||q.PageInfo.PageNumber!=1||q.ColumnSet.Columns.Count!=1||q.ColumnSet.Columns[0]!="title")throw new Exception("Query codec changed authored projection/page");if(c.Stage==40){var a=(EntityCollection)c.OutputParameters["BusinessEntityCollection"];if(a.TotalRecordCount!=(q.PageInfo.ReturnTotalRecordCount?5000:-1))throw new Exception("Incoming query count flag was lost");}}}
+ public sealed class Caller:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.OperationCreatedOn.Ticks!=DateTime.Parse("2026-10-13T10:11:12.1234567Z",System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.RoundtripKind).Ticks)throw new Exception("Framework clock precision lost");var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);for(int i=0;i<3;i++){var q=new QueryExpression("sample"){ColumnSet=new ColumnSet("title"),PageInfo=new PagingInfo{Count=5,PageNumber=1}};if(i<2)q.PageInfo.ReturnTotalRecordCount=i==0;var a=s.RetrieveMultiple(q);if(a.Entities.Count!=5||!a.MoreRecords||a.TotalRecordCount!=(i==0?5000:-1)||a.TotalRecordCountLimitExceeded!=(i==0)||a.EntityName!="sample"||a.MinActiveRowVersion!="-1")throw new Exception("Count/provider codec mismatch "+i);}var aggregate=s.RetrieveMultiple(new FetchExpression("<fetch aggregate='true'><entity name='sample'><attribute name='sampleid' alias='sampleid' aggregate='count'/></entity></fetch>")).Entities[0];if(aggregate.Id!=Guid.Empty||!(((AliasedValue)aggregate["sampleid"]).Value is int)||(int)((AliasedValue)aggregate["sampleid"]).Value!=5010)throw new Exception("Aggregate alias became Entity.Id");((Entity)c.InputParameters["Target"])["verified"]=true;}}
+ public sealed class Observer:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.InputParameters["Query"] is FetchExpression){var aggregate=((EntityCollection)c.OutputParameters["BusinessEntityCollection"]).Entities[0];if(aggregate.Id!=Guid.Empty||!(((AliasedValue)aggregate["sampleid"]).Value is int))throw new Exception("Aggregate output identity/type lost");return;}var q=(QueryExpression)c.InputParameters["Query"];if(q.PageInfo.Count!=5||q.PageInfo.PageNumber!=1||q.ColumnSet.Columns.Count!=1||q.ColumnSet.Columns[0]!="title")throw new Exception("Query codec changed authored projection/page");if(c.Stage==40){var a=(EntityCollection)c.OutputParameters["BusinessEntityCollection"];if(a.TotalRecordCount!=(q.PageInfo.ReturnTotalRecordCount?5000:-1))throw new Exception("Incoming query count flag was lost");}}}
  }`,
     );
     compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });
@@ -169,7 +397,7 @@ test(
     assert.equal(answer.verified, true);
   },
 );
-test('Unlinked SDK QueryExpression and QueryByAttribute reach observers without reconstruction or extra identity columns', () => {
+test('Unlinked SDK QueryExpression and QueryByAttribute reach observers without reconstruction and include the native primary Attribute', () => {
   for (const source of [
     {
       $type: 'QueryExpression',
@@ -197,7 +425,7 @@ test('Unlinked SDK QueryExpression and QueryByAttribute reach observers without 
     const result = run(store, source);
     assert.deepEqual(seen, [source, source, source]);
     assert.equal(result.entities[0].id, rootId);
-    assert.deepEqual(result.entities[0].attributes, { title: 'Parent' });
+    assert.deepEqual(result.entities[0].attributes, { title: 'Parent', rootid: { $type: 'Guid', value: rootId } });
   }
 });
 test('Nested SDK QueryExpression joins retain identity, projected columns and typed AliasedValue results', () => {
@@ -209,7 +437,7 @@ test('Nested SDK QueryExpression joins retain identity, projected columns and ty
   assert.deepEqual(q, before);
   assert.equal(entity.id, rootId);
   assert.deepEqual(entity.attributes.title, 'Parent');
-  assert.ok(!Object.hasOwn(entity.attributes, 'rootid'));
+  assert.deepEqual(entity.attributes.rootid, { $type: 'Guid', value: rootId });
   assert.deepEqual(entity.attributes['joined.amount'], {
     $type: 'AliasedValue',
     entityLogicalName: 'child',
@@ -223,7 +451,7 @@ test('Nested SDK QueryExpression joins retain identity, projected columns and ty
     value: { $type: 'OptionSetValue', value: 2 },
   });
 });
-test('Original FetchExpression aliases and aggregate aliases use typed SDK projection, with hidden primary identity', () => {
+test('Original FetchExpression aliases and aggregate aliases use typed SDK projection, with the ordinary primary Attribute', () => {
   const store = data(),
     fetch = {
       $type: 'FetchExpression',
@@ -238,7 +466,7 @@ test('Original FetchExpression aliases and aggregate aliases use typed SDK proje
     attributeLogicalName: 'title',
     value: 'Parent',
   });
-  assert.ok(!Object.hasOwn(answer.entities[0].attributes, 'rootid'));
+  assert.deepEqual(answer.entities[0].attributes.rootid, { $type: 'Guid', value: rootId });
   const aggregate = run(store, {
     $type: 'FetchExpression',
     query:
@@ -375,17 +603,16 @@ test('SDK QueryExpression preserves caller count controls and provider metadata 
   assert.equal(unpaged.entityName, 'child');
   assert.equal(unpaged.minActiveRowVersion, '-1');
   assert.equal(unpaged.totalRecordCount, -1);
-  assert.throws(
-    () =>
-      run(store, {
-        $type: 'QueryByAttribute',
-        entityName: 'root',
-        attributes: [],
-        values: [],
-        pageInfo: { returnTotalRecordCount: true },
-      }),
-    (error) => error.code === 'LocalPluginSdkUnsupported' && /total counts/.test(error.message),
-  );
+  const countedAttributes = run(store, {
+    $type: 'QueryByAttribute',
+    entityName: 'root',
+    attributes: [],
+    values: [],
+    pageInfo: { returnTotalRecordCount: true },
+  });
+  assert.equal(countedAttributes.totalRecordCount, 5000);
+  assert.equal(countedAttributes.totalRecordCountLimitExceeded, true);
+  assert.equal(countedAttributes.moreRecords, true);
 });
 test('SDK grouped lookup names and choice labels come from declared metadata and source rows', () => {
   const store = data();
@@ -562,5 +789,48 @@ test('FetchExpression structural binding rejects malformed original or changed X
     assert.deepEqual(seen, [10, 20]);
     assert.equal(store.pluginReadOnly, readOnlyBefore);
     assert.equal(store.snapshot().tables.root[0].title, 'Parent');
+  }
+});
+
+test('aliased values named like the primary column cannot become SDK Entity.Id', () => {
+  for (const observed of [false, true]) {
+    const store = data();
+    if (observed)
+      store.setPluginPipeline(
+        (context) => {
+          if (context.stage === 40)
+            assert.equal(context.collection.entities[0].id, '00000000-0000-0000-0000-000000000000');
+        },
+        (context) => context.operation === 'retrievemultiple',
+      );
+    for (const [query, entity, attribute, value] of [
+      [
+        '<fetch aggregate="true"><entity name="root"><attribute name="rootid" alias="rootid" aggregate="count"/></entity></fetch>',
+        'root',
+        'rootid',
+        1,
+      ],
+      [
+        '<fetch distinct="true"><entity name="root"><attribute name="title" alias="rootid"/></entity></fetch>',
+        'root',
+        'title',
+        'Parent',
+      ],
+      [
+        '<fetch distinct="true"><entity name="root"><link-entity name="child" from="rootid" to="rootid" alias="c"><attribute name="amount" alias="rootid"/></link-entity></entity></fetch>',
+        'child',
+        'amount',
+        { $type: 'Money', value: '12.5' },
+      ],
+    ]) {
+      const result = run(store, { $type: 'FetchExpression', query }).entities[0];
+      assert.equal(result.id, '00000000-0000-0000-0000-000000000000');
+      assert.deepEqual(result.attributes.rootid, {
+        $type: 'AliasedValue',
+        entityLogicalName: entity,
+        attributeLogicalName: attribute,
+        value,
+      });
+    }
   }
 });

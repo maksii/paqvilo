@@ -280,7 +280,7 @@ async function composeOrganizationRuntime({
 
   const principals = createPrincipals(store, { organizationId, tenantId, objectTypeCode: typeCodeOf, schema });
   // Extension operations (dataverse-operations.mjs) answer before the built-in functions and actions.
-  const operations = createOperationRegistry();
+  const operations = createOperationRegistry({ store });
   const metadata = createMetadataService({
     organizationId,
     lcid: settings.localeId,

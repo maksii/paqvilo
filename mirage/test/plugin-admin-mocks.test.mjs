@@ -101,6 +101,7 @@ test('Admin saves typed read and bulk mocks and those exact configurations affec
     (await admin(22, { targets: [sdkEntity('Mock bulk result', '00000000-0000-0000-0000-000000000000')] })).status,
     200,
   );
+  assert.equal((await admin(24, { targets: [sdkEntity('PostOperation context value')] })).status, 200);
   const user = '10000000-0000-0000-0000-000000000001',
     profile = {
       userId: user,
@@ -149,7 +150,6 @@ test('Admin rejects mock result shape or stage mismatches before changing saved 
     [21, { collection: { $type: 'EntityCollection', entities: [] } }],
     [22, { targets: [{ fx_title: 'Untyped' }] }],
     [22, { targets: [{ ...sdkEntity('Wrong table'), logicalName: 'other' }] }],
-    [24, { targets: [sdkEntity('PostOperation write')] }],
     [20, { collection: { $type: 'EntityCollection', entities: 'Invalid' } }],
     [20, { collection: { $type: 'EntityCollection', entities: [] } }],
     [20, { collection: { $type: 'EntityCollection', entities: [{ ...sdkEntity('Unknown field'), unexpected: 1 }] } }],

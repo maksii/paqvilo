@@ -71,8 +71,31 @@ test('custom API rows immediately update canonical HTTP routing, CSDL, parameter
   };
   const action = (xml, name) => new RegExp(`<Action Name="${name}"[^>]*>[\\s\\S]*?</Action>`).exec(xml)?.[0];
 
+  for (const description of [undefined, null]) {
+    const before = store.tableRows('customapi').length;
+    const failure = await json(
+      await call('POST', 'customapis', {
+        uniquename: 'new_MissingDescription',
+        name: 'Missing description',
+        description,
+        bindingtype: 0,
+        isfunction: false,
+      }),
+      400,
+    );
+    assert.equal(failure.error.code, '0x80040200');
+    assert.match(failure.error.message, /Attribute 'description' cannot be NULL/);
+    assert.equal(store.tableRows('customapi').length, before);
+  }
+
   const api = await json(
-    await call('POST', 'customapis', { uniquename: 'new_Live', name: 'Live', bindingtype: 0, isfunction: false }),
+    await call('POST', 'customapis', {
+      uniquename: 'new_Live',
+      name: 'Live',
+      description: 'Invented runtime API',
+      bindingtype: 0,
+      isfunction: false,
+    }),
     201,
   );
   const parameter = await json(
@@ -98,24 +121,31 @@ test('custom API rows immediately update canonical HTTP routing, CSDL, parameter
   assert.match(action(first.xml, 'new_Live') ?? '', /Parameter Name="Text" Type="Edm.String"/);
   assert.match(action(first.xml, 'new_Live') ?? '', /ReturnType Type="mscrm.new_LiveResponse"/);
   assert.equal((await json(await call('POST', 'new_Live', { Text: 'First' }))).Result, 'First');
-  const invalid = await json(
-    await call('POST', 'customapis', {
-      uniquename: 'invalid name',
-      name: 'Incomplete row',
-      bindingtype: 0,
-      isfunction: false,
-    }),
-    201,
-  );
-  const unbound = await json(
-    await call('POST', 'customapis', {
-      uniquename: 'new_MissingBinding',
-      name: 'Missing bound entity',
-      bindingtype: 1,
-      isfunction: false,
-    }),
-    201,
-  );
+  const invalidName = {
+    uniquename: 'invalid name',
+    name: 'Incomplete row',
+    description: 'Invented invalid-name repair scenario',
+    bindingtype: 0,
+    isfunction: false,
+  };
+  const invalidFailure = await json(await call('POST', 'customapis', invalidName), 400);
+  assert.equal(invalidFailure.error.code, '0x800608ab');
+  assert.match(invalidFailure.error.message, /must begin with a letter/);
+  const missingBinding = {
+    uniquename: 'new_MissingBinding',
+    name: 'Missing bound entity',
+    description: 'Invented missing-binding repair scenario',
+    bindingtype: 1,
+    isfunction: false,
+  };
+  const bindingFailure = await json(await call('POST', 'customapis', missingBinding), 400);
+  assert.equal(bindingFailure.error.code, '0x80040265');
+  assert.equal(bindingFailure.error.message, 'BoundEntityLogicalName is required.');
+  // Incomplete exported source rows remain repairable even though authoring them
+  // through the Dataverse service is rejected by native metadata validation.
+  const invalid = { ...invalidName, customapiid: '10000000-0000-0000-0000-000000000003' };
+  const unbound = { ...missingBinding, customapiid: '10000000-0000-0000-0000-000000000004' };
+  await store.transact(() => store.state.tables.customapi.push(invalid, unbound));
   assert.equal(
     (await call('GET', 'WhoAmI')).status,
     200,

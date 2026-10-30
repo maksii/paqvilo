@@ -485,7 +485,10 @@ describe('plug-in registration over HTTP', () => {
 
   it('refuses a pre-image on Create and a post-image on Delete with 0x8004416d', async () => {
     const createStepId = await stepOn(ids.Create, ids.createFilter, 40);
-    assert.equal((await errorOf(await postImage(imageBody(createStepId, { imagetype: 0 })))).code, '0x8004416d');
+    assert.equal(
+      (await errorOf(await postImage(imageBody(createStepId, { imagetype: 0, messagepropertyname: 'Id' })))).code,
+      '0x8004416d',
+    );
     const deleteStep = await stepOn(ids.Delete, ids.deleteFilter, 40);
     assert.equal((await errorOf(await postImage(imageBody(deleteStep, { imagetype: 1 })))).code, '0x8004416d');
   });
@@ -517,7 +520,7 @@ describe('plug-in registration over HTTP', () => {
     });
     assert.equal(step.status, 204);
     const probeStep = idFromLocation(step);
-    const image = await postImage(imageBody(probeStep, { imagetype: 1 }));
+    const image = await postImage(imageBody(probeStep, { imagetype: 1, messagepropertyname: 'Id' }));
     assert.equal(image.status, 204);
     const probeImage = idFromLocation(image);
     assert.equal((await call(`pluginassemblies(${probeAssembly})`, { method: 'DELETE' })).status, 204);
@@ -659,7 +662,7 @@ describe('plug-in registration: unit rules and mirror shape', () => {
     });
   });
 
-  it('a managed Microsoft step cannot be updated (0x8004419a)', async () => {
+  it('the local managed-base edit contract refuses managed level-zero steps (0x8004419a)', async () => {
     const { run } = await harness();
     const existing = {
       sdkmessageprocessingstepid: STEP,

@@ -59,6 +59,18 @@ const invoke = (store, name, entities) =>
     },
   });
 
+test('standard bulk does not mistake the recommended batch size for a 1000-record limit', async () => {
+  const store = storeOf();
+  await store.transact(() =>
+    invoke(
+      store,
+      'CreateMultiple',
+      Array.from({ length: 1001 }, (_, index) => entity({ title: `Invented ${index}` })),
+    ),
+  );
+  assert.equal(store.tableRows('secondary').length, 1002);
+});
+
 test('Standard bulk validates all identities/security before writing and preserves atomic failure', async () => {
   const store = storeOf(),
     before = store.snapshot();
@@ -70,7 +82,9 @@ test('Standard bulk validates all identities/security before writing and preserv
       ]),
     /not found/,
   );
-  assert.throws(() => invoke(store, 'UpdateMultiple', [entity({}, id), entity({}, id)]), /Duplicate/);
+  const repeated = storeOf();
+  invoke(repeated, 'UpdateMultiple', [entity({ title: 'First' }, id), entity({ title: 'Second' }, id)]);
+  assert.equal(repeated.tableRows('secondary')[0].title, 'First');
   assert.throws(
     () => invoke(store, 'CreateMultiple', [entity({}), { ...entity({}), logicalName: 'widget' }]),
     /one exact logical table/,

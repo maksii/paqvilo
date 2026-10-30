@@ -4,6 +4,9 @@ import { executeBulkRecords } from './plugin-bulk.mjs';
 import { associationBinding, executeAssociation, executeAssociationAsync } from './plugin-association.mjs';
 import { isExactNumeric, exactNumeric } from './exact-numeric.mjs';
 import { isElastic, recordKey } from './dataverse-elastic.mjs';
+import { odataToSdkQuery } from './plugin-query.mjs';
+import { sdkQueryParameters } from './plugin-clr.mjs';
+import { pluginStoreScope } from './plugin-execution-lifetime.mjs';
 
 const fail = (message, code = 'LocalOrganizationServiceUnsupported', status = 501) => {
   throw new DataError(message, status, code);
@@ -77,6 +80,16 @@ export function validateServiceProfile(profile) {
   for (const grant of profile.grants) {
     if (invalidGrant(grant)) fail('Invalid local backend grant.', 'LocalBackendIdentityRequired', 409);
   }
+  if (
+    profile.privileges !== undefined &&
+    (!Array.isArray(profile.privileges) ||
+      profile.privileges.some((value) => typeof value !== 'string' || !/^prv[A-Za-z0-9]+$/.test(value)))
+  )
+    fail(
+      'Local backend privileges must name explicit source-qualified privilege names.',
+      'LocalBackendIdentityRequired',
+      409,
+    );
   const bulk = profile.bulkTables;
   if (
     bulk !== undefined &&
@@ -116,19 +129,72 @@ export function authorizeGrant(store, profile, entity, operation, row) {
  * operations (dataverse-virtual-providers.mjs readSync), never from its local mirror: 501 VirtualProviderMissing without a
  * provider, 501 SdkVirtualReadUnsupported without the synchronous operation. Without an organization on the store the
  * service writes the store directly (no organization rules exist). */
-export function localOrganizationService(
-  store,
-  profile,
-  records = store.recordPipeline,
-  { diagnostic = () => {} } = {},
-) {
+export function localOrganizationService(store, profile, records, { diagnostic = () => {}, requestOptions = {} } = {}) {
+  const invocation = pluginStoreScope(store);
+  store = invocation?.store ?? store;
+  records ??= store.recordPipeline;
   validateServiceProfile(profile);
   // Bypass portal grants only AFTER the separate backend grant check below.
   const localIdentity = { id: profile.userId, admin: true };
   const authorize = (entity, operation, row) => authorizeGrant(store, profile, entity, operation, row);
+  // A grant contains the effective main write, including changes made by
+  // PreOperation steps and declarative rules. This one-use capability belongs
+  // to one service invocation, never a recursive child or a deferred effect.
+  const effectiveWrite = (entity, operation, run) => {
+    const logical = store.resolveMapping(entity).logicalName;
+    let active = true,
+      consumed = false;
+    const assertScope = (actualEntity, actualOperation) => {
+      if (!active || consumed || actualEntity !== logical || actualOperation !== operation)
+        fail(
+          'Local backend effective write authorization is outside its invocation.',
+          'LocalBackendPermissionDenied',
+          403,
+        );
+    };
+    const check = (row, previous) => {
+      if (operation === 'update') authorize(logical, operation, previous);
+      authorize(logical, operation, row);
+    };
+    const authorizeEffectiveWrite = (actualEntity, actualOperation, row, previous) => {
+      assertScope(actualEntity, actualOperation);
+      consumed = true;
+      check(row, previous);
+    };
+    // Delete cascades can themselves invoke privileged SDK writes. Check once
+    // before admitting those effects, then consume the capability only at the
+    // actual root removal, after all cascaded steps have finished.
+    authorizeEffectiveWrite.preflight = (actualEntity, actualOperation, row, previous) => {
+      assertScope(actualEntity, actualOperation);
+      check(row, previous);
+    };
+    try {
+      const result = run(authorizeEffectiveWrite);
+      if (typeof result?.then === 'function')
+        return result.finally(() => {
+          active = false;
+        });
+      active = false;
+      return result;
+    } catch (error) {
+      active = false;
+      throw error;
+    }
+  };
   // One context per call: the record hooks key per-write state on it. The SDK user is the profile's systemuser (SYSTEM
   // when the organization has no such user); the explicit grants above have authorized the call.
-  const context = () => ({ identity: localIdentity, userId: profile.userId, caller: null, method: 'SDK', headers: {} });
+  const context = () => ({
+    identity: localIdentity,
+    userId: profile.userId,
+    caller: null,
+    method: 'SDK',
+    headers: {},
+    bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+    bypassCustomAsync: requestOptions.bypassCustomAsync === true,
+    bypassStepIds: requestOptions.bypassStepIds,
+    systemParameters: requestOptions.systemParameters,
+    sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+  });
   const internal = (operation, entity, run) => {
     const deferred = [];
     const result = run({ sync: true, deferred, authorized: true });
@@ -160,21 +226,23 @@ export function localOrganizationService(
   };
   const get = (entity, id, columns, { responseToken, partitionId, unmask = false } = {}) => {
     const key = sdkRecordKey(store, entity, id, partitionId);
-    const virtual = virtualRead(entity, { single: true, id: key });
-    if (virtual) {
-      const row = virtual.rows[0];
-      if (!row) fail('Record not found.', 'NotFound', 404);
-      row[store.resolveMapping(entity).idColumn] ??= key;
-      authorize(entity, 'read', row);
-      return cloneStateData(records.projectInternal(context(), entity, row, { unmask, single: true }));
-    }
-    const raw = store.get(entity, key, localIdentity, { skipPluginRead: true });
-    if (!raw) fail('Record not found.', 'NotFound', 404);
-    authorize(entity, 'read', raw);
-    const options = { sdkColumns: columns, sdkResponseToken: responseToken };
+    const options = {
+      sdkColumns: columns,
+      sdkResponseToken: responseToken,
+      bypassStepIds: requestOptions.bypassStepIds,
+      bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+      ...(id?.$type === 'EntityReference' ? { sdkTarget: id } : {}),
+      resolveTarget: (target) =>
+        id && typeof id === 'object' && target.id !== id.id
+          ? target.id
+          : sdkRecordKey(store, entity, target, partitionId),
+      authorizeRead: (row) => authorize(entity, 'read', row),
+      ...(partitionId === undefined ? {} : { partitionId }),
+    };
     const row = records
       ? records.readInternal(context(), entity, key, { ...options, unmask })
       : store.get(entity, key, localIdentity, options);
+    if (!row) fail('Record not found.', 'NotFound', 404);
     return cloneStateData(row);
   };
   const isChoiceList = (entity, key) => {
@@ -222,8 +290,9 @@ export function localOrganizationService(
     }
   };
   // The explicit-grant checks of a write, shared by the synchronous and asynchronous drives; answer the store key.
-  const prepareCreate = (entity, values) => {
-    authorize(entity, 'create', values);
+  const prepareCreate = (entity, values, sdkCreateId) => {
+    const seeded = sdkCreateId && sdkCreateId !== '00000000-0000-0000-0000-000000000000';
+    authorize(entity, 'create', seeded ? { ...values, [store.resolveMapping(entity).idColumn]: sdkCreateId } : values);
     writeGraph(values, entity);
   };
   const prepareUpdate = (entity, id, values) => {
@@ -243,6 +312,7 @@ export function localOrganizationService(
     return key;
   };
   const association = (entity, id, relationship, related, associate, responseToken, awaitIo) => {
+    const effectiveAssociation = {};
     const options = {
       store,
       entity,
@@ -253,6 +323,10 @@ export function localOrganizationService(
       authorize,
       associate,
       responseToken,
+      bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+      bypassCustomAsync: requestOptions.bypassCustomAsync === true,
+      bypassStepIds: requestOptions.bypassStepIds,
+      onRebind: (binding) => Object.assign(effectiveAssociation, binding),
     };
     const run = () => (awaitIo ? executeAssociationAsync : executeAssociation)(options);
     const savepoint = awaitIo ? (fn) => store.sdkMutationAsync(fn) : (fn) => store.sdkMutation(fn);
@@ -267,10 +341,12 @@ export function localOrganizationService(
     const entry = associate ? 'associateInternal' : 'disassociateInternal';
     // records' association steps yield the write's promise without sync (dataverse-records.mjs associationSteps).
     if (awaitIo)
-      return savepoint(() => records[entry](context(), logical, rowId, via, ids, { authorized: true, write: run }));
+      return savepoint(() =>
+        records[entry](context(), logical, rowId, via, ids, { authorized: true, write: run, effectiveAssociation }),
+      );
     return savepoint(() =>
       internal(operation, entity, (opts) =>
-        records[entry](context(), logical, rowId, via, ids, { ...opts, write: run }),
+        records[entry](context(), logical, rowId, via, ids, { ...opts, write: run, effectiveAssociation }),
       ),
     );
   };
@@ -279,7 +355,7 @@ export function localOrganizationService(
     if (!grants.length) fail('Local backend profile denied read on ' + logical, 'LocalBackendPermissionDenied', 403);
     return grants;
   };
-  return {
+  const service = {
     get,
     query(entity, params = {}, { responseToken, sdkQuery, unmask = false } = {}) {
       if (params instanceof URLSearchParams ? params.has('$expand') : params.$expand)
@@ -296,21 +372,50 @@ export function localOrganizationService(
       const allowed = constrained
         ? (row) => grants.some((g) => g.predicate(cloneStateData(row), 'read') === true)
         : undefined;
-      const virtual = virtualRead(entity, {
-        request: {
-          select: p.$select ?? null,
-          filter: p.$filter ?? null,
-          orderby: p.$orderby ?? null,
-          top: p.$top == null ? null : Number(p.$top),
-        },
-      });
-      if (virtual) {
+      const virtualStatus = records?.virtualProviders?.status?.(logical);
+      if (virtualStatus?.virtual && !virtualStatus.fallback) {
         const c = context();
-        return {
-          value: virtual.rows
-            .filter((row) => !allowed || allowed(row))
-            .map((row) => records.projectInternal(c, logical, row, { unmask, single: false })),
+        const execute = (params) => {
+          const virtual = virtualRead(entity, {
+            request: {
+              select: params.$select ?? null,
+              filter: params.$filter ?? null,
+              orderby: params.$orderby ?? null,
+              top: params.$top == null ? null : Number(params.$top),
+            },
+          });
+          return {
+            value: virtual.rows
+              .filter((row) => !allowed || allowed(row))
+              .map((row) => records.projectInternal(c, logical, row, { unmask, single: false })),
+          };
         };
+        if (
+          !store.pluginPipeline ||
+          !store.pluginPipelineActive({
+            entity: logical,
+            operation: 'retrievemultiple',
+            bypassStepIds: requestOptions.bypassStepIds,
+            bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+          })
+        )
+          return execute(p);
+        return store.retrieveMultipleOperation(
+          logical,
+          sdkQuery ?? odataToSdkQuery(logical, p, store),
+          localIdentity,
+          (query) => {
+            if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== logical)
+              fail('Virtual RetrieveMultiple must retain its bound table and query type.');
+            return execute(sdkQueryParameters(query));
+          },
+          'value',
+          responseToken,
+          {
+            bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+            bypassStepIds: requestOptions.bypassStepIds,
+          },
+        );
       }
       // Column security as the Web API applies it: masked operands refused, hidden columns evaluated as null.
       const secured = records?.secureInternal?.(context(), logical, { params, unmask }) ?? {};
@@ -318,6 +423,8 @@ export function localOrganizationService(
         dialect: 'dataverse',
         sdkResponseToken: responseToken,
         sdkQuery,
+        bypassStepIds: requestOptions.bypassStepIds,
+        bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
         backendRowFilter: allowed,
         ...secured,
       });
@@ -341,88 +448,163 @@ export function localOrganizationService(
       const backendRowsFilter = (logical, row) =>
         (grants.get(logical) ?? []).some((g) => !g.predicate || g.predicate(cloneStateData(row), 'read') === true);
       const secured = records?.secureInternal?.(context(), tables[0], { fetchXml: xml, unmask }) ?? {};
-      const answer = store.fetchXml(xml, localIdentity, { ...options, backendRowsFilter, ...secured });
+      const answer = store.fetchXml(
+        xml,
+        { ...localIdentity, dataverse: true, systemUserId: profile.userId },
+        {
+          ...options,
+          bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+          bypassStepIds: requestOptions.bypassStepIds,
+          backendRowsFilter,
+          ...secured,
+        },
+      );
       return records && !answer.sdkCollection
         ? records.projectFetchedInternal({ ...context(), unmasked: unmask === true }, tables[0], answer)
         : answer;
     },
-    create(entity, values, { responseToken } = {}) {
-      prepareCreate(entity, values);
-      return store.sdkMutation(() =>
-        records
-          ? internal('create', entity, (options) =>
-              records.createInternal(context(), entity, values, {
-                ...options,
-                writeOptions: { sdkResponseToken: responseToken },
+    create(entity, values, { responseToken, sdkCreateId } = {}) {
+      prepareCreate(entity, values, sdkCreateId);
+      return effectiveWrite(entity, 'create', (authorizeEffectiveWrite) =>
+        store.sdkMutation(() =>
+          records
+            ? internal('create', entity, (options) =>
+                records.createInternal(context(), entity, values, {
+                  ...options,
+                  writeOptions: {
+                    sdkResponseToken: responseToken,
+                    sdkCreateId,
+                    authorizeEffectiveWrite,
+                    sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+                  },
+                }),
+              )
+            : store.createRecord(entity, values, localIdentity, {
+                ...requestOptions,
+                coerce: true,
+                sdkResponseToken: responseToken,
+                sdkCreateId,
+                authorizeEffectiveWrite,
               }),
-            )
-          : store.createRecord(entity, values, localIdentity, { coerce: true, sdkResponseToken: responseToken }),
+        ),
       );
     },
     update(entity, id, values, { responseToken } = {}) {
       const key = prepareUpdate(entity, id, values);
-      return store.sdkMutation(() =>
-        records
-          ? internal('update', entity, (options) =>
-              records.updateInternal(context(), entity, key, values, {
-                ...options,
-                writeOptions: { sdkResponseToken: responseToken },
+      return effectiveWrite(entity, 'update', (authorizeEffectiveWrite) =>
+        store.sdkMutation(() =>
+          records
+            ? internal('update', entity, (options) =>
+                records.updateInternal(context(), entity, key, values, {
+                  ...options,
+                  writeOptions: {
+                    sdkResponseToken: responseToken,
+                    authorizeEffectiveWrite,
+                    sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+                  },
+                }),
+              )
+            : store.updateRecord(entity, key, values, localIdentity, {
+                ...requestOptions,
+                coerce: true,
+                sdkResponseToken: responseToken,
+                authorizeEffectiveWrite,
               }),
-            )
-          : store.updateRecord(entity, key, values, localIdentity, { coerce: true, sdkResponseToken: responseToken }),
+        ),
       );
     },
     remove(entity, id, { responseToken, partitionId } = {}) {
       const key = prepareRemove(entity, id, partitionId);
-      return store.sdkMutation(() =>
-        records
-          ? internal('delete', entity, (options) =>
-              records.removeInternal(context(), entity, key, {
-                ...options,
-                writeOptions: { sdkResponseToken: responseToken },
+      return effectiveWrite(entity, 'delete', (authorizeEffectiveWrite) =>
+        store.sdkMutation(() =>
+          records
+            ? internal('delete', entity, (options) =>
+                records.removeInternal(context(), entity, key, {
+                  ...options,
+                  writeOptions: {
+                    sdkResponseToken: responseToken,
+                    sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+                    authorizeEffectiveWrite,
+                  },
+                }),
+              )
+            : store.removeRecord(entity, key, localIdentity, {
+                ...requestOptions,
+                sdkResponseToken: responseToken,
+                authorizeEffectiveWrite,
               }),
-            )
-          : store.removeRecord(entity, key, localIdentity, { sdkResponseToken: responseToken }),
+        ),
       );
     },
     // The same writes on the asynchronous pipeline, for a caller that is not nested inside a plug-in (a flow Dataverse
     // action): the internal entries without sync, inside one awaited SDK savepoint (store.sdkMutationAsync), so a
     // synchronous service endpoint step's post is awaited in process (never on the synchronous I/O bridge) and the
     // afterWrite hooks finish before the call returns. Each answers a promise of the stored row.
-    createAsync(entity, values, { responseToken } = {}) {
-      prepareCreate(entity, values);
-      return store.sdkMutationAsync(() =>
-        records
-          ? records.createInternal(context(), entity, values, {
-              authorized: true,
-              writeOptions: { sdkResponseToken: responseToken },
-            })
-          : store.createRecordAsync(entity, values, localIdentity, { coerce: true, sdkResponseToken: responseToken }),
+    createAsync(entity, values, { responseToken, sdkCreateId } = {}) {
+      prepareCreate(entity, values, sdkCreateId);
+      return effectiveWrite(entity, 'create', (authorizeEffectiveWrite) =>
+        store.sdkMutationAsync(() =>
+          records
+            ? records.createInternal(context(), entity, values, {
+                authorized: true,
+                writeOptions: {
+                  sdkResponseToken: responseToken,
+                  sdkCreateId,
+                  authorizeEffectiveWrite,
+                  sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+                },
+              })
+            : store.createRecordAsync(entity, values, localIdentity, {
+                ...requestOptions,
+                coerce: true,
+                sdkResponseToken: responseToken,
+                sdkCreateId,
+                authorizeEffectiveWrite,
+              }),
+        ),
       );
     },
     updateAsync(entity, id, values, { responseToken } = {}) {
       const key = prepareUpdate(entity, id, values);
-      return store.sdkMutationAsync(() =>
-        records
-          ? records.updateInternal(context(), entity, key, values, {
-              authorized: true,
-              writeOptions: { sdkResponseToken: responseToken },
-            })
-          : store.updateRecordAsync(entity, key, values, localIdentity, {
-              coerce: true,
-              sdkResponseToken: responseToken,
-            }),
+      return effectiveWrite(entity, 'update', (authorizeEffectiveWrite) =>
+        store.sdkMutationAsync(() =>
+          records
+            ? records.updateInternal(context(), entity, key, values, {
+                authorized: true,
+                writeOptions: {
+                  sdkResponseToken: responseToken,
+                  sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+                  authorizeEffectiveWrite,
+                },
+              })
+            : store.updateRecordAsync(entity, key, values, localIdentity, {
+                ...requestOptions,
+                coerce: true,
+                sdkResponseToken: responseToken,
+                authorizeEffectiveWrite,
+              }),
+        ),
       );
     },
     removeAsync(entity, id, { responseToken, partitionId } = {}) {
       const key = prepareRemove(entity, id, partitionId);
-      return store.sdkMutationAsync(() =>
-        records
-          ? records.removeInternal(context(), entity, key, {
-              authorized: true,
-              writeOptions: { sdkResponseToken: responseToken },
-            })
-          : store.removeRecordAsync(entity, key, localIdentity, { sdkResponseToken: responseToken }),
+      return effectiveWrite(entity, 'delete', (authorizeEffectiveWrite) =>
+        store.sdkMutationAsync(() =>
+          records
+            ? records.removeInternal(context(), entity, key, {
+                authorized: true,
+                writeOptions: {
+                  sdkResponseToken: responseToken,
+                  sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+                  authorizeEffectiveWrite,
+                },
+              })
+            : store.removeRecordAsync(entity, key, localIdentity, {
+                ...requestOptions,
+                sdkResponseToken: responseToken,
+                authorizeEffectiveWrite,
+              }),
+        ),
       );
     },
     // Associate/Disassociate: executeAssociation (explicit grants, the plug-in stages, the store association writes) runs as
@@ -450,11 +632,11 @@ export function localOrganizationService(
           'LocalPluginBulkUnsupported',
         );
       const write = records
-        ? (update, id, values) =>
+        ? (update, id, values, { postWriteEffects, ...writeOptions } = {}) =>
             internal(update ? 'update' : 'create', entity, (options) =>
               update
-                ? records.updateInternal(context(), entity, id, values, options)
-                : records.createInternal(context(), entity, values, options),
+                ? records.updateInternal(context(), entity, id, values, { ...options, writeOptions, postWriteEffects })
+                : records.createInternal(context(), entity, values, { ...options, writeOptions, postWriteEffects }),
             )
         : undefined;
       const authorizeRow = (op, row, previous) => {
@@ -470,8 +652,38 @@ export function localOrganizationService(
           targets: cloneStateData(targets),
           identity: localIdentity,
           responseToken,
+          bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+          bypassCustomAsync: requestOptions.bypassCustomAsync === true,
+          bypassStepIds: requestOptions.bypassStepIds,
           write,
+          runPostEffect: (effect) => internal(operation === 'updatemultiple' ? 'update' : 'create', entity, effect),
           authorize: authorizeRow,
+        }),
+      );
+    },
+    executeMessageSync(name, target, parameters) {
+      if (
+        !profile.grants.some(
+          (grant) =>
+            typeof grant.message === 'string' &&
+            grant.message.toLowerCase() === name.toLowerCase() &&
+            grant.operations.includes('execute'),
+        )
+      )
+        fail('Local backend profile denied execute on ' + name, 'LocalBackendPermissionDenied', 403);
+      if (!records?.executeMessageSyncInternal)
+        fail('Custom SDK messages require an organization message adapter.', 'LocalPluginSdkUnsupported', 501);
+      return store.sdkMutation(() =>
+        records.executeMessageSyncInternal({
+          principal: profile,
+          name,
+          target,
+          parameters,
+          systemParameters: requestOptions.systemParameters,
+          sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+          bypassCustomPlugins: requestOptions.bypassCustomPlugins === true,
+          bypassCustomAsync: requestOptions.bypassCustomAsync === true,
+          bypassStepIds: requestOptions.bypassStepIds,
         }),
       );
     },
@@ -493,6 +705,44 @@ export function localOrganizationService(
           },
     },
   };
+  for (const [name, operation] of Object.entries(service)) {
+    if (typeof operation !== 'function') continue;
+    const writes = [
+      'create',
+      'update',
+      'remove',
+      'createAsync',
+      'updateAsync',
+      'removeAsync',
+      'associate',
+      'associateAsync',
+      'disassociateAsync',
+      'bulk',
+      'executeMessageSync',
+    ].includes(name);
+    service[name] = (...args) => {
+      try {
+        invocation?.assertActive();
+        const result = operation(...args);
+        const returned =
+          invocation && result?.then
+            ? result.then((value) => invocation.snapshot(value))
+            : invocation
+              ? invocation.snapshot(result)
+              : result;
+        return returned?.then
+          ? returned.catch((error) => {
+              if (writes) store.markPluginTransactionFailure?.(error);
+              throw error;
+            })
+          : returned;
+      } catch (error) {
+        if (writes) store.markPluginTransactionFailure?.(error);
+        throw error;
+      }
+    };
+  }
+  return service;
 }
 
 /** SDK wire values carry their .NET type instead of erasing Money/lookups/options. */

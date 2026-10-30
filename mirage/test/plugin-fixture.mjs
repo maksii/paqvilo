@@ -62,7 +62,13 @@ export async function pluginFixture(t, { simulator = true } = {}) {
     watch: false,
     initial: {
       version: 1,
-      mappings: { fx_widget: { entitySet: 'fx_widgets', idColumn: 'fx_widgetid' } },
+      mappings: {
+        fx_widget: {
+          entitySet: 'fx_widgets',
+          idColumn: 'fx_widgetid',
+          fields: { fx_title: { type: 'string' }, fx_note: { type: 'string' } },
+        },
+      },
       tables: { fx_widget: [] },
       plugins: [],
       permissions: [

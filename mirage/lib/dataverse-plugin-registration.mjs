@@ -11,6 +11,7 @@ import { SDK_MESSAGES, pluginUnsupported } from './exported-plugins.mjs';
 import { InvalidAssembly, inspectAssembly, inspectSigningCertificate } from './clr-assembly-reader.mjs';
 import { isLoopbackUrl, loopbackFetch, messagingOf, serviceEndpointTarget } from './dataverse-webhooks.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
+import { stepConstructorSettings, copyStepConstructorSettings } from './plugin-constructor-configuration.mjs';
 
 const NAMESPACE = uuidV5('6ba7b811-9dad-11d1-80b4-00c04fd430c8', 'paqvilo-dataverse'); // same as dataverse-api.mjs DATAVERSE_NAMESPACE
 const SIXTEEN_MB = 16 * 1024 * 1024;
@@ -49,10 +50,11 @@ const NO_CUSTOM_STEP = new Set(['organization', 'privilege', 'roleprivileges']);
 // Read-only from the API: only Retrieve, RetrieveMultiple, Associate and Disassociate are documented for these tables.
 const READ_ONLY = new Set(['sdkmessage', 'sdkmessagefilter']);
 const VERB = { create: 'Create', update: 'Update', delete: 'Delete' };
-// The documented request property each message's image may read.
+// The message property each image reads; Create uses its native response Id.
 const IMAGE_PROPERTIES = {
   Assign: ['Target'],
-  Create: ['Target'],
+  Create: ['Id'],
+  CreateMultiple: ['Targets'],
   Delete: ['Target'],
   DeliverIncoming: ['EmailId'],
   DeliverPromote: ['EmailId'],
@@ -61,6 +63,7 @@ const IMAGE_PROPERTIES = {
   Send: ['FaxId', 'EmailId', 'TemplateId'],
   SetState: ['EntityMoniker'],
   Update: ['Target'],
+  UpdateMultiple: ['Targets'],
 };
 const ADMIN_ROLES = new Set(['System Administrator', 'System Customizer']);
 const IMPERSONATE = 'prvSetImpersonatingUserIdOnSdkMessageProcessingStep';
@@ -134,14 +137,14 @@ function assemblyFacts(assembly) {
 }
 
 // The message rows: pipeline, router built-ins, every registered name and every custom API (private ones flagged).
-function messageRows(store, org, names) {
+function messageRows(store, org, names, availability) {
   const apis = store.state.tables.customapi ?? [];
   const privateApis = new Set(apis.filter((api) => api.isprivate === true).map((api) => api.uniquename));
   const all = new Set([...PIPELINE, ...ROUTER, ...names, ...apis.map((api) => api.uniquename).filter(Boolean)]);
   return [...all].map((name) => ({
     sdkmessageid: messageId(name),
     name,
-    availability: 0,
+    availability: availability[name.toLowerCase()]?.message ?? 0,
     isactive: true,
     isprivate: privateApis.has(name),
     workflowsdkstepenabled: false,
@@ -151,7 +154,7 @@ function messageRows(store, org, names) {
 }
 
 // The filter rows: one per (message, table) for every mapping, and one per custom API (its bound table, or none).
-function filterRows(store, org) {
+function filterRows(store, org, availability) {
   const rows = [];
   for (const [logical, mapping] of Object.entries(store.state.mappings ?? {}))
     for (const message of [...FILTERED, ...(mapping.isVirtual || mapping.dataSourceId ? EXTERNAL_MESSAGES : [])])
@@ -162,7 +165,7 @@ function filterRows(store, org) {
         secondaryobjecttypecode: 'none',
         iscustomprocessingstepallowed: !mapping.intersect && !NO_CUSTOM_STEP.has(logical),
         isvisible: true,
-        availability: 0,
+        availability: availability[message.toLowerCase()]?.filters?.[logical] ?? 0,
         organizationid: org,
       });
   for (const api of store.state.tables.customapi ?? []) {
@@ -172,13 +175,41 @@ function filterRows(store, org) {
       sdkmessageid: messageId(api.uniquename),
       primaryobjecttypecode: table,
       secondaryobjecttypecode: 'none',
-      iscustomprocessingstepallowed: true,
+      iscustomprocessingstepallowed: Number(api.allowedcustomprocessingsteptype ?? 0) !== 0,
       isvisible: true,
       availability: 0,
       organizationid: org,
     });
   }
   return rows;
+}
+
+function sourceAvailability(plugins) {
+  const metadata = Object.create(null);
+  const add = (name) => (metadata[String(name).toLowerCase()] ??= { filters: Object.create(null) });
+  const messages = new Map((plugins.messages ?? []).map((message) => [String(message.id).toLowerCase(), message.name]));
+  for (const message of plugins.messages ?? []) {
+    const record = add(message.name);
+    if ([0, 1, 2].includes(message.availability)) record.message = message.availability;
+    Object.assign(record.filters, message.filterAvailability ?? {});
+  }
+  for (const filter of plugins.messageFilters ?? []) {
+    const name =
+      messages.get(String(filter.messageId).toLowerCase()) ?? SDK_MESSAGES[String(filter.messageId).toLowerCase()];
+    if (name && [0, 1, 2].includes(filter.availability)) add(name).filters[filter.entity] = filter.availability;
+  }
+  for (const step of plugins.steps ?? [])
+    if (step.message) {
+      const record = add(step.message);
+      if ([0, 1, 2].includes(step.messageAvailability)) record.message = step.messageAvailability;
+      if ([0, 1, 2].includes(step.filterAvailability)) record.filters[step.entity ?? 'none'] = step.filterAvailability;
+    }
+  return Object.fromEntries(
+    Object.entries(metadata).map(([name, record]) => [
+      name,
+      { ...record, filters: Object.fromEntries(Object.entries(record.filters)) },
+    ]),
+  );
 }
 
 /**
@@ -228,6 +259,11 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
       mode: step.mode ?? 0,
       rank: step.rank ?? 1,
       supporteddeployment: step.supportedDeployment ?? 0,
+      ...(Object.hasOwn(stepConstructorSettings(step), 'unsecureConfiguration')
+        ? { configuration: stepConstructorSettings(step).unsecureConfiguration }
+        : {}),
+      ...(step.secureConfigurationId ? { sdkmessageprocessingstepsecureconfigid: step.secureConfigurationId } : {}),
+      ...(step.customizationLevel != null ? { customizationlevel: step.customizationLevel } : {}),
       filteringattributes: (step.filteringAttributes ?? []).join(',') || null,
       statecode: step.enabled === false ? 1 : 0,
       statuscode: step.enabled === false ? 2 : 1,
@@ -249,7 +285,7 @@ export function solutionPluginRows(plugins, { organizationId } = {}) {
         entityalias: image.alias || image.name,
         imagetype: image.type ?? 0,
         attributes: (image.attributes ?? []).join(',') || null,
-        // Only Target is documented; writing a Create post image with Id is assumed native behavior.
+        // Native Create post-image registration reads its response Id property.
         messagepropertyname: step.message === 'Create' && (image.type ?? 0) !== 0 ? 'Id' : 'Target',
         organizationid: org,
       });
@@ -271,6 +307,7 @@ function mutableOf(row, images) {
     mode: Number(row.mode ?? 0),
     rank: Number(row.rank),
     supportedDeployment: Number(row.supporteddeployment ?? 0),
+    ...(row.customizationlevel != null ? { customizationLevel: Number(row.customizationlevel) } : {}),
     filteringAttributes: lowerList(row.filteringattributes),
     impersonatingUserId: idOfValue(row.impersonatinguserid)
       ? String(idOfValue(row.impersonatinguserid)).toLowerCase()
@@ -308,6 +345,9 @@ function stepFromRow(store, row, images) {
     messageSourceFile: null,
     messageObservation: null,
     entity,
+    ...(store.observed?.businessLogicOwnership?.[id]
+      ? { bypassOwnership: store.observed.businessLogicOwnership[id] }
+      : {}),
     messageFilterId: filter ? String(filter.sdkmessagefilterid).toLowerCase() : null,
     unfiltered: entity === null,
     typeSourceFile: null,
@@ -317,8 +357,26 @@ function stepFromRow(store, row, images) {
     serviceEndpointId: endpoint ? String(endpoint.serviceendpointid).toLowerCase() : null,
     stageName: STAGE_NAME[Number(row.stage)] ?? `Stage ${row.stage ?? 'unknown'}`,
     ...mutableOf(row, images),
+    ...customApiContract(store, message?.name),
   };
   return { ...step, unsupported: pluginUnsupported(step) };
+}
+
+// The API's extension policy belongs to its message, including an unbound API.
+function customApiContract(store, name) {
+  const api = store
+    .tableRows('customapi')
+    .find((row) => String(row.uniquename).toLowerCase() === String(name).toLowerCase());
+  return api
+    ? {
+        customApi: {
+          name: api.uniquename,
+          bindingType: Number(api.bindingtype ?? 0),
+          allowedCustomProcessingStepType: Number(api.allowedcustomprocessingsteptype ?? 0),
+          isFunction: api.isfunction === true,
+        },
+      }
+    : {};
 }
 
 /**
@@ -342,7 +400,10 @@ export function overlayRegisteredSteps(plugins, store) {
     seeded.sdkmessageprocessingstep.map((row) => [String(row.sdkmessageprocessingstepid).toLowerCase(), row]),
   );
   const norm = (value) => (value == null ? '' : String(value).toLowerCase());
-  const sameFields = (row, expected) => Object.keys(expected).every((key) => norm(row[key]) === norm(expected[key]));
+  const sameFields = (row, expected) =>
+    Object.keys(expected).every((key) =>
+      key === 'configuration' ? row[key] === expected[key] : norm(row[key]) === norm(expected[key]),
+    );
   // A Solution step whose bare EventHandler named no exported plug-in type (eventHandlerId) resolves against the organization's
   // rows: a serviceendpoint row makes it a service endpoint step, a plugintype row of a registered assembly a plug-in step;
   // with neither it stays unsupported (handler unresolved).
@@ -361,12 +422,15 @@ export function overlayRegisteredSteps(plugins, store) {
           assemblyId: String(assembly.pluginassemblyid).toLowerCase(),
           assemblyName: assembly.name ?? null,
         };
-    return { ...next, unsupported: pluginUnsupported(next) };
+    return copyStepConstructorSettings(step, { ...next, unsupported: pluginUnsupported(next) });
   };
   const steps = [],
     solutionIds = new Set();
   for (const source of plugins?.steps ?? []) {
-    const step = resolved(source),
+    const step = copyStepConstructorSettings(source, {
+        ...resolved(source),
+        ...customApiContract(store, source.message),
+      }),
       id = String(step.id).toLowerCase();
     solutionIds.add(id);
     const row = rowOf(id);
@@ -415,8 +479,10 @@ function seed(api, plugins = null) {
   const org = organizationOf(store) || String(api.settings?.organizationId ?? '').toLowerCase(); // reset runs before the organization row is re-seeded
   const stepMessages = (plugins?.steps ?? []).map((step) => step.message).filter(Boolean);
   const names = [...(api.registry?.names?.() ?? []), ...stepMessages];
-  upsert(store, 'sdkmessage', 'sdkmessageid', messageRows(store, org, names), { fresh: true });
-  upsert(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRows(store, org), { fresh: true });
+  const availability = plugins ? sourceAvailability(plugins) : (store.state.dataverse?.pluginSourceAvailability ?? {});
+  if (plugins) (store.state.dataverse ??= {}).pluginSourceAvailability = availability;
+  upsert(store, 'sdkmessage', 'sdkmessageid', messageRows(store, org, names, availability), { fresh: true });
+  upsert(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRows(store, org, availability), { fresh: true });
   if (plugins)
     for (const [logical, rows] of Object.entries(solutionPluginRows(plugins, { organizationId: org })))
       upsert(store, logical, `${logical}id`, rows);
@@ -503,6 +569,21 @@ function validateAssembly({ store, data, existing }) {
 
 function validateType({ store, data, existing }) {
   if (!valueOf(data, existing, 'typename')) throw required('typename');
+  const friendlyName = valueOf(data, existing, 'friendlyname');
+  if (
+    typeof friendlyName === 'string' &&
+    friendlyName &&
+    store
+      .tableRows('plugintype')
+      .some(
+        (row) =>
+          !same(row.plugintypeid, existing?.plugintypeid) &&
+          String(row.friendlyname ?? '').toLowerCase() === friendlyName.toLowerCase(),
+      )
+  )
+    throw new DataError('A record with matching key values already exists.', 412, 'DuplicateRecord', {
+      innerCode: '0x80040237',
+    });
   // The read-only columns come from the assembly (isworkflowactivity needs the content).
   const assembly = rowById(store, 'pluginassembly', 'pluginassemblyid', ref(data, existing, 'pluginassemblyid'));
   if (assembly)
@@ -538,20 +619,22 @@ function validateImage({ store, data, existing }) {
     property = String(val('messagepropertyname'));
   const post = type === 1 || type === 2,
     pre = type === 0 || type === 2;
-  // Assumed native behavior: a Create post image is read as Id.
-  if (!properties.includes(property) && !(name === 'Create' && post && property === 'Id'))
+  if (!properties.includes(property))
     throw fail(`Message property name '${property}' is not valid on message ${name}.`, '0x8004416b');
   if (post && [10, 20].includes(Number(step.stage)))
     throw fail('PreEvent step registration does not support Post Image.', '0x8004416e');
-  if ((name === 'Create' && pre) || (name === 'Delete' && post))
+  if ((['Create', 'CreateMultiple'].includes(name) && pre) || (name === 'Delete' && post))
     throw fail(`Message ${name} does not support this image type.`, '0x8004416d');
 }
 
 function validateStep({ store, principals, c, data, existing, operation }) {
   const val = (column) => valueOf(data, existing, column);
-  // A Microsoft registered step is read-only. Seeded rows carry ismanaged and customizationlevel 0.
+  // Bounded local managed-base edit contract, not publisher/ownership evidence.
   if (operation === 'update' && existing?.ismanaged === true && Number(existing.customizationlevel) === 0)
-    throw fail('A Microsoft registered SDK message processing step cannot be modified.', '0x8004419a');
+    throw fail(
+      'A managed base SDK message processing step cannot be modified by this local edit contract.',
+      '0x8004419a',
+    );
   const messageRefId = ref(data, existing, 'sdkmessageid');
   const filterRefId = ref(data, existing, 'sdkmessagefilterid');
   const handler = handlerOf(data, existing);
@@ -565,7 +648,23 @@ function validateStep({ store, principals, c, data, existing, operation }) {
   const stage = Number(val('stage')),
     mode = Number(val('mode') ?? 0),
     rank = Number(val('rank'));
+  for (const [column, value, accepted] of [
+    ['mode', mode, [0, 1]],
+    ['supporteddeployment', Number(val('supporteddeployment') ?? 0), [0, 1, 2]],
+  ])
+    if (!accepted.includes(value))
+      throw fail(
+        `A validation error occurred. The value ${value} of '${column}' on record of type 'sdkmessageprocessingstep' is outside the valid range. Accepted Values: ${accepted.join(',')}`,
+        '0x8004431a',
+      );
   const messageName = rowById(store, 'sdkmessage', 'sdkmessageid', messageRefId)?.name;
+  const customApi = store.tableRows('customapi').find((row) => row.uniquename === messageName);
+  if (customApi) {
+    const policy = Number(customApi.allowedcustomprocessingsteptype ?? 0);
+    if (policy === 0) throw fail('Custom Sdkmessageprocessingsteps are not allowed for this message.', '0x80090307');
+    if (policy === 1 && mode !== 1)
+      throw fail('Synchronous mode Sdkmessageprocessingsteps are not allowed on this message.', '0x80090306');
+  }
   if (EXTERNAL_MESSAGES.includes(messageName) && (stage !== 40 || mode !== 1)) {
     throw fail('External virtual table events support only asynchronous PostOperation steps.', '0x80090303');
   }
@@ -582,6 +681,11 @@ function validateStep({ store, principals, c, data, existing, operation }) {
   } else if (messageRefId && !store.tableRows('sdkmessagefilter').some((row) => same(row.sdkmessageid, messageRefId))) {
     throw fail('Custom Sdkmessageprocessingsteps are not allowed for this message.', '0x80090307');
   }
+  const availability = store.state.dataverse?.pluginSourceAvailability?.[String(messageName).toLowerCase()];
+  const deployment = Number(val('supporteddeployment') ?? 0);
+  const knownAvailability = [availability?.message, availability?.filters?.[filter?.primaryobjecttypecode ?? 'none']];
+  if ((deployment !== 0 && knownAvailability.includes(0)) || (deployment !== 1 && knownAvailability.includes(1)))
+    throw fail('Supported deployment does not agree with message availability', '0x80040203');
   // Assumed native behavior: the attributes must be columns of the filter's table; any message is accepted.
   const table = filter?.primaryobjecttypecode;
   if (table && table !== 'none') {

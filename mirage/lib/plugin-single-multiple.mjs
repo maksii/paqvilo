@@ -1,0 +1,247 @@
+import { DataError } from './data-error.mjs';
+import { recordToSdkEntity } from './plugin-clr.mjs';
+import { sdkValueToRecord } from './local-organization-service.mjs';
+import { pluginInvocationDepth, pluginInvocationParent } from './plugin-execution-lifetime.mjs';
+import { pluginStepBypassed } from './plugin-bypass.mjs';
+
+const empty = '00000000-0000-0000-0000-000000000000';
+export const multipleMessage = (operation) => ({ create: 'createmultiple', update: 'updatemultiple' })[operation];
+
+/** Single-origin requests merge single and multiple registrations by rank in
+ * each stage. Bulk-origin requests have their separate grouped ordering. */
+export function singleMultiplePipeline(store, items, execute) {
+  const frames = new WeakMap();
+  return (context) => {
+    const operation = multipleMessage(context.operation);
+    if (
+      !operation ||
+      context.pluginStepIds ||
+      !items().some(
+        (step) =>
+          step.enabled &&
+          step.contract?.supportedDeployment !== 1 &&
+          !pluginStepBypassed(step, context) &&
+          step.entity === context.entity &&
+          String(step.message).toLowerCase() === operation &&
+          (step.contract?.mode ?? 0) === 0,
+      )
+    )
+      return execute(context);
+    const mapping = store.resolveMapping(context.entity),
+      primary = mapping.idColumn;
+    let frame = frames.get(context.record);
+    if (!frame || context.stage === 10) {
+      frame = {
+        record: { [primary]: empty },
+        targets: [],
+        authoredPrimary: Object.hasOwn(context.target ?? {}, primary),
+      };
+      frames.set(context.record, frame);
+    }
+    // PreOperation starts its own wrapper identity. Actual scalar
+    // invocations advance it in rank order; the final PreOperation value then
+    // carries into PostOperation. PreValidation does not supply that value.
+    if (context.stage === 20) frame.record[primary] = empty;
+    const sourceInputTarget = frame.singleFrame?.inputParameters?.values?.Target;
+    if (
+      context.operation === 'update' &&
+      sourceInputTarget?.$type === 'Entity' &&
+      frame.singleFrame.inputParametersStage !== context.stage
+    )
+      sourceInputTarget.id = context.record[primary];
+    const currentTargetId = () => frame.singleFrame?.inputParameters?.values?.Target?.id ?? context.record[primary];
+    const encodeMultipleTarget = () => {
+      const target = recordToSdkEntity(
+        store,
+        mapping.logicalName,
+        context.operation === 'update' ? { ...context.target, [primary]: context.record[primary] } : context.target,
+      );
+      target.id = currentTargetId();
+      if (context.operation === 'create' && !frame.authoredPrimary && context.stage === 10)
+        delete target.attributes[primary];
+      return target;
+    };
+    if (context.stage === 40) frame.record.bulkIds = [context.record[primary]];
+    const applyMultiple = (multipleFrame) => {
+      frame.multipleFrame = multipleFrame;
+      const next = frame.targets[0];
+      if (
+        frame.targets.length !== 1 ||
+        next?.$type !== 'Entity' ||
+        next.logicalName !== mapping.logicalName ||
+        typeof next.id !== 'string' ||
+        next.id.toLowerCase() !== String(currentTargetId()).toLowerCase()
+      )
+        throw new DataError(
+          'A multiple-message step invoked by a single request must preserve its one bound target identity.',
+          501,
+          'LocalPluginBulkUnsupported',
+        );
+      {
+        const values = sdkValueToRecord(next),
+          retainsEmptyPrimary =
+            context.operation === 'create' &&
+            context.stage === 10 &&
+            context.target[primary] === empty &&
+            values[primary] === empty;
+        // The Update wrapper materializes its identity Attribute separately
+        // from the original scalar Target and its authored/filtering columns.
+        // A changed key remains visible to the normal immutable-key validator.
+        if (
+          context.operation === 'update' &&
+          !Object.hasOwn(context.target, primary) &&
+          values[primary] === context.record[primary]
+        )
+          delete values[primary];
+        for (const key of Object.keys(context.target))
+          if (!Object.hasOwn(values, key) && key !== primary) {
+            delete context.target[key];
+            if (context.stage !== 40) {
+              if (context.previous && Object.hasOwn(context.previous, key)) context.record[key] = context.previous[key];
+              else delete context.record[key];
+            }
+          }
+        Object.assign(context.target, values);
+        if (context.stage !== 40)
+          for (const [key, value] of Object.entries(values))
+            if (key !== primary || !retainsEmptyPrimary) context.record[key] = value;
+      }
+    };
+    const entries = items()
+      .filter(
+        (step) =>
+          step.enabled &&
+          step.contract?.supportedDeployment !== 1 &&
+          !pluginStepBypassed(step, context) &&
+          step.entity === context.entity &&
+          (step.contract?.mode ?? 0) === 0 &&
+          step.stage === context.stage &&
+          [operation, context.operation].includes(String(step.message).toLowerCase()),
+      )
+      .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+    let singleStarted = false,
+      multipleStarted = false;
+    const run = (index) => {
+      if (index === entries.length) {
+        if (
+          context.stage === 40 &&
+          frame.multipleFrame?.inputParametersStage === 40 &&
+          frame.multipleFrame.inputParameters?.values?.Targets?.$type === 'EntityCollection'
+        ) {
+          const encoded = encodeMultipleTarget();
+          const prior = frame.multipleFrame.inputParameters.values.Targets.entities[0] ?? {};
+          frame.multipleFrame.inputParameters.values.Targets.entities = [
+            { ...prior, id: currentTargetId(), attributes: encoded.attributes },
+          ];
+        }
+        return { ...(frame.singleFrame ?? {}), multipleFrame: frame.multipleFrame ?? {} };
+      }
+      const entry = entries[index],
+        multiple = String(entry.message).toLowerCase() === operation;
+      const base = { ...context, pluginStepIds: [entry.id] };
+      if (multiple) {
+        const target = encodeMultipleTarget();
+        frame.targets.splice(0, frame.targets.length, target);
+        const parent = store.pluginParentContext ?? pluginInvocationParent(store);
+        const priorValues = { ...(frame.multipleFrame?.inputParameters?.values ?? {}) };
+        const concurrencyBehavior = priorValues.ConcurrencyBehavior ?? {
+          $type: 'ConcurrencyBehavior',
+          value: context.concurrencyBehavior ?? 0,
+        };
+        delete priorValues.Targets;
+        if (context.operation === 'update') {
+          delete priorValues.FromSandbox;
+          delete priorValues.ConcurrencyBehavior;
+        }
+        const inputParameters = {
+          ...(frame.multipleFrame?.inputParameters ?? {}),
+          $type: 'ParameterCollection',
+          values: {
+            ...(context.operation === 'update'
+              ? {
+                  ...(context.stage === 10 && context.sdkFromSandbox === true ? { FromSandbox: true } : {}),
+                  ConcurrencyBehavior: concurrencyBehavior,
+                }
+              : {}),
+            ...priorValues,
+            Targets: {
+              ...(frame.multipleFrame?.inputParameters?.values?.Targets ?? {}),
+              $type: 'EntityCollection',
+              entities: frame.targets,
+            },
+          },
+        };
+        const preValidationUpsert =
+          context.operation === 'update' && context.stage === 10 && context.preValidationSourceOperation === 'upsert';
+        const sourceTarget =
+          context.operation === 'update'
+            ? recordToSdkEntity(store, mapping.logicalName, { ...context.target, [primary]: context.record[primary] })
+            : { ...recordToSdkEntity(store, mapping.logicalName, context.target), id: currentTargetId() };
+        Object.assign(base, {
+          operation,
+          record: frame.record,
+          targets: frame.targets,
+          previousRecords: [context.previous ?? null],
+          records: context.stage === 40 ? [context.record] : [],
+          target: undefined,
+          changedAttributes: Object.keys(target.attributes),
+          continuePhase: multipleStarted,
+          initialFrame: {
+            ...(frame.multipleFrame ?? {}),
+            inputParameters,
+            inputParametersStage: context.stage,
+            ...(context.stage === 10 && !preValidationUpsert
+              ? {}
+              : {
+                  delegatedSourceOperation: {
+                    operation: preValidationUpsert ? 'upsert' : context.operation,
+                    entity: context.entity,
+                    primaryId: preValidationUpsert ? empty : context.record[primary],
+                    target: sourceTarget,
+                    ...(context.operation === 'update' && (context.stage !== 10 || preValidationUpsert)
+                      ? {
+                          inputParameters: {
+                            $type: 'ParameterCollection',
+                            values: {
+                              Target: sourceTarget,
+                              ...(preValidationUpsert
+                                ? { ReturnRowVersion: null }
+                                : {
+                                    ...(context.sdkFromSandbox === true ? { FromSandbox: true } : {}),
+                                    ConcurrencyBehavior: concurrencyBehavior,
+                                  }),
+                            },
+                          },
+                        }
+                      : {}),
+                    frame: frame.singleFrame ?? {},
+                    identity: context.identity,
+                    depth: Math.max(pluginInvocationDepth(store) + 1, Number(parent?.values?.Depth ?? 0) + 1),
+                    isInTransaction: store.pluginInTransaction === true,
+                  },
+                }),
+          },
+        });
+        multipleStarted = true;
+      } else {
+        if (context.operation === 'update' && !singleStarted && frame.singleFrame)
+          base.initialFrame = frame.singleFrame;
+        base.onStepExecuted = () => {
+          frame.record[primary] = context.record[primary];
+        };
+        base.changedAttributes =
+          context.operation === 'update' ? Object.keys(context.target) : context.changedAttributes;
+        base.continuePhase = singleStarted;
+        singleStarted = true;
+      }
+      const result = execute(base);
+      const finish = (answer) => {
+        if (multiple) applyMultiple(answer);
+        else frame.singleFrame = answer;
+        return run(index + 1);
+      };
+      return result?.then ? result.then(finish) : finish(result);
+    };
+    return run(0);
+  };
+}

@@ -22,12 +22,12 @@ function send(message) {
   Atomics.store(flags, 0, 1);
   Atomics.notify(flags, 0);
 }
-function stop(message) {
+function stop(message, invocationId = active) {
   if (closed) return;
   closed = true;
   clearTimeout(timer);
   child.kill();
-  if (message) send({ ...message, invocationId: active });
+  if (message) send({ ...message, invocationId });
   port.close();
 }
 child.on('spawn', () => send({ kind: 'owned-child', pid: child.pid }));
@@ -71,6 +71,7 @@ port.on('message', (message) => {
     return;
   }
   if (message.kind === 'invoke') {
+    const invocationId = typeof message.invocationId === 'string' && message.invocationId ? message.invocationId : null;
     if (
       active ||
       typeof message.invocationId !== 'string' ||
@@ -79,10 +80,16 @@ port.on('message', (message) => {
       message.timeout < 100 ||
       message.timeout > 10000
     )
-      return stop({ kind: 'failure', code: 'LocalPluginProtocol', message: 'Invalid pooled CLR invocation.' });
+      return stop(
+        { kind: 'failure', code: 'LocalPluginProtocol', message: 'Invalid pooled CLR invocation.' },
+        active ?? invocationId,
+      );
     const input = JSON.stringify(message.input);
     if (Buffer.byteLength(input) > 4 * 1024 * 1024)
-      return stop({ kind: 'failure', code: 'LocalPluginInputLimit', message: 'CLR context exceeds 4 MiB.' });
+      return stop(
+        { kind: 'failure', code: 'LocalPluginInputLimit', message: 'CLR context exceeds 4 MiB.' },
+        invocationId,
+      );
     active = message.invocationId;
     pending = false;
     bytes = 0;

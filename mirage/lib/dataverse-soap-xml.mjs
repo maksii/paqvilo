@@ -3,7 +3,7 @@
 // order and OrganizationServiceFault. Pure functions, no sockets.
 import { DataError } from './data-error.mjs';
 import { xmlDecode, xmlEscapeAttribute } from './fetchxml-engine.mjs';
-import { fixedScaleNumeric } from './exact-numeric.mjs';
+import { exactNumeric, fixedScaleNumeric } from './exact-numeric.mjs';
 
 // Canonical http:// URIs. Microsoft samples show https:// forms; canonical() folds them.
 export const NS = {
@@ -226,6 +226,7 @@ function decodeReference(n) {
     logicalName: kidText(n, NS.a, 'LogicalName'),
     id: kidText(n, NS.a, 'Id'),
     name: kidText(n, NS.a, 'Name'),
+    ...(kid(n, NS.a, 'RowVersion') ? { rowVersion: kidText(n, NS.a, 'RowVersion') } : {}),
     keyAttributes: decodePairs(kid(n, NS.a, 'KeyAttributes')),
   };
 }
@@ -268,11 +269,40 @@ function decodeCollection(n) {
     type: 'EntityCollection',
     entityName: kidText(n, NS.a, 'EntityName'),
     entities: (kid(n, NS.a, 'Entities')?.children ?? []).map((e) => decodeEntity(e)),
-    moreRecords: kidText(n, NS.a, 'MoreRecords') === 'true',
+    moreRecords: ['true', '1'].includes(kidText(n, NS.a, 'MoreRecords')),
     pagingCookie: kidText(n, NS.a, 'PagingCookie'),
     totalRecordCount: count == null ? null : Number(count),
-    totalRecordCountLimitExceeded: limit == null ? null : limit === 'true',
+    totalRecordCountLimitExceeded: limit == null ? null : ['true', '1'].includes(limit),
     minActiveRowVersion: kidText(n, NS.a, 'MinActiveRowVersion'),
+  };
+}
+
+/** Do not discard configured SDK query facets that the local executor cannot
+ * represent. Normal SDK serializers emit empty collections and nil defaults. */
+export function assertSoapQueryProperties(node, type, properties) {
+  for (const [name, kind] of Object.entries(properties)) {
+    const member = kid(node, NS.a, name);
+    if (!member || isNil(member)) continue;
+    if (
+      kind !== 'object' &&
+      !member.children.length &&
+      (kind === 'collection' ? member.text.trim() === '' : member.text === '')
+    )
+      continue;
+    throw new DataError(`Unsupported configured SDK property: ${type}.${name}`, 501, 'LocalPluginQueryUnsupported');
+  }
+}
+
+/** ColumnSet is also a declared DataContract member without xsi:type. */
+export function decodeColumnSet(node) {
+  if (!node || isNil(node)) return null;
+  const declaredType = typeOf(node);
+  if (declaredType && declaredType.key !== 'a:ColumnSet') throw xmlError('ColumnSet has an incompatible SDK type.');
+  assertSoapQueryProperties(node, 'ColumnSet', { AttributeExpressions: 'collection' });
+  return {
+    type: 'ColumnSet',
+    allColumns: ['true', '1'].includes(kidText(node, NS.a, 'AllColumns')),
+    columns: (kid(node, NS.a, 'Columns')?.children ?? []).map((c) => c.text),
   };
 }
 
@@ -297,14 +327,7 @@ const DECODERS = new Map([
       values: n.children.map((item) => intOf(valueNode(item))),
     }),
   ],
-  [
-    'a:ColumnSet',
-    (n) => ({
-      type: 'ColumnSet',
-      allColumns: kidText(n, NS.a, 'AllColumns') === 'true',
-      columns: (kid(n, NS.a, 'Columns')?.children ?? []).map((c) => c.text),
-    }),
-  ],
+  ['a:ColumnSet', decodeColumnSet],
   [
     'a:EntityReferenceCollection',
     (n) => ({
@@ -371,7 +394,8 @@ const referenceBody = (r) =>
   maybe(r.id, (id) => plain('a:Id', id)) +
   maybe(r.keyAttributes, (keys) => pairs('a:KeyAttributes', keys, undefined, KEY_ATTRIBUTE_KVP)) +
   maybe(r.logicalName, (logical) => plain('a:LogicalName', logical)) +
-  (r.name == null ? nil('a:Name') : plain('a:Name', r.name));
+  (r.name == null ? nil('a:Name') : plain('a:Name', r.name)) +
+  (Object.hasOwn(r, 'rowVersion') ? plainOrNil('a:RowVersion', r.rowVersion) : '');
 const encodeReference = (name, r) => typed(name, 'a:EntityReference', referenceBody(r));
 const relationshipBody = (r) =>
   maybe(r.primaryEntityRole, (x) => plain('a:PrimaryEntityRole', x)) + plain('a:SchemaName', r.schemaName);
@@ -433,14 +457,28 @@ const ENCODERS = new Map([
   ['duration', scalarEncoder('e:duration')],
   ['EntityReference', encodeReference],
   ['OptionSetValue', (name, v) => typed(name, 'a:OptionSetValue', plainOrNil('a:Value', v.value))],
-  ['Money', (name, v) => typed(name, 'a:Money', moneyValue(v.value))],
+  [
+    'Money',
+    (name, v) =>
+      typed(
+        name,
+        'a:Money',
+        v.sdkExact && v.value != null
+          ? typed('a:Value', 'c:decimal', esc(exactNumeric(v.value, 'Money', { collapse: false }).value))
+          : moneyValue(v.value),
+      ),
+  ],
   [
     'OptionSetValueCollection',
     (name, v) =>
       typed(
         name,
         'x9:OptionSetValueCollection',
-        v.values.map((x) => `<x9:OptionSetValue>${plainOrNil('a:Value', x)}</x9:OptionSetValue>`).join(''),
+        v.values
+          .map((x) =>
+            x == null ? nil('x9:OptionSetValue') : `<x9:OptionSetValue>${plainOrNil('a:Value', x)}</x9:OptionSetValue>`,
+          )
+          .join(''),
       ),
   ],
   [

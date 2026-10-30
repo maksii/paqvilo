@@ -8,6 +8,7 @@ import { DataError } from './data-error.mjs';
 import { parseEntityReference } from './data.mjs';
 import { contextUrl, preferenceApplied } from './dataverse-odata.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
+import { assertPluginMessageAdmission } from './plugin-message-admission.mjs';
 
 // Only account and contact are documented for Merge; lead and incident are assumed to merge too.
 const MERGE_TABLES = new Set(['account', 'contact', 'lead', 'incident']);
@@ -149,6 +150,7 @@ async function merge(api, ctx) {
   if (typeof body.PerformParentingChecks !== 'boolean')
     throw invalid('The PerformParentingChecks parameter is required.');
   const { mapping } = target;
+  assertPluginMessageAdmission(api.store, 'Merge', ctx, mapping.logicalName);
   const idColumn = mapping.idColumn;
   const fields = mapping.fields ?? {};
   const targetRow = rowOf(api, mapping, target.id);

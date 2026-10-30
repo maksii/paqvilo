@@ -1,6 +1,7 @@
 // Operation registry for extension-defined Web API functions and actions. Pure: it stores and finds definitions;
 // the router in dataverse-api.mjs calls handle(ctx) for the one it finds.
 import { PLATFORM_OPERATIONS, platformOperationCsdl, platformCsdl } from './dataverse-operation-contracts.mjs';
+import { assertPluginMessageAdmission } from './plugin-message-admission.mjs';
 
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const KINDS = new Set(['function', 'action']);
@@ -37,7 +38,7 @@ function declarationOf(op) {
   return [complex, `${head}\n${body}\n</${tag}>`].filter(Boolean).join('\n');
 }
 
-export function createOperationRegistry() {
+export function createOperationRegistry({ store } = {}) {
   const operations = [];
   const providers = new Map();
   const normalize = (op) => {
@@ -58,7 +59,12 @@ export function createOperationRegistry() {
       kind: op.kind,
       binding: op.binding,
       entity,
-      handle: op.handle,
+      handle: store
+        ? (context) => {
+            assertPluginMessageAdmission(store, op.name, context);
+            return op.handle(context);
+          }
+        : op.handle,
       csdl,
       ...(op.soapResult ? { soapResult: op.soapResult } : {}),
     };

@@ -50,6 +50,14 @@ const VALUES = [
     keyAttributes: new Map([['code', text('W-1')]]),
   },
   { type: 'EntityReference', logicalName: 'widget', id: GUID, name: null, keyAttributes: new Map() },
+  ...[null, '17'].map((rowVersion) => ({
+    type: 'EntityReference',
+    logicalName: 'widget',
+    id: GUID,
+    name: null,
+    keyAttributes: new Map(),
+    rowVersion,
+  })),
   { type: 'OptionSetValue', value: 2 },
   { type: 'Money', value: '99.9000' }, // four-digit exact scale on the wire and after decode
   { type: 'OptionSetValueCollection', values: [1, 3] },

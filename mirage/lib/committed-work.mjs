@@ -29,6 +29,9 @@ const READY = 0,
   LOCKED = 2;
 // ponytail: a job whose transaction rolls back is tried 3 times, then finished Failed; a per-kind retry policy can replace the constant.
 const MAX_ATTEMPTS = 3;
+// An intentional per-kind retry already durably recorded its own attempt. It
+// must not consume the unrelated infrastructure/rollback poison budget.
+export const retryCommittedJob = Symbol('retry committed job');
 export const encodeEvent = (event) => v8.serialize(event).toString('base64');
 const decodeEvent = (text) => v8.deserialize(Buffer.from(text, 'base64'));
 const jobOf = (row) => {
@@ -148,15 +151,19 @@ export function committedJobs(store) {
   };
   const execute = async ({ id, payload }) => {
     started.add(id);
-    let failure = null;
+    let failure = null,
+      outcome;
     try {
-      await kinds.get(payload.kind)?.run({ id, payload, event: decodeEvent(payload.event) });
+      outcome = await kinds.get(payload.kind)?.run({ id, payload, event: decodeEvent(payload.event) });
     } catch (error) {
       failure = error;
       remember(id, payload.kind, error);
     }
     try {
-      if (kinds.has(payload.kind)) await countAttempt(id, payload.kind, failure);
+      if (kinds.has(payload.kind)) {
+        if (outcome === retryCommittedJob && readyJob(store.state.tables?.asyncoperation ?? [], id)) retry.add(id);
+        else await countAttempt(id, payload.kind, failure);
+      }
     } catch (error) {
       remember(id, payload.kind, error);
     } finally {

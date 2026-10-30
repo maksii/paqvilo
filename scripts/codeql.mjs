@@ -2,10 +2,12 @@
 // as CI checks it out, failing on every result GitHub has not dismissed.
 import fs from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { classifyChanges } from '../.github/scripts/change-scope.mjs';
+import { assertOwnedCiState } from './ci-workspace-lease.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -47,6 +49,74 @@ function toolCache() {
   return path.join(path.dirname(common), '.paqvilo', 'tools', `codeql-${CODEQL_BUNDLE.version}`);
 }
 
+/** A completed bundle is immutable. Only its installer may replace incomplete
+ * files, and another invocation waits without touching those files. */
+export async function ensureCodeqlBundle({
+  cache,
+  digest,
+  executable,
+  install,
+  wait = () => setTimeout(50),
+  timeoutMs = 600000,
+}) {
+  const marker = path.join(cache, '.complete');
+  const complete = () => {
+    try {
+      return fs.readFileSync(marker, 'utf8') === digest;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      return false;
+    }
+  };
+  if (complete()) return executable;
+  fs.mkdirSync(cache, { recursive: true });
+  const lock = path.join(cache, '.install.lock'),
+    token = randomUUID(),
+    deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (complete()) return executable;
+    try {
+      fs.mkdirSync(lock);
+      break;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      if (Date.now() >= deadline)
+        throw new Error(
+          `CodeQL bundle installation still owns ${lock}; inspect its installer before removing an abandoned lock.`,
+          { cause: error },
+        );
+      await wait();
+    }
+  }
+  fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, token }), { flag: 'wx' });
+  let failure;
+  try {
+    if (!complete()) {
+      // The cache is under this ESM checkout; bundle Node helpers are CommonJS.
+      fs.writeFileSync(path.join(cache, 'package.json'), '{ "type": "commonjs" }\n');
+      await install();
+      fs.writeFileSync(marker, digest);
+    }
+  } catch (error) {
+    failure = error;
+  }
+  try {
+    const owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8'));
+    if (owner.token !== token) throw new Error('CodeQL installer ownership changed; retaining its lock.');
+    fs.rmSync(lock, { recursive: true });
+  } catch (error) {
+    if (failure)
+      throw new AggregateError(
+        [failure, error],
+        `${failure.message}; CodeQL installer cleanup failed: ${error.message}`,
+        { cause: error },
+      );
+    throw error;
+  }
+  if (failure) throw failure;
+  return executable;
+}
+
 export async function codeqlExecutable({ env = process.env, platform = process.platform } = {}) {
   if (env.PAQ_CODEQL) {
     const version = JSON.parse(run(env.PAQ_CODEQL, ['version', '--format=json'])).version;
@@ -59,42 +129,55 @@ export async function codeqlExecutable({ env = process.env, platform = process.p
     throw new Error(`No pinned CodeQL bundle for ${platform}; set PAQ_CODEQL to a ${CODEQL_BUNDLE.version} CLI.`);
   const cache = toolCache();
   const executable = path.join(cache, 'codeql', platform === 'win32' ? 'codeql.exe' : 'codeql');
-  fs.mkdirSync(cache, { recursive: true });
-  // The cache sits inside the toolkit's "type": "module" package; the bundle's Node helpers are CommonJS.
-  fs.writeFileSync(path.join(cache, 'package.json'), '{ "type": "commonjs" }\n');
-  // The marker, written last, records the verified archive the extracted bundle came from.
-  const marker = path.join(cache, '.complete');
+  return ensureCodeqlBundle({
+    cache,
+    executable,
+    digest: asset[1],
+    install: async () => {
+      console.log(`[codeql] Downloading the pinned CodeQL ${CODEQL_BUNDLE.version} bundle once for every worktree.`);
+      // Windows scanners can hold freshly extracted files, so serialize this
+      // in-place installation instead of publishing a renamed bundle tree.
+      fs.rmSync(path.join(cache, 'codeql'), { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+      const staging = fs.mkdtempSync(path.join(cache, '.download-'));
+      try {
+        run('gh', [
+          'release',
+          'download',
+          `codeql-bundle-v${CODEQL_BUNDLE.version}`,
+          '--repo',
+          'github/codeql-action',
+          '--pattern',
+          asset[0],
+          '--dir',
+          staging,
+        ]);
+        const archive = path.join(staging, asset[0]);
+        if ((await fileDigest(archive)) !== asset[1]) throw new Error('CodeQL bundle digest mismatch.');
+        const tar =
+          platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+        run(tar, ['-xzf', archive, '-C', cache]);
+      } finally {
+        fs.rmSync(staging, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+      }
+    },
+  });
+}
+
+/** Readers see a complete immutable GitHub analysis, never a partially written
+ * shared-cache file from a concurrent analysis. */
+export function publishSarifCache(file, contents) {
+  JSON.parse(contents);
+  const temporary = `${file}.tmp-${randomUUID()}`;
   try {
-    if (fs.readFileSync(marker, 'utf8') === asset[1]) return executable;
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-  console.log(`[codeql] Downloading the pinned CodeQL ${CODEQL_BUNDLE.version} bundle once for every worktree.`);
-  // Extract in place rather than renaming a fresh tree, which Windows refuses while scanners hold its new files.
-  fs.rmSync(path.join(cache, 'codeql'), { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
-  const staging = fs.mkdtempSync(path.join(cache, '.download-'));
-  try {
-    run('gh', [
-      'release',
-      'download',
-      `codeql-bundle-v${CODEQL_BUNDLE.version}`,
-      '--repo',
-      'github/codeql-action',
-      '--pattern',
-      asset[0],
-      '--dir',
-      staging,
-    ]);
-    const archive = path.join(staging, asset[0]);
-    if ((await fileDigest(archive)) !== asset[1]) throw new Error('CodeQL bundle digest mismatch.');
-    const tar =
-      platform === 'win32' ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
-    run(tar, ['-xzf', archive, '-C', cache]);
-    fs.writeFileSync(marker, asset[1]);
+    fs.writeFileSync(temporary, contents, { flag: 'wx' });
+    try {
+      fs.renameSync(temporary, file);
+    } catch (error) {
+      if (!['EEXIST', 'EPERM'].includes(error.code) || fs.readFileSync(file, 'utf8') !== contents) throw error;
+    }
   } finally {
-    fs.rmSync(staging, { recursive: true, force: true, maxRetries: 10, retryDelay: 500 });
+    fs.rmSync(temporary, { force: true });
   }
-  return executable;
 }
 
 async function fileDigest(file) {
@@ -187,76 +270,150 @@ function githubDismissals(cacheDirectory) {
       const cached = path.join(cacheDirectory, `analysis-${analysis.id}.sarif`);
       let sarif;
       try {
-        sarif = fs.readFileSync(cached, 'utf8');
+        sarif = JSON.parse(fs.readFileSync(cached, 'utf8'));
       } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-        sarif = run('gh', [
+        if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+        const contents = run('gh', [
           'api',
           `repos/${repository}/code-scanning/analyses/${analysis.id}`,
           '-H',
           'Accept: application/sarif+json',
         ]);
-        fs.writeFileSync(cached, sarif);
+        sarif = JSON.parse(contents);
+        publishSarifCache(cached, contents);
       }
-      for (const key of dismissedKeys(JSON.parse(sarif), alerts, analysis.commit_sha)) keys.add(key);
+      for (const key of dismissedKeys(sarif, alerts, analysis.commit_sha)) keys.add(key);
     }
   }
   return keys;
 }
 
-export async function codeqlGate() {
-  const codeql = await codeqlExecutable();
-  const work = path.join(root, '.paqvilo', 'ci', 'codeql');
+export async function codeqlGate({
+  checkout = root,
+  executable = codeqlExecutable,
+  execute = run,
+  dismissals = githubDismissals,
+  snapshot,
+  log = console.log,
+  report = console.error,
+} = {}) {
+  // Legacy runners remove ci/codeql. A sibling run root survives those older
+  // processes as well as concurrent invocations of this implementation.
+  const state = assertOwnedCiState(checkout),
+    parent = path.join(state, 'codeql-runs');
+  fs.mkdirSync(parent, { recursive: true });
+  if (path.relative(state, fs.realpathSync(parent)) !== 'codeql-runs')
+    throw new Error('CodeQL run state must remain inside its checkout CI directory.');
+  const work = fs.mkdtempSync(path.join(parent, `run-${process.pid}-`));
   const source = path.join(work, 'source');
-  fs.rmSync(work, { recursive: true, force: true });
   fs.mkdirSync(source, { recursive: true });
-  // CI analyses a fresh checkout: only tracked content of the validated index, no dependencies or local state.
-  run('git', ['--no-optional-locks', 'checkout-index', '--all', `--prefix=${source.replaceAll('\\', '/')}/`]);
-  const cacheDirectory = path.join(path.dirname(path.dirname(codeql)), 'analyses');
-  fs.mkdirSync(cacheDirectory, { recursive: true });
-  const keys = githubDismissals(cacheDirectory);
-  const findings = [];
-  for (const language of codeqlLanguages()) {
-    const database = path.join(work, `db-${language}`);
-    const output = path.join(work, `${language}.sarif`);
-    const started = performance.now();
-    run(
-      codeql,
-      [
+  const manifest = {
+    version: 1,
+    startedAt: new Date().toISOString(),
+    bundle: CODEQL_BUNDLE.version,
+    languages: codeqlLanguages(),
+    status: 'running',
+    source: 'source',
+    analyses: [],
+  };
+  const save = () => fs.writeFileSync(path.join(work, 'report.json'), JSON.stringify(manifest, null, 2) + '\n');
+  log(`[codeql] Evidence: ${work}`);
+  save();
+  try {
+    const codeql = await executable();
+    if (snapshot) manifest.sourceTree = await snapshot(source);
+    else {
+      // CI analyses only tracked content of one validated index, never local data.
+      const tree = () => execute('git', ['--no-optional-locks', 'write-tree'], { cwd: checkout });
+      manifest.sourceTree = String(await tree()).trim();
+      await execute(
+        'git',
+        ['--no-optional-locks', 'checkout-index', '--all', `--prefix=${source.replaceAll('\\', '/')}/`],
+        { cwd: checkout },
+      );
+      if (manifest.sourceTree !== String(await tree()).trim())
+        throw new Error('The validated index changed while exporting CodeQL sources.');
+    }
+    save();
+    const cacheDirectory = path.join(path.dirname(path.dirname(codeql)), 'analyses');
+    fs.mkdirSync(cacheDirectory, { recursive: true });
+    const keys = await dismissals(cacheDirectory);
+    const findings = [];
+    for (const language of codeqlLanguages()) {
+      const database = path.join(work, `db-${language}`);
+      const output = path.join(work, `${language}.sarif`);
+      const started = performance.now();
+      const analysis = {
+        language,
+        suite: securitySuite(language),
+        category: `/language:${language}`,
+        database: path.basename(database),
+        sarif: path.basename(output),
+        status: 'creating',
+      };
+      manifest.analyses.push(analysis);
+      save();
+      await execute(
+        codeql,
+        [
+          'database',
+          'create',
+          database,
+          `--language=${language}`,
+          '--build-mode=none',
+          `--source-root=${source}`,
+          '--threads=0',
+          '--overwrite',
+        ],
+        { cwd: source },
+      );
+      analysis.status = 'analyzing';
+      save();
+      await execute(codeql, [
         'database',
-        'create',
+        'analyze',
         database,
-        `--language=${language}`,
-        '--build-mode=none',
-        `--source-root=${source}`,
+        securitySuite(language),
+        '--format=sarif-latest',
+        `--output=${output}`,
+        `--sarif-category=/language:${language}`,
         '--threads=0',
-        '--overwrite',
-      ],
-      { cwd: source },
-    );
-    run(codeql, [
-      'database',
-      'analyze',
-      database,
-      securitySuite(language),
-      '--format=sarif-latest',
-      `--output=${output}`,
-      `--sarif-category=/language:${language}`,
-      '--threads=0',
-    ]);
-    const open = undismissedResults(JSON.parse(fs.readFileSync(output, 'utf8')), keys);
-    console.log(
-      `[codeql] ${language}: ${open.length} undismissed finding(s) (${((performance.now() - started) / 1000).toFixed(1)} s)`,
-    );
-    findings.push(...open);
+      ]);
+      const open = undismissedResults(JSON.parse(fs.readFileSync(output, 'utf8')), keys);
+      analysis.status = 'complete';
+      analysis.undismissed = open.length;
+      save();
+      log(
+        `[codeql] ${language}: ${open.length} undismissed finding(s) (${((performance.now() - started) / 1000).toFixed(1)} s)`,
+      );
+      findings.push(...open);
+    }
+    for (const finding of findings)
+      report(`${finding.file}:${finding.line}: ${finding.rule}: ${finding.message.split('\n')[0]}`);
+    if (findings.length)
+      throw new Error(
+        `CodeQL reports ${findings.length} finding(s) that would block the Security gate. Fix them, or review and dismiss false positives on GitHub. SARIF: ${work}`,
+      );
+    manifest.status = 'complete';
+    manifest.completedAt = new Date().toISOString();
+    save();
+    log('[codeql] No undismissed CodeQL findings.');
+    return { work, manifest };
+  } catch (error) {
+    manifest.status = 'failed';
+    manifest.completedAt = new Date().toISOString();
+    manifest.failure = error.message;
+    try {
+      save();
+    } catch (recordError) {
+      throw new AggregateError(
+        [error, recordError],
+        `${error.message}; could not record CodeQL failure: ${recordError.message}. Evidence: ${work}`,
+        { cause: recordError },
+      );
+    }
+    throw new Error(`${error.message} CodeQL evidence: ${work}`, { cause: error });
   }
-  for (const finding of findings)
-    console.error(`${finding.file}:${finding.line}: ${finding.rule}: ${finding.message.split('\n')[0]}`);
-  if (findings.length)
-    throw new Error(
-      `CodeQL reports ${findings.length} finding(s) that would block the Security gate. Fix them, or review and dismiss false positives on GitHub. SARIF: ${work}`,
-    );
-  console.log('[codeql] No undismissed CodeQL findings.');
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

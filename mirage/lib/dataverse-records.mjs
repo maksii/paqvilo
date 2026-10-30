@@ -1,4 +1,6 @@
 import { cloneStateData } from './state-clone.mjs';
+import { isDeepStrictEqual } from 'node:util';
+import { pluginExecutionLifetime, pluginInvocationDepth } from './plugin-execution-lifetime.mjs';
 import { globalMetadataVersion } from './metadata-version.mjs';
 import { parseDataverseTop } from './dataverse-top.mjs';
 import { organizationRecord } from './organization-context.mjs';
@@ -7,7 +9,11 @@ import { assertDataverseRootBody } from './dataverse-reader-details.mjs';
 // properties, navigation, $ref and collection-bound actions. The Dataverse layer
 // authorizes each call here before the store runs under the bypass identity.
 import { DataError } from './data-error.mjs';
+import { assertPluginMessageAdmission } from './plugin-message-admission.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
+import { executeBulkRecordsAsync } from './plugin-bulk.mjs';
+import { associationRequestBinding } from './plugin-association.mjs';
+import { recordToSdkEntity } from './plugin-clr.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
 import { parseEntityReference, parseFetchXml } from './data.mjs';
 import { DATAVERSE_SYSTEM_COLUMNS, parseXmlDocument, webApiPagingCookie } from './fetchxml-engine.mjs';
@@ -77,6 +83,7 @@ const ALLOWED_QUERY = new Set([
   'savedQuery',
   'userQuery',
   'partitionId',
+  'tag',
   // Case-sensitive: any other casing keeps the 0x80060888 refusal.
   'UnMaskedData',
 ]);
@@ -390,10 +397,19 @@ export function createRecordHandlers({
     const fs = fieldSecurity?.();
     return {
       backendRowsFilter: rowsFilterOf(c),
+      bypassCustomPlugins: c.bypassCustomPlugins === true,
+      bypassStepIds: c.bypassStepIds,
+      ...(c.sdkQuery ? { sdkQuery: c.sdkQuery } : {}),
+      sdkResponseToken: c.sdkResponseToken,
       ...(fs?.rowMask ? { backendRowsMask: (name) => fs.rowMask(c.user, name) } : {}),
     };
   };
-  const secured = (c, extra = {}) => queryOptions({ ...extra, ...rowsOptionsOf(c) });
+  const secured = (c, extra = {}) =>
+    queryOptions({
+      bypassCustomPlugins: c.bypassCustomPlugins === true,
+      ...extra,
+      ...rowsOptionsOf(c),
+    });
   // Field metadata as this layer reads it: the system lookups are always declared, so a null lookup serializes as _x_value.
   const systemFields = (logical) => {
     let m;
@@ -935,7 +951,7 @@ export function createRecordHandlers({
   function rowOf(c, mapping, id, partitionId = null) {
     return String(id).includes('=')
       ? (store.findByKey(mapping, id) ?? null)
-      : (store.get(mapping.logicalName, id, c.identity, { partitionId }) ?? null);
+      : (store.get(mapping.logicalName, id, c.identity, { partitionId, skipPluginRead: true }) ?? null);
   }
 
   // Resolves the addressed row by primary key or alternate key; row is null when absent.
@@ -999,6 +1015,7 @@ export function createRecordHandlers({
   // Query options for collections: $top yields to maxpagesize, $skiptoken is handled here, the id always rides along.
   function collectionParams(c, mapping) {
     const params = new URLSearchParams(c.url.searchParams);
+    params.delete('tag');
     params.delete('$skiptoken');
     params.delete('$deltatoken');
     if (c.prefer.maxPageSize != null) params.delete('$top');
@@ -1039,14 +1056,55 @@ export function createRecordHandlers({
   }
 
   function entityProjectedBody(c, mapping, id, params, { allColumns }) {
-    const result = store.query(
-      mapping.logicalName,
-      params,
-      c.identity,
-      undefined,
-      secured(c, { id, ...(isElastic(mapping) ? { partitionId: c.partitionId ?? null } : {}) }),
-    );
-    const projected = result.value[0];
+    const options = secured(c, { id, ...(isElastic(mapping) ? { partitionId: c.partitionId ?? null } : {}) });
+    const runRetrieve =
+      c.method === 'GET' &&
+      store.pluginPipeline &&
+      store.pluginPipelineActive({
+        entity: mapping.logicalName,
+        operation: 'retrieve',
+        bypassCustomPlugins: c.bypassCustomPlugins === true,
+        bypassStepIds: c.bypassStepIds,
+      });
+    const projected = runRetrieve
+      ? store.get(mapping.logicalName, id, c.identity, {
+          ...options,
+          skipPluginRead: c.method !== 'GET',
+          sdkColumns: c.sdkColumns ?? {
+            allColumns:
+              !params.get('$select') ||
+              params
+                .get('$select')
+                .split(',')
+                .some((column) => column.trim() === '*'),
+            columns: parseSelect(params.get('$select')) ?? [],
+          },
+          sdkTarget: c.sdkTarget,
+          ...(c.sdkTarget
+            ? {
+                resolveTarget: (target) => {
+                  if (String(target.id).toLowerCase() !== String(c.sdkTarget.id).toLowerCase()) return target.id;
+                  if (!isDeepStrictEqual(target.keyAttributes ?? {}, c.sdkTarget.keyAttributes ?? {}))
+                    throw new DataError(
+                      'Changing an alternate-key Retrieve binding requires a qualified SDK adapter.',
+                      501,
+                      'LocalPluginQueryUnsupported',
+                    );
+                  return id;
+                },
+              }
+            : {}),
+          preserveProperties: parseExpand(params.get('$expand')).map((item) => item.navigation),
+          project: (_row, key, columns) => {
+            const selected = new URLSearchParams(params);
+            if (columns?.allColumns) selected.delete('$select');
+            else if (columns?.columns)
+              selected.set('$select', withIdSelect(columns.columns.join(','), mapping.idColumn));
+            return store.queryCore(mapping.logicalName, selected, c.identity, undefined, { ...options, id: key })
+              .value[0];
+          },
+        })
+      : store.queryCore(mapping.logicalName, params, c.identity, undefined, options).value[0];
     if (!projected) throw notFoundRecord(mapping.logicalName, id);
     const formatted = formatRow(c, mapping, projected, {
       etag: true,
@@ -1374,13 +1432,9 @@ export function createRecordHandlers({
   function applyPage(c, mapping) {
     assertQueryMembers(c, mapping, c.url.searchParams);
     assertApply(c, mapping, c.url.searchParams);
-    const result = store.query(
-      mapping.logicalName,
-      new URLSearchParams(c.url.searchParams),
-      c.identity,
-      undefined,
-      secured(c),
-    );
+    const params = new URLSearchParams(c.url.searchParams);
+    params.delete('tag');
+    const result = store.query(mapping.logicalName, params, c.identity, undefined, secured(c));
     const value = result.value.map((row) =>
       keepAnnotations(aggregateValues(mapping, row, formatRow(c, mapping, row, { etag: false })), c.include),
     );
@@ -1543,9 +1597,22 @@ export function createRecordHandlers({
   function getEntityResult(c) {
     const { mapping } = c;
     const key = lookupKey(c, mapping, c.route.key);
-    if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
+    if (!key.row && !key.id) throw notFoundRecord(mapping.logicalName, key.text);
+    if (
+      !key.row &&
+      (!store.pluginPipeline ||
+        !store.pluginPipelineActive({
+          entity: mapping.logicalName,
+          operation: 'retrieve',
+          bypassCustomPlugins: c.bypassCustomPlugins === true,
+          bypassStepIds: c.bypassStepIds,
+        }))
+    )
+      throw notFoundRecord(mapping.logicalName, key.text);
     authorize(c, mapping.logicalName, 'read', mapping, key.row);
-    const body = entityBody(c, mapping, key.row[mapping.idColumn], entityParams(c, mapping), { allColumns: true });
+    const body = entityBody(c, mapping, key.row?.[mapping.idColumn] ?? key.id, entityParams(c, mapping), {
+      allColumns: true,
+    });
     const etag = body['@odata.etag'];
     const match = c.headers['if-none-match'];
     if (
@@ -1710,12 +1777,19 @@ export function createRecordHandlers({
     ...currencyOnWrite(mapping, input),
     ...timeZoneOnWrite(mapping, input),
   });
-  const createOptions = (c, extra = {}) =>
+  const derivedCreateColumns = new WeakMap();
+  const createOptions = (c, extra = {}, data) =>
     writeOptions({
       ...extra,
+      derivedCreateColumns: derivedCreateColumns.get(data),
+      sdkResponseToken: extra.sdkResponseToken ?? c.sdkResponseToken,
+      sdkCreateId: extra.sdkCreateId ?? c.sdkCreateId,
       dataverseHttpReader: c.dataverseHttpReader,
       systemColumns: systemColumns(c, true),
-      bypassCustomPlugins: c.bypassCustomPlugins === true,
+      bypassCustomPlugins: c.bypassCustomPlugins === true || extra.bypassCustomPlugins === true,
+      bypassCustomAsync: c.bypassCustomAsync === true || extra.bypassCustomAsync === true,
+      bypassStepIds: extra.bypassStepIds ?? c.bypassStepIds,
+      deferCommittedEvent: extra.deferCommittedEvent === true,
     });
   // An object extra.systemColumns (an internal writer's kept stamps, e.g. CalculateRollupField's modifiedon) lands over the stamps.
   const updateOptions = (c, extra = {}) => {
@@ -1724,9 +1798,14 @@ export function createRecordHandlers({
     return writeOptions({
       partitionId: c.partitionId,
       ...extra,
+      sdkResponseToken: extra.sdkResponseToken ?? c.sdkResponseToken,
       dataverseHttpReader: c.dataverseHttpReader,
       systemColumns: kept ? (mapping, input) => ({ ...stamps(mapping, input), ...kept }) : stamps,
-      bypassCustomPlugins: c.bypassCustomPlugins === true,
+      pluginConcurrencyBehavior: extra.ifMatch != null && extra.ifMatch !== '*' ? 1 : 0,
+      bypassCustomPlugins: c.bypassCustomPlugins === true || extra.bypassCustomPlugins === true,
+      bypassCustomAsync: c.bypassCustomAsync === true || extra.bypassCustomAsync === true,
+      bypassStepIds: extra.bypassStepIds ?? c.bypassStepIds,
+      deferCommittedEvent: extra.deferCommittedEvent === true,
     });
   };
 
@@ -1738,11 +1817,13 @@ export function createRecordHandlers({
     bindsOf(c, mapping, data, null);
     await deepPayload(c, mapping, data);
     // A new row is active (statecode 0) with the default status of that state.
-    if (!('statecode' in data) && hasStateColumns(mapping)) data.statecode = 0;
+    const derived = {};
+    if (!('statecode' in data) && hasStateColumns(mapping)) data.statecode = derived.statecode = 0;
     if (!('statuscode' in data) && hasStateColumns(mapping)) {
       const status = defaultStatus(mapping);
-      if (status !== undefined) data.statuscode = status;
+      if (status !== undefined) data.statuscode = derived.statuscode = status;
     }
+    derivedCreateColumns.set(data, derived);
     await beforeWrite(c, mapping, { operation: 'create', data, existing: null });
     return data;
   }
@@ -1783,6 +1864,7 @@ export function createRecordHandlers({
   // Upsert semantics per If-Match / If-None-Match; runs inside the caller's transaction and returns { created, id }.
   async function upsertNow(c, mapping, key, body, { ifMatch, ifNoneMatch }) {
     const logical = mapping.logicalName;
+    if (ifMatch == null) assertPluginMessageAdmission(store, 'Upsert', c, logical);
     if (key.row && ifNoneMatch === '*') {
       throw new DataError('A record with matching key values already exists.', 412, 'PreconditionFailed', {
         innerCode: '0x80040237',
@@ -1832,7 +1914,11 @@ export function createRecordHandlers({
           key.row[mapping.idColumn],
           data,
           c.identity,
-          updateOptions(c, { ifMatch, ifNoneMatch }),
+          updateOptions(c, {
+            ifMatch,
+            ifNoneMatch,
+            ...(ifMatch == null ? { preValidationSourceOperation: 'upsert' } : {}),
+          }),
         ),
       );
       await afterWrite(c, mapping, { operation: 'update', id: key.row[mapping.idColumn] });
@@ -1847,7 +1933,7 @@ export function createRecordHandlers({
       }
     else data[mapping.idColumn] = key.id;
     const row = await withKeyViolation(mapping, data, () =>
-      store.createRecordAsync(logical, data, c.identity, createOptions(c, { ifNoneMatch })),
+      store.createRecordAsync(logical, data, c.identity, createOptions(c, { ifNoneMatch }, data)),
     );
     await afterWrite(c, mapping, { operation: 'create', id: row[mapping.idColumn] });
     return { created: true, id: row[mapping.idColumn] };
@@ -1863,7 +1949,7 @@ export function createRecordHandlers({
           mapping.logicalName,
           data,
           c.identity,
-          createOptions(c, { ifNoneMatch: c.headers['if-none-match'] }),
+          createOptions(c, { ifNoneMatch: c.headers['if-none-match'] }, data),
         ),
       );
       await afterWrite(c, mapping, { operation: 'create', id: created[mapping.idColumn] });
@@ -2013,7 +2099,16 @@ export function createRecordHandlers({
         route: true,
       });
     const params = new URLSearchParams({ $select: segment });
-    const projected = store.query(mapping.logicalName, params, c.identity, undefined, secured(c, { id })).value[0];
+    const projected = store.get(mapping.logicalName, id, c.identity, {
+      ...secured(c, { id }),
+      sdkColumns: { allColumns: false, columns: [segment] },
+      project: (_row, key, columns) => {
+        const selected = new URLSearchParams(params);
+        if (columns?.allColumns) selected.delete('$select');
+        else if (columns?.columns) selected.set('$select', columns.columns.join(','));
+        return store.queryCore(mapping.logicalName, selected, c.identity, undefined, secured(c, { id: key })).value[0];
+      },
+    });
     if (!projected) return null;
     // The property and $value routes go through the same read projection as the entity read (column security, masking).
     const formatted = { [mapping.idColumn]: projected[mapping.idColumn] ?? id, [segment]: projected[segment] ?? null };
@@ -2247,7 +2342,12 @@ export function createRecordHandlers({
         await runWrite(async () => {
           if (route.name === 'CreateMultiple') {
             const data = await createData(item, mapping, target);
-            const row = await store.createRecordAsync(mapping.logicalName, data, c.identity, createOptions(item));
+            const row = await store.createRecordAsync(
+              mapping.logicalName,
+              data,
+              c.identity,
+              createOptions(item, {}, data),
+            );
             ids.push(row[mapping.idColumn]);
             await afterWrite(item, mapping, { operation: 'create', id: row[mapping.idColumn] });
           } else {
@@ -2292,37 +2392,15 @@ export function createRecordHandlers({
 
   async function boundAction(c) {
     const { mapping, route } = c;
+    assertPluginMessageAdmission(store, route.name, c, mapping.logicalName);
     if (route.key != null) throw noResource(c);
     if (
       isElastic(mapping) &&
       ['CreateMultiple', 'UpdateMultiple', 'UpsertMultiple', 'DeleteMultiple'].includes(route.name)
     )
       return elasticBulk(c);
-    if (route.name === 'CreateMultiple') {
-      const targets = targetsOf(c);
-      refuseBulkTargets(mapping, 'CreateMultiple', targets);
-      const rows = await runWrite(async () => {
-        const created = [];
-        for (const target of targets) {
-          const data = await createData(c, mapping, target);
-          created.push(
-            await withKeyViolation(mapping, data, () =>
-              store.createRecordAsync(mapping.logicalName, data, c.identity, createOptions(c)),
-            ),
-          );
-        }
-        for (const row of created) await afterWrite(c, mapping, { operation: 'create', id: row[mapping.idColumn] });
-        return created;
-      });
-      return {
-        status: 200,
-        body: {
-          '@odata.context': contextFor(c, 'Microsoft.Dynamics.CRM.CreateMultipleResponse'),
-          Ids: rows.map((row) => row[mapping.idColumn]),
-        },
-      };
-    }
-    if (route.name === 'UpdateMultiple' || route.name === 'UpsertMultiple') {
+    if (route.name === 'CreateMultiple' || route.name === 'UpdateMultiple') return standardBulk(c);
+    if (route.name === 'UpsertMultiple') {
       const update = route.name === 'UpdateMultiple';
       const targets = targetsOf(c);
       refuseBulkTargets(mapping, route.name, targets);
@@ -2354,6 +2432,77 @@ export function createRecordHandlers({
       });
     }
     throw noResource(c);
+  }
+
+  // Both HTTP and the synchronous SDK enter the same grouped plug-in pipeline.
+  // HTTP keeps its payload/lookup grammar and awaits record hooks and webhooks.
+  async function standardBulk(c) {
+    const { mapping, route } = c,
+      update = route.name === 'UpdateMultiple',
+      raw = targetsOf(c);
+    refuseBulkTargets(mapping, route.name, raw);
+    const result = await runWrite(async () => {
+      const targets = [];
+      for (const target of raw) {
+        const text = target[mapping.idColumn];
+        if (update && text == null) throw invalid(`The ${mapping.idColumn} property is required.`);
+        const existing = update ? lookupKey(c, mapping, String(text)).row : null;
+        if (update && !existing) throw notFoundRecord(mapping.logicalName, String(text));
+        const data = update ? await updateData(c, mapping, target, existing) : await createData(c, mapping, target);
+        const id = update ? existing[mapping.idColumn] : data[mapping.idColumn];
+        delete data[mapping.idColumn];
+        const encoded = recordToSdkEntity(store, mapping.logicalName, store.normalizeRecord(mapping, data, c.identity));
+        delete encoded.attributes[mapping.idColumn];
+        targets.push({ ...encoded, id: id ?? '00000000-0000-0000-0000-000000000000' });
+      }
+      return executeBulkRecordsAsync({
+        store,
+        entity: mapping.logicalName,
+        operation: update ? 'updatemultiple' : 'createmultiple',
+        targets,
+        identity: c.identity,
+        bypassCustomPlugins: c.bypassCustomPlugins === true,
+        bypassCustomAsync: c.bypassCustomAsync === true,
+        bypassStepIds: c.bypassStepIds,
+        authorize: (operation, values, previous) => {
+          authorize(c, mapping.logicalName, operation, mapping, previous ?? values);
+          authorizeLookups(c, mapping, values);
+        },
+        write: async (_update, id, data, options) => {
+          const row = await withKeyViolation(mapping, data, () =>
+            update
+              ? store.updateRecordAsync(mapping.logicalName, id, data, c.identity, updateOptions(c, options))
+              : store.createRecordAsync(mapping.logicalName, data, c.identity, createOptions(c, options, data)),
+          );
+          options.postWriteEffects.push(() =>
+            afterWrite(c, mapping, { operation: update ? 'update' : 'create', id: row[mapping.idColumn] }),
+          );
+          return row;
+        },
+      });
+    });
+    if (update) return { status: 204 };
+    const outputs = result.outputParameters?.values;
+    let ids = result.ids;
+    if (outputs) {
+      ids = undefined;
+      if (Object.hasOwn(outputs, 'Ids')) {
+        if (outputs.Ids?.$type !== 'GuidArray' || !Array.isArray(outputs.Ids.values))
+          throw new DataError(
+            'CreateMultiple output Ids requires a typed Guid array.',
+            501,
+            'LocalPluginOutputUnsupported',
+          );
+        ids = outputs.Ids.values.map((value) => (typeof value === 'string' ? value : value.value));
+      }
+    }
+    return {
+      status: 200,
+      body: {
+        '@odata.context': contextFor(c, 'Microsoft.Dynamics.CRM.CreateMultipleResponse'),
+        ...(ids === undefined ? {} : { Ids: ids }),
+      },
+    };
   }
 
   // A verb a record does not take. PUT and POST on a record have their own native 0x80060888 messages; others are the generic 405.
@@ -2452,7 +2601,29 @@ export function createRecordHandlers({
   // registration would let the pipeline move such hooks wholly to post-commit work.
   function* writeHooks(name, ...args) {
     if (name === 'afterWrite') yield* writeHooks('external', ...args);
-    for (const hook of hookList(name)) yield { name, hook, value: hook(...args) };
+    for (const hook of hookList(name)) {
+      const execution = pluginExecutionLifetime(store, pluginInvocationDepth(store), undefined, { recordHook: true });
+      let value;
+      try {
+        value = execution.run(() => hook(...args));
+        if (typeof value?.then === 'function')
+          value = Promise.resolve(value).then(
+            (answer) => {
+              execution.close();
+              return answer;
+            },
+            (error) => {
+              execution.close('refused');
+              throw error;
+            },
+          );
+        else execution.close();
+      } catch (error) {
+        execution.close('refused');
+        throw error;
+      }
+      yield { name, hook, value, execution };
+    }
   }
   // A "store" step is the store write itself (yielded by createSteps/updateSteps/removeSteps): its value goes back into the
   // steps. On the synchronous drive it is the stored row (data.mjs createRecord: the plug-in pipeline posts I/O steps through
@@ -2462,13 +2633,14 @@ export function createRecordHandlers({
       let sent;
       for (let step = steps.next(); ; step = steps.next(sent)) {
         if (step.done) return step.value;
-        const { name, hook, value } = step.value;
+        const { name, hook, value, execution } = step.value;
         sent = value;
         if (typeof value?.then !== 'function') continue;
         if (name === 'afterWrite') {
           deferred.push(value);
           continue;
         }
+        execution?.close('refused');
         value.catch?.(() => {}); // refused below: its own failure is not reported a second time
         const module = hooks.moduleOf?.(hook) ?? (hook.name || 'an unnamed record hook');
         throw new DataError(
@@ -2552,26 +2724,37 @@ export function createRecordHandlers({
   function createInternal(c, logical, data, options = {}) {
     return drive(createSteps(internalContext(c), logical, data, options), options);
   }
-  function* createSteps(c, logical, data, { authorized = false, writeOptions: extra = {}, sync = false }) {
+  function* createSteps(
+    c,
+    logical,
+    data,
+    { authorized = false, writeOptions: extra = {}, sync = false, postWriteEffects },
+  ) {
     const mapping = store.resolveMapping(logical);
     if (c.user && !authorized) {
       authorize(c, mapping.logicalName, 'create', mapping);
       authorizeLookups(c, mapping, data);
     }
-    if (!('statecode' in data) && hasStateColumns(mapping)) data.statecode = 0;
+    const derived = {};
+    if (!('statecode' in data) && hasStateColumns(mapping)) data.statecode = derived.statecode = 0;
     if (!('statuscode' in data) && hasStateColumns(mapping)) {
       const status = defaultStatus(mapping);
-      if (status !== undefined) data.statuscode = status;
+      if (status !== undefined) data.statuscode = derived.statuscode = status;
     }
+    derivedCreateColumns.set(data, derived);
     yield* writeHooks('beforeWrite', c, mapping, { operation: 'create', data, existing: null });
     const write = sync ? store.createRecord : store.createRecordAsync;
     const row = yield {
       name: 'store',
       value: withKeyViolation(mapping, data, () =>
-        write.call(store, mapping.logicalName, data, c.identity ?? {}, createOptions(actorOf(c), extra)),
+        write.call(store, mapping.logicalName, data, c.identity ?? {}, createOptions(actorOf(c), extra, data)),
       ),
     };
-    yield* writeHooks('afterWrite', c, mapping, { operation: 'create', id: row[mapping.idColumn], sync });
+    if (postWriteEffects)
+      postWriteEffects.push((options) =>
+        drive(writeHooks('afterWrite', c, mapping, { operation: 'create', id: row[mapping.idColumn], sync }), options),
+      );
+    else yield* writeHooks('afterWrite', c, mapping, { operation: 'create', id: row[mapping.idColumn], sync });
     return row;
   }
 
@@ -2589,7 +2772,7 @@ export function createRecordHandlers({
     logical,
     id,
     data,
-    { authorized = false, writeOptions: extra = {}, partitionId, sync = false },
+    { authorized = false, writeOptions: extra = {}, partitionId, sync = false, postWriteEffects },
   ) {
     const mapping = store.resolveMapping(logical);
     const existing = existingRow(mapping, id, partitionId);
@@ -2613,7 +2796,14 @@ export function createRecordHandlers({
         ),
       ),
     };
-    yield* writeHooks('afterWrite', c, mapping, { operation: 'update', id: existing[mapping.idColumn], sync });
+    if (postWriteEffects)
+      postWriteEffects.push((options) =>
+        drive(
+          writeHooks('afterWrite', c, mapping, { operation: 'update', id: existing[mapping.idColumn], sync }),
+          options,
+        ),
+      );
+    else yield* writeHooks('afterWrite', c, mapping, { operation: 'update', id: existing[mapping.idColumn], sync });
     return row;
   }
 
@@ -2677,18 +2867,25 @@ export function createRecordHandlers({
     navigation,
     relatedIds,
     associate,
-    { authorized = false, writeOptions: extra = {}, write = null, sync = false },
+    {
+      authorized = false,
+      writeOptions: extra = {},
+      write = null,
+      sync = false,
+      effectiveAssociation,
+      associationParameters: suppliedParameters,
+    },
   ) {
-    const mapping = store.resolveMapping(logical);
+    let mapping = store.resolveMapping(logical);
     const operation = associate ? 'associate' : 'disassociate';
     const { partitionId, sdkResponseToken, portalRequest } = extra;
-    const existing = existingRow(mapping, id, partitionId ?? undefined);
-    const rowId = existing[mapping.idColumn];
+    let existing = existingRow(mapping, id, partitionId ?? undefined);
+    let rowId = existing[mapping.idColumn];
     let rel = null,
       target = null;
     if (!write) {
       rel = navigationOf(mapping, navigation);
-      if (!rel || rel.many === false)
+      if (!rel || (rel.many === false && !suppliedParameters))
         throw new DataError(
           `'${navigation}' is not a collection-valued navigation of ${mapping.logicalName}; set a single-valued one through its lookup.`,
           400,
@@ -2697,8 +2894,9 @@ export function createRecordHandlers({
       target = store.resolveMapping(rel.entity);
       const related = relatedIds.map((relatedId) => existingRow(target, relatedId));
       if (c.user && !authorized) {
-        authorize(c, mapping.logicalName, 'appendto', mapping, existing);
-        for (const row of related) authorize(c, target.logicalName, 'append', target, row);
+        authorize(c, mapping.logicalName, rel.many === false ? 'append' : 'appendto', mapping, existing);
+        for (const row of related)
+          authorize(c, target.logicalName, rel.many === false ? 'appendto' : 'append', target, row);
       }
     }
     for (const relatedId of relatedIds)
@@ -2711,57 +2909,127 @@ export function createRecordHandlers({
     if (write) yield { name: 'store', value: write() };
     else {
       // Assumed: the Relationship schema name falls back to the navigation name when the mapping names none.
-      const parameters = {
-        Target: { $type: 'EntityReference', logicalName: mapping.logicalName, id: rowId, name: null },
-        Relationship: { $type: 'Relationship', schemaName: rel.schemaName ?? navigation, primaryEntityRole: null },
-        RelatedEntities: {
-          $type: 'EntityReferenceCollection',
-          values: relatedIds.map((relatedId) => ({
-            $type: 'EntityReference',
-            logicalName: target.logicalName,
-            id: relatedId,
-            name: null,
-          })),
+      const parameters = suppliedParameters
+        ? cloneStateData(suppliedParameters)
+        : {
+            Target: { $type: 'EntityReference', logicalName: mapping.logicalName, id: rowId, name: null },
+            Relationship: { $type: 'Relationship', schemaName: rel.schemaName ?? navigation, primaryEntityRole: null },
+            RelatedEntities: {
+              $type: 'EntityReferenceCollection',
+              values: relatedIds.map((relatedId) => ({
+                $type: 'EntityReference',
+                logicalName: target.logicalName,
+                id: relatedId,
+                name: null,
+              })),
+            },
+          };
+      const originalBinding = {
+          entity: mapping.logicalName,
+          navigation,
+          schemaName: parameters.Relationship.schemaName,
+          role: parameters.Relationship.primaryEntityRole,
+          relatedEntity: target.logicalName,
         },
-      };
-      const holder = cloneStateData(existing),
+        holder = cloneStateData(existing),
         inherited = store.pluginInTransaction;
+      let finalFrame;
       const phase = function* (stage) {
         if (
-          c.bypassCustomPlugins === true ||
           !store.pluginPipeline ||
-          !store.pluginPipelineActive({ entity: mapping.logicalName, operation })
+          !store.pluginPipelineActive({
+            entity: mapping.logicalName,
+            operation,
+            bypassCustomPlugins: c.bypassCustomPlugins,
+            bypassStepIds: c.bypassStepIds,
+          })
         )
           return;
         if (stage !== 10) store.pluginInTransaction = !isElastic(mapping);
+        const context = {
+          entity: mapping.logicalName,
+          operation,
+          stage,
+          associationParameters: parameters,
+          record: holder,
+          identity: c.identity ?? {},
+          changedAttributes: [],
+          bypassStepIds: c.bypassStepIds,
+          bypassCustomPlugins: c.bypassCustomPlugins,
+          portalRequest: portalRequest === true,
+          ...(sync ? {} : { awaitIo: true }),
+        };
         const frame = yield {
           name: 'store',
-          value: store.pluginPipeline({
-            entity: mapping.logicalName,
-            operation,
-            stage,
-            associationParameters: parameters,
-            record: holder,
-            identity: c.identity ?? {},
-            changedAttributes: [],
-            portalRequest: portalRequest === true,
-            ...(sync ? {} : { awaitIo: true }),
-          }),
+          value: store.pluginPipeline(context),
         };
+        finalFrame = frame;
         if (stage === 40) handoffPluginResponse(store, operation, mapping.logicalName, frame, sdkResponseToken);
       };
       try {
         yield* phase(10);
         yield* phase(20);
+        const sameBinding =
+          parameters.Target?.logicalName === originalBinding.entity &&
+          String(parameters.Relationship?.schemaName ?? '').toLowerCase() ===
+            originalBinding.schemaName.toLowerCase() &&
+          (parameters.Relationship?.primaryEntityRole ?? null) === (originalBinding.role ?? null) &&
+          parameters.RelatedEntities?.values?.every(
+            (reference) => reference.logicalName === originalBinding.relatedEntity,
+          );
+        const effective = associationRequestBinding(store, parameters, c.identity ?? {}, {
+          navigationFallback: true,
+          allowLocalIds: !suppliedParameters,
+          ...(sameBinding ? { preferredNavigation: originalBinding.navigation } : {}),
+        });
+        mapping = effective.mapping;
+        rel = effective.rel;
+        navigation = effective.navigation;
+        rowId = effective.id;
+        relatedIds = effective.related.values.map((reference) => reference.id);
+        existing = existingRow(mapping, rowId, partitionId ?? undefined);
+        target = store.resolveMapping(rel.entity);
+        const related = relatedIds.map((relatedId) => existingRow(target, relatedId));
+        if (c.user && !authorized) {
+          authorize(c, mapping.logicalName, rel.many === false ? 'append' : 'appendto', mapping, existing);
+          for (const row of related)
+            authorize(c, target.logicalName, rel.many === false ? 'appendto' : 'append', target, row);
+        }
+        for (const key of Object.keys(holder)) delete holder[key];
+        Object.assign(holder, cloneStateData(existing));
         const change = sync ? store.changeAssociationRecord : store.changeAssociationRecordAsync;
-        for (const relatedId of relatedIds)
+        let writeMapping = mapping,
+          writeId = rowId,
+          writeNavigation = navigation,
+          writeRelated = relatedIds;
+        if (rel.many === false) {
+          const reverse = Object.entries(store.relationshipsFor(target, c.identity ?? {})).filter(
+            ([name, candidate]) =>
+              name === rel.partner &&
+              candidate.schemaName === rel.schemaName &&
+              candidate.entity === mapping.logicalName &&
+              candidate.many !== false &&
+              !candidate.intersect,
+          );
+          if (reverse.length !== 1)
+            throw new DataError(
+              'Association replacement requires its source-defined collection partner.',
+              501,
+              'LocalSdkRelationshipUnsupported',
+            );
+          writeMapping = target;
+          writeId = relatedIds[0];
+          writeNavigation = reverse[0][0];
+          writeRelated = [rowId];
+        }
+        for (const relatedId of writeRelated)
           yield {
             name: 'store',
             value: change.call(
               store,
-              mapping.logicalName,
-              rowId,
-              navigation,
+              writeMapping.logicalName,
+              writeId,
+              writeNavigation,
               relatedId,
               c.identity ?? {},
               associate,
@@ -2769,9 +3037,24 @@ export function createRecordHandlers({
             ),
           };
         yield* phase(40);
+        store.recordCommittedEvent(mapping.logicalName, operation, holder, [], {
+          target: {},
+          associationParameters: parameters,
+          identity: c.identity ?? {},
+          frame: finalFrame ?? {},
+          messageEvent: true,
+          bypassCustomAsync: c.bypassCustomAsync === true,
+          bypassStepIds: c.bypassStepIds,
+        });
       } finally {
         store.pluginInTransaction = inherited;
       }
+    }
+    if (write && effectiveAssociation?.mapping) {
+      mapping = effectiveAssociation.mapping;
+      rowId = effectiveAssociation.id;
+      navigation = effectiveAssociation.navigation;
+      relatedIds = effectiveAssociation.relatedIds;
     }
     for (const relatedId of relatedIds)
       yield* writeHooks('afterWrite', c, mapping, { operation, id: rowId, relationship: navigation, relatedId });
@@ -2790,14 +3073,18 @@ export function createRecordHandlers({
   function readInternal(c, logical, id, { unmask = false, partitionId, ...getOptions } = {}) {
     const context = internalContext(c),
       mapping = store.resolveMapping(logical);
-    const virtual = handlers.virtualProviders?.readSync(context, mapping.logicalName, { single: true, id });
-    if (virtual)
-      return virtual.rows[0]
-        ? projectInternal(context, mapping.logicalName, virtual.rows[0], { unmask, single: true })
-        : null;
     return store.get(mapping.logicalName, id, context.identity ?? {}, {
       ...getOptions,
       ...(partitionId === undefined ? {} : { partitionId }),
+      readRow: (key) => {
+        const virtual = handlers.virtualProviders?.readSync(context, mapping.logicalName, { single: true, id: key });
+        return virtual
+          ? (virtual.rows[0] ?? null)
+          : store.get(mapping.logicalName, key, context.identity ?? {}, {
+              skipPluginRead: true,
+              ...(partitionId === undefined ? {} : { partitionId }),
+            });
+      },
       project: (row) =>
         projectInternal(context, mapping.logicalName, withComputedInPlace(mapping, row), { unmask, single: true }),
     });

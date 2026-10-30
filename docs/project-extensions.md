@@ -93,11 +93,11 @@ A trusted pack can implement its Dataverse custom APIs. Export `customApis: { '<
 
 - Throw `{ pluginFault: 'InvalidPluginExecutionException', message, errorCode? }` for a plug-in fault: 400 `0x80040265` with its message. A named `errorCode` such as `0x8004F001` is not the top-level code: native carries it in `@Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode` as a signed decimal (`-2147160063`). Without one the SubErrorCode is `-2146233088`.
 - Any other throw is unhandled: 400 `0x80040224` with the thrown message.
-- A handler still running after `pluginTimeoutSeconds` (a simulator Dataverse setting, default `120`, the 2-minute sandbox limit) is a timeout: 400 `0x80040224`, with the message naming the plug-in type. Its writes roll back.
+- A handler still running after `pluginTimeoutSeconds` (a simulator Dataverse setting, default `120`, the 2-minute sandbox limit) is a timeout: 400 `0x80040224`, with the message naming the plug-in type. Its writes roll back, and its expired continuation cannot access the organization through the SDK/API after the response.
 
 A custom API with no `customApis` entry runs a `pluginTypes` handler (see "Plug-in type handlers") when its `plugintypeid` names a plug-in type whose `typename` has one. That handler is the API's main operation and receives the same `ctx`. A `customApis` entry for the API always wins over the type handler. The plug-in's name in messages is the type's `typename`.
 
-The plug-in annotations (`Prefer: odata.include-annotations`) follow the native bodies: `ErrorDetails.*`, `HelpLink`, `TraceText` and `InnerError.Message` for a plug-in fault, and the same without `ErrorDetails` for an unhandled or timed-out call. Without a handler, the custom API returns its defaults.
+The plug-in annotations (`Prefer: odata.include-annotations`) follow the native bodies: `ErrorDetails.*`, `HelpLink`, `TraceText` and `InnerError.Message` for a plug-in fault, and the same without `ErrorDetails` for an unhandled or timed-out call. An API without a named implementation returns its defaults. If plugintypeid names original logic without a trusted handler/runtime, execution fails explicitly and capability/preflight reports the missing implementation. Registered extension steps follow allowedcustomprocessingsteptype; synchronous SDK calls use the same main/stage driver and require synchronous local providers.
 
 ## Plug-in type handlers
 
@@ -117,7 +117,7 @@ The handler receives the arguments of a `pluginSteps` handler (`step`, `entity`,
 
 - A thrown error is the plug-in fault: 400 `0x80040265` with its message. Its `SubErrorCode` annotation is `-2146233088`. The write rolls back.
 - An asynchronous (mode 1) step runs after commit through the same queue as the exported ones. While the Dataverse API is on, each run also writes an asyncoperation system job (operation type System Event): Completed with status Succeeded, or Failed with the handler's message. A succeeded job is removed when its step has `asyncautodelete`. The job is written in the run's own transaction, so the portal response does not change.
-- `trace(text)` on a plug-in handler's arguments (and `context.trace` for a `pluginTypes` handler) records a trace line. With `organization.plugintracelogsetting` 2 every handler or CLR run writes a plugintracelog row with its trace lines (`messageblock`), type, message, depth and duration; 1 writes only failed runs, with `exceptiondetails`; 0 writes none. The row rolls back with a rolled-back write (native keeps it; the simulator does not).
+- `trace(text)` on a plug-in handler's arguments (and `context.trace` for a `pluginTypes` handler) records a trace line. With `organization.plugintracelogsetting` 2 every handler or CLR run writes a plugintracelog row with its trace lines (`messageblock`), type, message, depth and duration; 1 writes only failed runs, with `exceptiondetails`; 0 writes none. The diagnostic row survives business rollback, including a failed Custom API main operation.
 
 ## Dataverse message handlers
 

@@ -11,12 +11,14 @@ import { createRequestContext, currentRequest, runWithRequest } from './request-
 import { systemIds } from './runtime-clock.mjs';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
+import { invokeTrustedHandler } from './trusted-handler-invocation.mjs';
 import { descendants, parseSolutionXml } from './solution-xml.mjs';
 import { solutionLayerFiles } from './solution-content-fingerprint.mjs';
 import { contextUrl, dataverseError } from './dataverse-odata.mjs';
 import { ownerColumns, uuidV5 } from './dataverse-security.mjs';
 import { committedJobs, liveJob, stageCommittedJobs } from './committed-work.mjs';
 import { runTrackedFlow, inspectFlowTrigger } from './flow-runtime.mjs';
+import { pluginStepBypassed, pluginBypassOwnership } from './plugin-bypass.mjs';
 
 const CATEGORY_WORKFLOW = 0;
 const CATEGORY_MODERN_FLOW = 5;
@@ -28,6 +30,7 @@ const JOB_STATUS = { succeeded: 30, failed: 31, canceled: 32 };
 const LOG_STATUS = { succeeded: 2, failed: 3, canceled: 4 }; // workflowlog.status
 const DEPTH_LIMIT = 16; // a chain of workflow runs deeper than this is canceled (0x80044182)
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
+const workflowBypassFacts = new WeakMap();
 const FILE_LIMIT = 1024 * 1024;
 const COMMON = [
   'name',
@@ -164,6 +167,7 @@ export async function readSolutionWorkflows(layers = [], { diagnostic = () => {}
         id,
         name: fieldOf(node, 'Name') ?? fieldOf(node, 'UniqueName') ?? id,
         uniquename: fieldOf(node, 'UniqueName'),
+        customizationLevel: numeric(fieldOf(node, 'CustomizationLevel'), null),
         category: numeric(fieldOf(node, 'Category'), json !== null ? CATEGORY_MODERN_FLOW : CATEGORY_WORKFLOW),
         type: numeric(fieldOf(node, 'Type'), TYPE.definition),
         mode: numeric(fieldOf(node, 'Mode'), 0),
@@ -378,6 +382,7 @@ function classicChoice(config, row) {
 // A throw fails the job (or rejects the request for a real-time run); the caller writes the failure log.
 async function runClassic(api, config, run) {
   const { store } = api;
+  if (!store.hasOperationContext()) return store.withOperationContext(() => runClassic(api, config, run));
   // run.chain: the chain of the committed write that triggered a background run (its job runs on a later tick).
   const outer = run.chain ?? store.flowChain;
   if ((outer?.depth ?? 0) >= DEPTH_LIMIT) throw canceled(DEPTH_MESSAGE, '0x80044182');
@@ -407,14 +412,12 @@ async function runClassic(api, config, run) {
   store.flowChain = { id: outer?.id ?? (api.ids ?? systemIds).uuid(), depth: (outer?.depth ?? 0) + 1 };
   let message;
   try {
-    const result = await choice.handler({
-      workflow: { ...run.row },
-      target: run.target,
-      caller: run.caller,
-      inputs: run.inputs,
+    const result = await invokeTrustedHandler(
       api,
-      trace: (text) => trace.push(String(text)),
-    });
+      choice.handler,
+      { workflow: run.row, target: run.target, caller: run.caller, inputs: run.inputs },
+      { workingTarget: true, trace: (text) => trace.push(String(text)) },
+    );
     message = result?.message ?? (trace.join('\n') || null);
   } finally {
     store.flowChain = previous;
@@ -757,16 +760,37 @@ const inRunContext = (store, correlationId, principal, fn) => () =>
 // response never waits. A restart resumes Ready rows; a run whose claim rolls back three times ends Failed.
 // The row carries operationtype 10 (Workflow) from staging to completion.
 const JOB_KIND = 'workflow';
+function workflowLogic(store, definition) {
+  const fact = workflowBypassFacts.get(store)?.get(bare(definition.workflowid));
+  return {
+    ...fact,
+    ...definition,
+    bypassOwnership:
+      store.observed?.businessLogicOwnership?.[bare(definition.workflowid)] ??
+      definition.bypassOwnership ??
+      fact?.bypassOwnership,
+    id: definition.sdkmessageprocessingstepid,
+  };
+}
 function stageBackgroundRuns(api, config, events) {
   const { store } = api;
   const entries = [];
   for (const event of events) {
+    if (event.messageEvent) continue;
     const changed = (event.submittedAttributes ?? []).map((name) => String(name).toLowerCase());
     for (const definition of classicDefinitions(store, event.entity)) {
       if (
         Number(definition.mode) !== 0 ||
         !triggerFires(definition, event.operation, changed) ||
         !inScope(store, definition, event.row)
+      )
+        continue;
+      if (
+        pluginStepBypassed(
+          workflowLogic(store, definition),
+          { bypassCustomPlugins: event.bypassCustomAsync === true, bypassStepIds: event.bypassStepIds },
+          config.diagnostic ?? undefined,
+        )
       )
         continue;
       const mapping = store.resolveMapping(event.entity),
@@ -886,6 +910,14 @@ async function afterWriteTriggers(api, config, c, mapping, { operation, id }) {
       !inScope(store, definition, record)
     )
       continue;
+    if (
+      pluginStepBypassed(
+        workflowLogic(store, definition),
+        { bypassCustomPlugins: c.bypassCustomPlugins === true, bypassStepIds: c.bypassStepIds },
+        config.diagnostic ?? undefined,
+      )
+    )
+      continue;
     const run = {
       row: definition,
       target: { logicalName: logical, id: rowId, row: record },
@@ -944,6 +976,7 @@ export function classicWorkflowsView(store, overrides = {}) {
         updateAttributes: lowerNames(row.triggeronupdateattributelist),
       },
       override: overrides[bare(row.workflowid)] ?? null,
+      bypassOwnership: pluginBypassOwnership(workflowLogic(store, row)),
     }));
 }
 
@@ -964,15 +997,37 @@ export function workflowExtension(config = {}) {
   const settings = { handlers: new Map(), overrides: {}, cloudFlow: null, diagnostic: null, ...config };
   // facts: the Solution workflow facts, or a getter over the current sources (source-organization-extensions.mjs refresh).
   const factsOf = () => (typeof settings.facts === 'function' ? settings.facts() : settings.facts) ?? [];
+  const indexBypass = (api, facts) => {
+    workflowBypassFacts.set(api.store, new Map(facts.map((fact) => [bare(fact.id), fact])));
+    return facts;
+  };
   const seed = (api) =>
     api.store.transact(() => {
-      seedWorkflows(api.store, factsOf());
+      seedWorkflows(api.store, indexBypass(api, factsOf()));
     });
   return {
     name: 'dataverse-workflows',
+    describe(api) {
+      const ownership = (api?.store ? classicWorkflowsView(api.store) : []).map(
+        ({ workflowid, bypassOwnership: { kind, qualification, reason } }) => ({
+          workflowid,
+          kind,
+          qualification,
+          ...(reason ? { reason } : {}),
+        }),
+      );
+      return {
+        name: 'dataverse-workflows',
+        version: 1,
+        kind: 'dataverse-extension',
+        level: 'contract',
+        operations: [{ name: 'ExecuteWorkflow', level: 'contract' }],
+        seams: { bypassOwnership: ownership },
+      };
+    },
     /** Reseeds definitions and activations from facts inside the caller's transaction; returns { workflow: { added, changed, removed } }. */
     sync(api, facts = factsOf()) {
-      return { workflow: seedWorkflows(api.store, facts) };
+      return { workflow: seedWorkflows(api.store, indexBypass(api, facts)) };
     },
     install(api) {
       api.recordHooks.add('beforeWrite', (c, mapping, info) => {

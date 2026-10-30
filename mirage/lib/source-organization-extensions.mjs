@@ -4,6 +4,7 @@ import {
   describeCustomApis,
   parseCustomApiFiles,
   parseFxExpressionFiles,
+  prepareCustomApiRuntimes,
 } from './dataverse-customapi.mjs';
 import { parseDuplicateRuleXml } from './dataverse-duplicates.mjs';
 import { solutionLayerFiles } from './solution-content-fingerprint.mjs';
@@ -33,6 +34,9 @@ export async function sourceOrganizationExtensions({
   plugins,
   customApis = new Map(),
   pluginHandlers = new Map(),
+  pluginRuntimes = new Map(),
+  pluginRuntimeCache = new Map(),
+  prepareRuntime,
   workflowHandlers = new Map(),
   workflowOverrides = () => ({}),
   cloudFlow,
@@ -212,14 +216,24 @@ export async function sourceOrganizationExtensions({
     describe: (api) => describeCustomApis(api),
     async install(api) {
       installedApi = api;
-      ({ sync: syncCustomApis } = installCustomApis(
+      const installation = installCustomApis(
         { ...api, change: (fn) => fn() },
-        { handlers: customApis, pluginTypes: pluginHandlers, timeoutMs: timeoutMs },
-      ));
+        {
+          handlers: customApis,
+          pluginTypes: pluginHandlers,
+          pluginRuntimes,
+          runtimes: pluginRuntimeCache,
+          prepareRuntime,
+          timeoutMs: timeoutMs,
+        },
+      );
+      syncCustomApis = installation.sync;
+      await installation.ready;
       await api.store.transact(() => {
         seedRows(api, sources.rows);
       });
       syncCustomApis();
+      await prepareCustomApiRuntimes(api);
     },
     async reset(api) {
       await customApiExtension.install(api);
@@ -248,6 +262,7 @@ export async function sourceOrganizationExtensions({
       }));
       sources = next;
       syncCustomApis();
+      await prepareCustomApiRuntimes(api, { refresh: true });
       const changed = Object.fromEntries(
         Object.entries(changes).filter(([, counts]) => counts.added || counts.changed || counts.removed),
       );

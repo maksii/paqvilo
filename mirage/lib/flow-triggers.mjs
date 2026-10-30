@@ -293,6 +293,7 @@ export function createFlowTriggerRunner({
       counts = new Map(),
       note = (code, entry) => notes.push([code, entry]);
     for (const event of events) {
+      if (event.messageEvent) continue;
       // A committed custom API action (dataverse-customapi.mjs): one durable job per enabled "When an action is performed" host.
       if (event.operation === 'action') {
         for (const host of hosts.values())

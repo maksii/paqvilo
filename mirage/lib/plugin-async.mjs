@@ -1,7 +1,10 @@
-import { messageNameOf, runPluginPhase } from './exported-plugins.mjs';
-import { committedJobs, liveJob, stageCommittedJobs } from './committed-work.mjs';
+import { messageNameOf, runPluginPhase, pluginStepMatchesEntity, pluginPhaseMatches } from './exported-plugins.mjs';
+import { committedJobs, liveJob, stageCommittedJobs, retryCommittedJob } from './committed-work.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 import { createRequestContext, runWithRequest } from './request-context.mjs';
+import { recordToSdkEntity } from './plugin-clr.mjs';
+import { multipleMessage } from './plugin-single-multiple.mjs';
+import { pluginStepBypassed } from './plugin-bypass.mjs';
 
 // Each run gets its own request context: the starting request's correlation (carried by the committed event, else the chain)
 // as the parent, mode async, the writer as principal; a plug-in trace log and nested events then carry that correlation.
@@ -17,12 +20,14 @@ const errorNumber = (error) => {
   return /^0x[0-9a-f]+$/i.test(code ?? '') ? Number.parseInt(code, 16) | 0 : 0;
 };
 const sameId = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
+const PLUGIN_ATTEMPTS = 4;
 
 /** The asyncoperation row of one async step run (operationtype 1, System Event), Ready when the committed event is
  * accepted (committed-work.mjs keeps the event in its `data`), so a restart runs it. Learn's states: Ready (0/0), Locked
  * while running (2/20), then Completed Succeeded (3/30) or Failed (3/31). A succeeded run of a step with asyncautodelete is
  * removed, and so is every run while the Dataverse API is off (systemJobs() false): the row is then only the durable queue entry.
- * ponytail: a plug-in run writes Locked and its final state in one transaction, so only Ready and the final state are observable. */
+ * Plug-in claims/attempt counts commit before execution; Locked is observable.
+ * Explicit Retry returns the same job to Ready for a later local scheduler turn. */
 function jobColumns(store, item, event, chain) {
   let idColumn = null;
   try {
@@ -30,24 +35,59 @@ function jobColumns(store, item, event, chain) {
   } catch {
     /* A removed entity has no primary-key column to include. */
   }
-  const recordId = idColumn ? (event.row?.[idColumn] ?? null) : null;
+  const recordId =
+    idColumn && !['createmultiple', 'updatemultiple'].includes(event.operation)
+      ? (event.row?.[idColumn] ?? null)
+      : null;
   return {
     name: item.name ?? item.id,
     owningextensionid: { id: item.id, logical_name: 'sdkmessageprocessingstep', name: item.name },
     regardingobjectid: recordId ? { id: recordId, logical_name: event.entity } : null,
     regardingobjecttypecode: event.entity,
     primaryentitytype: event.entity,
-    messagename: messageNameOf(event.operation),
+    messagename: event.customApi?.name ?? messageNameOf(event.operation),
     correlationid: chain.id,
     depth: chain.depth + 1,
   };
 }
 // Claims a Ready job (Locked, In Progress) and returns its finish/cancel; null when the job left Ready (a cancel) or is gone.
-function claimJob(store, id, item, systemJobs, diagnostic) {
+function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = false } = {}) {
   const now = () => new Date(clockFunction(store.clock ?? systemClock)()).toISOString();
   const { rows, index } = liveJob(store, id);
   if (index < 0 || rows[index].statecode !== 0) return null;
-  Object.assign(rows[index], { statecode: 2, statuscode: 20, startedon: now() });
+  let attempt;
+  if (pluginAttempt) {
+    const payload = JSON.parse(rows[index].data);
+    const previous = payload.pluginAttempts ?? 0;
+    if (!Number.isSafeInteger(previous) || previous < 0 || previous > PLUGIN_ATTEMPTS)
+      throw new Error('Invalid durable asynchronous plug-in attempt count.');
+    if (previous === PLUGIN_ATTEMPTS) {
+      if (!systemJobs()) {
+        store.removeRow('asyncoperation', rows, index);
+        return null;
+      }
+      Object.assign(rows[index], {
+        statecode: 3,
+        statuscode: 31,
+        completedon: now(),
+        message:
+          payload.pluginLastFailure?.message ?? 'The asynchronous plug-in exhausted its four execution attempts.',
+        friendlymessage:
+          payload.pluginLastFailure?.message ?? 'The asynchronous plug-in exhausted its four execution attempts.',
+        errorcode: payload.pluginLastFailure?.errorcode ?? 0,
+      });
+      diagnostic({ code: 'PLUGIN_ASYNC_RETRY_EXHAUSTED', stepId: item?.id, asyncoperationid: id, attempts: previous });
+      return null;
+    }
+    attempt = previous + 1;
+    rows[index].data = JSON.stringify({ ...payload, pluginAttempts: attempt });
+  }
+  Object.assign(rows[index], {
+    statecode: 2,
+    statuscode: 20,
+    startedon: now(),
+    ...(pluginAttempt ? { retrycount: attempt - 1 } : {}),
+  });
   const autodelete =
     store.tableRows('sdkmessageprocessingstep').find((row) => sameId(row.sdkmessageprocessingstepid, item?.id))
       ?.asyncautodelete === true;
@@ -58,6 +98,29 @@ function claimJob(store, id, item, systemJobs, diagnostic) {
     return found;
   };
   return {
+    attempt,
+    retry(error) {
+      if (!attempt || attempt >= PLUGIN_ATTEMPTS) return false;
+      const { rows, index } = live();
+      if (index < 0) return false;
+      const row = rows[index],
+        payload = JSON.parse(row.data);
+      row.data = JSON.stringify({
+        ...payload,
+        pluginLastFailure: { message: String(error.message ?? error), errorcode: errorNumber(error) },
+      });
+      Object.assign(row, { statecode: 0, statuscode: 0, message: null, friendlymessage: null, errorcode: null });
+      delete row.startedon;
+      delete row.completedon;
+      return true;
+    },
+    recover() {
+      const { rows, index } = live();
+      if (index >= 0 && rows[index].statecode === 2 && rows[index].statuscode === 20) {
+        Object.assign(rows[index], { statecode: 0, statuscode: 0 });
+        delete rows[index].startedon;
+      }
+    },
     finish(error) {
       const { rows, index } = live();
       if (index < 0) return;
@@ -123,16 +186,47 @@ export function createAsyncPluginRunner({
     closing = false,
     stopSequence = Infinity;
   const itemOf = (id) => items().find((item) => sameId(item.id, id)) ?? null;
+  // The durable event is a snapshot; execution choices remain local/current.
+  // This is a simulator admission contract, not a native queue snapshot policy.
+  const skippedRegistration = (item, event, kind) => {
+    const skip = (message, code) => {
+      if (code) diagnostic({ code, severity: 'warning', stepId: item.id, message });
+      return message;
+    };
+    if (!item.enabled || item.mode === 'disabled')
+      return skip('Simulator: this asynchronous step is disabled; nothing was executed.', 'PLUGIN_STEP_DISABLED');
+    if (item.mode === 'placeholder')
+      return skip(
+        'Simulator: this asynchronous step has no local handler; nothing was executed.',
+        'PLUGIN_STEP_PLACEHOLDER',
+      );
+    if (item.unsupported && item.mode !== 'mock')
+      return skip(
+        `Simulator: unsupported registration, nothing was executed. ${item.unsupported}`,
+        'PLUGIN_STEP_UNSUPPORTED',
+      );
+    if ((kind === 'webhook') !== (item.mode === 'webhook'))
+      return 'Simulator: this asynchronous step changed its delivery kind; nothing was executed.';
+    if (
+      !pluginPhaseMatches([item], {
+        entity: event.entity,
+        operation: event.operation,
+        stage: 40,
+        changedAttributes: event.submittedAttributes ?? [],
+        asyncExecution: true,
+        bypassStepIds: event.bypassStepIds,
+        bypassCustomPlugins: event.bypassCustomAsync,
+        diagnostic,
+      })
+    )
+      return 'Simulator: this asynchronous registration no longer matches its queued message; nothing was executed.';
+    return null;
+  };
   // An asynchronous web hook is delivered after commit. Its System Job is Locked while the POST runs, then Succeeded, Failed, or Canceled
   // (32: an endpoint the simulator does not contact, with a WEBHOOK_NOT_CONTACTED diagnostic, or a contract other than 8).
   const deliverWebhook = async ({ id, payload: { itemId, chain }, event }) => {
     const item = itemOf(itemId);
     try {
-      if (!webhooks) {
-        diagnostic({ code: 'WEBHOOK_NOT_DELIVERED', stepId: itemId, reason: 'no-adapter' });
-        await store.transact(() => claimJob(store, id, item, () => false, diagnostic)?.finish(null));
-        return;
-      }
       let job = null;
       await store.transact(() => {
         job = claimJob(store, id, item, systemJobs, diagnostic);
@@ -143,6 +237,16 @@ export function createAsyncPluginRunner({
           throw Object.assign(new Error('The asynchronous step registration is no longer available.'), {
             code: 'LocalPluginAsyncUnavailable',
           });
+        const skipped = skippedRegistration(item, event, 'webhook');
+        if (skipped) {
+          await store.transact(() => job.cancel(skipped));
+          return;
+        }
+        if (!webhooks) {
+          diagnostic({ code: 'WEBHOOK_NOT_DELIVERED', stepId: itemId, reason: 'no-adapter' });
+          await store.transact(() => job.cancel('Simulator: no asynchronous webhook delivery adapter is configured.'));
+          return;
+        }
         const answer = await webhooks.afterCommit({
           item,
           entity: event.entity,
@@ -153,6 +257,13 @@ export function createAsyncPluginRunner({
           previous: structuredClone(event.previous ?? null),
           identity: structuredClone(event.identity ?? {}),
           changedAttributes: event.submittedAttributes,
+          customApi: event.customApi,
+          bypassStepIds: event.bypassStepIds,
+          associationParameters: event.associationParameters,
+          initialFrame: event.frame,
+          targets: event.targets,
+          previousRecords: event.previousRecords,
+          records: event.records,
           depth: chain.depth + 1,
           correlationId: event.correlationId ?? chain.id,
           diagnostic,
@@ -187,22 +298,33 @@ export function createAsyncPluginRunner({
   };
   const runStep = async ({ id, payload: { itemId, chain }, event }) => {
     const item = itemOf(itemId);
-    await store
-      .transact(() => {
+    let job = null,
+      retrying = false;
+    try {
+      // Persist the claim/attempt before invoking external original code. A
+      // restart cannot reset the four-attempt budget, even after a crash.
+      await store.transact(() => {
+        job = claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt: true });
+      });
+      if (!job) return;
+      await store.transact(() => {
         const previousChain = store.flowChain,
           previousFlag = store.pluginInTransaction,
           previousParent = store.pluginParentContext;
         store.flowChain = { id: chain.id, depth: chain.depth + 1 };
         store.pluginInTransaction = false;
         store.pluginParentContext = null;
-        let job = null;
         try {
-          job = claimJob(store, id, item, systemJobs, diagnostic);
-          if (!job) return;
           if (!item)
             throw Object.assign(new Error('The asynchronous step registration is no longer available.'), {
               code: 'LocalPluginAsyncUnavailable',
             });
+          const skipped = skippedRegistration(item, event, 'plugin');
+          if (skipped) {
+            job.cancel(skipped);
+            return;
+          }
+          let executed = false;
           runPluginPhase({
             store,
             items: [item],
@@ -216,18 +338,22 @@ export function createAsyncPluginRunner({
             previous: structuredClone(event.previous ?? null),
             identity: structuredClone(event.identity ?? {}),
             changedAttributes: event.submittedAttributes,
-            initialFrame: event.frame,
+            customApi: event.customApi,
+            bypassStepIds: event.bypassStepIds,
+            bypassCustomPlugins: event.bypassCustomAsync,
+            associationParameters: event.associationParameters,
+            targets: event.targets,
+            previousRecords: event.previousRecords,
+            records: event.records,
+            initialFrame: structuredClone(event.frame),
             asyncExecution: true,
             diagnostic,
+            onStepExecuted: () => {
+              executed = true;
+            },
           });
           // A run that executed nothing (an unsupported registration, or a placeholder) never reports success: its System Job is Canceled.
-          const skipped =
-            item.mode === 'placeholder'
-              ? 'Simulator: this asynchronous step has no local handler; nothing was executed.'
-              : item.unsupported && item.mode !== 'mock'
-                ? `Simulator: unsupported registration, nothing was executed. ${item.unsupported}`
-                : null;
-          if (skipped) job.cancel(skipped);
+          if (!executed) job.cancel('Simulator: this asynchronous step completed without executing a handler or mock.');
           else job.finish(null);
           diagnostic({
             code: 'PLUGIN_ASYNC_COMPLETED',
@@ -237,7 +363,18 @@ export function createAsyncPluginRunner({
             mode: item.mode,
           });
         } catch (error) {
-          job?.finish(error);
+          if (error.details?.sourceException?.operationStatus === 'Retry' && job.retry(error)) {
+            retrying = true;
+            diagnostic({
+              code: 'PLUGIN_ASYNC_RETRY_REQUESTED',
+              stepId: itemId,
+              chainId: chain.id,
+              attempt: job.attempt,
+              maxAttempts: PLUGIN_ATTEMPTS,
+            });
+            return;
+          }
+          job.finish(error);
           diagnostic({
             code: 'PLUGIN_ASYNC_FAILED',
             stepId: itemId,
@@ -249,16 +386,19 @@ export function createAsyncPluginRunner({
           store.pluginInTransaction = previousFlag;
           store.pluginParentContext = previousParent;
         }
-      })
-      .catch((error) => {
-        diagnostic({
-          code: 'PLUGIN_ASYNC_QUEUE_FAILED',
-          stepId: itemId,
-          error: { code: error.code, message: error.message },
-        });
-        throw error;
-      })
-      .finally(() => own.delete(id));
+      });
+      return retrying ? retryCommittedJob : undefined;
+    } catch (error) {
+      if (job) await store.transact(() => job.recover());
+      diagnostic({
+        code: 'PLUGIN_ASYNC_QUEUE_FAILED',
+        stepId: itemId,
+        error: { code: error.code, message: error.message },
+      });
+      throw error;
+    } finally {
+      if (!retrying) own.delete(id);
+    }
   };
   const inContext = (run) => (job) => runWithRequest(runContext(store, job.event, job.payload.chain), () => run(job));
   // A rethrown transaction failure reaches the job runner, which counts the attempt (committed-work.mjs).
@@ -285,16 +425,41 @@ export function createAsyncPluginRunner({
         .filter(
           (item) =>
             item.enabled &&
+            item.contract?.supportedDeployment !== 1 &&
             item.contract?.mode === 1 &&
-            item.entity === event.entity &&
-            String(item.message).toLowerCase() === event.operation &&
+            pluginStepMatchesEntity(item, event.entity) &&
+            (String(item.message).toLowerCase() === event.operation ||
+              (!event.fromBulk && String(item.message).toLowerCase() === multipleMessage(event.operation))) &&
             item.stage === 40 &&
-            (!['update', 'onexternalupdated'].includes(event.operation) ||
+            !pluginStepBypassed(
+              item,
+              { bypassCustomPlugins: event.bypassCustomAsync, bypassStepIds: event.bypassStepIds },
+              diagnostic,
+            ) &&
+            (!['update', 'updatemultiple', 'onexternalupdated'].includes(event.operation) ||
               !item.filteringAttributes.length ||
               item.filteringAttributes.some((name) => event.submittedAttributes.includes(name))),
         )
         .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
       for (const item of selected) {
+        let invocation = event;
+        if (String(item.message).toLowerCase() !== event.operation) {
+          const mapping = store.resolveMapping(event.entity),
+            id = event.row[mapping.idColumn];
+          const target = recordToSdkEntity(store, event.entity, event.target ?? {});
+          target.id = id;
+          if (!event.submittedAttributes.includes(mapping.idColumn)) delete target.attributes[mapping.idColumn];
+          invocation = {
+            ...event,
+            operation: multipleMessage(event.operation),
+            row: { [mapping.idColumn]: '00000000-0000-0000-0000-000000000000', bulkIds: [id] },
+            targets: [target],
+            previousRecords: [event.previous ?? null],
+            records: [event.row],
+            frame: event.frame?.multipleFrame ?? {},
+            messageEvent: true,
+          };
+        }
         // A root event (no chain) starts its own chain, so the rows of one bulk commit never share one chain budget.
         const chain = event.chain ?? { id: (store.ids ?? systemIds).uuid(), depth: 0 },
           count = (counts.get(chain.id) ?? runs.get(chain.id) ?? 0) + 1;
@@ -311,10 +476,10 @@ export function createAsyncPluginRunner({
         entries.push({
           id: (store.ids ?? systemIds).uuid(),
           kind: item.mode === 'webhook' ? 'webhook' : 'plugin',
-          columns: jobColumns(store, item, event, chain),
+          columns: jobColumns(store, item, invocation, chain),
           itemId: item.id,
           chain,
-          event,
+          event: invocation,
         });
       }
     }

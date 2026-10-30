@@ -437,9 +437,12 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
     assert.deepEqual(calls, []);
   });
 
-  it('a plug-in type with no handler leaves the API without one: the action answers 204 without running a handler', async () => {
+  it('a plug-in type with no handler leaves the API without one and refuses its unavailable main operation', async () => {
     const { call, calls } = await routed({ typeName: 'Contoso.Plugins.Unhandled' });
-    assert.deepEqual(await call(), { status: 204 });
+    await assert.rejects(
+      call(),
+      (error) => error.status === 501 && error.code === 'LocalPluginMainOperationUnavailable',
+    );
     assert.deepEqual(calls, []);
   });
 });

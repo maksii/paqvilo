@@ -5,6 +5,8 @@ import { createFlowTriggerRunner } from './flow-triggers.mjs';
 import { settleCommittedWork, committedJobs } from './committed-work.mjs';
 import { storeScheduler } from './runtime-clock.mjs';
 import { serviceEndpointDelivery } from './dataverse-webhooks.mjs';
+import { singleMultiplePipeline, multipleMessage } from './plugin-single-multiple.mjs';
+import { pluginStepBypassed } from './plugin-bypass.mjs';
 
 /** The same source/trusted-handler backend runs for portal and standalone hosts.
  * Callers own the source catalogue and execution choices; no portal or HTTP
@@ -33,17 +35,40 @@ export async function createOrganizationBackend({
   // messaging: a getter of providers.messaging; queue and topic endpoints (contracts 2, 5, 6) deliver through its bus.
   const webhooks = serviceEndpointDelivery(store, { messaging: messaging ?? null }),
     acceptedChains = new Set();
+  const executePhase = (context) =>
+    runPluginPhase({
+      ...context,
+      store,
+      runtimes,
+      items: context.pluginStepIds ? items().filter((step) => context.pluginStepIds.includes(step.id)) : items(),
+      handlers,
+      webhooks,
+      diagnostic,
+    });
+  const pipeline = singleMultiplePipeline(store, items, executePhase);
+  // Bulk operations order the multiple-message and single-message registrations
+  // in their respective ranked groups for each stage.
+  // A getter keeps API registration edits visible without caching source facts.
+  pipeline.steps = items;
+  pipeline.diagnostic = diagnostic;
   store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store, runtimes, items: items(), handlers, webhooks, diagnostic }),
-    ({ entity, operation }) =>
+    pipeline,
+    ({ entity, operation, bypassCustomPlugins = false, bypassStepIds = [] }) =>
       items().some(
         (step) =>
           step.enabled &&
+          step.contract?.supportedDeployment !== 1 &&
           pluginStepMatchesEntity(step, entity) &&
-          String(step.message).toLowerCase() === operation &&
+          [operation, multipleMessage(operation)].includes(String(step.message).toLowerCase()) &&
+          !pluginStepBypassed(step, { bypassCustomPlugins, bypassStepIds }, diagnostic) &&
           (!['retrieve', 'retrievemultiple'].includes(operation) || !['placeholder', 'disabled'].includes(step.mode)),
       ),
-    (context) => pluginPhaseRequiresCheckpoint(items(), context),
+    (context) =>
+      pluginPhaseRequiresCheckpoint(items(), context) ||
+      Boolean(
+        multipleMessage(context.operation) &&
+        pluginPhaseRequiresCheckpoint(items(), { ...context, operation: multipleMessage(context.operation) }),
+      ),
   );
   for (const item of items().filter((item) => item.mode === 'clr'))
     try {

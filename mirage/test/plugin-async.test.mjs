@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 const id = '10000000-0000-0000-0000-000000000001';
 const step = {
   id,
@@ -33,6 +34,41 @@ const data = () =>
       settings: { permissionMode: 'enforce' },
     },
   });
+
+test('an asynchronous job skipped by a later disabled local choice is canceled instead of reporting success', async (t) => {
+  const store = data(),
+    clock = fixedClock(),
+    scheduler = createScheduler({ clock, manual: true });
+  store.scheduler = scheduler;
+  let disabled = false,
+    executions = 0;
+  const handlers = new Map([
+    [
+      id,
+      () => {
+        executions++;
+      },
+    ],
+  ]);
+  const items = () =>
+    pluginCatalogue({
+      plugins: { steps: [step] },
+      handlers,
+      overrides: disabled ? { [`plugin-step:${id}`]: { mode: 'disabled' } } : {},
+    });
+  const runner = createAsyncPluginRunner({ store, items, handlers, runtimes: new Map(), systemJobs: () => true });
+  t.after(async () => {
+    await runner.close();
+    await scheduler.close();
+  });
+  await store.create('widget', { title: 'Queued' }, { admin: true });
+  assert.equal(store.tableRows('asyncoperation')[0].statuscode, 0);
+  disabled = true;
+  await scheduler.runDue();
+  assert.equal(executions, 0);
+  assert.equal(store.tableRows('asyncoperation')[0].statuscode, 32);
+  assert.match(store.tableRows('asyncoperation')[0].message, /disabled/);
+});
 test('Async source registrations execute only after commit and keep independent SDK writes after later job failure', async (t) => {
   const store = data(),
     notes = [],

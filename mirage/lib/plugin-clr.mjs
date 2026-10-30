@@ -7,12 +7,25 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads';
 import { DataError } from './data-error.mjs';
+import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
+import { pluginInvocationDepth, pluginInvocationParent } from './plugin-execution-lifetime.mjs';
+import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
-import { queryExpressionToFetch, prepareFetchForSdk, fetchResultToSdkCollection } from './plugin-sdk-query.mjs';
+import {
+  queryExpressionToFetch,
+  prepareFetchForSdk,
+  fetchResultToSdkCollection,
+  sdkReadColumns,
+} from './plugin-sdk-query.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
+import { imageAttributes } from './plugin-images.mjs';
 import { captureSdkResponse } from './plugin-response.mjs';
 import { isElastic, samePartition } from './dataverse-elastic.mjs';
+import { convertSdkQuery } from './plugin-query-conversion.mjs';
+import { CRM_FUNCTIONS } from './dataverse-conditions.mjs';
+import { runtimeConstructorSettings } from './plugin-constructor-configuration.mjs';
+import { validateSdkTag } from './plugin-request-tag.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginClrConfiguration', status = 409) => {
@@ -128,6 +141,14 @@ export function validateClrDescriptor(value) {
   for (const field of ['executionUserId', 'tenantId'])
     if (value.context[field] !== undefined && !uuid.test(value.context[field]))
       fail('CLR context ' + field + ' must be a GUID.');
+  if (
+    (value.context.mainOperationStepId !== undefined || value.context.mainOperationStepEvidence !== undefined) &&
+    (!uuid.test(value.context.mainOperationStepId ?? '') ||
+      typeof value.context.mainOperationStepEvidence !== 'string' ||
+      !value.context.mainOperationStepEvidence.trim() ||
+      value.context.mainOperationStepEvidence.length > 2048)
+  )
+    fail('A custom API main-operation step requires a GUID and bounded source evidence.');
   if (
     value.context.interfaceVersion === 7 &&
     (typeof value.context.environmentId !== 'string' ||
@@ -527,6 +548,10 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
     ...(Object.keys(formattedValues).length ? { formattedValues } : {}),
   };
 }
+export function recordToSdkReadEntity(store, entity, row, columns) {
+  const present = Object.fromEntries(Object.entries(row ?? {}).filter(([, value]) => value != null));
+  return recordToSdkEntity(store, entity, present, sdkReadColumns(store, entity, columns));
+}
 export function sdkQueryParameters(query) {
   if (query.pageInfo?.returnTotalRecordCount === true)
     fail('SDK total counts require the Fetch/QueryExpression execution adapter.', 'LocalPluginSdkUnsupported', 501);
@@ -550,7 +575,8 @@ export function sdkQueryParameters(query) {
     const attribute = name(c.attributeName),
       values = c.values ?? [],
       ops = { Equal: 'eq', NotEqual: 'ne', GreaterThan: 'gt', GreaterEqual: 'ge', LessThan: 'lt', LessEqual: 'le' };
-    if (ops[c.operatorName] && values.length === 1) return `${attribute} ${ops[c.operatorName]} ${literal(values[0])}`;
+    if (ops[c.operatorName] && values.length === 1)
+      return `${attribute} ${ops[c.operatorName]} ${c.compareColumns ? name(values[0]) : literal(values[0])}`;
     if (['Null', 'NotNull'].includes(c.operatorName) && !values.length)
       return `${attribute} ${c.operatorName === 'Null' ? 'eq' : 'ne'} null`;
     if (['In', 'NotIn'].includes(c.operatorName) && values.length)
@@ -561,9 +587,47 @@ export function sdkQueryParameters(query) {
           .join(c.operatorName === 'In' ? ' or ' : ' and ') +
         ')'
       );
+    if (
+      ['BeginsWith', 'DoesNotBeginWith', 'EndsWith', 'DoesNotEndWith'].includes(c.operatorName) &&
+      values.length === 1
+    ) {
+      const predicate = `${c.operatorName.includes('Begin') ? 'startswith' : 'endswith'}(${attribute},${literal(values[0])})`;
+      return c.operatorName.startsWith('DoesNot') ? `not (${predicate})` : predicate;
+    }
+    if (['Like', 'NotLike'].includes(c.operatorName) && values.length === 1 && typeof values[0] === 'string') {
+      const value = values[0];
+      const leading = value.startsWith('%'),
+        trailing = value.endsWith('%');
+      const inner = value.slice(leading ? 1 : 0, trailing ? -1 : undefined);
+      const decoded = inner.replace(/\[\[\]|\[%\]|\[_\]/g, (match) => ({ '[[]': '[', '[%]': '%', '[_]': '_' })[match]);
+      if (!['%', '_', '['].some((character) => inner.replace(/\[\[\]|\[%\]|\[_\]/g, '').includes(character))) {
+        const predicate =
+          leading && trailing
+            ? `contains(${attribute},${literal(decoded)})`
+            : leading
+              ? `endswith(${attribute},${literal(decoded)})`
+              : trailing
+                ? `startswith(${attribute},${literal(decoded)})`
+                : `${attribute} eq ${literal(decoded)}`;
+        return c.operatorName === 'NotLike' ? `not (${predicate})` : predicate;
+      }
+    }
+    const fn = CRM_FUNCTIONS[c.operatorName];
+    if (fn) {
+      const parameters = [`PropertyName=${literal(attribute)}`];
+      if (fn.values === 'list') parameters.push(`PropertyValues=[${values.map(literal).join(',')}]`);
+      else if (fn.values === 'pair' && values.length === 2)
+        parameters.push(`PropertyValue1=${literal(values[0])}`, `PropertyValue2=${literal(values[1])}`);
+      else if (fn.values === 'one' && values.length === 1) parameters.push(`PropertyValue=${literal(values[0])}`);
+      else if (fn.values !== 'none' || values.length)
+        fail('Unsupported SDK condition values.', 'LocalPluginSdkUnsupported', 501);
+      return `Microsoft.Dynamics.CRM.${c.operatorName}(${parameters.join(',')})`;
+    }
     fail('Unsupported SDK condition operator: ' + c.operatorName, 'LocalPluginSdkUnsupported', 501);
   };
   const filter = (f) => {
+    if (f.anyAllFilterLinkEntity)
+      fail('Collection criteria require the typed FetchXML execution adapter.', 'LocalPluginSdkUnsupported', 501);
     if (!['And', 'Or'].includes(f.operatorName ?? 'And'))
       fail('Unsupported SDK filter operator.', 'LocalPluginSdkUnsupported', 501);
     return [...(f.conditions ?? []).map(condition), ...(f.filters ?? []).map(filter).filter(Boolean)]
@@ -607,11 +671,21 @@ export function dispatchSdkCall(args) {
   }
   try {
     return dispatchSdkCallCore(args);
+  } catch (error) {
+    const method = message.method === 'Execute' ? message.arguments?.[0]?.requestName : message.method;
+    if (
+      ['Create', 'Update', 'Delete', 'Associate', 'Disassociate', 'CreateMultiple', 'UpdateMultiple'].includes(
+        method,
+      ) ||
+      store.tableRows('customapi').some((row) => row.uniquename === method && !row.isfunction)
+    )
+      store.markPluginTransactionFailure?.(error);
+    throw error;
   } finally {
     store.pluginParentContext = previous;
   }
 }
-function dispatchSdkCallCore({ store, profile, message, callerProfiles = [], diagnostic }) {
+function dispatchSdkCallCore({ store, profile, message, callerProfiles = [], diagnostic, sdkFromSandbox = false }) {
   const selected =
     message.userId === null
       ? profile
@@ -626,14 +700,55 @@ function dispatchSdkCallCore({ store, profile, message, callerProfiles = [], dia
   const previousExecutionUser = store.pluginExecutionUserId;
   store.pluginExecutionUserId = selected.userId;
   try {
-    return dispatchSdkCallAuthorized({ store, profile: selected, message, diagnostic });
+    return dispatchSdkCallAuthorized({ store, profile: selected, message, diagnostic, sdkFromSandbox });
   } finally {
     store.pluginExecutionUserId = previousExecutionUser;
   }
 }
-function dispatchSdkCallAuthorized({ store, profile, message, diagnostic }) {
+const SDK_BYPASS_PARAMETERS = [
+  'BypassCustomPluginExecution',
+  'BypassBusinessLogicExecution',
+  'BypassBusinessLogicExecutionStepIds',
+];
+function sdkBypassOptions(parameters, profile, store) {
+  if (
+    parameters.BypassCustomPluginExecution !== undefined &&
+    typeof parameters.BypassCustomPluginExecution !== 'boolean'
+  )
+    fail('SDK BypassCustomPluginExecution requires a boolean.', 'LocalPluginSdkUnsupported', 501);
+  if (
+    parameters.BypassBusinessLogicExecution !== undefined &&
+    typeof parameters.BypassBusinessLogicExecution !== 'string'
+  )
+    fail('SDK BypassBusinessLogicExecution requires a comma-separated string.', 'LocalPluginSdkUnsupported', 501);
+  const logic = String(parameters.BypassBusinessLogicExecution ?? '')
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  const bypassStepIds = parseBypassStepIds(store, parameters.BypassBusinessLogicExecutionStepIds);
+  if (logic.some((value) => !['customsync', 'customasync'].includes(value)))
+    fail('SDK BypassBusinessLogicExecution accepts CustomSync and CustomAsync.', 'LocalPluginSdkUnsupported', 501);
+  for (const [requested, privilege] of [
+    [parameters.BypassCustomPluginExecution === true, 'prvBypassCustomPlugins'],
+    [logic.length > 0 || bypassStepIds.length > 0, 'prvBypassCustomBusinessLogic'],
+  ])
+    if (requested && !profile.privileges?.includes(privilege))
+      fail('The local backend profile lacks ' + privilege + '.', 'LocalBackendPermissionDenied', 403);
+  return {
+    bypassCustomPlugins: parameters.BypassCustomPluginExecution === true || logic.includes('customsync'),
+    bypassCustomAsync: logic.includes('customasync'),
+    bypassStepIds,
+    systemParameters: Object.fromEntries(
+      SDK_BYPASS_PARAMETERS.filter((key) => Object.hasOwn(parameters, key)).map((key) => [key, parameters[key]]),
+    ),
+  };
+}
+function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFromSandbox }) {
   const readExecute =
-    message.method === 'Execute' && ['Retrieve', 'RetrieveMultiple'].includes(message.arguments?.[0]?.requestName);
+    message.method === 'Execute' &&
+    ['Retrieve', 'RetrieveMultiple', 'FetchXmlToQueryExpression', 'QueryExpressionToFetchXml'].includes(
+      message.arguments?.[0]?.requestName,
+    );
   if (
     store.pluginReadOnly &&
     ['Create', 'Update', 'Delete', 'Associate', 'Disassociate', 'Execute'].includes(message.method) &&
@@ -645,7 +760,10 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic }) {
       501,
     );
   // The organization's internal entries (store.recordPipeline): an SDK call runs the Web API write rules and read projection.
-  const service = localOrganizationService(store, profile, undefined, { diagnostic });
+  const service = localOrganizationService(store, profile, undefined, {
+    diagnostic,
+    requestOptions: { sdkFromSandbox },
+  });
   if (message.userId !== null && canon(message.userId) !== canon(profile.userId))
     fail(
       'SDK impersonation is not covered by the configured backend profile.',
@@ -666,6 +784,7 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic }) {
         parameters = request?.parameters?.values;
       if (
         request?.$type !== 'OrganizationRequest' ||
+        (request.typed !== undefined && typeof request.typed !== 'boolean') ||
         request.parameters?.$type !== 'ParameterCollection' ||
         !parameters ||
         typeof parameters !== 'object' ||
@@ -676,6 +795,20 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic }) {
           'LocalPluginSdkUnsupported',
           501,
         );
+      const bypass = sdkBypassOptions(parameters, profile, store);
+      if (['FetchXmlToQueryExpression', 'QueryExpressionToFetchXml'].includes(request.requestName)) {
+        const parameter = request.requestName === 'FetchXmlToQueryExpression' ? 'FetchXml' : 'Query';
+        if (
+          Object.keys(parameters).some((key) => key !== parameter && !SDK_BYPASS_PARAMETERS.includes(key)) ||
+          !Object.hasOwn(parameters, parameter)
+        )
+          fail('Query conversion requires exactly ' + parameter + '.', 'LocalPluginSdkUnsupported', 501);
+        return {
+          $type: 'OrganizationResponse',
+          responseName: request.requestName,
+          results: convertSdkQuery(store, request.requestName, parameters),
+        };
+      }
       const shapes = {
           Create: ['Target'],
           Update: ['Target'],
@@ -688,11 +821,44 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic }) {
           Disassociate: ['Target', 'Relationship', 'RelatedEntities'],
         },
         shape = shapes[request.requestName];
+      if (
+        !shape &&
+        store
+          .tableRows('customapi')
+          .some((row) => String(row.uniquename).toLowerCase() === String(request.requestName).toLowerCase())
+      ) {
+        const ref = parameters.Target;
+        const target = ref?.$type === 'EntityReference' ? { entity: ref.logicalName, id: ref.id } : null;
+        const input = {
+          $type: 'ParameterCollection',
+          values: Object.fromEntries(
+            Object.entries(parameters).filter(([key]) => !SDK_BYPASS_PARAMETERS.includes(key) && key !== 'tag'),
+          ),
+        };
+        const previousTag = store.pluginSdkTag;
+        validateSdkTag(parameters, store.pluginSdkTag);
+        store.pluginSdkTag = Object.hasOwn(parameters, 'tag') ? parameters.tag : previousTag;
+        try {
+          const answer = localOrganizationService(store, profile, undefined, {
+            diagnostic,
+            requestOptions: { ...bypass, sdkFromSandbox },
+          }).executeMessageSync(request.requestName, target, input);
+          return {
+            $type: 'OrganizationResponse',
+            responseName: request.requestName,
+            custom: true,
+            results: answer.outputs?.values ?? {},
+          };
+        } finally {
+          store.pluginSdkTag = previousTag;
+        }
+      }
       // UnMaskedData (Learn optional-parameters#return-unmasked-data): Retrieve and RetrieveMultiple only, exact case, a boolean.
       const optional = [
         'tag',
         'partitionId',
         'SessionToken',
+        ...SDK_BYPASS_PARAMETERS,
         ...(['Retrieve', 'RetrieveMultiple'].includes(request.requestName) ? ['UnMaskedData'] : []),
       ];
       if (
@@ -706,14 +872,7 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic }) {
       for (const key of ['partitionId', 'SessionToken'])
         if (parameters[key] != null && typeof parameters[key] !== 'string')
           fail('SDK ' + key + ' requires a string.', 'LocalPluginSdkUnsupported', 501);
-      if (
-        Object.hasOwn(parameters, 'tag') &&
-        (typeof parameters.tag !== 'string' || Buffer.byteLength(parameters.tag) > 8192)
-      )
-        fail('SDK tag requires a bounded string.', 'LocalPluginSdkUnsupported', 501);
-      const inherited = message.parentContext?.values?.SharedVariables?.values;
-      if (Object.hasOwn(parameters, 'tag') && inherited && Object.hasOwn(inherited, 'tag'))
-        fail('A descendant SDK request cannot replace an inherited immutable tag.', 'LocalPluginTagImmutable', 409);
+      validateSdkTag(parameters, store.pluginSdkTag);
       const method = request.requestName;
       let arguments_ = shape.map((key) => parameters[key]);
       if (['Associate', 'Disassociate'].includes(method)) {
@@ -738,12 +897,15 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic }) {
         arguments_ = [target.logicalName, target, ...(method === 'Retrieve' ? [parameters.ColumnSet] : [])];
       }
       const previousTag = store.pluginSdkTag;
-      store.pluginSdkTag = parameters.tag;
+      store.pluginSdkTag = Object.hasOwn(parameters, 'tag') ? parameters.tag : previousTag;
       try {
         return invokeSdkMethod(
           {
             store,
-            service,
+            service: localOrganizationService(store, profile, undefined, {
+              diagnostic,
+              requestOptions: { ...bypass, sdkFromSandbox },
+            }),
             message: {
               ...message,
               method,
@@ -751,6 +913,7 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic }) {
               requestOptions: {
                 partitionId: parameters.partitionId,
                 sessionToken: parameters.SessionToken,
+                ...bypass,
                 ...(parameters.UnMaskedData === true ? { unmask: true } : {}),
               },
             },
@@ -819,6 +982,8 @@ function invokeSdkMethod({ store, service, message }, namedResponse) {
   if (method === 'RetrieveMultiple') return results.BusinessEntityCollection ?? null;
   return captured.value;
 }
+const hasCollectionCriteria = (filter) =>
+  Boolean(filter?.anyAllFilterLinkEntity || filter?.filters?.some(hasCollectionCriteria));
 function executeSdkMethod({ store, service, message, responseToken }) {
   const args = message.arguments ?? [];
   switch (message.method) {
@@ -832,16 +997,10 @@ function executeSdkMethod({ store, service, message, responseToken }) {
     case 'Create': {
       const entity = args[0];
       if (entity?.$type !== 'Entity') fail('SDK Create requires an Entity.');
-      const row = service.create(
-        entity.logicalName,
-        {
-          ...sdkValueToRecord(entity),
-          ...(entity.id && !/^0{8}-0{4}-0{4}-0{4}-0{12}$/.test(entity.id)
-            ? { [service.mapping(entity.logicalName).idColumn]: entity.id }
-            : {}),
-        },
-        { responseToken },
-      );
+      const row = service.create(entity.logicalName, sdkValueToRecord(entity), {
+        responseToken,
+        sdkCreateId: entity.id,
+      });
       return typed('Guid', row[service.mapping(entity.logicalName).idColumn]);
     }
     case 'Update': {
@@ -859,7 +1018,9 @@ function executeSdkMethod({ store, service, message, responseToken }) {
         responseToken,
       });
     case 'Retrieve':
-      return recordToSdkEntity(
+      if (args[2] === null)
+        throw new DataError('SandboxFault.ThrowIfNull: columnSet', 400, 'InvalidArgument', { innerCode: '0x80040203' });
+      return recordToSdkReadEntity(
         store,
         args[0],
         service.get(args[0], args[1], args[2], { responseToken, ...message.requestOptions }),
@@ -869,12 +1030,50 @@ function executeSdkMethod({ store, service, message, responseToken }) {
       const query = args[0];
       let rows,
         entity = query.entityName;
+      const structured = ['QueryExpression', 'QueryByAttribute'].includes(query.$type);
+      const mapping = structured ? service.mapping(entity) : null;
+      const provider = structured ? store.recordPipeline?.virtualProviders?.status?.(entity) : null;
+      const defaultPaging =
+        structured &&
+        query.topCount == null &&
+        !mapping.isVirtual &&
+        !/^virtual$/i.test(mapping.tableType ?? '') &&
+        !mapping.dataSourceId &&
+        !provider?.virtual;
       if (
         query.$type === 'FetchExpression' ||
-        (query.$type === 'QueryExpression' &&
-          (query.linkEntities?.length || query.pageInfo?.count > 0 || query.pageInfo?.returnTotalRecordCount === true))
+        (['QueryExpression', 'QueryByAttribute'].includes(query.$type) &&
+          (defaultPaging ||
+            query.linkEntities?.length ||
+            query.pageInfo?.count > 0 ||
+            query.pageInfo?.returnTotalRecordCount === true ||
+            query.distinct ||
+            query.pageInfo?.pageNumber > 1 ||
+            query.pageInfo?.pagingCookie ||
+            query.dataSource ||
+            query.queryHints ||
+            hasCollectionCriteria(query.criteria)))
       ) {
-        const xml = query.$type === 'FetchExpression' ? query.query : queryExpressionToFetch(query, store);
+        const expression =
+          query.$type === 'QueryByAttribute'
+            ? {
+                ...query,
+                $type: 'QueryExpression',
+                linkEntities: [],
+                criteria: {
+                  operatorName: 'And',
+                  filters: [],
+                  conditions: (query.attributes ?? []).map((attributeName, index) => ({
+                    attributeName,
+                    operatorName: 'Equal',
+                    values: [query.values?.[index]],
+                  })),
+                },
+              }
+            : query;
+        if (query.$type === 'QueryByAttribute' && query.attributes?.length !== query.values?.length)
+          fail('SDK attribute query length mismatch.', 'LocalPluginSdkUnsupported', 501);
+        const xml = query.$type === 'FetchExpression' ? query.query : queryExpressionToFetch(expression, store);
         entity = /<entity\s[^>]*name=["'](\w+)["']/i.exec(xml)?.[1];
         const answer = service.fetch(xml, {
           sdkResult: true,
@@ -904,7 +1103,9 @@ function executeSdkMethod({ store, service, message, responseToken }) {
       } else fail('Unsupported SDK query structure.', 'LocalPluginSdkUnsupported', 501);
       return {
         $type: 'EntityCollection',
-        entities: rows.map((row) => recordToSdkEntity(store, entity, row, query.columnSet ?? { allColumns: true })),
+        entities: rows.map((row) =>
+          recordToSdkReadEntity(store, entity, row, query.columnSet ?? { allColumns: false, columns: [] }),
+        ),
         entityName: entity,
         minActiveRowVersion: '-1',
         moreRecords: false,
@@ -1112,7 +1313,7 @@ function executePooledClr(runtime, input, options, verified) {
   }
   return executeClrSnapshot(runtime, input, options, session.snapshot, session);
 }
-function executeClrSnapshot(runtime, input, { store, diagnostic }, snapshot, session) {
+function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConfiguration }, snapshot, session) {
   const timeout = clrTimeout(runtime.descriptor);
   const parentIdentity = session ? null : clrParentIdentity(snapshot.executable);
   const channels = session ?? new MessageChannel(),
@@ -1125,8 +1326,12 @@ function executeClrSnapshot(runtime, input, { store, diagnostic }, snapshot, ses
     ...input,
     assembly: snapshot.assembly,
     typeName: runtime.descriptor.typeName,
-    unsecureConfiguration: runtime.descriptor.unsecureConfiguration ?? null,
-    secureConfiguration: runtime.descriptor.secureConfiguration ?? null,
+    ...runtimeConstructorSettings(
+      store,
+      input.context?.OwningExtension?.id,
+      constructorConfiguration,
+      runtime.descriptor,
+    ),
   };
   const worker =
     session?.worker ??
@@ -1173,6 +1378,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic }, snapshot, ses
               store,
               profile: runtime.descriptor.serviceProfile,
               callerProfiles: runtime.descriptor.sdkCallerProfiles,
+              sdkFromSandbox: true,
               message,
               diagnostic,
             });
@@ -1211,7 +1417,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic }, snapshot, ses
           throw new DataError(
             message.message,
             message.code === 'LocalPluginTimeout' ? 504 : 400,
-            message.code ?? 'PluginValidation',
+            details.innerCode === '0x8009000c' ? 'PluginTransactionAborted' : (message.code ?? 'PluginValidation'),
             details,
           );
         } else if (message.kind === 'result') {
@@ -1270,8 +1476,12 @@ function executeClrSnapshot(runtime, input, { store, diagnostic }, snapshot, ses
 export function clrContext({ runtime, store, step, entity, operation, stage, target, record, previous, frame, depth }) {
   const descriptor = runtime.descriptor,
     context = descriptor.context,
-    parent = store.pluginParentContext,
-    primary = store.resolveMapping(entity).idColumn;
+    parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationParent(store),
+    primary = entity && !(frame.customApi && entity === 'none') ? store.resolveMapping(entity).idColumn : null;
+  const contextDepth = frame.delegatedParentContext
+    ? Math.max(depth, pluginInvocationDepth(store) + 1, frame.delegatedDepth ?? 0)
+    : Math.max(depth, pluginInvocationDepth(store) + 1, parent ? Number(parent.values.Depth) + 1 : 0);
+  if (contextDepth > 8) fail('Plug-in nested execution depth exceeds eight.', 'LocalPluginDepth', 400);
   const preValidationParent =
     stage !== 10 &&
     (step.contract?.mode ?? 0) === 0 &&
@@ -1287,7 +1497,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   }
   const image = (row, registration) => {
     if (!row) return null;
-    return recordToSdkEntity(store, entity, row, {
+    return recordToSdkEntity(store, entity, imageAttributes(row), {
       allColumns: !registration.attributes?.length,
       columns: registration.attributes ?? [],
     });
@@ -1302,6 +1512,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   }
   const bulk = ['createmultiple', 'updatemultiple'].includes(operation),
     messageName =
+      frame.customApi?.name ??
       {
         retrievemultiple: 'RetrieveMultiple',
         createmultiple: 'CreateMultiple',
@@ -1309,7 +1520,8 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
         onexternalcreated: 'OnExternalCreated',
         onexternalupdated: 'OnExternalUpdated',
         onexternaldeleted: 'OnExternalDeleted',
-      }[operation] ?? operation[0].toUpperCase() + operation.slice(1);
+      }[operation] ??
+      operation[0].toUpperCase() + operation.slice(1);
   const externalParameters = frame.externalEvent
     ? {
         PreImage: frame.externalEvent.previous ? recordToSdkEntity(store, entity, frame.externalEvent.previous) : null,
@@ -1354,7 +1566,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     frame.outputParameters = { $type: 'ParameterCollection', values: { ...frame.outputParameters.values, ...values } };
     frame.systemOutputsPopulated = true;
   }
-  return {
+  const answer = {
     expectedAssemblyName: step.assemblyName ?? null,
     context: {
       InterfaceVersion: context.interfaceVersion ?? 4,
@@ -1374,10 +1586,17 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       SecondaryEntityName: context.secondaryEntityName ?? '',
       Stage: stage,
       Mode: step.contract?.mode ?? 0,
-      Depth: Math.max(depth, parent ? Number(parent.values.Depth) + 1 : 0),
+      Depth: contextDepth,
       MessageName: messageName,
-      PrimaryEntityName: entity,
-      PrimaryEntityId: typed('Guid', record[primary]),
+      PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
+      PrimaryEntityId: typed(
+        'Guid',
+        ['associate', 'disassociate'].includes(operation)
+          ? '00000000-0000-0000-0000-000000000000'
+          : primary
+            ? (record[primary] ?? '00000000-0000-0000-0000-000000000000')
+            : '00000000-0000-0000-0000-000000000000',
+      ),
       UserId: typed('Guid', context.executionUserId ?? store.pluginExecutionUserId ?? descriptor.serviceProfile.userId),
       InitiatingUserId: parent?.values.InitiatingUserId ?? typed('Guid', context.initiatingUserId),
       OrganizationId: typed('Guid', context.organizationId),
@@ -1416,31 +1635,63 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     inputParameters: {
       $type: 'ParameterCollection',
       values: {
+        ...(frame.requestTag === undefined ? {} : { tag: frame.requestTag }),
         ...(portalRequest ? (context.portalInputParameters ?? {}) : {}),
-        ...(frame.associationParameters ??
-          (bulk
-            ? {
-                Targets: {
-                  $type: 'EntityCollection',
-                  entities: frame.targets,
-                  moreRecords: false,
-                  totalRecordCount: -1,
-                  pagingCookie: null,
-                },
-              }
-            : operation === 'retrievemultiple'
-              ? { Query: frame.query }
-              : operation === 'retrieve'
-                ? {
-                    Target: { $type: 'EntityReference', logicalName: entity, id: record[primary] },
-                    ColumnSet: { $type: 'ColumnSet', ...frame.columns },
-                  }
-                : {
-                    Target:
-                      operation === 'delete'
-                        ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
-                        : recordToSdkEntity(store, entity, { ...target, [primary]: record[primary] }),
-                  })),
+        ...(frame.inputParameters?.values ?? {}),
+        ...(frame.customApi
+          ? (frame.inputParameters?.values ?? {})
+          : (frame.associationParameters ??
+            (bulk
+              ? {
+                  Targets: {
+                    $type: 'EntityCollection',
+                    entities:
+                      stage === 40 &&
+                      frame.inputParametersStage === 40 &&
+                      frame.inputParameters?.values?.Targets?.$type === 'EntityCollection'
+                        ? frame.inputParameters.values.Targets.entities
+                        : frame.targets,
+                    moreRecords: false,
+                    totalRecordCount: -1,
+                    pagingCookie: null,
+                  },
+                }
+              : operation === 'retrievemultiple'
+                ? { Query: frame.query }
+                : operation === 'retrieve'
+                  ? {
+                      Target: frame.retrieveTarget ?? {
+                        $type: 'EntityReference',
+                        logicalName: entity,
+                        id: record[primary],
+                      },
+                      ColumnSet: { $type: 'ColumnSet', ...frame.columns },
+                    }
+                  : {
+                      Target:
+                        operation === 'delete'
+                          ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
+                          : stage === 40 &&
+                              frame.inputParametersStage === 40 &&
+                              frame.inputParameters?.values?.Target?.$type === 'Entity'
+                            ? frame.inputParameters.values.Target
+                            : {
+                                ...recordToSdkEntity(
+                                  store,
+                                  entity,
+                                  {
+                                    ...target,
+                                    ...(operation === 'create' && stage === 10 && Object.hasOwn(target, primary)
+                                      ? {}
+                                      : { [primary]: record[primary] }),
+                                  },
+                                  operation === 'create' && stage === 10
+                                    ? { allColumns: false, columns: Object.keys(target ?? {}) }
+                                    : { allColumns: true },
+                                ),
+                                id: frame.inputParameters?.values?.Target?.id ?? record[primary],
+                              },
+                    }))),
         ...externalParameters,
       },
     },
@@ -1449,4 +1700,15 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     preImages,
     postImages,
   };
+  if (frame.delegatedSourceOperation) {
+    const source = frame.delegatedSourceOperation;
+    const caller =
+      store.pluginExecutionUserId ??
+      source.identity?.systemUserId ??
+      (source.identity?.admin ? source.identity.id : null) ??
+      context.initiatingUserId ??
+      descriptor.serviceProfile.userId;
+    answer.context.ParentContext = delegatedPluginParent(source, answer.context, caller);
+  }
+  return answer;
 }

@@ -3,12 +3,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { ensureSecurityModel, createPrincipals } from '../lib/dataverse-security.mjs';
-import { createRecordHandlers } from '../lib/dataverse-records.mjs';
+import { createRecordHandlers, createRecordHooks } from '../lib/dataverse-records.mjs';
+import { install as installDuplicates } from '../lib/dataverse-duplicates.mjs';
 import { createChangeLog } from '../lib/dataverse-changes.mjs';
 import { handleSoap } from '../lib/dataverse-soap.mjs';
 import { NS } from '../lib/dataverse-soap-xml.mjs';
 import { runAtomic } from '../lib/dataverse-api.mjs';
 import { createOperationRegistry } from '../lib/dataverse-operations.mjs';
+import { createOrganizationBackend } from '../lib/organization-backend.mjs';
+import { pluginCatalogue } from '../lib/exported-plugins.mjs';
+import { DataError } from '../lib/data-error.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const ORG = '6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f';
@@ -104,12 +108,14 @@ async function setup() {
   await ensureSecurityModel(store, SETTINGS);
   const principals = createPrincipals(store, SETTINGS);
   const changes = createChangeLog(store);
+  const recordHooks = createRecordHooks();
   const records = createRecordHandlers({
     store,
     change: (fn) => fn(),
     principals,
     metadataFields: () => undefined,
     changes,
+    hooks: recordHooks,
   });
   const api = {
     store,
@@ -119,6 +125,7 @@ async function setup() {
     metadata: null,
     metadataFields: () => undefined,
     records,
+    recordHooks,
     changes,
     settings: SETTINGS,
     clock: () => CLOCK,
@@ -433,6 +440,181 @@ test('Associate and Disassociate write and remove the relationship row', async (
   assert.equal(t.store.state.tables.widget_tag.length, 0);
 });
 
+const associationRequest = (
+  message,
+  widget,
+  relatedIds,
+  { schema = 'widget_tags', targetEntity = 'widget', relatedEntity = 'tag', role = null } = {},
+) =>
+  execOne(`${message}Request`, message, [
+    pair('Target', refValue(targetEntity, widget)),
+    pair(
+      'Relationship',
+      valueEl(
+        'a:Relationship',
+        `${role == null ? '<a:PrimaryEntityRole i:nil="true"/>' : `<a:PrimaryEntityRole>${role}</a:PrimaryEntityRole>`}<a:SchemaName>${schema}</a:SchemaName>`,
+      ),
+    ),
+    pair(
+      'RelatedEntities',
+      valueEl(
+        'a:EntityReferenceCollection',
+        relatedIds
+          .map(
+            (id) =>
+              `<a:EntityReference><a:Id>${id}</a:Id><a:LogicalName>${relatedEntity}</a:LogicalName><a:Name i:nil="true"/></a:EntityReference>`,
+          )
+          .join(''),
+      ),
+    ),
+  ]);
+
+test('SOAP association messages retain the full related collection in one pipeline and one async job', async (t) => {
+  const f = await setup(),
+    widget = await createWidget(f, [pair('name', str('Parent'))]);
+  const tags = ['20000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002'];
+  f.store.state.tables.tag.push(...tags.map((tagid) => ({ tagid, name: tagid })));
+  const seen = [],
+    asyncSeen = [],
+    steps = [],
+    handlers = new Map();
+  for (const [index, message] of ['Associate', 'Disassociate'].entries())
+    for (const stage of [10, 20, 40, 'async']) {
+      const id = `30000000-0000-0000-0000-${String(index * 100 + (stage === 'async' ? 9 : stage)).padStart(12, '0')}`;
+      steps.push({
+        id,
+        enabled: true,
+        entity: 'widget',
+        message,
+        stage: stage === 'async' ? 40 : stage,
+        rank: 1,
+        mode: stage === 'async' ? 1 : 0,
+        supportedDeployment: 0,
+        filteringAttributes: [],
+        images: [],
+        typeName: 'Invented.Association',
+        assemblyId: 'invented',
+      });
+      handlers.set(id, (context) => {
+        const observation = {
+          message: context.operation,
+          stage: context.stage,
+          ids: context.associationParameters.RelatedEntities.values.map((reference) => reference.id),
+        };
+        (stage === 'async' ? asyncSeen : seen).push(observation);
+      });
+    }
+  const items = pluginCatalogue({ plugins: { steps }, handlers });
+  const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
+  t.after(() => backend.close());
+  for (const message of ['Associate', 'Disassociate']) {
+    const result = await f.send(associationRequest(message, widget, tags));
+    assert.equal(result.status, 200, result.body);
+    assert.equal(f.store.state.tables.widget_tag.length, message === 'Associate' ? 2 : 0);
+    await backend.settle();
+    assert.deepEqual(
+      seen.splice(0),
+      [10, 20, 40].map((stage) => ({ message: message.toLowerCase(), stage, ids: tags })),
+    );
+    assert.deepEqual(asyncSeen.splice(0), [{ message: message.toLowerCase(), stage: 40, ids: tags }]);
+  }
+});
+
+test('SOAP association failures roll back the complete related collection including earlier members', async () => {
+  const f = await setup(),
+    widget = await createWidget(f, [pair('name', str('Parent'))]);
+  const tags = ['20000000-0000-0000-0000-000000000001', '20000000-0000-0000-0000-000000000002'];
+  f.store.state.tables.tag.push(...tags.map((tagid) => ({ tagid, name: tagid })));
+  let reject = true;
+  f.store.setPluginPipeline(
+    (context) => {
+      if (
+        reject &&
+        context.stage === 40 &&
+        context.associationParameters.RelatedEntities.values.some((ref) => ref.id === tags[1])
+      )
+        throw new DataError('Refused related member', 400, 'PluginValidation', { innerCode: '0x80040265' });
+    },
+    (context) => ['associate', 'disassociate'].includes(context.operation),
+  );
+  const failure = await f.send(associationRequest('Associate', widget, tags));
+  assert.equal(failure.status, 500, failure.body);
+  assert.match(failure.body, /Refused related member/);
+  assert.deepEqual(f.store.state.tables.widget_tag, []);
+  reject = false;
+  assert.equal((await f.send(associationRequest('Associate', widget, tags))).status, 200);
+  const before = structuredClone(f.store.state.tables.widget_tag);
+  reject = true;
+  const unlink = await f.send(associationRequest('Disassociate', widget, tags));
+  assert.equal(unlink.status, 500, unlink.body);
+  assert.deepEqual(f.store.state.tables.widget_tag, before);
+});
+
+test('SOAP association preserves source schema direction and the explicit referencing EntityRole', async () => {
+  const f = await setup(),
+    widget = await createWidget(f, [pair('name', str('Parent'))]);
+  const gadget = '20000000-0000-0000-0000-000000000003';
+  f.store.state.tables.gadget.push({ gadgetid: gadget, name: 'Child' });
+  Object.assign(f.store.state.mappings.gadget.relationships.widgetid, {
+    schemaName: 'widget_gadgets',
+    partner: 'gadgets',
+  });
+  f.store.state.mappings.widget.relationships.gadgets = {
+    entity: 'gadget',
+    from: 'widgetid',
+    to: 'widgetid',
+    many: true,
+    schemaName: 'widget_gadgets',
+    partner: 'widgetid',
+  };
+  const seen = [];
+  f.store.setPluginPipeline(
+    (context) => seen.push(structuredClone(context.associationParameters)),
+    (context) => ['associate', 'disassociate'].includes(context.operation),
+  );
+  for (const message of ['Associate', 'Disassociate']) {
+    const result = await f.send(
+      associationRequest(message, gadget, [widget], {
+        schema: 'widget_gadgets',
+        targetEntity: 'gadget',
+        relatedEntity: 'widget',
+        role: 'Referencing',
+      }),
+    );
+    assert.equal(result.status, 200, result.body);
+    assert.equal(f.store.state.tables.gadget[0].widgetid, message === 'Associate' ? widget : null);
+    assert.equal(seen.length, 3);
+    for (const parameters of seen.splice(0)) {
+      assert.deepEqual(parameters.Relationship, {
+        $type: 'Relationship',
+        schemaName: 'widget_gadgets',
+        primaryEntityRole: 'Referencing',
+      });
+      assert.equal(parameters.Target.logicalName, 'gadget');
+      assert.equal(parameters.Target.id, gadget);
+      assert.equal(parameters.RelatedEntities.values[0].logicalName, 'widget');
+    }
+  }
+});
+
+test('SOAP association Target replacement retains SDK GUID validation even for an existing local row', async () => {
+  const f = await setup(),
+    widget = await createWidget(f, [pair('name', str('Parent'))]);
+  const tag = '20000000-0000-0000-0000-000000000001';
+  f.store.state.tables.widget.push({ widgetid: 'local-only', name: 'Local row' });
+  f.store.state.tables.tag.push({ tagid: tag, name: 'Tag' });
+  f.store.setPluginPipeline(
+    (context) => {
+      if (context.stage === 20) context.associationParameters.Target.id = 'local-only';
+    },
+    (context) => context.operation === 'associate',
+  );
+  const result = await f.send(associationRequest('Associate', widget, [tag]));
+  assert.equal(result.status, 500, result.body);
+  assert.match(result.body, /Target must remain a typed entity reference with a valid identity/);
+  assert.deepEqual(f.store.state.tables.widget_tag, []);
+});
+
 test('Upsert creates by alternate key, then updates the same row', async () => {
   const t = await setup();
   const target = (name) => entityValue('widget', [pair('name', str(name))], keyAttributes([pair('code', str('K1'))]));
@@ -474,6 +656,80 @@ test('Assign changes the owner of a user-owned row and SetState changes the stat
   assert.equal(t.store.state.tables.widget[0].statecode, 1);
   assert.equal(t.store.state.tables.widget[0].statuscode, 2);
 });
+
+function specializedRequest(message, logical, id, assignee) {
+  return execOne(message + 'Request', message, [
+    pair(message === 'Assign' ? 'Target' : 'EntityMoniker', refValue(logical, id)),
+    ...(message === 'Assign'
+      ? [pair('Assignee', refValue('systemuser', assignee))]
+      : [
+          pair('State', valueEl('a:OptionSetValue', '<a:Value>1</a:Value>')),
+          pair('Status', valueEl('a:OptionSetValue', '<a:Value>2</a:Value>')),
+        ]),
+  ]);
+}
+
+async function specializedFixture(message) {
+  const t = await setup();
+  const logical = message === 'Assign' ? 'gadget' : 'widget';
+  const created = await t.send(
+    execOne('CreateRequest', 'Create', [pair('Target', entityValue(logical, [pair('name', str('Original'))]))]),
+  );
+  assert.equal(created.status, 200, created.body);
+  return { ...t, logical, id: guidOf(created.body, 'id') };
+}
+
+const namedStep = (message, entity) => [
+  {
+    id: '11111111-1111-4111-8111-111111111111',
+    entity,
+    message,
+    enabled: true,
+    mode: 'handler',
+    contract: { mode: 0, supportedDeployment: 0 },
+  },
+];
+
+for (const message of ['Assign', 'SetState']) {
+  test(`SOAP ${message} delegates an explicit Update without claiming the Upsert pipeline`, async () => {
+    const t = await specializedFixture(message);
+    let updates = 0;
+    t.store.setPluginPipeline((context) => {
+      if (context.operation === 'update' && context.stage === 20) updates++;
+    });
+    t.store.pluginPipeline.steps = () => namedStep('Upsert', t.logical);
+    const result = await t.send(specializedRequest(message, t.logical, t.id, t.basic.systemuserid));
+    assert.equal(result.status, 200, result.body);
+    assert.equal(updates, 1);
+    const row = t.store.tableRows(t.logical)[0];
+    if (message === 'Assign') assert.equal(row.ownerid.id, t.basic.systemuserid);
+    else assert.equal(row.statecode, 1);
+  });
+
+  test(`SOAP ${message} cannot create a missing target through its delegated Update`, async () => {
+    const t = await specializedFixture(message);
+    const before = structuredClone(t.store.tableRows(t.logical));
+    const result = await t.send(
+      specializedRequest(message, t.logical, '22222222-2222-4222-8222-222222222222', t.basic.systemuserid),
+    );
+    assert.equal(result.status, 500, result.body);
+    assert.equal(errorCode(result.body), 0x80040217 | 0);
+    assert.deepEqual(t.store.tableRows(t.logical), before);
+  });
+
+  test(`SOAP ${message} entity-set aliases cannot bypass a configured named step`, async () => {
+    const t = await specializedFixture(message);
+    const before = structuredClone(t.store.tableRows(t.logical));
+    t.store.setPluginPipeline(() => {});
+    t.store.pluginPipeline.steps = () => namedStep(message, t.logical);
+    const result = await t.send(
+      specializedRequest(message, t.store.resolveMapping(t.logical).entitySet, t.id, t.basic.systemuserid),
+    );
+    assert.equal(result.status, 500, result.body);
+    assert.match(result.body, /plug-in pipeline is not implemented/);
+    assert.deepEqual(t.store.tableRows(t.logical), before);
+  });
+}
 
 test('ExecuteMultiple answers one item per request in order', async () => {
   const t = await setup();
@@ -816,6 +1072,494 @@ test('BypassCustomPluginExecution needs the bypass privilege and reaches the rec
   assert.deepEqual(seen, [true, false]);
 });
 
+test('SOAP business logic bypass checks its privilege and reaches records and registered operations', async () => {
+  const t = await setup();
+  const logic = (value) => pair('BypassBusinessLogicExecution', str(value));
+  const create = (value) =>
+    execOne('CreateRequest', 'Create', [
+      pair('Target', entityValue('widget', [pair('name', str('bypass'))])),
+      logic(value),
+    ]);
+  const denied = await t.send(create('CustomAsync'), { user: t.basic });
+  assert.equal(denied.status, 500);
+  assert.equal(errorCode(denied.body), -2147220960);
+  const seen = [];
+  const handle = t.api.records.handle;
+  t.api.records.handle = (ctx) => {
+    seen.push([ctx.bypassCustomPlugins, ctx.bypassCustomAsync]);
+    return handle.call(t.api.records, ctx);
+  };
+  assert.equal((await t.send(create('CustomAsync'))).status, 200);
+  assert.equal((await t.send(create('CustomSync,CustomAsync'))).status, 200);
+  assert.deepEqual(seen, [
+    [false, true],
+    [true, true],
+  ]);
+  t.api.registry.register({
+    name: 'BypassEcho',
+    kind: 'action',
+    binding: 'unbound',
+    handle: (ctx) => {
+      assert.deepEqual(ctx.body, { Value: 'payload' });
+      assert.equal(ctx.bypassCustomPlugins, true);
+      assert.equal(ctx.bypassCustomAsync, true);
+      assert.deepEqual(ctx.systemParameters, {
+        BypassBusinessLogicExecution: 'CustomSync,CustomAsync',
+        BypassCustomPluginExecution: true,
+      });
+      return { status: 200, body: { Value: ctx.body.Value } };
+    },
+  });
+  const registered = await t.send(
+    execute('OrganizationRequest', 'BypassEcho', [
+      pair('Value', str('payload')),
+      logic('CustomSync,CustomAsync'),
+      pair('BypassCustomPluginExecution', bool('true')),
+    ]),
+  );
+  assert.equal(registered.status, 200, registered.body);
+  assert.equal(attrText(registered.body, 'Value'), 'payload');
+  assert.equal((await t.send(create('Unknown'))).status, 500);
+});
+
+test('SOAP Retrieve preserves its exact ColumnSet and Target while keeping response projection independent', async () => {
+  const t = await setup(),
+    id = await createWidget(t, [pair('name', str('alpha')), pair('code', str('one'))]),
+    other = await createWidget(t, [pair('name', str('beta')), pair('code', str('two'))]);
+  const seen = [];
+  let redirect = false;
+  t.store.setPluginPipeline(
+    (c) => {
+      seen.push({
+        stage: c.stage,
+        columns: structuredClone(c.columns),
+        target: structuredClone(c.holder.target),
+        primary: c.record.widgetid,
+        mainPrimary: c.stage === 40 ? structuredClone(c.holder.entity.attributes.widgetid) : undefined,
+      });
+      if (redirect && c.stage === 20) c.holder.target.id = other;
+    },
+    (c) => c.operation === 'retrieve',
+  );
+  const reference = (key = false) =>
+    valueEl(
+      'a:EntityReference',
+      `<a:Id>${key ? '00000000-0000-0000-0000-000000000000' : id}</a:Id><a:LogicalName>widget</a:LogicalName><a:Name>Client label</a:Name><a:RowVersion>17</a:RowVersion>` +
+        (key ? keyAttributes([pair('code', str('one'))]) : ''),
+    );
+  for (const [allColumns, columns] of [
+    [false, []],
+    [false, ['name']],
+    [true, []],
+    [true, ['name']],
+  ]) {
+    seen.length = 0;
+    const result = await t.send(
+      execOne('RetrieveRequest', 'Retrieve', [
+        pair('Target', reference()),
+        pair(
+          'ColumnSet',
+          valueEl(
+            'a:ColumnSet',
+            `<a:AllColumns>${allColumns}</a:AllColumns><a:Columns>${columns.map((name) => `<f:string>${name}</f:string>`).join('')}</a:Columns>`,
+          ),
+        ),
+      ]),
+    );
+    assert.equal(result.status, 200, result.body);
+    assert.equal(attrText(result.body, 'name'), allColumns || columns.includes('name') ? 'alpha' : undefined);
+    assert.equal(attrText(result.body, 'code'), allColumns ? 'one' : undefined);
+    assert.match(result.body, new RegExp(`<a:Id>${id}</a:Id>`));
+    assert.equal(guidOf(result.body, 'widgetid'), id, 'the main response includes the primary Attribute');
+    assert.deepEqual(seen.find((observation) => observation.stage === 40).mainPrimary, { $type: 'Guid', value: id });
+    assert.deepEqual(
+      seen.map((c) => c.stage),
+      [10, 20, 40],
+    );
+    for (const observation of seen) {
+      assert.deepEqual(observation.columns, { allColumns, columns });
+      assert.deepEqual(observation.target, {
+        $type: 'EntityReference',
+        logicalName: 'widget',
+        id,
+        name: 'Client label',
+        rowVersion: '17',
+        keyAttributes: {},
+      });
+    }
+  }
+  seen.length = 0;
+  const keyed = await t.send(
+    execOne('RetrieveRequest', 'Retrieve', [
+      pair('Target', reference(true)),
+      pair(
+        'ColumnSet',
+        valueEl('a:ColumnSet', '<a:AllColumns>false</a:AllColumns><a:Columns><f:string>name</f:string></a:Columns>'),
+      ),
+    ]),
+  );
+  assert.equal(keyed.status, 200, keyed.body);
+  assert.equal(attrText(keyed.body, 'name'), 'alpha');
+  assert.deepEqual(seen[0].target.keyAttributes, { code: 'one' });
+  assert.equal(seen[0].target.id, '00000000-0000-0000-0000-000000000000');
+  redirect = true;
+  const changed = await t.send(
+    execOne('RetrieveRequest', 'Retrieve', [
+      pair('Target', reference()),
+      pair(
+        'ColumnSet',
+        valueEl('a:ColumnSet', '<a:AllColumns>false</a:AllColumns><a:Columns><f:string>name</f:string></a:Columns>'),
+      ),
+    ]),
+  );
+  assert.equal(changed.status, 200, changed.body);
+  assert.equal(attrText(changed.body, 'name'), 'beta');
+  assert.match(changed.body, new RegExp(`<a:Id>${other}</a:Id>`));
+  assert.equal(seen.at(-1).primary, id, 'replacing Target retains original request PrimaryEntityId');
+});
+
+test('SOAP Create keeps explicit Entity.Id, generated empty Id and an authored empty primary Attribute distinct', async () => {
+  const t = await setup(),
+    id = '11111111-1111-4111-8111-111111111111',
+    keyed = '22222222-2222-4222-8222-222222222222',
+    empty = '00000000-0000-0000-0000-000000000000';
+  const create = (entity) => t.send(execOne('CreateRequest', 'Create', [pair('Target', entity)]));
+  const explicit = await create(entityValue('widget', [pair('name', str('Explicit'))], `<a:Id>${id}</a:Id>`));
+  assert.equal(explicit.status, 200, explicit.body);
+  assert.equal(guidOf(explicit.body, 'id'), id);
+  assert.equal(t.store.tableRows('widget').find((row) => row.widgetid === id).name, 'Explicit');
+  const emptyProperty = await create(entityValue('widget', [pair('name', str('Generated'))], `<a:Id>${empty}</a:Id>`));
+  assert.equal(emptyProperty.status, 200, emptyProperty.body);
+  assert.notEqual(guidOf(emptyProperty.body, 'id'), empty);
+  assert.ok(t.store.tableRows('widget').some((row) => row.widgetid === guidOf(emptyProperty.body, 'id')));
+  const attribute = await create(
+    entityValue('widget', [pair('widgetid', guidValue(keyed)), pair('name', str('Attribute'))]),
+  );
+  assert.equal(attribute.status, 200, attribute.body);
+  assert.equal(guidOf(attribute.body, 'id'), keyed);
+  const seen = [];
+  t.store.setPluginPipeline(
+    (c) => {
+      seen.push({ stage: c.stage, primary: c.record.widgetid, attribute: c.target.widgetid });
+    },
+    (c) => c.operation === 'create',
+  );
+  const before = structuredClone(t.store.tableRows('widget'));
+  const zero = await create(entityValue('widget', [pair('widgetid', guidValue(empty))]));
+  assert.equal(zero.status, 500, zero.body);
+  assert.equal(errorCode(zero.body), Number.parseInt('80040203', 16) | 0);
+  assert.match(zero.body, /Expected non-empty Guid\./);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].stage, 10);
+  assert.notEqual(seen[0].primary, empty);
+  assert.equal(seen[0].attribute, empty);
+  assert.deepEqual(t.store.tableRows('widget'), before);
+});
+
+test('SOAP refuses configured Entity.RelatedEntities before Create or Update can change the parent', async () => {
+  const t = await setup(),
+    id = await createWidget(t, [pair('name', str('Before'))]);
+  const related =
+    '<a:RelatedEntities><a:KeyValuePairOfRelationshipEntityCollection>' +
+    '<b:key><a:SchemaName>widget_children</a:SchemaName></b:key><b:value><a:Entities><a:Entity><a:Attributes>' +
+    pair('name', str('Related requested')) +
+    '</a:Attributes><a:LogicalName>widget</a:LogicalName></a:Entity></a:Entities></b:value>' +
+    '</a:KeyValuePairOfRelationshipEntityCollection></a:RelatedEntities>';
+  const before = structuredClone(t.store.tableRows('widget'));
+  for (const message of ['Create', 'Update']) {
+    const target = entityValue(
+      'widget',
+      [pair('name', str('Must not persist'))],
+      `${message === 'Update' ? `<a:Id>${id}</a:Id>` : ''}${related}`,
+    );
+    const result = await t.send(execOne(message + 'Request', message, [pair('Target', target)]));
+    assert.equal(result.status, 500, result.body);
+    assert.match(result.body, /Entity.RelatedEntities requires a qualified graph-write adapter/);
+    assert.deepEqual(t.store.tableRows('widget'), before);
+  }
+  const empty = await t.send(
+    execOne('CreateRequest', 'Create', [
+      pair('Target', entityValue('widget', [pair('name', str('Empty collection allowed'))], '<a:RelatedEntities/>')),
+    ]),
+  );
+  assert.equal(empty.status, 200, empty.body);
+});
+
+test('SOAP refuses authored SDK concurrency request parameters before Update writes', async () => {
+  const t = await setup(),
+    id = await createWidget(t, [pair('name', str('Before concurrency'))]);
+  const before = structuredClone(t.store.tableRows('widget'));
+  for (const member of ['Default', 'IfRowVersionMatches', 'AlwaysOverwrite']) {
+    const target = entityValue(
+      'widget',
+      [pair('name', str('Must not persist'))],
+      `<a:Id>${id}</a:Id><a:RowVersion>17</a:RowVersion>`,
+    );
+    const result = await t.send(
+      execOne('UpdateRequest', 'Update', [
+        pair('Target', target),
+        pair('ConcurrencyBehavior', valueEl('a:ConcurrencyBehavior', member)),
+      ]),
+    );
+    assert.equal(result.status, 500, result.body);
+    assert.match(
+      result.body,
+      /Authored SDK ConcurrencyBehavior requires a qualified optimistic-concurrency execution adapter/,
+    );
+    assert.deepEqual(t.store.tableRows('widget'), before);
+  }
+});
+
+test('SOAP returns final typed plug-in results instead of reconstructing them from Web API bodies', async () => {
+  const t = await setup(),
+    id = await createWidget(t, [pair('name', str('Stored')), pair('code', str('one'))]),
+    replacement = '33333333-3333-4333-8333-333333333333';
+  let removeId = false,
+    conflict = false;
+  const native = {
+    $type: 'Entity',
+    logicalName: 'widget',
+    id,
+    attributes: {
+      name: 'Final typed row',
+      cash: { $type: 'Money', value: '9007199254740993.250001' },
+      alias: {
+        $type: 'AliasedValue',
+        entityLogicalName: 'widget',
+        attributeLogicalName: 'price',
+        value: { $type: 'Money', value: '4.25' },
+      },
+      reference: {
+        $type: 'EntityReference',
+        logicalName: 'widget',
+        id,
+        name: 'Reference label',
+        keyAttributes: { code: 'one' },
+        rowVersion: '17',
+      },
+    },
+    keyAttributes: { code: 'one' },
+    formattedValues: { cash: 'Exact display' },
+    rowVersion: '19',
+  };
+  const steps = ['Create', 'Retrieve', 'RetrieveMultiple', 'Update', 'Delete'].map((message, index) => ({
+    id: `55555555-5555-4555-8555-55555555555${index}`,
+    message,
+    enabled: true,
+    entity: 'widget',
+    stage: 40,
+    mode: 0,
+    rank: 1,
+    supportedDeployment: 0,
+    filteringAttributes: [],
+    images: [],
+    typeName: 'Invented.SoapReply',
+    assemblyId: 'invented',
+  }));
+  const handlers = new Map([
+    [
+      'Invented.SoapReply',
+      ({ context }) => {
+        if (context.MessageName === 'Create') {
+          if (removeId) delete context.OutputParameters.id;
+          else context.OutputParameters.id = replacement;
+        } else if (context.MessageName === 'Retrieve')
+          context.OutputParameters.BusinessEntity = structuredClone(native);
+        else if (context.MessageName === 'RetrieveMultiple') {
+          context.OutputParameters.BusinessEntityCollection = {
+            $type: 'EntityCollection',
+            entities: [structuredClone(native)],
+            entityName: 'widget',
+            moreRecords: true,
+            totalRecordCount: 7,
+            pagingCookie: 'opaque-cookie',
+            minActiveRowVersion: '23',
+            totalRecordCountLimitExceeded: true,
+          };
+          if (conflict)
+            context.OutputParameters.EntityCollection = structuredClone(
+              context.OutputParameters.BusinessEntityCollection,
+            );
+        }
+        context.OutputParameters.CustomGuid = { $type: 'Guid', value: replacement };
+        context.OutputParameters.CustomLarge = 5000000000;
+      },
+    ],
+  ]);
+  const items = pluginCatalogue({ plugins: { steps }, handlers });
+  const backend = await createOrganizationBackend({ store: t.store, items: () => items, handlers });
+  try {
+    const created = await t.send(
+      execOne('CreateRequest', 'Create', [pair('Target', entityValue('widget', [pair('name', str('Created'))]))]),
+    );
+    assert.equal(created.status, 200, created.body);
+    assert.equal(guidOf(created.body, 'id'), replacement);
+    assert.ok(
+      !t.store.tableRows('widget').some((row) => row.widgetid === replacement),
+      'the response id does not change main storage identity',
+    );
+    assert.equal(guidOf(created.body, 'CustomGuid'), replacement);
+    assert.match(created.body, /<b:key>CustomLarge<\/b:key><b:value i:type="c:long">5000000000<\/b:value>/);
+    removeId = true;
+    const removed = await t.send(
+      execOne('CreateRequest', 'Create', [pair('Target', entityValue('widget', [pair('name', str('No result id'))]))]),
+    );
+    assert.equal(removed.status, 200, removed.body);
+    assert.equal(guidOf(removed.body, 'id'), undefined);
+    assert.equal(guidOf(removed.body, 'CustomGuid'), replacement);
+    const bodyCreate = await t.send(
+      envelope(
+        `<Create xmlns="${NS.svc}"><entity i:type="a:Entity"><a:Attributes>${pair('name', str('Body no id'))}</a:Attributes><a:LogicalName>widget</a:LogicalName></entity></Create>`,
+      ),
+    );
+    assert.equal(bodyCreate.status, 200, bodyCreate.body);
+    assert.match(
+      bodyCreate.body,
+      /<svc:CreateResult i:type="e:guid">00000000-0000-0000-0000-000000000000<\/svc:CreateResult>/,
+    );
+    const retrieved = await t.send(
+      execOne('RetrieveRequest', 'Retrieve', [
+        pair('Target', refValue('widget', id)),
+        pair('ColumnSet', valueEl('a:ColumnSet', '<a:AllColumns>true</a:AllColumns><a:Columns/>')),
+      ]),
+    );
+    assert.equal(retrieved.status, 200, retrieved.body);
+    assert.equal(attrText(retrieved.body, 'name'), 'Final typed row');
+    assert.match(retrieved.body, /<b:key>cash<\/b:key><b:value i:type="a:Money">/);
+    assert.ok(retrieved.body.includes('9007199254740993.250001'));
+    assert.ok(retrieved.body.includes('Exact display'));
+    assert.ok(retrieved.body.includes('<a:RowVersion>19</a:RowVersion>'));
+    assert.ok(retrieved.body.includes('<a:RowVersion>17</a:RowVersion>'));
+    assert.match(retrieved.body, /<b:key>alias<\/b:key><b:value i:type="a:AliasedValue">/);
+    assert.equal(guidOf(retrieved.body, 'CustomGuid'), replacement);
+    const query = valueEl(
+      'a:QueryExpression',
+      '<a:EntityName>widget</a:EntityName><a:ColumnSet i:type="a:ColumnSet"><a:AllColumns>true</a:AllColumns><a:Columns/></a:ColumnSet>',
+    );
+    const many = await t.send(execOne('RetrieveMultipleRequest', 'RetrieveMultiple', [pair('Query', query)]));
+    assert.equal(many.status, 200, many.body);
+    assert.equal(rowCount(many.body), 1);
+    assert.ok(many.body.includes('<a:TotalRecordCount>7</a:TotalRecordCount>'));
+    assert.ok(many.body.includes('<a:MoreRecords>true</a:MoreRecords>'));
+    assert.ok(many.body.includes('<a:PagingCookie>opaque-cookie</a:PagingCookie>'));
+    assert.ok(many.body.includes('<a:MinActiveRowVersion>23</a:MinActiveRowVersion>'));
+    conflict = true;
+    const ambiguous = await t.send(execOne('RetrieveMultipleRequest', 'RetrieveMultiple', [pair('Query', query)]));
+    assert.equal(ambiguous.status, 500);
+    assert.match(ambiguous.body, /conflicting context and SDK response result aliases/);
+    const updated = await t.send(
+      execOne('UpdateRequest', 'Update', [
+        pair('Target', entityValue('widget', [pair('name', str('Updated'))], `<a:Id>${id}</a:Id>`)),
+      ]),
+    );
+    assert.equal(updated.status, 200, updated.body);
+    assert.equal(guidOf(updated.body, 'CustomGuid'), replacement);
+    const deleted = await t.send(execOne('DeleteRequest', 'Delete', [pair('Target', refValue('widget', id))]));
+    assert.equal(deleted.status, 200, deleted.body);
+    assert.equal(guidOf(deleted.body, 'CustomGuid'), replacement);
+  } finally {
+    await backend.close();
+  }
+});
+
+test('SOAP preserves original read query types and mutations, empty Retrieve columns and read bypass', async () => {
+  const t = await setup();
+  const id = await createWidget(t, [pair('name', str('alpha'))]);
+  await createWidget(t, [pair('name', str('beta'))]);
+  const emptyColumns = valueEl('a:ColumnSet', '<a:AllColumns>false</a:AllColumns><a:Columns/>');
+  const empty = await t.send(
+    execOne('RetrieveRequest', 'Retrieve', [pair('Target', refValue('widget', id)), pair('ColumnSet', emptyColumns)]),
+  );
+  assert.equal(empty.status, 200, empty.body);
+  assert.equal(attrText(empty.body, 'name'), undefined);
+  const allColumnsOne = await t.send(
+    execOne('RetrieveRequest', 'Retrieve', [
+      pair('Target', refValue('widget', id)),
+      pair('ColumnSet', valueEl('a:ColumnSet', '<a:AllColumns>1</a:AllColumns><a:Columns/>')),
+    ]),
+  );
+  assert.equal(allColumnsOne.status, 200, allColumnsOne.body);
+  assert.equal(attrText(allColumnsOne.body, 'name'), 'alpha');
+  const types = [];
+  t.store.setPluginPipeline(
+    (c) => {
+      if (c.stage !== 20) return;
+      types.push(c.query.$type);
+      if (c.query.$type === 'QueryByAttribute') c.query.values = ['alpha'];
+      else {
+        assert.equal(c.query.criteria.filterHint, 'union');
+        assert.equal(c.query.noLock, true);
+        c.query.criteria.conditions.push({ attributeName: 'name', operatorName: 'Equal', values: ['beta'] });
+      }
+    },
+    (c) => c.operation === 'retrievemultiple',
+  );
+  const qba = valueEl(
+    'a:QueryByAttribute',
+    '<a:EntityName>widget</a:EntityName><a:Attributes><b:string>name</b:string></a:Attributes>' +
+      '<a:ColumnSet i:type="a:ColumnSet"><a:AllColumns>true</a:AllColumns></a:ColumnSet>' +
+      `<a:Values>${str('beta')}</a:Values>`,
+  );
+  const qbaAnswer = await t.send(execOne('RetrieveMultipleRequest', 'RetrieveMultiple', [pair('Query', qba)]));
+  assert.equal(qbaAnswer.status, 200, qbaAnswer.body);
+  assert.equal(rowCount(qbaAnswer.body), 1);
+  assert.equal(attrText(qbaAnswer.body, 'name'), 'alpha');
+  const qe = valueEl(
+    'a:QueryExpression',
+    '<a:EntityName>widget</a:EntityName><a:NoLock>1</a:NoLock><a:ColumnSet i:type="a:ColumnSet"><a:AllColumns>true</a:AllColumns></a:ColumnSet>' +
+      '<a:Criteria><a:FilterOperator>And</a:FilterOperator><a:FilterHint>union</a:FilterHint><a:Conditions/></a:Criteria>',
+  );
+  const qeAnswer = await t.send(execOne('RetrieveMultipleRequest', 'RetrieveMultiple', [pair('Query', qe)]));
+  assert.equal(qeAnswer.status, 200, qeAnswer.body);
+  assert.equal(rowCount(qeAnswer.body), 1);
+  assert.equal(attrText(qeAnswer.body, 'name'), 'beta');
+  const bypassed = await t.send(
+    execOne('RetrieveMultipleRequest', 'RetrieveMultiple', [
+      pair('Query', qe),
+      pair('BypassBusinessLogicExecution', str('CustomSync')),
+    ]),
+  );
+  assert.equal(bypassed.status, 200, bypassed.body);
+  assert.equal(rowCount(bypassed.body), 2);
+  assert.deepEqual(types, ['QueryByAttribute', 'QueryExpression']);
+});
+
+test('SOAP selective step bypass checks privilege and keeps system IDs out of registered message inputs', async () => {
+  const t = await setup(),
+    selected = '30000000-0000-0000-0000-000000000001';
+  const create = execOne('CreateRequest', 'Create', [
+    pair('Target', entityValue('widget', [pair('name', str('Selected bypass'))])),
+    pair('BypassBusinessLogicExecutionStepIds', str(selected)),
+  ]);
+  assert.equal((await t.send(create, { user: t.basic })).status, 500);
+  assert.equal(t.store.tableRows('widget').length, 0);
+  const handle = t.api.records.handle;
+  t.api.records.handle = (c) => {
+    assert.deepEqual(c.bypassStepIds, [selected]);
+    return handle(c);
+  };
+  assert.equal((await t.send(create)).status, 200);
+  t.api.registry.register({
+    name: 'SelectiveEcho',
+    kind: 'action',
+    binding: 'unbound',
+    handle: (c) => {
+      assert.deepEqual(c.body, { Value: 'Declared' });
+      assert.deepEqual(c.bypassStepIds, [selected]);
+      assert.deepEqual(c.systemParameters, { BypassBusinessLogicExecutionStepIds: selected });
+      return { status: 200, body: { Value: c.body.Value } };
+    },
+  });
+  const result = await t.send(
+    execute('OrganizationRequest', 'SelectiveEcho', [
+      pair('Value', str('Declared')),
+      pair('BypassBusinessLogicExecutionStepIds', str(selected)),
+    ]),
+  );
+  assert.equal(result.status, 200, result.body);
+  assert.equal(attrText(result.body, 'Value'), 'Declared');
+});
+
 test("a metadata request is answered by the metadata handlers with the table's EntityMetadata", async () => {
   const t = await setup();
   const res = await t.send(execOne('RetrieveEntityRequest', 'RetrieveEntity', [pair('LogicalName', str('widget'))]));
@@ -834,7 +1578,13 @@ const CAPTURED_SDK_EXECUTE_MULTIPLE = `<s:Envelope xmlns:s="http://schemas.xmlso
 // The real SDK sends Requests as OrganizationRequestCollection in xrm/2012 (ExecuteMultiple).
 test('the captured SDK ExecuteMultiple runs every request of its xrm/2012 OrganizationRequestCollection', async () => {
   const t = await setup();
-  const res = await t.send(CAPTURED_SDK_EXECUTE_MULTIPLE);
+  const configured = await t.send(CAPTURED_SDK_EXECUTE_MULTIPLE);
+  assert.equal(configured.status, 500);
+  assert.match(configured.body, /Unsupported configured SDK property: OrganizationRequest.RequestId/);
+  assert.deepEqual(t.store.state.tables.widget, []);
+  const res = await t.send(
+    CAPTURED_SDK_EXECUTE_MULTIPLE.replace(/<a:RequestId>[^<]+<\/a:RequestId>/g, '<a:RequestId i:nil="true"/>'),
+  );
   assert.equal(res.status, 200, res.body);
   // Creates at indexes 0 and 2 run. The Delete at index 1 names a missing row, so it faults and ContinueOnError carries on.
   assert.deepEqual(
@@ -852,7 +1602,12 @@ test('the captured SDK ExecuteMultiple runs every request of its xrm/2012 Organi
 // The Retrieve capture (ColumnSet with an xrm/7.1 KeyAttributes and a Serialization/Arrays Columns list) reaches the record lookup.
 test('the captured SDK Retrieve decodes its ColumnSet and reaches the record lookup', async () => {
   const t = await setup();
-  const res = await t.send(CAPTURED_SDK_RETRIEVE);
+  const configured = await t.send(CAPTURED_SDK_RETRIEVE);
+  assert.equal(configured.status, 500);
+  assert.match(configured.body, /Unsupported configured SDK property: OrganizationRequest.RequestId/);
+  const res = await t.send(
+    CAPTURED_SDK_RETRIEVE.replace(/<a:RequestId>[^<]+<\/a:RequestId>/g, '<a:RequestId i:nil="true"/>'),
+  );
   assert.equal(res.status, 500, res.body);
   assert.equal(errorCode(res.body), -2147220969);
 });
@@ -1214,4 +1969,56 @@ test('a reference without an Id does not bind: the unbound operation of that nam
   const res = await t.send(execute('OrganizationRequest', 'Keyed', [pair('Target', keyless)]));
   assert.equal(res.status, 200, res.body);
   assert.equal(ran, true);
+});
+
+test('SOAP exact Boolean duplicate detection controls reach the real create and update rule hooks', async () => {
+  const t = await setup();
+  await installDuplicates(t.api);
+  const rule = '10000000-0000-4000-8000-000000000091';
+  t.store.state.tables.duplicaterule.push({
+    duplicateruleid: rule,
+    name: 'Invented name match',
+    baseentityname: 'widget',
+    matchingentityname: 'widget',
+    statecode: 1,
+    statuscode: 2,
+  });
+  t.store.state.tables.duplicaterulecondition.push({
+    duplicateruleconditionid: '10000000-0000-4000-8000-000000000092',
+    regardingobjectid: rule,
+    baseattributename: 'name',
+    matchingattributename: 'name',
+    operatorcode: 'ExactMatch',
+  });
+  await createWidget(t, [pair('name', str('Duplicate'))]);
+  const create = (extra) =>
+    t.send(
+      execOne('CreateRequest', 'Create', [
+        pair('Target', entityValue('widget', [pair('name', str('Duplicate'))])),
+        ...extra,
+      ]),
+    );
+  const refused = await create([pair('SuppressDuplicateDetection', bool(false))]);
+  assert.equal(refused.status, 500, refused.body);
+  assert.equal(errorCode(refused.body), Number.parseInt('80040333', 16) | 0);
+  assert.equal(t.store.tableRows('widget').length, 1);
+  assert.equal((await create([pair('SuppressDuplicateDetection', bool(true))])).status, 200);
+  assert.equal((await create([])).status, 200, 'A previous false flag cannot leak into an omitted default');
+  assert.equal(t.store.tableRows('widget').length, 3);
+  const different = await createWidget(t, [pair('name', str('Different'))]);
+  const target = entityValue('widget', [pair('widgetid', guidValue(different)), pair('name', str('Duplicate'))]);
+  const update = (flag) =>
+    t.send(execOne('UpdateRequest', 'Update', [pair('Target', target), pair('SuppressDuplicateDetection', flag)]));
+  const denied = await update(bool(false));
+  assert.equal(denied.status, 500);
+  assert.equal(errorCode(denied.body), Number.parseInt('80040333', 16) | 0);
+  assert.equal(t.store.tableRows('widget').find((row) => row.widgetid === different).name, 'Different');
+  assert.equal((await update(bool(true))).status, 200);
+  const before = structuredClone(t.store.tableRows('widget'));
+  assert.equal((await create([pair('SuppressDuplicateDetection', str('false'))])).status, 500);
+  assert.deepEqual(t.store.tableRows('widget'), before);
+  const unsupported = await create([pair('InventedOptional', bool(true))]);
+  assert.equal(unsupported.status, 500);
+  assert.match(unsupported.body, /Unsupported SOAP Create request parameter: InventedOptional/);
+  assert.deepEqual(t.store.tableRows('widget'), before, 'Configured unknown controls must fail before record effects');
 });

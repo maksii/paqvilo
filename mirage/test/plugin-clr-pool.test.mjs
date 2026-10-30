@@ -172,7 +172,7 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
     );
     compileClr(source, executable, { target: 'exe' });
     for (const pooled of [false, true])
-      for (const mode of ['null', 'array', 'pending'])
+      for (const mode of ['null', 'array', 'pending', ...(pooled ? ['invalid-timeout'] : [])])
         await t.test(`${pooled ? 'pooled' : 'fresh'} ${mode}`, async (sub) => {
           const { port1, port2 } = new MessageChannel(),
             signal = new SharedArrayBuffer(4),
@@ -196,10 +196,14 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
           const failure = await new Promise((resolve, reject) => {
             worker.once('error', reject);
             port1.on('message', (message) => {
-              if (message.kind === 'owned-child') pid = message.pid;
+              if (message.kind === 'owned-child') {
+                pid = message.pid;
+                if (mode === 'invalid-timeout')
+                  port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 10001 });
+              }
               if (message.kind === 'failure') resolve(message);
             });
-            if (pooled)
+            if (pooled && mode !== 'invalid-timeout')
               port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 10000 });
           });
           assert.equal(failure.code, 'LocalPluginProtocol', failure.message);
