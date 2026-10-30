@@ -1813,6 +1813,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
       input.context?.OwningExtension?.id,
       constructorConfiguration,
       runtime.descriptor,
+      { mainOperation: Number(input.context?.Stage) === 30 },
     ),
   };
   const worker =

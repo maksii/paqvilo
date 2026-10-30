@@ -422,8 +422,10 @@ function cmsCertificate(buffer) {
   throw invalid('CMS signer certificate is missing');
 }
 
-function packageSignature(buffer) {
-  // The ZIP central directory supplies sizes even when local headers use data descriptors. ZIP64/encryption are refused.
+// The entries of a NuGet package ZIP, read from its central directory (which supplies sizes even when local headers use data
+// descriptors). ZIP64, multi-disk archives and encryption are refused. Each entry's bytes are read on demand, inflated to at
+// most limit bytes.
+function* packageEntries(buffer) {
   let end = -1;
   for (let offset = buffer.length - 22; offset >= Math.max(0, buffer.length - 65557); offset--) {
     if (
@@ -450,25 +452,60 @@ function packageSignature(buffer) {
       commentLength = u16(buffer, offset + 32, 'ZIP comment');
     at(buffer, offset + 46, nameLength + extraLength + commentLength, 'ZIP entry');
     const name = buffer.toString('utf8', offset + 46, offset + 46 + nameLength);
-    if (name === '.signature.p7s') {
-      if (flags & 1 || ![0, 8].includes(method) || expanded > CERTIFICATE_LIMIT || compressed > CERTIFICATE_LIMIT)
-        throw invalid('unsupported package signature ZIP entry');
-      const local = u32(buffer, offset + 42, 'ZIP local offset');
-      if (u32(buffer, local, 'ZIP local entry') !== 0x04034b50) throw invalid('invalid ZIP local signature entry');
-      const start = local + 30 + u16(buffer, local + 26, 'ZIP local name') + u16(buffer, local + 28, 'ZIP local extra');
-      const bytes = buffer.subarray(at(buffer, start, compressed, 'ZIP signature bytes'), start + compressed);
-      let signature;
-      try {
-        signature = method === 8 ? inflateRawSync(bytes, { maxOutputLength: CERTIFICATE_LIMIT }) : bytes;
-      } catch {
-        throw invalid('invalid compressed package signature');
-      }
-      if (signature.length !== expanded) throw invalid('package signature size mismatch');
-      return signature;
-    }
+    const local = u32(buffer, offset + 42, 'ZIP local offset');
+    yield {
+      name,
+      bytes(limit) {
+        if (flags & 1 || ![0, 8].includes(method) || expanded > limit || compressed > limit)
+          throw invalid(`unsupported ZIP entry ${name}`);
+        if (u32(buffer, local, 'ZIP local entry') !== 0x04034b50) throw invalid(`invalid ZIP local entry ${name}`);
+        const start =
+          local + 30 + u16(buffer, local + 26, 'ZIP local name') + u16(buffer, local + 28, 'ZIP local extra');
+        const packed = buffer.subarray(at(buffer, start, compressed, 'ZIP entry bytes'), start + compressed);
+        let bytes;
+        try {
+          bytes = method === 8 ? inflateRawSync(packed, { maxOutputLength: limit }) : packed;
+        } catch {
+          throw invalid(`invalid compressed ZIP entry ${name}`);
+        }
+        if (bytes.length !== expanded) throw invalid(`ZIP entry size mismatch ${name}`);
+        return bytes;
+      },
+    };
     offset += 46 + nameLength + extraLength + commentLength;
   }
+}
+
+function packageSignature(buffer) {
+  for (const entry of packageEntries(buffer))
+    if (entry.name === '.signature.p7s') return entry.bytes(CERTIFICATE_LIMIT);
   return null;
+}
+
+const xmlText = (xml, tag) =>
+  new RegExp(`<(?:\\w+:)?${tag}>\\s*([^<]*?)\\s*</(?:\\w+:)?${tag}>`).exec(xml)?.[1] ?? null;
+/**
+ * A NuGet plug-in package (dependent assemblies): its nuspec id and version and every assembly under lib/, each inspected
+ * like inspectAssembly (identity and types; never loaded). Content that is not a NuGet package ZIP throws InvalidAssembly;
+ * a lib/ entry that is not a .NET assembly is a resource (not returned).
+ */
+export function inspectPackage(input, { limit = 16 * 1024 * 1024 } = {}) {
+  const buffer = Buffer.from(input);
+  let nuspec = null;
+  const assemblies = [];
+  for (const entry of packageEntries(buffer)) {
+    if (/^[^/]+\.nuspec$/i.test(entry.name)) nuspec = entry.bytes(1024 * 1024).toString('utf8');
+    else if (/^lib\/[^/]+\/[^/]+\.dll$/i.test(entry.name)) {
+      const bytes = entry.bytes(limit);
+      try {
+        assemblies.push({ path: entry.name, bytes, ...inspectAssembly(bytes) });
+      } catch (error) {
+        if (!(error instanceof InvalidAssembly)) throw error;
+      }
+    }
+  }
+  if (!nuspec) throw invalid('NuGet package has no .nuspec');
+  return { id: xmlText(nuspec, 'id'), version: xmlText(nuspec, 'version'), assemblies };
 }
 
 /** Signing certificate facts of a PE assembly or NuGet package. Null means no embedded signature; malformed data fails. */
