@@ -157,7 +157,7 @@ test('failed CLR preparation removes only its owned cache directory', { skip: CL
 });
 
 test(
-  'CLR workers reject non-object output and completion with pending SDK calls and kill owned children',
+  'CLR workers reject malformed output and bound a host stalled before dispatch, then kill owned children',
   { skip: CLR_SKIP },
   async (t) => {
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-protocol-'));
@@ -167,12 +167,13 @@ test(
     await fs.writeFile(
       source,
       `using System;public static class Protocol{public static void Main(){var line=Console.ReadLine();
+if(line.Contains("startup-gate")){Console.WriteLine("{\\"kind\\":\\"trace\\",\\"message\\":\\"Host waiting before plugin dispatch\\"}");Console.ReadLine();Console.WriteLine("{\\"kind\\":\\"result\\"}");return;}
 if(line.Contains("pending")){Console.WriteLine("{\\"kind\\":\\"rpc\\"}");Console.WriteLine("{\\"kind\\":\\"result\\"}");}
 else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("null");System.Threading.Thread.Sleep(30000);}}`,
     );
     compileClr(source, executable, { target: 'exe' });
     for (const pooled of [false, true])
-      for (const mode of ['null', 'array', 'pending', ...(pooled ? ['invalid-timeout'] : [])])
+      for (const mode of ['null', 'array', 'pending', 'startup-gate', ...(pooled ? ['invalid-timeout'] : [])])
         await t.test(`${pooled ? 'pooled' : 'fresh'} ${mode}`, async (sub) => {
           const { port1, port2 } = new MessageChannel(),
             signal = new SharedArrayBuffer(4),
@@ -181,7 +182,9 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
             new URL(pooled ? '../lib/plugin-clr-pool-worker.mjs' : '../lib/plugin-clr-worker.mjs', import.meta.url),
             { workerData: { port: port2, signal, executable, input, timeout: 10000 }, transferList: [port2] },
           );
-          let pid;
+          let pid,
+            waitingBeforeDispatch = false,
+            completed = false;
           sub.after(async () => {
             if (pid)
               try {
@@ -196,6 +199,9 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
           const failure = await new Promise((resolve, reject) => {
             worker.once('error', reject);
             port1.on('message', (message) => {
+              if (message.kind === 'trace' && message.message === 'Host waiting before plugin dispatch')
+                waitingBeforeDispatch = true;
+              if (message.kind === 'result') completed = true;
               if (message.kind === 'owned-child') {
                 pid = message.pid;
                 if (mode === 'invalid-timeout')
@@ -206,10 +212,19 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
             if (pooled && mode !== 'invalid-timeout')
               port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 10000 });
           });
-          assert.equal(failure.code, 'LocalPluginProtocol', failure.message);
+          assert.equal(
+            failure.code,
+            mode === 'startup-gate' ? 'LocalPluginTimeout' : 'LocalPluginProtocol',
+            failure.message,
+          );
+          if (mode === 'startup-gate') {
+            assert.equal(waitingBeforeDispatch, true, 'the protocol gate precedes plugin dispatch');
+            assert.equal(completed, false, 'the gate cannot produce a result without a second input line');
+          }
           if (pooled) assert.equal(failure.invocationId, 'invented-invocation');
           assert.ok(pid > 0);
-          // The host sleeps 30 seconds after its malformed line, so only the worker's kill makes it absent.
+          // Malformed hosts stay alive and the startup gate waits for input the
+          // driver never sends, so only the worker's kill makes either absent.
           assert.equal(await processAbsent(pid, HOST_EXIT_LIMIT_MS), true, 'worker must stop its malformed host');
         });
   },

@@ -7,6 +7,7 @@ import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { prepareClrRuntime, dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 
 const empty = '00000000-0000-0000-0000-000000000000',
   user = '10000000-0000-0000-0000-000000000001',
@@ -44,6 +45,10 @@ public sealed class Caller:IPlugin {public void Execute(IServiceProvider p){var 
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
+      // This semantic fixture launches fresh CLR processes, including nested
+      // SDK observers. Use the established ordinary-fixture startup/execution
+      // budget; the production default and dedicated timeout cases stay intact.
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       serviceProfile: {
         userId: user,
         evidence: 'Invented authored empty primary attribute',

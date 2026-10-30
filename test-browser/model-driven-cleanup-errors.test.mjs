@@ -8,6 +8,7 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { inspect } from 'node:util';
 import { chromium } from 'playwright-core';
 import run from '../lense/commands/model-driven.mjs';
 
@@ -468,7 +469,13 @@ test(
     assert.match(failure.message, /Could not open the model-driven app/);
     assert.equal(failure.errors.length, 2);
     assert.match(failure.errors[0].message, /Could not open the model-driven app/);
-    assert.match(failure.errors[1].code, /EISDIR|EPERM/);
+    // The filesystem failure may arrive alone or inside the inspector's own
+    // cleanup AggregateError when another teardown step also lost the browser.
+    const leaves = (error) => (error instanceof AggregateError ? error.errors.flatMap(leaves) : [error]);
+    assert.ok(
+      leaves(failure.errors[1]).some((error) => /EISDIR|EPERM/.test(error.code ?? '')),
+      inspect(failure.errors[1], { depth: 4 }),
+    );
     assert.ok(
       contexts.every((context) => context.pages().length === 0),
       'owned browser contexts close after inspector failure',
