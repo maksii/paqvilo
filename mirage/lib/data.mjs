@@ -2484,6 +2484,8 @@ export class DataStore {
       ...(options.preValidationSourceOperation
         ? { preValidationSourceOperation: options.preValidationSourceOperation }
         : {}),
+      // A record a bulk message delegates runs only its own message's steps (plugin-single-multiple.mjs).
+      ...(options.bulkOrigin ? { bulkOrigin: true } : {}),
       ...(options.omitConcurrencyBehavior
         ? { concurrencyBehavior: null }
         : options.pluginConcurrencyBehavior === undefined

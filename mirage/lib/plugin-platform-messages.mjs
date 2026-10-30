@@ -515,7 +515,7 @@ export function refuseDeleteMultiple(store, { mapping, rows, identity, options =
               cloneStateData(row),
               identity,
               Object.keys(target),
-              options,
+              { ...options, bulkOrigin: true },
             ];
           })(),
         );

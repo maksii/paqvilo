@@ -125,7 +125,8 @@ test('async-only implicit multiple steps retain the known source request metadat
       assert.equal(context.OperationCreatedOn, queuedTime.replace(/Z$/, ''));
       assert.equal(Object.hasOwn(context.InputParameters, 'Target'), false);
       assert.equal(context.InputParameters.Targets.length, 1);
-      assert.equal(Object.hasOwn(context.OutputParameters, 'id'), false);
+      // Native recorder corpus crud/depth: the queued CreateMultiple job of a single Create has the Create's id output.
+      assert.equal(Object.hasOwn(context.OutputParameters, 'id'), operation === 'create');
       assert.equal(store.tableRows('asyncoperation')[0].statuscode, 30);
       assert.equal(store.pluginSdkTag, undefined);
     });
@@ -179,55 +180,74 @@ test('typed async contexts bind each actual System Job identity and creation tim
   assert.equal(sourceFrame.operationId, id(90), 'the originating synchronous frame was not overwritten');
 });
 
-test('partial saved multiple frames retain known source metadata while explicit wrapper metadata takes precedence', async (t) => {
-  for (const explicit of [false, true])
-    await t.test(explicit ? 'explicit wrapper fields' : 'empty wrapper frame', async (t) => {
-      const store = await makeStore(),
-        scheduler = createScheduler({ clock: store.clock, manual: true }),
-        seen = [];
-      store.scheduler = scheduler;
-      const handlers = new Map([
-          [
-            'Invented.AsyncIdentity',
-            ({ context }) => {
-              seen.push(context);
-            },
-          ],
-        ]),
-        items = pluginCatalogue({ plugins: { steps: [step(3, { message: 'UpdateMultiple' })] }, handlers }),
-        runner = createAsyncPluginRunner({
-          store,
-          items: () => items,
-          handlers,
-          runtimes: new Map(),
-          systemJobs: () => true,
-        });
-      t.after(async () => {
-        await runner.close();
-        await scheduler.close();
-        store.close();
-      });
-      const multipleFrame = explicit ? { requestId: id(95), requestTag: 'wrapper canonical' } : {};
-      await store.transact(() =>
-        store.recordCommittedEvent('widget', 'update', store.tableRows('widget')[0], ['title'], {
-          target: { title: 'Updated' },
-          identity: { admin: true },
-          frame: { ...sourceFrame, requestTag: 'source canonical', multipleFrame },
-        }),
-      );
-      await scheduler.runDue();
-      await runner.drain();
-      const job = store.tableRows('asyncoperation')[0];
-      assert.equal(job.statuscode, 30, job.message);
-      assert.equal(seen.length, 1);
-      assert.equal(seen[0].RequestId, explicit ? id(95) : sourceFrame.requestId);
-      assert.equal(job.requestid, seen[0].RequestId);
-      assert.equal(seen[0].SharedVariables.tag, explicit ? 'wrapper canonical' : 'source canonical');
-      assert.equal(seen[0].OperationId, job.asyncoperationid);
-      assert.equal(seen[0].OperationCreatedOn, job.createdon.replace(/Z$/, ''));
-      assert.equal(Object.hasOwn(seen[0].InputParameters, 'Target'), false);
-      assert.equal(seen[0].InputParameters.Targets.length, 1);
+// @test-kind parity: native recorder corpus crud (async UpdateMultiple/40/m1 beside Update/40/m1 of the same PATCH): the multiple job sees the single job's request, shared variables and row under its own System Job identity
+test('a queued multiple job runs the saved single-message frame under its own message name and System Job', async (t) => {
+  const store = await makeStore(),
+    scheduler = createScheduler({ clock: store.clock, manual: true }),
+    seen = [];
+  store.scheduler = scheduler;
+  const handlers = new Map([
+      [
+        'Invented.AsyncIdentity',
+        ({ context }) => {
+          seen.push(context);
+        },
+      ],
+    ]),
+    items = pluginCatalogue({
+      plugins: { steps: [step(3, { message: 'Update' }), step(4, { message: 'UpdateMultiple' })] },
+      handlers,
+    }),
+    runner = createAsyncPluginRunner({
+      store,
+      items: () => items,
+      handlers,
+      runtimes: new Map(),
+      systemJobs: () => true,
     });
+  t.after(async () => {
+    await runner.close();
+    await scheduler.close();
+    store.close();
+  });
+  await store.transact(() =>
+    store.recordCommittedEvent('widget', 'update', store.tableRows('widget')[0], ['title'], {
+      target: { title: 'Updated' },
+      identity: { admin: true },
+      frame: {
+        ...sourceFrame,
+        requestTag: 'source canonical',
+        sharedVariables: { $type: 'ParameterCollection', values: { tag: 'source canonical', shared: 'from 20' } },
+      },
+    }),
+  );
+  await scheduler.runDue();
+  await runner.drain();
+  const jobs = store.tableRows('asyncoperation');
+  assert.deepEqual(
+    jobs.map((job) => [job.messagename, job.statuscode]),
+    [
+      ['Update', 30],
+      ['UpdateMultiple', 30],
+    ],
+  );
+  assert.deepEqual(
+    seen.map((context) => context.MessageName),
+    ['Update', 'UpdateMultiple'],
+  );
+  const [single, multiple] = seen;
+  for (const [index, context] of seen.entries()) {
+    assert.equal(context.RequestId, sourceFrame.requestId);
+    assert.equal(context.OperationId, jobs[index].asyncoperationid);
+    assert.equal(context.OperationCreatedOn, jobs[index].createdon.replace(/Z$/, ''));
+    assert.equal(context.PrimaryEntityId, id(1));
+    assert.deepEqual(context.SharedVariables, { tag: 'source canonical', shared: 'from 20' });
+  }
+  assert.notEqual(single.OperationId, multiple.OperationId);
+  assert.equal(Object.hasOwn(multiple.InputParameters, 'Target'), false);
+  assert.equal(multiple.InputParameters.Targets.length, 1);
+  assert.equal(multiple.InputParameters.Targets[0].id, id(1));
+  assert.equal(multiple.InputParameters.Targets[0].attributes.title, single.InputParameters.Target.title);
 });
 
 test('queued multiple execution preserves the actual originating SDK depth independently of the flow chain counter', async (t) => {

@@ -37,6 +37,7 @@ import { runtimeConstructorSettings } from './plugin-constructor-configuration.m
 import { validateSdkTag, canonicalTagParent } from './plugin-request-tag.mjs';
 import { executePlatformSdkMessage, isPlatformSdkMessage } from './plugin-platform-messages.mjs';
 import { formatPipelineTargets, pipelineFormattedValues } from './plugin-formatted-values.mjs';
+import { bridgeTargetInputs } from './plugin-single-multiple.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginClrConfiguration', status = 409) => {
@@ -1662,7 +1663,20 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
     executionMode: session ? 'pooled-fresh-instance' : 'fresh-host',
   };
 }
-export function clrContext({ runtime, store, step, entity, operation, stage, target, record, previous, frame, depth }) {
+export function clrContext({
+  runtime,
+  store,
+  step,
+  entity,
+  operation,
+  stage,
+  target,
+  record,
+  previous,
+  frame,
+  depth,
+  bridged = false,
+}) {
   const descriptor = runtime.descriptor,
     context = descriptor.context,
     parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),
@@ -1767,6 +1781,8 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
         onexternalupdated: 'OnExternalUpdated',
         onexternaldeleted: 'OnExternalDeleted',
       }[operation] ??
+      // A bridged step runs the single message's pipeline under its own multiple message name.
+      (bridged ? operation[0].toUpperCase() + operation.slice(1) + 'Multiple' : null) ??
       operation[0].toUpperCase() + operation.slice(1);
   const externalParameters = frame.externalEvent
     ? {
@@ -1912,7 +1928,8 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
       PrimaryEntityId: typed(
         'Guid',
-        ['associate', 'disassociate'].includes(operation)
+        // A queued DeleteMultiple job names no row (native crud, async, upsert: its context and parents carry Guid.Empty).
+        ['associate', 'disassociate'].includes(operation) || (bridged && asynchronous && operation === 'delete')
           ? '00000000-0000-0000-0000-000000000000'
           : primary
             ? (record[primary] ?? '00000000-0000-0000-0000-000000000000')
@@ -2046,7 +2063,10 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   if (crud && stage !== 10 && !frame.delegatedSourceOperation)
     answer.context.ParentContext = mainOperationParent({
       frame,
-      context: answer.context,
+      // A bridged multiple step's parent is the single message's main operation.
+      context: bridged
+        ? { ...answer.context, MessageName: operation[0].toUpperCase() + operation.slice(1) }
+        : answer.context,
       parent: asynchronous ? (frame.mainOuterParent ?? null) : parent,
       callerUserId,
       objectId,
@@ -2102,5 +2122,6 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     values: answer.inputParameters.values,
     currencyId: bulk ? undefined : record?.transactioncurrencyid,
   });
+  if (bridged) answer.inputParameters.values = bridgeTargetInputs(answer.inputParameters.values, entity);
   return answer;
 }
