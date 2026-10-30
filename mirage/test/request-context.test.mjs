@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 // Request context (lib/request-context.mjs): one context per call in the organization ALS. The client correlation id of a
 // Web API call reaches the committed event and the asynchronous web hook payload; a child context goes one level deeper.
 import test from 'node:test';
@@ -10,15 +11,8 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
 import { webhookDelivery } from '../lib/dataverse-webhooks.mjs';
-import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
-import {
-  pluginCatalogue,
-  pluginPhaseRequiresCheckpoint,
-  pluginStepMatchesEntity,
-  runPluginPhase,
-} from '../lib/exported-plugins.mjs';
+import { wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 import { createRequestContext, currentRequest, runWithRequest } from '../lib/request-context.mjs';
 import { ownsChange, runOwned } from '../lib/dataverse-transaction-context.mjs';
 import { fixedClock, sequentialIds } from '../testing.mjs';
@@ -168,37 +162,7 @@ test('x-ms-correlation-request-id reaches the committed event and the asynchrono
   );
   const webhooks = webhookDelivery(store),
     diagnostics = [];
-  const steps = () =>
-    pluginCatalogue({
-      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
-      handlers: new Map(),
-    });
-  store.setPluginPipeline(
-    (context) =>
-      runPluginPhase({
-        ...context,
-        store,
-        items: steps(),
-        handlers: new Map(),
-        webhooks,
-        diagnostic: (entry) => diagnostics.push(entry),
-      }),
-    ({ entity, operation }) =>
-      steps().some(
-        (item) =>
-          item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation,
-      ),
-    (context) => pluginPhaseRequiresCheckpoint(steps(), context),
-  );
-  const runner = createAsyncPluginRunner({
-    store,
-    items: steps,
-    handlers: new Map(),
-    runtimes: new Map(),
-    webhooks,
-    diagnostic: (entry) => diagnostics.push(entry),
-    systemJobs: () => true,
-  });
+  const runner = wireRegisteredSteps(store, webhooks, (entry) => diagnostics.push(entry));
   t.after(async () => {
     await runner.close();
     await server.close();

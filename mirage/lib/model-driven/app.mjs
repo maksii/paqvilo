@@ -68,6 +68,15 @@ const esc = (value) =>
     (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char],
   );
 const csrf = $('meta[name="mirage-csrf"]').content;
+// The shell's root (http.mjs fills the metas): every call of the app joins the page trace (docs/design/tracing.md).
+const traceHeaders = Object.fromEntries(
+  [
+    ['x-trace-id', 'mirage-trace-id'],
+    ['x-sim-parent-trace', 'mirage-trace-parent'],
+  ]
+    .map(([header, meta]) => [header, $(`meta[name="${meta}"]`)?.content])
+    .filter(([, value]) => value),
+);
 const storage = {
   get(key, fallback) {
     try {
@@ -225,6 +234,7 @@ async function api(path = '', options = {}) {
     ...options,
     headers: {
       'content-type': 'application/json',
+      ...traceHeaders,
       'x-sim-csrf': csrf,
       'x-mirage-provenance-format': '1',
       ...(app?.id ? { 'x-mirage-app': app.id } : {}),
@@ -4024,7 +4034,7 @@ async function customPageExists(name) {
   const resolved = app.customPages?.[String(name).toLowerCase()];
   if (!resolved?.supported) throw customPageMissing(name, resolved?.reason);
   const response = await fetch('/_apps/canvas/api/' + encodeURIComponent(name), {
-    headers: { accept: 'application/json' },
+    headers: { accept: 'application/json', ...traceHeaders },
   });
   if (response.status === 404) {
     const body = await response.json().catch(() => ({}));

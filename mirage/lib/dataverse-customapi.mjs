@@ -686,14 +686,34 @@ async function driveMessageAsync(iterator) {
   return next.value;
 }
 
-function invoke(api, name, c, options) {
-  const execute = () => driveMessageAsync(invokeSteps(api, name, c, options));
-  if (api.store.inTransaction?.()) return execute();
-  const atomic = api.runAtomic ?? ((fn) => api.store.transact(fn));
-  return api.change(() => atomic(execute));
+// One custom-api span per invocation (docs/design/tracing.md): the handler's trace lines are its events, and its writes nest
+// under it; the inputs and outputs are captured only at level full.
+function tracedInvocation(api, name, c, run) {
+  const traces = api.store.traces;
+  if (!traces?.enabled) return run(null);
+  return traces.wrap(
+    {
+      kind: 'custom-api',
+      name,
+      module: 'customapi',
+      operation: 'action',
+      entity: c.target?.mapping?.logicalName ?? null,
+      recordId: c.target?.id == null ? null : String(c.target.id),
+    },
+    run,
+  );
 }
 
-function* invokeSteps(api, name, c, options, synchronous = false) {
+function invoke(api, name, c, options) {
+  return tracedInvocation(api, name, c, (span) => {
+    const execute = () => driveMessageAsync(invokeSteps(api, name, c, options, false, span));
+    if (api.store.inTransaction?.()) return execute();
+    const atomic = api.runAtomic ?? ((fn) => api.store.transact(fn));
+    return api.change(() => atomic(execute));
+  });
+}
+
+function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
   const { handlers, pluginTypes = new Map(), timeoutMs: limit } = options;
   const { store } = api;
   // The limit may be a function, read per call: the admin Environment settings change it while the simulator runs.
@@ -721,12 +741,20 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
     );
   if (original?.descriptor && !original.step)
     throw new DataError(original.reason, 501, 'LocalPluginMainContextUnavailable');
-  // The plug-in's type (the custom API name when the pack names none) and the trace lines its handler writes.
+  span?.set({
+    isFunction: row.isfunction === true,
+    bindingType: Number(row.bindingtype ?? 0),
+    handler: registration ? 'handler' : fxIdOf(row) ? 'powerfx' : original?.descriptor ? 'clr' : 'none',
+  });
+  // The plug-in's type (the custom API name when the pack names none) and the trace lines its handler writes; it runs as
+  // the main operation (stage 30) at the main operation's depth (its fault identity, D-R3-19).
   const plugin = {
     name: row.uniquename,
     id: row.customapiid,
     type: registration?.pluginType ?? original?.type?.typename ?? row.uniquename,
     traces: [],
+    stage: 30,
+    depth: pluginExecutionDepth() + 1,
   };
   // Typed inputs, the bound target (entity or collection) and the caller. Without a pack handler the outputs are the defaults.
   const ctx = {
@@ -737,7 +765,10 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
     version: c.version,
     caller: c.caller,
     target: c.target && { logicalName: c.target.mapping?.logicalName, id: c.target.id, row: c.target.row },
-    trace: (text) => plugin.traces.push(String(text)),
+    trace: (text) => {
+      plugin.traces.push(String(text));
+      span?.event('trace', { message: String(text) });
+    },
   };
   const entity = row.bindingtype ? row.boundentitylogicalname : 'none',
     operation = row.uniquename.toLowerCase(),
@@ -782,6 +813,7 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
       },
     },
     mainFrame = false;
+  plugin.depth = frame.operationDepth;
   const parentContext = store.pluginParentContext ?? pluginInvocationSdkParent(store);
   const contextOf = (depth) => {
     frame ??= {};
@@ -1022,6 +1054,7 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
         inputs: ctx.inputs,
         outputs,
       });
+    span?.output(() => ({ inputs: ctx.inputs, outputs }));
     // Assumed: an action with no response properties returns 204.
     const response = properties.length
       ? { status: 200, body: responseBody(c, row, properties, outputs) }
@@ -1553,16 +1586,43 @@ function internalMessageContext(api, { principal, name, target = null, parameter
           ? { mapping }
           : undefined,
   };
-  return { op, context };
+  // The message is one span named by it (D-R3-8, as a Web API message call): the bound record, the systemuser it runs as
+  // (the actor stays the caller's, a flow for a flow action), the parameters and the answer at level full. A custom API's own
+  // span and the writes it makes nest under it.
+  const span = {
+    kind: action ? 'action' : 'function',
+    name: entity ? `${name} ${entity}` : name,
+    module: 'dataverse',
+    operation: name,
+    entity: entity ?? null,
+    recordId: row ? String(row[mapping.idColumn]) : null,
+    attributes: { message: name, binding, caller: 'internal', systemUserId: user.systemuserid ?? null },
+    input: () => ({ parameters }),
+  };
+  return { op, context, span };
+}
+
+function tracedMessage(api, spec, run) {
+  const traces = api.store.traces;
+  if (!traces?.enabled) return run();
+  return traces.wrap(spec, (span) => {
+    const done = (answer) => {
+      span.set({ statusCode: answer?.status ?? 204 });
+      span.output(() => answer?.body ?? null);
+      return answer;
+    };
+    const answer = run();
+    return typeof answer?.then === 'function' ? answer.then(done) : done(answer);
+  });
 }
 
 async function executeMessageInternal(api, request) {
-  const { op, context } = internalMessageContext(api, request);
+  const { op, context, span } = internalMessageContext(api, request);
   context.bypassStepIds = request.bypassStepIds;
   context.bypassCustomPlugins = request.bypassCustomPlugins === true;
   context.bypassCustomAsync = request.bypassCustomAsync === true;
   context.systemParameters = request.systemParameters;
-  const result = await op.handle(context);
+  const result = await tracedMessage(api, span, () => op.handle(context));
   if (!result) return { statusCode: 204, body: {} };
   const body =
     result.body !== null && typeof result.body === 'object' && !Buffer.isBuffer(result.body)
@@ -1576,7 +1636,7 @@ function executeMessageSyncInternal(api, request, options) {
     request.parameters?.$type === 'ParameterCollection'
       ? pluginMessageValues(request.parameters, api.store)
       : request.parameters;
-  const { op, context } = internalMessageContext(api, { ...request, parameters });
+  const { op, context, span } = internalMessageContext(api, { ...request, parameters });
   context.bypassCustomPlugins = request.bypassCustomPlugins === true;
   context.bypassCustomAsync = request.bypassCustomAsync === true;
   context.bypassStepIds = request.bypassStepIds;
@@ -1584,7 +1644,11 @@ function executeMessageSyncInternal(api, request, options) {
   context.sdkFromSandbox = request.sdkFromSandbox === true;
   if (!apiNamed(api.store, op.name))
     throw new DataError('This message has no synchronous SDK execution adapter.', 501, 'LocalPluginSdkUnsupported');
-  const result = driveMessageSync(invokeSteps(api, op.name, context, options, true));
+  const result = tracedMessage(api, span, () =>
+    tracedInvocation(api, op.name, context, (invocation) =>
+      driveMessageSync(invokeSteps(api, op.name, context, options, true, invocation)),
+    ),
+  );
   return { statusCode: result.status, body: result.body ?? {}, outputs: result.sdkOutputs };
 }
 

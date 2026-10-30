@@ -164,16 +164,23 @@ function* assignChildren(api, state, c, parent, previousOwner, newOwner, visited
 
 // Runs the child writes on the drive of the write that assigned the parent: the synchronous drive (a plug-in's own SDK call)
 // writes with store.updateRecord; every other write awaits store.updateRecordAsync, so a child's synchronous service
-// endpoint step posts in process instead of on the synchronous I/O bridge.
-function cascadeAssign(api, writes, sync) {
+// endpoint step posts in process instead of on the synchronous I/O bridge. done(rows) receives the count of child writes.
+function cascadeAssign(api, writes, sync, done) {
+  let rows = 0;
   if (sync) {
-    for (const [table, id, values, identity, options] of writes)
+    for (const [table, id, values, identity, options] of writes) {
       api.store.updateRecord(table, id, values, identity, options);
+      rows += 1;
+    }
+    done(rows);
     return undefined;
   }
   return (async () => {
-    for (const [table, id, values, identity, options] of writes)
+    for (const [table, id, values, identity, options] of writes) {
       await api.store.updateRecordAsync(table, id, values, identity, options);
+      rows += 1;
+    }
+    done(rows);
   })();
 }
 
@@ -211,6 +218,20 @@ function install(api, { diagnostic } = {}) {
     const rows = api.store.tableRows(mapping.logicalName);
     const row = rows[api.store.rowIndex(mapping, rows, id)] ?? null;
     if (!row || !row.ownerid || sameId(previous, refId(row.ownerid))) return;
+    // Tracing: one cascade event on the assigning write's span when children were reassigned (their writes nest under it).
+    const span = api.store.traces?.enabled ? api.store.traces.current() : null;
+    const done = (count) =>
+      count &&
+      span?.event('cascade', {
+        attributes: {
+          action: 'assign',
+          table: mapping.logicalName,
+          recordId: String(id),
+          rows: count,
+          previousOwner: previous ?? null,
+          owner: refId(row.ownerid) ?? null,
+        },
+      });
     return cascadeAssign(
       api,
       assignChildren(
@@ -223,6 +244,7 @@ function install(api, { diagnostic } = {}) {
         new Set([key]),
       ),
       sync,
+      done,
     );
   });
   scanDeclared(api, state);

@@ -659,8 +659,57 @@ const cloudKey = (name) =>
 /** The note-text prefix that marks portal-visible notes: site setting KnowledgeManagement/NotesFilter, `*WEB*` by default. */
 export const notesFilter = (portal) => siteSetting(portal ?? {}, 'KnowledgeManagement/NotesFilter') ?? '*WEB*';
 
+// Basic form modes (adx_mode) as the form span names them.
+const FORM_MODES = { 100000000: 'insert', 100000001: 'edit', 100000002: 'readonly' };
+
+/**
+ * A portal form submission (a basic or advanced form save, a step, a record state action) is one `form` span above the
+ * Dataverse operations it runs (D-R3-10): the form, its kind, mode, the action (button) and table; at level full the
+ * submitted values as input and the outcome as output. The submission itself is submitForm below.
+ */
+export function submitPortalForm(kind, componentId, body, options = {}) {
+  const traces = options.store?.traces;
+  if (!traces?.enabled) return submitForm(kind, componentId, body, options);
+  const definition = (kind === 'webform' ? options.portal?.advancedForms : options.portal?.forms)?.find(
+    (row) => canonical(row.id) === canonical(componentId),
+  );
+  const label = definition?.name ?? String(componentId);
+  return traces.wrap(
+    {
+      kind: 'form',
+      name: `${kind === 'webform' ? 'Advanced form' : 'Basic form'} ${label}`,
+      module: 'portal',
+      operation: 'submit',
+      entity: definition?.entityName ?? null,
+      recordId: typeof body?.recordId === 'string' && body.recordId ? canonical(body.recordId) : null,
+      attributes: {
+        form: label,
+        formId: definition?.id ?? String(componentId),
+        formKind: kind,
+        mode: FORM_MODES[Number(definition?.mode)] ?? null,
+        button: typeof body?.action === 'string' ? body.action : 'submit',
+        stepId: body?.stepId ?? null,
+        native: options.nativePostback === true,
+      },
+      input: () => body?.values ?? null,
+    },
+    async (span) => {
+      const result = await submitForm(kind, componentId, body, options);
+      span.setEntity(result?.entity ?? definition?.entityName ?? null, result?.recordId ?? null);
+      span.set({ formOperation: result?.operation ?? null, outcome: result?.outcome?.type ?? null });
+      span.output(() => ({
+        operation: result?.operation ?? null,
+        recordId: result?.recordId ?? null,
+        stepId: result?.stepId ?? null,
+        outcome: result?.outcome ?? null,
+      }));
+      return result;
+    },
+  );
+}
+
 /** Native form saves have their own schema and table-permission boundary, separate from Web API site settings. */
-export async function submitPortalForm(
+async function submitForm(
   kind,
   componentId,
   body,

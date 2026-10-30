@@ -11,6 +11,7 @@ import { assertDataverseRootBody } from './dataverse-reader-details.mjs';
 import { DataError } from './data-error.mjs';
 import { assertPluginMessageAdmission } from './plugin-message-admission.mjs';
 import { refuseDeleteMultiple } from './plugin-platform-messages.mjs';
+import { isConnectorDataverseSpan } from './connector-definition.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { executeBulkRecordsAsync } from './plugin-bulk.mjs';
 import { associationRequestBinding } from './plugin-association.mjs';
@@ -323,6 +324,121 @@ function keyViolation(mapping, data, error) {
   );
 }
 
+// Span names and operations of the dataverse spans (tracing): the message a route or internal entry runs.
+const OPERATION_LABEL = {
+  create: 'Create',
+  update: 'Update',
+  delete: 'Delete',
+  retrieve: 'Retrieve',
+  retrievemultiple: 'RetrieveMultiple',
+  associate: 'Associate',
+  disassociate: 'Disassociate',
+  action: 'Action',
+};
+// Tracing of a Web API dispatch (docs/design/tracing.md, D-R3-1, D-R3-2, D-R3-22).
+const GUID_TEXT = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
+// The record a keyed route names by primary key; an alternate key resolves in the store (data.mjs traceRecord).
+function routeRecordId(route) {
+  if (route?.key == null) return null;
+  try {
+    return parseKey(route.key)?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+// The kind of query a request carries (attribute `query`), or null.
+function queryKindOf(url) {
+  const has = (name) => url.searchParams.has(name);
+  if (has('fetchXml') || has('fetchxml')) return 'fetchxml';
+  if (has('savedQuery')) return 'savedquery';
+  if (has('userQuery')) return 'userquery';
+  if (has('$deltatoken')) return 'delta';
+  if (has('$apply')) return 'apply';
+  return ['$filter', '$select', '$orderby', '$top', '$skip', '$expand', '$count', '$search', '$skiptoken'].some(has)
+    ? 'odata'
+    : null;
+}
+// Level full: the body, the query options (credential-named values redacted by the store) and the headers that change the
+// answer.
+const DISPATCH_HEADERS = ['prefer', 'if-match', 'if-none-match'];
+function dispatchInput(c) {
+  const headers = Object.fromEntries(
+    DISPATCH_HEADERS.filter((name) => c.headers?.[name] != null).map((name) => [name, String(c.headers[name])]),
+  );
+  return {
+    ...(c.body === undefined ? {} : { body: c.body }),
+    query: c.url.searchParams,
+    ...(Object.keys(headers).length ? { headers } : {}),
+  };
+}
+// One bypass event per bypass header on the request: what it asked and which logic the local pipeline skipped for it.
+// BypassCustomPluginExecution true and BypassBusinessLogicExecution CustomSync skip the synchronous plug-in stages.
+const BYPASS_HEADERS = [
+  ['mscrm.bypasscustompluginexecution', 'MSCRM.BypassCustomPluginExecution'],
+  ['mscrm.bypassbusinesslogicexecution', 'MSCRM.BypassBusinessLogicExecution'],
+];
+function bypassEvents(span, c) {
+  if (!span) return;
+  for (const [name, header] of BYPASS_HEADERS) {
+    const value = c.headers?.[name];
+    if (value == null || String(value).trim() === '') continue;
+    const words = String(value)
+      .split(',')
+      .map((word) => word.trim().toLowerCase());
+    const skips =
+      c.bypassCustomPlugins === true &&
+      (name === 'mscrm.bypasscustompluginexecution' ? ['true', '1'].includes(words[0]) : words.includes('customsync'));
+    span.event('bypass', { attributes: { header, value: String(value), skipped: skips ? ['sync-plugins'] : [] } });
+  }
+}
+// The answer of a dispatch: its status, a single row's id, and for a collection page its row count, page number and
+// (when the answer carries them) total count and whether more records follow; the output only at level full.
+function dispatchAnswer(span, c, mapping, answer) {
+  if (!span) return;
+  const body =
+    answer?.body && typeof answer.body === 'object' && !Buffer.isBuffer(answer.body) && !answer.body.pipe
+      ? answer.body
+      : null;
+  const page = Array.isArray(body?.value);
+  if (!page && span.recordId == null && body?.[mapping.idColumn] != null)
+    span.setEntity(mapping.logicalName, String(body[mapping.idColumn]));
+  let pageNumber;
+  if (page) {
+    try {
+      pageNumber = decodeSkipToken(c.url.searchParams.get('$skiptoken') ?? '')?.pageNumber ?? 1;
+    } catch {
+      pageNumber = 1;
+    }
+  }
+  const total = page ? (body['@odata.count'] ?? body['@Microsoft.Dynamics.CRM.totalrecordcount']) : undefined;
+  span.set({
+    statusCode: answer?.status ?? null,
+    rowCount: page ? body.value.length : undefined,
+    pageNumber,
+    query: queryKindOf(c.url) ?? undefined,
+  });
+  span.output(() => ({
+    id: span.recordId,
+    rowCount: page ? body.value.length : null,
+    ...(total != null ? { totalCount: total } : {}),
+    ...(page ? { moreRecords: body['@odata.nextLink'] != null } : {}),
+    statusCode: answer?.status ?? null,
+  }));
+}
+
+const WEB_API_OPERATION = {
+  collection: { GET: 'retrievemultiple', POST: 'create' },
+  count: { GET: 'retrievemultiple' },
+  entity: { GET: 'retrieve', PATCH: 'update', DELETE: 'delete' },
+  property: { GET: 'retrieve', PUT: 'update', DELETE: 'update' },
+  member: { GET: 'retrieve', PUT: 'update', DELETE: 'update' },
+  value: { GET: 'retrieve' },
+  navigationCount: { GET: 'retrievemultiple' },
+  ref: { GET: 'retrieve', POST: 'associate', PUT: 'associate', DELETE: 'disassociate' },
+  navigationRef: { DELETE: 'disassociate' },
+  boundAction: { POST: 'action' },
+};
+
 // changeTrackingEnabled(logical) overrides the table's metadata flag; without it the flag is read from the mapping,
 // and an undefined flag keeps tracking allowed.
 // fieldSecurity is a getter for api.fieldSecurity (dataverse-fls): the extension installs after the handlers exist. Absent or
@@ -341,6 +457,59 @@ export function createRecordHandlers({
 }) {
   const authorize = (c, entity, operation, mapping, row) =>
     principals.authorize({ user: c.user, entity, operation, row, mapping });
+  // One dataverse span per internal entry and per Web API dispatch (docs/design/tracing.md); a plug-in step's nested SDK
+  // writes run on the same stack, so their spans nest under the step. c is the resolved context (internalContext).
+  // Record identity (D-R3-1): a primary key names the record at start; an alternate key or a create's id is named by the
+  // store as soon as it resolves the row (data.mjs traceRecord), and an internal entry's returned row names it otherwise.
+  // A Web API dispatch (dispatch: true) records its answer itself (dispatchAnswer).
+  const traced = (c, operation, entity, recordId, { sync, authorized, dispatch = false } = {}, input, run) => {
+    const traces = store.traces;
+    const current = traces?.enabled ? traces.current() : null;
+    // A bulk message has one span; its per-row writes open none (plugin-bulk.mjs). A flow Dataverse connector call is one
+    // dataverse span too (connector-runtime.mjs dataverseProvider, marked by markConnectorDataverseSpan): the entries it
+    // drives open none.
+    if (!traces?.enabled || current?.kind === 'bulk' || isConnectorDataverseSpan(current)) return run();
+    const user = c.portal ? null : c.user;
+    return traces.wrap(
+      {
+        kind: 'dataverse',
+        name: `${OPERATION_LABEL[operation] ?? operation} ${entity}`,
+        module: 'dataverse',
+        operation,
+        entity,
+        recordId: GUID_TEXT.test(String(recordId ?? '')) ? String(recordId).replace(/[{}]/g, '').toLowerCase() : null,
+        ...(user
+          ? {
+              actor: {
+                kind: user.applicationid ? 'app' : 'staff',
+                id: user.systemuserid ?? null,
+                name: user.fullname ?? null,
+              },
+            }
+          : {}),
+        attributes: {
+          sync: sync === true,
+          authorized: authorized === true,
+          method: c.method ?? null,
+          portal: c.portal ? true : undefined,
+          impersonatedBy: user?.impersonator?.systemuserid,
+          sdkUserId: c.method === 'SDK' ? (c.userId ?? undefined) : undefined,
+        },
+        input,
+      },
+      (span) => {
+        const result = run(span);
+        if (dispatch) return result;
+        const done = (value) => {
+          const id = (value && typeof value === 'object' ? value[store.resolveMapping(entity).idColumn] : null) ?? null;
+          if (id != null && span.recordId == null) span.setEntity(entity, String(id));
+          span.output(() => ({ id: span.recordId }));
+          return value;
+        };
+        return typeof result?.then === 'function' ? result.then(done) : done(result);
+      },
+    );
+  };
   const hookList = (name) => hooks.list?.(name) ?? [];
   const runHooks = (name, ...args) => {
     for (const hook of hookList(name)) hook(...args);
@@ -2879,7 +3048,16 @@ export function createRecordHandlers({
    * - no store transaction of its own and no If-None-Match unless writeOptions carries it.
    */
   function createInternal(c, logical, data, options = {}) {
-    return drive(createSteps(internalContext(c), logical, data, options), options);
+    const context = internalContext(c);
+    return traced(
+      context,
+      'create',
+      logical,
+      null,
+      options,
+      () => data,
+      () => drive(createSteps(context, logical, data, options), options),
+    );
   }
   function* createSteps(
     c,
@@ -2922,7 +3100,16 @@ export function createRecordHandlers({
    * Returns the stored row. Same context, options and differences as createInternal; the primary key column is never written.
    */
   function updateInternal(c, logical, id, data, options = {}) {
-    return drive(updateSteps(internalContext(c), logical, id, data, options), options);
+    const context = internalContext(c);
+    return traced(
+      context,
+      'update',
+      logical,
+      id,
+      options,
+      () => data,
+      () => drive(updateSteps(context, logical, id, data, options), options),
+    );
   }
   function* updateSteps(
     c,
@@ -2966,7 +3153,10 @@ export function createRecordHandlers({
 
   /** Deletes one row through the Web API delete rules: delete authorization, the hooks, updateOptions (cascaded rows). */
   function removeInternal(c, logical, id, options = {}) {
-    return drive(removeSteps(internalContext(c), logical, id, options), options);
+    const context = internalContext(c);
+    return traced(context, 'delete', logical, id, options, undefined, () =>
+      drive(removeSteps(context, logical, id, options), options),
+    );
   }
   function* removeSteps(c, logical, id, { authorized = false, writeOptions: extra = {}, partitionId, sync = false }) {
     const mapping = store.resolveMapping(logical);
@@ -3005,16 +3195,28 @@ export function createRecordHandlers({
    * Signature: associateInternal(c, logical, id, navigation, relatedIds, options) -> null (or a promise of null without sync).
    */
   function associateInternal(c, logical, id, navigation, relatedIds, options = {}) {
-    return drive(
-      associationSteps(internalContext(c), logical, id, navigation, [relatedIds].flat(), true, options),
+    const context = internalContext(c);
+    return traced(
+      context,
+      'associate',
+      logical,
+      id,
       options,
+      () => ({ navigation, relatedIds }),
+      () => drive(associationSteps(context, logical, id, navigation, [relatedIds].flat(), true, options), options),
     );
   }
   /** The Disassociate counterpart of associateInternal: same context, arguments, options and rules. */
   function disassociateInternal(c, logical, id, navigation, relatedIds, options = {}) {
-    return drive(
-      associationSteps(internalContext(c), logical, id, navigation, [relatedIds].flat(), false, options),
+    const context = internalContext(c);
+    return traced(
+      context,
+      'disassociate',
+      logical,
+      id,
       options,
+      () => ({ navigation, relatedIds }),
+      () => drive(associationSteps(context, logical, id, navigation, [relatedIds].flat(), false, options), options),
     );
   }
   function* associationSteps(
@@ -3269,9 +3471,14 @@ export function createRecordHandlers({
    */
   // A virtual table is never read from its local mirror here: handlers.virtualProviders (set by
   // dataverse-virtual-providers.mjs) answers the provider's synchronous retrieveSync or refuses with 501.
-  function readInternal(c, logical, id, { unmask = false, partitionId, ...getOptions } = {}) {
-    const context = internalContext(c),
-      mapping = store.resolveMapping(logical);
+  function readInternal(c, logical, id, options = {}) {
+    const context = internalContext(c);
+    return traced(context, 'retrieve', logical, id, { sync: true }, undefined, () =>
+      readRecord(context, logical, id, options),
+    );
+  }
+  function readRecord(context, logical, id, { unmask = false, partitionId, ...getOptions } = {}) {
+    const mapping = store.resolveMapping(logical);
     return store.get(mapping.logicalName, id, context.identity ?? {}, {
       ...getOptions,
       ...(partitionId === undefined ? {} : { partitionId }),
@@ -3385,7 +3592,22 @@ export function createRecordHandlers({
           (ctx.method === 'GET' || ctx.method === 'DELETE' ? parameter : ctx.body?.partitionid) ??
           null;
       }
-      const response = await dispatch(c);
+      const operation = WEB_API_OPERATION[c.route.kind]?.[ctx.method] ?? String(ctx.method).toLowerCase();
+      const tracing = store.traces?.enabled === true;
+      const response = await traced(
+        c,
+        operation,
+        mapping.logicalName,
+        tracing ? routeRecordId(c.route) : null,
+        { dispatch: true },
+        tracing ? () => dispatchInput(c) : undefined,
+        async (span) => {
+          bypassEvents(span, c);
+          const answer = await dispatch(c);
+          dispatchAnswer(span, c, mapping, answer);
+          return answer;
+        },
+      );
       if (isElastic(mapping) && ctx.method !== 'GET' && ctx.method !== 'DELETE' && response?.status < 400)
         response.headers = {
           ...response.headers,

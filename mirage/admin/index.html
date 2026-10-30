@@ -1,29 +1,32 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-ui-theme="auto">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <title>Paqvilo · Simulator workspace</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/__sim/ui-kit.css" />
     <link rel="stylesheet" href="/__sim/shell.css" />
     <link rel="stylesheet" href="/__sim/dashboard.css" />
     <link rel="stylesheet" href="/__sim/style.css" />
+    <link rel="stylesheet" href="/__sim/activity.css" />
     <link rel="stylesheet" href="/__sim/persona-picker.css" />
   </head>
   <body>
     <a class="skip-link" href="#main">Skip to workspace</a>
     <div class="shell">
-      <aside class="sidebar" aria-label="Workspace navigation">
+      <aside class="sidebar" aria-label="Workspace navigation" data-nav-collapsible>
         <a class="brand" href="/__sim/"
           ><span class="brand-symbol" aria-hidden="true">P</span
           ><span
             ><span id="workspace-name">Paqvilo</span><small id="workspace-kind">SIMULATOR WORKSPACE</small></span
           ></a
         >
-        <div class="nav-label">WORKSPACE</div>
-        <nav id="navigation"></nav>
+        <button type="button" class="nav-toggle" id="nav-toggle" aria-expanded="false" aria-controls="navigation">
+          <span aria-hidden="true">☰</span> Menu
+        </button>
+        <nav id="navigation" aria-label="Simulator views"></nav>
         <div class="nav-label area-label">AREAS</div>
         <nav class="nav-group areas" aria-label="Areas">
           <a
@@ -48,10 +51,14 @@
       <div class="workspace">
         <header class="topbar">
           <span class="breadcrumb"
-            >Workspace <span aria-hidden="true">/</span> <span id="breadcrumb-group">Monitor</span>
-            <span aria-hidden="true">/</span> <strong id="breadcrumb">Overview</strong></span
-          >
-          <div class="top-actions">
+            ><span class="breadcrumb-root">Simulator</span> <span class="breadcrumb-root" aria-hidden="true">/</span>
+            <span id="breadcrumb-group">Monitor</span>
+            <span aria-hidden="true">/</span> <strong id="breadcrumb">Health</strong></span
+          ><span id="breadcrumb-help" class="breadcrumb-help"></span>
+          <button type="button" class="button top-more" id="top-more" aria-expanded="false" aria-controls="top-actions">
+            Apps &amp; actions <span aria-hidden="true">▾</span>
+          </button>
+          <div class="top-actions" id="top-actions">
             <a id="open-model-driven" class="button" href="/main.aspx">Model-driven apps</a>
             <a class="button" href="/_apps/code/">Code apps</a>
             <a class="button" href="/_setup/" target="_blank" rel="noopener">Project setup</a>
@@ -102,17 +109,6 @@
           ><button type="submit" class="button danger" id="confirm-submit">Delete</button>
         </div>
       </form>
-    </dialog>
-    <dialog id="inspection" aria-labelledby="inspection-title">
-      <div class="panel-heading">
-        <h2 id="inspection-title">Request details</h2>
-        <button class="button small" id="inspection-close" aria-label="Close request details">Close</button>
-      </div>
-      <pre class="json-view" id="inspection-json"></pre>
-      <div class="dialog-actions">
-        <button class="button" id="inspection-correlated" hidden>Show correlated requests</button>
-        <button class="button" id="inspection-copy">Copy request details</button>
-      </div>
     </dialog>
     <script type="module" src="/__sim/app.mjs"></script>
   </body>
