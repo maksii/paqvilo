@@ -19,13 +19,14 @@ const identity = {
   contactId: id(20),
   roles: ['Reader'],
   systemUserId: id(30),
-  dataverse: {
-    userId: id(30),
-    businessUnitId: id(40),
-    teamIds: [id(31)],
-    userHierarchy: () => new Set([id(32)]),
-    hierarchy: (_table, _attribute, _record, mode) => new Set(mode === 'under' ? [id(2)] : [id(1), id(2)]),
-  },
+  // Like organizationPrincipalContext, the hierarchy lookups are non-enumerable so events can clone the identity.
+  dataverse: Object.defineProperties(
+    { userId: id(30), businessUnitId: id(40), teamIds: [id(31)] },
+    {
+      userHierarchy: { value: () => new Set([id(32)]) },
+      hierarchy: { value: (_table, _attribute, _record, mode) => new Set(mode === 'under' ? [id(2)] : [id(1), id(2)]) },
+    },
+  ),
 };
 function fixture() {
   return new DataStore({
