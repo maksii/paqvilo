@@ -1,4 +1,4 @@
-// @test-kind unproven: local model of async OperationStatus.Retry with a four-execution budget not natively recorded; restart durability is Paqvilo design
+// @test-kind unproven: local model of async Retry restart durability and private queues (Paqvilo design)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -114,8 +114,9 @@ if(mode=="always"||attempt<3)throw new InvalidPluginExecutionException(Operation
   return { root, makeStore, attach, attempts, stores };
 }
 
+// @test-kind parity: native asyncRetry (two concurrent captures): an always-Retry step executes five times and ends Failed with retrycount 4; coded and plain exceptions execute once; every failure has errorcode 0x80040265 and the authored text as friendlymessage; failed attempts' writes persist
 test(
-  'original CLR async Retry has four independent executions, fresh contexts and preserved completed SDK effects',
+  'original CLR async Retry has five independent executions, fresh contexts and preserved completed SDK effects',
   { skip: CLR_SKIP, timeout: 180000 },
   async (t) => {
     const f = await fixture(t);
@@ -125,7 +126,8 @@ test(
         const { runner, notes } = f.attach(store);
         const caller = await store.create('widget', { title: mode }, { admin: true });
         await runner.drain();
-        const expected = mode === 'always' ? 4 : mode === 'eventual' ? 3 : 1;
+        // @parity-evidence: native asyncRetry: always-Retry 5 executions, retrycount 4; coded/plain 1 execution, retrycount 0
+        const expected = mode === 'always' ? 5 : mode === 'eventual' ? 3 : 1;
         assert.equal(await f.attempts(caller.widgetid), expected);
         assert.equal(store.tableRows('widget').length, 1, 'the original caller stays committed');
         assert.equal(
@@ -141,8 +143,20 @@ test(
         assert.equal(payload.attempts, undefined, 'intentional retries do not consume infrastructure poison attempts');
         assert.equal(
           notes.filter((note) => note.code === 'PLUGIN_ASYNC_RETRY_REQUESTED').length,
-          mode === 'always' ? 3 : mode === 'eventual' ? 2 : 0,
+          mode === 'always' ? 4 : mode === 'eventual' ? 2 : 0,
         );
+        if (mode !== 'eventual') {
+          assert.equal(job.errorcode, 0x80040265 | 0, 'the authored code is not the job error code');
+          assert.equal(
+            job.friendlymessage,
+            {
+              always: 'Invented transient retry',
+              failed: 'Permanent plugin failure',
+              ordinary: 'Permanent ordinary failure',
+            }[mode],
+          );
+          assert.match(job.message, /^Plugin Trace:\r\n\r\n\[[^\]]+: Invented\.Retry\]/);
+        }
         if (mode === 'eventual') assert.equal(job.message, null, 'success does not retain a transient error');
         await runner.close();
       });
@@ -158,15 +172,16 @@ test(
           { admin: true },
         );
         await runner.drain();
-        assert.equal(await f.attempts(caller.widgetid), mode === 'private queue' ? 4 : 3);
+        assert.equal(await f.attempts(caller.widgetid), mode === 'private queue' ? 5 : 3);
         assert.equal(store.tableRows('asyncoperation').length, 0);
         await runner.close();
       });
   },
 );
 
+// @test-kind unproven: restart durability of the attempt budget is Paqvilo design; the five-execution budget is native asyncRetry
 test(
-  'async retry attempts persist before execution and survive a runtime restart without resetting the four-attempt budget',
+  'async retry attempts persist before execution and survive a runtime restart without resetting the five-attempt budget',
   { skip: CLR_SKIP, timeout: 180000 },
   async (t) => {
     const f = await fixture(t),
@@ -200,11 +215,11 @@ test(
     assert.equal(finished.statuscode, 30);
     assert.equal(finished.retrycount, 2);
     assert.equal(JSON.parse(finished.data).pluginAttempts, 3);
-    // A crash after the fourth durable claim cannot admit an execution five.
+    // A crash after the fifth durable claim cannot admit an execution six.
     await restarted.transact(() => {
       const payload = JSON.parse(finished.data);
-      finished.data = JSON.stringify({ ...payload, pluginAttempts: 4 });
-      Object.assign(finished, { statecode: 2, statuscode: 20, retrycount: 3 });
+      finished.data = JSON.stringify({ ...payload, pluginAttempts: 5 });
+      Object.assign(finished, { statecode: 2, statuscode: 20, retrycount: 4 });
     });
     await next.runner.close();
     const recovered = await new DataStore({ file }).init();
@@ -214,7 +229,7 @@ test(
     await last.runner.drain();
     assert.equal(await f.attempts(caller.widgetid), 3, 'unfinished exhausted claim does not restart the budget');
     assert.equal(recovered.tableRows('asyncoperation')[0].statuscode, 31);
-    assert.equal(recovered.tableRows('asyncoperation')[0].retrycount, 3);
-    assert.equal(JSON.parse(recovered.tableRows('asyncoperation')[0].data).pluginAttempts, 4);
+    assert.equal(recovered.tableRows('asyncoperation')[0].retrycount, 4);
+    assert.equal(JSON.parse(recovered.tableRows('asyncoperation')[0].data).pluginAttempts, 5);
   },
 );

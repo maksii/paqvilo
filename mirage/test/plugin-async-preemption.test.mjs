@@ -49,7 +49,7 @@ async function organization(t, steps, { asyncStartDelayMs } = {}) {
     { serviceendpointid: ENDPOINT, contract: 8, authtype: 0, url: `http://127.0.0.1:${receiver.address().port}/hook` },
   ];
   const handlers = new Map(
-    ['Create', 'Update', 'Delete', 'Assign'].map((message) => [
+    ['Create', 'Update', 'Delete', 'Assign', 'UpdateMultiple'].map((message) => [
       `Invented.${message}`,
       ({ context }) => ran.push(`plugin ${context.MessageName}`),
     ]),
@@ -94,6 +94,7 @@ test('deleting a row stops every waiting plug-in and web hook job regarding it, 
     step(2, 'Update', { serviceEndpointId: ENDPOINT }),
     typed(3, 'Assign'),
     typed(4, 'Delete'),
+    typed(5, 'UpdateMultiple'),
   ]);
   const row = await store.create('x_item', { x_name: 'brief' }, admin);
   await store.update('x_item', row.x_itemid, { x_name: 'changed' }, admin);
@@ -103,7 +104,18 @@ test('deleting a row stops every waiting plug-in and web hook job regarding it, 
   await store.remove('x_item', row.x_itemid, admin);
   await settle();
   // Only the jobs regarding the surviving row, and the Delete's own job, executed.
-  assert.deepEqual(ran.toSorted(), ['plugin Delete', 'plugin Update', 'webhook Update']);
+  assert.deepEqual(ran.toSorted(), ['plugin Delete', 'plugin Update', 'plugin UpdateMultiple', 'webhook Update']);
+  // @parity-evidence: native and native-r2 asyncDeletedRow (two captures): the deleted row's queued jobs, the bridged UpdateMultiple included, end Canceled 3/32 with errorcode and message null
+  // Native asyncDeletedRow (two captures): such a job ends Canceled (3/32) with no errorcode or message.
+  const canceled = store
+    .tableRows('asyncoperation')
+    .filter((job) => job.regardingobjectid?.id === row.x_itemid && job.messagename !== 'Delete');
+  // Native asyncDeletedRow: the UpdateMultiple job bridged from the row's Update regards the row and is canceled too.
+  assert.equal(canceled.length, 4);
+  for (const job of canceled) {
+    assert.deepEqual([job.statecode, job.statuscode, job.errorcode, job.message], [3, 32, null, null]);
+    assert.equal(job.friendlymessage, 'This system job was canceled because a referenced record was deleted.');
+  }
 });
 
 // @test-kind contract: asyncStartDelayMs is Paqvilo's calibration knob for the native asynchronous start latency (1.2-6 s recorded); 0 keeps the next-turn start

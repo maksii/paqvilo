@@ -2205,6 +2205,9 @@ export function runPluginPhase({
             ? cause
             : pluginFault(cause, item, stage, depth, typed || cause?.pluginFault === 'InvalidPluginExecutionException');
         if (executed) journal(failure);
+        // The run's trace lines, for an asynchronous job's failure message (plugin-async.mjs jobFailure).
+        if (failure && typeof failure === 'object' && !Object.hasOwn(failure, 'pluginTraces'))
+          Object.defineProperty(failure, 'pluginTraces', { value: [...traces], configurable: true });
         store?.counters?.increment('plugins.failures');
         // The fault identity (type, code, OperationStatus, plug-in type, step, stage, depth) travels on the error to every
         // span it fails; this step's span records it.

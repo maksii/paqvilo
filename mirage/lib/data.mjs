@@ -2363,7 +2363,7 @@ export class DataStore {
     };
     // The operation's synchronous caller chain, for its asynchronous jobs' ParentContext (plugin-sdk-parent.mjs
     // asynchronousParentChain): a named message's steps see it directly, a record operation under its main operation.
-    if (event.frame.asyncCallerParent === undefined)
+    if (event.frame && typeof event.frame === 'object' && event.frame.asyncCallerParent === undefined)
       event.frame.asyncCallerParent = asyncCallerParent(this.pluginParentContext ?? pluginInvocationSdkParent(this));
     // The staging span (tracing): kept beside the event, never in it (the event is persisted in asyncoperation.data), so a
     // job staged from it remembers it as its parent (committed-work.mjs stage, stagingSpan).

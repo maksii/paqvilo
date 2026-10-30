@@ -12,7 +12,7 @@ import { pluginFailure } from './plugin-fault.mjs';
 import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import {
-  asyncMultiplePluginParent,
+  asyncMultipleJobParent,
   asynchronousParentChain,
   clrSdkEntryContext,
   mainOperationParent,
@@ -1668,11 +1668,12 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
               exceptionDetails: message.exceptionDetails ?? null,
             },
           };
+          // Native traceFaults (two captures): an InvalidPluginExecutionException answers 0x80040265 with its message
+          // whatever errorCode (12345, 0x80040216) or OperationStatus it names; the code stays in sourceException.
           if (Number.isInteger(message.errorCode))
             details.innerCode =
-              (message.pluginException === true ||
-                message.exceptionType === 'Microsoft.Xrm.Sdk.InvalidPluginExecutionException') &&
-              message.errorCode >>> 0 === 0x80131500
+              message.pluginException === true ||
+              message.exceptionType === 'Microsoft.Xrm.Sdk.InvalidPluginExecutionException'
                 ? '0x80040265'
                 : '0x' + (message.errorCode >>> 0).toString(16).padStart(8, '0');
           else if (
@@ -2171,11 +2172,8 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       answer.context.ParentContext ?? frame.asyncCallerParent,
       answer.context,
     );
-  const multipleParent = asyncMultiplePluginParent(frame, operation, entity);
-  if (multipleParent)
-    answer.context.ParentContext = asynchronousParentChain(multipleParent, answer.context, {
-      primaryEntityId: multipleParent.values.PrimaryEntityId,
-    });
+  answer.context.ParentContext =
+    asyncMultipleJobParent(frame, operation, entity, answer.context) ?? answer.context.ParentContext;
   formatPipelineTargets(store, {
     entity,
     operation,

@@ -207,18 +207,36 @@ test(
       context: { initiatingUserId: CALLER, organizationId: id(5), businessUnitId: id(6) },
     });
     const recurse = step(1, 'Create', 40, 0, { typeName: 'Invented.Recurse', assemblyId: 'invented' });
-    const { store, settle, received } = await organization(t, [recurse, webhook(2, 'Create')], new Map(), {
-      runtimes: new Map([[recurse.id, runtime]]),
-    });
+    const { store, settle, received } = await organization(
+      t,
+      [recurse, webhook(2, 'Create'), webhook(3, 'CreateMultiple')],
+      new Map(),
+      { runtimes: new Map([[recurse.id, runtime]]) },
+    );
     await store.create('x_node', { x_name: 'level 1', x_level: 1 }, identity);
     await settle();
-    assert.deepEqual(received.toSorted((a, b) => a.Depth - b.Depth).map(labels), [
-      ['Create/30'],
-      ['Create/30', 'Create/40', 'Create/30'],
-      ['Create/30', 'Create/40', 'Create/30'],
-      ['Create/30', 'Create/40', 'Create/30'],
-    ]);
-    for (const context of received) assertJobFrames(context);
+    const creates = received.filter((context) => context.MessageName === 'Create'),
+      multiples = received.filter((context) => context.MessageName === 'CreateMultiple');
+    const native = (message) => [
+      [`${message}/30`],
+      [`${message}/30`, `${message}/40`, `${message}/30`],
+      [`${message}/30`, `${message}/40`, `${message}/30`],
+      [`${message}/30`, `${message}/40`, `${message}/30`],
+    ];
+    assert.deepEqual(creates.toSorted((a, b) => a.Depth - b.Depth).map(labels), native('Create'));
+    for (const context of creates) assertJobFrames(context);
+    // @parity-evidence: native depth.json CreateMultiple asynchronous jobs (Depth 2-10: CreateMultiple/30 < CreateMultiple/40 < CreateMultiple/30, PrimaryEntityId the single row), also faults.json and pipelineEffects.json
+    // A CreateMultiple step bridged from each nested Create reports the same frames as CreateMultiple, naming the
+    // single row (native depth.json CreateMultiple asynchronous jobs).
+    assert.deepEqual(multiples.toSorted((a, b) => a.Depth - b.Depth).map(labels), native('CreateMultiple'));
+    for (const context of multiples) {
+      const row = parameters(context.ParentContext.InputParameters).Target.Id;
+      for (let frame = context.ParentContext; frame; frame = frame.ParentContext) {
+        assert.equal(frame.Mode, 1);
+        assert.equal(frame.Depth, context.Depth);
+        assert.equal(frame.PrimaryEntityId, row);
+      }
+    }
   },
 );
 

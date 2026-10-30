@@ -1,4 +1,4 @@
-import { asyncMultiplePluginParent, asynchronousParentChain } from './plugin-sdk-parent.mjs';
+import { asyncMultipleJobParent, asynchronousParentChain } from './plugin-sdk-parent.mjs';
 import { organizationRecord } from './organization-context.mjs';
 import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 // Webhooks. A plug-in step whose eventhandler is a service endpoint with contract 8 (Webhook) POSTs the
@@ -600,28 +600,24 @@ export function remoteExecutionContext(store, facts) {
       ),
     );
   }
-  // Another asynchronous message reports its synchronous caller chain as the job's own frames (plugin-sdk-parent.mjs).
-  const multipleParent = asyncMultiplePluginParent(frame, operation, entity),
-    asyncParent =
-      multipleParent ??
-      (asyncExecution && !context.ParentContext && frame.asyncOperation ? frame.asyncCallerParent : null);
-  if (asyncParent) {
-    const guid = (value) => ({ $type: 'Guid', value });
-    const chain = asynchronousParentChain(
-      asyncParent,
-      {
-        MessageName: context.MessageName,
-        Depth: context.Depth,
-        PrimaryEntityId: guid(context.PrimaryEntityId),
-        IsolationMode: context.IsolationMode,
-        OwningExtension: { $type: 'EntityReference', logicalName: 'sdkmessageprocessingstep', id: item.id, name: null },
-        OperationId: guid(context.OperationId),
-        OperationCreatedOn: frame.createdOnWire,
-      },
-      multipleParent ? { primaryEntityId: multipleParent.values.PrimaryEntityId } : {},
-    );
-    context.ParentContext = remoteFrame(chain.values);
-  }
+  // A bridged multiple reports the single operation's frames, another asynchronous message its synchronous caller chain,
+  // relabelled as the job (plugin-sdk-parent.mjs).
+  const guid = (value) => ({ $type: 'Guid', value });
+  const job = {
+    MessageName: context.MessageName,
+    Depth: context.Depth,
+    PrimaryEntityId: guid(context.PrimaryEntityId),
+    IsolationMode: context.IsolationMode,
+    OwningExtension: { $type: 'EntityReference', logicalName: 'sdkmessageprocessingstep', id: item.id, name: null },
+    OperationId: guid(context.OperationId),
+    OperationCreatedOn: frame.createdOnWire,
+  };
+  const chain =
+    asyncMultipleJobParent(frame, operation, entity, job) ??
+    (asyncExecution && !context.ParentContext && frame.asyncOperation
+      ? asynchronousParentChain(frame.asyncCallerParent, job)
+      : null);
+  if (chain) context.ParentContext = remoteFrame(chain.values);
   return context;
 }
 

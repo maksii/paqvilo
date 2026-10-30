@@ -43,7 +43,35 @@ const errorNumber = (error) => {
   return /^0x[0-9a-f]+$/i.test(code ?? '') ? Number.parseInt(code, 16) | 0 : 0;
 };
 const sameId = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
-const PLUGIN_ATTEMPTS = 4;
+// Native asyncRetry (two captures): a step that always throws OperationStatus.Retry executes five times and ends Failed
+// with retrycount 4.
+const PLUGIN_ATTEMPTS = 5;
+const ISV_ABORTED = 0x80040265 | 0;
+const ORGANIZATION_SERVICE_FAULT = 'System.ServiceModel.FaultException`1[Microsoft.Xrm.Sdk.OrganizationServiceFault]';
+/** The failure columns of a plug-in job. Native asyncRetry: every plug-in exception (Retry, coded, plain) ends with
+ * errorcode 0x80040265 (the authored code is not kept), the authored text as friendlymessage and the plug-in trace block
+ * as message. Other local failures keep their own code and text. */
+function jobFailure(item, error, plugin = true) {
+  const text = String(error?.message ?? error),
+    code = error?.details?.innerCode;
+  if (!plugin || !['0x80040265', '0x80040224'].includes(code))
+    return { message: text, friendlymessage: text, errorcode: errorNumber(error) };
+  const type = item?.typeName ?? '',
+    assembly = item?.assemblyName ?? (type.includes('.') ? type.slice(0, type.lastIndexOf('.')) : type),
+    lines = error.pluginTraces ?? [];
+  // The ordinary exception's native stack frames are the platform's own and are not reproduced.
+  const failure =
+    code === '0x80040224'
+      ? `Exception type: Microsoft.Crm.CrmException\r\nMessage: ${text}\r\n-- End stack trace --\r\n\r\n`
+      : `${ORGANIZATION_SERVICE_FAULT}: ${text}`;
+  return {
+    message:
+      `Plugin Trace:\r\n\r\n[${assembly}: ${type}]\r\n[${item?.id}: ${item?.name}]\r\n\r\n\t\r\n\t` +
+      `${lines.join('\r\n\t')}\r\n\t\r\n\r\n\r\nError Message:\r\n\r\n${failure}`,
+    friendlymessage: text,
+    errorcode: ISV_ABORTED,
+  };
+}
 
 /** The asyncoperation row of one async step run (operationtype 1, System Event), Ready when the committed event is
  * accepted (committed-work.mjs keeps the event in its `data`), so a restart runs it. Learn's states: Ready (0/0), Locked
@@ -60,10 +88,16 @@ function jobColumns(store, item, event, chain) {
   } catch {
     /* A removed entity has no primary-key column to include. */
   }
-  const recordId =
-    idColumn && !['createmultiple', 'updatemultiple', 'retrievemultiple'].includes(event.operation)
-      ? (event.row?.[idColumn] ?? null)
-      : null;
+  // A multiple bridged from one row's operation regards that row (native asyncDeletedRow: its job is canceled with it).
+  const recordId = !idColumn
+    ? null
+    : ['createmultiple', 'updatemultiple'].includes(event.operation)
+      ? event.row?.bulkIds?.length === 1
+        ? event.row.bulkIds[0]
+        : null
+      : event.operation === 'retrievemultiple'
+        ? null
+        : (event.row?.[idColumn] ?? null);
   return {
     name: item.name ?? item.id,
     owningextensionid: { id: item.id, logical_name: 'sdkmessageprocessingstep', name: item.name },
@@ -125,14 +159,13 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         store.removeRow('asyncoperation', rows, index);
         return null;
       }
+      const exhausted = 'The asynchronous plug-in exhausted its five execution attempts.';
       Object.assign(rows[index], {
         statecode: 3,
         statuscode: 31,
         completedon: now(),
-        message:
-          payload.pluginLastFailure?.message ?? 'The asynchronous plug-in exhausted its four execution attempts.',
-        friendlymessage:
-          payload.pluginLastFailure?.message ?? 'The asynchronous plug-in exhausted its four execution attempts.',
+        message: payload.pluginLastFailure?.message ?? exhausted,
+        friendlymessage: payload.pluginLastFailure?.friendlymessage ?? payload.pluginLastFailure?.message ?? exhausted,
         errorcode: payload.pluginLastFailure?.errorcode ?? 0,
       });
       diagnostic({ code: 'PLUGIN_ASYNC_RETRY_EXHAUSTED', stepId: item?.id, asyncoperationid: id, attempts: previous });
@@ -166,7 +199,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         payload = JSON.parse(row.data);
       row.data = JSON.stringify({
         ...payload,
-        pluginLastFailure: { message: String(error.message ?? error), errorcode: errorNumber(error) },
+        pluginLastFailure: jobFailure(item, error),
       });
       Object.assign(row, { statecode: 0, statuscode: 0, message: null, friendlymessage: null, errorcode: null });
       delete row.startedon;
@@ -187,8 +220,6 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
         store.removeRow('asyncoperation', rows, index);
         return;
       }
-      // friendlymessage carries the plug-in's own message; the native user-facing text is not known.
-      const message = error ? String(error.message ?? error) : null;
       Object.assign(
         rows[index],
         error
@@ -196,9 +227,7 @@ function claimJob(store, id, item, systemJobs, diagnostic, { pluginAttempt = fal
               statecode: 3,
               statuscode: 31,
               completedon: now(),
-              message,
-              friendlymessage: message,
-              errorcode: errorNumber(error),
+              ...jobFailure(item, error, pluginAttempt),
             }
           : { statecode: 3, statuscode: 30, completedon: now() },
       );
@@ -496,10 +525,11 @@ export function createAsyncPluginRunner({
     jobs.register('plugin', inContext(runStep), { diagnostic }),
     jobs.register('webhook', inContext(deliverWebhook), { concurrent: true, diagnostic }),
   ];
-  // Native corpus (async, crud, ownerAndState, sdkMessages): an asynchronous step or web hook whose row is deleted before
-  // its job starts never executes, for every message (Create, Update, Assign, SetStateDynamicEntity, sharing), also when a
-  // retry waits; jobs regarding other rows still run. Inside the deleting transaction, every waiting plug-in and web hook
-  // job regarding the row fails with the row's absence (the native job's own state and error text are not recorded).
+  // Native corpus (async, crud, ownerAndState, sdkMessages, asyncDeletedRow): an asynchronous step or web hook whose row is
+  // deleted before its job starts never executes, for every message (Create, Update, the bridged multiples, Assign,
+  // SetStateDynamicEntity, sharing), also when a retry waits; jobs regarding other rows still run. Inside the deleting
+  // transaction, every waiting plug-in and web hook job regarding the row ends Canceled (3/32) without errorcode or
+  // message, with the platform's friendly message (native asyncDeletedRow, two captures).
   const failWaitingWrites = (event) => {
     let idColumn;
     try {
@@ -510,7 +540,6 @@ export function createAsyncPluginRunner({
     const rowId = idColumn && event.row?.[idColumn],
       rows = store.state.tables?.asyncoperation ?? [];
     if (!rowId) return;
-    const message = `${event.entity} With Id = ${rowId} Does Not Exist`;
     for (let index = rows.length - 1; index >= 0; index--) {
       const job = rows[index];
       if (
@@ -525,11 +554,11 @@ export function createAsyncPluginRunner({
       else
         Object.assign(job, {
           statecode: 3,
-          statuscode: 31,
+          statuscode: 32,
           completedon: new Date(clockFunction(store.clock ?? systemClock)()).toISOString(),
-          message,
-          friendlymessage: message,
-          errorcode: 0x80040217 | 0,
+          message: null,
+          friendlymessage: 'This system job was canceled because a referenced record was deleted.',
+          errorcode: null,
         });
     }
   };
@@ -640,6 +669,7 @@ export function createAsyncPluginRunner({
                     'createdOnWire',
                     'operationDepth',
                     'asyncSourceParent',
+                    'asyncCallerParent',
                     'bulkOrigin',
                     'formattedTargetKeys',
                   ].includes(key),

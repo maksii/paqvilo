@@ -103,7 +103,9 @@ namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public voi
     const before = app.store.snapshot();
     for (const [mode, expectedCode, message] of [
       ['default', '0x80040265', 'Invented default abort'],
-      ['custom', '0x8004f001', 'Invented explicit custom abort'],
+      // Native traceFaults (two captures): an InvalidPluginExecutionException naming its own code (12345, 0x80040216)
+      // still answers 0x80040265 with its message; the authored code stays in sourceException.
+      ['custom', '0x80040265', 'Invented explicit custom abort'],
       ['unrelated', '0x80040224', 'Invented unrelated exception'],
     ]) {
       const response = await fetch(app.url + '/_api/fx_widgets', {

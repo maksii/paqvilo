@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { pluginCatalogue, pluginHandlers, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { recordPluginTrace } from '../lib/plugin-trace.mjs';
 
 const STEP = '60000000-0000-4000-8000-000000000001';
 
@@ -73,5 +74,35 @@ test('a step handler fault marked InvalidPluginExecutionException keeps 0x800402
       assert.equal(error.message, 'declared refusal');
       return true;
     },
+  );
+});
+
+// @test-kind parity: native traceFaults (two captures): plugintracelog messageblock keeps the first 10240 characters, and a plug-in fault's exceptiondetails name the OrganizationServiceFault with the authored message
+test('a plug-in trace row keeps 10240 characters and names the fault it surfaced as', () => {
+  const state = emptyState();
+  state.mappings.plugintracelog = {
+    logicalName: 'plugintracelog',
+    entitySet: 'plugintracelogs',
+    idColumn: 'plugintracelogid',
+  };
+  state.tables.plugintracelog = [];
+  state.tables.organization = [{ organizationid: '60000000-0000-4000-8000-000000000009', plugintracelogsetting: 2 }];
+  const store = new DataStore({ state });
+  recordPluginTrace(store, {
+    typeName: 'Invented.Trace',
+    stepId: STEP,
+    messageName: 'Update',
+    entity: 'x_item',
+    depth: 1,
+    traces: ['x'.repeat(12_000)],
+    started: performance.now(),
+    startedAt: new Date(0).toISOString(),
+    error: Object.assign(new Error('Invented coded fault'), { details: { innerCode: '0x80040265' } }),
+  });
+  const [row] = store.tableRows('plugintracelog');
+  assert.equal(row.messageblock.length, 10240);
+  assert.equal(
+    row.exceptiondetails,
+    'System.ServiceModel.FaultException`1[Microsoft.Xrm.Sdk.OrganizationServiceFault]: Invented coded fault',
   );
 });

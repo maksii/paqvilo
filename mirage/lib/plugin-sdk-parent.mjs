@@ -187,3 +187,13 @@ export function asyncCallerParent(parent, remaining = ASYNC_PARENT_FRAMES) {
     values: { ...cloneStateData(values), ParentContext: asyncCallerParent(next, remaining - 1) },
   };
 }
+
+/** A bridged multiple job's ParentContext: the single operation's main frame over its synchronous caller chain, relabelled
+ * as the job but naming the single row (native depth, faults, pipelineEffects: CreateMultiple/30 < CreateMultiple/40 <
+ * CreateMultiple/30 for a nested Create, CreateMultiple/30 < CreateMultiple/10 under a PreValidation step). */
+export function asyncMultipleJobParent(frame, operation, entity, context) {
+  const main = asyncMultiplePluginParent(frame, operation, entity);
+  if (!main) return undefined;
+  main.values.ParentContext = frame.asyncCallerParent ?? null;
+  return asynchronousParentChain(main, context, { primaryEntityId: main.values.PrimaryEntityId });
+}

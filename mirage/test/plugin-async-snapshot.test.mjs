@@ -96,7 +96,7 @@ test('an asynchronous Create step sees the operation as PostOperation started, n
 
 // Native async, crud and ownerAndState: an Update whose row was deleted before its asynchronous job ran never
 // executes that step (the Delete's own asynchronous step does run).
-test('a queued asynchronous Update of a row deleted before its job ran does not execute and fails its job', async (t) => {
+test('a queued asynchronous Update of a row deleted before its job ran does not execute and is canceled', async (t) => {
   const runs = [];
   const handlers = new Map([
     ['Invented.AsyncUpdate', ({ context }) => runs.push(context.MessageName)],
@@ -112,8 +112,12 @@ test('a queued asynchronous Update of a row deleted before its job ran does not 
   await store.remove('x_item', row.x_itemid, { admin: true });
   await settle();
   assert.deepEqual(runs, ['Delete']);
-  const failed = store.tableRows('asyncoperation').find((job) => job.messagename === 'Update');
-  assert.equal(failed.statuscode, 31);
-  assert.equal(failed.errorcode, 0x80040217 | 0);
-  assert.match(failed.message, /Does Not Exist/);
+  // @parity-evidence: native and native-r2 asyncDeletedRow (two captures, DELETE at once): the deleted row's queued Update jobs end statecode 3 / statuscode 32 (Canceled), errorcode null, message null, friendlymessage 'This system job was canceled because a referenced record was deleted.', never started
+  const canceled = store.tableRows('asyncoperation').find((job) => job.messagename === 'Update');
+  assert.equal(canceled.statecode, 3);
+  assert.equal(canceled.statuscode, 32);
+  assert.equal(canceled.errorcode, null);
+  assert.equal(canceled.message, null);
+  assert.equal(canceled.friendlymessage, 'This system job was canceled because a referenced record was deleted.');
+  assert.equal(canceled.startedon, undefined);
 });

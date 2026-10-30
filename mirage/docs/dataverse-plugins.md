@@ -70,22 +70,26 @@ Steps on a web hook (service endpoint) are delivered as described in [Webhooks](
 **Restart.** Ready jobs live in the state file. When an organization starts on a saved state, its backend (`createOrganizationBackend`) and `createOrganizationRuntime` resume them, retaining any saved explicit plug-in retry count; `backend.resume()` re-scans on demand. An owned committed job left Locked by an interrupted process is recovered to Ready, with a COMMITTED_JOB_RECOVERED diagnostic. This is local at-least-once recovery: a completed external effect may be repeated, and the saved plug-in attempt budget is retained. `settleCommittedWork` (reload, stop, `backend.settle()`) waits for the queued jobs and for the store scheduler's due and running tasks, which include the `dataverse-async` jobs (BulkDelete, `systemJob`, background operations). With a manual scheduler, settle waits only for running work; Ready jobs wait for `runDue()`. A job waiting on a not-yet-due task of that scheduler (a connector retry pause, for example) is blocked: settle and close return without it, and the `advance(ms)` that makes the pause due finishes it. A job still Ready at close runs in the next runtime.
 
 An asynchronous original plug-in can explicitly request retry with
-`InvalidPluginExecutionException(OperationStatus.Retry, ...)`. Mirage permits
-four total executions of that job, as specified by Microsoft's
-[async exception guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/handle-exceptions#retry-an-asynchronous-plug-in).
+`InvalidPluginExecutionException(OperationStatus.Retry, ...)`
+([async exception guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/handle-exceptions#retry-an-asynchronous-plug-in)).
+As recorded natively, a step that always asks for Retry executes five times and
+its job ends Failed with `retrycount` 4.
 Its attempt count is saved before each invocation. A retry returns the same job
 to Ready for a later local scheduler turn, with a fresh invocation and the
 original committed event; completed independent SDK writes remain committed.
-The final failed attempt leaves a Failed job, while ordinary exceptions fail
-without requesting another plug-in execution. Ready retries retain their count
+The final failed attempt leaves a Failed job, while ordinary and coded
+exceptions fail after one execution. A failed plug-in job, as recorded
+natively, has `errorcode` 0x80040265 whatever code the exception named, the
+authored text as `friendlymessage` and the plug-in trace block (`Plugin
+Trace:`, the type and step, the trace lines, then `Error Message:`) as
+`message`; the native stack frames of an ordinary exception are not reproduced. Ready retries retain their count
 across restart. This does not reproduce cloud retry delays, worker recovery or
 service-protection policy. Deleting a row fails every waiting asynchronous
 plug-in and web hook job regarding it, whatever its message (a first attempt or
-a retry), inside the deleting transaction, with the row's `Does Not Exist`
-message and 0x80040217: the step never executes, as recorded natively, where a
-deleted row's pending Update, Assign, SetStateDynamicEntity and sharing steps and
-its Update web hook never ran. The native job state of such a job is not
-recorded. Native jobs started 1 to 6 seconds after their operation, so whether
+a retry, including a multiple bridged from the row's operation), inside the
+deleting transaction: the step never executes and its job ends Canceled (3/32)
+without `errorcode` or `message`, with the friendly message "This system job
+was canceled because a referenced record was deleted.", as recorded natively. Native jobs started 1 to 6 seconds after their operation, so whether
 one beats a quick deletion is a platform timing race. Local jobs start on the
 next scheduler turn; the Dataverse setting `asyncStartDelayMs` (default 0)
 postpones each new plug-in and web hook job (`asyncoperation.postponeuntil`) to
@@ -106,7 +110,7 @@ Synchronous JavaScript handlers (step id and plug-in type) and original CLR step
 
 Handlers and CLR runs write plugintracelog rows according to `organization.plugintracelogsetting` (0 off, 1 exceptions, 2 all); the trace lines a handler writes through `trace(text)` form `messageblock`.
 
-System-generated trace facts survive failed business transactions and SDK savepoint rollbacks, as documented by [Microsoft tracing guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/logging-tracing). Only `plugintracelog` facts are retained: target/related writes, events and jobs still follow their existing transaction boundaries. Nested rollbacks deduplicate trace IDs. A trace-only rollback save publishes a checkpoint and invalidates data/query revisions; it cannot replay the aborted business journal. If diagnostic persistence also fails, both failures remain available in an `AggregateError` whose cause is the original business rejection; no speculative state or successful commit is published. Native 10 KB text retention and trace cleanup scheduling are not modelled.
+System-generated trace facts survive failed business transactions and SDK savepoint rollbacks, as documented by [Microsoft tracing guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/logging-tracing). Only `plugintracelog` facts are retained: target/related writes, events and jobs still follow their existing transaction boundaries. Nested rollbacks deduplicate trace IDs. A trace-only rollback save publishes a checkpoint and invalidates data/query revisions; it cannot replay the aborted business journal. If diagnostic persistence also fails, both failures remain available in an `AggregateError` whose cause is the original business rejection; no speculative state or successful commit is published. As recorded natively, `messageblock` keeps the first 10240 characters and a plug-in fault's `exceptiondetails` name the `OrganizationServiceFault` it surfaced as (the native stack frames are not reproduced). Trace cleanup scheduling is not modelled.
 
 `TriggerServiceEndpointCheck` (bound to serviceendpoint) POSTs a probe to a contract 8 endpoint only when its URL is loopback, and answers 204 for any 2xx. With a messaging provider, a contract 2, 5 or 6 endpoint answers 204 when `providers.messaging.endpoints` maps it (nothing is sent) and 400 when it does not. Other contracts and non-loopback URLs get a 400 and are never contacted. The probe sends no authentication value.
 
@@ -179,7 +183,7 @@ SDK and SOAP Create preserve Entity.Id separately from the Attributes collection
 
 The private response handoff is scoped to one exact store, message, table and opaque invocation token. SDK calls use synchronous captures; SOAP calls retain their own capture across awaits. Nested SDK requests have separate frames; bare project/flow operations, cascade children and later asynchronous work cannot overwrite the initiating caller's results. Captures clone final values and are removed after success or failure. This is a correctness mechanism for trusted local code, not an untrusted-code isolation boundary. Retrieve/RetrieveMultiple context keys `BusinessEntity`/`BusinessEntityCollection` are mapped to the installed SDK response keys `Entity`/`EntityCollection`. SOAP preserves typed final outputs independently of its HTTP transport projection. Conflicting context/SDK aliases require an explicit adapter and fail diagnostically. Unsupported SDK messages, unsupported value types and changed read identities retain their existing explicit limitations. See Microsoft's [SDK message reference](https://learn.microsoft.com/en-gb/power-apps/developer/data-platform/org-service/use-messages).
 
-A default `InvalidPluginExecutionException` from the supplied Microsoft SDK carries a CLR source HRESULT. Mirage preserves that raw value in `sourceException.errorCode` and maps the default `0x80131500` to the Dataverse `IsvAborted` fault code `0x80040265` for HTTP inner errors and nested SDK faults. Explicit nondefault codes remain unchanged. The portal Web API wraps these faults in its own envelope. See Microsoft's [plugin exception guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/best-practices/business-logic/use-invalidpluginexecutionexception-plugin-workflow-activities).
+A default `InvalidPluginExecutionException` from the supplied Microsoft SDK carries a CLR source HRESULT. Mirage preserves that raw value in `sourceException.errorCode` and maps the default `0x80131500` to the Dataverse `IsvAborted` fault code `0x80040265` for HTTP inner errors and nested SDK faults. An explicit nondefault code or OperationStatus also answers `0x80040265` with the authored message, as recorded natively; the code stays in `sourceException.errorCode`. The portal Web API wraps these faults in its own envelope. See Microsoft's [plugin exception guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/best-practices/business-logic/use-invalidpluginexecutionexception-plugin-workflow-activities).
 
 Imported `multiselectpicklist` columns use `OptionSetValueCollection` in Targets, entity images and SDK reads. Stored arrays or comma-separated strings retain their selected option integers; SDK writes accept source-typed Int32 option arrays and validate declared options before mutation. Untyped arrays remain unsupported deep writes. See Microsoft's [choices column reference](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/multi-select-picklist).
 
