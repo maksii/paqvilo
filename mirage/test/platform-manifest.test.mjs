@@ -1,4 +1,4 @@
-// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
+// @test-kind unproven: local model of Power Pages native page markup, platform resources and headers; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -25,6 +25,7 @@ const CONTACT = 'c0000000-0000-4000-8000-000000000011';
 const VALIDATED =
   'var Page_Validators = (window.Page_Validators || []).concat([document.getElementById("RequiredFieldValidatorname")].filter(Boolean));';
 
+// @test-kind contract: Paqvilo's runtime injection keeps authored markup and saved form state
 test('runtime ViewState keys preserve authored markup and entity-like text inside the saved form state', () => {
   const state = {
     v: 1,
@@ -359,6 +360,7 @@ test('anti-forgery endpoints return the native self-closing input with the cooki
   assert.equal((await get(`/_portal/00000000-0000-4000-8000-000000000000/Layout/GetAntiForgeryToken`)).status, 404);
 });
 
+// @test-kind contract: Paqvilo serves its local equivalents at native paths unless the export provides the file
 test('native platform paths are served from local equivalents unless the export provides them', async (t) => {
   const { get } = await shellFixture(t);
   const expectations = [
@@ -399,6 +401,7 @@ test('native platform paths are served from local equivalents unless the export 
   assert.equal((await get(`/_portal/00000000-0000-4000-8000-000000000000/Resources/ResourceManager`)).status, 404);
 });
 
+// @test-kind contract: Paqvilo's local platform files answer conditional requests by file date
 test('local platform files are dated by their file and answer conditional requests with 304', async (t) => {
   const { app, get } = await shellFixture(t);
   const cases = [
@@ -421,6 +424,7 @@ test('local platform files are dated by their file and answer conditional reques
   }
 });
 
+// @test-kind contract: an exported web file takes precedence over Paqvilo's local equivalent
 test('an exported web file at a native platform path wins over the local equivalent', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-webfile-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
@@ -577,6 +581,7 @@ test("legacy ASPX page templates render their WebForms layout with the page's at
   assert.ok(entries.some((entry) => entry.code === 'COMPONENT_NOT_EXPORTED' && entry.path === '/missing/'));
 });
 
+// @test-kind contract: Paqvilo reports classic workflow execution from a portal as a local limitation
 test('classic workflow execution reports its local limitation and Bootstrap glyph fonts are served', async (t) => {
   const { app, get } = await shellFixture(t);
   const session = signInHeaders(app, CONTACT, { roles: ['Member'] });
@@ -947,6 +952,7 @@ test("platform resources on the portal origin carry the platform's headers; /dis
   assert.equal(await fallback.text(), await cdn.text());
 });
 
+// @test-kind contract: Paqvilo's aborted-render marker closes the server form
 test("an aborted form control writes the closing tags that follow it after the form's closing fields", () => {
   const html = webFormsForm({
     content:

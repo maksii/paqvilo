@@ -181,6 +181,7 @@ test('a relationship without Assign metadata reports CASCADE_ASSIGN_DEFAULTED on
   assert.equal(ownerOf(store, 'x_child', 'x_childid', ACTIVE), USER_ONE);
 });
 
+// @test-kind contract: Paqvilo reports declared cascades it does not simulate
 test('Share, Reparent, Merge and Unshare declared by metadata report NOT_SIMULATED once per table and change nothing', async (t) => {
   const cascade = { assign: 'NoCascade', share: 'Cascade', unshare: 'Active', reparent: 'Cascade', merge: 'Cascade' };
   const { request, json, store, diagnostics } = await setup(t, cascade);
@@ -200,11 +201,13 @@ test('Share, Reparent, Merge and Unshare declared by metadata report NOT_SIMULAT
   assert.equal(store.state.tables.principalobjectaccess?.length ?? 0, sharesBefore, 'no share row is granted');
 });
 
+// @test-kind contract: Paqvilo reports nothing for undeclared cascades
 test('a relationship without declared Share, Reparent, Merge or Unshare reports nothing for them', async (t) => {
   const { diagnostics } = await setup(t, { assign: 'NoCascade', share: 'NoCascade', merge: 'NoCascade' });
   assert.equal(diagnostics.filter((entry) => entry.table === 'x_parent' && /NOT_SIMULATED/.test(entry.code)).length, 0);
 });
 
+// @test-kind contract: Paqvilo's describe levels for the cascade extension
 test('describe lists Assign at behaviour and the other cascades at contract, with the seams', () => {
   const record = EXTENSION.describe();
   assert.equal(record.name, 'dataverse-cascade');
@@ -236,6 +239,7 @@ test('a PATCH that fails with 412 leaves no pre-image: a later write without bef
   assert.equal(ownerOf(store, 'x_child', 'x_childid', INACTIVE), USER_ONE);
 });
 
+// @test-kind unproven+security: local model of the Assign privilege check on cascaded children
 test('a caller without Assign on the child table: the cascade refuses and the parent write rolls back', async (t) => {
   const refusing = {
     ...EXTENSION,

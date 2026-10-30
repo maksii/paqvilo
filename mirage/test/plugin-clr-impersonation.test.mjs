@@ -1,4 +1,5 @@
-// @test-kind parity: native dataverse-recorder crud corpus 'Update 40 impersonated': UserId is the impersonated user, InitiatingUserId the caller
+// @test-kind parity: native recorder corpus 2026-10-30, crud scenario captured twice, 'Update 40 impersonated': UserId is the impersonated user, InitiatingUserId the caller
+// @parity-evidence: native recorder corpus 2026-10-30 crud and native-r2/crud: 'Probe: Update 40 impersonated' UserId = impersonated user, InitiatingUserId = caller in both captures
 // Native corpus (dataverse-recorder crud, 'Probe: Update 40 impersonated'): a step registered with an impersonating
 // user runs with UserId = that user while InitiatingUserId stays the caller. A trusted CLR runtime executes it.
 import test from 'node:test';

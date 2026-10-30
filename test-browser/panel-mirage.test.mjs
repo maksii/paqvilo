@@ -94,6 +94,7 @@ test('the first _sim state read reuses the implementation fingerprint taken when
   assert.deepEqual(reads, [], 'an unchanged implementation tree is not read again');
 });
 
+// @test-kind contract+security: hostile diagnostic text renders as text in the Mirage panel
 test(
   'Mirage panel inspects permissions, templates, forms and Solution sources, signs this browser in and out, and switches permissions and scenario',
   { timeout: 180_000 },

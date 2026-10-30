@@ -515,6 +515,7 @@ const packsPayload = {
   ],
   setupLink: '/_setup/#packs',
 };
+// @test-kind contract+security: the packs view escapes pack names
 test('packs view escapes names, shows matched status, provenance columns and expands details on request', async () => {
   const ctx = context({ responses: { '/packs': packsPayload } });
   await packs.load(ctx);
@@ -1855,6 +1856,7 @@ test('the Rendered tab and Pages & render resolve template sources to path:line 
   );
 });
 
+// @test-kind contract+security: a hostile finding is shown escaped
 test('a hostile finding is shown escaped; stale evidence says so in Pages & render', async () => {
   const hostile = '<img src=x onerror=alert(1)>';
   const findings = {
@@ -2138,6 +2140,7 @@ test('Live follows ended activities and the open activity’s own steps, and tur
   }
 });
 
+// @test-kind contract+security: activity text is escaped everywhere
 test('activity text is escaped everywhere', async () => {
   const tree = structuredClone(traceTree);
   const hostile = '<img src=x onerror=alert(1)>"\'';

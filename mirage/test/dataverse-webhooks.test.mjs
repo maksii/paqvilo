@@ -176,6 +176,7 @@ const create = (store, name = 'alpha') =>
 const rowsOf = (store) => store.tableRows('contoso_widget');
 
 describe('loopback guard (shared with TriggerServiceEndpointCheck)', () => {
+  // @test-kind contract+security: Paqvilo's loopback-only delivery guard
   it('accepts localhost, *.localhost, 127.0.0.0/8 and ::1 over http or https, and nothing else', () => {
     for (const url of ['http://localhost:1/x', 'https://api.localhost/x', 'http://127.0.0.2/x', 'http://[::1]:8080/x'])
       assert.equal(isLoopbackUrl(url), true, url);
@@ -198,6 +199,7 @@ describe('synchronous web hooks', () => {
     session = null;
   });
 
+  // @test-kind compatibility: Microsoft Learn "Use webhooks to create external handlers for server events" (request headers and RemoteExecutionContext body)
   it('posts the documented RemoteExecutionContext with the header authentication, and its 200 lets the create commit', async () => {
     const at = route();
     session = await world();
@@ -237,6 +239,7 @@ describe('synchronous web hooks', () => {
     });
   });
 
+  // @test-kind compatibility: Microsoft Learn "Register a webhook" (WebhookKey sends a code query string)
   it('sends a WebhookKey as the code query string', async () => {
     const at = route();
     session = await world();
@@ -259,6 +262,7 @@ describe('synchronous web hooks', () => {
     assert.equal((await receiver.log(at)).length, 1, 'the endpoint was called once');
   });
 
+  // @test-kind compatibility: Microsoft Learn "Use webhooks to create external handlers for server events" (one more attempt after 502, 503 or 504)
   it('retries a 503 once, as Learn documents, and the second answer decides', async () => {
     const at = route();
     session = await world();
@@ -268,6 +272,7 @@ describe('synchronous web hooks', () => {
     assert.equal((await receiver.log(at)).length, 2);
   });
 
+  // @test-kind compatibility: Microsoft Learn "Use webhooks to create external handlers for server events" (over 256 KB drops four properties and adds x-ms-dynamics-msg-size-exceeded)
   it('a payload over 256 KB drops ParentContext, InputParameters, PreEntityImages and PostEntityImages and says so in a header', async () => {
     const at = route();
     session = await world();
@@ -280,6 +285,7 @@ describe('synchronous web hooks', () => {
     assert.equal(entry.body.MessageName, 'Create');
   });
 
+  // @test-kind contract+security: a non-loopback endpoint is never contacted and diagnostics carry no authentication value
   it('a non-loopback URL is never contacted: the create succeeds, and a diagnostic names only the host', async () => {
     session = await world();
     const secret = 'invented-authvalue-9d2c';
@@ -309,6 +315,7 @@ describe('synchronous web hooks', () => {
     assert.equal(text.includes('invented-query-secret'), false, 'the URL path and query are in no diagnostic');
   });
 
+  // @test-kind contract: Paqvilo's asynchronous pipeline awaits an in-process receiver
   it("a receiver in Mirage's own process answers: the asynchronous pipeline awaits the POST instead of blocking the event loop", async () => {
     session = await world();
     const received = [];
@@ -335,6 +342,7 @@ describe('synchronous web hooks', () => {
     }
   });
 
+  // @test-kind contract: Paqvilo does not simulate contracts other than 8 and reports it
   it('a contract other than 8 is not simulated and never contacted, and the create succeeds', async () => {
     session = await world();
     await session.endpoint({ url: 'http://127.0.0.1:9/queue', contract: 2 });
@@ -392,6 +400,7 @@ describe('asynchronous web hooks', () => {
 
   // An uncontacted endpoint ends Canceled (32), as for an endpoint contract the simulator does not deliver; Succeeded (30)
   // would report a delivery that never happened.
+  // @test-kind contract+security: a non-loopback endpoint is never contacted
   it('a non-loopback URL is never contacted and its job is Canceled, with the not-contacted diagnostic', async () => {
     session = await world({ mode: 1 });
     await session.endpoint({ url: 'https://hooks.contoso.invalid/hook' });
@@ -446,6 +455,7 @@ describe('TriggerServiceEndpointCheck probes loopback endpoints only', () => {
   }
   const probe = (row) => action().handle({ target: { id: 'row', row }, body: {}, user: { systemuserid: 'x' } });
 
+  // @test-kind contract+security: TriggerServiceEndpointCheck probes loopback endpoints only
   it('answers 204 for a loopback contract 8 endpoint that accepts the probe, and refuses the others', async () => {
     const at = route();
     assert.deepEqual(await probe({ contract: 8, url: `${receiver.origin}${at}/status/200` }), { status: 204 });
@@ -464,6 +474,7 @@ describe('TriggerServiceEndpointCheck probes loopback endpoints only', () => {
 describe('loopback guard by resolved address', () => {
   afterEach(() => mock.restoreAll());
 
+  // @test-kind contract+security: the loopback guard checks the resolved address
   it('refuses a *.localhost name that resolves to a routable address, without a connection', async () => {
     const fetchSpy = mock.method(globalThis, 'fetch');
     const lookups = [];
