@@ -54,9 +54,8 @@ function jobColumns(store, item, event, chain) {
     /* A removed entity has no primary-key column to include. */
   }
   const recordId =
-    idColumn &&
-    !event.bridgedMessage &&
-    !['createmultiple', 'updatemultiple', 'retrievemultiple'].includes(event.operation)
+    // A bridged multiple job (plugin-single-multiple.mjs) concerns its single event's row.
+    idColumn && !['createmultiple', 'updatemultiple', 'retrievemultiple'].includes(event.operation)
       ? (event.row?.[idColumn] ?? null)
       : null;
   return {
@@ -507,7 +506,8 @@ export function createAsyncPluginRunner({
       const job = rows[index];
       if (
         job.statecode !== 0 ||
-        !['Create', 'Update'].includes(job.messagename) ||
+        // UpdateMultiple and CreateMultiple jobs of a single write wait on the same row (native asyncDeletedRow).
+        !['Create', 'Update', 'CreateMultiple', 'UpdateMultiple'].includes(job.messagename) ||
         job.regardingobjectid?.logical_name !== event.entity ||
         !sameId(job.regardingobjectid?.id, rowId) ||
         !String(job.data ?? '').includes('"kind":"plugin"')

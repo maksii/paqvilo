@@ -315,3 +315,24 @@ test(
     );
   },
 );
+
+test('a queued UpdateMultiple job of a row deleted before it ran fails with the row, as its Update job does', async (t) => {
+  // Native asyncDeletedRow (both captures): the deleted row's waiting Update and UpdateMultiple jobs never execute.
+  const steps = [step('UpdateMultiple', 40, 1, 1, { mode: 1 }), step('Update', 40, 1, 2, { mode: 1 })];
+  const runs = [];
+  const f = await fixture(
+    t,
+    steps,
+    new Map([['Invented.Observer', ({ context }) => void runs.push(context.MessageName)]]),
+  );
+  await f.store.update('x_item', id, { x_name: 'changed' }, { admin: true });
+  await f.store.remove('x_item', id, { admin: true });
+  await f.backend.settle();
+  assert.deepEqual(runs, []);
+  const jobs = f.store.tableRows('asyncoperation');
+  assert.deepEqual(jobs.map((job) => [job.messagename, job.regardingobjectid?.id, job.statecode]).sort(), [
+    ['Update', id, 3],
+    ['UpdateMultiple', id, 3],
+  ]);
+  assert.equal(jobs[0].statuscode, jobs[1].statuscode);
+});
