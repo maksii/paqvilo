@@ -1,4 +1,5 @@
-// @test-kind parity: native dataverse-recorder depth corpus: a nested PostOperation Create chain reached Depth 10 and committed
+// @test-kind parity: native recorder corpus 2026-10-30, depth scenario captured twice: a nested PostOperation Create chain reached Depth 10 and committed (204)
+// @parity-evidence: native recorder corpus 2026-10-30 depth and native-r2/depth: Create depths 1..10, POST 204 in both captures
 // Native corpus (dataverse-recorder depth): a PostOperation Create step that creates another row of its table from
 // each level reached Depth 10 and the request answered 204, so nested CLR execution passes the documented
 // on-premises cap of 8. Invented schema and assembly.

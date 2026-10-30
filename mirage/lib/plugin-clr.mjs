@@ -15,6 +15,7 @@ import {
   asynchronousParentChain,
   clrSdkEntryContext,
   mainOperationParent,
+  observedParentChain,
   selectSdkEntryParent,
 } from './plugin-sdk-parent.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
@@ -780,13 +781,21 @@ export function dispatchSdkCall(args) {
     previousMainOperation = store.pluginMainOperation;
   // A plug-in's SDK request is its own operation, never part of a named message's main operation.
   store.pluginMainOperation = null;
-  const sdkParent = args.sdkParentContext ?? message.parentContext ?? pluginInvocationSdkParent(store);
+  // A plug-in that itself runs inside an SDK-issued pipeline (Depth 2 and deeper) keeps the depth-1 sandbox step as the
+  // ParentContext of its own SDK requests; Depth still counts every level (native depth: Create/10/dN < Create/40/d1
+  // < Create/30/d1 for N 3..10).
+  const sdkParent = previous
+    ? null
+    : (args.sdkParentContext ?? message.parentContext ?? pluginInvocationSdkParent(store));
   if (sdkParent) {
     if (sdkParent.$type !== 'ExecutionContext' || Buffer.byteLength(JSON.stringify(sdkParent)) > 4 * 1024 * 1024)
       fail('SDK ParentContext is invalid or excessive.', 'LocalPluginInputLimit', 413);
     store.pluginParentContext = canonicalTagParent(cloneStateData(sdkParent), store.pluginSdkTag);
   }
   store.pluginRequestId = message.method === 'Execute' ? message.arguments?.[0]?.requestId : undefined;
+  // Collections the caller's operation starts after a plug-in request report no Accept-Language
+  // (exported-plugins.mjs runPluginPhase).
+  store.pluginSdkRequests = (store.pluginSdkRequests ?? 0) + 1;
   try {
     return store.traces?.enabled
       ? store.traces.wrap(sdkCallSpan(message), (span) => {
@@ -1879,10 +1888,12 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       inherited('InitiatingUserApplicationId') ??
       typed('Guid', caller?.dataverse?.appId ?? user(initiatingUserId)?.applicationid ?? empty),
     AuthenticatedUserId: typed('Guid', authenticatedUserId),
+    // A request a plug-in issues through its IOrganizationService, and the asynchronous jobs it queues, report no user
+    // agent (native depth, faults, sdkMessages and customApi, also at Depth 1); others report the caller's.
     InitiatingUserAgent:
-      inherited('InitiatingUserAgent') ??
-      caller?.dataverse?.userAgent ??
-      (context.initiatingUserAgentPresent ? 'Mirage observed user-agent presence; value withheld' : null),
+      (frame.sdkIssued ?? Boolean(store.pluginParentContext || pluginInvocationSdkParent(store)))
+        ? ''
+        : (inherited('InitiatingUserAgent') ?? caller?.dataverse?.userAgent ?? null),
     EnvironmentId: context.environmentId ?? store.state?.dataverse?.environmentId ?? null,
     TenantId: typed('Guid', context.tenantId ?? store.state?.dataverse?.tenantId ?? empty),
     IsApplicationUser:
@@ -2097,13 +2108,15 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       descriptor.serviceProfile.userId;
     answer.context.ParentContext = delegatedPluginParent(source, answer.context, caller);
   }
-  // PreOperation and PostOperation (and the asynchronous copies) see the main operation as their parent.
-  if (crud && stage !== 10 && !frame.delegatedSourceOperation)
+  // PreOperation and PostOperation (and the asynchronous copies) see the main operation as their parent. A record
+  // operation a named message's main operation delegates sees that message's stage-30 context instead (native
+  // sdkMessages: Update/20/d2 < Assign/30/d2 < Update/40/d1).
+  if (crud && stage !== 10 && !frame.delegatedSourceOperation && !frame.namedMainOperation)
     answer.context.ParentContext = mainOperationParent({
       frame,
       context: answer.context,
       parent: asynchronous ? (frame.mainOuterParent ?? null) : parent,
-      callerUserId,
+      userId: executionUserId,
       objectId,
       inputs: () => ({
         ...cloneStateData(frame.mainOperationInputs ?? {}),
@@ -2148,6 +2161,23 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   if (asynchronous)
     answer.context.ParentContext = asynchronousParentChain(answer.context.ParentContext, answer.context);
   answer.context.ParentContext = asyncMultiplePluginParent(frame, operation, entity) ?? answer.context.ParentContext;
+  // A named message's main operation reports the user its delegated record operation runs as (native sdkMessages:
+  // Assign/30 carries the SYSTEM user of its owner Update, and an impersonating step's user, as Update/30 does).
+  if (frame.namedMainOperation && !asynchronous && answer.context.ParentContext?.values)
+    answer.context.ParentContext = {
+      $type: 'ExecutionContext',
+      values: {
+        ...answer.context.ParentContext.values,
+        UserId: typed('Guid', executionUserId),
+        UserAzureActiveDirectoryObjectId: typed('Guid', objectId(executionUserId)),
+      },
+    };
+  answer.context.ParentContext = observedParentChain(
+    answer.context.ParentContext,
+    answer.context,
+    objectId,
+    store.pluginRequestRoots,
+  );
   formatPipelineTargets(store, {
     entity,
     operation,

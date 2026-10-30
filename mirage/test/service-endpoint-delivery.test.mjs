@@ -177,6 +177,7 @@ test('a sync contract 5 step sends inside the transaction: a commit keeps the me
   assert.equal(bus.peek('x-topic').length, 1);
 });
 
+// @test-kind contract+security: Paqvilo reports an unmapped endpoint and keeps its authentication value out of diagnostics
 test('an unmapped endpoint is reported and its System Job Failed, never dropped silently', async (t) => {
   const { store, bus, runner, diagnostics, job } = await world(t, { endpoints: {} });
   await create(store);
@@ -189,12 +190,14 @@ test('an unmapped endpoint is reported and its System Job Failed, never dropped 
   assert.ok(!JSON.stringify(diagnostics).includes('invented-sas-key'), 'no authvalue in diagnostics');
 });
 
+// @test-kind contract: Paqvilo's providers.messaging.endpoints mapping
 test('an unmapped sync step fails the operation and rolls it back', async (t) => {
   const { store } = await world(t, { mode: 0, endpoints: {} });
   await assert.rejects(create(store), /no providers\.messaging\.endpoints mapping/);
   assert.equal(store.tableRows('x_widget').length, 0);
 });
 
+// @test-kind contract: Paqvilo does not simulate a contract 2 job without a messaging provider
 test('without a messaging provider a contract 2 job is Canceled as before', async (t) => {
   const { store, runner, diagnostics, job } = await world(t, { bus: false });
   await create(store);

@@ -658,7 +658,8 @@ test('DELETE removes the row, then GET answers 404', async () => {
   assert.equal(after.status, 404);
 });
 
-// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, bulk scenario: DeleteMultiple on a standard table answers 405 0x8004023b "DeleteMultiple has not yet been implemented"
+// @test-kind parity: native recorder corpus 2026-10-30, bulk scenario captured twice: Web API DeleteMultiple on a non-elastic table answers 405 0x8004023b "DeleteMultiple has not yet been implemented"
+// @parity-evidence: native recorder corpus 2026-10-30 bulk and native-r2/bulk: DeleteMultiple 405 0x8004023b in both captures; the captured table is a custom non-elastic table
 test('CreateMultiple returns Ids; DeleteMultiple is not implemented', async () => {
   const t = await setup();
   const res = await t.send('POST', `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.CreateMultiple`, {

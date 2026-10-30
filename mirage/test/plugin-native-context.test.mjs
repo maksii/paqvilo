@@ -120,6 +120,8 @@ test('PreOperation and PostOperation see the ObjectModel main operation with the
     record = { gadgetid: id, title: 'Requested', size: 3 },
     previous = { gadgetid: id, title: 'Before', size: 3 };
   const frame = phases(store, 'update', 'gadget', [10, 20, 40], { target, record, previous });
+  // PostOperation runs inside the transaction (data.mjs sets it from PreOperation on); its ancestors report the same.
+  store.pluginInTransaction = true;
   const answer = clrContext({
     runtime,
     store,
@@ -133,6 +135,7 @@ test('PreOperation and PostOperation see the ObjectModel main operation with the
     frame,
     depth: 1,
   });
+  store.pluginInTransaction = false;
   const parent = answer.context.ParentContext.values;
   assert.equal(parent.Stage, 30);
   assert.equal(parent.Mode, 0);

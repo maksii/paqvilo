@@ -1,5 +1,5 @@
 import { DataError } from './data-error.mjs';
-import { recordToSdkEntity } from './plugin-clr.mjs';
+import { pluginExecutionDepth, recordToSdkEntity } from './plugin-clr.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
@@ -209,7 +209,12 @@ export function singleMultiplePipeline(store, items, execute) {
                 ),
                 id: currentTargetId(),
               };
-        const depth = Math.max(pluginInvocationDepth(store) + 1, Number(parent?.values?.Depth ?? 0) + 1);
+        // A nested caller's SDK parent is the depth-1 step (plugin-clr.mjs dispatchSdkCall); executing CLR steps count.
+        const depth = Math.max(
+          pluginExecutionDepth() + 1,
+          pluginInvocationDepth(store) + 1,
+          Number(parent?.values?.Depth ?? 0) + 1,
+        );
         const upsertSource = () =>
           upsertSourceOperation({
             target:

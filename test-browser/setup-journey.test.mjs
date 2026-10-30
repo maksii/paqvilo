@@ -479,6 +479,7 @@ test(
   },
 );
 
+// @test-kind contract+security: setup shows secret references only, never values
 test(
   'setting rows show current values, references only for secrets, and Settings reflect the file',
   { timeout: 60000 },

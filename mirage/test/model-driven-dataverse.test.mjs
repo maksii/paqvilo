@@ -1,4 +1,4 @@
-// @test-kind unproven: local model of the model-driven app Dataverse surface; no native capture cited
+// @test-kind contract: one transactional store shared by Paqvilo's organization API, model-driven shell and source overlays
 // The organization API and the model-driven shell must use one transactional store.
 import test from 'node:test';
 import assert from 'node:assert/strict';

@@ -1,4 +1,4 @@
-// @test-kind unproven: local model of CLR Target attribute removal against saved Update values; no native capture cited
+// @test-kind observation: native recorder corpus 2026-10-30 pipelineEffects (single capture): a column removed from the Target at Update PreOperation is not saved, and a PostOperation step filtered on that column does not fire
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

@@ -1,4 +1,4 @@
-// @test-kind unproven: local model of the asynchronous record pipeline driver; no native capture cited
+// @test-kind contract: Paqvilo's asynchronous record pipeline drive and synchronous I/O bridge design
 // The asynchronous drive for every write that is not a plug-in's own SDK call (a synchronous web hook
 // runs inside its operation): a flow Dataverse action, the Assign cascade and CalculateRollupField post a synchronous web
 // hook step in process, so Mirage keeps serving while the step waits and a receiver in Mirage's own process answers. The
@@ -290,6 +290,7 @@ test('a bridge post that may have been delivered (the connection dropped after t
   );
 });
 
+// @test-kind contract+security: web hook authentication values never cross the worker bridge
 test('a web hook authentication value never crosses the bridge: the worker resolves its env: reference', async (t) => {
   const receiver = await threadReceiver(t);
   const posted = [],
