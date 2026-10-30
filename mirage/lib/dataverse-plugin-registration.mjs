@@ -37,9 +37,14 @@ const PLATFORM_MESSAGES = Object.fromEntries(
     ['Execute', 'a6bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
     ['Export', 'a9bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server read'],
     ['ExportAll', 'aabdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server read'],
+    ['ExportCompressed', 'f822e36d-ff93-42ad-b833-45697966f484', 'server read'],
+    ['ExportCompressedAll', '343f7101-2166-40ea-ae81-9b183909592e', 'server read'],
     ['GrantAccess', 'c5bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
     ['Import', 'c7bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server read'],
     ['ImportAll', 'c8bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server read'],
+    ['ImportCompressedAll', 'ae6eb9c2-3c62-41f5-a1fe-f19f3709c75b', 'server read'],
+    ['ImportCompressedWithProgress', '0468d3d7-836b-4bb8-84cf-ca587cc30c68', 'server read'],
+    ['ImportWithProgress', '0368d3d7-836b-4bb8-84cf-ca587cc30c68', 'server read'],
     ['IsValidStateTransition', 'cebdbb1b-ea3e-db11-86a7-000a3a5473e8'],
     ['Merge', 'dbbdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
     ['ModifyAccess', 'dcbdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
@@ -49,6 +54,8 @@ const PLATFORM_MESSAGES = Object.fromEntries(
     ['PurgeRetainedContent', 'b7398baf-088d-4a42-8f14-1fdae647dc39'],
     ['Retain', '96db29d8-db5f-4b63-ae1d-2e9a9f222261'],
     ['Retrieve', 'f2bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
+    ['ReplicateAssociate', 'b8a2d3e4-5f6a-4b7c-8d9e-0f1a2b3c4d5e'],
+    ['ReplicateDisassociate', '4b5c6d7e-8f9a-4b0c-1d2e-3f4a5b6c7d8e'],
     ['RetrieveEntityChanges', 'ffe4e36f-d366-4c5f-8f20-47910c912cad', 'read'],
     ['RetrieveExchangeRate', '126075c5-c77f-44fd-bb7d-3457a9168cee'],
     ['RetrieveMultiple', '03bebb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
@@ -150,6 +157,62 @@ const STANDARD_TABLE_FILTERS = {
     'ValidateArchiveConfig',
     'ValidateRetentionConfig',
   ].map((message) => [message, true, ACCOUNT_SERVER_FILTERS.has(message) ? 0 : 2]),
+  // Native filter catalogue round 2 (native-filters-2). Messages whose native sdkmessageid is not recorded are left out:
+  // Handle and Route (task), AddMembers and RemoveMembers (team), and the systemuser and team messages that refuse
+  // custom steps (InviteUser, PromoteToAdmin, SetParent, RetrieveMembers, ...).
+  contact: [
+    ['Assign', true, 0],
+    ['Create', true, 2],
+    ['CreateMultiple', true, 2],
+    ['Delete', true, 2],
+    ['GrantAccess', true, 0],
+    ['IsValidStateTransition', true, 0],
+    ['Merge', true, 0],
+    ['ModifyAccess', true, 0],
+    ['Retrieve', true, 2],
+    ['RetrieveMultiple', true, 2],
+    ['RetrievePrincipalAccess', true, 2],
+    ['RetrieveSharedPrincipalsAndAccess', true, 2],
+    ['RevokeAccess', true, 0],
+    ['SetState', true, 2],
+    ['SetStateDynamicEntity', true, 2],
+    ['Update', true, 2],
+    ['UpdateMultiple', true, 2],
+  ],
+  task: [
+    ['Assign', true, 0],
+    ['Create', true, 2],
+    ['CreateMultiple', true, 2],
+    ['Delete', true, 2],
+    ['GrantAccess', true, 0],
+    ['ModifyAccess', true, 0],
+    ['Retrieve', true, 2],
+    ['RetrieveMultiple', true, 2],
+    ['RetrievePrincipalAccess', true, 2],
+    ['RetrieveSharedPrincipalsAndAccess', true, 2],
+    ['RevokeAccess', true, 0],
+    ['SetState', true, 2],
+    ['SetStateDynamicEntity', true, 2],
+    ['Update', true, 2],
+    ['UpdateMultiple', true, 2],
+  ],
+  systemuser: [
+    ['Create', true, 0],
+    ['Delete', true, 0],
+    ['Retrieve', false, 2],
+    ['RetrieveMultiple', false, 2],
+    ['SetState', true, 0],
+    ['SetStateDynamicEntity', true, 0],
+    ['Update', true, 0],
+  ],
+  team: [
+    ['Archive', true, 2],
+    ['Create', true, 0],
+    ['Delete', true, 0],
+    ['Retrieve', true, 2],
+    ['RetrieveMultiple', true, 2],
+    ['Update', true, 0],
+  ],
   transactioncurrency: [
     ['Create', true, 0],
     ['Delete', true, 0],
@@ -161,6 +224,45 @@ const STANDARD_TABLE_FILTERS = {
     ['Update', true, 0],
   ],
 };
+// Native filter sets of table kinds (native filter catalogue round 2): an N:N intersect table takes custom steps on
+// RetrieveMultiple only; an elastic table has data, bulk, Upsert, change-tracking, retention and archive filters (no state or
+// sharing messages; Assign and RetrievePrincipalAccess when owned); a virtual table has its data filters. All allow custom
+// steps with server-only availability. (UpsertMultipleLegacy, whose native id is not recorded, is left out.)
+const INTERSECT_MESSAGES = ['RetrieveMultiple'];
+const ELASTIC_MESSAGES = [
+  'Archive',
+  'BulkArchive',
+  'BulkRetain',
+  'Create',
+  'CreateMultiple',
+  'CreateMultipleLegacy',
+  'Delete',
+  'DeleteMultiple',
+  'PurgeArchivedContent',
+  'PurgeRetainedContent',
+  'Retain',
+  'Retrieve',
+  'RetrieveEntityChanges',
+  'RetrieveMultiple',
+  'RollbackRetain',
+  'Update',
+  'UpdateMultiple',
+  'UpdateMultipleLegacy',
+  'Upsert',
+  'UpsertMultiple',
+  'ValidateArchiveConfig',
+  'ValidateRetentionConfig',
+];
+const VIRTUAL_MESSAGES = [
+  'Create',
+  'CreateMultipleLegacy',
+  'Delete',
+  'Retrieve',
+  'RetrieveEntityChanges',
+  'RetrieveMultiple',
+  'Update',
+  'UpdateMultipleLegacy',
+];
 // The 'none' (no table) filters native has for platform messages, as message: [iscustomprocessingstepallowed, availability,
 // unfiltered]. The allowed flag governs a step registered on that filter. A step registered with no filter is accepted on any
 // existing message (Upsert, Merge and RetrieveEntityChanges included, whose 'none' filters refuse custom steps) except where
@@ -172,11 +274,18 @@ const NONE_FILTERS = {
   Execute: [true, 2],
   Export: [true, 0],
   ExportAll: [true, 0],
+  ExportCompressed: [true, 0],
+  ExportCompressedAll: [true, 0],
   Import: [true, 0],
   ImportAll: [true, 0],
+  ImportCompressedAll: [true, 0],
+  ImportCompressedWithProgress: [true, 0],
+  ImportWithProgress: [true, 0],
   Merge: [false, 2],
   Publish: [true, 0],
   PublishAll: [true, 0],
+  ReplicateAssociate: [true, 2],
+  ReplicateDisassociate: [true, 2],
   RetrieveEntityChanges: [false, 2],
   RetrievePersonalWall: [true, 0],
   RetrieveRecordWall: [true, 0],
@@ -314,13 +423,17 @@ function messageRows(store, org, names, availability) {
 // The messages a table's filters cover (see TABLE_MESSAGES).
 function tableMessages(logical, mapping) {
   const owned = ['UserOwned', 'TeamOwned'].includes(ownershipTypeName(logical, null, mapping));
+  const external = mapping.isVirtual || mapping.dataSourceId ? EXTERNAL_MESSAGES : [];
+  if (mapping.intersect) return INTERSECT_MESSAGES;
+  if (mapping.tableType === 'Elastic')
+    return [...ELASTIC_MESSAGES, ...(owned ? ['Assign', 'RetrievePrincipalAccess'] : [])];
+  if (mapping.isVirtual || mapping.dataSourceId) return [...VIRTUAL_MESSAGES, ...external];
   return [
     ...TABLE_MESSAGES,
     ...(standardTableDef(logical) ? [] : CUSTOM_TABLE_MESSAGES),
     ...(owned ? OWNED_TABLE_MESSAGES : []),
     ...(MERGEABLE.has(logical) ? ['Merge'] : []),
     ...(logical === 'transactioncurrency' ? ['RetrieveExchangeRate'] : []),
-    ...(mapping.isVirtual || mapping.dataSourceId ? EXTERNAL_MESSAGES : []),
   ];
 }
 
@@ -349,7 +462,8 @@ function filterRows(store, org, availability) {
         filter(
           message,
           logical,
-          !mapping.intersect && !NO_CUSTOM_STEP.has(logical) && !NO_CUSTOM_STEP_MESSAGES.has(message),
+          !NO_CUSTOM_STEP.has(logical) &&
+            (mapping.intersect || mapping.tableType === 'Elastic' || !NO_CUSTOM_STEP_MESSAGES.has(message)),
         ),
       );
   }

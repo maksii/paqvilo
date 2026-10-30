@@ -164,6 +164,79 @@ test('standard tables take their native filter sets, flags and availability', as
   assert.equal((await refused.json()).error.code, '0x80044187');
 });
 
+// Native filter catalogue round 2: filter sets of contact, task, systemuser and team, and of an elastic, a virtual and an
+// N:N intersect table (invented tables of those kinds here).
+test('table kinds and further standard tables take their native filter sets', async (t) => {
+  const kind = (logicalName, extra = {}) => ({
+    logicalName,
+    entitySet: `${logicalName}s`,
+    idColumn: `${logicalName}id`,
+    fields: {},
+    ...extra,
+  });
+  const f = await contractModuleFixture(t, {
+    mappings: {
+      contact: kind('contact'),
+      task: kind('task'),
+      systemuser: kind('systemuser'),
+      team: kind('team'),
+      x_elastic: kind('x_elastic', { tableType: 'Elastic', ownership: 'UserOwned' }),
+      x_virtual: kind('x_virtual', { isVirtual: true }),
+      x_peer: kind('x_peer', { intersect: true }),
+    },
+    extension: { name: 'registration-kinds-probe', install: () => {} },
+  });
+  const names = new Map(f.store.tableRows('sdkmessage').map((row) => [row.sdkmessageid, row.name]));
+  const filters = (table) =>
+    Object.fromEntries(
+      f.store
+        .tableRows('sdkmessagefilter')
+        .filter((row) => row.primaryobjecttypecode === table)
+        .map((row) => [names.get(row.sdkmessageid), [row.iscustomprocessingstepallowed, row.availability]]),
+    );
+  assert.deepEqual(filters('x_peer'), { RetrieveMultiple: [true, 0] });
+  assert.deepEqual(
+    Object.keys(filters('x_virtual'))
+      .filter((name) => name && !name.startsWith('OnExternal')) // the local external-event filters, see dataverse-plugins.md
+      .sort(),
+    [
+      'Create',
+      'CreateMultipleLegacy',
+      'Delete',
+      'Retrieve',
+      'RetrieveEntityChanges',
+      'RetrieveMultiple',
+      'Update',
+      'UpdateMultipleLegacy',
+    ],
+  );
+  const elastic = filters('x_elastic');
+  assert.deepEqual(
+    [elastic.Upsert, elastic.UpsertMultiple, elastic.RetrieveEntityChanges],
+    [
+      [true, 0],
+      [true, 0],
+      [true, 0],
+    ],
+  );
+  for (const name of ['SetState', 'IsValidStateTransition', 'GrantAccess'])
+    assert.equal(elastic[name], undefined, name);
+  assert.equal(Object.keys(filters('contact')).length, 17);
+  assert.equal(filters('contact').Retain, undefined);
+  assert.deepEqual(filters('contact').IsValidStateTransition, [true, 0]);
+  assert.deepEqual(filters('task').SetState, [true, 2]);
+  assert.deepEqual(filters('systemuser').Retrieve, [false, 2]);
+  assert.deepEqual(filters('systemuser').Update, [true, 0]);
+  assert.deepEqual(filters('team'), {
+    Archive: [true, 2],
+    Create: [true, 0],
+    Delete: [true, 0],
+    Retrieve: [true, 2],
+    RetrieveMultiple: [true, 2],
+    Update: [true, 0],
+  });
+});
+
 // Native accepted global (no filter) steps on every existing message: PublishAll and RetrieveExchangeRate (no table filter
 // in scope), Upsert (its 'none' filter refuses custom steps); a step registered on that refusing 'none' filter is refused.
 test('a step without a filter is accepted on any existing message; a refusing filter still refuses', async (t) => {
