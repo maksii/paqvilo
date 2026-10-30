@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of async System Job context metadata, retry identity and webhook payload timing; no cited native recording
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

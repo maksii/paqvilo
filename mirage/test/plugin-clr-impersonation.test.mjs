@@ -1,3 +1,4 @@
+// @test-kind parity: native dataverse-recorder crud corpus 'Update 40 impersonated': UserId is the impersonated user, InitiatingUserId the caller
 // Native corpus (dataverse-recorder crud, 'Probe: Update 40 impersonated'): a step registered with an impersonating
 // user runs with UserId = that user while InitiatingUserId stays the caller. A trusted CLR runtime executes it.
 import test from 'node:test';

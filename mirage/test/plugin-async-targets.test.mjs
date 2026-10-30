@@ -1,3 +1,4 @@
+// @test-kind parity: native dataverse-recorder pipelineEffects corpus: async steps get the Target PostOperation started with, not its context edits
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

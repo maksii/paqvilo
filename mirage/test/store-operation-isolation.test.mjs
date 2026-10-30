@@ -1,3 +1,4 @@
+// @test-kind security: transaction capabilities, identity, events and provisional writes never leak across independent operations or stores
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -164,6 +165,7 @@ test('a bare asynchronous record facade keeps its phase flags private while awai
   assert.equal(store.pluginInTransaction == null, true);
 });
 
+// @test-kind unproven: local model of serialized read observer write and rollback boundary; no native capture cited
 test('a serialized read observer retains its own authorized SDK writes and rollback boundary', async () => {
   const store = fixture();
   const row = await store.create('childs', { title: 'Before' }, { admin: true });

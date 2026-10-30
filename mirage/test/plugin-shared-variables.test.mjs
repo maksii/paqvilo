@@ -1,3 +1,4 @@
+// @test-kind contract: plug-in mock configuration refuses unsupported mocks with explicit error bodies
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
@@ -44,6 +45,7 @@ test('Explicit error bodies reject unsupported plugin mocks just as supported mo
   }
 });
 
+// @test-kind parity: native dev-environment recorder corpus (crud, pipelineEffects): PreValidation variables read from stage-30 main parent
 test(
   'Original DLL reads PreValidation variables through ParentContext across CRUD, ranks and nested SDK calls',
   { skip: CLR_SKIP },

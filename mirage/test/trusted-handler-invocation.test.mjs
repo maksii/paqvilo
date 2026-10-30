@@ -1,3 +1,4 @@
+// @test-kind security: trusted handler capabilities and working targets are fenced and expire after invocation
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local CLR host and backend SDK dispatch: typed values, paging and grant predicates for compiled original DLLs
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
@@ -42,6 +43,7 @@ function data() {
     },
   });
 }
+// @test-kind security: CLR registration requires explicit trust, confined assembly paths and explicit backend identity; no impersonation by default
 test('CLR registration cannot infer trust, backend identity or unsafe paths', () => {
   const clockDescriptor = {
     trust: 'execute-local-assembly',
@@ -127,6 +129,7 @@ test('CLR registration cannot infer trust, backend identity or unsafe paths', ()
     /SDK Execute requires/,
   );
 });
+// @test-kind security: backend RPC grants never inherit portal roles; reads outside the explicit grant fail
 test('Backend RPC grants do not inherit portal roles and preserve SDK value types', () => {
   const store = data(),
     row = recordToSdkEntity(store, 'widget', { widgetid: rowId, amount: 12.5, category: 2 });
@@ -202,6 +205,7 @@ test('SDK precision and projected identity never silently lose digits or the pri
   const empty = { ...restricted, grants: [{ ...restricted.grants[0], predicate: () => false }] };
   assert.deepEqual(localOrganizationService(store, empty).query('secondary').value, []);
 });
+// @test-kind unproven: assumes Delete dispatches no Retrieve message; no native capture of the Delete message sequence
 test('Internal backend Delete authorization does not dispatch a phantom Retrieve message or require a read grant', () => {
   const store = data(),
     messages = [];
@@ -215,6 +219,7 @@ test('Internal backend Delete authorization does not dispatch a phantom Retrieve
   assert.ok(!messages.includes('retrieve'));
   assert.ok(messages.includes('delete'));
 });
+// @test-kind compatibility: Learn event pipeline (transactions, images, PreValidation outside transaction, async after commit); nativeQualified false
 test(
   'Original compiled DLL executes context, service calls, images and rollback; timeout closes its host',
   { skip: CLR_SKIP },

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo message buses keep exact decimals and finite Double values on local and AMQP transports; out-of-range JSON refused
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';

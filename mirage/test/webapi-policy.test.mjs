@@ -1,3 +1,4 @@
+// @test-kind security: fail-closed Web API table/column permission enforcement; private simulator fields never exposed
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -850,6 +851,7 @@ test('enabled OData lookup aliases authorize only metadata-equivalent read and e
   );
 });
 
+// @test-kind contract: per-site observed setting for explicit lookup wire fields, with evidence
 test('observed explicit lookup wire fields separate OData admission from logical FetchXML and writes', () => {
   const store = new DataStore({ state: fixture() });
   const portal = {
@@ -899,6 +901,7 @@ test('observed explicit lookup wire fields separate OData admission from logical
   webApiPolicy(portal, store, 'contact').assertQuery(new URLSearchParams({ $select: '_companyid_value' }));
 });
 
+// @test-kind unproven: local model of Dataverse immutable-value handling after portal permissions; no native capture cited
 test('Dataverse immutable values are ignored after portal permissions, including lookup bindings and operation-specific flags', () => {
   const state = fixture();
   state.mappings.contact.fields = {
@@ -987,6 +990,7 @@ test('HTTP public wildcard API preserves private backend snapshots across denied
   assert.equal(app.store.snapshot().tables.contact[0].__simArtifact.snapshot.application, 'explicit admin edit');
 });
 
+// @test-kind unproven: local model of immutable metadata columns on HTTP writes; no native capture cited
 test('HTTP PATCH/PUT/DELETE cannot change immutable metadata columns while permitted fields still save', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-immutable-api-'));
   // Removed after the runtime closes, and also when startup fails.

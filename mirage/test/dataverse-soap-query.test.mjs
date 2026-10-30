@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn QueryExpression, QueryByAttribute and BulkDelete to FetchXML operator and join mapping; untranslatable facets refused
 // QueryExpression, QueryByAttribute and BulkDelete QuerySet to FetchXML. The output
 // is run through DataStore.fetchXml as well.
 import test from 'node:test';

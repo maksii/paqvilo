@@ -1,3 +1,4 @@
+// @test-kind parity: repeated native qualification of Create stage-10 Entity.Id changes adopted or ignored by main; duplicate/permission tails are local
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

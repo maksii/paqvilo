@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of SDK query routing, paging and projection; "native" shapes in titles cite no recording
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

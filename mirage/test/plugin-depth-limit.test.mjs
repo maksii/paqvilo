@@ -1,3 +1,4 @@
+// @test-kind unproven: local depth cap 16; the native recorder depth capture only showed a Depth 10 chain succeeding, not the online limit
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';

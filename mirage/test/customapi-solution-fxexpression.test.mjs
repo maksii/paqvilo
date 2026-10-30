@@ -1,3 +1,4 @@
+// @test-kind compatibility: unpacked solution format: customapi FxExpressionId links fxexpressions/<name>/fxexpression.xml so the Function evaluates its Power Fx
 // A Dataverse Function defined in a Solution: fxexpressions/<name>/fxexpression.xml holds the Power Fx expression and the
 // customapi.xml names it (customapi.FxExpressionId), so the Function
 // evaluates through the core engine instead of answering default outputs.

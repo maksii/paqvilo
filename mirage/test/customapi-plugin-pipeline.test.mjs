@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of custom API stages, bypass, Power Fx fencing and depth (cap 16 assumed; native corpus only showed Depth 10 succeeding)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -78,6 +79,7 @@ test(
   },
 );
 
+// @test-kind parity: native dev-environment recorder corpus (pipelineEffects): a nested Create PreOperation's ParentContext is its own stage-30 main operation
 test(
   'a JavaScript main operation retains its async depth and context when it calls an original CLR child',
   { skip: CLR_SKIP },
@@ -718,6 +720,7 @@ test('custom API asynchronous extensions receive committed input/output snapshot
   }
 });
 
+// @test-kind contract: Paqvilo refuses a custom API whose exported main-operation plug-in has no local implementation instead of guessing
 test('an exported main-operation plug-in without a local implementation refuses the custom API', async (t) => {
   const f = await fixture(t, { stages: [], namedMain: true });
   assert.equal(describeCustomApis(f.api).operations.find((op) => op.name === 'customapi:' + name).level, 'contract');
@@ -767,6 +770,7 @@ test('custom API main-handler traces obey organization settings and survive a fa
   assert.match(traces[0].exceptiondetails, /Main handler refused/);
 });
 
+// @test-kind security: trust check: an original main-operation DLL is prepared only after a witnessed internal-step identity
 test('original main-operation execution requires witnessed internal-step identity before preparing any DLL', async (t) => {
   const f = await fixture(t, {
     stages: [],

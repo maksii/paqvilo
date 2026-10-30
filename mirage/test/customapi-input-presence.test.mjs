@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of custom API optional input defaults and HTTP required-parameter admission; native claims in code cite no recording
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

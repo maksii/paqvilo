@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of SDK Create Entity.Id versus primary attribute channels; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

@@ -1,3 +1,4 @@
+// @test-kind security: expired or refused handler invocations cannot write through retained rows, SDK services or queued transactions
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -247,6 +248,7 @@ test('a transaction queued by a live handler is fenced if it starts after that i
   assert.equal(store.tableRows('child').length, 0);
 });
 
+// @test-kind compatibility: Learn: a caught nested SDK failure aborts the transaction (0x8009000c) while top-level PreValidation runs outside it
 for (const stage of [10, 20, 40])
   test(`a caught nested SDK failure ${stage === 10 ? 'preserves independent PreValidation' : 'invalidates the stage ' + stage + ' transaction'}`, async () => {
     const store = storeOf();

@@ -1,3 +1,4 @@
+// @test-kind contract+security: step constructor configuration reaches handlers while configuration text stays out of public catalogue and cache JSON
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -114,6 +115,7 @@ for (const format of ['xml', 'zip'])
     );
   });
 
+// @test-kind contract: Paqvilo resolution of absent, cleared and unavailable secure configuration references
 test('constructor settings distinguish absent registration, explicit clearing and unavailable secure references', () => {
   const tables = { sdkmessageprocessingstep: [], sdkmessageprocessingstepsecureconfig: [] };
   const store = { tableRows: (name) => tables[name] ?? [] };
@@ -150,6 +152,7 @@ test('constructor settings distinguish absent registration, explicit clearing an
   });
 });
 
+// @test-kind compatibility+security: Learn plug-in constructor (unsecure, secure) overload selection; secure text stays out of catalogue JSON
 test(
   'actual original constructors use source and current HTTP registration strings without mutating a reused runtime descriptor',
   { skip: CLR_SKIP, timeout: 120000 },

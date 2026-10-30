@@ -1,3 +1,4 @@
+// @test-kind unproven: local pipeline identity model for RequestId/OperationId/CorrelationId and Unspecified DateTime wire values
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';

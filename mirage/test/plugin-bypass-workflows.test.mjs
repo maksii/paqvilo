@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn bypass custom logic: CustomSync/CustomAsync map to sync/async lanes and leave Microsoft/system logic running
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';

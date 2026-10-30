@@ -1,7 +1,7 @@
 // @test-kind tooling: scripts/check-test-tags.mjs enforces docs/test-kinds.md on changed test files
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseTestKinds, check } from '../scripts/check-test-tags.mjs';
+import { parseTestKinds, check, kindsAt } from '../scripts/check-test-tags.mjs';
 
 const parityFile = [
   '// @test-kind parity: native dev-environment recording, reproduced twice (invented example)',
@@ -27,6 +27,20 @@ test('file and per-test kinds resolve per region and reject untagged or malforme
     /unknown kind/,
   );
   assert.match(parseTestKinds('// @test-kind parity\ntest("x", () => {});').errors[0], /malformed/);
+});
+
+test('a tag on an indented test covers only that test', () => {
+  const nested = [
+    '// @test-kind contract: describe-level default',
+    "describe('group', () => {",
+    '  // @test-kind parity: native recording reproduced twice (invented example)',
+    "  it('first', () => {});",
+    "  it('second', () => {});",
+    '});',
+  ].join('\n');
+  const parsed = parseTestKinds(nested);
+  assert.deepEqual(kindsAt(parsed, 4), ['parity']);
+  assert.deepEqual(kindsAt(parsed, 5), ['contract']);
 });
 
 test('a parity line changes only together with a @parity-evidence line', () => {

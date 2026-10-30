@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo solution plug-in import: facts from exports or evidence-backed observations only, admin inventory, no guessed filters
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -22,6 +23,7 @@ import { resolveMirageConfig } from '../../lense/config.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
+// @test-kind security: path confinement: explicit C# plug-in sources stay within trusted roots
 test('explicit C# sources stay confined to trusted roots and survive generated-project root normalization', async (t) => {
   const { dir, portal, solution } = await pluginFixture(t, { simulator: false });
   const codeDir = path.join(dir, 'components/PluginRules');
@@ -237,6 +239,7 @@ test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root an
   );
 });
 
+// @test-kind compatibility: Microsoft Learn plug-in pipeline: rank order, filtering attributes and rollback of a failed synchronous phase
 test('synchronous trusted plugin phases sort rank, filter submitted columns, reject async handlers and roll back failures', async () => {
   const parsed = parseSchemaDocument(`<ImportExportXml>${assemblyXml}${pluginStepsXml.join('')}</ImportExportXml>`, {
     kind: 'customizations',
@@ -365,6 +368,7 @@ test('synchronous trusted plugin phases sort rank, filter submitted columns, rej
   );
 });
 
+// @test-kind contract+security: Paqvilo admin plug-in inventory and editable mocks; admin writes are CSRF protected
 test('automatic plugin placeholders and editable mocks are inventoried, CSRF protected, and prevent bad CRUD writes', async (t) => {
   const { app } = await pluginFixture(t);
   const csrf = app.csrf;
@@ -414,6 +418,7 @@ test('automatic plugin placeholders and editable mocks are inventoried, CSRF pro
   );
 });
 
+// @test-kind compatibility: platform well-known SDK message ids resolve messages without a project observation
 test('well-known SDK message ids resolve without a project observation', () => {
   const createId = '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8';
   const xml = `<ImportExportXml><PluginAssembly FullName="Invented.WidgetRules, Version=2.0.0.0, Culture=neutral" PluginAssemblyId="${pluginId(1)}"><PluginTypes><PluginType Name="Invented.WidgetRules.Validate" AssemblyQualifiedName="Invented.WidgetRules.Validate, Invented.WidgetRules" PluginTypeId="${pluginId(2)}"/></PluginTypes><FileName>/PluginAssemblies/Rules.dll</FileName></PluginAssembly><SdkMessageProcessingStep Name="Step" SdkMessageProcessingStepId="${pluginId(3)}"><SdkMessageId>${createId}</SdkMessageId><PluginTypeId>${pluginId(2)}</PluginTypeId><PluginTypeName>Invented.WidgetRules.Validate, Invented.WidgetRules</PluginTypeName><PrimaryEntity>fx_widget</PrimaryEntity><Stage>10</Stage><Rank>3</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment></SdkMessageProcessingStep></ImportExportXml>`;
@@ -436,6 +441,7 @@ test('well-known SDK message ids resolve without a project observation', () => {
   assert.equal(importSolutionPlugins(layers, observed).steps[0].message, 'Update');
 });
 
+// @test-kind unproven: local model of a shared JavaScript/CLR Depth counter faulting at combined nine; no native recording cited
 test('JavaScript handlers and CLR steps share one Depth: a chain entered under CLR frames reports contiguous Depth and faults at combined nine', async () => {
   const { enterPluginExecution, leavePluginExecution, pluginExecutionDepth } = await import('../lib/plugin-clr.mjs');
   const step = {

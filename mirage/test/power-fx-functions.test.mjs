@@ -1,3 +1,4 @@
+// @test-kind contract: Power Fx provider seam: disabled engine answers 501 PowerFxEvaluatorMissing, pack adapters evaluate, capability record
 // Power Fx-backed custom APIs (Dataverse Functions) and automated low-code plug-ins route through api.providers.powerFx:
 // with the engine explicitly disabled a Function and a write an automated plug-in covers answer 501
 // PowerFxEvaluatorMissing (never default outputs, never an unchanged row; POWERFX_AUTOMATED_NOT_EVALUATED once); with a
@@ -19,6 +20,7 @@ const FX = '77777777-7777-4777-8777-777777777710';
 const AUTO = '77777777-7777-4777-8777-777777777711';
 const ids = { add: '77777777-7777-4777-8777-777777777712', plain: '77777777-7777-4777-8777-777777777713' };
 
+// @test-kind security: independent reads never borrow an awaiting transaction or SDK write capability
 test('independent HTTP reads cannot borrow an awaiting main operation transaction or SDK write capability', async (t) => {
   let entered, release;
   const waiting = new Promise((resolve) => {
@@ -420,6 +422,7 @@ test('a synchronous SDK create refuses an async-only adapter before storing (Sdk
   assert.equal(store.tableRows('x_item').length, 0);
 });
 
+// @test-kind security: refused asynchronous continuations cannot use retained data sources or caller rows
 test('a refused asynchronous automated Power Fx continuation cannot use retained data sources or caller rows', async (t) => {
   let release, finished, cached, caller;
   const gate = new Promise((resolve) => {
@@ -465,6 +468,7 @@ test('a refused asynchronous automated Power Fx continuation cannot use retained
   assert.ok(f.store.tableRows('systemuser').every((row) => row.fullname !== 'Late caller'));
 });
 
+// @test-kind unproven: assumed platform error code for a non-navigation bind; no native capture cited
 test('a bind on a name that is not a navigation (FxExpressionId) answers 400 0x80048d19 and creates nothing', async (t) => {
   const { call, store } = await organization(t, { withAdapter: true });
   const before = store.tableRows('customapi').length;

@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the merged single/multiple pipeline (rank order, duplicates, parents, async grouping); Learn documents only the merge
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -53,6 +54,7 @@ async function fixture(t, steps, handlers = new Map(), overrides = {}, runtimes 
   return { ...f, items, backend };
 }
 
+// @test-kind compatibility: Learn CreateMultiple/UpdateMultiple Web API actions: grouped plug-in handling and atomic rollback on a refusal
 test('HTTP bulk requests execute grouped handlers, persist their patches and roll back a grouped refusal', async (t) => {
   const create = step('CreateMultiple'),
     update = step('UpdateMultiple', 20, 1, 2),
@@ -242,6 +244,7 @@ test('bulk runs multiple-message ranks before single-message ranks in each stage
   ]);
 });
 
+// @test-kind contract: Paqvilo local disabled/placeholder step choices must not block SDK bulk calls
 test('disabled and placeholder single steps do not prevent an SDK bulk call', async (t) => {
   for (const mode of ['disabled', 'placeholder']) {
     await t.test(mode, async (t) => {
@@ -285,6 +288,7 @@ test('disabled and placeholder single steps do not prevent an SDK bulk call', as
   }
 });
 
+// @test-kind compatibility: Learn step registration: SupportedDeployment offline-only steps never run on the server pipeline
 test('offline-only client registrations remain inventoried and do not execute or queue on the online pipeline', async (t) => {
   const registrations = [
     step('Create', 20, 1, 1),
@@ -325,6 +329,7 @@ test('offline-only client registrations remain inventoried and do not execute or
   assert.equal(f.store.tableRows('asyncoperation').length, 0);
 });
 
+// @test-kind compatibility: Learn bypass custom logic: BypassBusinessLogicExecutionStepIds skips selected steps for scalar, bulk and async
 test('selective step bypass reaches scalar and grouped writes plus committed async jobs on HTTP and SDK', async (t) => {
   const registrations = [
     step('Create', 20, 1, 1),
@@ -421,6 +426,7 @@ test('selective step bypass reaches scalar and grouped writes plus committed asy
   );
 });
 
+// @test-kind compatibility+contract: Learn bypass leaves Microsoft/system logic running; ownership comes from Paqvilo evidenced bypassOwnership
 test('evidenced Microsoft/system source steps survive global and selected bypass without duplicated bulk execution', async (t) => {
   const registrations = [
     {
@@ -587,6 +593,7 @@ test('merged PostOperation Target changes reach later steps and async snapshots 
     });
 });
 
+// @test-kind contract: Paqvilo record afterWrite hook ordering relative to grouped PostOperation
 test('HTTP and SDK bulk record afterWrite hooks run after grouped PostOperation', async (t) => {
   const post = step('CreateMultiple', 40),
     seen = [];
@@ -1411,6 +1418,7 @@ test('single-origin UpdateMultiple exposes the delegated Update main-operation p
   assert.equal(captured.ParentContext.PrimaryEntityId, id);
 });
 
+// @test-kind compatibility: Learn event pipeline: a synchronous plug-in failure rolls back the whole transaction for single and grouped writes
 test('single and grouped writes give trusted multiple-message handlers the full rollback checkpoint', async (t) => {
   const registration = step('CreateMultiple');
   let store;

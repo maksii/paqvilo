@@ -1,3 +1,4 @@
+// @test-kind parity+contract: native crud corpus: Pre/PostOperation parent is the stage-30 main operation (CLR observer); JS handler parent view is local
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

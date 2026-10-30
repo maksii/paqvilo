@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn step image and custom API AllowedCustomProcessingStepType registration rules
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -57,6 +58,7 @@ async function fixture(t, plugins) {
   return { ...f, register };
 }
 
+// @test-kind contract: exported and observed availability metadata import with evidence; synthetic availability is not source evidence
 test('exported and observed availability metadata survives import and rejects a proven server-only filter/client-only step mismatch', async (t) => {
   const messageId = '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8',
     filterId = '60000000-0000-0000-0000-000000000001';
@@ -116,6 +118,7 @@ test('exported and observed availability metadata survives import and rejects a 
   );
 });
 
+// @test-kind unproven: local model of null message filter binding for Associate/Disassociate; no native capture cited
 test('Associate and Disassociate accept explicit null message filters and retain their unfiltered binding', async (t) => {
   const f = await fixture(t);
   for (const message of ['Associate', 'Disassociate']) {
@@ -252,6 +255,7 @@ test('custom API registration respects None, AsyncOnly and SyncAndAsync policies
   );
 });
 
+// @test-kind unproven: assumed global friendly-name uniqueness and error code; no native capture cited
 test('plug-in type friendly names are globally unique on create and update', async (t) => {
   const f = await fixture(t);
   const create = (typename, friendlyname) =>
@@ -294,6 +298,7 @@ test('plug-in type friendly names are globally unique on create and update', asy
   );
 });
 
+// @test-kind unproven: enum validation envelope text modelled on platform errors; no capture cited in file
 test('registration refuses unsupported mode and deployment enum values with the native validation envelope', async (t) => {
   const f = await fixture(t);
   const msg = f.store.tableRows('sdkmessage').find((row) => row.name === 'Create');

@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn custom API tables and OData CSDL: row writes update routing, $metadata, parameter validation and deletion
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

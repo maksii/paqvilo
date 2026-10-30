@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo bypass ownership: only evidence-backed observed settings protect steps; unknown ownership is diagnosed without exposing evidence
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { observedConfig } from '../lib/project-config.mjs';

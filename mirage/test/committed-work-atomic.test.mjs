@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn asynchronous service: the System Job is saved with its triggering operation, so rows and Ready jobs commit or roll back together
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -200,6 +201,7 @@ test('isolated, independent and elastic commits stage their jobs with their rows
   assert.equal(jobsOf(disk)[2].regardingobjectid.id, disk.tables.x_reading[0].x_readingid);
 });
 
+// @test-kind contract: Paqvilo commit-stager API: stagers must be synchronous and a throwing stager fails the commit
 test('a commit stager must be synchronous and a throwing stager fails the commit', async () => {
   const store = await new DataStore({ state: invented() }).init();
   assert.throws(() => store.addCommitStager(async () => {}), /synchronous/);
@@ -216,6 +218,7 @@ test('a commit stager must be synchronous and a throwing stager fails the commit
   assert.equal(store.state.tables.x_item.length, 1);
 });
 
+// @test-kind contract: Paqvilo committed-job bookkeeping applies only after the commit; a rolled-back stager leaves nothing
 test('stageCommittedJobs: the bookkeeping applies only after the commit; a rolled-back stager leaves nothing', async () => {
   const store = await new DataStore({ state: emptyState() }).init();
   storeScheduler(store, createScheduler({ clock: fixedClock(), manual: true }));
@@ -254,6 +257,7 @@ test('stageCommittedJobs: the bookkeeping applies only after the commit; a rolle
   assert.equal(stageCommittedJobs(store, { entries: [] }), null, 'nothing staged: the commit is not forced to save');
 });
 
+// @test-kind contract: Paqvilo manual scheduler design: a gated concurrent job schedules no idle ticks and does not block later Ready work
 test('a gated concurrent job does not enqueue idle ticks and does not block later Ready work on a manual scheduler', async (t) => {
   const store = await new DataStore({ state: emptyState() }).init();
   const scheduler = createScheduler({ clock: fixedClock(), manual: true });

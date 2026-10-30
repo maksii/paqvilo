@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn plug-in registration tables and documented errors; a few codes come from single native registration probes, not reproduced
 // Plug-in registration through the Dataverse API: seeded sdkmessage and sdkmessagefilter rows, the Solution's registrations
 // mirrored as rows, the write rules with their documented errors, the cascade and the privileges.
 import { describe, it, before, after, afterEach } from 'node:test';
@@ -798,6 +799,7 @@ describe('plug-in registration over SOAP', () => {
 });
 
 // With the Dataverse API on and zero registration writes, the pipeline's step list is the Solution's own list.
+// @test-kind contract: Paqvilo design: with no API writes the pipeline step list equals the Solution step list
 describe('plug-in registration: zero API writes keep the Solution step list', () => {
   const RESOLVED = importSolutionPlugins([
     { documents: [{ file: 'Contoso.Plugins.xml', facts: { plugins: PLUGINS } }] },
@@ -1131,6 +1133,7 @@ describe('plug-in registration: pipeline', () => {
 });
 
 // Pack validation and the one-handler-per-type lookup, without HTTP.
+// @test-kind contract: Paqvilo pack API: one handler per plug-in type name; ambiguous or invalid handlers rejected
 describe('plug-in type handlers: contract', () => {
   const TYPE_ID = 'a1000000-0000-4000-8000-000000000002';
   const ASSEMBLY_ID = 'a1000000-0000-4000-8000-000000000001';

@@ -1,3 +1,4 @@
+// @test-kind parity: native dataverse-recorder 'services' corpus: public SDK interface sets of the tracing, factory and organization service objects
 // Native corpus (dataverse-recorder 'services'): the online sandbox hands a plug-in concrete service objects whose
 // public SDK interfaces are ITracingService; IOrganizationServiceFactory with IClusterServiceFactory,
 // IProxyTypesAssemblyProvider, IServiceEndpointNotificationService and IDisposable; and IOrganizationService with

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo admin plug-in mocks: typed saved configurations, shape and stage validation, no side effects on refusal
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

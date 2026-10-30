@@ -1,3 +1,4 @@
+// @test-kind unproven: global Update/Delete execution and primary-key filters across HTTP/SOAP/SDK are modelled; registration probes cover admission
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -200,6 +201,7 @@ test(
 
 // Native accepts and runs global Create steps, and accepts an image on a global Update (registration probes); images
 // project for the table the message fires on.
+// @test-kind parity: native registration probes: global Create steps are accepted and run, global Update accepts an image
 test('source and HTTP registrations retain explicit global Update/Delete bindings, with images and global Create', async (t) => {
   const f = await contractModuleFixture(t, {
     mappings,

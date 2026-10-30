@@ -1,3 +1,4 @@
+// @test-kind parity: native dataverse-recorder depth corpus: a nested PostOperation Create chain reached Depth 10 and committed
 // Native corpus (dataverse-recorder depth): a PostOperation Create step that creates another row of its table from
 // each level reached Depth 10 and the request answered 204, so nested CLR execution passes the documented
 // on-premises cap of 8. Invented schema and assembly.
@@ -91,6 +92,7 @@ for (const persistentHost of [false, true])
 // An invocation's deadline covers its nested SDK calls, so a deep chain needs more than ten seconds. A descriptor may
 // ask for up to the native 2-minute plug-in limit (Learn: Analyze plug-in performance); the run below outlasts the
 // former ten-second ceiling by itself.
+// @test-kind compatibility: Learn Analyze plug-in performance: the 2-minute plug-in limit covers nested SDK calls
 test(
   'a CLR invocation may run longer than ten seconds when its descriptor allows it',
   { skip: CLR_SKIP },

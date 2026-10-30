@@ -1,3 +1,4 @@
+// @test-kind parity: native dev-environment recorder corpus (pipelineEffects, async, crud, ownerAndState): async step context and deleted-row job failure
 // Asynchronous step admission against native corpus facts (dataverse-recorder). Invented schema and handlers.
 import test from 'node:test';
 import assert from 'node:assert/strict';

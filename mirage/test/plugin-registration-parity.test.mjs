@@ -1,3 +1,4 @@
+// @test-kind parity: native registration probes and sdkmessage/sdkmessagefilter rows recorded on a dev environment (catalogue, codes, admission)
 // Registration catalogue, validation and execution admission that match native Dataverse (registration probes and
 // sdkmessagefilter rows recorded on a dev environment; the data here is invented).
 import test from 'node:test';
@@ -239,6 +240,7 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
 
 // A global Create runs PreValidation for every create; its Target round trip carries SDK values (an option array for a
 // choices column, a DateTime for a DateOnly column), which must not be refused as Web API wire input.
+// @test-kind unproven: local re-coercion of SDK Target values into Web API storage; not itself a native capture
 test('a PreValidation Target with SDK choices and DateOnly values is stored like the Web API values', async (t) => {
   const f = await contractModuleFixture(t, {
     mappings: {

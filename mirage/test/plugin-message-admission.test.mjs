@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo refuses named messages without an implemented plug-in pipeline (501) before any write
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assertPluginMessageAdmission } from '../lib/plugin-message-admission.mjs';

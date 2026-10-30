@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn SDK lookup columns are EntityReference values; polymorphic inference unqualified; nativeQualified false
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';

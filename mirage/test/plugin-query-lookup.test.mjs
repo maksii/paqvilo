@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn Web API lookup property _<name>_value maps to the SDK attribute <name>; commit cites recorder use, unreplayed
 // With a RetrieveMultiple step registered, a Web API read becomes the step's QueryExpression. A lookup property
 // (_x_value) in $select, $filter or $orderby names the SDK attribute x. Invented table.
 import test from 'node:test';

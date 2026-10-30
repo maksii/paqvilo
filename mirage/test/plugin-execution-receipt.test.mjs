@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo execution receipts: only adapters that actually ran or delivered are reported
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the SDK service on record hooks (depth cap 16 assumed; native corpus only showed a Depth 10 chain succeeding)
 // The SDK IOrganizationService on the organization record pipeline: synchronous rule hooks run inline, an asynchronous
 // hook remainder finishes after the synchronous call and reports SDK_DEFERRED_EFFECT on failure, and without an
 // organization the service says it writes the store directly.
@@ -222,6 +223,7 @@ test('an SDK write runs synchronous rule hooks inline and reports a failed async
   );
 });
 
+// @test-kind contract: Paqvilo SDK service says in its description that it writes the store directly without an organization
 test('without an organization the SDK service writes the store and says so in its description', async (t) => {
   const store = await storeWith(t, null);
   const sdk = localOrganizationService(store, profile);
@@ -230,6 +232,7 @@ test('without an organization the SDK service writes the store and says so in it
   assert.equal(row.versionnumber, undefined, 'no organization row version without an organization');
 });
 
+// @test-kind security: column security: secured columns stay masked on SDK Retrieve, RetrieveMultiple and FetchXML as on the Web API
 test('SDK Retrieve and RetrieveMultiple apply column security like the Web API read projection', async (t) => {
   const { readFixture, CUST } = await import('./read-projection-fixture.mjs');
   const ITEM = '77777777-7777-4777-8777-000000000001';

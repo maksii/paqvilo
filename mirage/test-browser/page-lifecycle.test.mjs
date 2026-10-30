@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo acceptance API page/context lifecycle observer: failed or pending reads stay visible, settling is bounded and fails closed
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

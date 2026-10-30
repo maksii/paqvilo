@@ -1,3 +1,4 @@
+// @test-kind security: pooled CLR host revokes service, factory, trace, context and provider handles when their invocation ends
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

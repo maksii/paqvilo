@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of async OperationStatus.Retry with a four-execution budget not natively recorded; restart durability is Paqvilo design
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

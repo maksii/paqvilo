@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn bulk operation messages: standard tables, one table per request, no 1000-record cap, atomic failure; nativeQualified false
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
@@ -71,6 +72,7 @@ test('standard bulk does not mistake the recommended batch size for a 1000-recor
   assert.equal(store.tableRows('secondary').length, 1002);
 });
 
+// @test-kind compatibility+contract: Learn bulk atomicity and single-table rule; source-evidenced bulkTables profile is a Paqvilo design
 test('Standard bulk validates all identities/security before writing and preserves atomic failure', async () => {
   const store = storeOf(),
     before = store.snapshot();
@@ -123,6 +125,7 @@ test('Standard bulk validates all identities/security before writing and preserv
   assert.deepEqual(store.snapshot(), before);
 });
 
+// @test-kind security: backend grant predicates are re-checked per bulk target after PreOperation SDK changes; no stale grant survives
 test(
   'Original bulk PreOperation SDK changes cannot retain a stale backend grant on any target',
   { skip: CLR_SKIP },

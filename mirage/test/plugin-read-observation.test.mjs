@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of read observer ordering, serialization, snapshots and rollback; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -320,6 +321,7 @@ test('The scalar portal OData adapter exposes modeled expansion while independen
   assert.ok(seen.every((query) => query.$type === 'QueryExpression'));
 });
 
+// @test-kind parity+contract: native dev-environment recorded contexts (SecondaryEntityName none, nested calls not portal calls); transport flag is local design
 test('Context2 portal identity requires an explicit transport flag and clears on nested SDK context', () => {
   const store = fixture(),
     frame = { portalRequest: true, portalContactId: contact },
@@ -391,6 +393,7 @@ test('SDK frames retain independently computed cookies and RowVersion metadata w
   assert.deepEqual(projected.attributes, { title: 'Existing' });
 });
 
+// @test-kind parity: native dev-environment recorder corpus (pipelineEffects): nested Create parent is its stage-30 main operation, caller one level up
 test(
   'Original CLR read recorder sees portal context in all three stages and records through SDK with nested identity cleared',
   { skip: CLR_SKIP },

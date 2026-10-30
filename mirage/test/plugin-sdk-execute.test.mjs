@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of named SDK Execute parameter contracts and rollback; CLR scenario marked not natively qualified
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';

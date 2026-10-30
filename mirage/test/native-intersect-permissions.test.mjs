@@ -1,3 +1,4 @@
+// @test-kind security: privilege checks: Append/AppendTo grants gate N:N association; denied or direct intersect writes leave links unchanged
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -180,6 +181,7 @@ test('explicitly configured edge mappings retain their own create/delete permiss
   }
 });
 
+// @test-kind contract: Paqvilo observed setting replays evidenced self N:N denial envelopes per missing flag
 test('qualified self N:N portal denials preserve the exact observed envelope for each missing flag', async (t) => {
   const profile = {
     webApiInnerError: 'all-errors',
@@ -226,6 +228,7 @@ test('qualified self N:N portal denials preserve the exact observed envelope for
   assert.equal((await (await otherTable.post()).json()).error.code, '90040105');
 });
 
+// @test-kind unproven: local model of self N:N navigation direction after a pre-operation identity replacement
 test('a self N:N navigation retains its source-qualified direction after a pre-operation identity replacement', async (t) => {
   for (const changed of ['Target', 'RelatedEntities', 'EquivalentRelationship']) {
     const f = await fixture(t, { self: true });
@@ -249,6 +252,7 @@ test('a self N:N navigation retains its source-qualified direction after a pre-o
   }
 });
 
+// @test-kind contract: Paqvilo observed setting requires evidence and explicit unique relationship schemas
 test('self N:N denial observations require evidence and explicit unique relationship schemas', () => {
   assert.throws(
     () => observedConfig({ webApiSelfNnPermissionErrors: { widget_labels: 'native-classic' } }),

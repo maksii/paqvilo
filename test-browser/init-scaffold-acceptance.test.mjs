@@ -1,3 +1,4 @@
+// @test-kind contract: init scaffold acceptance recipe runs and fails its intended assertions on regressions
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';

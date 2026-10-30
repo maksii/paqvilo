@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo JavaScript typed/legacy image views and Context4 alignment mirroring the native image projection
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -192,6 +193,7 @@ for (const message of ['CreateMultiple', 'UpdateMultiple'])
     });
   });
 
+// @test-kind parity: native qualification of selected-null and selected-primary-key images: null Attributes omitted, image Id retained
 test(
   'original CLR scalar and Context4 bulk image Entities omit null Attributes and retain independent identities',
   { skip: CLR_SKIP },
@@ -270,6 +272,7 @@ public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetServ
   },
 );
 
+// @test-kind parity: native pipelineEffects corpus: a nested Create PreOperation parent is its own Create main operation (stage 30)
 test(
   'a nested original CLR child receives JavaScript entry image snapshots while the author retains its live Context4 edits',
   { skip: CLR_SKIP },

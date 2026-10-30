@@ -1,3 +1,4 @@
+// @test-kind compatibility: documented OData @odata.type binding and SDK wire types (Money, Decimal, Int64, EntityCollection paging, KeyAttributes)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

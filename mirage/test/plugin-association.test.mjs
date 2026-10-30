@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the SDK/HTTP association pipeline with compiled invented DLLs; explicitly not natively qualified
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
@@ -300,6 +301,7 @@ test('association pre-operation Target and RelatedEntities replacement rebinds t
         });
 });
 
+// @test-kind security: privilege check: a mutated association target must pass the effective backend grant before any edge changes
 test('a mutated association target must pass the effective backend grant before any edge is changed', async (t) => {
   const store = data(),
     other = '20000000-0000-0000-0000-000000000091';
@@ -562,6 +564,7 @@ test('HTTP and SDK association handlers roll back arbitrary trusted-handler muta
   assert.equal(f.store.tableRows('child')[0].parentid, null);
 });
 
+// @test-kind security: privilege check: backend row and edge grants precede association, with no phantom Retrieve
 test('SDK schema/direction selection and backend row/edge grants precede association with no phantom Retrieve', async () => {
   const store = data(),
     seen = [];
@@ -648,6 +651,7 @@ test('SDK schema/direction selection and backend row/edge grants precede associa
   );
   assert.deepEqual(store.snapshot(), before);
 });
+// @test-kind security: privilege check: association revalidates current rows after stage-20 changes, not stale grant snapshots
 test('Association revalidates current rows after stage20 SDK changes rather than stale grant snapshots', async () => {
   const store = data();
   store.state.tables.root[0].allow = true;

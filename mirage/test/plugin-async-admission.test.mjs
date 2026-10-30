@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo async admission: success only with an actual execution receipt; mocks and missing adapters are reported honestly
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

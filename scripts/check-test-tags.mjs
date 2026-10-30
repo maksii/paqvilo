@@ -68,11 +68,17 @@ export function parseTestKinds(text) {
       errors.push(`line ${tag.line}: a file-level @test-kind belongs in the first ${FILE_TAG_LINES} lines`);
   if (fileTags.length > 1) errors.push('more than one file-level @test-kind');
   const topLevel = lines.flatMap((line, index) => (TOP_LEVEL.test(line) ? [index + 1] : []));
+  // A per-test region ends before the next declaration at the same or a shallower indentation, so a tag on an
+  // indented it() inside describe() covers only that test.
+  const indent = (line) => /^\s*/.exec(lines[line - 1])[0].length;
   const regions = tags
     .filter((tag) => tag.perTest)
     .map((tag) => {
-      const end = topLevel.find((line) => line > tag.declaration);
-      return { start: tag.line, end: end ? end - 1 : lines.length, kinds: tag.kinds };
+      const depth = indent(tag.declaration);
+      const end = lines.findIndex(
+        (line, index) => index + 1 > tag.declaration && DECLARATION.test(line) && indent(index + 1) <= depth,
+      );
+      return { start: tag.line, end: end >= 0 ? end : lines.length, kinds: tag.kinds };
     });
   const fileKinds = fileTags[0]?.kinds ?? null;
   if (!fileKinds)
@@ -82,10 +88,15 @@ export function parseTestKinds(text) {
   return { fileKinds, regions, errors };
 }
 
+// The innermost region (an it() inside a tagged describe()) wins.
 const kindsAt = (parsed, line) =>
-  parsed.regions.find((region) => line >= region.start && line <= region.end)?.kinds ?? parsed.fileKinds ?? [];
+  parsed.regions.filter((region) => line >= region.start && line <= region.end).sort((a, b) => b.start - a.start)[0]
+    ?.kinds ??
+  parsed.fileKinds ??
+  [];
 
 /** Old-side line numbers a unified -U0 diff removes or rewrites, and whether it adds a @parity-evidence line. */
+export { kindsAt };
 export function diffFacts(diff) {
   const removed = [];
   let evidence = false;

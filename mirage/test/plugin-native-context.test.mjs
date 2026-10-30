@@ -1,3 +1,4 @@
+// @test-kind parity: native recordings of single-record CLR context shapes: SharedVariables, stage-30 parent, async copies, Context4, Delete SYSTEM
 // Context values a CLR plug-in sees, against the native shapes recorded for single-record operations: platform
 // SharedVariables, the ObjectModel main-operation ParentContext, asynchronous copies, Context4 image collections,
 // the Delete main operation's SYSTEM identity and the inputs of reads requested outside a plug-in.

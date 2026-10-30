@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of PostOperation read input propagation across ranks; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

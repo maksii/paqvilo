@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of SDK entry snapshot detachment and callback operation metadata; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -120,6 +121,7 @@ for (const legacy of [false, true])
     assert.notEqual(seen[0][4], seen[3][4]);
   });
 
+// @test-kind parity: native dev-environment recorder corpus (pipelineEffects): nested Create parent is stage-30 main operation, entry snapshot above
 for (const flavor of ['typed', 'legacy', 'original'])
   test(
     `${flavor} SDK callers preserve per-step entry images, inputs and shared state across repeated live argument calls`,

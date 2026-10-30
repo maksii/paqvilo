@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn SDK message responses (Create/Retrieve/RetrieveMultiple/Update/Delete/CreateMultiple) returned to callers
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
