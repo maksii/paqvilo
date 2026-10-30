@@ -11,6 +11,15 @@ import { pluginStoreScope } from './plugin-execution-lifetime.mjs';
 const fail = (message, code = 'LocalOrganizationServiceUnsupported', status = 501) => {
   throw new DataError(message, status, code);
 };
+// A missing row, in the words and code an SDK caller receives (recorded native sdkSurface: Update of a missing row).
+const notFound = (store, entity, id) => {
+  throw new DataError(
+    `Entity '${store.resolveMapping(entity).logicalName}' With Id = ${id?.id ?? id?.value ?? id} Does Not Exist`,
+    404,
+    'NotFound',
+    { innerCode: '0x80040217' },
+  );
+};
 const uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const own = (o, k) => o != null && Object.hasOwn(o, k);
 const RESERVED_NAMES = ['constructor', 'prototype', '__proto__'];
@@ -41,6 +50,8 @@ function sdkRecordKey(store, entity, target, partitionId) {
 }
 
 const OPERATIONS = ['read', 'create', 'update', 'delete', 'associate', 'disassociate'];
+// The privilege an association checks on the row, as the Web API's $ref routes do.
+const ROLE_OPERATION = { associate: 'appendto', disassociate: 'appendto' };
 const BULK_MESSAGES = ['CreateMultiple', 'UpdateMultiple'];
 const tableName = (value) => /^[a-z][a-z0-9_]*$/i.test(value ?? '');
 const evidenced = (value) => typeof value === 'string' && Boolean(value.trim());
@@ -110,6 +121,22 @@ export function validateServiceProfile(profile) {
  * table for the operation whose predicate (when it has one) accepts the row; otherwise 403 LocalBackendPermissionDenied. */
 export function authorizeGrant(store, profile, entity, operation, row) {
   const logical = store.resolveMapping(entity).logicalName;
+  // A plug-in service of a Dataverse user (plugin-clr.mjs dispatchSdkCallCore): that user's security roles decide, as the
+  // Web API decides for its callers; the SYSTEM user is not checked.
+  const security = profile.dataverseSecurity;
+  if (security === 'system') return logical;
+  if (security) {
+    const principals = store.recordPipeline?.organizationApi?.principals;
+    if (!principals)
+      fail('A Dataverse run-as user needs the organization security model.', 'LocalBackendIdentityRequired', 409);
+    principals.authorize({
+      user: security,
+      entity: logical,
+      operation: ROLE_OPERATION[operation] ?? operation,
+      row: operation === 'create' ? undefined : row,
+    });
+    return logical;
+  }
   const grants = profile.grants.filter((g) => g.entity === logical && g.operations.includes(operation));
   if (!grants.some((g) => !g.predicate || g.predicate(cloneStateData(row), operation) === true))
     fail(`Local backend profile denied ${operation} on ${logical}.`, 'LocalBackendPermissionDenied', 403);
@@ -220,7 +247,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     records?.virtualProviders?.readSync(context(), store.resolveMapping(entity).logicalName, options) ?? null;
   const rawGet = (entity, id) => {
     const row = store.get(entity, id, localIdentity, { skipPluginRead: true });
-    if (!row) fail('Record not found.', 'NotFound', 404);
+    if (!row) notFound(store, entity, id);
     authorize(entity, 'read', row);
     return row;
   };
@@ -242,7 +269,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     const row = records
       ? records.readInternal(context(), entity, key, { ...options, unmask })
       : store.get(entity, key, localIdentity, options);
-    if (!row) fail('Record not found.', 'NotFound', 404);
+    if (!row) notFound(store, entity, id);
     return cloneStateData(row);
   };
   const isChoiceList = (entity, key) => {
@@ -298,7 +325,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
   const prepareUpdate = (entity, id, values) => {
     const key = sdkRecordKey(store, entity, id, values.partitionid);
     const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
-    if (!previous) fail('Record not found.', 'NotFound', 404);
+    if (!previous) notFound(store, entity, id);
     authorize(entity, 'update', previous);
     authorize(entity, 'update', { ...previous, ...values });
     writeGraph(values, entity);
@@ -307,7 +334,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
   const prepareRemove = (entity, id, partitionId) => {
     const key = sdkRecordKey(store, entity, id, partitionId);
     const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
-    if (!previous) fail('Record not found.', 'NotFound', 404);
+    if (!previous) notFound(store, entity, id);
     authorize(entity, 'delete', previous);
     return key;
   };
@@ -351,6 +378,15 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     );
   };
   const readGrants = (logical) => {
+    // A Dataverse run-as user reads the rows its roles admit (the Web API read filter); SYSTEM reads every row.
+    if (profile.dataverseSecurity === 'system') return [{}];
+    if (profile.dataverseSecurity) {
+      const filter = store.recordPipeline?.organizationApi?.principals?.readFilter({
+        user: profile.dataverseSecurity,
+        entity: logical,
+      });
+      return [{ predicate: filter ? (row) => filter(row) : undefined }];
+    }
     const grants = profile.grants.filter((g) => g.entity === logical && g.operations.includes('read'));
     if (!grants.length) fail('Local backend profile denied read on ' + logical, 'LocalBackendPermissionDenied', 403);
     return grants;
@@ -489,7 +525,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
         ),
       );
     },
-    update(entity, id, values, { responseToken } = {}) {
+    update(entity, id, values, { responseToken, ifMatch, concurrencyBehavior } = {}) {
       const key = prepareUpdate(entity, id, values);
       return effectiveWrite(entity, 'update', (authorizeEffectiveWrite) =>
         store.sdkMutation(() =>
@@ -501,6 +537,8 @@ export function localOrganizationService(store, profile, records, { diagnostic =
                     sdkResponseToken: responseToken,
                     authorizeEffectiveWrite,
                     sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+                    ...(ifMatch == null ? {} : { ifMatch }),
+                    ...(concurrencyBehavior == null ? {} : { pluginConcurrencyBehavior: concurrencyBehavior }),
                   },
                 }),
               )
@@ -509,6 +547,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
                 coerce: true,
                 sdkResponseToken: responseToken,
                 authorizeEffectiveWrite,
+                ...(ifMatch == null ? {} : { ifMatch }),
               }),
         ),
       );
@@ -518,7 +557,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     messageUpdate(entity, id, values, writeOptions = {}) {
       const key = sdkRecordKey(store, entity, id);
       const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
-      if (!previous) fail('Record not found.', 'NotFound', 404);
+      if (!previous) notFound(store, entity, id);
       authorize(entity, 'update', previous);
       return store.sdkMutation(() =>
         records
@@ -532,7 +571,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
             }),
       );
     },
-    remove(entity, id, { responseToken, partitionId } = {}) {
+    remove(entity, id, { responseToken, partitionId, ifMatch, concurrencyBehavior } = {}) {
       const key = prepareRemove(entity, id, partitionId);
       return effectiveWrite(entity, 'delete', (authorizeEffectiveWrite) =>
         store.sdkMutation(() =>
@@ -544,6 +583,8 @@ export function localOrganizationService(store, profile, records, { diagnostic =
                     sdkResponseToken: responseToken,
                     sdkFromSandbox: requestOptions.sdkFromSandbox === true,
                     authorizeEffectiveWrite,
+                    ...(ifMatch == null ? {} : { ifMatch }),
+                    ...(concurrencyBehavior == null ? {} : { pluginConcurrencyBehavior: concurrencyBehavior }),
                   },
                 }),
               )
@@ -551,6 +592,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
                 ...requestOptions,
                 sdkResponseToken: responseToken,
                 authorizeEffectiveWrite,
+                ...(ifMatch == null ? {} : { ifMatch }),
               }),
         ),
       );
@@ -681,8 +723,13 @@ export function localOrganizationService(store, profile, records, { diagnostic =
       );
     },
     executeMessageSync(name, target, parameters) {
+      // A Dataverse run-as user executes any message its privileges allow: the message's own execute privilege is checked
+      // by the operation as that user, as on the Web API.
+      const principal = profile.dataverseSecurity
+        ? { ...profile, grants: [{ message: name, operations: ['execute'] }] }
+        : profile;
       if (
-        !profile.grants.some(
+        !principal.grants.some(
           (grant) =>
             typeof grant.message === 'string' &&
             grant.message.toLowerCase() === name.toLowerCase() &&
@@ -694,7 +741,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
         fail('Custom SDK messages require an organization message adapter.', 'LocalPluginSdkUnsupported', 501);
       return store.sdkMutation(() =>
         records.executeMessageSyncInternal({
-          principal: profile,
+          principal,
           name,
           target,
           parameters,

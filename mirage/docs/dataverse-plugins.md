@@ -42,6 +42,33 @@ only, no platform shared variables, the DeleteMultiple request identity), then
 answers `405 0x8004023b`. SDK Merge on a table without a Merge filter fails with
 the native `0x80040800` fault.
 
+A plug-in's `IOrganizationService.Execute` takes the SDK's own request classes
+(`WhoAmIRequest`, `AssignRequest`, a generated custom API class) as well as a
+generic `OrganizationRequest`. As natively, a typed request answers its response
+class from Microsoft.Xrm.Sdk.Messages or the Proxy's Microsoft.Crm.Sdk.Messages
+(`WhoAmIResponse`), and a generic request the base `OrganizationResponse` with the
+same results; ExecuteMultiple and ExecuteTransaction items follow their own requests. Besides the record, platform and custom API
+messages it answers WhoAmI (the service's user), RetrieveVersion, ExecuteMultiple
+(per-item faults, `ContinueOnError`, `ReturnResponses`), ExecuteTransaction
+(all or nothing, `ExecuteTransactionFault.FaultedRequestIndex`) and the metadata
+reads, which the official serializer reads from the SOAP service's answer.
+Update and Delete honour `ConcurrencyBehavior` (`0x80060882` for a stale
+`RowVersion`, `0x80060883` without one); Create carries `RelatedEntities` as
+a deep insert and Retrieve answers `RelatedEntitiesQuery`. A missing row faults `0x80040217` ("Entity '<table>' With Id = <id> Does Not
+Exist") and, caught, leaves the step's transaction usable. An organization
+failure reaches the plug-in as `FaultException<OrganizationServiceFault>` with
+the code the Web API answers for the same failure; `NotSupportedException` means
+a local adapter gap. WhoAmI, RetrieveVersion, the response classes and the
+missing-row fault are recorded natively; the other messages follow the SDK
+contracts.
+
+A Retrieve or RetrieveMultiple step may write through the SDK, as natively: a
+portal or Dataverse Web API read (and SOAP, which reads through it) whose read steps
+run gets a read-operation boundary, so the write commits on its own and stays when
+the read later faults, while the read context itself is not transacted
+(`IsInTransaction` false). A read outside any operation (an internal store read)
+still refuses the write with `501 LocalPluginReadWriteUnsupported`.
+
 Other named operations, and the SOAP and Web API entry points of the messages
 above, do not acquire their own plug-in pipeline merely because their
 local operation handler performs CRUD. An enabled, explicitly selected handler,
@@ -129,9 +156,9 @@ An asynchronous step run that executes nothing (an unsupported registration, or 
 
 ## Original assembly registration
 
-Register exact exported step IDs in a trusted external data pack's `pluginRuntimes`. A descriptor contains `trust: 'execute-local-assembly'`, `root`, relative `assembly`, exact `typeName`, `sdkRoot`, relative `sdkAssembly`, `cacheRoot`, `serviceProfile` and `context`. Context requires evidence-qualified initiating-user, organisation and business-unit GUIDs. The profile requires an explicit execution-user GUID, evidence and table/operation grants; it does not inherit portal roles or administrator access. A null SDK service-factory caller requires an explicit local system-factory choice. Arbitrary impersonation is unsupported.
+Register exact exported step IDs in a trusted external data pack's `pluginRuntimes`. A descriptor contains `trust: 'execute-local-assembly'`, `root`, relative `assembly`, exact `typeName`, `sdkRoot`, relative `sdkAssembly`, `cacheRoot`, `serviceProfile` and `context`. Context requires evidence-qualified initiating-user, organisation and business-unit GUIDs. The profile requires an explicit execution-user GUID, evidence and table/operation grants; it does not inherit portal roles or administrator access. `IOrganizationServiceFactory.CreateOrganizationService` runs as the user it names, as natively: `null` is the organization's SYSTEM user, `Guid.Empty` the step's executing user (`context.UserId`), any other id that system user (a missing user faults `0x80040217`). That user is both `UserId` and `InitiatingUserId` of the nested operation's contexts. In an organization those calls are authorized by the run-as user's Dataverse security roles, as Web API calls are: a missing privilege is the native `0x80040220` fault and SYSTEM is not checked. A store without a Dataverse security model has no roles, so there the profile's grants authorize every run-as user.
 
-SDK requests may set `BypassCustomPluginExecution` (boolean), `BypassBusinessLogicExecution` (`CustomSync`, `CustomAsync`, or both separated by a comma), or `BypassBusinessLogicExecutionStepIds` (comma-separated step GUIDs). The profile must explicitly list `prvBypassCustomPlugins` for the first option or `prvBypassCustomBusinessLogic` for the other two in its optional `privileges` array, covered by the profile's evidence. Portal roles and the profile's table grants do not imply these privileges. The choices apply to that operation's custom extensions; nested SDK operations require their own explicit choices. They do not authorize additional row access or disable the Custom API main operation. HTTP headers and SOAP request parameters share the same selective-step behavior. The step-count limit defaults to three and follows the exported organization's `OrgDbOrgSettings` value `BypassBusinessLogicExecutionStepIdsLimit`; a simulator platform override can model another value.
+SDK requests may set `BypassCustomPluginExecution` (boolean), `BypassBusinessLogicExecution` (`CustomSync`, `CustomAsync`, or both separated by a comma), or `BypassBusinessLogicExecutionStepIds` (comma-separated step GUIDs). The run-as user must hold `prvBypassCustomPlugins` for the first option or `prvBypassCustomBusinessLogic` for the other two through its roles (System Administrator holds both); on a store without a security model the profile lists them in its optional `privileges` array, covered by the profile's evidence. Portal roles and the profile's table grants do not imply these privileges. The choices apply to that operation's custom extensions; nested SDK operations require their own explicit choices. They do not authorize additional row access or disable the Custom API main operation. HTTP headers and SOAP request parameters share the same selective-step behavior. The step-count limit defaults to three and follows the exported organization's `OrgDbOrgSettings` value `BypassBusinessLogicExecutionStepIdsLimit`; a simulator platform override can model another value.
 
 Bypass retains an extension whose `bypassOwnership` classification identifies `system` or `microsoft` with explicit evidence. Project observations can supply `observed.businessLogicOwnership[componentGuid] = { kind, evidence }` for a step, workflow or expression. Customization level, customizability, assembly namespaces and publisher display names do not establish that ownership. Unclassified trusted adapters retain the local custom-logic behavior, with `PLUGIN_BYPASS_OWNERSHIP_UNKNOWN` diagnostics and an unqualified inventory classification; this does not establish native Microsoft-solution bypass parity. The existing capability registry reports source step classifications under `source-plugin-bypass-ownership`.
 
@@ -279,7 +306,7 @@ Operation flags, execution identities, parents, rollback boundaries and event ch
 
 An explicit trusted portal transport option supplies `IsPortalsClientCall` and `PortalsContactId` from the active local Contact. User roles alone do not set these properties. Nested SDK operations clear both properties while retaining the live parent context and correlation. Each local request frame supplies a stable generated RequestId and empty SecondaryEntityName for the supported single-table CRUD/read messages. Local GUIDs and timestamps are local provenance rather than copies of native platform values. Microsoft's [Context2 reference](https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.ipluginexecutioncontext2?view=dataverse-sdk-latest) describes these portal properties.
 
-An original runtime descriptor may explicitly list `sdkCallerProfiles` for known SDK factory callers. Each identity requires its own evidence and table/operation grants. A nested SDK pipeline uses that requested execution identity, preserves the initiating ancestor identity and restores the previous frame after completion; unknown callers still fail. An exported run-as step can independently bind `context.executionUserId`. This does not infer Dataverse impersonation privileges from portal roles.
+On a store without a Dataverse security model, an original runtime descriptor may list `sdkCallerProfiles`: the grants of SDK factory callers other than the profile user. Each identity requires its own evidence and table/operation grants. A nested SDK pipeline uses the requested execution identity, preserves the initiating ancestor identity and restores the previous frame after completion. An exported run-as step can independently bind `context.executionUserId`. This does not infer Dataverse impersonation privileges from portal roles.
 
 Evidence-qualified `context.interfaceVersion: 7` supplies environment ID, tenant ID, application-user status and user-agent presence; a withheld user agent stays null. A request a plug-in issues through its IOrganizationService, and the asynchronous jobs it queues, report an empty `InitiatingUserAgent`; others, including a custom API main operation, report the caller's. Nonbulk Context4 image collections are shared by a stage: they hold one image set with the images of every registration of that stage (at PostOperation also queued asynchronous ones and `AsynchronousStepPrimaryName`), or stay empty. The main-operation parent holds the PreValidation set. Native fills that set in execution order and adds a platform `PreBusinessEntity` image on Update; Mirage builds the whole stage set up front and has no `PreBusinessEntity`. Retrieve and RetrieveMultiple requested outside a plug-in carry `IncludeAnnotations` (and `ReturnNotifications` on Retrieve) as false; RetrieveMultiple also carries an empty `AppModuleId` and `IsAppModuleContext` false. Explicit portal input observations for `AppModuleId`, `IsAppModuleContext` and `IncludeAnnotations` keep precedence; an observed empty Fetch paging-cookie convention can also be selected. Native `SecondaryEntityName` can be supplied as a context observation.
 
@@ -300,9 +327,10 @@ custom processing for every table.
 Explicit null-filter registrations (including Create, the bulk messages and an
 asynchronous RetrieveMultiple, which runs after the read with its query and
 result) use the actual affected table and record in their execution context;
-images on a global write project from that table. Global steps on Upsert,
-UpsertMultiple and Merge, and asynchronous Retrieve steps, are accepted and never
-run, as natively. An impersonating step runs with the impersonated user as
+images on a global write project from that table. Global steps on Upsert
+and UpsertMultiple, and asynchronous Retrieve steps, are accepted and never run,
+as natively. A global Merge step is accepted and not run locally; no native
+recording shows a global Merge step yet. An impersonating step runs with the impersonated user as
 `UserId`. Update filtering
 includes the table's implicit primary key, even when the caller did not author
 that column; other filters continue to use attribute presence rather than value

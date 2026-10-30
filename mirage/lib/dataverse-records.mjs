@@ -2019,7 +2019,9 @@ export function createRecordHandlers({
       sdkResponseToken: extra.sdkResponseToken ?? c.sdkResponseToken,
       dataverseHttpReader: c.dataverseHttpReader,
       systemColumns: kept ? (mapping, input) => ({ ...stamps(mapping, input), ...kept }) : stamps,
-      pluginConcurrencyBehavior: extra.ifMatch != null && extra.ifMatch !== '*' ? 1 : 0,
+      // An SDK request names its ConcurrencyBehavior (AlwaysOverwrite is 2); a Web API If-Match other than * is IfRowVersionMatches.
+      pluginConcurrencyBehavior:
+        extra.pluginConcurrencyBehavior ?? (extra.ifMatch != null && extra.ifMatch !== '*' ? 1 : 0),
       pluginAcceptLanguage: c.headers?.get?.('accept-language') ?? c.headers?.['accept-language'] ?? '',
       bypassCustomPlugins: c.bypassCustomPlugins === true || extra.bypassCustomPlugins === true,
       bypassCustomAsync: c.bypassCustomAsync === true || extra.bypassCustomAsync === true,
@@ -3631,7 +3633,15 @@ export function createRecordHandlers({
         tracing ? () => dispatchInput(c) : undefined,
         async (span) => {
           bypassEvents(span, c);
-          const answer = await dispatch(c);
+          // A read whose Retrieve or RetrieveMultiple steps run gets a read-operation boundary: a step's SDK write commits
+          // on its own even when the read later fails (recorded native readNested), as the portal's reads do.
+          const readSteps =
+            ctx.method === 'GET' &&
+            typeof store.readOperation === 'function' &&
+            ['retrieve', 'retrievemultiple'].some((operation) =>
+              store.pluginPipelineActive?.({ entity: mapping.logicalName, operation }),
+            );
+          const answer = await (readSteps ? store.readOperation(() => dispatch(c)) : dispatch(c));
           dispatchAnswer(span, c, mapping, answer);
           return answer;
         },

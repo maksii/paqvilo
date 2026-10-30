@@ -47,6 +47,8 @@ export function convertSdkQuery(store, message, parameters) {
       'noLock',
       'queryHints',
       'dataSource',
+      // ForceSeek is a SQL index hint: it does not change the converted query.
+      'forceSeek',
     ]);
     if (!parameters.Query || Object.keys(parameters.Query).some((key) => !allowed.has(key)))
       fail('QueryExpression conversion contains an unsupported query property.');

@@ -1171,3 +1171,51 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
 
 /** Alias of serviceEndpointDelivery: the name the organization backend calls (without options, contract 8 only). */
 export const webhookDelivery = (store, options) => serviceEndpointDelivery(store, options);
+
+/**
+ * IServiceEndpointNotificationService.Execute from a plug-in (plugin-sdk-messages.mjs): posts the plug-in's RemoteExecutionContext
+ * (serialized by the CLR host with the official DataContractJsonSerializer) to a web hook endpoint on the synchronous I/O bridge,
+ * under the rule of a synchronous step: a contacted endpoint answering outside 2xx fails the call ("Endpoint unavailable"); a
+ * non-loopback endpoint is not contacted (WEBHOOK_NOT_CONTACTED). Answers null: the web hook's response body is not returned.
+ * Other contracts (Service Bus queues, topics, Event Hub, two-way listeners) are not posted from a plug-in locally (501).
+ */
+export function notifyServiceEndpoint(store, endpointId, body, diagnostic = () => {}) {
+  const endpoint = store.tableRows('serviceendpoint').find((row) => same(row.serviceendpointid, endpointId));
+  if (!endpoint)
+    throw new DataError(`serviceendpoint With Id = ${endpointId} Does Not Exist`, 404, 'NotFound', {
+      innerCode: '0x80040217',
+    });
+  if (Number(endpoint.contract) !== WEBHOOK_CONTRACT)
+    throw new DataError(
+      `Service endpoint contract ${Number(endpoint.contract)} is not posted from a plug-in locally; only web hooks (contract 8) are.`,
+      501,
+      'LocalPluginSdkUnsupported',
+    );
+  if (!isLoopbackUrl(endpoint.url)) {
+    diagnostic({
+      code: 'WEBHOOK_NOT_CONTACTED',
+      severity: 'warning',
+      reason: 'non-loopback',
+      host: hostnameOf(endpoint.url),
+      message: 'The simulator contacts only loopback webhook endpoints. The endpoint was not called.',
+    });
+    return null;
+  }
+  const context = JSON.parse(body),
+    org = organizationRecord(store) ?? {};
+  const { status } = postSync({
+    url: new URL(endpoint.url).toString(),
+    headers: {
+      'content-type': 'application/json',
+      'x-ms-dynamics-organization': String(org.domainname ?? org.name ?? ''),
+      'x-ms-dynamics-entity-name': context.PrimaryEntityName ?? '',
+      'x-ms-dynamics-request-name': context.MessageName ?? '',
+      'x-ms-correlation-request-id': context.CorrelationId ?? '',
+    },
+    body,
+    auth: { type: Number(endpoint.authtype), value: endpoint.authvalue ?? '' },
+  });
+  store.counters?.increment(status >= 200 && status < 300 ? 'webhooks.delivered' : 'webhooks.failed');
+  if (!(status >= 200 && status < 300)) throw unavailable();
+  return null;
+}

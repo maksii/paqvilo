@@ -650,7 +650,8 @@ function typedContext({
     (preValidationParent || store?.pluginParentContext || pluginInvocationSdkParent(store));
   initializePluginOperation(frame, store, parent);
   const executing = identity?.systemUserId ?? identity?.id ?? parent?.values?.UserId?.value ?? null;
-  const initiating = parent?.values?.InitiatingUserId?.value ?? executing;
+  // A plug-in's SDK call: the service's user initiates the nested operation (recorded native sdkSurface, readNested).
+  const initiating = store?.pluginExecutionUserId ?? parent?.values?.InitiatingUserId?.value ?? executing;
   const result = {
     MessageName: customApi?.name ?? messageNameOf(operation),
     PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
