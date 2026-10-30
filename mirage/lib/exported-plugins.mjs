@@ -40,7 +40,12 @@ import { populatePluginSystemOutputs } from './plugin-response.mjs';
 import { pluginFailure } from './plugin-fault.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { pluginMessageHasPipeline, pluginStepInert } from './plugin-message-admission.mjs';
-import { bridgeTargetInputs, multipleMessage, unbridgeTargetInputs } from './plugin-single-multiple.mjs';
+import {
+  bridgeTargetInputs,
+  bulkTargetsCollection,
+  multipleMessage,
+  unbridgeTargetInputs,
+} from './plugin-single-multiple.mjs';
 import { ownershipOf } from './dataverse-security.mjs';
 import {
   recordStepConstructorSettings,
@@ -759,13 +764,9 @@ function handlerExecutionContext({
               ? { Target: holder?.target, ColumnSet: { $type: 'ColumnSet', ...columns } }
               : ['createmultiple', 'updatemultiple'].includes(operation)
                 ? {
-                    Targets: {
-                      $type: 'EntityCollection',
-                      entities: targets,
-                      moreRecords: false,
-                      totalRecordCount: -1,
-                      pagingCookie: null,
-                    },
+                    Targets: bulkTargetsCollection(entity, targets, {
+                      submitted: context.Stage === 10 && context.Mode !== 1,
+                    }),
                   }
                 : {
                     Target:
@@ -996,7 +997,7 @@ function platformSharedVariables(operation, acceptLanguage = '') {
   return {
     IsAutoTransact: !['retrieve', 'retrievemultiple'].includes(operation),
     AcceptLang: String(acceptLanguage ?? ''),
-    ...(['create', 'createmultiple'].includes(operation) ? { DefaultsAddedFlag: true } : {}),
+    ...(operation === 'create' ? { DefaultsAddedFlag: true } : {}),
   };
 }
 
@@ -1004,7 +1005,7 @@ function platformSharedVariables(operation, acceptLanguage = '') {
  * Natively it lists user-owned tables and association intersects; an organization-owned table is absent. */
 function changedEntityType(store, operation, entity, intersectEntity) {
   if (['associate', 'disassociate'].includes(operation)) return intersectEntity ?? null;
-  if (!['create', 'update', 'delete'].includes(operation) || !store) return null;
+  if (!['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation) || !store) return null;
   const mapping = store.resolveMapping(entity);
   return ownershipOf(entity, null, mapping) === 'user' ? entity : null;
 }
@@ -1060,6 +1061,8 @@ export function runPluginPhase({
   bulkOrigin = false,
   // A single Create/Update/Delete also runs its paired multiple message's steps (plugin-single-multiple.mjs).
   bridgedMessage = null,
+  // A record a bulk message delegates: that message's context of this stage (plugin-bulk.mjs).
+  bulkParent = null,
   acceptLanguage = '',
   asyncExecution = false,
   initialFrame,
@@ -1097,6 +1100,14 @@ export function runPluginPhase({
   }
   // Records a bulk message delegates, and a bulk message UpsertMultiple delegates, have no tag input (recorded corpus).
   if (!inheritsRequestTag && !continued) phaseFrame.inputTagConsumed = true;
+  // Such a record runs under the bulk message's context of the current stage and shares its request identity
+  // (native bulk: Create/10 <- CreateMultiple/10, Create/20 <- CreateMultiple/20 <- CreateMultiple/30).
+  if (bulkParent && !asyncExecution) {
+    phaseFrame.delegatedSourceOperation = bulkParent;
+    for (const key of ['requestId', 'operationId', 'correlationId', 'createdOn', 'createdOnWire', 'requestTag'])
+      if (bulkParent.frame?.[key] !== undefined && !Object.hasOwn(phaseFrame, key))
+        phaseFrame[key] = cloneStateData(bulkParent.frame[key]);
+  }
   // Durable jobs must retain the originating operation depth even when no
   // synchronous registration executes. Internal message delegation shares it.
   phaseFrame.operationDepth ??=
@@ -1164,6 +1175,11 @@ export function runPluginPhase({
       });
     } else if (phaseFrame.delegatedSourceOperation?.operation === 'upsert') delete phaseFrame.delegatedSourceOperation;
   }
+  // The operations an Upsert main operation runs share its request identity (plugin-delegation.mjs).
+  if (phaseFrame.delegatedSourceOperation?.operation === 'upsert')
+    for (const key of ['requestId', 'operationId', 'correlationId'])
+      if (phaseFrame.delegatedSourceOperation.frame?.[key] != null)
+        phaseFrame[key] ??= phaseFrame.delegatedSourceOperation.frame[key];
   phaseFrame.suppliedRequestId ??= store?.pluginRequestId;
   phaseFrame.requestId ??=
     (store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.RequestId?.value ??
@@ -1193,7 +1209,15 @@ export function runPluginPhase({
         };
     }
   }
-  if (stage === 10 && !asyncExecution && ['create', 'update', 'delete'].includes(operation)) {
+  if (stage === 10 && !asyncExecution && ['createmultiple', 'updatemultiple'].includes(operation))
+    phaseFrame.mainOperationTargets ??= bulkTargetsCollection(entity, cloneStateData(targets ?? []), {
+      submitted: true,
+    });
+  if (
+    stage === 10 &&
+    !asyncExecution &&
+    ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation)
+  ) {
     // A sandboxed plug-in's SDK request is marked FromSandbox in its PreValidation (and main operation) inputs.
     if (sdkFromSandbox) {
       phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
@@ -1221,10 +1245,14 @@ export function runPluginPhase({
     // Native pipelines start every SharedVariables collection with the platform's entries (see
     // platformSharedVariables). A plug-in-issued SDK request carries no Accept-Language.
     const nested = Boolean(store?.pluginParentContext || pluginInvocationSdkParent(store)),
-      platform = platformSharedVariables(
-        operation,
-        nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage,
-      );
+      // A record a bulk message delegates keeps only its own message's entries; the platform's belong to the bulk
+      // message's collections (native bulk).
+      platform =
+        bulkOrigin && !['createmultiple', 'updatemultiple'].includes(operation)
+          ? operation === 'create'
+            ? { DefaultsAddedFlag: true }
+            : {}
+          : platformSharedVariables(operation, nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage);
     if (!phaseFrame.platformSharedSeeded) {
       phaseFrame.sharedVariables = {
         $type: 'ParameterCollection',
@@ -1234,7 +1262,11 @@ export function runPluginPhase({
     }
     // PreValidation shares the main operation's collection (the ParentContext of stages 20 and 40); PreOperation
     // and PostOperation start their own one.
-    if (stage !== 10 && ['create', 'update', 'delete'].includes(operation) && !phaseFrame.mainSharedVariables) {
+    if (
+      stage !== 10 &&
+      ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation) &&
+      !phaseFrame.mainSharedVariables
+    ) {
       const prior = phaseFrame.sharedVariables.values;
       phaseFrame.mainSharedVariables = phaseFrame.sharedVariables;
       phaseFrame.sharedVariables = {
@@ -1244,7 +1276,7 @@ export function runPluginPhase({
       phaseFrame.preValidationSharedDetached = true;
     }
     // After the main operation wrote, the request's root collection lists the security-relevant tables it changed.
-    if (stage === 40 && !nested && !phaseFrame.delegatedParentContext) {
+    if (stage === 40 && !nested && !phaseFrame.delegatedParentContext && !bulkParent) {
       const table = changedEntityType(store, operation, entity, intersectEntity);
       // An HTTP Upsert's framework operation (plugin-sdk-parent selectSdkEntryParent) is the root when present.
       const root = phaseFrame.sdkFrameworkSource
@@ -1252,7 +1284,7 @@ export function runPluginPhase({
             $type: 'ParameterCollection',
             values: { AcceptLang: phaseFrame.sdkFrameworkSource.acceptLanguage ?? '', IsAutoTransact: false },
           })
-        : ['create', 'update', 'delete'].includes(operation)
+        : ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation)
           ? phaseFrame.mainSharedVariables
           : phaseFrame.sharedVariables;
       if (table && root)
@@ -1611,7 +1643,7 @@ export function runPluginPhase({
           frame.inputParametersStage = stage;
           // CRUD PreValidation variables belong to the parent context of later
           // stages, while PreOperation and PostOperation share their own collection.
-          if (stage === 10 && ['create', 'update', 'delete'].includes(operation))
+          if (stage === 10 && ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation))
             frame.preValidationContext = preValidationSnapshot(
               frame,
               bridged ? { ...context.context, MessageName: messageNameOf(operation) } : context.context,

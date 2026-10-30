@@ -129,13 +129,15 @@ test(
     const sdk = clrSdk(),
       source = path.join(root, 'Phases.cs'),
       assembly = path.join(root, 'Phases.dll');
+    // Native recorder corpus bulk: a record's PreOperation step sees the CreateMultiple/20 context (the bulk step's
+    // stage-20 collection) as its parent, not the record's own PreValidation collection.
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;
 namespace Invented {
 public sealed class Seed:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));c.SharedVariables["ranked"]="kept";}}
 public sealed class Check:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));if((string)c.SharedVariables["ranked"]!="kept")throw new Exception("Ranked PreValidation state lost");}}
-public sealed class Pre:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));if((string)c.ParentContext.SharedVariables["ranked"]!="kept")throw new Exception("PreValidation parent state lost");c.SharedVariables["pre"]="kept";}}
+public sealed class Pre:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));if(c.ParentContext.MessageName!="CreateMultiple"||c.ParentContext.Stage!=20||(string)c.ParentContext.SharedVariables["bulk"]!="kept")throw new Exception("Bulk stage parent state lost");c.SharedVariables["pre"]="kept";}}
 public sealed class Post:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));if((string)c.SharedVariables["pre"]!="kept")throw new Exception("PreOperation state lost");c.SharedVariables["post"]="kept";}}
 public sealed class Async:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));if((string)c.SharedVariables["post"]!="kept")throw new Exception("Final synchronous state lost");var svc=((IOrganizationServiceFactory)s.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var row=new Entity("x_item",c.PrimaryEntityId);row["x_keep"]="Async exact frame";svc.Update(row);}}
 public sealed class BulkPre:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));c.SharedVariables["bulk"]="kept";}}

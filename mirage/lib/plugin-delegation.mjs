@@ -1,13 +1,32 @@
+import { currentRequest } from './request-context.mjs';
+
+const upsertIdentities = new WeakMap();
+// The request identity of the Upsert main operation an inbound request runs: its existence read and the Create or Update
+// it then runs share it (native crud: a PATCH's RetrieveMultiple and Update carry one RequestId, OperationId and
+// CorrelationId).
+function upsertRequestIdentity() {
+  const request = currentRequest();
+  if (!request?.ids) return {};
+  let identity = upsertIdentities.get(request);
+  if (!identity) {
+    const requestId = request.ids.uuid();
+    identity = { requestId, operationId: requestId, correlationId: request.ids.uuid() };
+    upsertIdentities.set(request, identity);
+  }
+  return { ...identity };
+}
+
 /** A platform single-to-multiple delegation is a core main-operation parent at
  * the same plug-in depth. Its hidden internal step identity is not fabricated. */
 export function delegatedPluginParent(source, context, executionUserId) {
   const values = {
     ...context,
-    MessageName: source.operation[0].toUpperCase() + source.operation.slice(1),
+    MessageName: source.messageName ?? source.operation[0].toUpperCase() + source.operation.slice(1),
     // An Upsert main operation names no primary table (native bare-PATCH parent: PrimaryEntityName none).
     PrimaryEntityName: source.operation === 'upsert' ? 'none' : source.entity,
     PrimaryEntityId: { $type: 'Guid', value: source.primaryId },
-    Stage: 30,
+    // A bulk message's stage context (the parent of the records it delegates) keeps that stage.
+    Stage: source.stage ?? 30,
     Mode: 0,
     Depth: source.depth ?? context.Depth,
     IsInTransaction: source.isInTransaction ?? context.IsInTransaction,
@@ -20,6 +39,7 @@ export function delegatedPluginParent(source, context, executionUserId) {
     PostEntityImages: { $type: 'EntityImageCollection', values: {} },
   };
   delete values.OwningExtension;
+  if (source.owningExtension) values.OwningExtension = structuredClone(source.owningExtension);
   delete values.trace;
   delete values.PreEntityImagesCollection;
   delete values.PostEntityImagesCollection;
@@ -63,7 +83,7 @@ export function upsertSourceOperation({
       $type: 'ParameterCollection',
       values: withTag({ IsAutoTransact: false, AcceptLang: acceptLanguage }),
     },
-    frame: {},
+    frame: upsertRequestIdentity(),
     identity,
     depth,
     isInTransaction,

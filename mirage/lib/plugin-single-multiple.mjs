@@ -44,6 +44,22 @@ export function bridgeTargetInputs(values, entity) {
   };
 }
 
+/** The Targets of a bulk-origin CreateMultiple/UpdateMultiple, named after the table: as the request supplied them at
+ * PreValidation (TotalRecordCount 0, MinActiveRowVersion null), as the platform carries them from PreOperation on and in
+ * queued jobs (TotalRecordCount -1, MinActiveRowVersion "-1") (native recorder corpus bulk). */
+export function bulkTargetsCollection(entity, entities, { submitted }) {
+  return {
+    $type: 'EntityCollection',
+    entityName: entity,
+    entities,
+    moreRecords: false,
+    totalRecordCount: submitted ? 0 : -1,
+    totalRecordCountLimitExceeded: false,
+    pagingCookie: null,
+    minActiveRowVersion: submitted ? null : '-1',
+  };
+}
+
 /** The single message's InputParameters after a bridged step ran: its one Targets record is the Target again. A step
  * that changes the record count, table or identity of that collection is refused. */
 export function unbridgeTargetInputs(values, { entity, id }) {

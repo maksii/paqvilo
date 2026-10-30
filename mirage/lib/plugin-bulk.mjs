@@ -3,8 +3,17 @@ import { sdkValueToRecord } from './local-organization-service.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
-import { pluginStepMatchesEntity } from './exported-plugins.mjs';
+import { messageNameOf, pluginStepMatchesEntity } from './exported-plugins.mjs';
+import { initializePluginOperation } from './plugin-operation-context.mjs';
+import { pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
+import { bulkTargetsCollection } from './plugin-single-multiple.mjs';
+import { uuidV5 } from './dataverse-security.mjs';
+import { isDeepStrictEqual } from 'node:util';
 const emptyId = '00000000-0000-0000-0000-000000000000';
+const samePrimary = (target, primary) =>
+  String(
+    sdkValueToRecord({ ...target, attributes: { [primary]: target.attributes[primary] } })[primary] ?? '',
+  ).toLowerCase() === String(target.id ?? '').toLowerCase();
 const uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginBulkUnsupported', status = 501) => {
   throw new DataError(message, status, code);
@@ -38,6 +47,9 @@ function* bulkSteps(
     entity,
     operation,
     targets: suppliedTargets,
+    // Per target, the values the main operation stamps (audit, ownership, state): the Targets show them from
+    // PreOperation on, and the write derives them again where no step changed them.
+    preOperationStamps = [],
     identity,
     authorize,
     responseToken,
@@ -64,13 +76,6 @@ function* bulkSteps(
   )
     fail('Bulk SDK targets must contain one or more records of one supported message.');
   const catalogue = store.pluginPipeline?.steps;
-  if (
-    !catalogue &&
-    !bypassCustomPlugins &&
-    store.pluginPipeline &&
-    store.pluginPipelineActive({ entity: mapping.logicalName, operation: single, bypassCustomPlugins, bypassStepIds })
-  )
-    fail('Mixed single-record and bulk registrations require source-qualified native merged-pipeline ordering.');
   const previous = [],
     targets = [],
     writeIndexes = [],
@@ -87,7 +92,8 @@ function* bulkSteps(
     if (update && (!uuid.test(target.id) || target.id === emptyId))
       fail('UpdateMultiple requires each original entity ID.', 'LocalPluginBulkInput', 400);
     target.id ??= emptyId;
-    if (Object.hasOwn(target.attributes, primary))
+    // A Target may name its key as an attribute equal to Entity.Id (native Web API bulk bodies carry it).
+    if (Object.hasOwn(target.attributes, primary) && !samePrimary(target, primary))
       fail('Bulk identity belongs to Entity.Id, not a conflicting primary-key attribute.', 'LocalPluginBulkInput', 400);
     let duplicate = false;
     if (target.id !== emptyId) {
@@ -119,6 +125,120 @@ function* bulkSteps(
     },
   }));
   let finalBulkFrame;
+  // One request identity for the bulk message and every record it delegates (native bulk: all contexts of one request,
+  // queued jobs included, share RequestId and CorrelationId).
+  const operationIdentity = {};
+  initializePluginOperation(operationIdentity, store, store.pluginParentContext ?? pluginInvocationSdkParent(store));
+  let bulkFrameStarted = false,
+    submittedTargets;
+  const bulkFrame = () => {
+    if (bulkFrameStarted) return {};
+    bulkFrameStarted = true;
+    return { initialFrame: structuredClone(operationIdentity) };
+  };
+  const requestIdentity = () => {
+    const source = finalBulkFrame ?? operationIdentity;
+    return Object.fromEntries(
+      ['requestId', 'operationId', 'correlationId', 'createdOn', 'createdOnWire']
+        .filter((key) => source[key] !== undefined)
+        .map((key) => [key, structuredClone(source[key])]),
+    );
+  };
+  // The bulk message's context of a stage, which every delegated record's step sees as its parent: PreValidation's has
+  // only the request tag as input, PreOperation's and PostOperation's none and the CreateMultiple/30 main operation as
+  // their own parent (native bulk; owned by the bulk step that ran last in that stage).
+  const tagOf = () => (delegated ? undefined : (finalBulkFrame?.requestTag ?? store.pluginSdkTag));
+  const stageSource = (stage, step) => ({
+    operation,
+    messageName: messageNameOf(operation),
+    entity: mapping.logicalName,
+    primaryId: emptyId,
+    stage,
+    ...(step
+      ? {
+          owningExtension: {
+            $type: 'EntityReference',
+            logicalName: 'sdkmessageprocessingstep',
+            id: step.id,
+            name: step.name ?? null,
+          },
+        }
+      : {}),
+    inputParameters: {
+      $type: 'ParameterCollection',
+      values: stage === 10 && tagOf() !== undefined ? { tag: tagOf() } : {},
+    },
+    sharedVariables: structuredClone(finalBulkFrame?.sharedVariables ?? { $type: 'ParameterCollection', values: {} }),
+    frame: requestIdentity(),
+    ...(finalBulkFrame?.operationDepth ? { depth: finalBulkFrame.operationDepth } : {}),
+    isInTransaction: store.pluginInTransaction === true,
+    ...(stage === 10
+      ? {}
+      : {
+          parent: {
+            operation,
+            messageName: messageNameOf(operation),
+            entity: mapping.logicalName,
+            primaryId: emptyId,
+            // The platform step that performs the bulk main operation (plugin-sdk-parent.mjs mainOperationValues).
+            owningExtension: {
+              $type: 'EntityReference',
+              logicalName: 'sdkmessageprocessingstep',
+              id: uuidV5(emptyId, `sdkmessageprocessingstep:ObjectModel Implementation:${messageNameOf(operation)}`),
+              name: 'ObjectModel Implementation',
+            },
+            inputParameters: {
+              $type: 'ParameterCollection',
+              values: {
+                Targets: structuredClone(
+                  finalBulkFrame?.mainOperationTargets ??
+                    bulkTargetsCollection(mapping.logicalName, submittedTargets, { submitted: true }),
+                ),
+                ...(tagOf() === undefined ? {} : { tag: tagOf() }),
+              },
+            },
+            sharedVariables: structuredClone(
+              finalBulkFrame?.mainSharedVariables ??
+                finalBulkFrame?.sharedVariables ?? { $type: 'ParameterCollection', values: {} },
+            ),
+            frame: requestIdentity(),
+            ...(finalBulkFrame?.operationDepth ? { depth: finalBulkFrame.operationDepth } : {}),
+            isInTransaction: true,
+          },
+        }),
+  });
+  // One record's pipeline at a stage, under the bulk message's stage context.
+  const recordPhase = function* (stage, records, index, context, step, extra = {}) {
+    const target = targets[index];
+    const singleFrame = singleFrames[index],
+      values = sdkValueToRecord(target);
+    for (const key of Object.keys(singleFrame.target)) delete singleFrame.target[key];
+    Object.assign(singleFrame.target, values);
+    if (stage === 40) Object.assign(singleFrame.record, records[index]);
+    else Object.assign(singleFrame.record, previous[index], values);
+    singleFrame.frame = yield store.pluginPipeline({
+      ...context,
+      operation: single,
+      target: singleFrame.target,
+      record: singleFrame.record,
+      previous: previous[index],
+      changedAttributes: Object.keys(singleFrame.target),
+      targets: undefined,
+      previousRecords: undefined,
+      records: undefined,
+      // A record a bulk message delegates has neither the request tag nor ConcurrencyBehavior (recorded corpus).
+      inheritsRequestTag: false,
+      concurrencyBehavior: null,
+      bulkParent: stageSource(stage, step),
+      ...extra,
+    });
+    {
+      const encoded = recordToSdkEntity(store, mapping.logicalName, singleFrame.target);
+      if (!Object.hasOwn(target.attributes, primary) || !samePrimary(encoded, primary))
+        delete encoded.attributes[primary];
+      target.attributes = encoded.attributes;
+    }
+  };
   const check = () => {
     const unique = new Set();
     if (
@@ -130,7 +250,7 @@ function* bulkSteps(
           !target.attributes ||
           typeof target.attributes !== 'object' ||
           Array.isArray(target.attributes) ||
-          Object.hasOwn(target.attributes, primary) ||
+          (Object.hasOwn(target.attributes, primary) && !samePrimary(target, primary)) ||
           !uuid.test(target.id) ||
           ((update || original[index].id !== emptyId) && target.id !== original[index].id)
         )
@@ -165,6 +285,7 @@ function* bulkSteps(
       ...(awaitIo ? { awaitIo: true } : {}),
     };
     if (store.pluginPipeline) {
+      let stageStep = null;
       if (catalogue) {
         let bulkStarted = false;
         const singleStarted = new Set();
@@ -198,63 +319,73 @@ function* bulkSteps(
               changedAttributes: [...new Set(targets.flatMap((target) => Object.keys(target.attributes ?? {})))],
               pluginStepIds: [entry.id],
               continuePhase: bulkStarted,
+              ...bulkFrame(),
             });
             bulkStarted = true;
+            stageStep = entry;
             finalBulkFrame = frame;
             if (stage === 40) handoffPluginResponse(store, operation, mapping.logicalName, frame, responseToken);
           } else {
-            const target = targets[index];
-            const singleFrame = singleFrames[index],
-              values = sdkValueToRecord(target);
-            for (const key of Object.keys(singleFrame.target)) delete singleFrame.target[key];
-            Object.assign(singleFrame.target, values);
-            if (stage === 40) Object.assign(singleFrame.record, records[index]);
-            else Object.assign(singleFrame.record, previous[index], values);
-            singleFrame.frame = yield store.pluginPipeline({
-              ...context,
-              operation: single,
-              target: singleFrame.target,
-              record: singleFrame.record,
-              previous: previous[index],
-              changedAttributes: Object.keys(singleFrame.target),
-              targets: undefined,
-              previousRecords: undefined,
-              records: undefined,
-              // A record a bulk message delegates has neither the request tag nor ConcurrencyBehavior (recorded corpus).
-              inheritsRequestTag: false,
-              concurrencyBehavior: null,
+            yield* recordPhase(stage, records, index, context, stageStep, {
               pluginStepIds: [entry.id],
               continuePhase: singleStarted.has(index),
             });
             singleStarted.add(index);
-            {
-              const encoded = recordToSdkEntity(store, mapping.logicalName, singleFrame.target);
-              delete encoded.attributes[primary];
-              target.attributes = encoded.attributes;
-            }
           }
           check();
         }
-      } else if (
-        store.pluginPipelineActive({ entity: mapping.logicalName, operation, bypassCustomPlugins, bypassStepIds })
-      ) {
-        const frame = yield store.pluginPipeline(context);
-        finalBulkFrame = frame;
-        if (stage === 40) handoffPluginResponse(store, operation, mapping.logicalName, frame, responseToken);
+      } else {
+        // Without a step catalogue the host's pipeline orders each message's steps: the bulk message's first, then
+        // every record's own (the native bulk order).
+        if (
+          store.pluginPipelineActive({ entity: mapping.logicalName, operation, bypassCustomPlugins, bypassStepIds })
+        ) {
+          const frame = yield store.pluginPipeline({ ...context, ...bulkFrame() });
+          finalBulkFrame = frame;
+          if (stage === 40) handoffPluginResponse(store, operation, mapping.logicalName, frame, responseToken);
+          check();
+        }
+        if (
+          store.pluginPipelineActive({
+            entity: mapping.logicalName,
+            operation: single,
+            bypassCustomPlugins,
+            bypassStepIds,
+          })
+        )
+          for (const index of targets.keys()) {
+            yield* recordPhase(stage, records, index, context, null);
+            check();
+          }
       }
     }
     check();
   };
   try {
+    submittedTargets = structuredClone(targets);
     yield* phase(10, []);
+    const stamped = targets.map((target, index) => {
+      const values = Object.fromEntries(
+        Object.entries(preOperationStamps[index] ?? {}).filter(([name]) => !Object.hasOwn(target.attributes, name)),
+      );
+      target.attributes = {
+        ...target.attributes,
+        ...recordToSdkEntity(store, mapping.logicalName, values, { allColumns: true, target: true }).attributes,
+      };
+      return values;
+    });
     yield* phase(20, []);
     // Preimages retain the original request snapshot. Authorization must see
     // current rows after every stage20 SDK side effect, for every target before
     // the first bulk primary write.
     const writes = writeIndexes.map((index) => {
       const target = targets[index];
-      const values = sdkValueToRecord(target),
-        current = update ? store.get(entity, target.id, identity, { skipPluginRead: true }) : null;
+      const values = sdkValueToRecord(target);
+      // Stamps no step changed are the main operation's to derive again.
+      for (const [name, value] of Object.entries(stamped[index]))
+        if (isDeepStrictEqual(values[name], value)) delete values[name];
+      if (update) delete values[primary];
+      const current = update ? store.get(entity, target.id, identity, { skipPluginRead: true }) : null;
       if (update && !current) fail('Bulk target was removed during PreOperation.', 'NotFound', 404);
       authorize(single, update ? { ...current, ...values } : values, current);
       return { index, target, values };
@@ -268,17 +399,20 @@ function* bulkSteps(
       rows[index] = yield write
         ? write(update, target.id, data, {
             bypassCustomPlugins,
-            skipPluginPipeline: Boolean(catalogue),
+            // Every record ran its own message's steps in the phases above.
+            skipPluginPipeline: true,
             deferCommittedEvent: true,
             bypassCustomAsync,
             bypassStepIds,
             postWriteEffects,
+            targetIndex: index,
           })
         : update
           ? store.updateRecord(entity, target.id, data, identity, {
               coerce: true,
               bypassCustomPlugins,
-              skipPluginPipeline: Boolean(catalogue),
+              // Every record ran its own message's steps in the phases above.
+              skipPluginPipeline: true,
               deferCommittedEvent: true,
               bypassCustomAsync,
               bypassStepIds,
@@ -286,7 +420,8 @@ function* bulkSteps(
           : store.createRecord(entity, data, identity, {
               coerce: true,
               bypassCustomPlugins,
-              skipPluginPipeline: Boolean(catalogue),
+              // Every record ran its own message's steps in the phases above.
+              skipPluginPipeline: true,
               deferCommittedEvent: true,
               bypassCustomAsync,
               bypassStepIds,

@@ -2604,7 +2604,10 @@ export function createRecordHandlers({
   // The grouped CreateMultiple/UpdateMultiple pipeline over Web API targets, inside the caller's write.
   async function bulkWrite(c, update, raw, { concurrencyBehavior, delegated = false } = {}) {
     const { mapping } = c;
-    const targets = [];
+    const targets = [],
+      stamps = [],
+      derived = [];
+    const now = new Date(store.clock.now()).toISOString();
     for (const target of raw) {
       const text = target[mapping.idColumn];
       if (update && text == null) throw invalid(`The ${mapping.idColumn} property is required.`);
@@ -2612,16 +2615,36 @@ export function createRecordHandlers({
       if (update && !existing) throw notFoundRecord(mapping.logicalName, String(text));
       const data = update ? await updateData(c, mapping, target, existing) : await createData(c, mapping, target);
       const id = update ? existing[mapping.idColumn] : data[mapping.idColumn];
-      delete data[mapping.idColumn];
-      const encoded = recordToSdkEntity(store, mapping.logicalName, store.normalizeRecord(mapping, data, c.identity));
-      delete encoded.attributes[mapping.idColumn];
-      targets.push({ ...encoded, id: id ?? '00000000-0000-0000-0000-000000000000' });
+      // As a single Create's Target (data.mjs createStepsCore): the submitted columns, the primary key a request names
+      // and two-option defaults at PreValidation; the derived state and the audit/ownership stamps from PreOperation on
+      // (native bulk: CreateMultiple/10 Targets carry the key and the boolean default, /20 the stamps).
+      const created = update ? {} : (derivedCreateColumns.get(data) ?? {});
+      const input = store.normalizeRecord(mapping, data, c.identity);
+      for (const name of Object.keys(created)) delete input[name];
+      if (!update)
+        for (const [name, value] of Object.entries(mapping.recordDefaults ?? {}))
+          if (
+            !Object.hasOwn(input, name) &&
+            fieldKind(store.fieldDefinition(mapping.logicalName, name, fieldsOf)) === 'boolean'
+          )
+            input[name] = structuredClone(value);
+      targets.push({
+        ...recordToSdkEntity(store, mapping.logicalName, input),
+        id: id ?? '00000000-0000-0000-0000-000000000000',
+      });
+      derived.push(created);
+      stamps.push({
+        ...store.systemColumnsFor(systemColumns(c, !update), mapping, data),
+        ...(update ? { modifiedon: now } : { createdon: now, modifiedon: now }),
+        ...created,
+      });
     }
     return executeBulkRecordsAsync({
       store,
       entity: mapping.logicalName,
       operation: update ? 'updatemultiple' : 'createmultiple',
       targets,
+      preOperationStamps: stamps,
       identity: c.identity,
       bypassCustomPlugins: c.bypassCustomPlugins === true,
       bypassCustomAsync: c.bypassCustomAsync === true,
@@ -2631,6 +2654,11 @@ export function createRecordHandlers({
         authorizeLookups(c, mapping, values);
       },
       write: async (_update, id, data, options) => {
+        if (!update) {
+          const columns = derived[options.targetIndex] ?? {};
+          for (const [name, value] of Object.entries(columns)) if (!Object.hasOwn(data, name)) data[name] = value;
+          derivedCreateColumns.set(data, columns);
+        }
         const row = await withKeyViolation(mapping, data, () =>
           update
             ? store.updateRecordAsync(mapping.logicalName, id, data, c.identity, updateOptions(c, options))
