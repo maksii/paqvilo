@@ -143,6 +143,7 @@ describe('web hook and Service Bus delivery spans', () => {
   });
   const spansOf = (request, kind) => session.traces.tree(request.traceId).spans.filter((span) => span.kind === kind);
 
+  // @test-kind contract+security: the web hook span never records the endpoint authentication
   it('a synchronous web hook step records the context it sent and the answer, without the endpoint authentication', async () => {
     const at = route();
     session = await world({ url: `${receiver.origin}${at}/status/200` });
@@ -319,6 +320,7 @@ describe('endpoint check and secret spans', () => {
     assert.equal((await receiver.log(at))[0].headers['x-sim-parent-trace'], probe.spanId);
   });
 
+  // @test-kind contract+security: a secret span keeps the status, never the value
   it('a secret span names the vault, secret and version and keeps the status only', async () => {
     const VARIABLE = 'PAQVILO_TRACE_WEBHOOKS_SECRET';
     const APP_ONE = 'eeeeeeee-0000-4000-8000-0000000000b1',

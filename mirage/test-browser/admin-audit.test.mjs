@@ -1,4 +1,4 @@
-// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
+// @test-kind contract+security: Paqvilo's _sim audit and Activity UI; valid-token denial, sanitized export and hostile hash values stay inert
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

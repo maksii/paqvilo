@@ -438,6 +438,7 @@ test('guided Solution path replacement and reordering keep referenced IDs and au
   assert.deepEqual(errors, []);
 });
 
+// @test-kind contract+security: extension trust requires an explicit choice
 test('guided extension trust requires an explicit choice and survives setup refresh', async (t) => {
   const { root, page, errors, resources } = await work(t),
     project = path.join(root, 'mirage.project.json');

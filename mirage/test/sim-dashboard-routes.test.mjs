@@ -94,6 +94,7 @@ function assertShape(body) {
   assert.equal(typeof body.docs.simAdministration.path, 'string');
 }
 
+// @test-kind contract+security: the dashboard payload carries no credential material
 test('standalone dashboard: payload shape, no credential material, memoised nodes and moving counters', async (t) => {
   const sim = await standalone(t);
   const dashboard = async () => json(await fetch(`${sim.url}/_sim/api/dashboard`));
@@ -308,6 +309,7 @@ const portalFiles = {
   'web-templates/Main.webtemplate.source.html': '<p>Invented</p>',
 };
 
+// @test-kind contract+security: the dashboard payload carries no credential material
 test('Power Pages dashboard adds the portal listener, admin hosts and the portal request ring', async (t) => {
   const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'sim-dashboard-pp-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
@@ -538,6 +540,7 @@ test('the dashboard route answers 503 starting before its host exists', async (t
   assert.equal((await fetch(`${origin}/_sim/api/other`)).status, 404);
 });
 
+// @test-kind contract+security: dashboard activity bodies are redacted
 test('activity keeps counts named like credentials; the rest of the body is redacted', async (t) => {
   const host = {
     organization: null,

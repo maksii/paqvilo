@@ -7,7 +7,6 @@ import { messageNameOf, pluginStepMatchesEntity } from './exported-plugins.mjs';
 import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import { bulkTargetsCollection } from './plugin-single-multiple.mjs';
-import { uuidV5 } from './dataverse-security.mjs';
 import { isDeepStrictEqual } from 'node:util';
 const emptyId = '00000000-0000-0000-0000-000000000000';
 const samePrimary = (target, primary) =>
@@ -207,13 +206,6 @@ function* bulkSteps(
             messageName: messageNameOf(operation),
             entity: mapping.logicalName,
             primaryId: emptyId,
-            // The platform step that performs the bulk main operation (plugin-sdk-parent.mjs mainOperationValues).
-            owningExtension: {
-              $type: 'EntityReference',
-              logicalName: 'sdkmessageprocessingstep',
-              id: uuidV5(emptyId, `sdkmessageprocessingstep:ObjectModel Implementation:${messageNameOf(operation)}`),
-              name: 'ObjectModel Implementation',
-            },
             inputParameters: {
               $type: 'ParameterCollection',
               values: {

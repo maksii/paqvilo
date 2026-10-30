@@ -79,7 +79,8 @@ test(
   },
 );
 
-// @test-kind parity: native dev-environment recorder corpus (pipelineEffects): a nested Create PreOperation's ParentContext is its own stage-30 main operation
+// @test-kind parity: native recorder corpus 2026-10-30, customApiNested captured twice: a custom API main operation's SDK Create has ParentContext Create/30 at Depth 2 and the custom API stage 30 (Depth 1, request inputs, IsAutoTransact true) above it
+// @parity-evidence: native recorder corpus 2026-10-30 customApiNested and native-r2/customApiNested: child Create 20 at Depth 2, parent Create/30/d2, grandparent custom API stage 30 at Depth 1 with the request inputs and IsAutoTransact true in both captures
 test(
   'a JavaScript main operation retains its async depth and context when it calls an original CLR child',
   { skip: CLR_SKIP },
