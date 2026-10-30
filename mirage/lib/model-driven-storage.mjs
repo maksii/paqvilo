@@ -6,9 +6,11 @@ import { DataError } from './data-error.mjs';
 import { copyPlainGraph } from './state-clone.mjs';
 
 const copy = copyPlainGraph;
+// Platform-stamped columns a source export never carries (audit, ownership, row version, the owning organization of
+// an organization-owned row) survive re-materialization from source.
 const system = (name) =>
   /^__sim/.test(name) ||
-  /^(?:createdon|createdby|createdonbehalfby|modifiedon|modifiedby|modifiedonbehalfby|versionnumber|ownerid|owninguser|owningteam|owningbusinessunit)$/.test(
+  /^(?:createdon|createdby|createdonbehalfby|modifiedon|modifiedby|modifiedonbehalfby|versionnumber|ownerid|owninguser|owningteam|owningbusinessunit|organizationid)$/.test(
     name,
   );
 const lookupIdentity = (field, value) => {
