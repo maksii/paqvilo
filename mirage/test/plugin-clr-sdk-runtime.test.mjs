@@ -11,6 +11,7 @@ import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import childProcess from 'node:child_process';
+import { createTraceStore } from '../lib/trace-store.mjs';
 import { once } from 'node:events';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
@@ -181,7 +182,9 @@ test(
     store.setPluginPipeline((context) =>
       runPluginPhase({ ...context, store, runtimes, items, diagnostic: (note) => notes.push(note) }),
     );
-    store.withOperationContext(() =>
+    store.traces = createTraceStore({ settings: { level: 'summary' } });
+    const request = store.traces.start({ kind: 'http', name: 'POST /invented', module: 'portal' });
+    await store.traces.run(request, () =>
       dispatchSdkCall({
         store,
         profile,
@@ -208,6 +211,25 @@ test(
         },
       }),
     );
+    request.end();
+    // Tracing: the step span carries the ILogger entries as telemetry events, and every SDK and service call is an sdk-call span.
+    const { spans } = store.traces.tree(request.traceId);
+    const stepSpan = spans.find((span) => span.kind === 'plugin-step');
+    assert.deepEqual(
+      stepSpan.events.filter((event) => event.type === 'telemetry').map((event) => event.message),
+      ['Probe invented logged'],
+    );
+    const calls = spans
+      .filter((span) => span.kind === 'sdk-call' && span.parentSpanId === stepSpan.spanId)
+      .map((span) => span.name);
+    for (const name of [
+      'WhoAmI',
+      'RetrieveEntity',
+      'ExecuteMultiple',
+      'IEnvironmentVariableService.RetrieveEnvironmentVariableValue',
+      'IServiceEndpointNotificationService.Execute',
+    ])
+      assert.ok(calls.includes(name), name);
     const traces = notes.filter((note) => note.code === 'PLUGIN_CLR_TRACE').map((note) => note.message);
     // The unknown table reaches the plug-in as FaultException<OrganizationServiceFault> with the code the local Web API answers
     // for the same failure (0x8006088a); the native SDK code for an unknown table is not captured.

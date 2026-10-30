@@ -12,6 +12,7 @@ import { CANVAS_ASSETS, canvasAssetUrls } from './canvas-assets.mjs';
 // Mount before the model-driven handler: that handler answers 404 for every other `/_apps/*` path.
 import { stringifyExactJson } from './exact-numeric.mjs';
 import { canvasPlayerAsset, canvasPlayerPage } from './canvas-player.mjs';
+import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 
 const PREFIX = '/_apps/canvas/';
 const API_PREFIX = '/_apps/api/canvas/';
@@ -39,7 +40,17 @@ function send(res, status, type, body) {
   res.end(body);
 }
 // Exact decimals (exact-numeric.mjs) keep every digit: a 28-digit Decimal is written as its number lexeme.
-const json = (res, status, value) => send(res, status, 'application/json; charset=utf-8', stringifyExactJson(value));
+const writeJson = (res, status, value) =>
+  send(res, status, 'application/json; charset=utf-8', stringifyExactJson(value));
+// The behaviour property a driver action runs (its canvas span is named `<action> <control>.<property>`).
+const ACTION_PROPERTY = { select: 'OnSelect', input: 'OnChange', 'add-media': 'OnChange', codecomponent: 'OnChange' };
+// The source text of one control or screen property formula (canvas-source.mjs rows; owner may carry its screen).
+const formulaOf = (source, control, property) => {
+  const row = (source.formulas ?? []).find(
+    (item) => item.property === property && (item.owner === control || String(item.owner).endsWith(`.${control}`)),
+  );
+  return row ? String(row.text ?? '').replace(/^\s*=/, '') : null;
+};
 const page = (title, body, hosted, playerList = false) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title></head>` +
   `<body><p role="status"><strong>${hosted ? (playerList ? PLAYER_BANNER : BANNER) : INVENTORY_BANNER}</strong></p>${body}</body></html>`;
@@ -209,7 +220,10 @@ function appView(app, snapshot, token) {
  * CANVAS_DISABLED diagnostic once. `runtime` (createCanvasRuntime) hosts the apps; `principal(req)` → { kind, principalId }
  * or null, or a promise of it (the staff session, or a signed-in portal visitor's mapped Dataverse user; never SYSTEM); `csrf()` → the simulator CSRF token. Without
  * a runtime the pages show the inventory and the API answers 501 CanvasRuntimeUnavailable. Returns false synchronously for
- * paths it does not own and true for the rest (the answer may complete asynchronously).
+ * paths it does not own and true for the rest (the answer may complete asynchronously). `traces` (the host trace store)
+ * names the request root's actor with `traceActor(principal)` (default: a staff or local administrator principal is the
+ * `staff` actor; any other keeps the root's), opens one `canvas` span per driver action and records every error answer
+ * on the root (recordHttpError).
  */
 export function createCanvasHandler({
   apps,
@@ -218,8 +232,84 @@ export function createCanvasHandler({
   runtime = null,
   principal = () => null,
   csrf = () => null,
+  traces = null,
+  traceActor = (caller) =>
+    ['staff', 'local-admin'].includes(caller?.kind) ? { kind: 'staff', id: caller.principalId, name: null } : null,
 } = {}) {
   if (typeof apps !== 'function') throw new TypeError('createCanvasHandler needs an apps() function.');
+  // Every JSON answer of 400 or more is the request root's error ({ error } or the first failed formula of an outcome).
+  const json = (res, status, value) => {
+    if (status >= 400) {
+      const error = value?.error ?? value?.errors?.find((item) => item.status >= 400) ?? value?.errors?.[0];
+      const span = traces?.current() ?? null;
+      // A plug-in fault keeps the identity its Dataverse spans carry (traceError, D-R3-19).
+      if (error?.traceError) span?.setStatus(statusFromHttp(status)).setError(error);
+      else recordHttpError(span, status, { code: error?.code, message: error?.message });
+    }
+    writeJson(res, status, value);
+  };
+  // One canvas span per driver action (start, select <control>.OnSelect, run <formula>, …); the formula text is input at
+  // level full; an action whose formulas failed ends with the first failure (denied for a refused write).
+  const traceAction = async (app, action, fn) => {
+    if (!traces?.enabled) return fn();
+    const kind = String(action.action ?? 'unknown');
+    const property =
+      kind === 'codecomponent-event'
+        ? action.event
+        : kind === 'start' || kind === 'reset'
+          ? 'OnStart'
+          : ACTION_PROPERTY[kind];
+    const control = kind === 'start' || kind === 'reset' ? 'App' : (action.control ?? null);
+    const target = control && property ? `${control}.${property}` : (action.control ?? action.screen ?? null);
+    const name = ['run', 'evaluate'].includes(kind)
+      ? `${kind} ${action.formula ?? ''}`
+      : kind === 'start' || kind === 'reset' || !target
+        ? kind
+        : `${kind} ${target}`;
+    const span = traces.start({
+      kind: 'canvas',
+      name,
+      module: 'canvas',
+      operation: kind,
+      attributes: {
+        app: app.uniqueName,
+        action: kind,
+        ...(control ? { control } : {}),
+        ...(property ? { property } : {}),
+        ...(action.screen ? { screen: action.screen } : {}),
+        ...(Number.isInteger(action.item) ? { item: action.item } : {}),
+      },
+      input: () => ({
+        formula:
+          typeof action.formula === 'string'
+            ? action.formula
+            : control && property
+              ? formulaOf(app.source, control, property)
+              : null,
+        ...(action.parameters ? { parameters: action.parameters } : {}),
+        ...(action.value !== undefined ? { value: action.value } : {}),
+      }),
+    });
+    let outcome;
+    try {
+      outcome = await traces.run(span, fn);
+    } catch (error) {
+      span.fail(error);
+      throw error;
+    }
+    const failed = outcome.errors?.find((item) => item.status >= 400) ?? outcome.errors?.[0];
+    span.output(() => ({ result: outcome.result ?? null, errors: outcome.errors ?? [] }));
+    if (failed)
+      span.end({
+        status: failed.status >= 400 ? statusFromHttp(failed.status) : 'error',
+        error: failed.traceError
+          ? failed
+          : { code: failed.code ?? 'CanvasFormulaError', message: failed.message ?? '' },
+        attributes: { errors: outcome.errors.length },
+      });
+    else span.end();
+    return outcome;
+  };
   const reported = new Set();
   const once = (key, entry) => {
     if (!reported.has(key)) {
@@ -238,6 +328,7 @@ export function createCanvasHandler({
     return { kind: caller.kind, principalId: caller.principalId };
   };
   async function api(req, res, app) {
+    traces?.current()?.set({ app: app.uniqueName });
     if (!runtime)
       throw failure(
         501,
@@ -284,15 +375,22 @@ export function createCanvasHandler({
           'parameters must be an object of text, number or Boolean values.',
         );
       const viewport = action.viewport === undefined ? undefined : canvasViewport(action.viewport);
-      if (action.action === 'reset') runtime.reset(app.uniqueName, caller);
-      const snapshot = await (await runtime.session(app.uniqueName, caller, { parameters, viewport })).observe();
+      const { snapshot } = await traceAction(app, action, async () => {
+        if (action.action === 'reset') runtime.reset(app.uniqueName, caller);
+        // A new instance ran App.OnStart now: its errors are this action's outcome.
+        const fresh = !runtime.existing(app.uniqueName, caller);
+        const snapshot = await (await runtime.session(app.uniqueName, caller, { parameters, viewport })).observe();
+        return { snapshot, errors: fresh ? (snapshot.errors ?? []) : [] };
+      });
       if (form) {
         res.writeHead(303, { location: `${PREFIX}${encodeURIComponent(app.uniqueName)}?view=inspect` });
         return res.end();
       }
       return json(res, 200, { result: null, errors: [], snapshot });
     }
-    const outcome = await (await runtime.session(app.uniqueName, caller)).act(action);
+    const outcome = await traceAction(app, action, async () =>
+      (await runtime.session(app.uniqueName, caller)).act(action),
+    );
     if (form) {
       res.writeHead(303, { location: `${PREFIX}${encodeURIComponent(app.uniqueName)}?view=inspect` });
       return res.end();
@@ -360,6 +458,13 @@ export function createCanvasHandler({
   }
   const handle = async (req, res, url) => {
     const { pathname } = url;
+    // The root's actor is the principal the app runs as; an unusable session is answered by the paths that need one.
+    if (traces?.enabled)
+      try {
+        traces.current()?.setActor(traceActor(await principal(req)));
+      } catch {
+        /* no actor */
+      }
     if (enabled() === false) {
       once(':disabled', {
         code: 'CANVAS_DISABLED',
@@ -460,7 +565,15 @@ export function createCanvasHandler({
       // Explicitly trusted PCF bundles commonly generate Fluent CSS at runtime. Script execution stays same-origin.
       if (Object.values(app.source.codeComponents ?? {}).some((component) => component.admitted))
         res.setHeader('content-security-policy', CSP.replace("style-src 'self'", "style-src 'self' 'unsafe-inline'"));
-      return send(res, 200, 'text/html; charset=utf-8', canvasPlayerPage(app, csrf() ?? ''));
+      return send(
+        res,
+        200,
+        'text/html; charset=utf-8',
+        canvasPlayerPage(app, csrf() ?? '', {
+          traceId: res.getHeader('x-trace-id') ?? null,
+          spanId: res.getHeader('x-sim-span-id') ?? null,
+        }),
+      );
     }
     return view(req, res, app);
   };

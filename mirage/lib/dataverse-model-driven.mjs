@@ -103,9 +103,16 @@ export function createModelDrivenWebApi({ organization }) {
       });
       const out = { status: 200, headers: {}, chunks: [] };
       await new Promise((resolve, reject) => {
-        const listeners = [];
+        // finish and close listeners, as a Node response emits them: end fires finish then close; destroy fires close
+        // alone, so the handler's http span ends (499) on that path too.
+        const listeners = { finish: [], close: [] };
+        const emit = (event) => {
+          for (const listener of listeners[event].splice(0)) listener();
+        };
         const res = {
           headersSent: false,
+          writableFinished: false,
+          destroyed: false,
           setHeader: (name, value) => {
             out.headers[name.toLowerCase()] = value;
           },
@@ -116,16 +123,21 @@ export function createModelDrivenWebApi({ organization }) {
             return out.status;
           },
           on: (event, listener) => {
-            if (event === 'finish') listeners.push(listener);
+            listeners[event]?.push(listener);
             return res;
           },
           end: (payload) => {
             if (payload !== undefined) out.chunks.push(Buffer.from(payload));
-            res.headersSent = true;
-            for (const listener of listeners) listener();
+            res.headersSent = res.writableFinished = true;
+            emit('finish');
+            emit('close');
             resolve();
           },
-          destroy: () => reject(new DataError('The Web API request failed.', 500, 'WebApiExecuteFailed')),
+          destroy: () => {
+            res.destroyed = true;
+            emit('close');
+            reject(new DataError('The Web API request failed.', 500, 'WebApiExecuteFailed'));
+          },
         };
         handlerFor(runtime, hostname)(req, res).catch(reject);
       });

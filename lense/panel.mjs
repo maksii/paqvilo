@@ -20,7 +20,7 @@ import { portalResourceUrl } from './online.mjs';
 import { filesForPage } from './browser.mjs';
 import { browserProfileInfo } from './browser-profile.mjs';
 import { createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
-import { observeHttpErrors } from './http-errors.mjs';
+import { boundedJsonBody, observeHttpErrors } from './http-errors.mjs';
 import { consoleLocation } from './console-location.mjs';
 import { annotateRuntimeSources } from './runtime-sources.mjs';
 import { selectionEvidenceCurrent } from './inspection-source-open.mjs';
@@ -1214,33 +1214,35 @@ export function enablePanel(context, session, opts = {}) {
   const watch = (page) => {
     const removers = [];
     const listen = (event, handler) => removers.push(on(page, event, handler));
-    const errors = observeHttpErrors(context, page, {
-      origin: cfg.origin,
-      response: (entry) => {
-        const documentProblems = problems.get(page) ?? [];
-        problems.set(page, documentProblems);
-        return (body) => {
-          if (problems.get(page) !== documentProblems) return;
-          const detail = [body?.error?.message, body?.error?.innererror?.message]
-            .map((value) => (typeof value === 'object' ? value?.value : value))
-            .filter((value) => typeof value === 'string')
-            .map((value) => redactText(value, 2000).replace(/(\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]'))
-            .join(' · ');
-          problem(page, { type: 'http', status: entry.status, text: `${entry.method} ${entry.path}`, where: detail });
-        };
-      },
-    });
+    // A failed same-origin response becomes one Issues row whose detail is its JSON error message and inner message
+    // (redacted). The row belongs to the document that received the response.
+    const httpProblem = (entry) => {
+      const documentProblems = problems.get(page) ?? [];
+      problems.set(page, documentProblems);
+      return (body) => {
+        if (problems.get(page) !== documentProblems) return;
+        const detail = [body?.error?.message, body?.error?.innererror?.message]
+          .map((value) => (typeof value === 'object' ? value?.value : value))
+          .filter((value) => typeof value === 'string')
+          .map((value) => redactText(value, 2000).replace(/(\/[^\s?]+)\?[^\s]+/g, '$1?[redacted]'))
+          .join(' · ');
+        problem(page, { type: 'http', status: entry.status, text: `${entry.method} ${entry.path}`, where: detail });
+      };
+    };
+    const errors = observeHttpErrors(context, page, { origin: cfg.origin, response: httpProblem });
     errorObservers.add(errors);
     errorsByPage.set(page, errors);
     errors.ready.catch(() => {});
+    // Without the DevTools observer (it could not attach or enable in time, as on a loaded CI runner) the row still
+    // keeps the message of a small JSON error body of declared size; any other body keeps only the HTTP metadata.
     listen('response', (res) => {
-      if (errors.failed && res.status() >= 400 && sameOrigin(res.url(), cfg.origin))
-        problem(page, {
-          type: 'http',
-          status: res.status(),
-          text: `${res.request().method()} ${new URL(res.url()).pathname}`,
-          where: '',
-        });
+      if (!errors.failed || res.status() < 400 || !sameOrigin(res.url(), cfg.origin)) return;
+      const finish = httpProblem({
+        status: res.status(),
+        method: res.request().method(),
+        path: new URL(res.url()).pathname,
+      });
+      void boundedJsonBody(res).then(finish);
     });
     listen('pageerror', (err) => {
       if (!sameOrigin(page.url(), cfg.origin)) return;

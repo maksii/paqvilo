@@ -5,13 +5,22 @@
 // Microsoft.Crm.Sdk.Messages); metadata answers travel as the SOAP Execute XML the official DataContractSerializer reads.
 // Also: the OrganizationServiceFault an SDK caller receives for an organization failure (sdkFault).
 import { DataError } from './data-error.mjs';
-import { dataverseError } from './dataverse-odata.mjs';
 import { organizationRecord } from './organization-context.mjs';
-import { metadataRequests } from './dataverse-soap-metadata.mjs';
 import { encodeValue, envelope } from './dataverse-soap-xml.mjs';
 import { xmlEscapeAttribute } from './fetchxml-engine.mjs';
-import { effectiveEnvironmentVariables } from './secret-resolver.mjs';
-import { notifyServiceEndpoint } from './dataverse-webhooks.mjs';
+
+// The organization modules load after this one: a static import would close a module cycle through plugin-clr.mjs
+// (exported-plugins.mjs and the settings registry load it while they initialize). SDK calls run long after startup.
+let dataverseError, metadataRequests, notifyServiceEndpoint;
+Promise.all([
+  import('./dataverse-odata.mjs'),
+  import('./dataverse-soap-metadata.mjs'),
+  import('./dataverse-webhooks.mjs'),
+]).then(([odata, metadata, webhooks]) => {
+  ({ dataverseError } = odata);
+  ({ metadataRequests } = metadata);
+  ({ notifyServiceEndpoint } = webhooks);
+});
 
 const fail = (message, code = 'LocalPluginSdkUnsupported', status = 501, details) => {
   throw new DataError(message, status, code, details);
@@ -231,10 +240,18 @@ export function executePluginServiceCall({ store, method, args = [], diagnostic 
     case 'IEnvironmentVariableService.RetrieveEnvironmentVariableValue': {
       const [name] = args;
       if (typeof name !== 'string' || !name) invalid('An environment variable schema name is required.');
-      const entry = effectiveEnvironmentVariables(store.state)[name.toLowerCase()];
-      if (entry?.secret)
+      // The effective value: the value row (seeding has merged the profile, project and _sim overrides into it), else the
+      // definition default (secret-resolver.mjs effectiveEnvironmentVariables reads the same layers).
+      const definition = store.tableRows('environmentvariabledefinition').find((row) => same(row.schemaname, name));
+      if (!definition) return null;
+      // Secret type (100000005) or a secret store other than Key Vault: the provider resolves it, not the plug-in service.
+      if (Number(definition.type) === 100000005 || Number(definition.secretstore ?? 0) === 1)
         fail('A secret environment variable is resolved by its Key Vault provider, not by the local plug-in service.');
-      return entry?.value ?? null;
+      const value = store
+        .tableRows('environmentvariablevalue')
+        .find((row) => same(refId(row.environmentvariabledefinitionid), definition.environmentvariabledefinitionid));
+      const text = value ? (value.value ?? null) : (definition.defaultvalue ?? null);
+      return text == null ? null : String(text);
     }
     case 'IFeatureControlService.GetFeatureControl':
       return null;
