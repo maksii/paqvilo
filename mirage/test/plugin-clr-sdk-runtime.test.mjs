@@ -17,6 +17,8 @@ import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 const objectId = '71000000-0000-0000-0000-000000000001';
+// The response class follows the request class, as the recorded native sdkSurface scenario shows: WhoAmIRequest answers
+// Microsoft.Crm.Sdk.Messages.WhoAmIResponse, new OrganizationRequest("WhoAmI") the base Microsoft.Xrm.Sdk.OrganizationResponse.
 const SOURCE = `using System;using System.ServiceModel;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Messages;using Microsoft.Xrm.Sdk.Metadata;using Microsoft.Xrm.Sdk.PluginTelemetry;using Microsoft.Crm.Sdk.Messages;
 namespace Invented {public sealed class Probe:IPlugin {
 static void Check(bool ok,string what){if(!ok)throw new InvalidPluginExecutionException("Probe failed: "+what);}
@@ -25,7 +27,7 @@ var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(
 var trace=(ITracingService)p.GetService(typeof(ITracingService));
 var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);
 var who=(WhoAmIResponse)s.Execute(new WhoAmIRequest());Check(who.UserId==c.UserId,"typed WhoAmI");
-var untyped=s.Execute(new OrganizationRequest("WhoAmI"));Check(untyped is WhoAmIResponse,"untyped WhoAmI decodes to "+untyped.GetType().FullName);
+var untyped=s.Execute(new OrganizationRequest("WhoAmI"));Check(untyped.GetType()==typeof(OrganizationResponse)&&untyped.Results.Contains("UserId"),"untyped WhoAmI answers "+untyped.GetType().FullName);
 var version=(RetrieveVersionResponse)s.Execute(new RetrieveVersionRequest());Check(version.Version=="9.2.99.1","RetrieveVersion "+version.Version);
 var entity=(RetrieveEntityResponse)s.Execute(new RetrieveEntityRequest{LogicalName="x_item",EntityFilters=EntityFilters.Entity});Check(entity.EntityMetadata.LogicalName=="x_item","RetrieveEntity metadata");
 var batch=new ExecuteMultipleRequest{Requests=new OrganizationRequestCollection(),Settings=new ExecuteMultipleSettings{ContinueOnError=true,ReturnResponses=true}};

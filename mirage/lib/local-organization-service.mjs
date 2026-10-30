@@ -11,6 +11,15 @@ import { pluginStoreScope } from './plugin-execution-lifetime.mjs';
 const fail = (message, code = 'LocalOrganizationServiceUnsupported', status = 501) => {
   throw new DataError(message, status, code);
 };
+// A missing row, in the words and code an SDK caller receives (recorded native sdkSurface: Update of a missing row).
+const notFound = (store, entity, id) => {
+  throw new DataError(
+    `Entity '${store.resolveMapping(entity).logicalName}' With Id = ${id?.id ?? id?.value ?? id} Does Not Exist`,
+    404,
+    'NotFound',
+    { innerCode: '0x80040217' },
+  );
+};
 const uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const own = (o, k) => o != null && Object.hasOwn(o, k);
 const RESERVED_NAMES = ['constructor', 'prototype', '__proto__'];
@@ -238,7 +247,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     records?.virtualProviders?.readSync(context(), store.resolveMapping(entity).logicalName, options) ?? null;
   const rawGet = (entity, id) => {
     const row = store.get(entity, id, localIdentity, { skipPluginRead: true });
-    if (!row) fail('Record not found.', 'NotFound', 404);
+    if (!row) notFound(store, entity, id);
     authorize(entity, 'read', row);
     return row;
   };
@@ -260,7 +269,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     const row = records
       ? records.readInternal(context(), entity, key, { ...options, unmask })
       : store.get(entity, key, localIdentity, options);
-    if (!row) fail('Record not found.', 'NotFound', 404);
+    if (!row) notFound(store, entity, id);
     return cloneStateData(row);
   };
   const isChoiceList = (entity, key) => {
@@ -316,7 +325,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
   const prepareUpdate = (entity, id, values) => {
     const key = sdkRecordKey(store, entity, id, values.partitionid);
     const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
-    if (!previous) fail('Record not found.', 'NotFound', 404);
+    if (!previous) notFound(store, entity, id);
     authorize(entity, 'update', previous);
     authorize(entity, 'update', { ...previous, ...values });
     writeGraph(values, entity);
@@ -325,7 +334,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
   const prepareRemove = (entity, id, partitionId) => {
     const key = sdkRecordKey(store, entity, id, partitionId);
     const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
-    if (!previous) fail('Record not found.', 'NotFound', 404);
+    if (!previous) notFound(store, entity, id);
     authorize(entity, 'delete', previous);
     return key;
   };
@@ -548,7 +557,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     messageUpdate(entity, id, values, writeOptions = {}) {
       const key = sdkRecordKey(store, entity, id);
       const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
-      if (!previous) fail('Record not found.', 'NotFound', 404);
+      if (!previous) notFound(store, entity, id);
       authorize(entity, 'update', previous);
       return store.sdkMutation(() =>
         records

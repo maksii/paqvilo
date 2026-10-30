@@ -156,7 +156,8 @@ test('Backend RPC grants do not inherit portal roles and preserve SDK value type
           arguments: ['widget', { $type: 'Guid', value: rowId }, { allColumns: true }],
         },
       }),
-    /Record not found/,
+    // @parity-evidence: native dev-environment recorder corpus sdkSurface: an SDK request on a missing row faults 0x80040217 'Entity '<table>' With Id = <id> Does Not Exist'
+    /Entity 'widget' With Id = 20000000-0000-0000-0000-000000000001 Does Not Exist/,
   );
   const result = dispatchSdkCall({
     store,

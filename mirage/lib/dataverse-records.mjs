@@ -3605,7 +3605,15 @@ export function createRecordHandlers({
         tracing ? () => dispatchInput(c) : undefined,
         async (span) => {
           bypassEvents(span, c);
-          const answer = await dispatch(c);
+          // A read whose Retrieve or RetrieveMultiple steps run gets a read-operation boundary: a step's SDK write commits
+          // on its own even when the read later fails (recorded native readNested), as the portal's reads do.
+          const readSteps =
+            ctx.method === 'GET' &&
+            typeof store.readOperation === 'function' &&
+            ['retrieve', 'retrievemultiple'].some((operation) =>
+              store.pluginPipelineActive?.({ entity: mapping.logicalName, operation }),
+            );
+          const answer = await (readSteps ? store.readOperation(() => dispatch(c)) : dispatch(c));
           dispatchAnswer(span, c, mapping, answer);
           return answer;
         },

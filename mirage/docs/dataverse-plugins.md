@@ -40,27 +40,30 @@ the native `0x80040800` fault.
 
 A plug-in's `IOrganizationService.Execute` takes the SDK's own request classes
 (`WhoAmIRequest`, `AssignRequest`, a generated custom API class) as well as a
-generic `OrganizationRequest`, and answers the message's response class from
-Microsoft.Xrm.Sdk.Messages or the Proxy's Microsoft.Crm.Sdk.Messages (a custom
-API keeps `OrganizationResponse`). Besides the record, platform and custom API
+generic `OrganizationRequest`. As natively, a typed request answers its response
+class from Microsoft.Xrm.Sdk.Messages or the Proxy's Microsoft.Crm.Sdk.Messages
+(`WhoAmIResponse`), and a generic request the base `OrganizationResponse` with the
+same results; ExecuteMultiple and ExecuteTransaction items follow their own requests. Besides the record, platform and custom API
 messages it answers WhoAmI (the service's user), RetrieveVersion, ExecuteMultiple
 (per-item faults, `ContinueOnError`, `ReturnResponses`), ExecuteTransaction
 (all or nothing, `ExecuteTransactionFault.FaultedRequestIndex`) and the metadata
 reads, which the official serializer reads from the SOAP service's answer.
 Update and Delete honour `ConcurrencyBehavior` (`0x80060882` for a stale
 `RowVersion`, `0x80060883` without one); Create carries `RelatedEntities` as
-a deep insert and Retrieve answers `RelatedEntitiesQuery`. An organization
+a deep insert and Retrieve answers `RelatedEntitiesQuery`. A missing row faults `0x80040217` ("Entity '<table>' With Id = <id> Does Not
+Exist") and, caught, leaves the step's transaction usable. An organization
 failure reaches the plug-in as `FaultException<OrganizationServiceFault>` with
 the code the Web API answers for the same failure; `NotSupportedException` means
-a local adapter gap. These follow the SDK contracts: no native capture of them
-from a plug-in exists yet.
+a local adapter gap. WhoAmI, RetrieveVersion, the response classes and the
+missing-row fault are recorded natively; the other messages follow the SDK
+contracts.
 
-A Retrieve or RetrieveMultiple step writes through the SDK only when its read runs
-as a read operation with a rollback boundary (portal reads, and reads nested in a
-write); on a Dataverse Web API or SOAP read the write is refused with
-`501 LocalPluginReadWriteUnsupported`. Native read contexts are not
-transacted (`IsInTransaction` false); whether a write from a read step commits on
-its own, and the nested context it gets, are not captured yet.
+A Retrieve or RetrieveMultiple step may write through the SDK, as natively: a
+portal or Dataverse Web API read (and SOAP, which reads through it) whose read steps
+run gets a read-operation boundary, so the write commits on its own and stays when
+the read later faults, while the read context itself is not transacted
+(`IsInTransaction` false). A read outside any operation (an internal store read)
+still refuses the write with `501 LocalPluginReadWriteUnsupported`.
 
 Other named operations, and the SOAP and Web API entry points of the messages
 above, do not acquire their own plug-in pipeline merely because their
