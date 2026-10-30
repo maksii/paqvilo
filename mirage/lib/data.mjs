@@ -2238,6 +2238,9 @@ export class DataStore {
    * service fault into a successful outer operation. */
   markPluginTransactionFailure(cause) {
     if (cause?.code === 'LocalPluginExecutionExpired' || transactionFrameOf(this, { closed: true })?.closed) return;
+    // A request that fails because its row does not exist has written nothing: a plug-in that catches the fault keeps its
+    // transaction (recorded native sdkSurface: an Update of a missing row faults 0x80040217 and the operation succeeds).
+    if (cause?.code === 'NotFound' || cause?.details?.innerCode === '0x80040217') return;
     if (
       !this.pluginInTransaction ||
       !this.pluginRollbackBoundary ||
@@ -2616,6 +2619,8 @@ export class DataStore {
       ...(options.preValidationSourceOperation
         ? { preValidationSourceOperation: options.preValidationSourceOperation }
         : {}),
+      // A record a bulk message delegates runs only its own message's steps (plugin-single-multiple.mjs).
+      ...(options.bulkOrigin ? { bulkOrigin: true } : {}),
       ...(options.omitConcurrencyBehavior
         ? { concurrencyBehavior: null }
         : options.pluginConcurrencyBehavior === undefined

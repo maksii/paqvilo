@@ -122,6 +122,9 @@ for (const legacy of [false, true])
   });
 
 // @test-kind parity: native dev-environment recorder corpus (pipelineEffects): nested Create parent is stage-30 main operation, entry snapshot above
+// @parity-evidence: native recorder captures native and native-r2, sdkSurface: a plug-in's SDK UpdateMultiple/CreateMultiple of two
+// targets queues a job with PreEntityImagesCollection length 0, PostEntityImagesCollection 2, and a ParentContext
+// UpdateMultiple/30/m1 (CreateMultiple/30/m1) carrying Targets, not Target, and an empty PrimaryEntityId.
 for (const flavor of ['typed', 'legacy', 'original'])
   test(
     `${flavor} SDK callers preserve per-step entry images, inputs and shared state across repeated live argument calls`,
@@ -156,7 +159,7 @@ if(!(parent.SharedVariables["AcceptLang"] is string)||(string)parent.SharedVaria
 else{if(parent.MessageName!="Update"||parent.Stage!=20||parent.PrimaryEntityName!="widget"||parent.PrimaryEntityId!=new Guid("${id(1)}")||parent.OwningExtension.Id!=new Guid("${id(12)}")||(string)parent.SharedVariables["seedMarker"]!="Earlier"||parent.PreEntityImages["Original"].GetAttributeValue<string>("title")!="Before"||!(parent.InputParameters["ConcurrencyBehavior"] is ConcurrencyBehavior)||parent.SecondaryEntityName!="none")throw new Exception("Update entry snapshot mismatch");}
 }} public sealed class Parent:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];var kind=target.GetAttributeValue<string>("kind");target["title"]="Live target";target["added"]=true;c.PreEntityImages["Original"]["title"]="Live image";c.SharedVariables["seedMarker"]="Edited";c.SharedVariables["currentMarker"]="Live";c.SharedVariables["opaque"]=new object();c.OutputParameters["currentOutput"]="Live";var service=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);for(int i=1;i<=2;i++){var row=new Entity("child");row["kind"]=kind;row["label"]=target.GetAttributeValue<string>("title")+" argument "+i;service.Create(row);}c.SharedVariables.Remove("opaque");if((string)c.SharedVariables["currentMarker"]!="Live"||(string)c.SharedVariables["seedMarker"]!="Edited"||(string)c.OutputParameters["currentOutput"]!="Live"||c.PreEntityImages["Original"].GetAttributeValue<string>("title")!="Live image"||target.GetAttributeValue<string>("title")!="Live target")throw new Exception("SDK snapshot changed caller live state");}}
 public sealed class Main:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));c.InputParameters["Text"]="Edited";c.SharedVariables["currentMarker"]="Live";c.OutputParameters["currentOutput"]="Live";var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);for(int i=1;i<=2;i++){var row=new Entity("child");row["kind"]="main";row["label"]=(string)c.InputParameters["Text"]+" argument "+i;s.Create(row);}if((string)c.InputParameters["Text"]!="Edited"||(string)c.SharedVariables["currentMarker"]!="Live"||(string)c.OutputParameters["currentOutput"]!="Live")throw new Exception("Main live state changed");c.OutputParameters["Reply"]="Completed";}}
-public sealed class AsyncImages:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext4)p.GetService(typeof(IPluginExecutionContext));int pre=c.MessageName=="CreateMultiple"?0:2;if(c.Mode!=1||c.PreEntityImagesCollection.Length!=pre||c.PostEntityImagesCollection.Length!=2||(string)c.SharedVariables["arrayCounts"]!=pre+":2")throw new Exception("Async Context4 image availability differs from model");foreach(var images in c.PreEntityImagesCollection)if(images.Count!=0)throw new Exception("Unexpected registered pre image");foreach(var images in c.PostEntityImagesCollection)if(images.Count!=0)throw new Exception("Unexpected registered post image");var parent=c.ParentContext;if(parent==null||parent.MessageName!=c.MessageName||parent.Stage!=30||parent.Mode!=1||parent.Depth!=c.Depth||parent.PrimaryEntityName!="widget"||parent.PrimaryEntityId!=new Guid("${id(1)}")||parent.IsInTransaction||parent.IsolationMode!=2||parent.OperationId!=c.OperationId||parent.RequestId!=c.RequestId||parent.CorrelationId!=c.CorrelationId||parent.OperationCreatedOn!=c.OperationCreatedOn||parent.OperationCreatedOn.Kind!=DateTimeKind.Unspecified)throw new Exception("Async main parent tuple missing");if(parent.OutputParameters.Count!=0||parent.PreEntityImages.Count!=0||parent.PostEntityImages.Count!=0||parent.InputParameters.Contains("Targets")||!parent.InputParameters.Contains("Target")||((Entity)parent.InputParameters["Target"]).Id!=new Guid("${id(1)}")||(string)parent.InputParameters["tag"]!="known")throw new Exception("Async main scalar inputs missing");if(c.MessageName=="UpdateMultiple"&&(ConcurrencyBehavior)parent.InputParameters["ConcurrencyBehavior"]!=ConcurrencyBehavior.Default)throw new Exception("Async main concurrency input missing");if(c.MessageName=="CreateMultiple"&&!(bool)parent.InputParameters["FromSandbox"])throw new Exception("Async main SDK source missing");}}public sealed class Raw:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var row=new Entity("child");row["kind"]="raw";s.Create(row);}}
+public sealed class AsyncImages:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext4)p.GetService(typeof(IPluginExecutionContext));int pre=0;if(c.Mode!=1||c.PreEntityImagesCollection.Length!=pre||c.PostEntityImagesCollection.Length!=2||(string)c.SharedVariables["arrayCounts"]!=pre+":2")throw new Exception("Async Context4 image availability differs from model");foreach(var images in c.PreEntityImagesCollection)if(images.Count!=0)throw new Exception("Unexpected registered pre image");foreach(var images in c.PostEntityImagesCollection)if(images.Count!=0)throw new Exception("Unexpected registered post image");var parent=c.ParentContext;if(parent==null||parent.MessageName!=c.MessageName||parent.Stage!=30||parent.Mode!=1||parent.Depth!=c.Depth||parent.PrimaryEntityName!="widget"||parent.PrimaryEntityId!=Guid.Empty||parent.IsInTransaction||parent.IsolationMode!=2||parent.OperationId!=c.OperationId||parent.RequestId!=c.RequestId||parent.CorrelationId!=c.CorrelationId||parent.OperationCreatedOn!=c.OperationCreatedOn||parent.OperationCreatedOn.Kind!=DateTimeKind.Unspecified)throw new Exception("Async main parent tuple missing");if(parent.OutputParameters.Count!=0||parent.PreEntityImages.Count!=0||parent.PostEntityImages.Count!=0||!parent.InputParameters.Contains("Targets")||parent.InputParameters.Contains("Target")||((EntityCollection)parent.InputParameters["Targets"]).Entities.Count!=2||(string)parent.InputParameters["tag"]!="known")throw new Exception("Async main scalar inputs missing");if(c.MessageName=="UpdateMultiple"&&(ConcurrencyBehavior)parent.InputParameters["ConcurrencyBehavior"]!=ConcurrencyBehavior.Default)throw new Exception("Async main concurrency input missing");if(c.MessageName=="CreateMultiple"&&!(bool)parent.InputParameters["FromSandbox"])throw new Exception("Async main SDK source missing");}}public sealed class Raw:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var row=new Entity("child");row["kind"]="raw";s.Create(row);}}
 }`,
       );
       compileClr(source, assembly, { references: [sdk] });
@@ -377,15 +380,9 @@ public sealed class AsyncImages:IPlugin{public void Execute(IServiceProvider p){
             [
               'Invented.ArrayModel',
               ({ context }) => {
-                assert.equal(context.PreEntityImagesCollection.length, message === 'CreateMultiple' ? 0 : 2);
+                assert.equal(context.PreEntityImagesCollection.length, 0);
                 assert.equal(context.PostEntityImagesCollection.length, 2);
                 assert.equal(context.Depth, 2);
-                assert.equal(context.ParentContext.MessageName, message);
-                assert.equal(context.ParentContext.Stage, 30);
-                assert.equal(context.ParentContext.Mode, 1);
-                assert.equal(context.ParentContext.Depth, 2);
-                assert.equal(context.ParentContext.InputParameters.Target.widgetid, id(1));
-                assert.equal(context.ParentContext.InputParameters.tag, 'known');
                 context.SharedVariables.arrayCounts = context.PreEntityImagesCollection.length + ':2';
               },
             ],
@@ -413,20 +410,28 @@ public sealed class AsyncImages:IPlugin{public void Execute(IServiceProvider p){
               correlationId: id(82),
               createdOn: '2026-01-02T03:04:05.000Z',
               createdOnWire: { $type: 'DateTime', value: '2026-01-02T03:04:05.000' },
-              asyncSourceParent: {
-                primaryId: id(1),
-                inputParameters: {
-                  $type: 'ParameterCollection',
-                  values: {
-                    Target: { $type: 'Entity', logicalName: 'widget', id: id(1), attributes: {} },
-                    tag: 'known',
-                    ...(message === 'UpdateMultiple'
-                      ? { ConcurrencyBehavior: { $type: 'ConcurrencyBehavior', value: 0 } }
-                      : { FromSandbox: true }),
-                  },
-                },
-                sharedVariables: { $type: 'ParameterCollection', values: { tag: 'known' } },
+              // The queued frame of an SDK bulk request: its main operation's inputs and Targets (plugin-bulk.mjs).
+              mainOperationInputs: {
+                tag: 'known',
+                ...(message === 'UpdateMultiple'
+                  ? { ConcurrencyBehavior: { $type: 'ConcurrencyBehavior', value: 0 } }
+                  : { FromSandbox: true }),
               },
+              mainOperationTargets: {
+                $type: 'EntityCollection',
+                entityName: 'widget',
+                entities: [id(1), id(2)].map((row) => ({
+                  $type: 'Entity',
+                  logicalName: 'widget',
+                  id: row,
+                  attributes: {},
+                })),
+                moreRecords: false,
+                totalRecordCount: 0,
+                pagingCookie: null,
+                minActiveRowVersion: null,
+              },
+              mainSharedVariables: { $type: 'ParameterCollection', values: { tag: 'known' } },
             },
             record: { widgetid: '00000000-0000-0000-0000-000000000000', bulkIds: [id(1), id(2)] },
             targets: records.map((row) => ({

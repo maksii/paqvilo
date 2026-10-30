@@ -48,6 +48,7 @@ async function fixture(t, { resumeRun, csrf = () => CSRF } = {}) {
   return { call, scheduler, connectors, flowRuns, run, done, approvalId: approval.suspended.id };
 }
 
+// @test-kind contract+security: run history omits trigger input and secure outputs
 test('run history and waits list runs without trigger input or secure outputs', async (t) => {
   const { call, run, done, approvalId } = await fixture(t);
   const list = await call('GET', `/_sim/api/flow-runs?processId=${FLOW}`);
@@ -73,6 +74,7 @@ test('run history and waits list runs without trigger input or secure outputs', 
   assert.equal((await call('GET', '/_sim/api/other')).status, 404, 'other admin routes are left to the next handler');
 });
 
+// @test-kind contract+security: answering a wait requires the CSRF token
 test('answering a wait needs the CSRF token, records the response and schedules resumeRun', async (t) => {
   const resumed = [];
   const { call, scheduler, connectors, run, approvalId } = await fixture(t, {
@@ -123,6 +125,7 @@ test('without a host resumeRun answering a wait is 501 FlowResumeNotWired and ch
   assert.equal(connectors.approvals.get(approvalId).status, 'Pending');
 });
 
+// @test-kind contract+security: flow-run payloads redact cookie and authorization headers
 test('flow-run payloads redact set-cookie and authorization headers that a connector journalled', async (t) => {
   const { call, flowRuns } = await fixture(t);
   const run = await flowRuns.start({ processId: FLOW });
@@ -139,6 +142,7 @@ test('flow-run payloads redact set-cookie and authorization headers that a conne
   assert.ok(!/invented-cookie|invented-bearer/.test((await call('GET', '/_sim/api/flow-runs')).text));
 });
 
+// @test-kind contract+security: a missing simulator CSRF token fails closed
 test('a missing simulator CSRF token fails closed: no header, or no token to compare with, is 403 and resumes nothing', async (t) => {
   const resumed = [];
   const { call, scheduler, connectors, approvalId } = await fixture(t, {

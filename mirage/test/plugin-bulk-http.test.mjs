@@ -129,13 +129,15 @@ test(
     const sdk = clrSdk(),
       source = path.join(root, 'Phases.cs'),
       assembly = path.join(root, 'Phases.dll');
+    // Native recorder corpus bulk: a record's PreOperation step sees the CreateMultiple/20 context (the bulk step's
+    // stage-20 collection) as its parent, not the record's own PreValidation collection.
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;
 namespace Invented {
 public sealed class Seed:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));c.SharedVariables["ranked"]="kept";}}
 public sealed class Check:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));if((string)c.SharedVariables["ranked"]!="kept")throw new Exception("Ranked PreValidation state lost");}}
-public sealed class Pre:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));if((string)c.ParentContext.SharedVariables["ranked"]!="kept")throw new Exception("PreValidation parent state lost");c.SharedVariables["pre"]="kept";}}
+public sealed class Pre:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));if(c.ParentContext.MessageName!="CreateMultiple"||c.ParentContext.Stage!=20||(string)c.ParentContext.SharedVariables["bulk"]!="kept")throw new Exception("Bulk stage parent state lost");c.SharedVariables["pre"]="kept";}}
 public sealed class Post:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));if((string)c.SharedVariables["pre"]!="kept")throw new Exception("PreOperation state lost");c.SharedVariables["post"]="kept";}}
 public sealed class Async:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));if((string)c.SharedVariables["post"]!="kept")throw new Exception("Final synchronous state lost");var svc=((IOrganizationServiceFactory)s.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var row=new Entity("x_item",c.PrimaryEntityId);row["x_keep"]="Async exact frame";svc.Update(row);}}
 public sealed class BulkPre:IPlugin{public void Execute(IServiceProvider s){var c=(IPluginExecutionContext)s.GetService(typeof(IPluginExecutionContext));c.SharedVariables["bulk"]="kept";}}
@@ -589,7 +591,9 @@ test('merged PostOperation Target changes reach later steps and async snapshots 
       const saved = f.store.tableRows('x_item').find((row) => row.x_itemid === authored.x_itemid);
       assert.equal(saved.x_name, 'Saved original');
       assert.equal(saved.x_keep, 'Saved keep');
-      assert.deepEqual(captured, [['Scalar context', 'Grouped context']]);
+      // Native recorder corpus pipelineEffects/crud: a single Create's queued CreateMultiple job is the Create job under
+      // its own name, so it sees the Target PostOperation started with, without the PostOperation context edits.
+      assert.deepEqual(captured, [bulk ? ['Scalar context', 'Grouped context'] : ['Saved original', 'Saved keep']]);
     });
 });
 
@@ -1009,18 +1013,29 @@ test('single-origin Create and Update merge single and multiple registrations by
     });
 });
 
-test('provided-ID implicit CreateMultiple preserves authored identity and has no main-operation parent in PreValidation', async (t) => {
+test('provided-ID implicit CreateMultiple preserves authored identity and shares the single Create parent view', async (t) => {
   const provided = '20000000-0000-0000-0000-000000000099';
   const registrations = [10, 20, 40].map((stage, index) => step('CreateMultiple', stage, 1, index + 1));
-  const seen = [];
+  const singles = [10, 20, 40].map((stage, index) => ({
+    ...step('Create', stage, 1, index + 4),
+    typeName: 'Invented.SingleSibling',
+  }));
+  const seen = [],
+    siblings = [];
   const f = await fixture(
     t,
-    registrations,
+    [...registrations, ...singles],
     new Map([
       [
         registrations[0].typeName,
         ({ context }) => {
           seen.push(context);
+        },
+      ],
+      [
+        'Invented.SingleSibling',
+        ({ context }) => {
+          siblings.push(context);
         },
       ],
     ]),
@@ -1031,16 +1046,22 @@ test('provided-ID implicit CreateMultiple preserves authored identity and has no
     [10, 20, 40],
   );
   for (const context of seen) {
-    assert.equal(context.PrimaryEntityId, empty);
+    // Native recorder corpus crud: CreateMultiple steps of a single Create report its PrimaryEntityId at 10, 20 and 40.
+    assert.equal(context.PrimaryEntityId, provided);
     assert.equal(context.InputParameters.Targets[0].id, provided);
     const primary = context.InputParameters.Targets[0].attributes.x_itemid;
     assert.equal(primary?.value ?? primary, provided);
+  }
+  // Native recorder corpus crud: the Create step at equal rank runs first, and both see one parent (none at PreValidation).
+  assert.deepEqual(
+    siblings.map((context) => context.Stage),
+    [10, 20, 40],
+  );
+  for (const [index, context] of seen.entries()) {
+    const sibling = siblings[index];
     if (context.Stage === 10) assert.equal(context.ParentContext ?? null, null);
-    else {
-      assert.equal(context.ParentContext.MessageName, 'Create');
-      assert.equal(context.ParentContext.Stage, 30);
-      assert.equal(context.ParentContext.PrimaryEntityId, provided);
-    }
+    assert.deepEqual(context.ParentContext, sibling.ParentContext);
+    assert.equal(sibling.PrimaryEntityId, context.PrimaryEntityId);
   }
 });
 
@@ -1048,6 +1069,8 @@ test(
   'original CLR implicit multiple messages follow actual scalar rank order, phase boundaries and current typed Target identity',
   { skip: CLR_SKIP },
   async (t) => {
+    // The Observer runs on the single message's own frame (native recorder corpus crud/depth), so a parent binding is
+    // checked only when no scalar step re-pointed Target.Id (that parent view is the single Update's own).
     const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-mixed-create-identity-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     const sdk = clrSdk(),
@@ -1055,7 +1078,7 @@ test(
       assembly = path.join(root, 'Identity.dll');
     await fs.writeFile(
       source,
-      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Noop:IPlugin {public void Execute(IServiceProvider p){}}public sealed class Mutate:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));((Entity)c.InputParameters["Target"]).Id=new Guid("20000000-0000-0000-0000-000000000098");}}public sealed class Observer:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var ts=(EntityCollection)c.InputParameters["Targets"];if(ts.Entities.Count!=1)throw new Exception("Wrong collection count");var target=ts.Entities[0];bool supplied=target.GetAttributeValue<string>("x_keep")!="generated";if(target.Id==Guid.Empty)throw new Exception("Missing allocated target identity");bool has=target.Contains("x_itemid");if(has!=(supplied||c.Stage!=10))throw new Exception("Wrong primary attribute at "+c.Stage);if(has&&(Guid)target["x_itemid"]!=(supplied?new Guid("20000000-0000-0000-0000-000000000099"):target.Id))throw new Exception("Wrong primary attribute value");if(c.MessageName=="UpdateMultiple"&&c.ParentContext!=null){var pt=(Entity)c.ParentContext.InputParameters["Target"];if(pt.Id!=new Guid("20000000-0000-0000-0000-000000000099")||pt.GetAttributeValue<Guid>("x_itemid")!=pt.Id)throw new Exception("Mutable child identity changed parent binding");}c.SharedVariables["ObservedIdentityStage"]=c.Stage;c.SharedVariables["ObservedIdentityPrimary"]=c.PrimaryEntityId.ToString();c.SharedVariables["ObservedIdentityTarget"]=target.Id.ToString();}}}`,
+      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Noop:IPlugin {public void Execute(IServiceProvider p){}}public sealed class Mutate:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));((Entity)c.InputParameters["Target"]).Id=new Guid("20000000-0000-0000-0000-000000000098");c.SharedVariables["Mutated"]=true;}}public sealed class Observer:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var ts=(EntityCollection)c.InputParameters["Targets"];if(ts.Entities.Count!=1)throw new Exception("Wrong collection count");var target=ts.Entities[0];bool supplied=target.GetAttributeValue<string>("x_keep")!="generated";if(target.Id==Guid.Empty)throw new Exception("Missing allocated target identity");bool has=target.Contains("x_itemid");if(has!=(supplied||c.Stage!=10))throw new Exception("Wrong primary attribute at "+c.Stage);if(has&&(Guid)target["x_itemid"]!=(supplied?new Guid("20000000-0000-0000-0000-000000000099"):target.Id))throw new Exception("Wrong primary attribute value");if(c.MessageName=="UpdateMultiple"&&c.ParentContext!=null&&!c.SharedVariables.Contains("Mutated")&&!c.ParentContext.SharedVariables.Contains("Mutated")){var pt=(Entity)c.ParentContext.InputParameters["Target"];if(pt.Id!=new Guid("20000000-0000-0000-0000-000000000099")||pt.GetAttributeValue<Guid>("x_itemid")!=pt.Id)throw new Exception("Mutable child identity changed parent binding");}c.SharedVariables["ObservedIdentityStage"]=c.Stage;c.SharedVariables["ObservedIdentityPrimary"]=c.PrimaryEntityId.ToString();c.SharedVariables["ObservedIdentityTarget"]=target.Id.ToString();}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
@@ -1070,23 +1093,12 @@ test(
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
     });
     const createCases = [
-      ...[10, 20, 40].flatMap((stage) =>
-        [5, 30].map((rank) => ({
-          scalar: [{ stage, rank }],
-          supplied: true,
-          primary:
-            stage === 10
-              ? [rank === 5, false, false, false]
-              : stage === 20
-                ? [false, rank === 5, true, true]
-                : [false, false, rank === 5, true],
-        })),
-      ),
+      ...[10, 20, 40].flatMap((stage) => [5, 30].map((rank) => ({ scalar: [{ stage, rank }], supplied: true }))),
       ...[false, true].flatMap((supplied) => [
-        { scalar: [], supplied, primary: [false, false, false, false] },
-        { scalar: [10, 20, 40].map((stage) => ({ stage, rank: 5 })), supplied, primary: [true, true, true, true] },
+        { scalar: [], supplied },
+        { scalar: [10, 20, 40].map((stage) => ({ stage, rank: 5 })), supplied },
       ]),
-      { scalar: [{ stage: 10, rank: 10 }], supplied: true, mutate: true, primary: [true, false, false, false] },
+      { scalar: [{ stage: 10, rank: 10 }], supplied: true, mutate: true },
     ];
     const cases = [
       ...createCases.map((scenario) => ({ ...scenario, message: 'Create' })),
@@ -1097,14 +1109,12 @@ test(
         supplied: true,
         mutate: true,
         seedReplacement: true,
-        primary: stage === 10 ? [true, false, false, false] : [false, true, true, true],
       })),
       {
         message: 'Update',
         scalar: [{ stage: 10, rank: 10 }],
         supplied: true,
         mutate: true,
-        primary: [true, false, false, false],
       },
     ];
     for (const scenario of cases) {
@@ -1181,13 +1191,18 @@ test(
         seen.map((entry) => entry.stage),
         [10, 20, 40, 40],
       );
+      // Targets[0] is the single Target as it stands: a scalar step's re-pointed Target.Id reaches the multiple steps
+      // after it, until the single message binds its Target to the row again (Create at PreOperation, Update at
+      // PostOperation).
+      const mutatedAt = (stage) =>
+        scenario.mutate &&
+        (stage === scenario.scalar[0].stage ||
+          (message === 'Update' && scenario.scalar[0].stage === 10 && stage === 20));
       assert.equal(
         seen.every(
           (entry) =>
-            entry.target.id ===
-              (scenario.mutate && entry.stage === scenario.scalar[0].stage
-                ? '20000000-0000-0000-0000-000000000098'
-                : body.x_itemid) && entry.observedTarget === entry.target.id,
+            entry.target.id === (mutatedAt(entry.stage) ? '20000000-0000-0000-0000-000000000098' : body.x_itemid) &&
+            entry.observedTarget === entry.target.id,
         ),
         true,
       );
@@ -1199,7 +1214,8 @@ test(
         assert.equal(replacement?.x_name, scenario.seedReplacement ? 'Replacement seed unchanged' : undefined);
       }
       assert.equal(
-        seen.every((entry, index) => entry.primary === (scenario.primary[index] ? body.x_itemid : empty)),
+        // Native recorder corpus crud/depth: every implicit multiple step reports the single message's PrimaryEntityId.
+        seen.every((entry) => entry.primary === body.x_itemid),
         true,
       );
     }
@@ -1218,7 +1234,7 @@ test(
     const provided = '20000000-0000-0000-0000-000000000099';
     await fs.writeFile(
       source,
-      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Driver:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(((Entity)c.InputParameters["Target"]).GetAttributeValue<string>("x_name")!="Drive CLR")return;var f=(IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory));var s=f.CreateOrganizationService(c.UserId);var row=new Entity("x_item",new Guid("${provided}"));row["x_name"]="SDK CLR";s.Update(row);}}public sealed class Inputs:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var ts=(EntityCollection)c.InputParameters["Targets"];if(ts.Entities.Count!=1)throw new Exception("Wrong Targets count");var row=ts.Entities[0];if(row.Id!=new Guid("${provided}")||row.GetAttributeValue<Guid>("x_itemid")!=row.Id)throw new Exception("Update wrapper lost PK projection");string name=row.GetAttributeValue<string>("x_name");bool sandbox=name=="SDK CLR"&&c.Stage==10;object behavior=c.InputParameters["ConcurrencyBehavior"];if(!(behavior is ConcurrencyBehavior)||(ConcurrencyBehavior)behavior!=(name=="ETag"?ConcurrencyBehavior.IfRowVersionMatches:ConcurrencyBehavior.Default))throw new Exception("Wrong typed concurrency behavior");if(c.InputParameters.Contains("FromSandbox")!=sandbox||(sandbox&&(!(c.InputParameters["FromSandbox"] is bool)||!(bool)c.InputParameters["FromSandbox"])))throw new Exception("Wrong immediate sandbox provenance");var parent=c.ParentContext;if(c.Stage==10){if(name=="Default"&&(parent==null||parent.MessageName!="Upsert"||parent.Stage!=30||parent.PrimaryEntityId!=Guid.Empty))throw new Exception("Wrong default PATCH parent");if((name=="Star"||name=="ETag")&&parent!=null)throw new Exception("Unexpected conditional PATCH parent");if(name=="SDK CLR"&&(parent==null||parent.MessageName!="Create"||parent.Stage!=20||parent.PrimaryEntityId==Guid.Empty))throw new Exception("Original SDK caller parent lost");}else if(parent==null||parent.MessageName!="Update"||parent.Stage!=30||parent.PrimaryEntityId!=row.Id)throw new Exception("Wrong Update core parent");if(c.Stage==10&&name=="Default"){if(!parent.InputParameters.Contains("ReturnRowVersion")||parent.InputParameters["ReturnRowVersion"]!=null||String.Join(",",parent.InputParameters.Keys)!="Target,ReturnRowVersion")throw new Exception("Wrong nullable Upsert return-version parameter");}if(c.Stage!=10||name=="Default"){var pt=(Entity)parent.InputParameters["Target"];if(pt.Id!=row.Id||pt.GetAttributeValue<Guid>("x_itemid")!=row.Id||pt.Attributes.Count!=2||!pt.Contains("x_name"))throw new Exception("Wrong core parent Target projection");}if(c.Stage!=10){object pb=parent.InputParameters["ConcurrencyBehavior"];if(!(pb is ConcurrencyBehavior)||(ConcurrencyBehavior)pb!=(ConcurrencyBehavior)behavior)throw new Exception("Wrong typed core parent concurrency");bool from=name=="SDK CLR";if(parent.InputParameters.Contains("FromSandbox")!=from||(from&&(!(parent.InputParameters["FromSandbox"] is bool)||!(bool)parent.InputParameters["FromSandbox"])))throw new Exception("Wrong core parent sandbox provenance");string expected=from?"Target,FromSandbox,ConcurrencyBehavior":"Target,ConcurrencyBehavior";if(String.Join(",",parent.InputParameters.Keys)!=expected)throw new Exception("Wrong core parent parameter shape");}c.SharedVariables["ObservedInputStage"]=c.Stage;c.SharedVariables["ObservedInputKeys"]=String.Join(",",c.InputParameters.Keys);}}}`,
+      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Driver:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(((Entity)c.InputParameters["Target"]).GetAttributeValue<string>("x_name")!="Drive CLR")return;var f=(IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory));var s=f.CreateOrganizationService(c.UserId);var row=new Entity("x_item",new Guid("${provided}"));row["x_name"]="SDK CLR";s.Update(row);}}public sealed class Inputs:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var ts=(EntityCollection)c.InputParameters["Targets"];if(ts.Entities.Count!=1)throw new Exception("Wrong Targets count");var row=ts.Entities[0];if(row.Id!=new Guid("${provided}")||row.GetAttributeValue<Guid>("x_itemid")!=row.Id)throw new Exception("Update wrapper lost PK projection");string name=row.GetAttributeValue<string>("x_name");bool sandbox=name=="SDK CLR"&&c.Stage==10;object behavior=c.InputParameters["ConcurrencyBehavior"];if(!(behavior is ConcurrencyBehavior)||(ConcurrencyBehavior)behavior!=(name=="ETag"?ConcurrencyBehavior.IfRowVersionMatches:ConcurrencyBehavior.Default))throw new Exception("Wrong typed concurrency behavior");if(c.InputParameters.Contains("FromSandbox")!=sandbox||(sandbox&&(!(c.InputParameters["FromSandbox"] is bool)||!(bool)c.InputParameters["FromSandbox"])))throw new Exception("Wrong immediate sandbox provenance");var parent=c.ParentContext;if(c.Stage==10){if(name=="Default"&&(parent==null||parent.MessageName!="Upsert"||parent.Stage!=30||parent.PrimaryEntityId!=Guid.Empty))throw new Exception("Wrong default PATCH parent");if((name=="Star"||name=="ETag")&&parent!=null)throw new Exception("Unexpected conditional PATCH parent");if(name=="SDK CLR"&&(parent==null||parent.MessageName!="Create"||parent.Stage!=20||parent.PrimaryEntityId==Guid.Empty))throw new Exception("Original SDK caller parent lost");}else if(parent==null||parent.MessageName!="Update"||parent.Stage!=30||parent.PrimaryEntityId!=row.Id)throw new Exception("Wrong Update core parent");if(c.Stage==10&&name=="Default"){if(!parent.InputParameters.Contains("ReturnRowVersion")||parent.InputParameters["ReturnRowVersion"]!=null||String.Join(",",parent.InputParameters.Keys)!="Target,ReturnRowVersion")throw new Exception("Wrong nullable Upsert return-version parameter");}if(c.Stage!=10||name=="Default"){var pt=(Entity)parent.InputParameters["Target"];if(pt.Id!=row.Id||pt.GetAttributeValue<Guid>("x_itemid")!=row.Id||pt.Attributes.Count!=2||!pt.Contains("x_name"))throw new Exception("Wrong core parent Target projection");}if(c.Stage!=10){object pb=parent.InputParameters["ConcurrencyBehavior"];if(!(pb is ConcurrencyBehavior)||(ConcurrencyBehavior)pb!=(ConcurrencyBehavior)behavior)throw new Exception("Wrong typed core parent concurrency");bool from=name=="SDK CLR";if(parent.InputParameters.Contains("FromSandbox")!=from||(from&&(!(parent.InputParameters["FromSandbox"] is bool)||!(bool)parent.InputParameters["FromSandbox"])))throw new Exception("Wrong core parent sandbox provenance");string expected=from?"Target,ConcurrencyBehavior,FromSandbox":"Target,ConcurrencyBehavior";if(String.Join(",",parent.InputParameters.Keys)!=expected)throw new Exception("Wrong core parent parameter shape");}c.SharedVariables["ObservedInputStage"]=c.Stage;c.SharedVariables["ObservedInputKeys"]=String.Join(",",c.InputParameters.Keys);}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const profile = {
@@ -1259,9 +1275,11 @@ test(
             'Invented.InputSnapshot',
             ({ context }) => {
               assert.equal(context.SharedVariables.ObservedInputStage, context.Stage);
+              // The single Update's inputs with Target as the trailing Targets (native recorder corpus crud/depth key order);
+              // the single Update's own FromSandbox/ConcurrencyBehavior order is local (no native SDK Update/10 capture).
               const keys =
                 context.Stage === 10 && kind === 'SDK CLR'
-                  ? 'FromSandbox,ConcurrencyBehavior,Targets'
+                  ? 'ConcurrencyBehavior,FromSandbox,Targets'
                   : 'ConcurrencyBehavior,Targets';
               assert.equal(context.SharedVariables.ObservedInputKeys, keys);
               seen.push({ stage: context.Stage, parent: context.ParentContext });
@@ -1314,7 +1332,9 @@ test(
   },
 );
 
-test('skipped scalar registrations cannot supply an implicit CreateMultiple primary identity', async (t) => {
+// Native recorder corpus crud/depth: CreateMultiple steps of a single Create report the Create's PrimaryEntityId at every
+// stage, whether or not a Create step ran before them.
+test('implicit CreateMultiple steps report the single Create primary identity whatever scalar steps were skipped', async (t) => {
   for (const scenario of [
     { mode: 'disabled' },
     { mode: 'placeholder' },
@@ -1350,7 +1370,7 @@ test('skipped scalar registrations cannot supply an implicit CreateMultiple prim
       handlers,
       scenario.mode ? { ['plugin-step:' + scalar.id]: { mode: scenario.mode } } : {},
     );
-    await f.store.transact(() =>
+    const row = await f.store.transact(() =>
       f.store.createRecordAsync(
         'x_item',
         { x_name: 'Skipped scalar' },
@@ -1358,7 +1378,7 @@ test('skipped scalar registrations cannot supply an implicit CreateMultiple prim
         scenario.bypass ? { bypassStepIds: [scalar.id] } : {},
       ),
     );
-    assert.deepEqual(seen, [empty, empty, empty], JSON.stringify(scenario));
+    assert.deepEqual(seen, [row.x_itemid, row.x_itemid, row.x_itemid], JSON.stringify(scenario));
   }
 });
 
@@ -1376,8 +1396,9 @@ test('an unchanged authored empty key reaches the Create validation boundary thr
         registrations[0].typeName,
         ({ context }) => {
           observed++;
-          assert.equal(context.PrimaryEntityId, empty);
+          // The single Create's own view (native recorder corpus crud: CreateMultiple shares PrimaryEntityId and Target).
           assert.notEqual(context.InputParameters.Targets[0].id, empty);
+          assert.equal(context.PrimaryEntityId, context.InputParameters.Targets[0].id);
           const primary = context.InputParameters.Targets[0].attributes.x_itemid;
           assert.equal(primary?.value ?? primary, empty);
         },
@@ -1393,29 +1414,40 @@ test('an unchanged authored empty key reaches the Create validation boundary thr
   assert.equal(f.store.tableRows('x_item').length, 1);
 });
 
-test('single-origin UpdateMultiple exposes the delegated Update main-operation parent at the same depth', async (t) => {
-  const registration = step('UpdateMultiple');
-  let captured;
+// Native recorder corpus crud: UpdateMultiple/10/20/40 of a single PATCH report the Update's PrimaryEntityId, depth,
+// request and parent (the CLR view is plugin-delegation.test.mjs; this is the handler view of the same frame).
+test('single-origin UpdateMultiple shares the single Update identity, depth and parent view', async (t) => {
+  const registration = step('UpdateMultiple'),
+    sibling = { ...step('Update', 20, 1, 2), typeName: 'Invented.UpdateSibling' };
+  const captured = {};
   const f = await fixture(
     t,
-    [registration],
+    [registration, sibling],
     new Map([
       [
         registration.typeName,
         ({ context }) => {
-          captured = context;
+          captured.multiple = context;
+        },
+      ],
+      [
+        sibling.typeName,
+        ({ context }) => {
+          captured.single = context;
         },
       ],
     ]),
   );
   assert.equal((await f.request('PATCH', `/x_items(${id})`, { x_name: 'Updated' })).status, 200);
-  assert.equal(captured.MessageName, 'UpdateMultiple');
-  assert.equal(captured.PrimaryEntityId, empty);
-  assert.equal(captured.Depth, 1);
-  assert.equal(captured.ParentContext.MessageName, 'Update');
-  assert.equal(captured.ParentContext.Stage, 30);
-  assert.equal(captured.ParentContext.Depth, 1);
-  assert.equal(captured.ParentContext.PrimaryEntityId, id);
+  const { multiple, single } = captured;
+  assert.equal(multiple.MessageName, 'UpdateMultiple');
+  assert.equal(single.MessageName, 'Update');
+  assert.equal(multiple.PrimaryEntityId, id);
+  assert.equal(multiple.Depth, 1);
+  for (const field of ['PrimaryEntityId', 'Depth', 'RequestId', 'CorrelationId', 'OperationId', 'ParentContext'])
+    assert.deepEqual(multiple[field], single[field], field);
+  assert.equal(multiple.InputParameters.Targets[0].id, id);
+  assert.equal(multiple.InputParameters.Targets[0].attributes.x_name, single.InputParameters.Target.x_name);
 });
 
 // @test-kind compatibility: Learn event pipeline: a synchronous plug-in failure rolls back the whole transaction for single and grouped writes

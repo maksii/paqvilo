@@ -243,8 +243,34 @@ test('named message steps are executable, global ones match every table and neve
     const store = { pluginPipeline: { steps: () => [{ ...step(message), mode: 'clr', entity: 'widget' }] } };
     assert.doesNotThrow(() => assertPluginMessageAdmission(store, message, {}, 'widget'));
   }
-  // SOAP and Web API entry points of named messages run no pipeline yet, so their chosen steps still refuse.
-  const store = { pluginPipeline: { steps: () => [{ ...step('Assign'), mode: 'clr', entity: 'widget' }] } };
+});
+
+// @test-kind contract: Paqvilo refuses a chosen step on a named message whose local entry point has no pipeline (501) instead of skipping it
+// @parity-evidence: native recorder corpus 2026-10-30 soapMessages (two captures): SOAP Assign runs the Assign pipeline, so the local refusal moves out of the file's parity tag
+// Native runs this pipeline (recorder corpus 2026-10-30, soapMessages: SOAP Assign runs Assign 10/20/40 with the
+// delegated Update 20/40 under Assign stage 30), so this refusal is a local limitation, not platform behaviour.
+test('a chosen step on a named message without a local pipeline refuses', () => {
+  const store = {
+    pluginPipeline: {
+      steps: () => [
+        {
+          id: '30000000-0000-4000-8000-000000000001',
+          message: 'Assign',
+          entity: 'widget',
+          unfiltered: true,
+          messageFilterId: null,
+          enabled: true,
+          mode: 'clr',
+          stage: 20,
+          rank: 1,
+          supportedDeployment: 0,
+          images: [],
+          typeName: 'Invented.Step',
+          assemblyId: 'invented',
+        },
+      ],
+    },
+  };
   assert.throws(
     () => assertPluginMessageAdmission(store, 'Assign', {}, 'widget'),
     /plug-in pipeline is not implemented/,

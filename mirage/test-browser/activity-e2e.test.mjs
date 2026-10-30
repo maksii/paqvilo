@@ -499,6 +499,7 @@ test('at phone width nothing scrolls sideways and step names wrap; dark and ligh
   }
 });
 
+// @test-kind contract+security: a hostile audit filter value renders as text, never markup
 test('a denied request shows its code and portal code, audit filters narrow, and export downloads', async (t) => {
   const { sim, stranger, orderId } = run;
   const { page, errors } = await pageOf(t);

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo step modes, journaled saves and checkpoint/rollback persistence around plug-in phases
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -63,6 +64,7 @@ const MODES = {
   handler: { calls: ['handler'], code: null, note: undefined },
   mock: { calls: [], code: null, note: 'mocked' },
 };
+// @test-kind contract+security: privilege check: every step mode keeps the table-permission gate, never invokes trusted code for an ungranted identity and never lets a secondary effect grant access
 for (const [mode, expected] of Object.entries(MODES)) {
   test(`scoped Create with ${mode} retains the table grant gate and final membership check`, async () => {
     const state = scopedState(),
@@ -119,6 +121,7 @@ for (const [mode, expected] of Object.entries(MODES)) {
   });
 }
 
+// @test-kind contract+security: privilege check: inert exported steps leave Parent-scoped form and Web API inserts gated exactly as without plug-ins
 test('exported inert Create steps leave Parent-scoped basic form and Web API inserts equivalent', async (t) => {
   const fixture = await pluginFixture(t);
   await fixture.app.close();

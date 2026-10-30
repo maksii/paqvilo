@@ -16,6 +16,7 @@ import {
   asynchronousParentChain,
   clrSdkEntryContext,
   mainOperationParent,
+  observedParentChain,
   selectSdkEntryParent,
 } from './plugin-sdk-parent.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
@@ -37,7 +38,15 @@ import { CRM_FUNCTIONS } from './dataverse-conditions.mjs';
 import { runtimeConstructorSettings } from './plugin-constructor-configuration.mjs';
 import { validateSdkTag, canonicalTagParent } from './plugin-request-tag.mjs';
 import { executePlatformSdkMessage, isPlatformSdkMessage } from './plugin-platform-messages.mjs';
+import {
+  executePluginServiceCall,
+  executeSdkOrganizationMessage,
+  organizationApiOf,
+  sdkFault,
+} from './plugin-sdk-messages.mjs';
 import { formatPipelineTargets, pipelineFormattedValues } from './plugin-formatted-values.mjs';
+import { privilegeDeniedError } from './dataverse-security.mjs';
+import { bridgeTargetInputs, bulkTargetsCollection } from './plugin-single-multiple.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginClrConfiguration', status = 409) => {
@@ -352,6 +361,16 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
     dependencies = await Promise.all(
       (descriptor.dependencies ?? []).map((relative) => readClrDependency(descriptor.root, relative)),
     );
+  // The sandbox supplies Microsoft.Crm.Sdk.Proxy with the SDK: a plug-in that does not ship it still binds the
+  // Microsoft.Crm.Sdk.Messages request classes (WhoAmIRequest, AssignRequest) when the SDK folder carries it.
+  const proxyName = 'Microsoft.Crm.Sdk.Proxy.dll';
+  if (!dependencies.some((file) => path.basename(file.path).toLowerCase() === proxyName.toLowerCase())) {
+    const proxy = await fs
+      .access(path.join(descriptor.sdkRoot, proxyName))
+      .then(() => readClrDependency(descriptor.sdkRoot, proxyName))
+      .catch(() => null);
+    if (proxy) dependencies.push(proxy);
+  }
   const names = [assembly, sdk, ...dependencies].map((f) => path.basename(f.path).toLowerCase());
   if (new Set(names).size !== names.length) fail('CLR dependency filenames must be unique.');
   const source = (await readClrDependency(path.dirname(hostSource), path.basename(hostSource))).bytes,
@@ -514,6 +533,18 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
           declared.push(related.logicalName);
         }
         targets = declared.includes(null) ? [] : [...new Set(declared)];
+      }
+      // A polymorphic lookup (customer, owner, regarding) stored as a bare GUID names its table in the row's type
+      // column (<column>type, as owneridtype); without one the target stays ambiguous (never guessed from row presence).
+      const companion = row[key + 'type'];
+      if (uuid.test(value) && typeof companion === 'string' && !(Array.isArray(targets) && targets.length === 1)) {
+        let known = null;
+        try {
+          known = store.resolveMapping(companion);
+        } catch (error) {
+          if (error.code !== 'UnknownEntity') throw error;
+        }
+        if (known && (!targets?.length || targets.includes(known.logicalName))) targets = [known.logicalName];
       }
       if (
         !uuid.test(value) ||
@@ -775,19 +806,38 @@ export function sdkQueryParameters(query) {
   return params;
 }
 export function dispatchSdkCall(args) {
+  // The other plug-in services the host binds (IServiceProvider.GetService) name their calls "<interface>.<method>".
+  if (String(args.message?.method).includes('.')) {
+    const call = () =>
+      executePluginServiceCall({
+        store: args.store,
+        method: args.message.method,
+        args: args.message.arguments,
+        diagnostic: args.diagnostic,
+      });
+    return args.store.traces?.enabled ? args.store.traces.wrap(sdkCallSpan(args.message), call) : call();
+  }
   const { store, message } = args,
     previous = store.pluginParentContext,
     previousRequestMetadata = store.pluginRequestId,
     previousMainOperation = store.pluginMainOperation;
   // A plug-in's SDK request is its own operation, never part of a named message's main operation.
   store.pluginMainOperation = null;
-  const sdkParent = args.sdkParentContext ?? message.parentContext ?? pluginInvocationSdkParent(store);
+  // A plug-in that itself runs inside an SDK-issued pipeline (Depth 2 and deeper) keeps the depth-1 sandbox step as the
+  // ParentContext of its own SDK requests; Depth still counts every level (native depth: Create/10/dN < Create/40/d1
+  // < Create/30/d1 for N 3..10).
+  const sdkParent = previous
+    ? null
+    : (args.sdkParentContext ?? message.parentContext ?? pluginInvocationSdkParent(store));
   if (sdkParent) {
     if (sdkParent.$type !== 'ExecutionContext' || Buffer.byteLength(JSON.stringify(sdkParent)) > 4 * 1024 * 1024)
       fail('SDK ParentContext is invalid or excessive.', 'LocalPluginInputLimit', 413);
     store.pluginParentContext = canonicalTagParent(cloneStateData(sdkParent), store.pluginSdkTag);
   }
   store.pluginRequestId = message.method === 'Execute' ? message.arguments?.[0]?.requestId : undefined;
+  // Collections the caller's operation starts after a plug-in request report no Accept-Language
+  // (exported-plugins.mjs runPluginPhase).
+  store.pluginSdkRequests = (store.pluginSdkRequests ?? 0) + 1;
   try {
     return store.traces?.enabled
       ? store.traces.wrap(sdkCallSpan(message), (span) => {
@@ -881,26 +931,39 @@ function dispatchSdkCallCore({
   sdkFromSandbox = false,
   invokingUserId,
 }) {
-  // Natively CreateOrganizationService(null) runs as the organization's SYSTEM user and
-  // CreateOrganizationService(context.UserId) as the step's executing user. Both keep the step's backend grants;
-  // any other user still needs its own evidence-backed caller profile.
+  // IOrganizationServiceFactory.CreateOrganizationService (Learn): null is the organization's SYSTEM user, Guid.Empty the
+  // step's executing user (context.UserId), any other id that system user. With an organization the calls are authorized by
+  // that user's Dataverse security roles, as the Web API authorizes its callers (SYSTEM is not checked; a missing privilege
+  // is the native 0x80040220 fault). A store without a Dataverse security model has no roles: there the descriptor's
+  // grants (or a caller profile of that user) authorize the call. So do they for the descriptor's own identities (its
+  // profile user, the step's executing user) when the organization has no such systemuser: those are project-configured
+  // stand-ins, not users the plug-in chose.
   const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM');
-  const selected =
+  const runAs =
     message.userId === null
-      ? system
-        ? { ...profile, userId: system.systemuserid }
-        : profile
-      : invokingUserId &&
-          canon(message.userId) === canon(invokingUserId) &&
-          canon(profile.userId) !== canon(invokingUserId)
-        ? { ...profile, userId: message.userId }
-        : [profile, ...callerProfiles].find((candidate) => canon(candidate.userId) === canon(message.userId));
-  if (!selected)
-    fail(
-      'SDK impersonation is not covered by the configured backend profiles.',
-      'LocalPluginImpersonationUnsupported',
-      501,
-    );
+      ? (system?.systemuserid ?? profile.userId)
+      : canon(message.userId) === canon('00000000-0000-0000-0000-000000000000')
+        ? (invokingUserId ?? profile.userId)
+        : message.userId;
+  const principals = organizationApiOf(store)?.principals,
+    user = principals?.byId(runAs),
+    configured = [profile.userId, invokingUserId].some((id) => id && canon(id) === canon(runAs));
+  let selected;
+  if (principals && (user || !configured)) {
+    if (!user)
+      throw new DataError(`systemuser With Id = ${runAs} Does Not Exist`, 404, 'NotFound', { innerCode: '0x80040217' });
+    selected = {
+      userId: user.systemuserid,
+      evidence: profile.evidence,
+      grants: [],
+      ...(profile.bulkTables ? { bulkTables: profile.bulkTables } : {}),
+      dataverseSecurity: system && canon(user.systemuserid) === canon(system.systemuserid) ? 'system' : user,
+    };
+  } else
+    selected = {
+      ...([profile, ...callerProfiles].find((candidate) => canon(candidate.userId) === canon(runAs)) ?? profile),
+      userId: runAs,
+    };
   validateServiceProfile(selected);
   const previousExecutionUser = store.pluginExecutionUserId;
   store.pluginExecutionUserId = selected.userId;
@@ -933,12 +996,23 @@ function sdkBypassOptions(parameters, profile, store) {
   const bypassStepIds = parseBypassStepIds(store, parameters.BypassBusinessLogicExecutionStepIds);
   if (logic.some((value) => !['customsync', 'customasync'].includes(value)))
     fail('SDK BypassBusinessLogicExecution accepts CustomSync and CustomAsync.', 'LocalPluginSdkUnsupported', 501);
+  // A run-as user holds a bypass privilege through its roles (System Administrator holds both, as on the Web API).
+  const security = profile.dataverseSecurity,
+    principals = security && security !== 'system' ? organizationApiOf(store)?.principals : null;
+  const holds = (privilege) =>
+    security === 'system' ||
+    (principals
+      ? principals.privileges(security).get(privilege) > 0 ||
+        principals.roles(security).some((role) => role.name === 'System Administrator')
+      : profile.privileges?.includes(privilege));
   for (const [requested, privilege] of [
     [parameters.BypassCustomPluginExecution === true, 'prvBypassCustomPlugins'],
     [logic.length > 0 || bypassStepIds.length > 0, 'prvBypassCustomBusinessLogic'],
   ])
-    if (requested && !profile.privileges?.includes(privilege))
-      fail('The local backend profile lacks ' + privilege + '.', 'LocalBackendPermissionDenied', 403);
+    if (requested && !holds(privilege))
+      throw principals
+        ? privilegeDeniedError(security, privilege, 'systemuser')
+        : new DataError('The local backend profile lacks ' + privilege + '.', 403, 'LocalBackendPermissionDenied');
   return {
     bypassCustomPlugins: parameters.BypassCustomPluginExecution === true || logic.includes('customsync'),
     bypassCustomAsync: logic.includes('customasync'),
@@ -951,9 +1025,21 @@ function sdkBypassOptions(parameters, profile, store) {
 function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFromSandbox }) {
   const readExecute =
     message.method === 'Execute' &&
-    ['Retrieve', 'RetrieveMultiple', 'FetchXmlToQueryExpression', 'QueryExpressionToFetchXml'].includes(
-      message.arguments?.[0]?.requestName,
-    );
+    [
+      'Retrieve',
+      'RetrieveMultiple',
+      'FetchXmlToQueryExpression',
+      'QueryExpressionToFetchXml',
+      'WhoAmI',
+      'RetrieveVersion',
+      'RetrieveEntity',
+      'RetrieveAttribute',
+      'RetrieveAllEntities',
+      'RetrieveAllOptionSets',
+      'RetrieveOptionSet',
+      'RetrieveRelationship',
+      'RetrieveMetadataChanges',
+    ].includes(message.arguments?.[0]?.requestName);
   if (
     store.pluginReadOnly &&
     ['Create', 'Update', 'Delete', 'Associate', 'Disassociate', 'Execute'].includes(message.method) &&
@@ -969,19 +1055,6 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
     diagnostic,
     requestOptions: { sdkFromSandbox },
   });
-  if (message.userId !== null && canon(message.userId) !== canon(profile.userId))
-    fail(
-      'SDK impersonation is not covered by the configured backend profile.',
-      'LocalPluginImpersonationUnsupported',
-      501,
-    );
-  // null factory user requests Dataverse SYSTEM. It must be explicitly bound, never granted by default.
-  if (message.userId === null && profile.allowSystemFactory !== true)
-    fail(
-      'CreateOrganizationService(null) requires explicit system-factory authorization.',
-      'LocalPluginImpersonationUnsupported',
-      501,
-    );
   const args = message.arguments ?? [];
   switch (message.method) {
     case 'Execute': {
@@ -1080,13 +1153,37 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
           store.pluginSdkTag = previousTag;
         }
       }
+      if (!shape) {
+        const answer = executeSdkOrganizationMessage({
+          store,
+          userId: profile.userId,
+          request,
+          parameters,
+          dispatch: (inner) =>
+            dispatchSdkCallAuthorized({
+              store,
+              profile,
+              message: { ...message, method: 'Execute', arguments: [inner] },
+              diagnostic,
+              sdkFromSandbox,
+            }),
+        });
+        if (answer !== undefined) return answer;
+      }
       // UnMaskedData (Learn optional-parameters#return-unmasked-data): Retrieve and RetrieveMultiple only, exact case, a boolean.
+      // ConcurrencyBehavior (Update, Delete), SuppressDuplicateDetection and SolutionUniqueName (Create, Update): the
+      // documented optional parameters (Microsoft.Xrm.Sdk.Messages request members and Learn optional-parameters).
       const optional = [
         'tag',
         'partitionId',
         'SessionToken',
         ...SDK_BYPASS_PARAMETERS,
         ...(['Retrieve', 'RetrieveMultiple'].includes(request.requestName) ? ['UnMaskedData'] : []),
+        ...(['Update', 'Delete'].includes(request.requestName) ? ['ConcurrencyBehavior'] : []),
+        ...(request.requestName === 'Retrieve' ? ['RelatedEntitiesQuery'] : []),
+        ...(['Create', 'Update'].includes(request.requestName)
+          ? ['SuppressDuplicateDetection', 'SolutionUniqueName']
+          : []),
       ];
       if (
         !shape ||
@@ -1096,9 +1193,12 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
         fail('Unsupported SDK Execute request or parameters: ' + request.requestName, 'LocalPluginSdkUnsupported', 501);
       if (parameters.UnMaskedData != null && typeof parameters.UnMaskedData !== 'boolean')
         fail('SDK UnMaskedData requires a boolean.', 'LocalPluginSdkUnsupported', 501);
-      for (const key of ['partitionId', 'SessionToken'])
+      for (const key of ['partitionId', 'SessionToken', 'SolutionUniqueName'])
         if (parameters[key] != null && typeof parameters[key] !== 'string')
           fail('SDK ' + key + ' requires a string.', 'LocalPluginSdkUnsupported', 501);
+      if (parameters.SuppressDuplicateDetection != null && typeof parameters.SuppressDuplicateDetection !== 'boolean')
+        fail('SDK SuppressDuplicateDetection requires a boolean.', 'LocalPluginSdkUnsupported', 501);
+      const concurrency = sdkConcurrency(request.requestName, parameters);
       validateSdkTag(parameters, store.pluginSdkTag);
       const method = request.requestName;
       let arguments_ = shape.map((key) => parameters[key]);
@@ -1142,6 +1242,8 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
                 sessionToken: parameters.SessionToken,
                 ...bypass,
                 ...(parameters.UnMaskedData === true ? { unmask: true } : {}),
+                ...concurrency,
+                ...(parameters.RelatedEntitiesQuery ? { relatedEntitiesQuery: parameters.RelatedEntitiesQuery } : {}),
               },
             },
           },
@@ -1154,6 +1256,44 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
     default:
       return invokeSdkMethod({ store, service, message }, false);
   }
+}
+// ConcurrencyBehavior (Microsoft.Xrm.Sdk.ConcurrencyBehavior: Default 0, IfRowVersionMatches 1, AlwaysOverwrite 2): with
+// IfRowVersionMatches the write applies only when the target's RowVersion is the stored row version (else 0x80060882), and
+// a missing RowVersion faults 0x80060883 (Learn "Optimistic concurrency"); the other values overwrite.
+function sdkConcurrency(name, parameters) {
+  if (!Object.hasOwn(parameters, 'ConcurrencyBehavior')) return {};
+  const behavior = parameters.ConcurrencyBehavior;
+  if (behavior?.$type !== 'ConcurrencyBehavior' || ![0, 1, 2].includes(behavior.value))
+    fail('SDK ConcurrencyBehavior requires a ConcurrencyBehavior value.', 'LocalPluginSdkUnsupported', 501);
+  if (behavior.value !== 1) return { concurrencyBehavior: behavior.value };
+  const version = parameters.Target?.rowVersion;
+  if (version == null || version === '')
+    throw new DataError(
+      'The RowVersion property must be provided when the value of ConcurrencyBehavior is IfVersionMatches.',
+      400,
+      'ConcurrencyVersionNotProvided',
+      { innerCode: '0x80060883' },
+    );
+  return { concurrencyBehavior: 1, ifMatch: 'W/"' + String(version).replaceAll('"', '') + '"' };
+}
+// The relationship a deep insert or a RelatedEntitiesQuery names, from the table's relationships (schema name and related table).
+function relatedBinding(store, entity, relationship, rows, table) {
+  if (relationship?.$type !== 'Relationship' || typeof relationship.schemaName !== 'string' || !rows?.length || !table)
+    throw new DataError('SDK related rows require a Relationship and related rows.', 400, 'InvalidArgument', {
+      innerCode: '0x80040203',
+    });
+  const rel = Object.values(store.relationshipsFor(store.resolveMapping(entity), { dataverse: true })).find(
+    (candidate) =>
+      candidate.schemaName?.toLowerCase() === relationship.schemaName.toLowerCase() && candidate.entity === table,
+  );
+  if (!rel)
+    throw new DataError(
+      'The relationship ' + relationship.schemaName + ' does not relate ' + entity + ' to ' + table + '.',
+      400,
+      'InvalidArgument',
+      { innerCode: '0x80040203' },
+    );
+  return { rel, relationship, entities: rows };
 }
 function invokeSdkMethod({ store, service, message }, namedResponse) {
   const args = message.arguments ?? [],
@@ -1224,16 +1364,67 @@ function executeSdkMethod({ store, service, message, responseToken }) {
     case 'Create': {
       const entity = args[0];
       if (entity?.$type !== 'Entity') fail('SDK Create requires an Entity.');
-      const row = service.create(entity.logicalName, sdkValueToRecord(entity), {
+      // Deep insert (Entity.RelatedEntities, Learn "create related table rows in one operation"): a row the new row looks up
+      // (N:1) is created first; rows that look the new row up (1:N) are created with that lookup; N:N rows are created and
+      // then associated. Each related row is an ordinary SDK Create (its own pipeline, its own related rows).
+      const related = (entity.relatedEntities ?? []).map((item) =>
+          relatedBinding(
+            store,
+            entity.logicalName,
+            item.relationship,
+            item.entities?.entities,
+            item.entities?.entities?.[0]?.logicalName,
+          ),
+        ),
+        create = (child) =>
+          executeSdkMethod({ store, service, message: { ...message, method: 'Create', arguments: [child] } }).value;
+      const values = sdkValueToRecord(entity);
+      for (const { rel, entities } of related.filter((binding) => binding.rel.many === false)) {
+        if (entities.length !== 1)
+          throw new DataError('A many-to-one deep insert takes exactly one related row.', 400, 'InvalidArgument', {
+            innerCode: '0x80040203',
+          });
+        values[rel.from] = { id: create(entities[0]), logical_name: rel.entity };
+      }
+      const row = service.create(entity.logicalName, values, {
         responseToken,
         sdkCreateId: entity.id,
       });
-      return typed('Guid', row[service.mapping(entity.logicalName).idColumn]);
+      const id = row[service.mapping(entity.logicalName).idColumn];
+      for (const { rel, relationship, entities } of related.filter((binding) => binding.rel.many !== false)) {
+        if (rel.intersect) {
+          const ids = entities.map(create);
+          service.associate(
+            entity.logicalName,
+            id,
+            relationship,
+            {
+              $type: 'EntityReferenceCollection',
+              values: ids.map((value) => ({ $type: 'EntityReference', logicalName: rel.entity, id: value })),
+            },
+            true,
+            {},
+          );
+        } else
+          for (const child of entities)
+            create({
+              ...child,
+              attributes: {
+                ...child.attributes,
+                [rel.to]: { $type: 'EntityReference', logicalName: entity.logicalName, id },
+              },
+            });
+      }
+      return typed('Guid', id);
     }
     case 'Update': {
       const entity = args[0];
       if (entity?.$type !== 'Entity') fail('SDK Update requires an Entity.');
-      service.update(entity.logicalName, entity, sdkValueToRecord(entity), { responseToken });
+      service.update(entity.logicalName, entity, sdkValueToRecord(entity), {
+        responseToken,
+        ifMatch: message.requestOptions?.ifMatch,
+        concurrencyBehavior: message.requestOptions?.concurrencyBehavior,
+      });
       return null;
     }
     case 'Delete':
@@ -1244,15 +1435,74 @@ function executeSdkMethod({ store, service, message, responseToken }) {
       return service.associate(args[0], sdkValueToRecord(args[1]), args[2], args[3], message.method === 'Associate', {
         responseToken,
       });
-    case 'Retrieve':
+    case 'Retrieve': {
       if (args[2] === null)
         throw new DataError('SandboxFault.ThrowIfNull: columnSet', 400, 'InvalidArgument', { innerCode: '0x80040203' });
-      return recordToSdkReadEntity(
-        store,
-        args[0],
-        service.get(args[0], args[1], args[2], { responseToken, ...message.requestOptions }),
-        args[2],
-      );
+      const row = service.get(args[0], args[1], args[2], { responseToken, ...message.requestOptions }),
+        result = recordToSdkReadEntity(store, args[0], row, args[2]);
+      // RetrieveRequest.RelatedEntitiesQuery: each relationship's query, restricted to the rows related to this one.
+      const queries = message.requestOptions?.relatedEntitiesQuery?.values ?? [];
+      if (queries.length)
+        result.relatedEntities = queries.map(({ relationship, query }) => {
+          if (query?.$type !== 'QueryExpression') fail('SDK RelatedEntitiesQuery requires QueryExpression values.');
+          const { rel } = relatedBinding(store, args[0], relationship, [query], query.entityName),
+            mapping = service.mapping(args[0]),
+            criteria = query.criteria ?? { operatorName: 'And', conditions: [], filters: [] },
+            key = (value) => (value && typeof value === 'object' ? value.id : value) ?? null;
+          const equal = (attributeName, value) => ({
+            operatorName: 'And',
+            conditions: [
+              {
+                attributeName,
+                operatorName: value == null ? 'Null' : 'Equal',
+                values: value == null ? [] : [typed('Guid', value)],
+              },
+            ],
+            filters: [],
+          });
+          const scoped = rel.intersect
+            ? {
+                ...query,
+                linkEntities: [
+                  ...(query.linkEntities ?? []),
+                  {
+                    $type: 'LinkEntity',
+                    linkFromEntityName: query.entityName,
+                    linkToEntityName: rel.intersect.entity,
+                    linkFromAttributeName: rel.to,
+                    linkToAttributeName: rel.intersect.to,
+                    joinOperator: 'Inner',
+                    columns: { $type: 'ColumnSet', allColumns: false, columns: [] },
+                    linkCriteria: equal(rel.intersect.from, key(row[rel.from])),
+                    linkEntities: [],
+                    orders: [],
+                  },
+                ],
+              }
+            : {
+                ...query,
+                criteria: {
+                  ...criteria,
+                  filters: [
+                    ...(criteria.filters ?? []),
+                    // N:1: the row this one looks up; 1:N: the rows that look this one up.
+                    rel.many === false
+                      ? equal(rel.to, key(row[rel.from]) ?? '00000000-0000-0000-0000-000000000000')
+                      : equal(rel.to, row[mapping.idColumn]),
+                  ],
+                },
+              };
+          return {
+            relationship,
+            entities: executeSdkMethod({
+              store,
+              service,
+              message: { ...message, method: 'RetrieveMultiple', arguments: [scoped] },
+            }),
+          };
+        });
+      return result;
+    }
     case 'RetrieveMultiple': {
       const query = args[0];
       let rows,
@@ -1279,6 +1529,8 @@ function executeSdkMethod({ store, service, message, responseToken }) {
             query.pageInfo?.pagingCookie ||
             query.dataSource ||
             query.queryHints ||
+            query.columnSet?.attributeExpressions?.length ||
+            query.orders?.some((order) => order.alias) ||
             hasCollectionCriteria(query.criteria)))
       ) {
         const expression =
@@ -1638,16 +1890,11 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
             });
           } catch (cause) {
             error = { code: cause.code ?? 'LocalPluginSdkError', message: cause.message };
-            const inner = cause.details?.innerCode ?? (cause.code === 'NotFound' ? '0x80040217' : null);
             if (cause.code === 'LocalPluginTagDuplicate') error.clrExceptionType = 'System.ArgumentException';
-            else if (/^0x[a-f\d]{8}$/i.test(inner ?? ''))
-              error.organizationServiceFault = {
-                errorCode: parseInt(inner, 16) | 0,
-                message: cause.message,
-                timestamp: new Date().toISOString(),
-                errorDetails: cause.details?.sourceException?.exceptionDetails ?? {},
-                provenance: 'Local modeled SDK fault; native timestamp/correlation/stack are not available',
-              };
+            else {
+              const fault = sdkFault(cause);
+              if (fault) error.organizationServiceFault = fault;
+            }
           }
           port1.postMessage({ kind: 'rpc-answer', value, error, ...(session ? { invocationId } : {}) });
         } else if (message.kind === 'trace') {
@@ -1657,6 +1904,14 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
           diagnostic({ code: 'PLUGIN_CLR_TRACE', message: message.message });
           // ITracingService: an event on the current (plugin-step) span.
           store?.traces?.current()?.event('trace', { message: message.message });
+        } else if (message.kind === 'telemetry') {
+          // ILogger entries: natively Application Insights telemetry, never the plug-in trace log.
+          if (typeof message.message !== 'string' || message.message.length > 16384)
+            fail('CLR telemetry exceeds the local limit.', 'LocalPluginOutputLimit', 413);
+          diagnostic({ code: 'PLUGIN_CLR_TELEMETRY', level: String(message.level ?? ''), message: message.message });
+          store?.traces
+            ?.current()
+            ?.event('telemetry', { level: String(message.level ?? ''), message: message.message });
         } else if (message.kind === 'failure') {
           if (message.code === 'LocalPluginTimeout') throw timedOut();
           const details = {
@@ -1740,7 +1995,20 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
     executionMode: session ? 'pooled-fresh-instance' : 'fresh-host',
   };
 }
-export function clrContext({ runtime, store, step, entity, operation, stage, target, record, previous, frame, depth }) {
+export function clrContext({
+  runtime,
+  store,
+  step,
+  entity,
+  operation,
+  stage,
+  target,
+  record,
+  previous,
+  frame,
+  depth,
+  bridged = false,
+}) {
   const descriptor = runtime.descriptor,
     context = descriptor.context,
     parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),
@@ -1759,7 +2027,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   const preValidationParent =
     stage !== 10 &&
     (step.contract?.mode ?? 0) === 0 &&
-    ['create', 'update', 'delete'].includes(operation) &&
+    ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation) &&
     frame.preValidationContext;
   if (preValidationParent && !frame.preValidationSharedDetached) {
     const prior = frame.sharedVariables?.values ?? {};
@@ -1845,6 +2113,8 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
         onexternalupdated: 'OnExternalUpdated',
         onexternaldeleted: 'OnExternalDeleted',
       }[operation] ??
+      // A bridged step runs the single message's pipeline under its own multiple message name.
+      (bridged ? operation[0].toUpperCase() + operation.slice(1) + 'Multiple' : null) ??
       operation[0].toUpperCase() + operation.slice(1);
   const externalParameters = frame.externalEvent
     ? {
@@ -1887,8 +2157,14 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       context.executionUserId ??
       descriptor.serviceProfile.userId,
     executionUserId = step.impersonatingUserId ?? callerUserId,
+    // A plug-in's SDK call runs as its service's user, which is also the nested contexts' InitiatingUserId (recorded native
+    // sdkSurface and readNested: SYSTEM for CreateOrganizationService(null), the caller for Guid.Empty).
     initiatingUserId =
-      guidOf(inherited('InitiatingUserId')) ?? caller?.systemUserId ?? context.initiatingUserId ?? executionUserId,
+      store.pluginExecutionUserId ??
+      guidOf(inherited('InitiatingUserId')) ??
+      caller?.systemUserId ??
+      context.initiatingUserId ??
+      executionUserId,
     authenticatedUserId = guidOf(inherited('AuthenticatedUserId')) ?? caller?.dataverse?.callerId ?? initiatingUserId,
     businessUnitId =
       guidOf(inherited('BusinessUnitId')) ??
@@ -1902,32 +2178,40 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       inherited('InitiatingUserApplicationId') ??
       typed('Guid', caller?.dataverse?.appId ?? user(initiatingUserId)?.applicationid ?? empty),
     AuthenticatedUserId: typed('Guid', authenticatedUserId),
+    // A request a plug-in issues through its IOrganizationService, and the asynchronous jobs it queues, report no user
+    // agent (native depth, faults, sdkMessages and customApi, also at Depth 1); others report the caller's.
     InitiatingUserAgent:
-      inherited('InitiatingUserAgent') ??
-      caller?.dataverse?.userAgent ??
-      (context.initiatingUserAgentPresent ? 'Mirage observed user-agent presence; value withheld' : null),
+      (frame.sdkIssued ?? Boolean(store.pluginParentContext || pluginInvocationSdkParent(store)))
+        ? ''
+        : (inherited('InitiatingUserAgent') ?? caller?.dataverse?.userAgent ?? null),
     EnvironmentId: context.environmentId ?? store.state?.dataverse?.environmentId ?? null,
     TenantId: typed('Guid', context.tenantId ?? store.state?.dataverse?.tenantId ?? empty),
     IsApplicationUser:
       inherited('IsApplicationUser') ?? context.isApplicationUser ?? Boolean(user(authenticatedUserId)?.applicationid),
   };
+  // A queued bulk job has no pre-image sets unless its registration asks for pre images (native sdkSurface, both
+  // captures: an SDK UpdateMultiple of two targets queues PreEntityImagesCollection length 0, PostEntityImagesCollection 2).
   const bulkImages = (rows, post) => ({
     $type: 'EntityImageCollectionArray',
-    values: frame.targets.map((_, index) => ({
-      $type: 'EntityImageCollection',
-      values: Object.fromEntries(
-        (step.images ?? [])
-          .filter((registration) => (post ? [1, 2] : [0, 2]).includes(registration.type) && rows[index])
-          .map((registration) => [registration.alias || registration.name, image(rows[index], registration)]),
-      ),
-    })),
+    values:
+      !post && asynchronous && !(step.images ?? []).some((registration) => [0, 2].includes(registration.type))
+        ? []
+        : frame.targets.map((_, index) => ({
+            $type: 'EntityImageCollection',
+            values: Object.fromEntries(
+              (step.images ?? [])
+                .filter((registration) => (post ? [1, 2] : [0, 2]).includes(registration.type) && rows[index])
+                .map((registration) => [registration.alias || registration.name, image(rows[index], registration)]),
+            ),
+          })),
   });
   // The main operation populates system results once. Keep custom values and
   // subsequent PostOperation replacements across ranks for every message shape.
   frame.outputParameters ??= { $type: 'ParameterCollection', values: {} };
   initializePluginOperation(frame, store, parent, { createdOn: context.operationCreatedOn });
   // Create's PreOperation/PostOperation collection carries the platform's telemetry root (a JSON string).
-  if (['create', 'createmultiple'].includes(operation) && stage !== 10 && !asynchronous && !frame.telemetryRootSeeded) {
+  // A bulk CreateMultiple's collections have none (native bulk); each delegated Create's have.
+  if (operation === 'create' && stage !== 10 && !asynchronous && !frame.telemetryRootSeeded) {
     frame.sharedVariables ??= { $type: 'ParameterCollection', values: {} };
     frame.sharedVariables.values.telemetryrootcontext ??= JSON.stringify({
       serviceRequestId: frame.requestId,
@@ -1990,7 +2274,8 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
       PrimaryEntityId: typed(
         'Guid',
-        ['associate', 'disassociate'].includes(operation)
+        // A queued DeleteMultiple job names no row (native crud, async, upsert: its context and parents carry Guid.Empty).
+        ['associate', 'disassociate'].includes(operation) || (bridged && asynchronous && operation === 'delete')
           ? '00000000-0000-0000-0000-000000000000'
           : primary
             ? (record[primary] ?? '00000000-0000-0000-0000-000000000000')
@@ -2040,18 +2325,15 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
           : (frame.associationParameters ??
             (bulk
               ? {
-                  Targets: {
-                    $type: 'EntityCollection',
-                    entities:
-                      stage === 40 &&
+                  Targets: bulkTargetsCollection(
+                    entity,
+                    stage === 40 &&
                       frame.inputParametersStage === 40 &&
                       frame.inputParameters?.values?.Targets?.$type === 'EntityCollection'
-                        ? frame.inputParameters.values.Targets.entities
-                        : frame.targets,
-                    moreRecords: false,
-                    totalRecordCount: -1,
-                    pagingCookie: null,
-                  },
+                      ? frame.inputParameters.values.Targets.entities
+                      : frame.targets,
+                    { submitted: stage === 10 && !asynchronous },
+                  ),
                 }
               : operation === 'retrievemultiple'
                 ? { Query: frame.query, ...readRequestParameters }
@@ -2120,33 +2402,42 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       descriptor.serviceProfile.userId;
     answer.context.ParentContext = delegatedPluginParent(source, answer.context, caller);
   }
-  // PreOperation and PostOperation (and the asynchronous copies) see the main operation as their parent.
-  if (crud && stage !== 10 && !frame.delegatedSourceOperation)
+  // PreOperation and PostOperation (and the asynchronous copies) see the main operation as their parent. A record
+  // operation a named message's main operation delegates sees that message's stage-30 context instead (native
+  // sdkMessages: Update/20/d2 < Assign/30/d2 < Update/40/d1).
+  // A bulk CreateMultiple/UpdateMultiple has its own main operation too (native bulk: CreateMultiple/30).
+  if ((crud || bulk) && stage !== 10 && !frame.delegatedSourceOperation && !frame.namedMainOperation)
     answer.context.ParentContext = mainOperationParent({
       frame,
-      context: answer.context,
+      // A bridged multiple step's parent is the single message's main operation.
+      context: bridged
+        ? { ...answer.context, MessageName: operation[0].toUpperCase() + operation.slice(1) }
+        : answer.context,
       parent: asynchronous ? (frame.mainOuterParent ?? frame.asyncCallerParent ?? null) : parent,
-      callerUserId,
+      userId: executionUserId,
       objectId,
-      inputs: () => ({
-        ...cloneStateData(frame.mainOperationInputs ?? {}),
-        Target:
-          operation === 'delete'
-            ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
-            : {
-                ...recordToSdkEntity(
-                  store,
-                  entity,
-                  operation === 'create' && Object.hasOwn(frame.mainOperationTarget ?? {}, primary)
-                    ? frame.mainOperationTarget
-                    : { ...frame.mainOperationTarget, [primary]: record[primary] },
-                  operation === 'create'
-                    ? { allColumns: false, columns: Object.keys(frame.mainOperationTarget ?? {}) }
-                    : { allColumns: true },
-                ),
-                id: record[primary],
-              },
-      }),
+      inputs: () =>
+        bulk
+          ? { ...cloneStateData(frame.mainOperationInputs ?? {}), Targets: cloneStateData(frame.mainOperationTargets) }
+          : {
+              ...cloneStateData(frame.mainOperationInputs ?? {}),
+              Target:
+                operation === 'delete'
+                  ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
+                  : {
+                      ...recordToSdkEntity(
+                        store,
+                        entity,
+                        operation === 'create' && Object.hasOwn(frame.mainOperationTarget ?? {}, primary)
+                          ? frame.mainOperationTarget
+                          : { ...frame.mainOperationTarget, [primary]: record[primary] },
+                        operation === 'create'
+                          ? { allColumns: false, columns: Object.keys(frame.mainOperationTarget ?? {}) }
+                          : { allColumns: true },
+                      ),
+                      id: record[primary],
+                    },
+            },
       images: stageCollection(10, false),
     });
   // The Create main operation's Target names the key it allocated after PreValidation (native upsert and
@@ -2165,7 +2456,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       ...mainParentTarget.attributes,
       ...recordToSdkEntity(store, entity, { [primary]: record[primary] }).attributes,
     };
-  if (!asynchronous && crud && stage !== 10) frame.mainOuterParent ??= parent ? cloneStateData(parent) : null;
+  if (!asynchronous && (crud || bulk) && stage !== 10) frame.mainOuterParent ??= parent ? cloneStateData(parent) : null;
   // An asynchronous job sees the synchronous step parent chain as its own operation (plugin-sdk-parent.mjs).
   if (asynchronous)
     answer.context.ParentContext = asynchronousParentChain(
@@ -2174,6 +2465,23 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     );
   answer.context.ParentContext =
     asyncMultipleJobParent(frame, operation, entity, answer.context) ?? answer.context.ParentContext;
+  // A named message's main operation reports the user its delegated record operation runs as (native sdkMessages:
+  // Assign/30 carries the SYSTEM user of its owner Update, and an impersonating step's user, as Update/30 does).
+  if (frame.namedMainOperation && !asynchronous && answer.context.ParentContext?.values)
+    answer.context.ParentContext = {
+      $type: 'ExecutionContext',
+      values: {
+        ...answer.context.ParentContext.values,
+        UserId: typed('Guid', executionUserId),
+        UserAzureActiveDirectoryObjectId: typed('Guid', objectId(executionUserId)),
+      },
+    };
+  answer.context.ParentContext = observedParentChain(
+    answer.context.ParentContext,
+    answer.context,
+    objectId,
+    store.pluginRequestRoots,
+  );
   formatPipelineTargets(store, {
     entity,
     operation,
@@ -2183,5 +2491,6 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     values: answer.inputParameters.values,
     currencyId: bulk ? undefined : record?.transactioncurrencyid,
   });
+  if (bridged) answer.inputParameters.values = bridgeTargetInputs(answer.inputParameters.values, entity);
   return answer;
 }

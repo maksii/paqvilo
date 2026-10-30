@@ -11,6 +11,7 @@ import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { customApiHandlers, install as installCustomApis } from '../lib/dataverse-customapi.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
+import { assignRoles } from '../lib/dataverse-security.mjs';
 import { itemNoteOrganization, pingApiStore } from './support/trace-plugins.mjs';
 
 const USER = '77777777-7777-4777-8777-0000000000e1';
@@ -279,6 +280,9 @@ test('a custom API plug-in fault has the same identity; the internal message ent
 
 test('a CLR SDK create names its new record: never the empty GUID, and the created id as output', async (t) => {
   const { store, traces } = await organization(t);
+  // A plug-in SDK call is authorized by its run-as user's security roles (audit C16, approved 2026-10-30).
+  const admin = store.tableRows('role').find((row) => row.name === 'System Administrator');
+  await assignRoles(store, { systemuserid: USER, roleIds: [admin.roleid] });
   const root = traces.start({ kind: 'plugin-step', name: 'Invented CLR step', module: 'clr' });
   const created = traces.run(root, () =>
     dispatchSdkCall({
