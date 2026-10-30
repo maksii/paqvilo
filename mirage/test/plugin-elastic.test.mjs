@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of elastic-table key and partition addressing, typed lookup partitions and the 500-row fetch page; no native capture
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

@@ -67,6 +67,7 @@ test('a retried call is one connector span with retry events, its attempts and i
   );
 });
 
+// @test-kind contract+security: a secure connector call captures no payloads
 test('a failed call fails its span; a secure call and the summary level capture no payloads', async () => {
   const { traces, connectors } = await traced('full', [
     invented({

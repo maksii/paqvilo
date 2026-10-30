@@ -931,6 +931,8 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
       }
       frame ??= {};
       frame.customApi = customApi;
+      // The main operation reports its request's caller facts, such as the user agent (native customApi stage 30).
+      frame.callerIdentity ??= identity;
       frame.inputParameters = messageParameters.inputParameters;
       frame.outputParameters = messageParameters.outputParameters;
       const assemblyId = original.type.pluginassemblyid?.id ?? original.type.pluginassemblyid;

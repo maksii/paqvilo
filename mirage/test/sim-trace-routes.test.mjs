@@ -187,6 +187,7 @@ test('recordId filters traces and spans by the record a span names, ignoring bra
   assert.equal((await call('GET', `/_sim/api/trace/stats?recordId=${id}`)).body.count, 1);
 });
 
+// @test-kind contract+security: flush requires POST and the CSRF token
 test('flush needs POST and the CSRF token and answers the status once the store flushed', async (t) => {
   const { call, traces } = await fixture(t);
   assert.equal((await call('POST', '/_sim/api/trace/flush')).status, 403);
@@ -196,6 +197,7 @@ test('flush needs POST and the CSRF token and answers the status once the store 
   assert.deepEqual(flushed.body, JSON.parse(JSON.stringify(traces.status())));
 });
 
+// @test-kind contract+security: trace settings change only behind the CSRF token
 test('settings change at run time behind the CSRF token; invalid settings are 400 and keep the old value', async (t) => {
   const { call, traces } = await fixture(t);
   const read = await call('GET', '/_sim/api/trace/settings');
@@ -228,6 +230,7 @@ test('settings change at run time behind the CSRF token; invalid settings are 40
   assert.equal((await call('POST', '/_sim/api/trace/settings', {}, { 'x-sim-csrf': CSRF })).status, 405);
 });
 
+// @test-kind contract+security: clear requires POST and the CSRF token
 test('clear needs POST and the CSRF token and drops every trace', async (t) => {
   const { call, traces } = await fixture(t);
   assert.equal((await call('POST', '/_sim/api/trace/clear')).status, 403);

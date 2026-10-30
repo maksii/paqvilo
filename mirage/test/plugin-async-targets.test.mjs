@@ -1,4 +1,5 @@
-// @test-kind parity: native dataverse-recorder pipelineEffects corpus: async steps get the Target PostOperation started with, not its context edits
+// @test-kind parity: native recorder corpus 2026-10-30, pipelineEffects scenario captured twice: async steps get the Target PostOperation started with, not its context edits
+// @parity-evidence: native recorder corpus 2026-10-30 pipelineEffects and native-r2/pipelineEffects: async Create/CreateMultiple Targets carry the defaults and lack the PostOperation edit; async Update targets are partial with modified stamps
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

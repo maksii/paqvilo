@@ -93,6 +93,7 @@ test('a child context keeps the correlation, records its parent and goes one lev
   });
 });
 
+// @test-kind unproven: local model of x-ms-correlation-request-id reaching the committed event and web hook CorrelationId; no native capture cited
 test('x-ms-correlation-request-id reaches the committed event and the asynchronous web hook payload', async (t) => {
   const hook = await receiver(t);
   const secretVar = `PAQVILO_REQUEST_CONTEXT_SECRET_${process.pid}`;

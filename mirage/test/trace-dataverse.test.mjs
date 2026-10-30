@@ -252,6 +252,7 @@ test('a committed event names its staging span and its commit is an event; a com
   assert.equal(traces.status().spans, 0, 'a commit outside any span records nothing');
 });
 
+// @test-kind contract+security: a secret span never holds the secret value
 test('RetrieveEnvironmentVariableSecretValue nests a secret span holding the key and status, never the value', async () => {
   const { api, traces, admin } = await organization();
   await api.registry.find({ name: 'UpsertEnvironmentVariable', kind: 'action', binding: 'unbound' }).handle({

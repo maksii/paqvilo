@@ -356,6 +356,7 @@ test('product mapping: admin labels, unknown ids keep their label, raw ids never
   assert.equal(new Set(html.match(/ id="[^"]+"/g)).size, html.match(/ id="[^"]+"/g).length, 'element ids are unique');
 });
 
+// @test-kind contract+security: dashboard markup is CSP-safe and escapes hostile labels
 test('markup is CSP-safe and escapes hostile labels and details', () => {
   const hostile = '<img src=x onerror=alert(1)>"\'&';
   const nodes = [

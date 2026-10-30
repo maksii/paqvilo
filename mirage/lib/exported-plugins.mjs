@@ -40,7 +40,7 @@ import {
   pluginInvocationSdkParent,
   pluginInvocationParent,
 } from './plugin-execution-lifetime.mjs';
-import { asyncMultiplePluginParent, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
+import { asyncMultiplePluginParent, recordRequestRootChange, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
 import { recordPluginTrace } from './plugin-trace.mjs';
 import { delegatedPluginParent, upsertSourceOperation } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
@@ -780,6 +780,17 @@ function typedContext({
   }
   const asyncParent = asyncMultiplePluginParent(frame, operation, entity);
   if (asyncParent) result.ParentContext = pluginContextValues(asyncParent, store);
+  // A main operation reports the step's executing user: an impersonating step's own main operation and a named
+  // message's main operation (native crud "Probe: Update 40 impersonated", sdkMessages Assign/30 as SYSTEM).
+  if (
+    (frame?.delegatedParentContext ? frame.namedMainOperation : item.impersonatingUserId && preValidationParent) &&
+    !frame?.delegatedSourceOperation &&
+    result.ParentContext
+  )
+    result.ParentContext.UserId = result.UserId;
+  // Every ancestor reports the observing context's IsInTransaction (native: 855 synchronous ancestor samples).
+  for (let level = result.ParentContext; level; level = level.ParentContext)
+    level.IsInTransaction = result.IsInTransaction;
   return result;
 }
 
@@ -1053,12 +1064,15 @@ function matchingPluginSteps(
 
 /** The entries the platform puts in every pipeline's SharedVariables (native recordings of Web API and plug-in
  * SDK requests): IsAutoTransact (false for reads), the caller's Accept-Language ('' for a plug-in's SDK request)
- * and, on Create, DefaultsAddedFlag. */
-function platformSharedVariables(operation, acceptLanguage = '') {
+ * and, on Create, DefaultsAddedFlag; CreateMultiple carries it when its steps run for a Create or a plug-in requested
+ * it, not for a Web API CreateMultiple or UpsertMultiple request (native bulk). */
+function platformSharedVariables(operation, acceptLanguage = '', { nested = false, bulkOrigin = false } = {}) {
   return {
     IsAutoTransact: !['retrieve', 'retrievemultiple'].includes(operation),
     AcceptLang: String(acceptLanguage ?? ''),
-    ...(['create', 'createmultiple'].includes(operation) ? { DefaultsAddedFlag: true } : {}),
+    ...(operation === 'create' || (operation === 'createmultiple' && (nested || !bulkOrigin))
+      ? { DefaultsAddedFlag: true }
+      : {}),
   };
 }
 
@@ -1153,6 +1167,9 @@ export function runPluginPhase({
     phaseFrame.delegatedParentContext ??= cloneStateData(mainOperation.context);
     phaseFrame.delegatedDepth ??= mainOperation.depth;
     if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
+    if (mainOperation.namedMessage) phaseFrame.namedMainOperation = true;
+    // A refused message's per-record PreValidation (DeleteMultiple) has no platform SharedVariables (native bulk).
+    if (mainOperation.preValidationOnly) phaseFrame.platformSharedSeeded = true;
     // The request tag is an input of the message, not of the operations it delegates (SDK Upsert keeps it).
     if (!mainOperation.keepsRequestTag) phaseFrame.inputTagConsumed = true;
     delete phaseFrame.delegatedSourceOperation;
@@ -1169,6 +1186,9 @@ export function runPluginPhase({
       pluginInvocationDepth(store),
       Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0),
     ) + 1;
+  // A request a plug-in issued through its IOrganizationService (plugin-clr.mjs InitiatingUserAgent); its asynchronous
+  // jobs keep the fact.
+  if (!asyncExecution) phaseFrame.sdkIssued ??= Boolean(store?.pluginParentContext || pluginInvocationSdkParent(store));
   executionFrames.set(record, phaseFrame);
   // UpsertMultiple's UpdateMultiple carries ConcurrencyBehavior on the message (dataverse-records.mjs bulkWrite).
   if (operation === 'updatemultiple' && bulkConcurrencyBehavior !== undefined) {
@@ -1228,6 +1248,7 @@ export function runPluginPhase({
   }
   phaseFrame.suppliedRequestId ??= store?.pluginRequestId;
   phaseFrame.requestId ??=
+    phaseFrame.delegatedParentContext?.values?.RequestId?.value ??
     (store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.RequestId?.value ??
     (store?.ids ?? systemIds).uuid();
   if (
@@ -1286,7 +1307,10 @@ export function runPluginPhase({
       platform = platformSharedVariables(
         operation,
         nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage,
+        { nested, bulkOrigin },
       );
+    // The PreValidation collection exists before any step ran; remember how many plug-in requests preceded it.
+    if (stage === 10) phaseFrame.sdkRequestsBefore ??= store?.pluginSdkRequests ?? 0;
     if (!phaseFrame.platformSharedSeeded) {
       phaseFrame.sharedVariables = {
         $type: 'ParameterCollection',
@@ -1299,24 +1323,36 @@ export function runPluginPhase({
     if (stage !== 10 && ['create', 'update', 'delete'].includes(operation) && !phaseFrame.mainSharedVariables) {
       const prior = phaseFrame.sharedVariables.values;
       phaseFrame.mainSharedVariables = phaseFrame.sharedVariables;
+      // After a PreValidation step's own SDK request, the PreOperation/PostOperation collection reports no
+      // Accept-Language (native faults: Create/20 and Create/40 at Depth 1 read '').
+      const afterSdkRequest = (store?.pluginSdkRequests ?? 0) > (phaseFrame.sdkRequestsBefore ?? Infinity);
       phaseFrame.sharedVariables = {
         $type: 'ParameterCollection',
-        values: { ...platform, ...(Object.hasOwn(prior, 'tag') ? { tag: prior.tag } : {}) },
+        values: {
+          ...platform,
+          ...(afterSdkRequest ? { AcceptLang: '' } : {}),
+          ...(Object.hasOwn(prior, 'tag') ? { tag: prior.tag } : {}),
+        },
       };
       phaseFrame.preValidationSharedDetached = true;
     }
-    // After the main operation wrote, the request's root collection lists the security-relevant tables it changed.
+    // After the main operation wrote, the request's root collection lists the security-relevant tables it changed,
+    // also those of nested plug-in requests (plugin-sdk-parent recordRequestRootChange).
+    const table = stage === 40 ? changedEntityType(store, operation, entity, intersectEntity) : null;
+    if (table) recordRequestRootChange(store, phaseFrame.requestId, { table });
     if (stage === 40 && !nested && !phaseFrame.delegatedParentContext) {
-      const table = changedEntityType(store, operation, entity, intersectEntity);
-      // An HTTP Upsert's framework operation (plugin-sdk-parent selectSdkEntryParent) is the root when present.
+      // An HTTP Upsert's framework operation (plugin-sdk-parent selectSdkEntryParent) is the root when present; an
+      // upsert-created row's Create main operation is not the root (native upsert: Create/30 has no entry).
       const root = phaseFrame.sdkFrameworkSource
         ? (phaseFrame.sdkFrameworkSource.sharedVariables ??= {
             $type: 'ParameterCollection',
             values: { AcceptLang: phaseFrame.sdkFrameworkSource.acceptLanguage ?? '', IsAutoTransact: false },
           })
-        : ['create', 'update', 'delete'].includes(operation)
-          ? phaseFrame.mainSharedVariables
-          : phaseFrame.sharedVariables;
+        : preValidationSourceOperation === 'upsert'
+          ? null
+          : ['create', 'update', 'delete'].includes(operation)
+            ? phaseFrame.mainSharedVariables
+            : phaseFrame.sharedVariables;
       if (table && root)
         root.values.ChangedEntityTypes = { ...(root.values.ChangedEntityTypes ?? {}), [table]: 'Update' };
     }
