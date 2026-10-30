@@ -41,6 +41,7 @@ export async function createOrganizationBackend({
       store,
       runtimes,
       items: context.pluginStepIds ? items().filter((step) => context.pluginStepIds.includes(step.id)) : items(),
+      stageItems: items(),
       handlers,
       webhooks,
       diagnostic,

@@ -110,6 +110,11 @@ function runMessagePipeline(
     record = { [mapping.idColumn]: id ?? EMPTY },
     customApi = { name: message, platformMessage: true, bindingType: 0, parameters: [], properties: [] },
     requestTag = store.pluginSdkTag;
+  // The message's row before the operation (pre images, the Assign primary-name image) and, for PostOperation, after
+  // it: registered images of Assign, SetState and the sharing messages hold the record (Microsoft Learn image table).
+  const storedRow = () =>
+    cloneStateData(store.tableRows(mapping.logicalName).find((row) => same(row[mapping.idColumn], id)) ?? null);
+  const previous = id && id !== EMPTY ? storedRow() : null;
   const values = { ...inputs };
   if (requestTag !== undefined) values.tag = requestTag;
   if (Object.hasOwn(inputs, 'FromSandbox')) {
@@ -148,6 +153,7 @@ function runMessagePipeline(
         operation,
         stage,
         record,
+        previous,
         identity,
         changedAttributes: [],
         bypassStepIds,
@@ -201,12 +207,14 @@ function runMessagePipeline(
     }
     if (preValidationOnly) return outputs;
     messageParameters.outputParameters.values = { ...outputs };
+    if (previous) Object.assign(record, storedRow() ?? {});
     phase(40);
     store.pluginFrames ??= new WeakMap();
     store.pluginFrames.set(record, frame);
     store.recordCommittedEvent(mapping.logicalName, operation, record, [], {
       customApi,
       target: {},
+      previous,
       identity,
       messageEvent: true,
       bypassCustomAsync,
@@ -257,12 +265,13 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
   };
   // The main operation's own Update: no PreValidation stage, no ConcurrencyBehavior or FromSandbox input and no nested
   // SetStateDynamicEntity (recorded native Assign and SetState).
-  const innerUpdate = (target, values) =>
+  const innerUpdate = (target, values, writeOptions = {}) =>
     service.messageUpdate(target.logicalName, target.id, values, {
       skipPreValidation: true,
       omitConcurrencyBehavior: true,
       stateMessage: false,
       sdkFromSandbox: false,
+      ...writeOptions,
     });
   const named = (inputs, target, main) =>
     runMessagePipeline(store, {
@@ -284,7 +293,11 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
         const previous = store.pluginExecutionUserId;
         if (system) store.pluginExecutionUserId = system.systemuserid;
         try {
-          innerUpdate(target, { ownerid: { id: assignee.id, logical_name: assignee.logicalName } });
+          innerUpdate(
+            target,
+            { ownerid: { id: assignee.id, logical_name: assignee.logicalName } },
+            { assignOwner: true },
+          );
         } finally {
           store.pluginExecutionUserId = previous;
         }

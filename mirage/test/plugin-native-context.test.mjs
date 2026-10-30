@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
 import { clrContext } from '../lib/plugin-clr.mjs';
 import { runPluginPhase } from '../lib/exported-plugins.mjs';
+import { stageImageSet } from '../lib/plugin-images.mjs';
 
 const caller = '10000000-0000-0000-0000-000000000001',
   system = '10000000-0000-0000-0000-000000000002',
@@ -258,14 +259,18 @@ test('a Delete main operation and its later stages execute as SYSTEM while PreVa
   assert.equal(later.ParentContext.values.InputParameters.values.Target.$type, 'EntityReference');
 });
 
-test('Context4 collections hold every registration of the stage while PreEntityImages stay the own step', () => {
+// @parity-evidence: native crud.json ev 1618-1621, 1600-1601, 1678-1679: the stage set fills in execution order (a step does not see later steps' images), so the set is the one runPluginPhase computed for this step (end to end in plugin-context4-images.test.mjs), not the union of the stage's registrations
+test('Context4 collections hold the stage set the step sees while PreEntityImages stay the own step', () => {
   const store = fixture(),
     target = { title: 'Requested' },
     record = { gadgetid: id, title: 'Requested', size: 3 },
     previous = { gadgetid: id, title: 'Before', size: 3 };
   const frame = phases(store, 'update', 'gadget', [10, 20], { target, record, previous });
   frame.stageImages = {
-    20: { registrations: [[{ alias: 'own', type: 0 }], [{ alias: 'other', type: 0, attributes: ['size'] }]] },
+    20: stageImageSet({
+      stage: 20,
+      steps: [{ images: [{ alias: 'other', type: 0, attributes: ['size'] }] }, { images: [{ alias: 'own', type: 0 }] }],
+    }),
   };
   const answer = clrContext({
     runtime,
@@ -281,7 +286,7 @@ test('Context4 collections hold every registration of the stage while PreEntityI
     depth: 1,
   });
   assert.deepEqual(Object.keys(answer.preImages), ['own']);
-  assert.deepEqual(Object.keys(answer.context.PreEntityImagesCollection.values[0].values).sort(), ['other', 'own']);
+  assert.deepEqual(Object.keys(answer.context.PreEntityImagesCollection.values[0].values), ['other', 'own']);
   assert.deepEqual(answer.context.PreEntityImagesCollection.values[0].values.other.attributes, { size: 3 });
   assert.deepEqual(answer.context.PostEntityImagesCollection.values, []);
 });

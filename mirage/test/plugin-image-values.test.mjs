@@ -43,6 +43,7 @@ function fixture() {
   state.mappings.widget = {
     entitySet: 'widgets',
     idColumn: 'widgetid',
+    nameColumn: 'title',
     fields: {
       title: { dataverseType: 'nvarchar' },
       flag: { dataverseType: 'bit' },
@@ -110,6 +111,7 @@ test('JavaScript typed and legacy image views omit nulls while retaining false, 
   assert.equal(store.tableRows('widget')[0].title, null, 'the stored null is not changed by image projection');
 });
 
+// Context4 sets per target; none before PostOperation and no Create pre-image sets (native bulk.json ev 1373/1376/1379).
 for (const message of ['CreateMultiple', 'UpdateMultiple'])
   test(`typed JavaScript ${message} image collections align every target, including unavailable image slots`, async (t) => {
     const store = fixture();
@@ -126,15 +128,15 @@ for (const message of ['CreateMultiple', 'UpdateMultiple'])
           ({ context, previousRecords }) => {
             const pre = context.PreEntityImagesCollection,
               post = context.PostEntityImagesCollection;
-            assert.equal(pre.length, 2);
-            assert.equal(post.length, 2);
-            if (message === 'CreateMultiple') assert.deepEqual(pre, [{}, {}]);
+            assert.equal(pre.length, message === 'CreateMultiple' ? 0 : 2);
+            assert.equal(post.length, context.Stage === 40 ? 2 : 0);
+            if (message === 'CreateMultiple') assert.deepEqual(pre, []);
             else {
               assert.deepEqual(pre[0].NullPre, {});
               assert.deepEqual(pre[1].NullPre, { title: 'Present' });
               assert.equal(previousRecords[0].title, null, 'legacy previousRecords remain raw snapshots');
             }
-            if (context.Stage !== 40) assert.deepEqual(post, [{}, {}]);
+            if (context.Stage !== 40) assert.deepEqual(post, []);
             else {
               assert.deepEqual(post[0].NullPost, {});
               assert.deepEqual(post[1].NullPost, { title: 'Present' });
@@ -158,8 +160,9 @@ for (const message of ['CreateMultiple', 'UpdateMultiple'])
     assert.deepEqual(seen, [20, 40]);
   });
 
+// @test-kind parity: native bulk.json capture 2026-10-30, ev 1407 and 1446 (repeated at 1454/1459): asynchronous bulk-origin CreateMultiple and UpdateMultiple without registered images have no pre-image sets and one AsynchronousStepPrimaryName set per target
 for (const message of ['CreateMultiple', 'UpdateMultiple'])
-  test(`asynchronous ${message} Context4 images honor Create preimage unavailability without losing target slots`, () => {
+  test(`asynchronous ${message} Context4 images hold one primary-name set per target and no pre-image sets`, () => {
     const store = fixture();
     const rows = [store.tableRows('widget')[0], { ...store.tableRows('widget')[0], widgetid: second }];
     const step = { ...steps(message, ['Invented.AsyncImages'])[1], mode: 1, images: [] };
@@ -167,8 +170,11 @@ for (const message of ['CreateMultiple', 'UpdateMultiple'])
       [
         'Invented.AsyncImages',
         ({ context }) => {
-          assert.deepEqual(context.PreEntityImagesCollection, message === 'CreateMultiple' ? [] : [{}, {}]);
-          assert.deepEqual(context.PostEntityImagesCollection, [{}, {}]);
+          assert.deepEqual(context.PreEntityImagesCollection, []);
+          assert.deepEqual(
+            context.PostEntityImagesCollection,
+            [id, second].map((widgetid) => ({ AsynchronousStepPrimaryName: { widgetid } })),
+          );
         },
       ],
     ]);
@@ -180,6 +186,7 @@ for (const message of ['CreateMultiple', 'UpdateMultiple'])
       operation: message.toLowerCase(),
       stage: 40,
       asyncExecution: true,
+      bulkOrigin: true,
       record: { widgetid: '00000000-0000-0000-0000-000000000000', bulkIds: [id, second] },
       targets: rows.map((row) => ({
         $type: 'Entity',
@@ -273,6 +280,7 @@ public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetServ
 );
 
 // @test-kind parity: native pipelineEffects corpus: a nested Create PreOperation parent is its own Create main operation (stage 30)
+// @parity-evidence: native bulk.json ev 1373/1376 and crud.json ev 1612: a PreOperation *Multiple context has no post-image set (PostEntityImagesCollection [])
 test(
   'a nested original CLR child receives JavaScript entry image snapshots while the author retains its live Context4 edits',
   { skip: CLR_SKIP },
@@ -291,7 +299,7 @@ test(
       source,
       `using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Child:IPlugin{
 static void Check(EntityImageCollection images){var empty=images["NullPre"];if(empty.Id!=new Guid("${id}")||empty.Attributes.Count!=0)throw new Exception("Parent entry image snapshot lost");var key=images["PrimaryPre"];if(key.Id!=new Guid("${id}")||key.GetAttributeValue<Guid>("widgetid")!=new Guid("${id}"))throw new Exception("Parent entry image identity changed");if(images["AllPre"].Contains("title"))throw new Exception("Snapshot null returned");}
-public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(parent==null||parent.MessageName!="Create"||parent.Stage!=30)throw new Exception("Main operation parent missing");parent=parent.ParentContext;if(parent==null)throw new Exception("Parent missing");if(parent.MessageName=="UpdateMultiple"){var b=parent as IPluginExecutionContext4;if(b==null||b.PreEntityImagesCollection.Length!=1||b.PostEntityImagesCollection.Length!=1)throw new Exception("Parent Context4 image alignment lost");Check(b.PreEntityImagesCollection[0]);if(parent.Stage==20&&b.PostEntityImagesCollection[0].Count!=0)throw new Exception("Premature post images");if(parent.Stage==40&&(b.PostEntityImagesCollection[0]["NullPost"].Attributes.Count!=0||b.PostEntityImagesCollection[0]["NullPost"].Id!=new Guid("${id}")))throw new Exception("Parent post image lost");}else Check(parent.PreEntityImages);}}}`,
+public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(parent==null||parent.MessageName!="Create"||parent.Stage!=30)throw new Exception("Main operation parent missing");parent=parent.ParentContext;if(parent==null)throw new Exception("Parent missing");if(parent.MessageName=="UpdateMultiple"){var b=parent as IPluginExecutionContext4;if(b==null||b.PreEntityImagesCollection.Length!=1||b.PostEntityImagesCollection.Length!=(parent.Stage==40?1:0))throw new Exception("Parent Context4 image alignment lost");Check(b.PreEntityImagesCollection[0]);if(parent.Stage==40&&(b.PostEntityImagesCollection[0]["NullPost"].Attributes.Count!=0||b.PostEntityImagesCollection[0]["NullPost"].Id!=new Guid("${id}")))throw new Exception("Parent post image lost");}else Check(parent.PreEntityImages);}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
