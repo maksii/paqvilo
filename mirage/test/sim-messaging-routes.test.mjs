@@ -31,6 +31,7 @@ const withBus = (store) => {
   };
 };
 
+// @test-kind contract+security: message peeks redact credentials
 test('GET /_sim/api/messages lists entities with stats and peeks one entity with its dead-letter queue, credentials redacted', async (t) => {
   const { api, call } = await serve(t, withBus);
   const { bus } = api.providers.messaging;
@@ -76,6 +77,7 @@ test('GET /_sim/api/messages lists entities with stats and peeks one entity with
   assert.equal((await call('GET', '/_sim/api/messages?entity=x-queue')).body.messages.length, 1);
 });
 
+// @test-kind contract+security: purging requires the CSRF header
 test('DELETE /_sim/api/messages/<entity> needs the CSRF header and purges only that entity', async (t) => {
   const { api, call } = await serve(t, withBus);
   const { bus } = api.providers.messaging;
@@ -116,6 +118,7 @@ test('without providers the GETs answer configured false and the purge 404', asy
   assert.equal((await call('GET', '/_sim/api/other')).status, 404, 'other paths are left to the host');
 });
 
+// @test-kind contract+security: redactSecrets replaces credential values
 test('redactSecrets replaces credential values and DataContract pairs only', () => {
   assert.deepEqual(
     redactSecrets({
@@ -137,6 +140,7 @@ test('redactSecrets replaces credential values and DataContract pairs only', () 
   );
 });
 
+// @test-kind contract+security: redactSecrets covers credential suffixes and pair forms
 test('redactSecrets covers credential suffixes and pair forms, keeping sharedaccesskeyname and the bare key field', () => {
   const context = {
     Target: {
@@ -170,6 +174,7 @@ test('redactSecrets covers credential suffixes and pair forms, keeping sharedacc
   });
 });
 
+// @test-kind contract+security: a missing simulator CSRF token fails closed
 test('DELETE fails closed when the simulator has no CSRF token, even without a header', async (t) => {
   const { api, call } = await serve(t, withBus, () => undefined);
   const { bus } = api.providers.messaging;

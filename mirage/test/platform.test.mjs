@@ -1,4 +1,4 @@
-// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
+// @test-kind unproven: local model of Power Pages form, list and lookup rendering; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -93,6 +93,7 @@ test('lookup views follow exact XML paging cookies and fail explicitly on incomp
   );
 });
 
+// @test-kind contract: Paqvilo's lookup FetchXML paging rewrite preserves authored XML
 test('lookup pagination strips only root paging attributes and preserves quoted contents and authored XML', async () => {
   const calls = [],
     suffix =
@@ -117,6 +118,7 @@ test('lookup pagination strips only root paging attributes and preserves quoted 
   );
 });
 
+// @test-kind contract: Paqvilo's lookup FetchXML root parser rejects malformed roots before querying
 test('lookup root parsing handles adversarial whitespace and rejects unterminated quoted roots before querying', async () => {
   const calls = [],
     spaces = ' '.repeat(250000);
@@ -244,6 +246,7 @@ test('editable hidden lookups retain native navigation bindings without reading 
   );
 });
 
+// @test-kind contract: Paqvilo's rich text adapter loads source-bound configuration and rejects malformed JSON
 test('rich text adapters fetch source-bound configuration URLs and reject malformed source JSON', async (t) => {
   const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'rte-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -288,6 +291,7 @@ test('rich text adapters fetch source-bound configuration URLs and reject malfor
   );
 });
 
+// @test-kind unproven+security: local model of native query aliases and rich text binding; record HTML is escaped, never injected
 test('native form query aliases select component records and rich text binds JSON HTML without source markup injection', async () => {
   const requested = [];
   const portal = {
@@ -350,6 +354,7 @@ test('native form query aliases select component records and rich text binds JSO
   assert.equal(again.match(/entity-grid-compat\.js/g).length, 1);
 });
 
+// @test-kind contract: Paqvilo's page trace propagation (docs/design/tracing.md) stays on the same origin
 test('page trace propagation correlates same-origin fetch/XHR and preserves explicit headers without tracing external requests', async () => {
   const requests = [];
   class XMLHttpRequest {
@@ -447,6 +452,7 @@ test('systemform XML maps ordered controls, labels, types and disabled controls'
   assert.equal(schema.fields[1].readOnly, true);
   assert.throws(() => schemaFromFormXml('<!DOCTYPE form><form></form>'), /declarations/);
 });
+// @test-kind unproven+security: local model of native form and list output; record values are escaped and reads run as the caller
 test('mapped form and list query identity, render escaping and original custom script', async () => {
   const formConfig = (html) =>
     JSON.parse(/<script type="application\/json" data-paqvilo-mirage-form-config>([\s\S]*?)<\/script>/.exec(html)[1]);
@@ -604,6 +610,7 @@ test('legacy jQuery window load handlers retain event semantics without changing
   assert.equal(collection.load('/fragment'), 'ajax:/fragment');
 });
 
+// @test-kind contract: Paqvilo's client runtime bootstrap and its source stream lifecycle
 test('runtime bootstrap is singleton and closes/reopens its one tab stream across page lifecycle', () => {
   const listeners = {},
     documentListeners = {},
@@ -816,6 +823,7 @@ test('advanced progress, empty quick views, scoped subgrids and authored action 
   assert.doesNotMatch(relatedHtml, /srcdoc=|holdReady/);
 });
 
+// @test-kind contract: Paqvilo's configured component read provider
 test('configured component read provider supplies records, lookups and views consistently', async () => {
   const layoutsOf = (html, selector = 'class="entity-grid') => {
     const start = html.indexOf(selector);
@@ -944,6 +952,7 @@ test('empty native choices retain a blank select option for source cache refresh
   assert.match(html, /class="clearfix cell picklist-cell"|<div class="form-group">/);
 });
 
+// @test-kind contract: Paqvilo's store formatted-value wrappers
 test('formatted choice wrappers select scalar values and display labels', async () => {
   const store = {
     resolveMapping: () => ({ entitySet: 'contacts', idColumn: 'contactid' }),
@@ -1159,6 +1168,7 @@ test('exported lookup views filter choices and owner fields stay hidden when con
   assert.doesNotMatch(html, /ownerid_lookupmodal/);
 });
 
+// @test-kind contract: Paqvilo reports the section it approximates when no form XML is exported
 test('basic forms without exported form XML render an approximated native section and report it', async () => {
   const diagnostics = [];
   const portal = {
@@ -1334,6 +1344,7 @@ test('FormXml section labels become fieldset aria-labels; legends follow showlab
   assert.match(html, /<label for="telephone1" id="telephone1_label" class="field-label">Business phone<\/label>/);
 });
 
+// @test-kind contract: Paqvilo reports a lookup table the identity cannot read instead of failing the render
 test('dropdown lookups over a table the identity cannot read render without choices and report it', async () => {
   const diagnostics = [];
   const denied = Object.assign(new Error('No read permission on account'), { status: 403 });
@@ -1397,6 +1408,7 @@ test('dropdown lookups over a table the identity cannot read render without choi
   );
 });
 
+// @test-kind contract: Paqvilo reports approximated and fallback advanced form steps
 test('advanced forms without resolved systemforms render approximated steps; unresolved steps fall back and are reported', async () => {
   const diagnostics = [];
   const portal = {
