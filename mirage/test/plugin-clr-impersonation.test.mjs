@@ -34,7 +34,8 @@ const runtime = {
 };
 
 test('an impersonated step runs under a CLR runtime as the impersonated user', () => {
-  assert.match(pluginCatalogue({ plugins: { steps: [step] } })[0].unsupported, /identity adapter/);
+  // @parity-evidence: native registration probes (dev environment, plugin-registration-parity.test.mjs) admit an impersonating step and the crud corpus runs it as the impersonated user; native has no identity-adapter refusal, and every local handler sets UserId, so the merged registration admission (parity/reg) supersedes the earlier no-runtime refusal
+  assert.equal(pluginCatalogue({ plugins: { steps: [step] } })[0].unsupported, null);
   const [item] = pluginCatalogue({ plugins: { steps: [step] }, runtimes: new Map([[step.id, runtime]]) });
   assert.equal(item.unsupported, null);
   const store = new DataStore({

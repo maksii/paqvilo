@@ -1,3 +1,4 @@
+// @test-kind unproven: local Web API record handler models; a test with native evidence carries its own tag
 // Simulated Dataverse record handlers: collections, single rows, properties,
 // navigation, $ref, paging, writes and bound actions.
 import test from 'node:test';
@@ -657,6 +658,7 @@ test('DELETE removes the row, then GET answers 404', async () => {
   assert.equal(after.status, 404);
 });
 
+// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, bulk scenario: DeleteMultiple on a standard table answers 405 0x8004023b "DeleteMultiple has not yet been implemented"
 test('CreateMultiple returns Ids; DeleteMultiple is not implemented', async () => {
   const t = await setup();
   const res = await t.send('POST', `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.CreateMultiple`, {
@@ -668,10 +670,15 @@ test('CreateMultiple returns Ids; DeleteMultiple is not implemented', async () =
     `${ORIGIN}/api/data/${VERSION}/$metadata#Microsoft.Dynamics.CRM.CreateMultipleResponse`,
   );
   assert.equal(res.body.Ids.length, 2);
+  const id = await create(t, 'widgets', { name: 'kept' });
   const deleted = await failure(
-    t.send('POST', `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.DeleteMultiple`, { body: { Targets: [] } }),
+    t.send('POST', `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.DeleteMultiple`, {
+      body: { Targets: [{ '@odata.type': 'Microsoft.Dynamics.CRM.widget', widgetid: id }] },
+    }),
   );
-  assert.equal(deleted.status, 501);
+  assert.equal(deleted.status, 405);
+  assert.equal(deleted.details.innerCode, '0x8004023b');
+  assert.equal((await t.send('GET', `/api/data/${VERSION}/widgets(${id})`)).status, 200);
 });
 
 test('FetchXML collection omits null columns and reports more records only when requested', async () => {

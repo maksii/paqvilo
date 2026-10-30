@@ -17,6 +17,8 @@ import {
   leavePluginExecution,
   pluginExecutionDepth,
   recordToSdkEntity,
+  PLUGIN_MAX_DEPTH,
+  PLUGIN_DEPTH_MESSAGE,
 } from './plugin-clr.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import {
@@ -501,8 +503,7 @@ export function pluginHandlers(packs = []) {
 const handlerOf = (handlers, step) => handlers.get(step.id) ?? handlers.get(step.typeName);
 // Nesting of synchronous JavaScript handlers (step id and plug-in type): a write a handler makes runs its own steps one level
 // deeper (Depth). The counter is the one CLR steps use (plugin-clr.mjs pluginExecutionDepth), so a JS/CLR chain shares one
-// Depth. Handlers must return synchronously, so it is balanced within one call stack. Depth past eight fails.
-const HANDLER_DEPTH_LIMIT = 8;
+// Depth. Handlers must return synchronously, so it is balanced within one call stack. Depth past PLUGIN_MAX_DEPTH fails.
 // A plug-in type handler's exception is the InvalidPluginExecutionException fault: 0x80040265 with the SubErrorCode native sends.
 const pluginFault = (cause, item) =>
   pluginFailure(
@@ -602,13 +603,14 @@ function typedContext({
               : ['createmultiple', 'updatemultiple'].includes(operation)
                 ? { Targets: Array.isArray(targets) ? targets.map(detachedRecord) : cloneStateData(targets) }
                 : {},
+    // The main operation's Create id is an output of every PostOperation context, also when earlier stages
+    // already gave the frame an (empty) output collection.
     OutputParameters: customApi
       ? pluginMessageValues(messageParameters.outputParameters, store)
-      : frame?.outputParameters
-        ? pluginMessageValues(frame.outputParameters, store)
-        : stage === 40 && operation === 'create' && idColumn
-          ? { id: record[idColumn] }
-          : {},
+      : {
+          ...(stage === 40 && operation === 'create' && idColumn ? { id: record[idColumn] } : {}),
+          ...(frame?.outputParameters ? pluginMessageValues(frame.outputParameters, store) : {}),
+        },
     SharedVariables: pluginMessageValues(frame?.sharedVariables, store),
     IsInTransaction: store?.pluginInTransaction === true,
     IsolationMode: item.isolationMode ?? 2,
@@ -1000,6 +1002,8 @@ export function runPluginPhase({
   preValidationSourceOperation,
   frameworkInputTarget,
   concurrencyBehavior = 0,
+  bulkConcurrencyBehavior,
+  inheritsRequestTag = true,
   acceptLanguage = '',
   asyncExecution = false,
   initialFrame,
@@ -1015,12 +1019,26 @@ export function runPluginPhase({
   store?.assertPluginTransactionActive?.();
   if (stage === 10 && !continuePhase && !asyncExecution && !['retrieve', 'retrievemultiple'].includes(operation))
     executionFrames.set(record, {});
+  const continued = executionFrames.has(record) && !initialFrame && !(stage === 10 && !continuePhase);
   if (initialFrame) executionFrames.set(record, cloneStateData(initialFrame));
   const phaseFrame = executionFrames.get(record) ?? {};
   // The main operation's InputParameters are the PreValidation view; keep it for a main-operation ParentContext
   // when no PreValidation step produced a snapshot.
   if (stage === 10 && !asyncExecution && ['create', 'update', 'delete'].includes(operation))
     phaseFrame.mainOperationTarget ??= cloneStateData(target ?? {});
+  // A record operation a named message's main operation starts (plugin-platform-messages.mjs) runs at that message's
+  // depth with its stage-30 context as parent, as a platform main operation's delegated write does.
+  const mainOperation = store?.pluginMainOperation;
+  if (mainOperation && !asyncExecution && !continued) {
+    phaseFrame.delegatedParentContext ??= cloneStateData(mainOperation.context);
+    phaseFrame.delegatedDepth ??= mainOperation.depth;
+    if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
+    // The request tag is an input of the message, not of the operations it delegates (SDK Upsert keeps it).
+    if (!mainOperation.keepsRequestTag) phaseFrame.inputTagConsumed = true;
+    delete phaseFrame.delegatedSourceOperation;
+  }
+  // Records a bulk message delegates, and a bulk message UpsertMultiple delegates, have no tag input (recorded corpus).
+  if (!inheritsRequestTag && !continued) phaseFrame.inputTagConsumed = true;
   // Durable jobs must retain the originating operation depth even when no
   // synchronous registration executes. Internal message delegation shares it.
   phaseFrame.operationDepth ??=
@@ -1032,8 +1050,17 @@ export function runPluginPhase({
       Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0),
     ) + 1;
   executionFrames.set(record, phaseFrame);
-  // Native Update and Delete requests carry ConcurrencyBehavior (Default unless an If-Match row version applies).
-  if (operation === 'update' || (operation === 'delete' && stage === 10)) {
+  // UpsertMultiple's UpdateMultiple carries ConcurrencyBehavior on the message (dataverse-records.mjs bulkWrite).
+  if (operation === 'updatemultiple' && bulkConcurrencyBehavior !== undefined) {
+    phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
+    phaseFrame.inputParameters.values.ConcurrencyBehavior ??= {
+      $type: 'ConcurrencyBehavior',
+      value: bulkConcurrencyBehavior,
+    };
+  }
+  // Native Update and Delete requests carry ConcurrencyBehavior (Default unless an If-Match row version applies); a named
+  // message's main-operation Update has none (concurrencyBehavior null).
+  if ((operation === 'update' || (operation === 'delete' && stage === 10)) && concurrencyBehavior !== null) {
     phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
     phaseFrame.inputParameters.values.ConcurrencyBehavior ??= {
       $type: 'ConcurrencyBehavior',
@@ -1058,7 +1085,7 @@ export function runPluginPhase({
   if (
     !asyncExecution &&
     stage !== 10 &&
-    ['create', 'update', 'delete'].includes(operation) &&
+    ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation) &&
     !phaseFrame.inputTagConsumed
   ) {
     if (phaseFrame.inputParameters?.values) {
@@ -1553,8 +1580,7 @@ export function runPluginPhase({
                 Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0) + 1,
               );
           nested = true;
-          if (handlerDepth > HANDLER_DEPTH_LIMIT)
-            throw new DataError('Plug-in nested execution depth exceeds eight.', 400, 'LocalPluginDepth');
+          if (handlerDepth > PLUGIN_MAX_DEPTH) throw new DataError(PLUGIN_DEPTH_MESSAGE, 400, 'LocalPluginDepth');
           executed = true;
           started = performance.now();
           startedAt = new Date((store?.clock ?? systemClock).now()).toISOString();

@@ -206,7 +206,8 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
               if (message.kind === 'owned-child') {
                 pid = message.pid;
                 if (mode === 'invalid-timeout')
-                  port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 10001 });
+                  // One millisecond past the native 2-minute sandbox limit.
+                  port1.postMessage({ kind: 'invoke', invocationId: 'invented-invocation', input, timeout: 120_001 });
               }
               if (message.kind === 'failure') resolve(message);
             });

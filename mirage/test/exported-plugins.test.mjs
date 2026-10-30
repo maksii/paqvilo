@@ -156,6 +156,7 @@ test('solution plugin facts preserve assembly/type/step registrations and exact 
   assert.equal(unresolved.steps[0].message, null, 'message GUIDs are never guessed');
 });
 
+// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, crud and reads scenarios: global (null-filter) Create and RetrieveMultiple steps run for the table
 test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root and never guesses an unresolved filter', () => {
   const step = (id, binding, message = 'RetrieveMultiple') =>
     `<SdkMessageProcessingStep SdkMessageProcessingStepId="${pluginId(id)}"><PluginTypeId>${pluginId(2)}</PluginTypeId><SdkMessageName>${message}</SdkMessageName>${binding}<Stage>20</Stage><Rank>${id}</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment></SdkMessageProcessingStep>`;
@@ -170,6 +171,15 @@ test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root an
     assert.equal(declaration.unsupported, null);
     assert.equal(pluginStepMatchesEntity(declaration, 'fixture'), true);
   }
+  // Native corpus (dataverse-recorder): a Create step registered without a message filter runs for every table
+  // (pqwp_probe and pqwp_child Creates both reached "Recorder: Create begin").
+  assert.equal(
+    pluginStepMatchesEntity(
+      plugins.steps.find((step) => step.id === pluginId(25)),
+      'other',
+    ),
+    true,
+  );
   for (const id of [23, 24])
     assert.match(
       plugins.steps.find((step) => step.id === pluginId(id)).unsupported,
@@ -441,8 +451,8 @@ test('well-known SDK message ids resolve without a project observation', () => {
   assert.equal(importSolutionPlugins(layers, observed).steps[0].message, 'Update');
 });
 
-// @test-kind unproven: local model of a shared JavaScript/CLR Depth counter faulting at combined nine; no native recording cited
-test('JavaScript handlers and CLR steps share one Depth: a chain entered under CLR frames reports contiguous Depth and faults at combined nine', async () => {
+// @test-kind unproven: local model of a shared JavaScript/CLR Depth counter faulting at combined seventeen; the cap is 16 (native corpus: a nested Create chain reached Depth 10 and succeeded), the native limit itself is not observed
+test('JavaScript handlers and CLR steps share one Depth: a chain entered under CLR frames reports contiguous Depth and faults at combined seventeen', async () => {
   const { enterPluginExecution, leavePluginExecution, pluginExecutionDepth } = await import('../lib/plugin-clr.mjs');
   const step = {
     id: '10000000-0000-4000-8000-000000000042',
@@ -491,7 +501,10 @@ test('JavaScript handlers and CLR steps share one Depth: a chain entered under C
       store.update('x_widget', row.x_widgetid, { x_count: 1 }, { admin: true }),
       (error) => error.code === 'LocalPluginDepth' && error.status === 400,
     );
-    assert.deepEqual(depths, [4, 5, 6, 7, 8]);
+    assert.deepEqual(
+      depths,
+      Array.from({ length: 13 }, (_, i) => i + 4),
+    );
     assert.equal(pluginExecutionDepth(), 3);
   } finally {
     for (let i = 0; i < 3; i++) leavePluginExecution();

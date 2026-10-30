@@ -392,6 +392,8 @@ export function createAsyncPluginRunner({
             previousRecords: event.previousRecords,
             records: event.records,
             initialFrame: jobExecutionFrame(store, id, event),
+            // A record a bulk message delegated has no ConcurrencyBehavior input (recorded corpus).
+            ...(event.fromBulk ? { concurrencyBehavior: null } : {}),
             asyncExecution: true,
             diagnostic,
             onStepExecuted: () => {

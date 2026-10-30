@@ -47,6 +47,9 @@ function* bulkSteps(
     bypassCustomAsync = false,
     bypassStepIds = [],
     portalRequest = false,
+    concurrencyBehavior,
+    // A bulk message another message delegates (UpsertMultiple): inside its transaction, without the request tag.
+    delegated = false,
   },
   awaitIo,
 ) {
@@ -142,7 +145,7 @@ function* bulkSteps(
       fail('Bulk plugin changed the table/count or an existing target identity.', 'LocalPluginBulkInput', 400);
   };
   const phase = function* (stage, records) {
-    if (stage !== 10) store.pluginInTransaction = true;
+    if (stage !== 10 || delegated) store.pluginInTransaction = true;
     const context = {
       entity: mapping.logicalName,
       operation,
@@ -156,6 +159,8 @@ function* bulkSteps(
       portalRequest,
       bypassStepIds,
       bypassCustomPlugins,
+      ...(concurrencyBehavior === undefined ? {} : { bulkConcurrencyBehavior: concurrencyBehavior }),
+      ...(delegated ? { inheritsRequestTag: false } : {}),
       ...(awaitIo ? { awaitIo: true } : {}),
     };
     if (store.pluginPipeline) {
@@ -214,6 +219,9 @@ function* bulkSteps(
               targets: undefined,
               previousRecords: undefined,
               records: undefined,
+              // A record a bulk message delegates has neither the request tag nor ConcurrencyBehavior (recorded corpus).
+              inheritsRequestTag: false,
+              concurrencyBehavior: null,
               pluginStepIds: [entry.id],
               continuePhase: singleStarted.has(index),
             });

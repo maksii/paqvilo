@@ -726,6 +726,12 @@ for (const message of ['Assign', 'SetState']) {
     const result = await t.send(
       specializedRequest(message, t.store.resolveMapping(t.logical).entitySet, t.id, t.basic.systemuserid),
     );
+    // @parity-evidence: native dev-environment plug-in recorder corpus 2026-10-30, sdkMessages scenario: registered SetState steps never execute; SetState runs as SetStateDynamicEntity
+    // Registered SetState steps never execute natively: SetState runs as SetStateDynamicEntity (recorded corpus).
+    if (message === 'SetState') {
+      assert.equal(result.status, 200, result.body);
+      return;
+    }
     assert.equal(result.status, 500, result.body);
     assert.match(result.body, /plug-in pipeline is not implemented/);
     assert.deepEqual(t.store.tableRows(t.logical), before);

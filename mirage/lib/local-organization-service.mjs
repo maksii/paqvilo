@@ -513,6 +513,25 @@ export function localOrganizationService(store, profile, records, { diagnostic =
         ),
       );
     },
+    // The Update a named message's main operation performs (plugin-platform-messages.mjs): the caller has authorized the
+    // message; writeOptions shape its pipeline (skipPreValidation, omitConcurrencyBehavior, stateMessage).
+    messageUpdate(entity, id, values, writeOptions = {}) {
+      const key = sdkRecordKey(store, entity, id);
+      const previous = store.get(entity, key, localIdentity, { skipPluginRead: true });
+      if (!previous) fail('Record not found.', 'NotFound', 404);
+      authorize(entity, 'update', previous);
+      return store.sdkMutation(() =>
+        records
+          ? internal('update', entity, (options) =>
+              records.updateInternal(context(), entity, key, values, { ...options, writeOptions }),
+            )
+          : store.updateRecord(entity, key, values, localIdentity, {
+              ...requestOptions,
+              coerce: true,
+              ...writeOptions,
+            }),
+      );
+    },
     remove(entity, id, { responseToken, partitionId } = {}) {
       const key = prepareRemove(entity, id, partitionId);
       return effectiveWrite(entity, 'delete', (authorizeEffectiveWrite) =>
@@ -719,6 +738,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
       'disassociateAsync',
       'bulk',
       'executeMessageSync',
+      'messageUpdate',
     ].includes(name);
     service[name] = (...args) => {
       try {
