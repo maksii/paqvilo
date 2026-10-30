@@ -1,6 +1,8 @@
 import { systemIds } from './runtime-clock.mjs';
 import { readFile } from 'node:fs/promises';
 import { codeAppsWorkbenchHtml } from './code-apps-workbench.mjs';
+import { recordHttpError, statusFromHttp } from './trace-store.mjs';
+import { tracedFetch } from './trace-hosts.mjs';
 
 /*
  * Local bridge for Power Apps code apps under /_apps/code/<name>/.
@@ -69,13 +71,15 @@ const publicApp = (app) => ({
   appSettingNames: Object.keys(app.appSettings ?? {}),
   features: FEATURES,
 });
-async function serverStatus(app) {
+// The dev server probe is an http-out span of the request (tracedFetch; a plain fetch without a trace store).
+async function serverStatus(app, traces) {
   if (!app.localAppUrl) return { state: 'unavailable' };
   try {
-    const response = await fetch(app.localAppUrl, {
-      method: 'HEAD',
-      redirect: 'manual',
-      signal: AbortSignal.timeout(1500),
+    const response = await tracedFetch(traces, {
+      module: 'code-apps',
+      operation: 'probe',
+      url: app.localAppUrl,
+      init: { method: 'HEAD', redirect: 'manual', signal: AbortSignal.timeout(1500) },
     });
     await response.body?.cancel();
     return { state: 'reachable', status: response.status };
@@ -90,7 +94,7 @@ const escapeHtml = (text) =>
     (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch],
   );
 
-const json = (res, status, body, headers = {}) => {
+const writeJson = (res, status, body, headers = {}) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers });
   res.end(JSON.stringify(body));
 };
@@ -136,7 +140,8 @@ export function authorityTokenIssuer({ issueAccessToken, origin, appId }) {
  * issueToken({ resource, user, app }) → { access_token, expires_on }; dataverse({ method, path, search, headers, body,
  * principal }) → { status, headers?, body }; connectors?({ app, reference, operationId, body, principal }) → result,
  * where undefined means "not simulated"; csrf() → token; diagnostic?(record); ids → { uuid() } for the host sessionId
- * (default systemIds, the runtime clock/ids seam).
+ * (default systemIds, the runtime clock/ids seam); traces: the host trace store (the request root's actor is the selected
+ * staff user, every error answer is recorded on it with recordHttpError, the dev server probe is an http-out span).
  * Returns async (req, res, url?) => boolean; false when the path is not under /_apps/code/.
  */
 export function createCodeAppsHandler({
@@ -150,9 +155,32 @@ export function createCodeAppsHandler({
   csrf,
   diagnostic = () => {},
   ids = systemIds,
+  traces = null,
 }) {
   // Adapters supply a fresh per-load session ID; direct HTTP consumers share the deterministic host fallback.
   const sessionId = ids.uuid();
+  // Every answer of 400 or more is the request root's error (its { error: { code, message } }, else the status).
+  const json = (res, status, body, headers) => {
+    if (status >= 400)
+      recordHttpError(traces?.current() ?? null, status, { code: body?.error?.code, message: body?.error?.message });
+    writeJson(res, status, body, headers);
+  };
+  // The root's actor is the selected staff user; no session (or an unusable one) leaves it anonymous.
+  const traceActor = (req) => {
+    if (!traces?.enabled) return;
+    try {
+      const principal = sessions.resolve(req);
+      const row = principal.kind === 'staff' ? user(principal.principalId) : null;
+      if (row)
+        traces.current()?.setActor({
+          kind: 'staff',
+          id: principal.principalId,
+          name: row.fullname ?? row.domainname ?? null,
+        });
+    } catch {
+      /* no actor */
+    }
+  };
   const principalOf = (req) => {
     const principal = sessions.resolve(req);
     if (principal.kind !== 'staff')
@@ -179,6 +207,7 @@ export function createCodeAppsHandler({
       url.pathname === '/_apps/code/_api/apps' ||
       url.pathname.startsWith('/_apps/code/_assets/')
     ) {
+      traceActor(req);
       res.setHeader('cache-control', 'no-store');
       res.setHeader('x-content-type-options', 'nosniff');
       if (!['GET', 'HEAD'].includes(req.method)) {
@@ -190,7 +219,7 @@ export function createCodeAppsHandler({
         const inventory = await Promise.all(
           records.map(async (app) => ({
             ...publicApp(app),
-            ...(url.searchParams.get('probe') === '1' ? { server: await serverStatus(app) } : {}),
+            ...(url.searchParams.get('probe') === '1' ? { server: await serverStatus(app, traces) } : {}),
           })),
         );
         json(res, 200, { mode: 'simulation', features: FEATURES, apps: inventory });
@@ -222,6 +251,7 @@ export function createCodeAppsHandler({
     }
     const match = /^\/_apps\/code\/([^/]+)(\/(.*))?$/.exec(url.pathname);
     if (!match) return false;
+    traceActor(req);
     res.setHeader('cache-control', 'no-store');
     res.setHeader('x-content-type-options', 'nosniff');
     try {
@@ -233,6 +263,7 @@ export function createCodeAppsHandler({
       }
       const app = apps().find((item) => item.name.toLowerCase() === name.toLowerCase());
       if (!app) throw fail(404, 'CodeAppNotFound', `Code app '${name}' is not configured.`);
+      traces?.current()?.set({ app: app.name });
       const base = `/_apps/code/${encodeURIComponent(app.name)}/`;
       if (match[2] === undefined) {
         res.writeHead(308, { location: base + url.search });
@@ -351,6 +382,20 @@ export function createCodeAppsHandler({
           principal: { principalId, kind },
         });
         const out = Object.fromEntries(Object.entries(result.headers ?? {}).filter(([, value]) => value != null));
+        // A text or empty answer of 400 or more names its status and, for an OData error text, its code and message on
+        // the root (an object body goes through json, which does the same).
+        if (
+          result.status >= 400 &&
+          (typeof result.body !== 'object' || result.body === null || Buffer.isBuffer(result.body))
+        ) {
+          let error;
+          try {
+            error = JSON.parse(String(result.body ?? '')).error;
+          } catch {
+            /* not an OData error text */
+          }
+          recordHttpError(traces?.current() ?? null, result.status, { code: error?.code, message: error?.message });
+        }
         if (result.body === undefined || result.body === null) {
           res.writeHead(result.status ?? 204, out);
           res.end();
@@ -419,6 +464,12 @@ export function createCodeAppsHandler({
     } catch (error) {
       if (!res.headersSent && !res.destroyed)
         json(res, error.status ?? 500, { error: { code: error.code ?? 'CodeAppError', message: error.message } });
+      // After the answer (which recorded its envelope): a plug-in fault keeps the identity its spans carry (D-R3-19).
+      if (error?.traceError && traces?.enabled && (error.status ?? 500) >= 400)
+        traces
+          .current()
+          ?.setStatus(statusFromHttp(error.status ?? 500))
+          .setError(error);
     }
     return true;
   };

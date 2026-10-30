@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 // Host wiring on both hosts (Power Pages simulator and standalone dataverse-api runtime): status `docs`, `routes` (from
 // the mounted routers' own `routes` lists) and `modelDrivenApps`; ISO request times on the dashboard; the in-process Web
 // API behind Xrm.WebApi.execute; the default /search/ page; the portal document control; Solution custom connectors and
@@ -212,6 +213,7 @@ const SHARED = [
   '/flow-runs',
   '/flow-waits',
   '/flow-triggers',
+  '/trace',
   '/preflight',
   '/status',
   '/dataverse',
@@ -309,6 +311,7 @@ test('Power Pages: the portal document control answers 503 while its document st
 // a prefix the routers do not list answers 404. Prefixes not in PROBES are requested with GET; /shutdown runs last.
 const PROBES = {
   '/records': ['GET', '/records/contact'],
+  '/activity': ['GET', '/activity/export?format=bundle'],
   '/persona-catalog': ['PUT', '/persona-catalog', {}],
   '/reference': ['POST', '/reference/enrich/validate', { plan: [] }],
   '/config': ['PATCH', '/config', { operations: {} }],
