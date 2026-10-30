@@ -87,9 +87,10 @@ test(
     const sdk = clrSdk(),
       source = path.join(root, 'Child.cs'),
       assembly = path.join(root, 'Child.dll');
+    // Native (parity corpus pipelineEffects): a nested Create PreOperation's ParentContext is its own Create stage-30 main operation; the calling context is that main operation's parent.
     await fs.writeFile(
       source,
-      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Child:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.Depth!=2||c.ParentContext==null||c.ParentContext.MessageName!="${name}"||c.ParentContext.Stage!=30||c.ParentContext.Depth!=1||(string)c.ParentContext.InputParameters["Text"]!="From JS"||(bool)c.ParentContext.SharedVariables["IsAutoTransact"]!=true)throw new Exception("Main parent context lost");((Entity)c.InputParameters["Target"])["title"]="Observed child";}}}`,
+      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Child:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var main=c.ParentContext;if(main==null||main.MessageName!="Create"||main.Stage!=30||main.Depth!=2)throw new Exception("Create main operation parent lost");var caller=main.ParentContext;if(c.Depth!=2||caller==null||caller.MessageName!="${name}"||caller.Stage!=30||caller.Depth!=1||(string)caller.InputParameters["Text"]!="From JS"||(bool)caller.SharedVariables["IsAutoTransact"]!=true)throw new Exception("Main parent context lost");((Entity)c.InputParameters["Target"])["title"]="Observed child";}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({

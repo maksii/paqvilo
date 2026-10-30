@@ -283,11 +283,12 @@ test(
     const sdk = clrSdk(),
       source = path.join(root, 'ParentImages.cs'),
       assembly = path.join(root, 'ParentImages.dll');
+    // Native (parity corpus pipelineEffects): a nested Create PreOperation's parent is its own Create main operation; the caller is one level up.
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Child:IPlugin{
 static void Check(EntityImageCollection images){var empty=images["NullPre"];if(empty.Id!=new Guid("${id}")||empty.Attributes.Count!=0)throw new Exception("Parent entry image snapshot lost");var key=images["PrimaryPre"];if(key.Id!=new Guid("${id}")||key.GetAttributeValue<Guid>("widgetid")!=new Guid("${id}"))throw new Exception("Parent entry image identity changed");if(images["AllPre"].Contains("title"))throw new Exception("Snapshot null returned");}
-public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(parent==null)throw new Exception("Parent missing");if(parent.MessageName=="UpdateMultiple"){var b=parent as IPluginExecutionContext4;if(b==null||b.PreEntityImagesCollection.Length!=1||b.PostEntityImagesCollection.Length!=1)throw new Exception("Parent Context4 image alignment lost");Check(b.PreEntityImagesCollection[0]);if(parent.Stage==20&&b.PostEntityImagesCollection[0].Count!=0)throw new Exception("Premature post images");if(parent.Stage==40&&(b.PostEntityImagesCollection[0]["NullPost"].Attributes.Count!=0||b.PostEntityImagesCollection[0]["NullPost"].Id!=new Guid("${id}")))throw new Exception("Parent post image lost");}else Check(parent.PreEntityImages);}}}`,
+public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(parent==null||parent.MessageName!="Create"||parent.Stage!=30)throw new Exception("Main operation parent missing");parent=parent.ParentContext;if(parent==null)throw new Exception("Parent missing");if(parent.MessageName=="UpdateMultiple"){var b=parent as IPluginExecutionContext4;if(b==null||b.PreEntityImagesCollection.Length!=1||b.PostEntityImagesCollection.Length!=1)throw new Exception("Parent Context4 image alignment lost");Check(b.PreEntityImagesCollection[0]);if(parent.Stage==20&&b.PostEntityImagesCollection[0].Count!=0)throw new Exception("Premature post images");if(parent.Stage==40&&(b.PostEntityImagesCollection[0]["NullPost"].Attributes.Count!=0||b.PostEntityImagesCollection[0]["NullPost"].Id!=new Guid("${id}")))throw new Exception("Parent post image lost");}else Check(parent.PreEntityImages);}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
