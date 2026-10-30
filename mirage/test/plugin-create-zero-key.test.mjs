@@ -1,3 +1,4 @@
+// @test-kind parity: repeated native qualification: empty primary attribute keeps an allocated Entity.Id in PreValidation, then faults 0x80040203
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

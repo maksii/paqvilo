@@ -1,3 +1,4 @@
+// @test-kind parity: executes the official Microsoft.Xrm.Sdk DataContractJsonSerializer as oracle for key metadata and numeric bytes
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

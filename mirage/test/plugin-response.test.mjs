@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of SDK response capture and isolation; CLR scenarios are marked not natively qualified
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import assert from 'node:assert/strict';

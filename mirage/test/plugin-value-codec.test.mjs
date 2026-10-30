@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft.Xrm.Sdk public type shapes (ConcurrencyBehavior, Entity, collections, messages) round-trip through the codec
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of main Update rebase over nested SDK writes and deletes; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';

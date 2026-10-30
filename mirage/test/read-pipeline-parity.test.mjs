@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of read pipeline stages, ColumnSet and projection; "native" comments cite no recording
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -400,6 +401,7 @@ test('query-conversion Execute requests remain read-only and retain named SDK re
   }
 });
 
+// @test-kind security: SDK bypass options require explicit profile privileges
 test('SDK bypass options require explicit profile privileges and affect only the requested custom phases', () => {
   const store = fixture();
   const allowed = {
@@ -780,6 +782,7 @@ test('selective SDK bypass respects organization limits and does not propagate i
   );
 });
 
+// @test-kind contract: bypass keeps source-protected steps and reports unqualified ownership as diagnostics
 test('read bypass retains source-protected steps and reports unqualified ownership', async (t) => {
   assert.equal(pluginBypassOwnership({ customizationLevel: '' }).kind, 'unknown');
   assert.equal(pluginBypassOwnership({ customizationLevel: 0 }).kind, 'unknown');

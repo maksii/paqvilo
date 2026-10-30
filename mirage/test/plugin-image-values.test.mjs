@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo JavaScript typed/legacy image views and Context4 alignment mirroring the native image projection
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -192,6 +193,7 @@ for (const message of ['CreateMultiple', 'UpdateMultiple'])
     });
   });
 
+// @test-kind parity: native qualification of selected-null and selected-primary-key images: null Attributes omitted, image Id retained
 test(
   'original CLR scalar and Context4 bulk image Entities omit null Attributes and retain independent identities',
   { skip: CLR_SKIP },
@@ -270,6 +272,7 @@ public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetServ
   },
 );
 
+// @test-kind parity: native pipelineEffects corpus: a nested Create PreOperation parent is its own Create main operation (stage 30)
 test(
   'a nested original CLR child receives JavaScript entry image snapshots while the author retains its live Context4 edits',
   { skip: CLR_SKIP },
@@ -283,11 +286,12 @@ test(
     const sdk = clrSdk(),
       source = path.join(root, 'ParentImages.cs'),
       assembly = path.join(root, 'ParentImages.dll');
+    // Native (parity corpus pipelineEffects): a nested Create PreOperation's parent is its own Create main operation; the caller is one level up.
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Child:IPlugin{
 static void Check(EntityImageCollection images){var empty=images["NullPre"];if(empty.Id!=new Guid("${id}")||empty.Attributes.Count!=0)throw new Exception("Parent entry image snapshot lost");var key=images["PrimaryPre"];if(key.Id!=new Guid("${id}")||key.GetAttributeValue<Guid>("widgetid")!=new Guid("${id}"))throw new Exception("Parent entry image identity changed");if(images["AllPre"].Contains("title"))throw new Exception("Snapshot null returned");}
-public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(parent==null)throw new Exception("Parent missing");if(parent.MessageName=="UpdateMultiple"){var b=parent as IPluginExecutionContext4;if(b==null||b.PreEntityImagesCollection.Length!=1||b.PostEntityImagesCollection.Length!=1)throw new Exception("Parent Context4 image alignment lost");Check(b.PreEntityImagesCollection[0]);if(parent.Stage==20&&b.PostEntityImagesCollection[0].Count!=0)throw new Exception("Premature post images");if(parent.Stage==40&&(b.PostEntityImagesCollection[0]["NullPost"].Attributes.Count!=0||b.PostEntityImagesCollection[0]["NullPost"].Id!=new Guid("${id}")))throw new Exception("Parent post image lost");}else Check(parent.PreEntityImages);}}}`,
+public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(parent==null||parent.MessageName!="Create"||parent.Stage!=30)throw new Exception("Main operation parent missing");parent=parent.ParentContext;if(parent==null)throw new Exception("Parent missing");if(parent.MessageName=="UpdateMultiple"){var b=parent as IPluginExecutionContext4;if(b==null||b.PreEntityImagesCollection.Length!=1||b.PostEntityImagesCollection.Length!=1)throw new Exception("Parent Context4 image alignment lost");Check(b.PreEntityImagesCollection[0]);if(parent.Stage==20&&b.PostEntityImagesCollection[0].Count!=0)throw new Exception("Premature post images");if(parent.Stage==40&&(b.PostEntityImagesCollection[0]["NullPost"].Attributes.Count!=0||b.PostEntityImagesCollection[0]["NullPost"].Id!=new Guid("${id}")))throw new Exception("Parent post image lost");}else Check(parent.PreEntityImages);}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({

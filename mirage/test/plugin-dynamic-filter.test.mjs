@@ -1,3 +1,4 @@
+// @test-kind unproven: assumes columns added by an earlier rank admit later filtered steps in the same stage; no native capture
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

@@ -1,3 +1,4 @@
+// @test-kind contract: Lense X-ray and refresh never show a stale inspection report over a newer navigation
 // Response ordering and history navigation.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';

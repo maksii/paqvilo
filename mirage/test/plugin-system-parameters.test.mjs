@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn MSCRM.BypassCustomPluginExecution and BypassBusinessLogicExecution optional parameters
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';

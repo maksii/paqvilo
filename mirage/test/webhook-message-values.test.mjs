@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of webhook RemoteExecutionContext identity, parents and typed values; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -144,6 +145,7 @@ test('webhook-only stages share one known operation identity and time independen
   }
 });
 
+// @test-kind parity: executes the official Microsoft.Xrm.Sdk DataContractJsonSerializer and compares RemoteExecutionContext output
 test(
   'webhook typed message payloads match the public SDK DataContract JSON serializer',
   { skip: CLR_SKIP },

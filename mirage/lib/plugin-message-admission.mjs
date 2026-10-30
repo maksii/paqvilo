@@ -13,6 +13,17 @@ const messages = new Set([
   'disassociate',
 ]);
 
+// Registrations the platform accepts but never executes: unfiltered steps on Upsert, UpsertMultiple and Merge, and
+// asynchronous Retrieve steps (native recordings show no execution while those messages ran). They are admitted and
+// silently match nothing, never a refusal native would not produce.
+export function pluginStepInert(step) {
+  const name = String(step.message).toLowerCase();
+  return (
+    (step.unfiltered === true && ['upsert', 'upsertmultiple', 'merge'].includes(name)) ||
+    (name === 'retrieve' && (step.contract?.mode ?? step.mode) === 1)
+  );
+}
+
 export function pluginMessageHasPipeline(step) {
   return Boolean(
     step.customApi ||
@@ -34,7 +45,8 @@ export function assertPluginMessageAdmission(store, message, context = {}, entit
       item.contract?.supportedDeployment !== 1 &&
       !['placeholder', 'disabled'].includes(item.mode) &&
       String(item.message).toLowerCase() === name &&
-      !pluginMessageHasPipeline(item),
+      !pluginMessageHasPipeline(item) &&
+      !pluginStepInert(item),
   );
   if (!candidates.length) return;
   const target =

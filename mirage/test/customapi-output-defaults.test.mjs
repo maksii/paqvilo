@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of sparse custom API outputs through PostOperation and per-transport defaults; no cited native recording
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

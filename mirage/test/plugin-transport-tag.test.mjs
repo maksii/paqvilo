@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of per-request tag isolation across HTTP, SOAP and SDK descendants; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

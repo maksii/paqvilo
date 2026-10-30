@@ -1,3 +1,4 @@
+// @test-kind unproven: delegated UpdateMultiple ParentContext (single Update, stage 30, same depth) is a local model; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

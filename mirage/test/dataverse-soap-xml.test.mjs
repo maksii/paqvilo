@@ -1,3 +1,4 @@
+// @test-kind compatibility: documented Organization service SOAP/DataContract wire formats (namespaces, member order, faults) from Microsoft SDK docs and samples
 // Dataverse SOAP XML codec: namespace-aware parsing, value round trips, envelopes, faults.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -168,6 +169,7 @@ test('https:// namespace forms from Microsoft samples are accepted', () => {
   assert.equal(parseOrganizationRequest(request).requestName, 'WhoAmI');
 });
 
+// @test-kind security: XML hardening: DTDs, unbalanced tags and undeclared prefixes are refused
 test('DTDs, unbalanced tags and undeclared prefixes throw DataError 400', () => {
   for (const bad of ["<!DOCTYPE x [<!ENTITY y 'z'>]><x/>", '<a><b></a>', '<p:a xmlns:q="urn:x"/>']) {
     assert.throws(

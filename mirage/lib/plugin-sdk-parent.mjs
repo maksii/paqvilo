@@ -1,4 +1,5 @@
 import { cloneStateData } from './state-clone.mjs';
+import { uuidV5 } from './dataverse-security.mjs';
 
 /** A CLR invocation envelope separates scalar context from its parameter and
  * image collections. Reassemble a detached per-step SDK parent snapshot. */
@@ -38,17 +39,19 @@ export function selectSdkEntryParent(entry, frameworkSource) {
       values: { Target: cloneStateData(frameworkSource.target), ReturnRowVersion: null },
     },
     OutputParameters: { $type: 'ParameterCollection', values: {} },
-    SharedVariables: {
-      $type: 'ParameterCollection',
-      values: { AcceptLang: frameworkSource.acceptLanguage ?? '', IsAutoTransact: false },
-    },
+    SharedVariables: cloneStateData(
+      frameworkSource.sharedVariables ?? {
+        $type: 'ParameterCollection',
+        values: { AcceptLang: frameworkSource.acceptLanguage ?? '', IsAutoTransact: false },
+      },
+    ),
     PreEntityImages: { $type: 'EntityImageCollection', values: {} },
     PostEntityImages: { $type: 'EntityImageCollection', values: {} },
     PreEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
     PostEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
     ParentContext: null,
+    OwningExtension: mainOperationValues({ MessageName: 'Upsert' }).OwningExtension,
   };
-  delete values.OwningExtension;
   return { $type: 'ExecutionContext', values };
 }
 
@@ -81,4 +84,77 @@ export function asyncMultiplePluginParent(frame, operation, entity) {
     if (frame[key] != null) values[name] = { $type: 'Guid', value: frame[key] };
   if (frame.createdOnWire) values.OperationCreatedOn = cloneStateData(frame.createdOnWire);
   return { $type: 'ExecutionContext', values };
+}
+
+/** The platform step that performs a message's main operation (stage 30), as native contexts name it. */
+const MAIN_OPERATION_STEP = 'ObjectModel Implementation';
+const emptyParameters = () => ({ $type: 'ParameterCollection', values: {} });
+
+/** Values of a main-operation (stage 30) context: native reports the PreValidation context of the same request
+ * as this frame, inside the transaction, owned by the platform's ObjectModel step, with the main operation's live
+ * SharedVariables and image collection and no step images. */
+function mainOperationValues(values, { sharedVariables, images } = {}) {
+  return {
+    ...values,
+    Stage: 30,
+    Mode: 0,
+    IsInTransaction: true,
+    OwningExtension: {
+      $type: 'EntityReference',
+      logicalName: 'sdkmessageprocessingstep',
+      id: uuidV5(
+        '00000000-0000-0000-0000-000000000000',
+        `sdkmessageprocessingstep:${MAIN_OPERATION_STEP}:${values.MessageName}`,
+      ),
+      name: MAIN_OPERATION_STEP,
+    },
+    SharedVariables: cloneStateData(sharedVariables ?? values.SharedVariables ?? emptyParameters()),
+    PreEntityImages: { $type: 'EntityImageCollection', values: {} },
+    PostEntityImages: { $type: 'EntityImageCollection', values: {} },
+    PreEntityImagesCollection: images ?? { $type: 'EntityImageCollectionArray', values: [] },
+    PostEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
+  };
+}
+
+/** The ParentContext of a CRUD PreOperation/PostOperation step: the request's PreValidation snapshot when a
+ * PreValidation step ran, else the current context reduced to the PreValidation inputs. Natively the main
+ * operation runs as the caller (never an impersonating step's user). */
+export function mainOperationParent({ frame, context, parent, callerUserId, objectId, inputs, images }) {
+  const snapshot = frame.preValidationContext?.values;
+  const base = snapshot
+    ? cloneStateData(snapshot)
+    : {
+        ...cloneStateData(context),
+        InputParameters: { $type: 'ParameterCollection', values: inputs() },
+        OutputParameters: emptyParameters(),
+        ParentContext: parent ?? null,
+      };
+  base.UserId = { $type: 'Guid', value: callerUserId };
+  base.UserAzureActiveDirectoryObjectId = { $type: 'Guid', value: objectId(callerUserId) };
+  return {
+    $type: 'ExecutionContext',
+    values: mainOperationValues(base, { sharedVariables: frame.mainSharedVariables, images }),
+  };
+}
+
+/** An asynchronous job's view of the committed synchronous parent chain: native keeps each level's stage, inputs,
+ * shared variables and identities, but reports the job's mode, depth, message, row, step (unnamed), operation id
+ * and creation time, outside a transaction. */
+export function asynchronousParentChain(node, context) {
+  if (!node?.values) return node ?? null;
+  return {
+    $type: 'ExecutionContext',
+    values: {
+      ...node.values,
+      Mode: 1,
+      Depth: context.Depth,
+      MessageName: context.MessageName,
+      PrimaryEntityId: cloneStateData(context.PrimaryEntityId),
+      IsInTransaction: false,
+      OwningExtension: cloneStateData(context.OwningExtension),
+      OperationId: cloneStateData(context.OperationId),
+      OperationCreatedOn: cloneStateData(context.OperationCreatedOn),
+      ParentContext: asynchronousParentChain(node.values.ParentContext, context),
+    },
+  };
 }

@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn event pipeline: PostOperation Target changes pass to later ranks but are not saved
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

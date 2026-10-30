@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo SOAP value encoder keeps numeric widths and refuses ambiguous or unlisted values with Local* diagnostics
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -53,6 +54,7 @@ test('SOAP final SDK results retain numeric widths and reject ambiguous or unqua
   });
   assert.match(encodeValue('b:value', soapSdkValue(value())), /<x9:OptionSetValue i:nil="true"\/>/);
 });
+// @test-kind parity: official Microsoft.Xrm.Sdk DataContractSerializer executed: it reads Paqvilo's SOAP Entity metadata, exact Money, aliases and null members
 test(
   'installed SDK deserializes final SOAP Entity metadata, exact Money, aliases and nullable choice members',
   { skip: CLR_SKIP },

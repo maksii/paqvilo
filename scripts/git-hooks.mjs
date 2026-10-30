@@ -94,6 +94,13 @@ async function preCommit() {
     );
     const scripts = preCommitScripts(files);
     console.log(`Staged validation: ${scripts.join(', ') || 'no applicable checks'}.`);
+    // Changed test files declare their kind; parity assertions change only with recorded proof (docs/test-kinds.md).
+    const tags = spawnSync(process.execPath, [path.join(root, 'scripts', 'check-test-tags.mjs'), '--staged'], {
+      cwd: root,
+      stdio: 'inherit',
+      windowsHide: true,
+    });
+    if (tags.status !== 0) throw new Error('Staged validation failed (test kinds). Commit stopped.');
     if (scripts.includes('quality')) {
       for (const directory of ['', 'mirage']) {
         const source = path.join(root, directory, 'node_modules');

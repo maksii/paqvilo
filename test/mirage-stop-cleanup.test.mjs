@@ -1,3 +1,4 @@
+// @test-kind tooling: test-harness workspace reaper never leaves Mirage runtimes behind
 // The stop-scope workspace never leaves a runtime behind: not when a test fails or times out while
 // a CLI is still starting one, and not when the test process itself ends abruptly.
 import test from 'node:test';

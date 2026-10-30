@@ -1,3 +1,4 @@
+// @test-kind contract: lookup targets derive from one exact metadata relationship; ambiguous or missing metadata refuses explicitly (501)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

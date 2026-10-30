@@ -1,3 +1,4 @@
+// @test-kind unproven: duplicate detection between PreValidation and PreOperation is a local model; header and 0x80040333 follow Learn
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';

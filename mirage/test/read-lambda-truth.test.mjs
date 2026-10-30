@@ -1,3 +1,4 @@
+// @test-kind unproven: local three-valued model of any/all lambda truth over rows; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

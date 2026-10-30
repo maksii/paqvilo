@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn Power Pages Web API errors (9004010D, Webapi/error/innererror) and plug-in error codes 0x80040265/0x80040224
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';

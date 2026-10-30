@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of tag inheritance and validation across nested SDK calls; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

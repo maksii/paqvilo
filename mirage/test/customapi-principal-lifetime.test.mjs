@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo invocation lifetime design: caller views detach, inputs cannot alias caller rows, scoped handles expire, rollback stays isolated
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';

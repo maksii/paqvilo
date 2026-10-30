@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo local async runner: local disabled/mock choices, close/drain semantics and committed-event consumer isolation
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -69,6 +70,7 @@ test('an asynchronous job skipped by a later disabled local choice is canceled i
   assert.equal(store.tableRows('asyncoperation')[0].statuscode, 32);
   assert.match(store.tableRows('asyncoperation')[0].message, /disabled/);
 });
+// @test-kind compatibility: Learn event pipeline: asynchronous steps run after the main transaction commits and their own SDK writes persist
 test('Async source registrations execute only after commit and keep independent SDK writes after later job failure', async (t) => {
   const store = data(),
     notes = [],
@@ -103,6 +105,7 @@ test('Async source registrations execute only after commit and keep independent 
   await runner.close();
   assert.deepEqual(runner.status(), { pending: 0, closed: true });
 });
+// @test-kind unproven: local recursion limit (maxDepth option) and no async job on rollback; no native capture of async recursion bounds
 test('Async recursion is bounded and rollback emits no asynchronous job', async (t) => {
   const store = data(),
     notes = [],

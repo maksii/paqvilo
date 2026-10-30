@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn custom API tables, bindings, CSDL and Web API error codes; individual codes not re-recorded natively
 // Custom APIs: customapi tables, unpacked solution parsing and registry operations.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -118,6 +119,7 @@ function harness(files = FILES, options = {}) {
 
 const innerCode = (code) => (error) => error.details?.innerCode === code;
 
+// @test-kind contract: Paqvilo install seeds the custom API tables as dataverse-only mappings and keeps an existing mapping
 test('install seeds the three tables as dataverse-only mappings and keeps an existing mapping', () => {
   const state = emptyState();
   state.mappings.customapi = { logicalName: 'customapi', entitySet: 'custom', idColumn: 'customapiid', fields: {} };
@@ -200,6 +202,7 @@ test('executeprivilegename is checked: a missing privilege is a 403 0x80040220',
   assert.equal((await call('sample_Collection')).status, 200);
 });
 
+// @test-kind parity: native live baseline case custom.no-output-function: a function with no response property is absent (404 0x80060888)
 test('a function with no response property is absent: 404 0x80060888 (native custom.no-output-function)', async () => {
   const { call } = harness();
   await assert.rejects(call('sample_Empty'), innerCode('0x80060888'));
@@ -224,6 +227,7 @@ test('CSDL: entity-bound function, unbound action, collection-bound function; pr
   assert.equal(op('sample_Empty').csdl, '');
 });
 
+// @test-kind contract: Paqvilo registry sync: rows added after install register once per revision; a deleted row fails at call time
 test('sync registers rows added after install once per revision; a deleted row fails at call time', async () => {
   const { store, ops, sync, call, op } = harness();
   const before = ops.length;
@@ -340,6 +344,7 @@ test('a documented deep insert creates the parameter and property rows under the
   );
 });
 
+// @test-kind contract: Paqvilo persists the seeded custom API mappings in the ready transaction
 test('the seeded customapi mappings are persisted by the ready transaction', async (t) => {
   const dir = await makeTemporaryDirectory(join(tmpdir(), 'customapi-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -474,6 +479,7 @@ test('handler outputs fill the response by name; the bound target and caller rea
   });
 });
 
+// @test-kind contract: Paqvilo handler setup failures clear the request timeout and never invoke the handler
 test('bound handler context setup failures clear the request timeout and do not invoke the handler', async (t) => {
   let invoked = false;
   const timers = [],
@@ -618,6 +624,7 @@ test('a timeout names the custom API when the pack names no plug-in type', async
   );
 });
 
+// @test-kind contract: Paqvilo pack API: customApiHandlers keyed by lowercase unique name; bad or duplicate entries rejected
 test('customApiHandlers keys handlers by lowercase unique name, takes a bare function or { handler, pluginType }, and rejects a bad entry or a duplicate', () => {
   const handlers = customApiHandlers([
     {
@@ -645,6 +652,7 @@ test('customApiHandlers keys handlers by lowercase unique name, takes a bare fun
   );
 });
 
+// @test-kind contract: Paqvilo reads the configured plug-in limit per call
 test('the plug-in limit is read per call: a limit raised while the simulator runs lets a slow handler finish', async () => {
   let limit = 20;
   const handlers = handlersOf({ sample_Echo: () => new Promise((resolve) => setTimeout(() => resolve({}), 60)) });

@@ -1,3 +1,4 @@
+// @test-kind tooling: scripts/ci.mjs validation receipts, sharding, concurrency and revocation
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn bypass custom business logic (CustomSync, CustomAsync, step ids) applied to the Update a 1:N associate implies
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

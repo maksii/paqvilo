@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of tag inheritance into async CLR jobs; the tag shared variable is documented but async inheritance is not recorded
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

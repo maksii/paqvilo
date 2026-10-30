@@ -1,3 +1,4 @@
+// @test-kind security: effective-write authorization is per invocation, never reused, expires on failure and honours grant revocation
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn Dataverse connector operations (UpdateRecord, UpdateOnlyRecord, associate, changesets) over the SDK service
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
@@ -119,6 +120,7 @@ test('AssociateEntities relates two invented rows through a 1:N relationship and
   assert.equal(rows('x_child')[0].x_parentid ?? null, null);
 });
 
+// @test-kind security: origin confinement: an @odata.id on another origin is refused
 test('an @odata.id on another origin is refused', () => {
   const { invoke, rows } = setup();
   assert.throws(
@@ -134,6 +136,7 @@ test('an @odata.id on another origin is refused', () => {
   assert.equal(rows('x_child')[0].x_parentid ?? null, null);
 });
 
+// @test-kind contract: Paqvilo answers OperationUnsupported for connector actions and file columns that are not wired
 test('bound and unbound actions and file columns answer OperationUnsupported until the organization entry is wired', () => {
   const { invoke } = setup();
   assert.throws(() => invoke('PerformUnboundAction', { actionName: 'x_Recalculate', 'item/x_value': 1 }), {
@@ -287,6 +290,7 @@ test('a flow handles a failed plugin transaction in a changeset and continues in
   assert.equal(rows('x_parent')[0].x_name, 'Flow handled the failed request');
 });
 
+// @test-kind contract: Paqvilo connector inspect and invoke share one parameter set
 test('inspect and invoke accept the same parameter set', () => {
   const { connectors, invoke } = setup();
   for (const [operationId, spec] of Object.entries(DATAVERSE_OPERATION_SPEC)) {

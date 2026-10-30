@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo refuses unsupported query facets explicitly; the requests are serialized by the installed Microsoft.Xrm.Sdk
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';

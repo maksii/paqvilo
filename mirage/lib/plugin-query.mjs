@@ -4,10 +4,9 @@ import { isExactNumeric, decimalParts } from './exact-numeric.mjs';
 const fail = (message) => {
   throw new DataError(message, 501, 'LocalPluginQueryUnsupported');
 };
+// A Web API lookup value property (_x_value) names the lookup column x.
 const name = (value) => {
-  // A Web API lookup value property (_x_value) is the logical lookup column x in the SDK query.
-  const lookup = typeof value === 'string' && /^_([a-z]\w*)_value$/i.exec(value);
-  if (lookup) return lookup[1];
+  if (typeof value === 'string') value = value.replace(/^_([a-z]\w*)_value$/i, '$1');
   if (typeof value !== 'string' || !/^[a-z][\w]*$/i.test(value))
     fail('SDK query projection requires logical column names.');
   return value;

@@ -10,7 +10,13 @@ import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_thread
 import { DataError } from './data-error.mjs';
 import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
 import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
-import { asyncMultiplePluginParent, clrSdkEntryContext, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
+import {
+  asyncMultiplePluginParent,
+  asynchronousParentChain,
+  clrSdkEntryContext,
+  mainOperationParent,
+  selectSdkEntryParent,
+} from './plugin-sdk-parent.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
@@ -40,6 +46,13 @@ const canon = (id) =>
     .toLowerCase();
 const hostSource = fileURLToPath(new URL('./plugin-clr-host.cs', import.meta.url));
 let executionDepth = 0;
+// The nested plug-in Depth cap. Native evidence: a synchronous Create chain reached Depth 10 and the request
+// succeeded (the documented on-premises default of 8 does not apply online); the native limit itself is not observed.
+export const PLUGIN_MAX_DEPTH = 16;
+// An invocation's deadline includes its nested SDK calls (and their plug-ins). Native plug-in execution and the whole
+// message operation are limited to 2 minutes (Learn: Analyze plug-in performance), so a descriptor may ask up to that.
+const CLR_MAX_TIMEOUT_MS = 120_000;
+export const PLUGIN_DEPTH_MESSAGE = `Plug-in nested execution depth exceeds ${PLUGIN_MAX_DEPTH}.`;
 let parentStartTicks;
 function clrParentIdentity(executable) {
   if (!parentStartTicks) {
@@ -84,7 +97,7 @@ function clrTimeout(descriptor) {
   const value = descriptor.timeoutMs;
   if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
     fail('CLR timeoutMs must be a positive safe integer in milliseconds.');
-  return Math.max(100, Math.min(value ?? 2000, 10000));
+  return Math.max(100, Math.min(value ?? 2000, CLR_MAX_TIMEOUT_MS));
 }
 export function validateClrDescriptor(value) {
   if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
@@ -1365,7 +1378,7 @@ export function clrHostPoolStatus() {
 function executePooledClr(runtime, input, options, verified) {
   const depth = executionDepth + 1,
     key = runtime.directory + '\0' + runtime.descriptor.typeName + '\0' + depth;
-  if (depth > 8) fail('CLR nested execution depth exceeds eight.', 'LocalPluginDepth', 400);
+  if (depth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
   let session = pooledHosts.get(key);
   if (!session) {
     if (pooledHosts.size >= 32) {
@@ -1482,7 +1495,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
     completed = false;
   executionDepth++;
   try {
-    if (executionDepth > 8) fail('CLR nested execution depth exceeds eight.', 'LocalPluginDepth', 400);
+    if (executionDepth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
     while (!result) {
       let packet;
       while ((packet = receiveMessageOnPort(port1))) {
@@ -1622,7 +1635,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
         frame.operationDepth ?? 0,
         parent ? Number(parent.values.Depth) + 1 : 0,
       );
-  if (contextDepth > 8) fail('Plug-in nested execution depth exceeds eight.', 'LocalPluginDepth', 400);
+  if (contextDepth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
   const preValidationParent =
     stage !== 10 &&
     (step.contract?.mode ?? 0) === 0 &&
@@ -1644,14 +1657,51 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       retrieved: true,
     });
   };
-  const preImages = {},
-    postImages = {};
-  for (const registration of step.images ?? []) {
-    if ([0, 2].includes(registration.type) && previous)
-      preImages[registration.alias || registration.name] = image(previous, registration);
-    if ([1, 2].includes(registration.type) && stage === 40 && operation !== 'delete')
-      postImages[registration.alias || registration.name] = image(record, registration);
+  const asynchronous = (step.contract?.mode ?? 0) === 1,
+    crud = ['create', 'update', 'delete'].includes(operation),
+    nameColumn = primary ? store.resolveMapping(entity).nameColumn : null;
+  // The platform's own image for asynchronous registrations: the row's primary name and key (pre for Delete).
+  const asyncPrimaryName = () => {
+    const row = operation === 'delete' ? previous : record;
+    if (!row || !nameColumn) return null;
+    const columns = [nameColumn, primary];
+    return recordToSdkEntity(store, entity, imageAttributes(row, columns), { allColumns: false, columns });
+  };
+  const collectImages = (registrations, post, target) => {
+    for (const registration of registrations)
+      if (post ? [1, 2].includes(registration.type) && record : [0, 2].includes(registration.type) && previous)
+        target[registration.alias || registration.name] = image(post ? record : previous, registration);
+    return target;
+  };
+  const postAvailable = stage === 40 && operation !== 'delete';
+  const preImages = collectImages(step.images ?? [], false, {}),
+    postImages = postAvailable ? collectImages(step.images ?? [], true, {}) : {};
+  if (asynchronous && crud) {
+    const name = asyncPrimaryName();
+    if (name) (operation === 'delete' ? preImages : postImages).AsynchronousStepPrimaryName = name;
   }
+  // IPluginExecutionContext4 collections of a single-record message: every registration of the stage (see
+  // runPluginPhase stageImages), plus the asynchronous primary-name image at PostOperation.
+  const stageCollection = (viewStage, post) => {
+    const registrations =
+      frame.stageImages?.[viewStage]?.registrations ?? (viewStage === stage ? [step.images ?? []] : []);
+    const values = {};
+    if (!post || (viewStage === 40 && operation !== 'delete'))
+      for (const images of registrations) collectImages(images, post, values);
+    if (
+      crud &&
+      viewStage === 40 &&
+      post === (operation !== 'delete') &&
+      (asynchronous || frame.stageImages?.[40]?.asynchronous)
+    ) {
+      const name = asyncPrimaryName();
+      if (name) values.AsynchronousStepPrimaryName = name;
+    }
+    return {
+      $type: 'EntityImageCollectionArray',
+      values: Object.keys(values).length ? [{ $type: 'EntityImageCollection', values }] : [],
+    };
+  };
   const bulk = ['createmultiple', 'updatemultiple'].includes(operation),
     messageName =
       frame.customApi?.name ??
@@ -1692,12 +1742,19 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     inherited = (key) => parent?.values?.[key],
     guidOf = (value) => value?.value ?? value ?? null,
     empty = '00000000-0000-0000-0000-000000000000';
-  const executionUserId =
-      step.impersonatingUserId ??
+  // A native Delete's main operation (and its PreOperation, PostOperation and asynchronous steps) executes as the
+  // organization's SYSTEM user; PreValidation still runs as the caller.
+  const systemDelete =
+    operation === 'delete' && stage !== 10 && !store.pluginParentContext && !pluginInvocationSdkParent(store)
+      ? store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid
+      : null;
+  const callerUserId =
+      systemDelete ??
       store.pluginExecutionUserId ??
       caller?.systemUserId ??
       context.executionUserId ??
       descriptor.serviceProfile.userId,
+    executionUserId = step.impersonatingUserId ?? callerUserId,
     initiatingUserId =
       guidOf(inherited('InitiatingUserId')) ?? caller?.systemUserId ?? context.initiatingUserId ?? executionUserId,
     authenticatedUserId = guidOf(inherited('AuthenticatedUserId')) ?? caller?.dataverse?.callerId ?? initiatingUserId,
@@ -1737,6 +1794,22 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   // subsequent PostOperation replacements across ranks for every message shape.
   frame.outputParameters ??= { $type: 'ParameterCollection', values: {} };
   initializePluginOperation(frame, store, parent, { createdOn: context.operationCreatedOn });
+  // Create's PreOperation/PostOperation collection carries the platform's telemetry root (a JSON string).
+  if (['create', 'createmultiple'].includes(operation) && stage !== 10 && !asynchronous && !frame.telemetryRootSeeded) {
+    frame.sharedVariables ??= { $type: 'ParameterCollection', values: {} };
+    frame.sharedVariables.values.telemetryrootcontext ??= JSON.stringify({
+      serviceRequestId: frame.requestId,
+      correlationId: frame.correlationId,
+      activityVector: '00',
+      clientCorrelation: {
+        clientPrincipalId: identityFacts.InitiatingUserAzureActiveDirectoryObjectId.value,
+        clientTenantId: identityFacts.TenantId.value,
+        clientAppIdId: guidOf(identityFacts.InitiatingUserApplicationId),
+        organizationId: context.organizationId ?? store.state?.dataverse?.organizationId ?? empty,
+      },
+    });
+    frame.telemetryRootSeeded = true;
+  }
   if (stage === 40 && !frame.systemOutputsPopulated) {
     const values =
       operation === 'create'
@@ -1751,6 +1824,22 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     frame.outputParameters = { $type: 'ParameterCollection', values: { ...frame.outputParameters.values, ...values } };
     frame.systemOutputsPopulated = true;
   }
+  // Reads requested outside a plug-in carry the client's app-module and annotation inputs (Web API reads natively;
+  // the app module is empty outside a model-driven app).
+  // Explicit descriptor observations (portalInputParameters) keep precedence.
+  const outsidePlugin = !store.pluginParentContext && !pluginInvocationSdkParent(store);
+  const readRequestParameters = Object.fromEntries(
+    Object.entries(
+      !outsidePlugin
+        ? {}
+        : {
+            ...(frame.delegatedParentContext ? {} : { IncludeAnnotations: false }),
+            ...(operation === 'retrievemultiple'
+              ? { AppModuleId: typed('Guid', empty), IsAppModuleContext: false }
+              : {}),
+          },
+    ).filter(([key]) => !(portalRequest && Object.hasOwn(context.portalInputParameters ?? {}, key))),
+  );
   const answer = {
     ...(frame.sdkFrameworkSource ? { sdkFrameworkSource: frame.sdkFrameworkSource } : {}),
     expectedAssemblyName: step.assemblyName ?? null,
@@ -1791,9 +1880,10 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
         $type: 'EntityReference',
         logicalName: 'sdkmessageprocessingstep',
         id: step.id,
-        name: step.name,
+        // Native asynchronous contexts do not name their step.
+        name: asynchronous ? null : step.name,
       },
-      ParentContext: preValidationParent || parent || null,
+      ParentContext: parent || null,
       ...(bulk
         ? {
             PreEntityImagesCollection:
@@ -1803,14 +1893,8 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
             PostEntityImagesCollection: bulkImages(stage === 40 ? (frame.records ?? []) : [], true),
           }
         : {
-            PreEntityImagesCollection: {
-              $type: 'EntityImageCollectionArray',
-              values: Object.keys(preImages).length ? [{ $type: 'EntityImageCollection', values: preImages }] : [],
-            },
-            PostEntityImagesCollection: {
-              $type: 'EntityImageCollectionArray',
-              values: Object.keys(postImages).length ? [{ $type: 'EntityImageCollection', values: postImages }] : [],
-            },
+            PreEntityImagesCollection: stageCollection(stage, false),
+            PostEntityImagesCollection: stageCollection(stage, true),
           }),
     },
     inputParameters: {
@@ -1838,7 +1922,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
                   },
                 }
               : operation === 'retrievemultiple'
-                ? { Query: frame.query }
+                ? { Query: frame.query, ...readRequestParameters }
                 : operation === 'retrieve'
                   ? {
                       Target: frame.retrieveTarget ?? {
@@ -1847,6 +1931,9 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
                         id: record[primary],
                       },
                       ColumnSet: { $type: 'ColumnSet', ...frame.columns },
+                      ...(readRequestParameters.IncludeAnnotations === undefined
+                        ? {}
+                        : { IncludeAnnotations: false, ReturnNotifications: false }),
                     }
                   : {
                       Target:
@@ -1901,6 +1988,56 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       descriptor.serviceProfile.userId;
     answer.context.ParentContext = delegatedPluginParent(source, answer.context, caller);
   }
+  // PreOperation and PostOperation (and the asynchronous copies) see the main operation as their parent.
+  if (crud && stage !== 10 && !frame.delegatedSourceOperation)
+    answer.context.ParentContext = mainOperationParent({
+      frame,
+      context: answer.context,
+      parent: asynchronous ? (frame.mainOuterParent ?? null) : parent,
+      callerUserId,
+      objectId,
+      inputs: () => ({
+        ...cloneStateData(frame.mainOperationInputs ?? {}),
+        Target:
+          operation === 'delete'
+            ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
+            : {
+                ...recordToSdkEntity(
+                  store,
+                  entity,
+                  operation === 'create' && Object.hasOwn(frame.mainOperationTarget ?? {}, primary)
+                    ? frame.mainOperationTarget
+                    : { ...frame.mainOperationTarget, [primary]: record[primary] },
+                  operation === 'create'
+                    ? { allColumns: false, columns: Object.keys(frame.mainOperationTarget ?? {}) }
+                    : { allColumns: true },
+                ),
+                id: record[primary],
+              },
+      }),
+      images: stageCollection(10, false),
+    });
+  // The Create main operation's Target names the key it allocated after PreValidation (native upsert and
+  // nested-SDK creates: the Create/30 parent Target carries the primary-key attribute).
+  const mainParentTarget = answer.context.ParentContext?.values?.InputParameters?.values?.Target;
+  if (
+    operation === 'create' &&
+    crud &&
+    stage !== 10 &&
+    !frame.delegatedSourceOperation &&
+    mainParentTarget?.$type === 'Entity' &&
+    record[primary] != null &&
+    !Object.hasOwn(mainParentTarget.attributes ?? {}, primary)
+  )
+    mainParentTarget.attributes = {
+      ...mainParentTarget.attributes,
+      ...recordToSdkEntity(store, entity, { [primary]: record[primary] }).attributes,
+    };
+  if (!asynchronous && crud && stage !== 10) frame.mainOuterParent ??= parent ? cloneStateData(parent) : null;
+  // An asynchronous job sees the committed synchronous chain as its own operation: every level reports the job's
+  // mode, depth, message, row, step, operation id and time, outside a transaction.
+  if (asynchronous)
+    answer.context.ParentContext = asynchronousParentChain(answer.context.ParentContext, answer.context);
   answer.context.ParentContext = asyncMultiplePluginParent(frame, operation, entity) ?? answer.context.ParentContext;
   return answer;
 }

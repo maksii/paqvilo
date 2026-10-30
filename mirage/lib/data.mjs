@@ -159,6 +159,23 @@ function committedPluginParent(store, mapping, operation, target, row, options) 
   };
 }
 
+// Native corpus (pipelineEffects): an asynchronous step sees the operation as it stood when PostOperation began.
+// Target edits, OutputParameters and SharedVariables written by synchronous PostOperation steps do not reach it, so
+// the queued event keeps the pre-PostOperation parameters and the async run populates the system outputs itself.
+function prePostOperationFrame(frame) {
+  return {
+    inputParameters: clone(frame?.inputParameters),
+    outputParameters: clone(frame?.outputParameters),
+    sharedVariables: clone(frame?.sharedVariables),
+  };
+}
+const queuedFrame = (frame, before, asyncSourceParent) => ({
+  ...(frame ?? {}),
+  ...before,
+  systemOutputsPopulated: false,
+  asyncSourceParent,
+});
+
 const metadataField = (mapping, key) => {
   const fields = mapping?.fields ?? mapping?.fieldMetadata ?? {};
   return fields[key] ?? fields[Object.keys(fields).find((name) => name.toLowerCase() === key.toLowerCase())];
@@ -2489,8 +2506,15 @@ export class DataStore {
       throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
     if (stage !== 40 && operation !== 'delete') {
       const normalized = this.normalizeRecord(mapping, target);
-      // The Target a step hands back holds SDK values (a choices column is an option value list), not the
-      // client's Web API payload, so the HTTP payload reader rules do not apply to it.
+      // A plug-in Target carries SDK values, not Web API wire input: a DateOnly column holds a DateTime and a choices
+      // column an option array (OptionSetValueCollection), stored as the Web API's comma-separated values.
+      if (options.dataverseWebApi)
+        for (const [key, value] of Object.entries(normalized))
+          if (
+            Array.isArray(value) &&
+            fieldKind(this.fieldDefinition(mapping.logicalName, key, options.metadata)) === 'multichoice'
+          )
+            normalized[key] = value.join(',');
       if (options.coerce)
         this.coerceRecord(mapping, normalized, {
           ...options,
@@ -3752,6 +3776,25 @@ export class DataStore {
           501,
           'LocalPluginQueryUnsupported',
         );
+      // Native runs asynchronous RetrieveMultiple steps after the read, with its query and result (a message event:
+      // flows and mutation observers ignore it). A read outside a transaction stages it in its own queued transaction.
+      const readEvent = clone({
+        target: {},
+        query,
+        collection,
+        identity,
+        frame: responseFrame ?? {},
+        messageEvent: true,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+      });
+      if (this.committedEventCandidates) this.recordCommittedEvent(entity, 'retrievemultiple', record, [], readEvent);
+      else if (this.commitStagers?.size)
+        this.transact(() => this.recordCommittedEvent(entity, 'retrievemultiple', clone(record), [], readEvent), {
+          skipSaveIfUnchanged: true,
+        }).catch((error) => {
+          (this.committedEventErrors ??= []).push({ code: error.code ?? 'CommitStagerError', message: error.message });
+        });
       const sourceRows = answer[key] ?? [];
       const sourceById = new Map(
         sourceRows.map((row, index) => [row[mapping.idColumn] ?? answer.sdkRootIds?.[index], row]),
@@ -4868,12 +4911,27 @@ export class DataStore {
         );
       }
     // Native asynchronous Create snapshots include materialized defaults and
-    // main-operation fields. Expose that baseline before PostOperation so its
-    // later context edits/removals remain authoritative without changing data.
+    // main-operation fields, as they stood before PostOperation ran (never the row version or empty on-behalf/team
+    // lookups).
     for (const [name, value] of Object.entries(row))
       if (!notInTarget(name, value) && !(pluginTarget[name] === '' && value === null))
         pluginTarget[name] = clone(value);
-    const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options);
+    const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options),
+      asyncTarget = clone(pluginTarget),
+      beforePost = prePostOperationFrame(this.pluginFrames?.get(row));
+    // Values the main operation derived after PreOperation (exchangerate, <money>_base) belong to the Target the
+    // asynchronous steps see (native crud: asynchronous Create Target carries them).
+    const queuedTarget = beforePost.inputParameters?.values?.Target;
+    if (queuedTarget?.$type === 'Entity') {
+      const missing = Object.fromEntries(
+        Object.entries(asyncTarget).filter(([name]) => !own(queuedTarget.attributes ?? {}, name)),
+      );
+      if (Object.keys(missing).length)
+        Object.assign(
+          (queuedTarget.attributes ??= {}),
+          recordToSdkEntity(this, m.logicalName, missing, { allColumns: true, target: true }).attributes,
+        );
+    }
     if (isElastic(m)) {
       this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
         target: pluginTarget,
@@ -4888,12 +4946,12 @@ export class DataStore {
     yield [m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options];
     if (!isElastic(m) && !options.deferCommittedEvent)
       this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
-        target: pluginTarget,
+        target: asyncTarget,
         previous: null,
         identity,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
-        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
+        frame: queuedFrame(this.pluginFrames?.get(row), beforePost, asyncSourceParent),
       });
     return row;
   }
@@ -5037,13 +5095,11 @@ export class DataStore {
         .filter((name) => own(row, name))
         .map((name) => [name, clone(row[name])]),
     );
-    const beforePostTarget = new Set(Object.keys(target));
-    const committedTarget = () => {
-      const values = { ...asyncTargetBaseline, ...clone(target) };
-      for (const name of beforePostTarget) if (!own(target, name)) delete values[name];
-      return values;
-    };
-    const asyncSourceParent = committedPluginParent(this, mapping, 'update', target, row, options);
+    const committedTarget = () => ({ ...asyncTargetBaseline, ...clone(target) });
+    const asyncSourceParent = committedPluginParent(this, mapping, 'update', target, row, options),
+      asyncTarget = committedTarget(),
+      submitted = Object.keys(target),
+      beforePost = prePostOperationFrame(this.pluginFrames?.get(row));
     if (isElastic(mapping)) {
       this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
         target: committedTarget(),
@@ -5057,13 +5113,13 @@ export class DataStore {
     }
     yield [mapping, 'update', 40, target, row, previous, identity, changedAttributes, options];
     if (!isElastic(mapping) && !options.deferCommittedEvent)
-      this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
-        target: committedTarget(),
+      this.recordCommittedEvent(mapping.logicalName, 'update', row, submitted, {
+        target: asyncTarget,
         previous,
         identity,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
-        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
+        frame: queuedFrame(this.pluginFrames?.get(row), beforePost, asyncSourceParent),
       });
     return row;
   }

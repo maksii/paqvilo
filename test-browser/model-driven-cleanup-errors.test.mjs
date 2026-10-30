@@ -1,3 +1,4 @@
+// @test-kind contract: Lense model-driven ownership and cleanup: owned resources disposed, external browsers kept, failures reported
 import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';

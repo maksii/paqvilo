@@ -1,3 +1,4 @@
+// @test-kind tooling: local CodeQL driver concurrency, installation locks and SARIF evidence
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

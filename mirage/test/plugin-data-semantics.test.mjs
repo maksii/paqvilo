@@ -239,7 +239,7 @@ test('a choices value a step hands back as an option list is stored, not read as
   });
   const created = await f.request('POST', '/x_items', { x_itemid: id, x_name: 'Created', x_choices: '1' });
   assert(created.status < 300, await created.text());
-  assert.deepEqual(f.store.tableRows('x_item')[0].x_choices, [1, 2]);
+  assert.equal(f.store.tableRows('x_item')[0].x_choices, '1,2');
 });
 
 // @test-kind compatibility: Web API lookup properties _<lookup>_value name the logical lookup column (Microsoft Learn, lookup properties)

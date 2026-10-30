@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo SDK codec boundary: a lookup without an admitted observer never enters the SDK parent codec
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';

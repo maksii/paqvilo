@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo CLR host lifecycle: startup probe allowance, explicit pooling opt-in, owned cache cleanup, worker protocol bounds
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -230,6 +231,7 @@ else if(line.Contains("array"))Console.WriteLine("[]");else Console.WriteLine("n
   },
 );
 
+// @test-kind security: pooled hosts are isolated per runtime and a tampered execution snapshot is refused (LocalPluginSourceChanged)
 test(
   'pooled process reuse, runtime isolation, snapshot tampering and throwing cleanup diagnostics',
   { skip: CLR_SKIP },
@@ -304,6 +306,7 @@ test(
   },
 );
 
+// @test-kind security: only the exact parent incarnation authorizes a CLR host; orphaned hosts terminate after abrupt parent death
 test(
   'exact parent incarnation closes fresh and pooled CPU-hung CLR hosts after abrupt Node death',
   { skip: CLR_SKIP },

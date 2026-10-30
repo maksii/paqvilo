@@ -3085,6 +3085,7 @@ export function createRecordHandlers({
           operation,
           stage,
           associationParameters: parameters,
+          ...(rel.intersect ? { intersectEntity: rel.intersect.entity } : {}),
           record: holder,
           identity: c.identity ?? {},
           changedAttributes: [],

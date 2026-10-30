@@ -78,7 +78,7 @@ port.on('message', (message) => {
       !message.invocationId ||
       !Number.isInteger(message.timeout) ||
       message.timeout < 100 ||
-      message.timeout > 10000
+      message.timeout > 120_000
     )
       return stop(
         { kind: 'failure', code: 'LocalPluginProtocol', message: 'Invalid pooled CLR invocation.' },

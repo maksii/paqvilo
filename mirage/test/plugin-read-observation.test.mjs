@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of read observer ordering, serialization, snapshots and rollback; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -320,6 +321,7 @@ test('The scalar portal OData adapter exposes modeled expansion while independen
   assert.ok(seen.every((query) => query.$type === 'QueryExpression'));
 });
 
+// @test-kind parity+contract: native dev-environment recorded contexts (SecondaryEntityName none, nested calls not portal calls); transport flag is local design
 test('Context2 portal identity requires an explicit transport flag and clears on nested SDK context', () => {
   const store = fixture(),
     frame = { portalRequest: true, portalContactId: contact },
@@ -391,6 +393,7 @@ test('SDK frames retain independently computed cookies and RowVersion metadata w
   assert.deepEqual(projected.attributes, { title: 'Existing' });
 });
 
+// @test-kind parity: native dev-environment recorder corpus (pipelineEffects): nested Create parent is its stage-30 main operation, caller one level up
 test(
   'Original CLR read recorder sees portal context in all three stages and records through SDK with nested identity cleared',
   { skip: CLR_SKIP },
@@ -400,11 +403,12 @@ test(
     const sdk = clrSdk(),
       assembly = path.join(root, 'Recorder.dll'),
       source = path.join(root, 'Recorder.cs');
+    // Native (parity corpus pipelineEffects): a nested Create PreOperation's parent is its own Create main operation (in the transaction, not a portal call); the caller is one level up.
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented {
  public sealed class Recorder:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext7)services.GetService(typeof(IPluginExecutionContext7));if(c.EnvironmentId!="observed-local-environment"||c.TenantId!=new Guid("${user}")||!c.IsApplicationUser||c.InitiatingUserAgent==null||c.PreEntityImagesCollection.Length!=0||c.PostEntityImagesCollection.Length!=0)throw new InvalidPluginExecutionException("Context7 observations mismatch");if(!(c.InputParameters["AppModuleId"] is Guid)||(bool)c.InputParameters["IsAppModuleContext"])throw new InvalidPluginExecutionException("Observed input flags mismatch");if(c.Stage==40&&((EntityCollection)c.OutputParameters["BusinessEntityCollection"]).Entities[0].RowVersion!="12345")throw new InvalidPluginExecutionException("Source RowVersion lost");if(!c.IsPortalsClientCall||c.PortalsContactId!=new Guid("${contact}")||c.IsInTransaction||c.Depth!=1)throw new InvalidPluginExecutionException("Root read context mismatch");var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(new Guid("${writer}"));if(c.Stage==10)c.SharedVariables["observed"]="all stages";if((string)c.SharedVariables["observed"]!="all stages")throw new InvalidPluginExecutionException("Read shared values lost");var audit=new Entity("audit");audit["title"]=c.Stage.ToString();service.Create(audit);if(c.Stage==40&&((FetchExpression)c.InputParameters["Query"]).Query.Contains("fail"))throw new InvalidPluginExecutionException("Later observer rejected");}}
- public sealed class Audit:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext2)services.GetService(typeof(IPluginExecutionContext2));var parent=(IPluginExecutionContext2)c.ParentContext;if(c.UserId!=new Guid("${writer}")||c.InitiatingUserId!=new Guid("${user}")||c.IsPortalsClientCall||c.PortalsContactId!=Guid.Empty||c.Depth!=2||!c.IsInTransaction||parent.IsInTransaction||!parent.IsPortalsClientCall||parent.PortalsContactId!=new Guid("${contact}")||c.CorrelationId!=parent.CorrelationId)throw new InvalidPluginExecutionException("Nested recording context mismatch");((Entity)c.InputParameters["Target"])["note"]="nested SDK identity cleared";}}
+ public sealed class Audit:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext2)services.GetService(typeof(IPluginExecutionContext2));var main=(IPluginExecutionContext2)c.ParentContext;if(main.MessageName!="Create"||main.Stage!=30||!main.IsInTransaction||main.IsPortalsClientCall)throw new InvalidPluginExecutionException("Nested main operation mismatch");var parent=(IPluginExecutionContext2)main.ParentContext;if(c.UserId!=new Guid("${writer}")||c.InitiatingUserId!=new Guid("${user}")||c.IsPortalsClientCall||c.PortalsContactId!=Guid.Empty||c.Depth!=2||!c.IsInTransaction||parent.IsInTransaction||!parent.IsPortalsClientCall||parent.PortalsContactId!=new Guid("${contact}")||c.CorrelationId!=parent.CorrelationId)throw new InvalidPluginExecutionException("Nested recording context mismatch");((Entity)c.InputParameters["Target"])["note"]="nested SDK identity cleared";}}
  }`,
     );
     compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });

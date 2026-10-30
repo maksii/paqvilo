@@ -1,3 +1,4 @@
+// @test-kind compatibility: .NET Framework SDK SOAP Organization service contracts and SDK docs; some request bodies captured from the real ServiceClient
 // SOAP Organization service over the record handlers.
 import test from 'node:test';
 import assert from 'node:assert/strict';

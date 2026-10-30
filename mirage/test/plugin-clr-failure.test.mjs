@@ -1,3 +1,4 @@
+// @test-kind compatibility: Learn Web service error codes 0x80040224/0x80040265/0x80040217/0x8009000c for plug-in exceptions and caught nested faults
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -130,6 +131,7 @@ test(
   },
 );
 
+// @test-kind compatibility+contract: documented plug-in error codes; local adapter/output failures use Paqvilo LocalPluginSdkUnsupported classification
 test(
   'controlled plug-in exceptions, modeled SDK faults and local adapter failures keep their separate classification',
   { skip: CLR_SKIP },

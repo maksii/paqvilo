@@ -1,3 +1,4 @@
+// @test-kind contract: plug-in mock configuration refuses unsupported mocks with explicit error bodies
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
@@ -44,6 +45,7 @@ test('Explicit error bodies reject unsupported plugin mocks just as supported mo
   }
 });
 
+// @test-kind parity: native dev-environment recorder corpus (crud, pipelineEffects): PreValidation variables read from stage-30 main parent
 test(
   'Original DLL reads PreValidation variables through ParentContext across CRUD, ranks and nested SDK calls',
   { skip: CLR_SKIP },
@@ -53,6 +55,7 @@ test(
     const sdk = clrSdk(),
       source = path.join(directory, 'SharedAudit.cs'),
       assembly = path.join(directory, 'SharedAudit.dll');
+    // Native (parity corpus crud, pipelineEffects): the PreValidation variables are read from the stage-30 main operation parent.
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;
@@ -65,7 +68,7 @@ test(
     return;
    }
    var parent=c.ParentContext;
-   if(parent==null||parent.Stage!=10||parent.PrimaryEntityName!=c.PrimaryEntityName)throw new InvalidPluginExecutionException("Documented PreValidation parent is absent");
+   if(parent==null||parent.Stage!=30||parent.PrimaryEntityName!=c.PrimaryEntityName)throw new InvalidPluginExecutionException("Documented PreValidation parent is absent");
    if(((Money)parent.SharedVariables["pre"]).Value!=19.25m||(long)parent.SharedVariables["long"]!=9007199254740993L)throw new InvalidPluginExecutionException("Parent shared types or values differ");
    if(c.SharedVariables.Contains("pre")||c.SharedVariables.Contains("long"))throw new InvalidPluginExecutionException("PreValidation variables leaked into current collection");
    if(c.Depth!=parent.Depth||c.CorrelationId!=parent.CorrelationId)throw new InvalidPluginExecutionException("Same request depth/correlation changed");

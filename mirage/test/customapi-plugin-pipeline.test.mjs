@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of custom API stages, bypass, Power Fx fencing and depth (cap 16 assumed; native corpus only showed Depth 10 succeeding)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore, emptyState } from '../lib/data.mjs';
@@ -78,6 +79,7 @@ test(
   },
 );
 
+// @test-kind parity: native dev-environment recorder corpus (pipelineEffects): a nested Create PreOperation's ParentContext is its own stage-30 main operation
 test(
   'a JavaScript main operation retains its async depth and context when it calls an original CLR child',
   { skip: CLR_SKIP },
@@ -87,9 +89,10 @@ test(
     const sdk = clrSdk(),
       source = path.join(root, 'Child.cs'),
       assembly = path.join(root, 'Child.dll');
+    // Native (parity corpus pipelineEffects): a nested Create PreOperation's ParentContext is its own Create stage-30 main operation; the calling context is that main operation's parent.
     await fs.writeFile(
       source,
-      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Child:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.Depth!=2||c.ParentContext==null||c.ParentContext.MessageName!="${name}"||c.ParentContext.Stage!=30||c.ParentContext.Depth!=1||(string)c.ParentContext.InputParameters["Text"]!="From JS"||(bool)c.ParentContext.SharedVariables["IsAutoTransact"]!=true)throw new Exception("Main parent context lost");((Entity)c.InputParameters["Target"])["title"]="Observed child";}}}`,
+      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Child:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var main=c.ParentContext;if(main==null||main.MessageName!="Create"||main.Stage!=30||main.Depth!=2)throw new Exception("Create main operation parent lost");var caller=main.ParentContext;if(c.Depth!=2||caller==null||caller.MessageName!="${name}"||caller.Stage!=30||caller.Depth!=1||(string)caller.InputParameters["Text"]!="From JS"||(bool)caller.SharedVariables["IsAutoTransact"]!=true)throw new Exception("Main parent context lost");((Entity)c.InputParameters["Target"])["title"]="Observed child";}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
@@ -717,6 +720,7 @@ test('custom API asynchronous extensions receive committed input/output snapshot
   }
 });
 
+// @test-kind contract: Paqvilo refuses a custom API whose exported main-operation plug-in has no local implementation instead of guessing
 test('an exported main-operation plug-in without a local implementation refuses the custom API', async (t) => {
   const f = await fixture(t, { stages: [], namedMain: true });
   assert.equal(describeCustomApis(f.api).operations.find((op) => op.name === 'customapi:' + name).level, 'contract');
@@ -766,6 +770,7 @@ test('custom API main-handler traces obey organization settings and survive a fa
   assert.match(traces[0].exceptiondetails, /Main handler refused/);
 });
 
+// @test-kind security: trust check: an original main-operation DLL is prepared only after a witnessed internal-step identity
 test('original main-operation execution requires witnessed internal-step identity before preparing any DLL', async (t) => {
   const f = await fixture(t, {
     stages: [],
@@ -843,13 +848,14 @@ test('synchronous SDK execution refuses an async-only main handler and fences it
   assert.equal(f.store.tableRows('child').length, 0);
 });
 
-test('recursive JavaScript custom API main operations share the eight-level plugin depth limit', async (t) => {
+// The shared cap is 16 levels (native corpus: a nested Create chain reached Depth 10 and succeeded).
+test('recursive JavaScript custom API main operations share the sixteen-level plugin depth limit', async (t) => {
   let calls = 0;
   const f = await fixture(t, {
     stages: [],
     main: () => {
       calls++;
-      if (calls < 10)
+      if (calls < 18)
         return {
           outputs: pluginMessageValues(
             f.api.records.executeMessageSyncInternal({
@@ -867,7 +873,7 @@ test('recursive JavaScript custom API main operations share the eight-level plug
     },
   });
   await assert.rejects(f.call(), (error) => error.code === 'LocalPluginDepth');
-  assert.equal(calls, 8);
+  assert.equal(calls, 16);
 });
 
 test('overlapping asynchronous main operations on separate organizations keep independent invocation depths', async (t) => {

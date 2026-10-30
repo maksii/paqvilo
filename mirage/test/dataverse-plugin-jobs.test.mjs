@@ -1,3 +1,4 @@
+// @test-kind compatibility: Microsoft Learn asyncoperation system jobs, asyncautodelete and organization plugintracelogsetting for plug-in executions
 // Plug-in system jobs: asyncoperation rows for async steps, plugintracelog rows, the Custom API plug-in type route and the
 // TriggerServiceEndpointCheck probe.
 import { describe, it, afterEach, mock } from 'node:test';
@@ -190,6 +191,7 @@ describe('async steps write asyncoperation system jobs when the Dataverse API is
   });
 });
 
+// @test-kind contract: Paqvilo design: the Dataverse API switch adds system jobs without changing portal results
 describe('the portal path is unchanged by system jobs', () => {
   it('a portal write that triggers an async step returns the same rows with the Dataverse API on and off; only the system job differs', async () => {
     const handlers = pluginHandlers([{ id: 'invented', pluginSteps: { [STEP]: () => {} } }]);
@@ -351,6 +353,7 @@ describe('plugintracelog follows organization.plugintracelogsetting', () => {
   });
 });
 
+// @test-kind contract: Paqvilo pack API: pluginTypes handlers serve Custom API plug-in types; customApis entries take precedence
 describe('a Custom API whose plug-in type has a pluginTypes handler runs it', () => {
   const API_ID = 'cccccccc-0000-4000-8000-000000000001';
   const ADMIN = { systemuserid: 'aaaaaaaa-0000-4000-8000-000000000001' };
@@ -447,6 +450,7 @@ describe('a Custom API whose plug-in type has a pluginTypes handler runs it', ()
   });
 });
 
+// @test-kind security: loopback-only delivery: TriggerServiceEndpointCheck contacts only loopback webhooks; other URLs are never contacted
 describe('TriggerServiceEndpointCheck probes a loopback webhook endpoint', () => {
   let server;
   // Awaited, so the next test starts only after the endpoint stopped listening and dropped its connections.

@@ -1,3 +1,4 @@
+// @test-kind contract: Tweaks refresh keeps an open confirmation and keyboard focus
 // A Tweaks refresh must not remove an open confirmation or move keyboard focus.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
