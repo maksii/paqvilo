@@ -1803,8 +1803,16 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   const preImages = collectImages(step.images ?? [], false, {}),
     postImages = postAvailable ? collectImages(step.images ?? [], true, {}) : {};
   // A bulk-origin *Multiple step's own collections hold no primary-name image (native bulk); its Context4 sets do.
+  // A single-origin *Multiple lane names its one target's row (native crud ev 1648/1653).
+  const laneRow = () => {
+    const id = frame.targets?.[0]?.id ?? record?.bulkIds?.[0];
+    return (
+      (primaryNameOn === 'pre' ? frame.previousRecords?.[0] : frame.records?.[0]) ??
+      store.tableRows(entity).find((row) => canon(row[primary]) === canon(id))
+    );
+  };
   if (asynchronous && primaryNameOn && !(bulk && frame.bulkOrigin)) {
-    const name = asyncPrimaryName(primaryNameOn === 'pre' ? previous : record);
+    const name = asyncPrimaryName(bulk ? laneRow() : primaryNameOn === 'pre' ? previous : record);
     if (name) (primaryNameOn === 'pre' ? preImages : postImages)[PRIMARY_NAME_IMAGE] = name;
   }
   // IPluginExecutionContext4 collections: the stage's image set as this step sees it (runPluginPhase stageImages,

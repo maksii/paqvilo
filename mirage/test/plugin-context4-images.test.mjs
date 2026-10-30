@@ -32,6 +32,7 @@ let prepared;
 const root = path.join(os.tmpdir(), `paq-context4-${process.pid}`),
   log = path.join(root, 'seen.txt');
 after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
+// @parity-evidence: native crud.json ev 1648/1653 (repeated at 1658, imagesOrder 7680/7686): an asynchronous single-origin *Multiple step's own AsynchronousStepPrimaryName names the target row; the observer now also logs that image's id (no existing assertion changed)
 // One original assembly whose Observer logs, per execution: step id, message, stage, mode, the Context4 collections
 // (sets joined by '/', aliases in collection order), its own image aliases, the main-operation parent's pre set, the
 // PreBusinessEntity attributes and the owner of each own image.
@@ -46,7 +47,7 @@ static string Keys(EntityImageCollection[] sets){return string.Join("/",sets.Sel
 static string Owners(EntityImageCollection images){return string.Join(",",images.Select(i=>i.Key+":"+(i.Value.Contains("ownerid")?((EntityReference)i.Value["ownerid"]).Id.ToString():"-")));}
 public void Execute(IServiceProvider p){var c=(IPluginExecutionContext4)p.GetService(typeof(IPluginExecutionContext));string parent;try{var pc=c.ParentContext as IPluginExecutionContext4;parent=pc==null?"none":pc.MessageName+"/"+pc.Stage+":"+Keys(pc.PreEntityImagesCollection);}catch(Exception){parent="unavailable";}
 var business=c.PreEntityImagesCollection.FirstOrDefault(s=>s.Contains("${PBE}"));
-File.AppendAllText(@"${log.replaceAll('"', '""')}",string.Join("|",c.OwningExtension.Id,c.MessageName,c.Stage,c.Mode,Keys(c.PreEntityImagesCollection),Keys(c.PostEntityImagesCollection),string.Join(",",c.PreEntityImages.Keys)+";"+string.Join(",",c.PostEntityImages.Keys),parent,business==null?"-":string.Join(",",business["${PBE}"].Attributes.Keys),Owners(c.PreEntityImages)+";"+Owners(c.PostEntityImages))+Environment.NewLine);}}}`,
+File.AppendAllText(@"${log.replaceAll('"', '""')}",string.Join("|",c.OwningExtension.Id,c.MessageName,c.Stage,c.Mode,Keys(c.PreEntityImagesCollection),Keys(c.PostEntityImagesCollection),string.Join(",",c.PreEntityImages.Keys)+";"+string.Join(",",c.PostEntityImages.Keys),parent,business==null?"-":string.Join(",",business["${PBE}"].Attributes.Keys),Owners(c.PreEntityImages)+";"+Owners(c.PostEntityImages),c.PostEntityImages.Contains("${ASPN}")?c.PostEntityImages["${ASPN}"].Id.ToString():"-")+Environment.NewLine);}}}`,
     );
     const sdk = clrSdk();
     compileClr(source, path.join(root, 'Observer.dll'), { references: [sdk] });
@@ -125,7 +126,7 @@ async function observe(t, steps, act, store = storeOf()) {
   await backend.asyncPluginRunner.drain();
   const seen = {};
   for (const line of (await fs.readFile(log, 'utf8')).trim().split(/\r?\n/).filter(Boolean)) {
-    const [stepId, message, stage, mode, pre, post, own, parent, business, owners] = line.split('|');
+    const [stepId, message, stage, mode, pre, post, own, parent, business, owners, named] = line.split('|');
     const n = Number(stepId.slice(-12));
     (seen[n] ??= []).push({
       message,
@@ -137,6 +138,7 @@ async function observe(t, steps, act, store = storeOf()) {
       parent,
       business,
       owners,
+      named,
     });
   }
   return seen;
@@ -164,6 +166,7 @@ test(
         step(6, 'Update', 40, 2),
         step(7, 'Update', 40, 3, { images: [{ alias: 'both', type: 2, attributes: ['title'] }] }),
         step(8, 'Update', 40, 4, { mode: 1 }),
+        step(11, 'UpdateMultiple', 40, 4, { mode: 1 }),
         step(9, 'Update', 40, 5),
         step(10, 'UpdateMultiple', 40, 6),
       ],
@@ -185,6 +188,9 @@ test(
     assert.deepEqual([seen[5][0].mode, seen[5][0].pre, seen[5][0].post], [1, `pre,${PBE}`, `post,${ASPN}`]);
     assert.equal(seen[5][0].own, `pre;post,${ASPN}`);
     assert.deepEqual([seen[8][0].pre, seen[8][0].post], [`pre,${PBE},both`, `post,${ASPN},both`]);
+    // The asynchronous UpdateMultiple lane shares the set and names its target row (native crud ev 1653).
+    assert.deepEqual([seen[11][0].pre, seen[11][0].post], [`pre,${PBE},both`, `post,${ASPN},both`]);
+    assert.deepEqual([seen[11][0].own, seen[11][0].named], [`;${ASPN}`, id]);
   },
 );
 
