@@ -86,6 +86,7 @@ function probe(store, want, { act, stepOf = () => step(), multiple } = {}) {
     snapshots = new WeakMap();
   const pipeline = (phase) => {
     const frame = runPluginPhase({ ...phase, store, items: [], handlers: new Map() });
+    // @parity-evidence: native recorder corpus crud/depth/faults (two captures): a single Create/Update/Delete runs its paired multiple message's steps on the same frame (audit C26a); only this probe helper changes, no assertion
     // A single Create/Update/Delete also runs its multiple message's steps on its own frame (plugin-single-multiple.mjs).
     const labels = [
       `${phase.customApi?.name ?? phase.operation}/${phase.stage}`,

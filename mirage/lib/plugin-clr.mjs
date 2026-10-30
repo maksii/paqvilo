@@ -44,8 +44,8 @@ import {
   sdkFault,
 } from './plugin-sdk-messages.mjs';
 import { formatPipelineTargets, pipelineFormattedValues } from './plugin-formatted-values.mjs';
-import { bridgeTargetInputs, bulkTargetsCollection } from './plugin-single-multiple.mjs';
 import { privilegeDeniedError } from './dataverse-security.mjs';
+import { bridgeTargetInputs, bulkTargetsCollection } from './plugin-single-multiple.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginClrConfiguration', status = 409) => {
