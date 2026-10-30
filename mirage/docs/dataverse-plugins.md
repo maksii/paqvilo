@@ -44,6 +44,8 @@ Mirage stores the registration rows (plug-in assemblies, types, steps and images
 
 `OnExternalCreated`, `OnExternalUpdated` and `OnExternalDeleted` expose registration filters only for virtual mappings. Their steps must use asynchronous PostOperation (mode 1, stage 40); other registrations fail with `0x80090303`. Notifications publish the supplied snapshot and schedule the local asynchronous pipeline without modifying provider-owned rows.
 
+The seeded catalogue follows native rows: platform messages keep their native `sdkmessageid` and flags (Retrieve, RetrieveMultiple and the principal-access reads are not auto-transacted; the archive and legacy bulk messages are private). Every table has filters for the data, state, retention and archive messages (`IsValidStateTransition` takes no custom step); custom tables add `DeleteMultiple`; user- or team-owned tables add Assign and the sharing messages; account, contact, lead and incident add Merge; transactioncurrency adds RetrieveExchangeRate. Associate, Disassociate and Execute have only a `none` filter that allows steps; Upsert, UpsertMultiple and Merge have a `none` filter that does not, yet a step registered with no filter on them is accepted. Validation answers with the native codes and texts: an asynchronous step outside stage 40 (`0x80040203`, naming the step), a filter that takes no custom step (`0x80044187`, naming the step and filter), an unknown filtering attribute (`0x8004f036`, a missing dependency), and an image type the message does not support (`0x8004416d`, checked before the property name). Any whole rank is accepted, a negative one included.
+
 While the Dataverse API is on, its registration rows decide which steps run. With no registration writes the list equals the Solution's own list. A disabled step stops running, a deleted step is removed, and a step registered through the API takes the same pipeline position as a Solution step (stage, then rank).
 
 Steps on a web hook (service endpoint) are delivered as described in [Webhooks](#webhooks). Asynchronous steps run after commit as durable jobs. Each accepted run is written as a Ready asyncoperation system job (System Event, operationtype 1; Ready 0/0) inside the transaction that commits the triggering write, so the commit carries its jobs or does not happen: a failed save or a rolled-back caller leaves neither the row nor its job. The job's `data` column keeps the job kind, its correlation chain and the committed event. Only the start of the runner waits for the commit. One runner per store (`committedJobs` in `committed-work.mjs`) runs the Ready jobs in table order (FIFO) on the organization scheduler (`runtime-clock.mjs`): on the next turn with the default scheduler, or when a test calls `runDue()`/`advance(ms)` on a manual one. A plug-in run durably claims Locked before invocation, then records its final state in its own store transaction: Completed/Succeeded (30), or Completed/Failed (31) with `message`, `friendlymessage` and `errorcode`. A succeeded job is removed when its step has `asyncautodelete`. While the Dataverse API is off the job row is only the queue entry and is removed when the run ends, so the portal tables keep their shape. A job whose step registration is no longer in the catalogue when it runs ends Failed (`LocalPluginAsyncUnavailable`). A web hook job is Locked while its POST runs, does not hold back the jobs after it, and is finished by `asyncoperationid` in a later transaction; if the row is gone by then, a `PLUGIN_ASYNC_JOB_MISSING` diagnostic is recorded. A job cancelled (statecode 3) before it starts does not run. Committed async runs are never dropped: past 100 queued runs (and each further 100) a `PLUGIN_ASYNC_BACKLOG` diagnostic is recorded and every run still executes in order; only the depth and per-chain loop guards (`PLUGIN_ASYNC_LIMIT`) skip runs. A root committed event starts its own chain, so the rows of one bulk commit never share one chain budget.
@@ -261,9 +263,13 @@ actual queried table as `PrimaryEntityName`; scope is never substituted into
 runtime context. Accepting a registration does not mean the platform invokes
 custom processing for every table.
 
-Explicit null-filter `Update` and `Delete` registrations also use the actual
-affected table and record in their execution context. Global `Create` bindings
-and images on global write registrations remain unqualified. Update filtering
+Explicit null-filter registrations (including Create, the bulk messages and an
+asynchronous RetrieveMultiple, which runs after the read with its query and
+result) use the actual affected table and record in their execution context;
+images on a global write project from that table. Global steps on Upsert,
+UpsertMultiple and Merge, and asynchronous Retrieve steps, are accepted and never
+run, as natively. An impersonating step runs with the impersonated user as
+`UserId`. Update filtering
 includes the table's implicit primary key, even when the caller did not author
 that column; other filters continue to use attribute presence rather than value
 changes.

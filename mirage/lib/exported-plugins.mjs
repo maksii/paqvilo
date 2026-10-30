@@ -37,7 +37,7 @@ import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
 import { pluginFailure } from './plugin-fault.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
-import { pluginMessageHasPipeline } from './plugin-message-admission.mjs';
+import { pluginMessageHasPipeline, pluginStepInert } from './plugin-message-admission.mjs';
 import {
   recordStepConstructorSettings,
   copyStepConstructorSettings,
@@ -433,8 +433,8 @@ export async function resolvePluginSourceFiles(plugins, mappings = {}, defaultRo
   return plugins;
 }
 
-// impersonation: a trusted type handler implements the identity (UserId) of an impersonated step.
-export function pluginUnsupported(step, { images = false, impersonation = false } = {}) {
+// An impersonated step runs with the impersonated user as UserId (every handler and the CLR context implement it).
+export function pluginUnsupported(step, { images = false } = {}) {
   if (![0, 1].includes(step.mode)) return 'Execution mode is missing or unsupported.';
   const external = /^onexternal(created|updated|deleted)$/.test(String(step.message).toLowerCase());
   const customApi = step.customApi;
@@ -445,51 +445,22 @@ export function pluginUnsupported(step, { images = false, impersonation = false 
     return 'The custom API does not allow this processing step execution mode.';
   if (external && (step.mode !== 1 || step.stage !== 40))
     return 'External virtual-table events require asynchronous PostOperation execution.';
-  if (
-    step.mode === 1 &&
-    (step.stage !== 40 ||
-      (!customApi &&
-        ![
-          'create',
-          'update',
-          'delete',
-          'createmultiple',
-          'updatemultiple',
-          'associate',
-          'disassociate',
-          'onexternalcreated',
-          'onexternalupdated',
-          'onexternaldeleted',
-        ].includes(String(step.message).toLowerCase())))
-  )
+  // Native accepts an asynchronous step on any message at stage 40; the message's pipeline decides below.
+  if (step.mode === 1 && step.stage !== 40)
     return 'Asynchronous execution supports post-commit stage 40 mutation and external virtual-table event registrations.';
   if (!stages[step.stage]) return 'Only synchronous stages 10, 20 and 40 are simulated.';
   if (!step.message)
     return 'The SDK message name is not exported. Add evidence-backed observed.sdkMessages or exported SDK message metadata; the step label is not used to guess behavior.';
-  if (!pluginMessageHasPipeline(step)) return 'This message has no configured local execution pipeline.';
-  if (
-    step.unfiltered === true &&
-    (step.entity ||
-      step.messageFilterId ||
-      !['retrievemultiple', 'associate', 'disassociate', 'update', 'delete'].includes(
-        String(step.message).toLowerCase(),
-      ) ||
-      (String(step.message).toLowerCase() === 'retrievemultiple' && step.mode !== 0))
-  )
-    return 'Unfiltered execution requires an explicit null filter on a supported read, association, Update or Delete message.';
-  if (
-    step.unfiltered === true &&
-    ['update', 'delete'].includes(String(step.message).toLowerCase()) &&
-    step.images?.length
-  )
-    return 'Images on global write registrations require a separately qualified table-specific projection adapter.';
+  const inert = pluginStepInert(step);
+  if (!inert && !pluginMessageHasPipeline(step)) return 'This message has no configured local execution pipeline.';
+  // An unfiltered (global) step runs for every table its message fires on, with that table in the context.
+  if (step.unfiltered === true && (step.entity || step.messageFilterId))
+    return 'Unfiltered execution requires an explicit null filter.';
   if (!customApi && step.unfiltered !== true && (!step.entity || !/^[a-z][a-z0-9_]*$/i.test(step.entity)))
     return 'An explicit logical table binding is required.';
   if (!Number.isInteger(step.rank)) return 'An explicit execution rank is required.';
   if (step.supportedDeployment === 1) return 'Offline-only client registration is skipped by online/server execution.';
   if (![0, 2].includes(step.supportedDeployment)) return 'Server deployment is missing or unsupported.';
-  if (step.impersonatingUserId && !impersonation)
-    return 'Impersonated execution requires an explicit identity adapter.';
   if (step.images?.length && !images) return 'Registered pre/post images require an explicit image adapter.';
   if (images && (step.images ?? []).some((image) => ![0, 1, 2].includes(image.type) || (!image.alias && !image.name)))
     return 'Registered image type or alias is unresolved.';
@@ -507,16 +478,15 @@ export function pluginUnsupported(step, { images = false, impersonation = false 
 }
 
 export function pluginStepMatchesEntity(step, entity) {
+  if (pluginStepInert(step)) return false;
   return (
     (step.customApi && (step.customApi.bindingType === 0 ? !entity || entity === 'none' : step.entity === entity)) ||
     step.entity === entity ||
     (step.unfiltered === true &&
+      !step.customApi &&
       step.entity == null &&
       step.messageFilterId == null &&
-      ['retrievemultiple', 'associate', 'disassociate', 'update', 'delete'].includes(
-        String(step.message).toLowerCase(),
-      ) &&
-      (String(step.message).toLowerCase() !== 'retrievemultiple' || (step.contract?.mode ?? step.mode) === 0))
+      pluginMessageHasPipeline(step))
   );
 }
 // One handler per plug-in type name (pluginTypes) serves every step of that type, including steps the Dataverse API
@@ -893,10 +863,7 @@ export function pluginCatalogue({
       registered = handlerOf(handlers, step) !== undefined;
     const runtime = runtimes.get(step.id),
       descriptor = descriptors.get(step.id),
-      unsupported = pluginUnsupported(step, {
-        images: Boolean(runtime || descriptor || registered),
-        impersonation: !handlers.has(step.id) && handlers.has(step.typeName),
-      });
+      unsupported = pluginUnsupported(step, { images: Boolean(runtime || descriptor || registered) });
     const clrAvailable = Boolean((runtime?.descriptor ?? descriptor)?.typeName === step.typeName);
     return copyStepConstructorSettings(step, {
       ...step,

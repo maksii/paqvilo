@@ -45,7 +45,7 @@ function jobColumns(store, item, event, chain) {
     /* A removed entity has no primary-key column to include. */
   }
   const recordId =
-    idColumn && !['createmultiple', 'updatemultiple'].includes(event.operation)
+    idColumn && !['createmultiple', 'updatemultiple', 'retrievemultiple'].includes(event.operation)
       ? (event.row?.[idColumn] ?? null)
       : null;
   return {
@@ -386,6 +386,8 @@ export function createAsyncPluginRunner({
             bypassStepIds: event.bypassStepIds,
             bypassCustomPlugins: event.bypassCustomAsync,
             associationParameters: event.associationParameters,
+            query: structuredClone(event.query),
+            collection: structuredClone(event.collection),
             targets: event.targets,
             previousRecords: event.previousRecords,
             records: event.records,

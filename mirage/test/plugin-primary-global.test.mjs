@@ -198,7 +198,9 @@ test(
   },
 );
 
-test('source and HTTP registrations retain explicit global Update/Delete bindings without inferring global Create or image projections', async (t) => {
+// Native accepts and runs global Create steps, and accepts an image on a global Update (registration probes); images
+// project for the table the message fires on.
+test('source and HTTP registrations retain explicit global Update/Delete bindings, with images and global Create', async (t) => {
   const f = await contractModuleFixture(t, {
     mappings,
     tables: {
@@ -232,16 +234,13 @@ test('source and HTTP registrations retain explicit global Update/Delete binding
     assert.equal(step.entity, null);
     assert.equal(step.messageFilterId, null);
     assert.equal(step.unsupported, null);
-    assert.match(
+    assert.equal(
       pluginUnsupported(
         { ...step, images: [{ name: 'Before', alias: 'Before', type: 0, attributes: [] }] },
         { images: true },
       ),
-      /global write registrations/,
+      null,
     );
   }
-  assert.ok(
-    pluginUnsupported(definition(99, 'Create', 20)),
-    'Global Create remains outside the qualified binding contract',
-  );
+  assert.equal(pluginUnsupported(definition(99, 'Create', 20)), null, 'global Create is admitted');
 });

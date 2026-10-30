@@ -41,7 +41,8 @@ async function fixture(t, plugins) {
       .find(
         (row) =>
           row.sdkmessageid === msg.sdkmessageid &&
-          row.primaryobjecttypecode === (message.startsWith('x_Policy') ? 'none' : 'x_item'),
+          row.primaryobjecttypecode ===
+            (message.startsWith('x_Policy') || ['Associate', 'Disassociate'].includes(message) ? 'none' : 'x_item'),
       );
     return f.request('POST', '/sdkmessageprocessingsteps', {
       name: `${message} ${stage}/${mode}`,

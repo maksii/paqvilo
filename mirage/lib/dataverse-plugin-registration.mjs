@@ -5,7 +5,7 @@ import { organizationRecord } from './organization-context.mjs';
 // the documented errors. A row runs nothing by itself: overlayRegisteredSteps decides which steps join the pipeline. Seeding is insert-or-replace
 // by id, so reseeding is idempotent and the Solution's rows win on reseed.
 import { DataError } from './data-error.mjs';
-import { privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
+import { ownershipTypeName, privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
 import { standardTableDef } from './dataverse-standard.mjs';
 import { SDK_MESSAGES, pluginUnsupported } from './exported-plugins.mjs';
 import { InvalidAssembly, inspectAssembly, inspectSigningCertificate } from './clr-assembly-reader.mjs';
@@ -15,34 +15,95 @@ import { stepConstructorSettings, copyStepConstructorSettings } from './plugin-c
 
 const NAMESPACE = uuidV5('6ba7b811-9dad-11d1-80b4-00c04fd430c8', 'paqvilo-dataverse'); // same as dataverse-api.mjs DATAVERSE_NAMESPACE
 const SIXTEEN_MB = 16 * 1024 * 1024;
-const PIPELINE = [
+// Platform SDK messages with their native sdkmessage ids (the same in every organization) and row flags: private,
+// server-only availability (0, else 2) and read (autotransact false). Recorded from native sdkmessage rows.
+const PLATFORM_MESSAGES = Object.fromEntries(
+  [
+    ['Archive', 'd1b4b049-36f7-4788-93e1-21fa36b3a544', 'private'],
+    ['Assign', '8cbdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
+    ['Associate', '16e7c888-3b24-448b-b7da-ebfe9b681762'],
+    ['BulkArchive', '87a84fbd-5d5c-42a0-a270-bddebee1f9f5', 'private'],
+    ['BulkRetain', '3c4af4bf-858c-4bbf-a730-7a4f05d4a1aa'],
+    ['Create', '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8'],
+    ['CreateMultiple', 'eb9990f6-feff-497f-974c-eb457ee0d072'],
+    ['CreateMultipleLegacy', '9473dd2f-1787-4d63-8ed2-79d33ee9550e', 'private'],
+    ['Delete', 'a1bdbb1b-ea3e-db11-86a7-000a3a5473e8'],
+    ['DeleteMultiple', '3a2f175d-d34f-41ca-94f2-8ec927d1c9e9'],
+    ['Disassociate', 'bdfc191d-fc56-493a-a6b1-cb0c47a22ecc'],
+    ['Execute', 'a6bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
+    ['GrantAccess', 'c5bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
+    ['IsValidStateTransition', 'cebdbb1b-ea3e-db11-86a7-000a3a5473e8'],
+    ['Merge', 'dbbdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
+    ['ModifyAccess', 'dcbdbb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
+    ['PurgeArchivedContent', '49648deb-0127-4175-8003-44a9755e15f1', 'private'],
+    ['PurgeRetainedContent', 'b7398baf-088d-4a42-8f14-1fdae647dc39'],
+    ['Retain', '96db29d8-db5f-4b63-ae1d-2e9a9f222261'],
+    ['Retrieve', 'f2bdbb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
+    ['RetrieveExchangeRate', '126075c5-c77f-44fd-bb7d-3457a9168cee'],
+    ['RetrieveMultiple', '03bebb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
+    ['RetrievePrincipalAccess', '04bebb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
+    ['RetrieveSharedPrincipalsAndAccess', '10bebb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
+    ['RetrieveVersion', '31bebb1b-ea3e-db11-86a7-000a3a5473e8'],
+    ['RevokeAccess', '11bebb1b-ea3e-db11-86a7-000a3a5473e8', 'server'],
+    ['RollbackRetain', '9d8b5bbb-f49b-4d3b-8628-0b01f259ef75'],
+    ['SetState', '1cbebb1b-ea3e-db11-86a7-000a3a5473e8'],
+    ['SetStateDynamicEntity', '1dbebb1b-ea3e-db11-86a7-000a3a5473e8'],
+    ['Update', '20bebb1b-ea3e-db11-86a7-000a3a5473e8'],
+    ['UpdateMultiple', 'e2ac2e19-aea0-47a3-b024-f7a7015b4d60'],
+    ['UpdateMultipleLegacy', '9483dd2f-1787-4d63-8ed2-79d33ee9550e', 'private'],
+    ['Upsert', '437b4608-8fc1-472a-968d-3a3f55180fba', 'read'],
+    ['UpsertMultiple', 'a37ff683-98b5-4325-953f-9a338240dbf0'],
+    ['ValidateArchiveConfig', '8a60138c-3079-473b-ae9b-6d245b4ac3f1', 'private'],
+    ['ValidateRetentionConfig', 'd3181841-c5be-4b19-b09b-a20a75ab49ff'],
+    ['WhoAmI', '26bebb1b-ea3e-db11-86a7-000a3a5473e8', 'read'],
+  ].map(([name, id, flag]) => [name, { id, flag }]),
+);
+// Native per-table filters follow the table's capabilities. Every table: data, state, retention and archive messages
+// (IsValidStateTransition takes no custom step). Custom tables add DeleteMultiple and the legacy bulk messages (a standard
+// table such as account has neither). User- or team-owned tables add the ownership and sharing messages; the mergeable
+// standard tables add Merge; transactioncurrency adds RetrieveExchangeRate.
+const TABLE_MESSAGES = [
   'Create',
-  'Update',
+  'CreateMultiple',
   'Delete',
   'Retrieve',
   'RetrieveMultiple',
-  'Associate',
-  'Disassociate',
-  'CreateMultiple',
-  'UpdateMultiple',
-  'UpsertMultiple',
-  'DeleteMultiple',
-];
-const ROUTER = ['WhoAmI', 'RetrieveVersion', 'GrantAccess', 'ModifyAccess', 'RevokeAccess', 'Assign', 'SetState'];
-// One sdkmessagefilter per table for the CRUD, association and bulk messages.
-const FILTERED = [
-  'Create',
   'Update',
-  'Delete',
-  'Retrieve',
-  'RetrieveMultiple',
-  'Associate',
-  'Disassociate',
-  'CreateMultiple',
   'UpdateMultiple',
-  'UpsertMultiple',
-  'DeleteMultiple',
+  'SetState',
+  'SetStateDynamicEntity',
+  'Retain',
+  'BulkRetain',
+  'PurgeRetainedContent',
+  'RollbackRetain',
+  'ValidateRetentionConfig',
+  'IsValidStateTransition',
+  'Archive',
+  'BulkArchive',
+  'PurgeArchivedContent',
+  'ValidateArchiveConfig',
 ];
+const CUSTOM_TABLE_MESSAGES = ['DeleteMultiple', 'CreateMultipleLegacy', 'UpdateMultipleLegacy'];
+const OWNED_TABLE_MESSAGES = [
+  'Assign',
+  'GrantAccess',
+  'ModifyAccess',
+  'RevokeAccess',
+  'RetrievePrincipalAccess',
+  'RetrieveSharedPrincipalsAndAccess',
+];
+const MERGEABLE = new Set(['account', 'contact', 'lead', 'incident']);
+const NO_CUSTOM_STEP_MESSAGES = new Set(['IsValidStateTransition']);
+// Messages with only the 'none' filter, and whether it allows a custom step. Upsert, UpsertMultiple and Merge allow none
+// there; a step registered with no filter is still accepted (and never executed).
+const UNFILTERED_MESSAGES = {
+  Associate: true,
+  Disassociate: true,
+  Execute: true,
+  Upsert: false,
+  UpsertMultiple: false,
+  Merge: false,
+};
 const EXTERNAL_MESSAGES = ['OnExternalCreated', 'OnExternalUpdated', 'OnExternalDeleted'];
 const STAGE_NAME = { 10: 'PreValidation', 20: 'PreOperation', 40: 'PostOperation' };
 // Mirage's own system tables and intersect tables take no custom processing step.
@@ -59,6 +120,7 @@ const IMAGE_PROPERTIES = {
   DeliverIncoming: ['EmailId'],
   DeliverPromote: ['EmailId'],
   Merge: ['Target', 'SubordinateId'],
+  Retrieve: ['Target'],
   Route: ['Target'],
   Send: ['FaxId', 'EmailId', 'TemplateId'],
   SetState: ['EntityMoniker'],
@@ -71,7 +133,8 @@ const STAGE_TEXT =
   'Invalid plug-in registration stage. Steps can only be modified in stages BeforeMainOperationOutsideTransaction, BeforeMainOperationInsideTransaction, AfterMainOperationInsideTransaction and AfterMainOperationOutsideTransaction.';
 const KNOWN_MESSAGE_IDS = new Map(Object.entries(SDK_MESSAGES).map(([id, name]) => [name, id]));
 
-const messageId = (name) => KNOWN_MESSAGE_IDS.get(name) ?? uuidV5(NAMESPACE, `sdkmessage:${name}`); // the id of a non-platform message is a guess
+const messageId = (name) =>
+  PLATFORM_MESSAGES[name]?.id ?? KNOWN_MESSAGE_IDS.get(name) ?? uuidV5(NAMESPACE, `sdkmessage:${name}`); // the id of a non-platform message is a guess
 const filterId = (org, message, table) => uuidV5(org, `sdkmessagefilter:${message}:${table}`);
 // A lookup is stored as its id (Solution rows) or as { id, logical_name, name } (rows the API wrote).
 const idOfValue = (value) => (value !== null && typeof value === 'object' ? value.id : value);
@@ -136,38 +199,67 @@ function assemblyFacts(assembly) {
   };
 }
 
-// The message rows: pipeline, router built-ins, every registered name and every custom API (private ones flagged).
+// The message rows: the platform messages, every registered name and every custom API (private ones flagged).
 function messageRows(store, org, names, availability) {
   const apis = store.state.tables.customapi ?? [];
   const privateApis = new Set(apis.filter((api) => api.isprivate === true).map((api) => api.uniquename));
-  const all = new Set([...PIPELINE, ...ROUTER, ...names, ...apis.map((api) => api.uniquename).filter(Boolean)]);
-  return [...all].map((name) => ({
-    sdkmessageid: messageId(name),
-    name,
-    availability: availability[name.toLowerCase()]?.message ?? 0,
-    isactive: true,
-    isprivate: privateApis.has(name),
-    workflowsdkstepenabled: false,
-    autotransact: true,
-    organizationid: org,
-  }));
+  const all = new Set([
+    ...Object.keys(PLATFORM_MESSAGES),
+    ...names,
+    ...apis.map((api) => api.uniquename).filter(Boolean),
+  ]);
+  return [...all].map((name) => {
+    const platform = PLATFORM_MESSAGES[name];
+    return {
+      sdkmessageid: messageId(name),
+      name,
+      availability: availability[name.toLowerCase()]?.message ?? (platform && platform.flag !== 'server' ? 2 : 0),
+      isactive: true,
+      isprivate: privateApis.has(name) || platform?.flag === 'private',
+      workflowsdkstepenabled: false,
+      autotransact: platform?.flag !== 'read',
+      organizationid: org,
+    };
+  });
 }
 
-// The filter rows: one per (message, table) for every mapping, and one per custom API (its bound table, or none).
+// The messages a table's filters cover (see TABLE_MESSAGES).
+function tableMessages(logical, mapping) {
+  const owned = ['UserOwned', 'TeamOwned'].includes(ownershipTypeName(logical, null, mapping));
+  return [
+    ...TABLE_MESSAGES,
+    ...(standardTableDef(logical) ? [] : CUSTOM_TABLE_MESSAGES),
+    ...(owned ? OWNED_TABLE_MESSAGES : []),
+    ...(MERGEABLE.has(logical) ? ['Merge'] : []),
+    ...(logical === 'transactioncurrency' ? ['RetrieveExchangeRate'] : []),
+    ...(mapping.isVirtual || mapping.dataSourceId ? EXTERNAL_MESSAGES : []),
+  ];
+}
+
+// The filter rows: one per (message, table) for every mapping (tableMessages), one 'none' filter per unfiltered message,
+// and one per custom API (its bound table, or none).
 function filterRows(store, org, availability) {
   const rows = [];
+  const filter = (message, logical, allowed) => ({
+    sdkmessagefilterid: filterId(org, message, logical),
+    sdkmessageid: messageId(message),
+    primaryobjecttypecode: logical,
+    secondaryobjecttypecode: 'none',
+    iscustomprocessingstepallowed: allowed,
+    isvisible: true,
+    availability: availability[message.toLowerCase()]?.filters?.[logical] ?? 0,
+    organizationid: org,
+  });
   for (const [logical, mapping] of Object.entries(store.state.mappings ?? {}))
-    for (const message of [...FILTERED, ...(mapping.isVirtual || mapping.dataSourceId ? EXTERNAL_MESSAGES : [])])
-      rows.push({
-        sdkmessagefilterid: filterId(org, message, logical),
-        sdkmessageid: messageId(message),
-        primaryobjecttypecode: logical,
-        secondaryobjecttypecode: 'none',
-        iscustomprocessingstepallowed: !mapping.intersect && !NO_CUSTOM_STEP.has(logical),
-        isvisible: true,
-        availability: availability[message.toLowerCase()]?.filters?.[logical] ?? 0,
-        organizationid: org,
-      });
+    for (const message of tableMessages(logical, mapping))
+      rows.push(
+        filter(
+          message,
+          logical,
+          !mapping.intersect && !NO_CUSTOM_STEP.has(logical) && !NO_CUSTOM_STEP_MESSAGES.has(message),
+        ),
+      );
+  for (const [message, allowed] of Object.entries(UNFILTERED_MESSAGES)) rows.push(filter(message, 'none', allowed));
   for (const api of store.state.tables.customapi ?? []) {
     const table = api.boundentitylogicalname || 'none';
     rows.push({
@@ -348,7 +440,8 @@ function stepFromRow(store, row, images) {
     ...(store.observed?.businessLogicOwnership?.[id]
       ? { bypassOwnership: store.observed.businessLogicOwnership[id] }
       : {}),
-    messageFilterId: filter ? String(filter.sdkmessagefilterid).toLowerCase() : null,
+    // A step on a 'none' filter is unfiltered, like one registered with no filter.
+    messageFilterId: entity ? String(filter.sdkmessagefilterid).toLowerCase() : null,
     unfiltered: entity === null,
     typeSourceFile: null,
     assemblyId: assembly?.pluginassemblyid ?? null,
@@ -619,12 +712,13 @@ function validateImage({ store, data, existing }) {
     property = String(val('messagepropertyname'));
   const post = type === 1 || type === 2,
     pre = type === 0 || type === 2;
+  // Native checks the image type before the property: a Create pre-image on Target is refused for its type.
+  if ((['Create', 'CreateMultiple'].includes(name) && pre) || (name === 'Delete' && post))
+    throw fail(`Message ${name} does not support this image type.`, '0x8004416d');
   if (!properties.includes(property))
     throw fail(`Message property name '${property}' is not valid on message ${name}.`, '0x8004416b');
   if (post && [10, 20].includes(Number(step.stage)))
     throw fail('PreEvent step registration does not support Post Image.', '0x8004416e');
-  if ((['Create', 'CreateMultiple'].includes(name) && pre) || (name === 'Delete' && post))
-    throw fail(`Message ${name} does not support this image type.`, '0x8004416d');
 }
 
 function validateStep({ store, principals, c, data, existing, operation }) {
@@ -637,6 +731,11 @@ function validateStep({ store, principals, c, data, existing, operation }) {
     );
   const messageRefId = ref(data, existing, 'sdkmessageid');
   const filterRefId = ref(data, existing, 'sdkmessagefilterid');
+  // Native error texts name the step; a create without a supplied id gets the id its row would take.
+  const stepId = () =>
+    String(
+      existing?.sdkmessageprocessingstepid ?? (data.sdkmessageprocessingstepid ??= store.ids.uuid()),
+    ).toLowerCase();
   const handler = handlerOf(data, existing);
   if (operation === 'create' && data.rank === undefined) data.rank = 1; // the Plug-in Registration Tool sends rank; the default is 1
   for (const [column, present] of [
@@ -668,16 +767,21 @@ function validateStep({ store, principals, c, data, existing, operation }) {
   if (EXTERNAL_MESSAGES.includes(messageName) && (stage !== 40 || mode !== 1)) {
     throw fail('External virtual table events support only asynchronous PostOperation steps.', '0x80090303');
   }
-  // Assumed native behavior: only a whole number of at least 1 is accepted for rank.
-  if (!Number.isInteger(rank) || rank < 1) throw fail('The rank must be a whole number of at least 1.', '0x80040203');
+  // Native accepts any whole rank, a negative one included.
+  if (!Number.isInteger(rank)) throw fail('The rank must be a whole number.', '0x80040203');
   if (![10, 20, 40].includes(stage)) throw fail(STAGE_TEXT, '0x80044184');
-  // The rule is documented; the error text and code are guesses.
   if (mode === 1 && stage !== 40)
-    throw fail('Asynchronous plug-ins can only be registered for the PostOperation stage.', '0x80040203');
+    throw fail(
+      `Asynchronous steps are only supported in AfterMainOperationInsideTransaction stages and AfterMainOperationOutsideTransaction stage. SdkMessageProcessingStep name '${val('name') ?? ''}', id '${stepId()}'.`,
+      '0x80040203',
+    );
   const filter = rowById(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRefId);
   if (filterRefId) {
     if (!filter || !same(filter.sdkmessageid, messageRefId) || filter.iscustomprocessingstepallowed !== true)
-      throw fail('Custom SdkMessageProcessingStep is not allowed on the specified message and entity.', '0x80044187');
+      throw fail(
+        `Custom SdkMessageProcessingStep is not allowed on the specified message and entity. SdkMessageProcessingStepId: '${stepId()}', SdkMessageFilterId: '${filterRefId}'.`,
+        '0x80044187',
+      );
   } else if (messageRefId && !store.tableRows('sdkmessagefilter').some((row) => same(row.sdkmessageid, messageRefId))) {
     throw fail('Custom Sdkmessageprocessingsteps are not allowed for this message.', '0x80090307');
   }
@@ -686,7 +790,7 @@ function validateStep({ store, principals, c, data, existing, operation }) {
   const knownAvailability = [availability?.message, availability?.filters?.[filter?.primaryobjecttypecode ?? 'none']];
   if ((deployment !== 0 && knownAvailability.includes(0)) || (deployment !== 1 && knownAvailability.includes(1)))
     throw fail('Supported deployment does not agree with message availability', '0x80040203');
-  // Assumed native behavior: the attributes must be columns of the filter's table; any message is accepted.
+  // The attributes must be columns of the filter's table (a missing dependency natively); any message is accepted.
   const table = filter?.primaryobjecttypecode;
   if (table && table !== 'none') {
     const columns = columnsOf(store, table);
@@ -695,7 +799,10 @@ function validateStep({ store, principals, c, data, existing, operation }) {
       .map((item) => item.trim().toLowerCase())
       .filter(Boolean))
       if (!columns.has(attribute))
-        throw fail(`The filtering attribute '${attribute}' is not a column of ${table}.`, '0x80040203');
+        throw fail(
+          `The dependent component Attribute (Id=${attribute}) does not exist.  Failure trying to associate it with SdkMessageProcessingStep (Id=${stepId()}) as a dependency. Missing dependency lookup type = AttributeNameLookup.`,
+          '0x8004f036',
+        );
   }
   if (ref(data, existing, 'sdkmessageprocessingstepsecureconfigid') && Number(val('supporteddeployment') ?? 0) !== 0)
     throw fail(

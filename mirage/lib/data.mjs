@@ -2473,7 +2473,17 @@ export class DataStore {
       throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
     if (stage !== 40 && operation !== 'delete') {
       const normalized = this.normalizeRecord(mapping, target);
-      if (options.coerce) this.coerceRecord(mapping, normalized, options);
+      // A plug-in Target carries SDK values, not Web API wire input: a DateOnly column holds a DateTime and a choices
+      // column an option array (OptionSetValueCollection), stored as the Web API's comma-separated values.
+      if (options.dataverseWebApi)
+        for (const [key, value] of Object.entries(normalized))
+          if (
+            Array.isArray(value) &&
+            fieldKind(this.fieldDefinition(mapping.logicalName, key, options.metadata)) === 'multichoice'
+          )
+            normalized[key] = value.join(',');
+      if (options.coerce)
+        this.coerceRecord(mapping, normalized, { ...options, dataverseWebApi: false, dataverseHttpReader: undefined });
       const retainsEmpty =
         operation === 'create' &&
         stage === 10 &&
@@ -3720,6 +3730,25 @@ export class DataStore {
           501,
           'LocalPluginQueryUnsupported',
         );
+      // Native runs asynchronous RetrieveMultiple steps after the read, with its query and result (a message event:
+      // flows and mutation observers ignore it). A read outside a transaction stages it in its own queued transaction.
+      const readEvent = clone({
+        target: {},
+        query,
+        collection,
+        identity,
+        frame: responseFrame ?? {},
+        messageEvent: true,
+        bypassCustomAsync: options.bypassCustomAsync === true,
+        bypassStepIds: options.bypassStepIds,
+      });
+      if (this.committedEventCandidates) this.recordCommittedEvent(entity, 'retrievemultiple', record, [], readEvent);
+      else if (this.commitStagers?.size)
+        this.transact(() => this.recordCommittedEvent(entity, 'retrievemultiple', clone(record), [], readEvent), {
+          skipSaveIfUnchanged: true,
+        }).catch((error) => {
+          (this.committedEventErrors ??= []).push({ code: error.code ?? 'CommitStagerError', message: error.message });
+        });
       const sourceRows = answer[key] ?? [];
       const sourceById = new Map(
         sourceRows.map((row, index) => [row[mapping.idColumn] ?? answer.sdkRootIds?.[index], row]),

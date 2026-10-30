@@ -160,14 +160,15 @@ test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root an
   const xml = `<ImportExportXml>${assemblyXml}${step(21, '<SdkMessageFilterId/>')}${step(22, '<PrimaryEntity>none</PrimaryEntity>')}${step(23, '')}${step(24, `<SdkMessageFilterId>${pluginId(99)}</SdkMessageFilterId>`)}${step(25, '<SdkMessageFilterId/>', 'Create')}</ImportExportXml>`;
   const parsed = parsePluginDocument(xml),
     plugins = importSolutionPlugins([{ documents: [{ file: '/invented/global.xml', facts: { plugins: parsed } }] }]);
-  for (const id of [21, 22]) {
+  // Native runs an unfiltered Create step for the table it fires on (recorded global Create registrations).
+  for (const id of [21, 22, 25]) {
     const declaration = plugins.steps.find((step) => step.id === pluginId(id));
     assert.equal(declaration.unfiltered, true);
     assert.equal(declaration.entity, null);
     assert.equal(declaration.unsupported, null);
     assert.equal(pluginStepMatchesEntity(declaration, 'fixture'), true);
   }
-  for (const id of [23, 24, 25])
+  for (const id of [23, 24])
     assert.match(
       plugins.steps.find((step) => step.id === pluginId(id)).unsupported,
       /explicit logical table binding is required|Unfiltered execution requires an explicit null filter/,
@@ -226,12 +227,13 @@ test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root an
     ),
     false,
   );
+  // Native runs an asynchronous global RetrieveMultiple step after the read (recorded reads scenario).
   assert.equal(
     pluginStepMatchesEntity(
       { entity: null, unfiltered: true, messageFilterId: null, message: 'RetrieveMultiple', mode: 1 },
       'fixture',
     ),
-    false,
+    true,
   );
 });
 

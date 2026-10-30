@@ -347,8 +347,10 @@ describe('plug-in registration over HTTP', () => {
     assert.equal((await createStep({ mode: 1, stage: 40 })).status, 204);
   });
 
-  it('refuses a rank below 1 and defaults a missing rank to 1', async () => {
-    assert.equal((await errorOf(await createStep({ rank: 0 }))).code, '0x80040203');
+  // Native accepts a negative rank (registration probe: Update at stage 20 with rank -1).
+  it('accepts any whole rank, a negative one included, and defaults a missing rank to 1', async () => {
+    assert.equal((await createStep({ rank: -1 })).status, 204);
+    assert.equal((await errorOf(await createStep({ rank: 1.5 }))).code, '0x80040203');
     const response = await createStep({ name: 'Default rank' });
     const step = await (await call(`sdkmessageprocessingsteps(${idFromLocation(response)})`)).json();
     assert.equal(step.rank, 1);
@@ -359,7 +361,13 @@ describe('plug-in registration over HTTP', () => {
       await createStep({ 'sdkmessagefilterid@odata.bind': `/sdkmessagefilters(${ids.updateFilter})` }),
     );
     assert.equal(error.code, '0x80044187');
-    assert.equal(error.message, 'Custom SdkMessageProcessingStep is not allowed on the specified message and entity.');
+    // Native text names the step and the filter (registration probe on IsValidStateTransition).
+    assert.match(
+      error.message,
+      new RegExp(
+        `^Custom SdkMessageProcessingStep is not allowed on the specified message and entity\\. SdkMessageProcessingStepId: '[0-9a-f-]{36}', SdkMessageFilterId: '${ids.updateFilter}'\\.$`,
+      ),
+    );
   });
 
   it('refuses a filter the table does not allow a custom step on with 0x80044187', async () => {
@@ -381,9 +389,18 @@ describe('plug-in registration over HTTP', () => {
   });
 
   it('refuses filtering attributes that are not columns of the filter table', async () => {
-    const error = await errorOf(await createStep({ filteringattributes: 'contoso_name,no_such_column' }));
-    assert.equal(error.code, '0x80040203');
-    assert.equal(error.message, "The filtering attribute 'no_such_column' is not a column of contoso_widget.");
+    const error = await errorOf(
+      await createStep({
+        sdkmessageprocessingstepid: 'a1000000-0000-4000-8000-0000000000f0',
+        filteringattributes: 'contoso_name,no_such_column',
+      }),
+    );
+    // Native: a missing dependency (registration probe with an unknown filtering attribute).
+    assert.equal(error.code, '0x8004f036');
+    assert.equal(
+      error.message,
+      'The dependent component Attribute (Id=no_such_column) does not exist.  Failure trying to associate it with SdkMessageProcessingStep (Id=a1000000-0000-4000-8000-0000000000f0) as a dependency. Missing dependency lookup type = AttributeNameLookup.',
+    );
     assert.equal((await createStep({ filteringattributes: 'contoso_name' })).status, 204);
   });
 
@@ -934,9 +951,10 @@ describe('plug-in registration: pipeline', () => {
         })
       ).json()
     ).access_token;
+    // Native: Associate and Disassociate have only the 'none' filter.
     for (const name of ['Create', 'Update', 'Associate', 'Disassociate']) {
       ids[name] = messageId(store, name);
-      ids[`${name}Filter`] = filterId(store, ids[name], 'contoso_widget');
+      ids[`${name}Filter`] = filterId(store, ids[name], name.endsWith('ssociate') ? 'none' : 'contoso_widget');
     }
     auditType = await createType(AUDIT, 'Contoso.Plugins.Audit');
     unhandledType = await createType(UNHANDLED, 'Contoso.Plugins.Other');
@@ -1085,7 +1103,7 @@ describe('plug-in registration: pipeline', () => {
     assert.equal(trace.length, 1);
   });
 
-  it('accepts a step on Associate and Disassociate, whose table filters are seeded (no 0x80090307)', async () => {
+  it('accepts a step on Associate and Disassociate, whose none filters are seeded (no 0x80090307)', async () => {
     const associate = await registerStep({ name: 'Associate probe', stage: 20, ...binds('Associate') });
     const disassociate = await registerStep({ name: 'Disassociate probe', stage: 20, ...binds('Disassociate') });
     assert.match(associate, /^[0-9a-f-]{36}$/);
