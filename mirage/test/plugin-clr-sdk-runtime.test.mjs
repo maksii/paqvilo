@@ -37,7 +37,7 @@ Check(multiple.Responses[0].Response is CreateResponse&&((CreateResponse)multipl
 Check(multiple.Responses[1].Fault.ErrorCode==unchecked((int)0x80040217),"ExecuteMultiple item fault");
 try{s.Retrieve("x_nope",Guid.NewGuid(),new Microsoft.Xrm.Sdk.Query.ColumnSet(true));Check(false,"unknown table read");}catch(FaultException<OrganizationServiceFault> fault){trace.Trace("fault {0:x8}",fault.Detail.ErrorCode);}
 var logger=(ILogger)p.GetService(typeof(ILogger));logger.LogInformation("Probe {Name} logged","invented");
-var variables=(IEnvironmentVariableService)p.GetService(typeof(IEnvironmentVariableService));Check(variables.RetrieveEnvironmentVariableValue("x_setting")=="current value","environment variable");Check(variables.RetrieveEnvironmentVariableValue("x_absent")==null,"absent environment variable");
+Check(p.GetService(typeof(IEnvironmentVariableService))==null&&p.GetService(typeof(IOrganizationService))==null&&p.GetService(typeof(System.Collections.IList))==null,"unbound services are null");Check(p.GetService(typeof(IFeatureControlService))!=null&&p.GetService(typeof(IManagedIdentityService))!=null,"feature control and managed identity services");
 var notifier=(IServiceEndpointNotificationService)p.GetService(typeof(IServiceEndpointNotificationService));notifier.Execute(new EntityReference("serviceendpoint",new Guid("76000000-0000-0000-0000-000000000001")),c);
 try{notifier.Execute(new EntityReference("serviceendpoint",new Guid("76000000-0000-0000-0000-000000000002")),c);Check(false,"failing endpoint");}catch(FaultException<OrganizationServiceFault> fault){trace.Trace("endpoint fault {0:x8}",fault.Detail.ErrorCode);}
 trace.Trace("probe completed");
@@ -93,15 +93,6 @@ test(
     const state = emptyState();
     state.mappings.x_item = { entitySet: 'x_items', idColumn: 'x_itemid' };
     state.tables.x_item = [];
-    const definition = '72000000-0000-0000-0000-000000000001';
-    state.tables.environmentvariabledefinition = [
-      {
-        environmentvariabledefinitionid: definition,
-        schemaname: 'x_setting',
-        defaultvalue: 'default value',
-        type: 100000000,
-      },
-    ];
     state.tables.serviceendpoint = [
       {
         serviceendpointid: '76000000-0000-0000-0000-000000000001',
@@ -118,13 +109,6 @@ test(
         authtype: 5,
         authvalue: '',
         contract: 8,
-      },
-    ];
-    state.tables.environmentvariablevalue = [
-      {
-        environmentvariablevalueid: '72000000-0000-0000-0000-000000000002',
-        environmentvariabledefinitionid: definition,
-        value: 'current value',
       },
     ];
     const store = await new DataStore({ state }).init();
@@ -224,13 +208,7 @@ test(
     const calls = spans
       .filter((span) => span.kind === 'sdk-call' && span.parentSpanId === stepSpan.spanId)
       .map((span) => span.name);
-    for (const name of [
-      'WhoAmI',
-      'RetrieveEntity',
-      'ExecuteMultiple',
-      'IEnvironmentVariableService.RetrieveEnvironmentVariableValue',
-      'IServiceEndpointNotificationService.Execute',
-    ])
+    for (const name of ['WhoAmI', 'RetrieveEntity', 'ExecuteMultiple', 'IServiceEndpointNotificationService.Execute'])
       assert.ok(calls.includes(name), name);
     const traces = notes.filter((note) => note.code === 'PLUGIN_CLR_TRACE').map((note) => note.message);
     // The unknown table reaches the plug-in as FaultException<OrganizationServiceFault> with the code the local Web API answers

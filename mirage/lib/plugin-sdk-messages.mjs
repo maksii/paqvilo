@@ -224,8 +224,7 @@ export function executeSdkOrganizationMessage({ store, userId, request, paramete
 
 /**
  * The plug-in services besides the organization service (IServiceProvider.GetService), as the host's RPC names them
- * ("<interface>.<method>"): IEnvironmentVariableService answers the effective value of an environment variable (its value row,
- * else its definition default; null when the organization has no such definition), IFeatureControlService has no feature
+ * ("<interface>.<method>"): IServiceEndpointNotificationService posts to a web hook, IFeatureControlService has no feature
  * controls locally (null), and IManagedIdentityService cannot acquire a token: a local process has no Azure managed identity
  * federated to the plug-in package.
  */
@@ -236,22 +235,6 @@ export function executePluginServiceCall({ store, method, args = [], diagnostic 
       if (endpoint?.$type !== 'EntityReference' || typeof body !== 'string')
         invalid('IServiceEndpointNotificationService.Execute requires a service endpoint reference and a context.');
       return notifyServiceEndpoint(store, endpoint.id, body, diagnostic);
-    }
-    case 'IEnvironmentVariableService.RetrieveEnvironmentVariableValue': {
-      const [name] = args;
-      if (typeof name !== 'string' || !name) invalid('An environment variable schema name is required.');
-      // The effective value: the value row (seeding has merged the profile, project and _sim overrides into it), else the
-      // definition default (secret-resolver.mjs effectiveEnvironmentVariables reads the same layers).
-      const definition = store.tableRows('environmentvariabledefinition').find((row) => same(row.schemaname, name));
-      if (!definition) return null;
-      // Secret type (100000005) or a secret store other than Key Vault: the provider resolves it, not the plug-in service.
-      if (Number(definition.type) === 100000005 || Number(definition.secretstore ?? 0) === 1)
-        fail('A secret environment variable is resolved by its Key Vault provider, not by the local plug-in service.');
-      const value = store
-        .tableRows('environmentvariablevalue')
-        .find((row) => same(refId(row.environmentvariabledefinitionid), definition.environmentvariabledefinitionid));
-      const text = value ? (value.value ?? null) : (definition.defaultvalue ?? null);
-      return text == null ? null : String(text);
     }
     case 'IFeatureControlService.GetFeatureControl':
       return null;

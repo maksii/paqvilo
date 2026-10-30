@@ -7,6 +7,7 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { sdkFault } from '../lib/plugin-sdk-messages.mjs';
+import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 
 const EMPTY = '00000000-0000-0000-0000-000000000000';
 
@@ -39,12 +40,13 @@ async function organization(t) {
   const id = (name) => store.tableRows('systemuser').find((row) => row.fullname === name).systemuserid;
   // The descriptor profile grants nothing: authorization comes from the run-as user's roles.
   const profile = { userId: id('Invented admin'), evidence: 'Invented run-as step', grants: [] };
-  const create = (userId, name, extra = {}) =>
+  const create = (userId, name, extra = {}, sdkParentContext) =>
     store.withOperationContext(() =>
       dispatchSdkCall({
         store,
         profile,
         invokingUserId: id('Invented admin'),
+        sdkParentContext,
         message: {
           method: 'Execute',
           userId,
@@ -105,4 +107,53 @@ test('a run-as user without the privilege is refused with the native privilege f
     () => create('77000000-0000-0000-0000-000000000099', 'nobody'),
     (error) => error.details?.innerCode === '0x80040217',
   );
+});
+
+test('the nested operation of a plug-in SDK call is initiated by the service user', async (t) => {
+  // Recorded native sdkSurface and readNested: UserId and InitiatingUserId of the nested contexts are the run-as user.
+  const { store, id, create } = await organization(t);
+  const seen = [];
+  const step = {
+    id: '77000000-0000-0000-0000-0000000000a1',
+    name: 'Invented nested observer',
+    entity: 'x_item',
+    message: 'Create',
+    enabled: true,
+    stage: 20,
+    rank: 1,
+    mode: 0,
+    assemblyId: 'invented-run-as',
+    supportedDeployment: 0,
+    filteringAttributes: [],
+    images: [],
+    typeName: 'Invented.Observer',
+  };
+  const handlers = new Map([
+    [
+      'Invented.Observer',
+      ({ context }) => {
+        seen.push([context.UserId, context.InitiatingUserId].map((v) => v?.value ?? v));
+      },
+    ],
+  ]);
+  const items = pluginCatalogue({ plugins: { steps: [step] }, handlers });
+  store.setPluginPipeline((context) => runPluginPhase({ ...context, store, items, handlers }));
+  const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM').systemuserid;
+  // The calling step's context: the plain user initiated the outer operation.
+  const caller = {
+    $type: 'ExecutionContext',
+    values: {
+      MessageName: 'Update',
+      Stage: 40,
+      Depth: 1,
+      UserId: { $type: 'Guid', value: id('Invented plain') },
+      InitiatingUserId: { $type: 'Guid', value: id('Invented plain') },
+    },
+  };
+  create(null, 'as system', {}, caller);
+  create(id('Invented admin'), 'as admin', {}, caller);
+  assert.deepEqual(seen, [
+    [system, system],
+    [id('Invented admin'), id('Invented admin')],
+  ]);
 });

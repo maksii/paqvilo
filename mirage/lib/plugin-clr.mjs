@@ -2108,8 +2108,14 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       context.executionUserId ??
       descriptor.serviceProfile.userId,
     executionUserId = step.impersonatingUserId ?? callerUserId,
+    // A plug-in's SDK call runs as its service's user, which is also the nested contexts' InitiatingUserId (recorded native
+    // sdkSurface and readNested: SYSTEM for CreateOrganizationService(null), the caller for Guid.Empty).
     initiatingUserId =
-      guidOf(inherited('InitiatingUserId')) ?? caller?.systemUserId ?? context.initiatingUserId ?? executionUserId,
+      store.pluginExecutionUserId ??
+      guidOf(inherited('InitiatingUserId')) ??
+      caller?.systemUserId ??
+      context.initiatingUserId ??
+      executionUserId,
     authenticatedUserId = guidOf(inherited('AuthenticatedUserId')) ?? caller?.dataverse?.callerId ?? initiatingUserId,
     businessUnitId =
       guidOf(inherited('BusinessUnitId')) ??

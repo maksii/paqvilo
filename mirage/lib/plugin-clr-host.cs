@@ -235,11 +235,12 @@ public static class PaqviloPluginHost {
    if(type.IsInterface&&typeof(IExecutionContext).IsAssignableFrom(type)&&type.IsAssignableFrom(typeof(LocalContext)))return ContextProxy(Context,Lease);
    if(type==typeof(ITracingService))return new LocalTracing(Lease);
    if(type==typeof(IOrganizationServiceFactory)||type==typeof(IServiceEndpointNotificationService))return new LocalServiceFactory(Lease);
-   // ILogger (Application Insights telemetry), IEnvironmentVariableService, IFeatureControlService and IManagedIdentityService
-   // are resolved by name: older SDKs lack them, so the host binds them through a transparent proxy, not a compiled class.
+   // ILogger (Application Insights telemetry), IFeatureControlService and IManagedIdentityService are resolved by name: older
+   // SDKs lack them, so the host binds them through a transparent proxy, not a compiled class. Every other type, including
+   // IEnvironmentVariableService and IOrganizationService, is null (recorded native sandbox: GetService per type).
    if(type.IsInterface&&type.FullName=="Microsoft.Xrm.Sdk.PluginTelemetry.ILogger")return new TelemetryLogger(type,Lease).GetTransparentProxy();
-   if(type.IsInterface&&new[]{"Microsoft.Xrm.Sdk.IEnvironmentVariableService","Microsoft.Xrm.Sdk.IFeatureControlService","Microsoft.Xrm.Sdk.IManagedIdentityService"}.Contains(type.FullName))return new ServiceCalls(type,Lease).GetTransparentProxy();
-   throw Unsupported("Unconfigured service: "+type.FullName);
+   if(type.IsInterface&&new[]{"Microsoft.Xrm.Sdk.IFeatureControlService","Microsoft.Xrm.Sdk.IManagedIdentityService"}.Contains(type.FullName))return new ServiceCalls(type,Lease).GetTransparentProxy();
+   return null;
   }
  }
  // Concrete service objects with the public SDK interfaces the online sandbox objects implement (native corpus
