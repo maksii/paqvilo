@@ -380,7 +380,7 @@ test('a QueryExpression with ColumnSet.AttributeExpressions runs as an aggregate
   assert.equal(total.value, 3);
 });
 
-test('a polymorphic lookup stored as a bare GUID takes its table from the type column or the row that holds it', async () => {
+test('a polymorphic lookup stored as a bare GUID takes its table from the type column', async () => {
   const { recordToSdkEntity } = await import('../lib/plugin-clr.mjs');
   const account = '75000000-0000-0000-0000-000000000001',
     contact = '75000000-0000-0000-0000-000000000002';
@@ -405,11 +405,12 @@ test('a polymorphic lookup stored as a bare GUID takes its table from the type c
     x_customeridtype: 'x_contact',
   });
   assert.equal(typed.attributes.x_customerid.logicalName, 'x_contact');
-  const found = recordToSdkEntity(store, 'x_case', {
-    x_caseid: '75000000-0000-0000-0000-000000000003',
-    x_customerid: account,
-  });
-  assert.equal(found.attributes.x_customerid.logicalName, 'x_account');
+  // Without a type column the target is not guessed from the table that happens to hold the row.
+  assert.throws(
+    () =>
+      recordToSdkEntity(store, 'x_case', { x_caseid: '75000000-0000-0000-0000-000000000003', x_customerid: account }),
+    /one exact source-declared target table/,
+  );
   assert.throws(
     () =>
       recordToSdkEntity(store, 'x_case', {

@@ -526,27 +526,16 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
         targets = declared.includes(null) ? [] : [...new Set(declared)];
       }
       // A polymorphic lookup (customer, owner, regarding) stored as a bare GUID names its table in the row's type
-      // column (<column>type, as owneridtype), else the one candidate table that holds the row.
-      if (uuid.test(value) && Array.isArray(targets) && targets.length !== 1) {
-        const companion = row[key + 'type'],
-          known = (table) => {
-            try {
-              return store.resolveMapping(table);
-            } catch {
-              return null;
-            }
-          };
-        const resolved =
-          typeof companion === 'string' && known(companion) && (!targets.length || targets.includes(companion))
-            ? [known(companion).logicalName]
-            : targets.filter((table) => {
-                const target = known(table);
-                return (
-                  target &&
-                  store.tableRows(target.logicalName).some((item) => canon(item[target.idColumn]) === canon(value))
-                );
-              });
-        if (resolved.length === 1) targets = resolved;
+      // column (<column>type, as owneridtype); without one the target stays ambiguous (never guessed from row presence).
+      const companion = row[key + 'type'];
+      if (uuid.test(value) && typeof companion === 'string' && !(Array.isArray(targets) && targets.length === 1)) {
+        let known = null;
+        try {
+          known = store.resolveMapping(companion);
+        } catch (error) {
+          if (error.code !== 'UnknownEntity') throw error;
+        }
+        if (known && (!targets?.length || targets.includes(known.logicalName))) targets = [known.logicalName];
       }
       if (
         !uuid.test(value) ||
