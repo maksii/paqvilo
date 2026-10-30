@@ -2484,6 +2484,7 @@ export class DataStore {
       ...(options.preValidationSourceOperation
         ? { preValidationSourceOperation: options.preValidationSourceOperation }
         : {}),
+      ...(options.targetKeyAttributes ? { targetKeyAttributes: options.targetKeyAttributes } : {}),
       ...(options.omitConcurrencyBehavior
         ? { concurrencyBehavior: null }
         : options.pluginConcurrencyBehavior === undefined

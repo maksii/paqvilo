@@ -2013,7 +2013,15 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
                   : {
                       Target:
                         operation === 'delete'
-                          ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
+                          ? {
+                              $type: 'EntityReference',
+                              logicalName: entity,
+                              id: record[primary],
+                              // A Delete addressed by an alternate key names it in its PreValidation Target (recorded native upsert).
+                              ...(stage === 10 && frame.targetKeyAttributes
+                                ? { keyAttributes: cloneStateData(frame.targetKeyAttributes) }
+                                : {}),
+                            }
                           : stage === 40 &&
                               frame.inputParametersStage === 40 &&
                               frame.inputParameters?.values?.Target?.$type === 'Entity'
@@ -2075,7 +2083,13 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
         ...cloneStateData(frame.mainOperationInputs ?? {}),
         Target:
           operation === 'delete'
-            ? { $type: 'EntityReference', logicalName: entity, id: record[primary] }
+            ? {
+                $type: 'EntityReference',
+                logicalName: entity,
+                id: record[primary],
+                // The main operation's Target is the PreValidation one, alternate key included (recorded native upsert).
+                ...(frame.targetKeyAttributes ? { keyAttributes: cloneStateData(frame.targetKeyAttributes) } : {}),
+              }
             : {
                 ...recordToSdkEntity(
                   store,

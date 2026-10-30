@@ -13,7 +13,7 @@ import { assertPluginMessageAdmission } from './plugin-message-admission.mjs';
 import { refuseDeleteMultiple } from './plugin-platform-messages.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { executeBulkRecordsAsync } from './plugin-bulk.mjs';
-import { associationRequestBinding } from './plugin-association.mjs';
+import { associationRequestBinding, navigationRole } from './plugin-association.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
 import { odataToSdkQuery } from './plugin-query.mjs';
 import { upsertSourceOperation } from './plugin-delegation.mjs';
@@ -2142,7 +2142,10 @@ export function createRecordHandlers({
         mapping.logicalName,
         key.row[mapping.idColumn],
         c.identity,
-        updateOptions(c, { ifMatch: c.headers['if-match'] }),
+        updateOptions(c, {
+          ifMatch: c.headers['if-match'],
+          ...(key.alternate ? { targetKeyAttributes: { ...key.alternate } } : {}),
+        }),
       );
       await afterWrite(c, mapping, { operation: 'delete', id: key.row[mapping.idColumn] });
     });
@@ -3070,7 +3073,11 @@ export function createRecordHandlers({
         ? cloneStateData(suppliedParameters)
         : {
             Target: { $type: 'EntityReference', logicalName: mapping.logicalName, id: rowId, name: null },
-            Relationship: { $type: 'Relationship', schemaName: rel.schemaName ?? navigation, primaryEntityRole: null },
+            Relationship: {
+              $type: 'Relationship',
+              schemaName: rel.schemaName ?? navigation,
+              primaryEntityRole: navigationRole(mapping, navigation, rel),
+            },
             RelatedEntities: {
               $type: 'EntityReferenceCollection',
               values: relatedIds.map((relatedId) => ({
