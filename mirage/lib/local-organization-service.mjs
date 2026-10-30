@@ -489,7 +489,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
         ),
       );
     },
-    update(entity, id, values, { responseToken } = {}) {
+    update(entity, id, values, { responseToken, ifMatch, concurrencyBehavior } = {}) {
       const key = prepareUpdate(entity, id, values);
       return effectiveWrite(entity, 'update', (authorizeEffectiveWrite) =>
         store.sdkMutation(() =>
@@ -501,6 +501,8 @@ export function localOrganizationService(store, profile, records, { diagnostic =
                     sdkResponseToken: responseToken,
                     authorizeEffectiveWrite,
                     sdkFromSandbox: requestOptions.sdkFromSandbox === true,
+                    ...(ifMatch == null ? {} : { ifMatch }),
+                    ...(concurrencyBehavior == null ? {} : { pluginConcurrencyBehavior: concurrencyBehavior }),
                   },
                 }),
               )
@@ -509,6 +511,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
                 coerce: true,
                 sdkResponseToken: responseToken,
                 authorizeEffectiveWrite,
+                ...(ifMatch == null ? {} : { ifMatch }),
               }),
         ),
       );
@@ -532,7 +535,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
             }),
       );
     },
-    remove(entity, id, { responseToken, partitionId } = {}) {
+    remove(entity, id, { responseToken, partitionId, ifMatch, concurrencyBehavior } = {}) {
       const key = prepareRemove(entity, id, partitionId);
       return effectiveWrite(entity, 'delete', (authorizeEffectiveWrite) =>
         store.sdkMutation(() =>
@@ -544,6 +547,8 @@ export function localOrganizationService(store, profile, records, { diagnostic =
                     sdkResponseToken: responseToken,
                     sdkFromSandbox: requestOptions.sdkFromSandbox === true,
                     authorizeEffectiveWrite,
+                    ...(ifMatch == null ? {} : { ifMatch }),
+                    ...(concurrencyBehavior == null ? {} : { pluginConcurrencyBehavior: concurrencyBehavior }),
                   },
                 }),
               )
@@ -551,6 +556,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
                 ...requestOptions,
                 sdkResponseToken: responseToken,
                 authorizeEffectiveWrite,
+                ...(ifMatch == null ? {} : { ifMatch }),
               }),
         ),
       );

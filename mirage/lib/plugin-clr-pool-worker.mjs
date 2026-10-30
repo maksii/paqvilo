@@ -57,7 +57,7 @@ readline.createInterface({ input: child.stdout, crlfDelay: Infinity }).on('line'
   if (message.kind === 'rpc') {
     pending = true;
     send({ ...message, invocationId: active });
-  } else if (message.kind === 'trace') send({ ...message, invocationId: active });
+  } else if (['trace', 'telemetry'].includes(message.kind)) send({ ...message, invocationId: active });
   else if (['result', 'failure'].includes(message.kind)) {
     clearTimeout(timer);
     send({ ...message, invocationId: active });

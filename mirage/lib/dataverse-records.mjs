@@ -1850,7 +1850,9 @@ export function createRecordHandlers({
       sdkResponseToken: extra.sdkResponseToken ?? c.sdkResponseToken,
       dataverseHttpReader: c.dataverseHttpReader,
       systemColumns: kept ? (mapping, input) => ({ ...stamps(mapping, input), ...kept }) : stamps,
-      pluginConcurrencyBehavior: extra.ifMatch != null && extra.ifMatch !== '*' ? 1 : 0,
+      // An SDK request names its ConcurrencyBehavior (AlwaysOverwrite is 2); a Web API If-Match other than * is IfRowVersionMatches.
+      pluginConcurrencyBehavior:
+        extra.pluginConcurrencyBehavior ?? (extra.ifMatch != null && extra.ifMatch !== '*' ? 1 : 0),
       pluginAcceptLanguage: c.headers?.get?.('accept-language') ?? c.headers?.['accept-language'] ?? '',
       bypassCustomPlugins: c.bypassCustomPlugins === true || extra.bypassCustomPlugins === true,
       bypassCustomAsync: c.bypassCustomAsync === true || extra.bypassCustomAsync === true,

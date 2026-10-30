@@ -36,6 +36,7 @@ import { CRM_FUNCTIONS } from './dataverse-conditions.mjs';
 import { runtimeConstructorSettings } from './plugin-constructor-configuration.mjs';
 import { validateSdkTag, canonicalTagParent } from './plugin-request-tag.mjs';
 import { executePlatformSdkMessage, isPlatformSdkMessage } from './plugin-platform-messages.mjs';
+import { executePluginServiceCall, executeSdkOrganizationMessage, sdkFault } from './plugin-sdk-messages.mjs';
 import { formatPipelineTargets, pipelineFormattedValues } from './plugin-formatted-values.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
@@ -351,6 +352,16 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
     dependencies = await Promise.all(
       (descriptor.dependencies ?? []).map((relative) => readClrDependency(descriptor.root, relative)),
     );
+  // The sandbox supplies Microsoft.Crm.Sdk.Proxy with the SDK: a plug-in that does not ship it still binds the
+  // Microsoft.Crm.Sdk.Messages request classes (WhoAmIRequest, AssignRequest) when the SDK folder carries it.
+  const proxyName = 'Microsoft.Crm.Sdk.Proxy.dll';
+  if (!dependencies.some((file) => path.basename(file.path).toLowerCase() === proxyName.toLowerCase())) {
+    const proxy = await fs
+      .access(path.join(descriptor.sdkRoot, proxyName))
+      .then(() => readClrDependency(descriptor.sdkRoot, proxyName))
+      .catch(() => null);
+    if (proxy) dependencies.push(proxy);
+  }
   const names = [assembly, sdk, ...dependencies].map((f) => path.basename(f.path).toLowerCase());
   if (new Set(names).size !== names.length) fail('CLR dependency filenames must be unique.');
   const source = (await readClrDependency(path.dirname(hostSource), path.basename(hostSource))).bytes,
@@ -513,6 +524,29 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
           declared.push(related.logicalName);
         }
         targets = declared.includes(null) ? [] : [...new Set(declared)];
+      }
+      // A polymorphic lookup (customer, owner, regarding) stored as a bare GUID names its table in the row's type
+      // column (<column>type, as owneridtype), else the one candidate table that holds the row.
+      if (uuid.test(value) && Array.isArray(targets) && targets.length !== 1) {
+        const companion = row[key + 'type'],
+          known = (table) => {
+            try {
+              return store.resolveMapping(table);
+            } catch {
+              return null;
+            }
+          };
+        const resolved =
+          typeof companion === 'string' && known(companion) && (!targets.length || targets.includes(companion))
+            ? [known(companion).logicalName]
+            : targets.filter((table) => {
+                const target = known(table);
+                return (
+                  target &&
+                  store.tableRows(target.logicalName).some((item) => canon(item[target.idColumn]) === canon(value))
+                );
+              });
+        if (resolved.length === 1) targets = resolved;
       }
       if (
         !uuid.test(value) ||
@@ -774,6 +808,14 @@ export function sdkQueryParameters(query) {
   return params;
 }
 export function dispatchSdkCall(args) {
+  // The other plug-in services the host binds (IServiceProvider.GetService) name their calls "<interface>.<method>".
+  if (String(args.message?.method).includes('.'))
+    return executePluginServiceCall({
+      store: args.store,
+      method: args.message.method,
+      args: args.message.arguments,
+      diagnostic: args.diagnostic,
+    });
   const { store, message } = args,
     previous = store.pluginParentContext,
     previousRequestMetadata = store.pluginRequestId,
@@ -898,9 +940,21 @@ function sdkBypassOptions(parameters, profile, store) {
 function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFromSandbox }) {
   const readExecute =
     message.method === 'Execute' &&
-    ['Retrieve', 'RetrieveMultiple', 'FetchXmlToQueryExpression', 'QueryExpressionToFetchXml'].includes(
-      message.arguments?.[0]?.requestName,
-    );
+    [
+      'Retrieve',
+      'RetrieveMultiple',
+      'FetchXmlToQueryExpression',
+      'QueryExpressionToFetchXml',
+      'WhoAmI',
+      'RetrieveVersion',
+      'RetrieveEntity',
+      'RetrieveAttribute',
+      'RetrieveAllEntities',
+      'RetrieveAllOptionSets',
+      'RetrieveOptionSet',
+      'RetrieveRelationship',
+      'RetrieveMetadataChanges',
+    ].includes(message.arguments?.[0]?.requestName);
   if (
     store.pluginReadOnly &&
     ['Create', 'Update', 'Delete', 'Associate', 'Disassociate', 'Execute'].includes(message.method) &&
@@ -1027,13 +1081,37 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
           store.pluginSdkTag = previousTag;
         }
       }
+      if (!shape) {
+        const answer = executeSdkOrganizationMessage({
+          store,
+          userId: profile.userId,
+          request,
+          parameters,
+          dispatch: (inner) =>
+            dispatchSdkCallAuthorized({
+              store,
+              profile,
+              message: { ...message, method: 'Execute', arguments: [inner] },
+              diagnostic,
+              sdkFromSandbox,
+            }),
+        });
+        if (answer !== undefined) return answer;
+      }
       // UnMaskedData (Learn optional-parameters#return-unmasked-data): Retrieve and RetrieveMultiple only, exact case, a boolean.
+      // ConcurrencyBehavior (Update, Delete), SuppressDuplicateDetection and SolutionUniqueName (Create, Update): the
+      // documented optional parameters (Microsoft.Xrm.Sdk.Messages request members and Learn optional-parameters).
       const optional = [
         'tag',
         'partitionId',
         'SessionToken',
         ...SDK_BYPASS_PARAMETERS,
         ...(['Retrieve', 'RetrieveMultiple'].includes(request.requestName) ? ['UnMaskedData'] : []),
+        ...(['Update', 'Delete'].includes(request.requestName) ? ['ConcurrencyBehavior'] : []),
+        ...(request.requestName === 'Retrieve' ? ['RelatedEntitiesQuery'] : []),
+        ...(['Create', 'Update'].includes(request.requestName)
+          ? ['SuppressDuplicateDetection', 'SolutionUniqueName']
+          : []),
       ];
       if (
         !shape ||
@@ -1043,9 +1121,12 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
         fail('Unsupported SDK Execute request or parameters: ' + request.requestName, 'LocalPluginSdkUnsupported', 501);
       if (parameters.UnMaskedData != null && typeof parameters.UnMaskedData !== 'boolean')
         fail('SDK UnMaskedData requires a boolean.', 'LocalPluginSdkUnsupported', 501);
-      for (const key of ['partitionId', 'SessionToken'])
+      for (const key of ['partitionId', 'SessionToken', 'SolutionUniqueName'])
         if (parameters[key] != null && typeof parameters[key] !== 'string')
           fail('SDK ' + key + ' requires a string.', 'LocalPluginSdkUnsupported', 501);
+      if (parameters.SuppressDuplicateDetection != null && typeof parameters.SuppressDuplicateDetection !== 'boolean')
+        fail('SDK SuppressDuplicateDetection requires a boolean.', 'LocalPluginSdkUnsupported', 501);
+      const concurrency = sdkConcurrency(request.requestName, parameters);
       validateSdkTag(parameters, store.pluginSdkTag);
       const method = request.requestName;
       let arguments_ = shape.map((key) => parameters[key]);
@@ -1089,6 +1170,8 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
                 sessionToken: parameters.SessionToken,
                 ...bypass,
                 ...(parameters.UnMaskedData === true ? { unmask: true } : {}),
+                ...concurrency,
+                ...(parameters.RelatedEntitiesQuery ? { relatedEntitiesQuery: parameters.RelatedEntitiesQuery } : {}),
               },
             },
           },
@@ -1101,6 +1184,44 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
     default:
       return invokeSdkMethod({ store, service, message }, false);
   }
+}
+// ConcurrencyBehavior (Microsoft.Xrm.Sdk.ConcurrencyBehavior: Default 0, IfRowVersionMatches 1, AlwaysOverwrite 2): with
+// IfRowVersionMatches the write applies only when the target's RowVersion is the stored row version (else 0x80060882), and
+// a missing RowVersion faults 0x80060883 (Learn "Optimistic concurrency"); the other values overwrite.
+function sdkConcurrency(name, parameters) {
+  if (!Object.hasOwn(parameters, 'ConcurrencyBehavior')) return {};
+  const behavior = parameters.ConcurrencyBehavior;
+  if (behavior?.$type !== 'ConcurrencyBehavior' || ![0, 1, 2].includes(behavior.value))
+    fail('SDK ConcurrencyBehavior requires a ConcurrencyBehavior value.', 'LocalPluginSdkUnsupported', 501);
+  if (behavior.value !== 1) return { concurrencyBehavior: behavior.value };
+  const version = parameters.Target?.rowVersion;
+  if (version == null || version === '')
+    throw new DataError(
+      'The RowVersion property must be provided when the value of ConcurrencyBehavior is IfVersionMatches.',
+      400,
+      'ConcurrencyVersionNotProvided',
+      { innerCode: '0x80060883' },
+    );
+  return { concurrencyBehavior: 1, ifMatch: 'W/"' + String(version).replaceAll('"', '') + '"' };
+}
+// The relationship a deep insert or a RelatedEntitiesQuery names, from the table's relationships (schema name and related table).
+function relatedBinding(store, entity, relationship, rows, table) {
+  if (relationship?.$type !== 'Relationship' || typeof relationship.schemaName !== 'string' || !rows?.length || !table)
+    throw new DataError('SDK related rows require a Relationship and related rows.', 400, 'InvalidArgument', {
+      innerCode: '0x80040203',
+    });
+  const rel = Object.values(store.relationshipsFor(store.resolveMapping(entity), { dataverse: true })).find(
+    (candidate) =>
+      candidate.schemaName?.toLowerCase() === relationship.schemaName.toLowerCase() && candidate.entity === table,
+  );
+  if (!rel)
+    throw new DataError(
+      'The relationship ' + relationship.schemaName + ' does not relate ' + entity + ' to ' + table + '.',
+      400,
+      'InvalidArgument',
+      { innerCode: '0x80040203' },
+    );
+  return { rel, relationship, entities: rows };
 }
 function invokeSdkMethod({ store, service, message }, namedResponse) {
   const args = message.arguments ?? [],
@@ -1171,16 +1292,67 @@ function executeSdkMethod({ store, service, message, responseToken }) {
     case 'Create': {
       const entity = args[0];
       if (entity?.$type !== 'Entity') fail('SDK Create requires an Entity.');
-      const row = service.create(entity.logicalName, sdkValueToRecord(entity), {
+      // Deep insert (Entity.RelatedEntities, Learn "create related table rows in one operation"): a row the new row looks up
+      // (N:1) is created first; rows that look the new row up (1:N) are created with that lookup; N:N rows are created and
+      // then associated. Each related row is an ordinary SDK Create (its own pipeline, its own related rows).
+      const related = (entity.relatedEntities ?? []).map((item) =>
+          relatedBinding(
+            store,
+            entity.logicalName,
+            item.relationship,
+            item.entities?.entities,
+            item.entities?.entities?.[0]?.logicalName,
+          ),
+        ),
+        create = (child) =>
+          executeSdkMethod({ store, service, message: { ...message, method: 'Create', arguments: [child] } }).value;
+      const values = sdkValueToRecord(entity);
+      for (const { rel, entities } of related.filter((binding) => binding.rel.many === false)) {
+        if (entities.length !== 1)
+          throw new DataError('A many-to-one deep insert takes exactly one related row.', 400, 'InvalidArgument', {
+            innerCode: '0x80040203',
+          });
+        values[rel.from] = { id: create(entities[0]), logical_name: rel.entity };
+      }
+      const row = service.create(entity.logicalName, values, {
         responseToken,
         sdkCreateId: entity.id,
       });
-      return typed('Guid', row[service.mapping(entity.logicalName).idColumn]);
+      const id = row[service.mapping(entity.logicalName).idColumn];
+      for (const { rel, relationship, entities } of related.filter((binding) => binding.rel.many !== false)) {
+        if (rel.intersect) {
+          const ids = entities.map(create);
+          service.associate(
+            entity.logicalName,
+            id,
+            relationship,
+            {
+              $type: 'EntityReferenceCollection',
+              values: ids.map((value) => ({ $type: 'EntityReference', logicalName: rel.entity, id: value })),
+            },
+            true,
+            {},
+          );
+        } else
+          for (const child of entities)
+            create({
+              ...child,
+              attributes: {
+                ...child.attributes,
+                [rel.to]: { $type: 'EntityReference', logicalName: entity.logicalName, id },
+              },
+            });
+      }
+      return typed('Guid', id);
     }
     case 'Update': {
       const entity = args[0];
       if (entity?.$type !== 'Entity') fail('SDK Update requires an Entity.');
-      service.update(entity.logicalName, entity, sdkValueToRecord(entity), { responseToken });
+      service.update(entity.logicalName, entity, sdkValueToRecord(entity), {
+        responseToken,
+        ifMatch: message.requestOptions?.ifMatch,
+        concurrencyBehavior: message.requestOptions?.concurrencyBehavior,
+      });
       return null;
     }
     case 'Delete':
@@ -1191,15 +1363,74 @@ function executeSdkMethod({ store, service, message, responseToken }) {
       return service.associate(args[0], sdkValueToRecord(args[1]), args[2], args[3], message.method === 'Associate', {
         responseToken,
       });
-    case 'Retrieve':
+    case 'Retrieve': {
       if (args[2] === null)
         throw new DataError('SandboxFault.ThrowIfNull: columnSet', 400, 'InvalidArgument', { innerCode: '0x80040203' });
-      return recordToSdkReadEntity(
-        store,
-        args[0],
-        service.get(args[0], args[1], args[2], { responseToken, ...message.requestOptions }),
-        args[2],
-      );
+      const row = service.get(args[0], args[1], args[2], { responseToken, ...message.requestOptions }),
+        result = recordToSdkReadEntity(store, args[0], row, args[2]);
+      // RetrieveRequest.RelatedEntitiesQuery: each relationship's query, restricted to the rows related to this one.
+      const queries = message.requestOptions?.relatedEntitiesQuery?.values ?? [];
+      if (queries.length)
+        result.relatedEntities = queries.map(({ relationship, query }) => {
+          if (query?.$type !== 'QueryExpression') fail('SDK RelatedEntitiesQuery requires QueryExpression values.');
+          const { rel } = relatedBinding(store, args[0], relationship, [query], query.entityName),
+            mapping = service.mapping(args[0]),
+            criteria = query.criteria ?? { operatorName: 'And', conditions: [], filters: [] },
+            key = (value) => (value && typeof value === 'object' ? value.id : value) ?? null;
+          const equal = (attributeName, value) => ({
+            operatorName: 'And',
+            conditions: [
+              {
+                attributeName,
+                operatorName: value == null ? 'Null' : 'Equal',
+                values: value == null ? [] : [typed('Guid', value)],
+              },
+            ],
+            filters: [],
+          });
+          const scoped = rel.intersect
+            ? {
+                ...query,
+                linkEntities: [
+                  ...(query.linkEntities ?? []),
+                  {
+                    $type: 'LinkEntity',
+                    linkFromEntityName: query.entityName,
+                    linkToEntityName: rel.intersect.entity,
+                    linkFromAttributeName: rel.to,
+                    linkToAttributeName: rel.intersect.to,
+                    joinOperator: 'Inner',
+                    columns: { $type: 'ColumnSet', allColumns: false, columns: [] },
+                    linkCriteria: equal(rel.intersect.from, key(row[rel.from])),
+                    linkEntities: [],
+                    orders: [],
+                  },
+                ],
+              }
+            : {
+                ...query,
+                criteria: {
+                  ...criteria,
+                  filters: [
+                    ...(criteria.filters ?? []),
+                    // N:1: the row this one looks up; 1:N: the rows that look this one up.
+                    rel.many === false
+                      ? equal(rel.to, key(row[rel.from]) ?? '00000000-0000-0000-0000-000000000000')
+                      : equal(rel.to, row[mapping.idColumn]),
+                  ],
+                },
+              };
+          return {
+            relationship,
+            entities: executeSdkMethod({
+              store,
+              service,
+              message: { ...message, method: 'RetrieveMultiple', arguments: [scoped] },
+            }),
+          };
+        });
+      return result;
+    }
     case 'RetrieveMultiple': {
       const query = args[0];
       let rows,
@@ -1226,6 +1457,8 @@ function executeSdkMethod({ store, service, message, responseToken }) {
             query.pageInfo?.pagingCookie ||
             query.dataSource ||
             query.queryHints ||
+            query.columnSet?.attributeExpressions?.length ||
+            query.orders?.some((order) => order.alias) ||
             hasCollectionCriteria(query.criteria)))
       ) {
         const expression =
@@ -1564,22 +1797,22 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
             });
           } catch (cause) {
             error = { code: cause.code ?? 'LocalPluginSdkError', message: cause.message };
-            const inner = cause.details?.innerCode ?? (cause.code === 'NotFound' ? '0x80040217' : null);
             if (cause.code === 'LocalPluginTagDuplicate') error.clrExceptionType = 'System.ArgumentException';
-            else if (/^0x[a-f\d]{8}$/i.test(inner ?? ''))
-              error.organizationServiceFault = {
-                errorCode: parseInt(inner, 16) | 0,
-                message: cause.message,
-                timestamp: new Date().toISOString(),
-                errorDetails: cause.details?.sourceException?.exceptionDetails ?? {},
-                provenance: 'Local modeled SDK fault; native timestamp/correlation/stack are not available',
-              };
+            else {
+              const fault = sdkFault(cause);
+              if (fault) error.organizationServiceFault = fault;
+            }
           }
           port1.postMessage({ kind: 'rpc-answer', value, error, ...(session ? { invocationId } : {}) });
         } else if (message.kind === 'trace') {
           if (typeof message.message !== 'string' || message.message.length > 16384)
             fail('CLR trace exceeds the local limit.', 'LocalPluginOutputLimit', 413);
           diagnostic({ code: 'PLUGIN_CLR_TRACE', message: message.message });
+        } else if (message.kind === 'telemetry') {
+          // ILogger entries: natively Application Insights telemetry, never the plug-in trace log.
+          if (typeof message.message !== 'string' || message.message.length > 16384)
+            fail('CLR telemetry exceeds the local limit.', 'LocalPluginOutputLimit', 413);
+          diagnostic({ code: 'PLUGIN_CLR_TELEMETRY', level: String(message.level ?? ''), message: message.message });
         } else if (message.kind === 'failure') {
           const details = {
             sourceException: {

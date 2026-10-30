@@ -38,6 +38,23 @@ table runs its PreValidation stage and each target's Delete PreValidation, then
 answers `405 0x8004023b`. SDK Merge on a table without a Merge filter fails with
 the native `0x80040800` fault.
 
+A plug-in's `IOrganizationService.Execute` takes the SDK's own request classes
+(`WhoAmIRequest`, `AssignRequest`, a generated custom API class) as well as a
+generic `OrganizationRequest`, and answers the message's response class from
+Microsoft.Xrm.Sdk.Messages or the Proxy's Microsoft.Crm.Sdk.Messages (a custom
+API keeps `OrganizationResponse`). Besides the record, platform and custom API
+messages it answers WhoAmI (the service's user), RetrieveVersion, ExecuteMultiple
+(per-item faults, `ContinueOnError`, `ReturnResponses`), ExecuteTransaction
+(all or nothing, `ExecuteTransactionFault.FaultedRequestIndex`) and the metadata
+reads, which the official serializer reads from the SOAP service's answer.
+Update and Delete honour `ConcurrencyBehavior` (`0x80060882` for a stale
+`RowVersion`, `0x80060883` without one); Create carries `RelatedEntities` as
+a deep insert and Retrieve answers `RelatedEntitiesQuery`. An organization
+failure reaches the plug-in as `FaultException<OrganizationServiceFault>` with
+the code the Web API answers for the same failure; `NotSupportedException` means
+a local adapter gap. These follow the SDK contracts: no native capture of them
+from a plug-in exists yet.
+
 Other named operations, and the SOAP and Web API entry points of the messages
 above, do not acquire their own plug-in pipeline merely because their
 local operation handler performs CRUD. An enabled, explicitly selected handler,
