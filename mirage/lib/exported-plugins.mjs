@@ -1362,6 +1362,7 @@ export function runPluginPhase({
               ? (identity?.contactId ?? identity?.id ?? null)
               : null;
           frame.portalRequest = portalRequest && !store.pluginParentContext && !identity?.admin;
+          frame.callerIdentity ??= identity;
           if (read) {
             frame.query = query;
             frame.collection = collection;

@@ -342,7 +342,8 @@ test('Context2 portal identity requires an explicit transport flag and clears on
   const first = clrContext(args).context;
   assert.equal(first.IsPortalsClientCall, true);
   assert.equal(first.PortalsContactId.value, contact);
-  assert.equal(first.SecondaryEntityName, '');
+  // Native reports 'none' for every message, reads included (recorded dev-environment contexts).
+  assert.equal(first.SecondaryEntityName, 'none');
   assert.equal(clrContext(args).context.RequestId.value, first.RequestId.value);
   store.pluginParentContext = { $type: 'ExecutionContext', values: first };
   const nested = clrContext({ ...args, frame: { ...frame } }).context;

@@ -921,7 +921,13 @@ async function authenticated(d, c, handle) {
     if (impersonation.refused) return impersonation.refused;
     const user = impersonation.user ?? caller;
 
-    const { identity } = organizationPrincipalContext(d.store, user, { caller, appId: verdict.claims.appid });
+    const { identity } = organizationPrincipalContext(d.store, user, {
+      caller,
+      appId: verdict.claims.appid,
+      // Plug-in contexts report the caller's User-Agent (InitiatingUserAgent) and Accept-Language (AcceptLang).
+      userAgent: req.headers['user-agent'] ?? null,
+      acceptLanguage: req.headers['accept-language'] ?? '*',
+    });
     const bodyBuffer = BODY_METHODS.has(c.method) ? await readBody(req) : Buffer.alloc(0);
     // The request context names who asked (the caller) and who executes (the impersonated user) from here on.
     const context = currentRequest();

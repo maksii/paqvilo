@@ -95,7 +95,7 @@ public static class PaqviloPluginHost {
   if(value is EntityImageCollection[])return new Dictionary<string,object>{{"$type","EntityImageCollectionArray"},{"values",((EntityImageCollection[])value).Select(v=>Wire(v,depth+1)).ToArray()}};
   if(value is Guid[])return new Dictionary<string,object>{{"$type","GuidArray"},{"values",((Guid[])value).Select(v=>v.ToString()).ToArray()}};
   if(value is EntityImageCollection)return new Dictionary<string,object>{{"$type","EntityImageCollection"},{"values",((EntityImageCollection)value).ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))}};
-  if(value is IPluginExecutionContext){var proxy=RemotingServices.GetRealProxy(value) as InterfaceProxy;if(proxy==null||proxy.Data==null)throw Unsupported("Unbound ParentContext implementation.");if(proxy.Lease!=null)proxy.Lease.Check();return EncodeContext(proxy.Data,depth+1);}
+  if(value is IPluginExecutionContext){var local=value as LocalContext;if(local==null)throw Unsupported("Unbound ParentContext implementation.");if(local.Lease!=null)local.Lease.Check();return EncodeContext(local.Data,depth+1);}
   if(value is ParameterCollection)return new Dictionary<string,object>{{"$type","ParameterCollection"},{"values",((ParameterCollection)value).ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))}};
   if(value is ColumnSet){var c=(ColumnSet)value;RejectConfigured(c,"AttributeExpressions");return new Dictionary<string,object>{{"$type","ColumnSet"},{"allColumns",c.AllColumns},{"columns",c.Columns.ToArray()}};}
   if(value is FetchExpression)return new Dictionary<string,object>{{"$type","FetchExpression"},{"query",((FetchExpression)value).Query}};
@@ -126,13 +126,66 @@ public static class PaqviloPluginHost {
   public override IMessage Invoke(IMessage message){var call=(IMethodCallMessage)message;try{if(Lease!=null)Lease.Check();return new ReturnMessage(Handler(call),null,0,call.LogicalCallContext,call);}catch(Exception e){return new ReturnMessage(e,call);}}
  }
  static object Proxy(Type type,Func<IMethodCallMessage,object> handler,InvocationLease lease=null){return new InterfaceProxy(type,handler,lease).GetTransparentProxy();}
- static Type ContextContract(Dictionary<string,object> context){return context.ContainsKey("InterfaceVersion")&&Convert.ToInt32(context["InterfaceVersion"])==7?typeof(IPluginExecutionContext7):typeof(IPluginExecutionContext4);}
- static object ContextProxy(Dictionary<string,object> context,InvocationLease lease=null){var proxy=new InterfaceProxy(ContextContract(context),call=>{if(call.MethodName.StartsWith("get_")){object value;if(!context.TryGetValue(call.MethodName.Substring(4),out value))throw Unsupported("Unconfigured execution context property: "+call.MethodName.Substring(4));return value;}if(call.MethodName.StartsWith("set_")){context[call.MethodName.Substring(4)]=call.Args[0];return null;}throw Unsupported("Unsupported context method: "+call.MethodName);},lease);proxy.Data=context;return proxy.GetTransparentProxy();}
+ // Native hands plug-ins a concrete context object implementing every context interface of the
+ // installed SDK, so GetType, reflection and interface checks behave as they do online.
+ static object ContextProxy(Dictionary<string,object> context,InvocationLease lease=null){return new LocalContext(context,lease);}
+ sealed class LocalContext:
+#if PAQVILO_CONTEXT7
+  IPluginExecutionContext7
+#else
+  IPluginExecutionContext4
+#endif
+ {
+  internal readonly Dictionary<string,object> Data;internal readonly InvocationLease Lease;
+  internal LocalContext(Dictionary<string,object> data,InvocationLease lease){Data=data;Lease=lease;}
+  T V<T>(string name){if(Lease!=null)Lease.Check();object value;if(!Data.TryGetValue(name,out value))throw Unsupported("Unconfigured execution context property: "+name);return value==null?default(T):(T)value;}
+  public int Mode{get{return V<int>("Mode");}}
+  public int IsolationMode{get{return V<int>("IsolationMode");}}
+  public int Depth{get{return V<int>("Depth");}}
+  public string MessageName{get{return V<string>("MessageName");}}
+  public string PrimaryEntityName{get{return V<string>("PrimaryEntityName");}}
+  public Guid? RequestId{get{return V<Guid?>("RequestId");}}
+  public string SecondaryEntityName{get{return V<string>("SecondaryEntityName");}}
+  public ParameterCollection InputParameters{get{return V<ParameterCollection>("InputParameters");}}
+  public ParameterCollection OutputParameters{get{return V<ParameterCollection>("OutputParameters");}}
+  public ParameterCollection SharedVariables{get{return V<ParameterCollection>("SharedVariables");}}
+  public Guid UserId{get{return V<Guid>("UserId");}}
+  public Guid InitiatingUserId{get{return V<Guid>("InitiatingUserId");}}
+  public Guid BusinessUnitId{get{return V<Guid>("BusinessUnitId");}}
+  public Guid OrganizationId{get{return V<Guid>("OrganizationId");}}
+  public string OrganizationName{get{return V<string>("OrganizationName");}}
+  public Guid PrimaryEntityId{get{return V<Guid>("PrimaryEntityId");}}
+  public EntityImageCollection PreEntityImages{get{return V<EntityImageCollection>("PreEntityImages");}}
+  public EntityImageCollection PostEntityImages{get{return V<EntityImageCollection>("PostEntityImages");}}
+  public EntityReference OwningExtension{get{return V<EntityReference>("OwningExtension");}}
+  public Guid CorrelationId{get{return V<Guid>("CorrelationId");}}
+  public bool IsExecutingOffline{get{return V<bool>("IsExecutingOffline");}}
+  public bool IsOfflinePlayback{get{return V<bool>("IsOfflinePlayback");}}
+  public bool IsInTransaction{get{return V<bool>("IsInTransaction");}}
+  public Guid OperationId{get{return V<Guid>("OperationId");}}
+  public DateTime OperationCreatedOn{get{return V<DateTime>("OperationCreatedOn");}}
+  public int Stage{get{return V<int>("Stage");}}
+  public IPluginExecutionContext ParentContext{get{return V<IPluginExecutionContext>("ParentContext");}}
+  public Guid UserAzureActiveDirectoryObjectId{get{return V<Guid>("UserAzureActiveDirectoryObjectId");}}
+  public Guid InitiatingUserAzureActiveDirectoryObjectId{get{return V<Guid>("InitiatingUserAzureActiveDirectoryObjectId");}}
+  public Guid InitiatingUserApplicationId{get{return V<Guid>("InitiatingUserApplicationId");}}
+  public Guid PortalsContactId{get{return V<Guid>("PortalsContactId");}}
+  public bool IsPortalsClientCall{get{return V<bool>("IsPortalsClientCall");}}
+  public Guid AuthenticatedUserId{get{return V<Guid>("AuthenticatedUserId");}}
+  public EntityImageCollection[] PreEntityImagesCollection{get{return V<EntityImageCollection[]>("PreEntityImagesCollection");}}
+  public EntityImageCollection[] PostEntityImagesCollection{get{return V<EntityImageCollection[]>("PostEntityImagesCollection");}}
+#if PAQVILO_CONTEXT7
+  public string InitiatingUserAgent{get{return V<string>("InitiatingUserAgent");}}
+  public string EnvironmentId{get{return V<string>("EnvironmentId");}}
+  public Guid TenantId{get{return V<Guid>("TenantId");}}
+  public bool IsApplicationUser{get{return V<bool>("IsApplicationUser");}}
+#endif
+ }
  sealed class Services:IServiceProvider {
   readonly Dictionary<string,object> Context;readonly InvocationLease Lease;
   public Services(Dictionary<string,object> context,InvocationLease lease){Context=context;Lease=lease;}
   public object GetService(Type type){Lease.Check();
-   if(type.IsInterface&&typeof(IExecutionContext).IsAssignableFrom(type)&&type.IsAssignableFrom(ContextContract(Context)))return ContextProxy(Context,Lease);
+   if(type.IsInterface&&typeof(IExecutionContext).IsAssignableFrom(type)&&type.IsAssignableFrom(typeof(LocalContext)))return ContextProxy(Context,Lease);
    if(type==typeof(ITracingService))return Proxy(type,call=>{if(call.MethodName!="Trace")throw Unsupported("Unsupported tracing method.");var args=(object[])call.Args[1];Send(new {kind="trace",message=String.Format(CultureInfo.InvariantCulture,(string)call.Args[0],args)});return null;},Lease);
    if(type==typeof(IOrganizationServiceFactory))return Proxy(type,call=>{if(call.MethodName!="CreateOrganizationService")throw Unsupported("Unsupported factory method.");Guid? user=(Guid?)call.Args[0];return Proxy(typeof(IOrganizationService),c=>Rpc(Lease,c.MethodName,c.Args,user),Lease);},Lease);
    throw Unsupported("Unconfigured service: "+type.FullName);

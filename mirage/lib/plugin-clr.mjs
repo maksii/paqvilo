@@ -354,20 +354,30 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
     await fs.writeFile(sourceFile, source, { flag: 'wx' });
     const compilerFile =
       compiler ?? path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
-    const build = spawnSync(
-      compilerFile,
-      [
-        '/nologo',
-        '/target:exe',
-        '/out:' + executable,
-        '/reference:' + files[1].path,
-        '/reference:System.Web.Extensions.dll',
-        '/reference:System.Runtime.Serialization.dll',
-        '/reference:System.ServiceModel.dll',
-        sourceFile,
-      ],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000, maxBuffer: 256 * 1024 },
-    );
+    // The host context implements IPluginExecutionContext7 when the installed SDK declares it (current
+    // online contract); an older SDK gets the Context4 class instead.
+    const compile = (defines) =>
+      spawnSync(
+        compilerFile,
+        [
+          '/nologo',
+          '/target:exe',
+          ...defines.map((name) => '/define:' + name),
+          '/out:' + executable,
+          '/reference:' + files[1].path,
+          '/reference:System.Web.Extensions.dll',
+          '/reference:System.Runtime.Serialization.dll',
+          '/reference:System.ServiceModel.dll',
+          sourceFile,
+        ],
+        { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000, maxBuffer: 256 * 1024 },
+      );
+    let contextInterfaceVersion = 7,
+      build = compile(['PAQVILO_CONTEXT7']);
+    if (!build.error && build.status !== 0 && /IPluginExecutionContext7/.test(String(build.stdout))) {
+      contextInterfaceVersion = 4;
+      build = compile([]);
+    }
     if (build.error || build.status !== 0)
       fail(
         'CLR host compilation failed: ' + String(build.error?.message ?? build.stdout ?? build.stderr).slice(0, 4000),
@@ -394,6 +404,7 @@ export async function prepareClrRuntime(descriptor, { compiler } = {}) {
         assemblySha256: files[0].sha256,
         sdkSha256: files[1].sha256,
         hostSourceSha256: sha(source),
+        contextInterfaceVersion,
         trusted: true,
         securityModel: 'Explicit project backend profile; native process is trusted code, not a security sandbox',
       },
@@ -709,11 +720,29 @@ export function dispatchSdkCall(args) {
     store.pluginRequestId = previousRequestMetadata;
   }
 }
-function dispatchSdkCallCore({ store, profile, message, callerProfiles = [], diagnostic, sdkFromSandbox = false }) {
+function dispatchSdkCallCore({
+  store,
+  profile,
+  message,
+  callerProfiles = [],
+  diagnostic,
+  sdkFromSandbox = false,
+  invokingUserId,
+}) {
+  // Natively CreateOrganizationService(null) runs as the organization's SYSTEM user and
+  // CreateOrganizationService(context.UserId) as the step's executing user. Both keep the step's backend grants;
+  // any other user still needs its own evidence-backed caller profile.
+  const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM');
   const selected =
     message.userId === null
-      ? profile
-      : [profile, ...callerProfiles].find((candidate) => canon(candidate.userId) === canon(message.userId));
+      ? system
+        ? { ...profile, userId: system.systemuserid }
+        : profile
+      : invokingUserId &&
+          canon(message.userId) === canon(invokingUserId) &&
+          canon(profile.userId) !== canon(invokingUserId)
+        ? { ...profile, userId: message.userId }
+        : [profile, ...callerProfiles].find((candidate) => canon(candidate.userId) === canon(message.userId));
   if (!selected)
     fail(
       'SDK impersonation is not covered by the configured backend profiles.',
@@ -1409,6 +1438,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
               profile: runtime.descriptor.serviceProfile,
               callerProfiles: runtime.descriptor.sdkCallerProfiles,
               sdkFromSandbox: true,
+              invokingUserId: input.context?.UserId?.value,
               message,
               diagnostic,
             });
@@ -1581,6 +1611,49 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       portalRequest && uuid.test(frame.portalContactId ?? '')
         ? frame.portalContactId
         : '00000000-0000-0000-0000-000000000000';
+  // Identities as the platform reports them. UserId is the executing principal: an impersonating step, a nested
+  // SDK service's user, else the Dataverse caller (the descriptor's identity stands in for portal and replay
+  // callers). The initiating/authenticated values belong to the original caller and pass down nested contexts.
+  const caller = frame.callerIdentity?.dataverse ? frame.callerIdentity : null,
+    user = (id) =>
+      id
+        ? store
+            .tableRows('systemuser')
+            .find((row) => String(row.systemuserid).toLowerCase() === String(id).toLowerCase())
+        : null,
+    inherited = (key) => parent?.values?.[key],
+    guidOf = (value) => value?.value ?? value ?? null,
+    empty = '00000000-0000-0000-0000-000000000000';
+  const executionUserId =
+      step.impersonatingUserId ??
+      store.pluginExecutionUserId ??
+      caller?.systemUserId ??
+      context.executionUserId ??
+      descriptor.serviceProfile.userId,
+    initiatingUserId =
+      guidOf(inherited('InitiatingUserId')) ?? caller?.systemUserId ?? context.initiatingUserId ?? executionUserId,
+    authenticatedUserId = guidOf(inherited('AuthenticatedUserId')) ?? caller?.dataverse?.callerId ?? initiatingUserId,
+    businessUnitId =
+      guidOf(inherited('BusinessUnitId')) ??
+      (caller ? guidOf(user(initiatingUserId)?.businessunitid?.id ?? user(initiatingUserId)?.businessunitid) : null) ??
+      context.businessUnitId,
+    objectId = (id) => user(id)?.azureactivedirectoryobjectid ?? empty;
+  const identityFacts = {
+    UserAzureActiveDirectoryObjectId: typed('Guid', objectId(executionUserId)),
+    InitiatingUserAzureActiveDirectoryObjectId: typed('Guid', objectId(initiatingUserId)),
+    InitiatingUserApplicationId:
+      inherited('InitiatingUserApplicationId') ??
+      typed('Guid', caller?.dataverse?.appId ?? user(initiatingUserId)?.applicationid ?? empty),
+    AuthenticatedUserId: typed('Guid', authenticatedUserId),
+    InitiatingUserAgent:
+      inherited('InitiatingUserAgent') ??
+      caller?.dataverse?.userAgent ??
+      (context.initiatingUserAgentPresent ? 'Mirage observed user-agent presence; value withheld' : null),
+    EnvironmentId: context.environmentId ?? store.state?.dataverse?.environmentId ?? null,
+    TenantId: typed('Guid', context.tenantId ?? store.state?.dataverse?.tenantId ?? empty),
+    IsApplicationUser:
+      inherited('IsApplicationUser') ?? context.isApplicationUser ?? Boolean(user(authenticatedUserId)?.applicationid),
+  };
   const bulkImages = (rows, post) => ({
     $type: 'EntityImageCollectionArray',
     values: frame.targets.map((_, index) => ({
@@ -1614,22 +1687,13 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     ...(frame.sdkFrameworkSource ? { sdkFrameworkSource: frame.sdkFrameworkSource } : {}),
     expectedAssemblyName: step.assemblyName ?? null,
     context: {
-      InterfaceVersion: context.interfaceVersion ?? 4,
-      ...(context.interfaceVersion === 7
-        ? {
-            InitiatingUserAgent: context.initiatingUserAgentPresent
-              ? 'Mirage observed user-agent presence; value withheld'
-              : null,
-            EnvironmentId: context.environmentId,
-            TenantId: typed('Guid', context.tenantId),
-            IsApplicationUser: context.isApplicationUser,
-          }
-        : {}),
+      InterfaceVersion: runtime.provenance?.contextInterfaceVersion ?? 7,
+      ...identityFacts,
       IsPortalsClientCall: portalRequest,
       PortalsContactId: typed('Guid', portalContactId),
       RequestId: typed('Guid', (frame.requestId ??= parent?.values?.RequestId?.value ?? randomUUID())),
-      SecondaryEntityName:
-        context.secondaryEntityName ?? (operation === 'update' || (frame.customApi && entity === 'none') ? 'none' : ''),
+      // Native reports 'none' for every message observed (CRUD, reads, bulk, association, named messages).
+      SecondaryEntityName: context.secondaryEntityName ?? 'none',
       Stage: stage,
       Mode: step.contract?.mode ?? 0,
       Depth: contextDepth,
@@ -1643,11 +1707,11 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
             ? (record[primary] ?? '00000000-0000-0000-0000-000000000000')
             : '00000000-0000-0000-0000-000000000000',
       ),
-      UserId: typed('Guid', context.executionUserId ?? store.pluginExecutionUserId ?? descriptor.serviceProfile.userId),
-      InitiatingUserId: parent?.values.InitiatingUserId ?? typed('Guid', context.initiatingUserId),
-      OrganizationId: typed('Guid', context.organizationId),
-      OrganizationName: context.organizationName ?? '',
-      BusinessUnitId: typed('Guid', context.businessUnitId),
+      UserId: typed('Guid', executionUserId),
+      InitiatingUserId: typed('Guid', initiatingUserId),
+      OrganizationId: typed('Guid', context.organizationId ?? store.state?.dataverse?.organizationId),
+      OrganizationName: context.organizationName ?? store.state?.dataverse?.uniqueName ?? '',
+      BusinessUnitId: typed('Guid', businessUnitId),
       CorrelationId: typed('Guid', (frame.correlationId ??= parent?.values.CorrelationId?.value ?? randomUUID())),
       OperationId: typed('Guid', frame.operationId),
       OperationCreatedOn: cloneStateData(frame.createdOnWire),
