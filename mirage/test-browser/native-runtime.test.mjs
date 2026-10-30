@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const require = createRequire(import.meta.url);
 const SITE = '6a2b3c4d-1e2f-4a5b-8c6d-7e8f9a0b1c2d';
@@ -19,7 +19,7 @@ const ACCOUNTS = [
 ];
 
 test('native client runtime: WebForms validators, jQuery grid events, paging and the lookup modal', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'native-runtime-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-runtime-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   // The portal's own jQuery is a source web file.
   const jquery = await fs.readFile(
@@ -137,6 +137,7 @@ test('native client runtime: WebForms validators, jQuery grid events, paging and
   await page.locator('#fullname').blur();
 
   // Lookup modal: show.bs.modal, lookup grid service, row selection and footer Select.
+  const listResponses = (await page.evaluate(() => window.gridResponses)).length;
   await page.getByRole('button', { name: 'Organisation Launch lookup modal' }).click();
   const modal = page.locator('#parentcustomerid_lookupmodal section.modal-lookup');
   try {
@@ -176,7 +177,11 @@ test('native client runtime: WebForms validators, jQuery grid events, paging and
     ]),
     [ACCOUNTS[1], 'Beta', 'account'],
   );
-  assert.ok((await page.evaluate(() => window.gridResponses)).includes('1/3'));
+  assert.deepEqual(
+    (await page.evaluate(() => window.gridResponses)).slice(listResponses),
+    ['1/3'],
+    'the lookup grid service answered one page of the three accounts',
+  );
   // Native postback: success message after the page re-renders.
   await page.locator('#UpdateButton').click();
   await page.locator('#MessageLabel').filter({ hasText: 'Submission completed successfully.' }).waitFor();

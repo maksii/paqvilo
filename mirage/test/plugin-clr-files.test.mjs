@@ -1,16 +1,17 @@
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import syncFs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { canonicalClrDirectory, readClrDependency, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-files-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-files-'));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
   return fs.realpath(root);
 }
@@ -132,10 +133,10 @@ test('CLR opened-file read rejects a pathname replaced during reading without re
 });
 test(
   'Actual original CLR case-variant cache compiles once, runs verified snapshot bytes and removes snapshots after success, fault, timeout and nesting',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
     const root = await fixture(t),
-      sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+      sdk = clrSdk(),
       source = path.join(root, 'Original.cs'),
       assembly = path.join(root, 'Original.dll'),
       cache = path.join(root, 'MixedCaseCache');
@@ -144,14 +145,7 @@ test(
       source,
       'using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Original:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];if(target.GetAttributeValue<string>("title")=="fault")throw new InvalidPluginExecutionException("ordinary owned fault");if(target.GetAttributeValue<string>("title")=="timeout")System.Threading.Thread.Sleep(5000);if(target.GetAttributeValue<string>("title")=="nested"){var service=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var child=new Entity("widget");child["title"]="ordinary";service.Create(child);}target["title"]="saved by original";}}}',
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      build = spawnSync(compiler, ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source], {
-        shell: false,
-        windowsHide: true,
-        encoding: 'utf8',
-        timeout: 20000,
-      });
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const user = '10000000-0000-0000-0000-000000000001',
       runtime = await prepareClrRuntime({
         trust: 'execute-local-assembly',

@@ -15,7 +15,7 @@ import {
   signInContent,
 } from '../lib/auth-session.mjs';
 import { signInHeaders } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const page = (id, name, partial, parent = 'home') =>
   [
@@ -133,7 +133,7 @@ const initialState = (identity = { contactId: 'alex', roleSource: 'memberships',
 });
 
 async function simulator(t, initial = initialState()) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-auth-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-auth-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles)) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
@@ -260,7 +260,10 @@ test('configured authentication routes trim trailing slashes in linear time with
   assert.deepEqual(authRoute('/custom/login' + '/'.repeat(200_000), 'GET', { loginPath: '/custom/login' }), {
     kind: 'sign-in-page',
   });
-  assert.ok(performance.now() - started < 1500, 'long slash runs must not trigger repeated suffix scans');
+  // The three linear calls take about a millisecond; a repeated suffix scan (/\/+$/ backtracking) over 200,000
+  // slashes takes tens of seconds, so this bound separates the two by three orders of magnitude on any runner.
+  const LINEAR_BOUND_MS = 1500;
+  assert.ok(performance.now() - started < LINEAR_BOUND_MS, 'long slash runs must not trigger repeated suffix scans');
 });
 
 test('the sign-in content lists personas, labels the simulation and escapes values', () => {

@@ -1,7 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +11,9 @@ import {
   preCommitScripts,
   githubScope,
   suitesForScope,
+  ciLanes,
 } from '../.github/scripts/change-scope.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 const classifyChanges = (files) => {
   const { runtime, package: packaged, dependencies } = completeScope(files);
@@ -40,8 +41,7 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
   });
   for (const file of [
     'mirage/README.md',
-    'mirage/docs/dataverse-api.md',
-    'examples/project/README.md',
+    'mirage/docs/operations.md',
     'examples/company-operations/plugins/README.md',
     'AGENTS.md',
     'LICENSE',
@@ -65,6 +65,15 @@ test('secondary edits skip runtime jobs but packaged documentation retains relea
   ])
     assert.equal(classifyChanges([file]).runtime, true, file);
   assert.equal(classifyChanges(['mirage/package-lock.json']).dependencies, true);
+  // Documents that suites assert against (settings tables, documented error codes) select those suites.
+  for (const [file, suites] of [
+    ['docs/configuration.md', ['mirage']],
+    ['mirage/docs/dataverse-api.md', ['mirage']],
+    ['docs/lense.md', ['lense']],
+  ]) {
+    assert.equal(classifyChanges([file]).runtime, true, file);
+    assert.deepEqual(suitesForScope(completeScope([file])), suites, file);
+  }
 });
 
 test('description, title, base and source events validate the same complete PR diff with a stable required gate', (t) => {
@@ -150,7 +159,7 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
   assert.equal(ci.jobs.gate.name, 'CI gate');
   assert.equal(ci.jobs.gate.if, 'always()');
-  assert.deepEqual(ci.jobs.gate.needs, ['changes', 'checks', 'test', 'browser', 'windows', 'package']);
+  assert.deepEqual(ci.jobs.gate.needs, ['changes', 'checks', 'test', 'browser', 'windows', 'sdk-linux', 'package']);
   const command = ci.jobs.gate.steps.find((step) => step.name === 'Require every job to succeed').run;
   assert.match(command, /^node -e ".*"$/);
   const script = command.slice('node -e "'.length, -1);
@@ -160,10 +169,12 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
     PACKAGE: 'true',
     RUNTIME: 'true',
     SMOKE_REQUIRED: 'true',
+    SDK_REQUIRED: 'true',
     CHECKS: 'success',
     TESTS: 'success',
     BROWSER: 'success',
     WINDOWS: 'success',
+    SDK: 'success',
     SMOKE: 'success',
   };
   const run = (env) => {
@@ -176,7 +187,7 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
     return result.status;
   };
   assert.equal(run(required), 0);
-  for (const lane of ['SCOPE_RESULT', 'CHECKS', 'TESTS', 'BROWSER', 'WINDOWS', 'SMOKE'])
+  for (const lane of ['SCOPE_RESULT', 'CHECKS', 'TESTS', 'BROWSER', 'WINDOWS', 'SDK', 'SMOKE'])
     for (const result of ['failure', 'cancelled', 'skipped'])
       assert.equal(run({ ...required, [lane]: result }), 1, `${lane} cannot qualify with ${result}`);
   assert.equal(
@@ -186,10 +197,12 @@ test('the stable required CI gate rejects failed, cancelled or skipped applicabl
       PACKAGE: 'false',
       RUNTIME: 'false',
       SMOKE_REQUIRED: 'false',
+      SDK_REQUIRED: 'false',
       CHECKS: 'skipped',
       TESTS: 'skipped',
       BROWSER: 'skipped',
       WINDOWS: 'skipped',
+      SDK: 'skipped',
       SMOKE: 'skipped',
     }),
     0,
@@ -241,11 +254,12 @@ test('documentation CI retains required CodeQL configurations without scheduling
   for (const workflow of [ci, security]) {
     assert.equal(workflow.jobs.gate.if, 'always()');
     assert.equal(workflow.on.pull_request.paths, undefined, 'required gates must report on documentation PRs');
+    assert.ok(workflow.on.pull_request.branches.includes('0.9.8'), 'release PRs must receive both gates');
   }
 });
 
 function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-gates-'));
+  const root = tempDirSync('paqvilo-gates-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const env = { ...process.env };
   for (const name of Object.keys(env)) if (name.startsWith('GIT_')) delete env[name];
@@ -255,9 +269,12 @@ function fixture(t) {
     return result.stdout.trim();
   };
   git('init', '-q');
-  git('config', 'user.name', 'Fixture');
-  git('config', 'user.email', 'fixture@example.test');
-  git('config', 'core.hooksPath', '.no-hooks');
+  // A runner's global identity, hooks, signing or line-ending configuration must not change the fixture's commits.
+  // One file append instead of a Git process per setting.
+  fs.appendFileSync(
+    path.join(root, '.git', 'config'),
+    '[user]\n\tname = Fixture\n\temail = fixture@example.test\n[core]\n\thooksPath = .no-hooks\n\tautocrlf = false\n[commit]\n\tgpgsign = false\n',
+  );
   const write = (name, contents) => {
     const file = path.join(root, name);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -320,7 +337,10 @@ function hookFixture(t, { classifier, readyDependencies = false } = {}) {
   }
   if (classifier) write('.github/scripts/change-scope.mjs', classifier);
   if (readyDependencies)
-    write('scripts/ensure-dependencies.mjs', 'export const dependencyReadiness = () => ({ ready: true });');
+    write(
+      'scripts/ensure-dependencies.mjs',
+      'export const dependencyReadiness = () => ({ ready: true }); export const browserExecutable = async () => ({ path: null });',
+    );
   write('package.json', '{"type":"module"}');
   write('README.md', 'original');
   write('SECURITY.md', 'original');
@@ -445,6 +465,43 @@ test('literal and package imports expand suites while isolated overlays remain L
   assert.deepEqual(suitesForScope(completeScope(['unclassified/file.mjs'], { root })), ['lense', 'mirage', 'examples']);
 });
 
+test('quoted file, directory and template references select the suites that read or spawn them', (t) => {
+  const { root, write } = fixture(t);
+  write('package.json', JSON.stringify({ name: 'paqvilo' }));
+  write('mirage/lib/assets/icon.svg', '<svg/>');
+  write(
+    'mirage/lib/server.mjs',
+    "export const icon = new URL('./assets/icon.svg', import.meta.url); export const url = './';",
+  );
+  write('mirage/lib/other.mjs', 'export {};');
+  write('mirage/tool.mjs', 'export {};');
+  write('bin/cli.mjs', 'export const run = (tool) => new URL(`../mirage/${tool}.mjs`, import.meta.url);');
+  write('test/server.test.mjs', "import '../mirage/lib/server.mjs';");
+  write('test/cli.test.mjs', "const cli = new URL('../bin/cli.mjs', import.meta.url);");
+  write(
+    'examples/project/test/fixture.test.mjs',
+    "const fixtures = new URL('../../../mirage/lib/assets/', import.meta.url);",
+  );
+  write('mirage/test/guide.test.mjs', "const guide = new URL('../../docs/guide.md', import.meta.url);");
+  write('docs/guide.md', '# Invented guide\n');
+  write('docs/other.md', '# Unread guide\n');
+  assert.deepEqual(suitesForScope(completeScope(['mirage/lib/assets/icon.svg'], { root })), [
+    'lense',
+    'mirage',
+    'examples',
+  ]);
+  assert.deepEqual(suitesForScope(completeScope(['mirage/tool.mjs'], { root })), ['lense', 'mirage']);
+  assert.deepEqual(
+    suitesForScope(completeScope(['mirage/lib/other.mjs'], { root })),
+    ['mirage'],
+    "a bare './' is a URL",
+  );
+  assert.deepEqual(suitesForScope(completeScope(['docs/guide.md'], { root })), ['mirage']);
+  assert.equal(completeScope(['docs/guide.md'], { root }).runtime, true);
+  assert.deepEqual(suitesForScope(completeScope(['docs/other.md'], { root })), []);
+  assert.equal(completeScope(['docs/other.md'], { root }).runtime, false);
+});
+
 test('main, explicit full, scheduled and manual runs select every gate', () => {
   for (const [eventName, event, env] of [
     ['push', {}, { GITHUB_REF: 'refs/heads/main' }],
@@ -461,8 +518,32 @@ test('main, explicit full, scheduled and manual runs select every gate', () => {
 
 test('workflow matrices use selected suites on the pinned runtime and shared local commands', () => {
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  for (const [name, kind, lanes] of [
+    ['test', 'unit', 'units'],
+    ['windows', 'unit', 'units'],
+    ['browser', 'browser', 'browsers'],
+  ]) {
+    assert.equal(ci.jobs[name].strategy.matrix.include, `\${{ fromJSON(needs.changes.outputs.${lanes}) }}`);
+    for (const step of ['ci:prepare', 'ci:verify'])
+      assert.match(
+        ci.jobs[name].steps.find((entry) => entry.run?.includes(step)).run,
+        new RegExp(
+          `--${kind} .*\\$\\{\\{ matrix\\.shard && format\\('--shard \\{0\\}', matrix\\.shard\\) \\|\\| '' \\}\\}`,
+        ),
+      );
+    // Every selected suite keeps its lane, and a sharded suite keeps every shard exactly once.
+    for (const suite of ['lense', 'mirage', 'examples']) {
+      const shards = ciLanes(kind, [suite]).map((lane) => [lane.suite, lane.shard]);
+      const total = shards.length;
+      assert.deepEqual(
+        shards,
+        total === 1 ? [[suite, undefined]] : shards.map((_, index) => [suite, `${index + 1}/${total}`]),
+        `${kind} ${suite}`,
+      );
+    }
+  }
+  assert.ok(ciLanes('unit', ['mirage']).length > 1, 'the longest suite is sharded');
   for (const name of ['test', 'windows', 'browser']) {
-    assert.match(ci.jobs[name].strategy.matrix.suite, /fromJSON\(needs.changes.outputs.suites\)/);
     assert.equal(ci.jobs[name].strategy.matrix.node, undefined);
     assert.equal(
       ci.jobs[name].steps.find((step) => step.uses?.startsWith('actions/setup-node@')).with['node-version-file'],
@@ -511,7 +592,7 @@ test('verification receipts require an identical tree, toolchain, browser, fixtu
 
 test('starting a validation revokes previous evidence even when the rerun fails', async (t) => {
   const { consumeVerificationReceipt, matchingVerification } = await import('../scripts/ci.mjs');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-verification-receipt-'));
+  const directory = tempDirSync('paq-verification-receipt-');
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'verification.json');
   const identity = { tree: 'previously-passing-tree' };
@@ -528,7 +609,7 @@ test('starting a validation revokes previous evidence even when the rerun fails'
 
 test('malformed validation evidence is revoked', async (t) => {
   const { consumeVerificationReceipt } = await import('../scripts/ci.mjs');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-malformed-receipt-'));
+  const directory = tempDirSync('paq-malformed-receipt-');
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, 'verification.json');
   const malformed = fs.openSync(file, 'wx');
@@ -564,6 +645,14 @@ test('every PR retains all main CodeQL configurations regardless of changed lang
   assert.equal(security.jobs.codeql.strategy.matrix.language, '${{ fromJSON(needs.changes.outputs.languages) }}');
   const analysis = security.jobs.codeql.steps.find((step) => step.uses?.startsWith('github/codeql-action/analyze@'));
   assert.equal(analysis.with.category, '/language:${{ matrix.language }}');
+});
+
+test('CI and security run required gates for baseline PRs targeting 0.9.8', () => {
+  for (const file of ['ci', 'security']) {
+    const workflow = YAML.parse(fs.readFileSync(new URL(`../.github/workflows/${file}.yml`, import.meta.url), 'utf8'));
+    assert.ok(workflow.on.pull_request.branches.includes('0.9.8'), file);
+    assert.ok(workflow.on.pull_request.branches.includes('main'), file);
+  }
 });
 
 test('the pre-push hook refuses a different pushed commit and allows branch deletions without validating source', (t) => {
@@ -604,7 +693,12 @@ test('CI command rejects conflicting, incomplete and unknown options before runn
     ['verify', '--full', '--suite', 'lense'],
     ['verify', '--unknown'],
   ]) {
-    const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', windowsHide: true });
+    // Rejection precedes any validation; the guard only ends a regression that starts validating this checkout.
+    const result = spawnSync(process.execPath, [script, ...args], {
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 30_000,
+    });
     assert.equal(result.status, 1, args.join(' '));
     assert.doesNotMatch(result.stdout, /CI selection|completed without errors/);
   }
@@ -679,7 +773,13 @@ test('SDK fixtures reject stale DLL bytes and compiler pinning matches every CLR
   write('fixture.dll', 'invented stale SDK bytes');
   assert.throws(() => verifyClrSdk(path.join(root, 'fixture.dll')), /DLL digest mismatch/);
   const pin = JSON.parse(fs.readFileSync(new URL('../global.json', import.meta.url), 'utf8'));
-  assert.deepEqual(pin.sdk, { version: '10.0.113', rollForward: 'disable', allowPrerelease: false });
+  // Servicing patches of the pinned feature band are accepted; another band, minor or major is refused.
+  assert.deepEqual(pin.sdk, { version: '10.0.114', rollForward: 'latestPatch', allowPrerelease: false });
+  const { dotnetSatisfies } = await import('../scripts/ci.mjs');
+  assert.equal(dotnetSatisfies('10.0.114', '10.0.114'), true);
+  assert.equal(dotnetSatisfies('10.0.114', '10.0.120'), true);
+  for (const other of ['10.0.113', '10.0.200', '10.1.100', '11.0.114', '10.0.114-preview.1', ''])
+    assert.equal(dotnetSatisfies('10.0.114', other), false, other);
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
   for (const name of ['test', 'windows', 'browser']) {
     const setup = ci.jobs[name].steps.find((step) => step.uses?.startsWith('actions/setup-dotnet@'));
@@ -768,26 +868,41 @@ test('Windows examples require the verified CLR fixture independently of Mirage 
   );
 });
 
-test('full Windows runs require locked SDK client gates without expanding ordinary PRs', async () => {
+test('full and applicable scoped PR runs require locked SDK clients on Windows and Linux', async () => {
   const { fullSdkGate } = await import('../scripts/ci.mjs');
   assert.equal(fullSdkGate(completeScope([], { full: true }), 'win32'), true);
-  assert.equal(fullSdkGate(completeScope([], { full: true }), 'linux'), false);
+  assert.equal(fullSdkGate(completeScope([], { full: true }), 'linux'), true);
   assert.equal(fullSdkGate(completeScope(['lense/panel-ui.mjs']), 'win32'), false);
-  assert.equal(fullSdkGate(completeScope(['package.json']), 'win32'), false);
+  assert.equal(fullSdkGate(completeScope(['package.json']), 'win32'), true);
   const ci = YAML.parse(fs.readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8'));
+  // Exactly one Mirage leg (the first shard, or the whole suite) prepares and runs the SDK clients.
+  const once = "matrix.suite == 'mirage' && (!matrix.shard || startsWith(matrix.shard, '1/'))";
   const step = ci.jobs.windows.steps.find((step) => step.run === 'node scripts/ci.mjs sdk');
-  assert.equal(step?.if, "matrix.suite == 'mirage' && needs.changes.outputs.full == 'true'");
+  assert.equal(step?.if, `${once} && needs.changes.outputs.sdk == 'true'`);
+  const prepare = ci.jobs.windows.steps.find((step) => step.name === 'Release port 80 for the ServiceClient gate');
+  assert.equal(prepare?.if, `${step.if} && runner.environment == 'github-hosted'`);
+  assert.equal(prepare.shell, 'pwsh');
+  assert.ok(ci.jobs.windows.steps.indexOf(prepare) < ci.jobs.windows.steps.indexOf(step));
+  assert.match(prepare.run, /net stop http \/y/);
+  assert.match(prepare.run, /Port 80 is still held/);
   assert.ok(
-    ci.jobs.windows.steps.some((step) => step.run?.includes("needs.changes.outputs.full == 'true' && '--sdk'")),
+    ci.jobs.windows.steps.some((step) =>
+      step.run?.includes(`${once} && needs.changes.outputs.sdk == 'true' && '--sdk'`),
+    ),
   );
+  const { validationSteps } = await import('../scripts/ci.mjs');
+  const sdkSteps = (scope, platform) =>
+    validationSteps(scope, [], {}, platform).filter((step) => step.label === 'sdk gates');
+  assert.deepEqual(sdkSteps(completeScope([], { full: true }), 'win32')[0]?.commands, [['scripts/ci.mjs', 'sdk']]);
+  assert.deepEqual(sdkSteps(completeScope([], { full: true }), 'linux')[0]?.commands, [['scripts/ci.mjs', 'sdk']]);
+  assert.deepEqual(sdkSteps(completeScope(['lense/panel-ui.mjs']), 'win32'), []);
   const source = fs.readFileSync(new URL('../scripts/ci.mjs', import.meta.url), 'utf8');
-  assert.match(source, /if \(fullSdkGate\(scope\)\) verifySdkGates\(\)/);
   assert.match(source, /cert-auth\/Gate\/Gate\.csproj', '--locked-mode'/);
 });
 
 test('example preparation removes stale local dependencies without following junctions and prepared imports match the lock', async (t) => {
   const { resetExampleModules, requireExampleBrowserDependency } = await import('../scripts/ci.mjs');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-example-deps-'));
+  const directory = tempDirSync('paq-example-deps-');
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const checkout = path.join(directory, 'checkout'),
     project = path.join(checkout, 'examples/project');
@@ -818,7 +933,7 @@ test('example preparation removes stale local dependencies without following jun
 
 test('Git status probes fail closed without refreshing the index with optional locks', async (t) => {
   const { checkedGitStatus, validationTree } = await import('../scripts/ci.mjs');
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paq-git-status-'));
+  const directory = tempDirSync('paq-git-status-');
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   assert.throws(() => checkedGitStatus(directory), /Cannot determine Git worktree status/);
   assert.throws(() => checkedGitStatus(path.join(directory, 'missing')), /Cannot determine Git worktree status/);

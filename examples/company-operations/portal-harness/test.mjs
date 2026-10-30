@@ -155,7 +155,8 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
     const calls = [],
       operations = new Map(),
       queryCache = new Map();
-    let eventReads = 0;
+    let eventReads = 0,
+      elapsed = 0;
     const packet = {
       pqvd_plugineventid: 'event',
       pqvd_spanid: 'span',
@@ -208,6 +209,13 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
       },
       context: { contactId: '11111111-1111-4111-8111-111111111111', roles: ['CO Test Runner'] },
       request,
+      // Virtual time: the late packet arrives on the third poll without two real one-second intervals.
+      clock: {
+        now: () => elapsed,
+        sleep: async (ms) => {
+          elapsed += ms;
+        },
+      },
     });
     const result = await runner.run({ selectedCases: [], pluginProfile: 'P10' }),
       profile = result.evidence.find((e) => e.profile === 'P10' && !e.kind),
@@ -220,6 +228,7 @@ test('P10 saves reconciled packets before cleanup and marks failed reconciliatio
       );
     assert.equal(profile.backendReconciliation.state, fail ? 'read-failed' : 'observed');
     assert.equal(eventReads, fail ? 1 : 3);
+    assert.equal(elapsed, fail ? 0 : 2000, 'two default one-second polling intervals separate the three reads');
     assert.equal(queryCache.size, fail ? 0 : 3);
     assert.deepEqual(result.residuals, []);
     assert.ok(cleanup > calls.findLastIndex((c) => c.url.startsWith('/_api/pqvd_pluginevents?')));

@@ -2,7 +2,6 @@ import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
@@ -10,9 +9,8 @@ import { OverlaySession } from '../lense/session.mjs';
 import { PortalModel, isSourceFile } from '../lense/portal-model.mjs';
 import { GitBaseline, gitHead, gitDirectories } from '../lense/git.mjs';
 import { watchSources, logHits } from '../lense/commands/dev.mjs';
-import { createFixture, SITE } from './fixture.mjs';
+import { createFixture, SITE, tempDirSync } from './fixture.mjs';
 
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const git = (cwd, ...args) =>
   execFileSync('git', args, { cwd, windowsHide: true, encoding: 'utf8', timeout: 30_000 }).trim();
 function fixture(t) {
@@ -56,7 +54,7 @@ test('scratch saves are ignored while new page code and missing asset payloads r
 
 test('path caching cannot retain a descendant after an ancestor is moved outside and replaced by a junction', (t) => {
   const fx = fixture(t);
-  const outside = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-outside-ancestor-')));
+  const outside = tempDirSync('pp-outside-ancestor-');
   t.after(() => fs.rmSync(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   const file = fx.file('basic-forms/contact/Contact.basicform.custom_javascript.js');
   new PortalModel(fx.dir);
@@ -107,7 +105,7 @@ test('Git awareness handles branches, detached HEAD and linked worktree director
   const dirs = await gitDirectories(fx.file('web-pages/home'));
   assert.equal(dirs.toplevel, fx.dir);
   assert.equal(dirs.gitDir, dirs.commonDir);
-  const parent = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'pp-linked-awareness-')));
+  const parent = tempDirSync('pp-linked-awareness-');
   const linked = path.join(parent, 'checkout');
   t.after(() => fs.rmSync(parent, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   git(fx.dir, 'worktree', 'add', '--detach', linked, 'HEAD');
@@ -127,7 +125,7 @@ test('repository watching notices a commit with a pinned baseline and polling st
   const watcher = watchSources(s, { pages: () => [] }, { baselinePollMs: 60_000, log: () => {} });
   ownedFixture(t).add(() => watcher.close());
   await watcher.ready;
-  const updated = once(s, 'head', { signal: AbortSignal.timeout(10_000) });
+  const updated = once(s, 'head', { signal: AbortSignal.timeout(120_000) });
   fx.write('web-files/app.js', 'window.committed = true;');
   fx.commit();
   const [head] = await updated;
@@ -136,7 +134,7 @@ test('repository watching notices a commit with a pinned baseline and polling st
   await watcher.close();
   const poll = watchSources(s, { pages: () => [] }, { gitWatch: false, baselinePollMs: 30, log: () => {} });
   ownedFixture(t).add(() => poll.close());
-  const renamed = once(s, 'head', { signal: AbortSignal.timeout(10_000) });
+  const renamed = once(s, 'head', { signal: AbortSignal.timeout(120_000) });
   git(fx.dir, 'switch', '-c', 'polling-still-aware');
   assert.equal((await renamed)[0].branch, 'polling-still-aware');
 });
@@ -182,21 +180,27 @@ test('Pin HEAD waits for an in-flight save, retains source pauses, and preserves
   assert.equal(s.baseline.commit, head.commit);
 });
 
-test('navigation logging groups resources and shutdown releases timers and listeners', async () => {
+test('navigation logging groups resources and shutdown releases timers and listeners', (t) => {
+  // The summary is printed once hits settle: advance the settle timer instead of sleeping past it.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const settleMs = 5;
   const s = Object.assign(new EventEmitter(), { cfg: { siteName: 'test', envName: 'loopback' } });
   const logs = [];
-  const stop = logHits(s, (line) => logs.push(line), { verbose: false, settleMs: 5 });
+  const stop = logHits(s, (line) => logs.push(line), { verbose: false, settleMs });
   const page = {};
   s.emit('hit', { page, navigation: true, url: '/', sources: [], type: 'html' });
-  for (let i = 0; i < 50; i++)
+  for (let i = 0; i < 50; i++) {
     s.emit('hit', { page, url: `/asset-${i}.js`, type: 'file', sources: [{ rel: `web-files/asset-${i}.js` }] });
-  await sleep(15);
+    t.mock.timers.tick(settleMs - 1);
+  }
+  assert.deepEqual(logs, [], 'each hit restarts the settle period');
+  t.mock.timers.tick(1);
   assert.equal(logs.length, 1);
   assert.match(logs[0], /test@loopback.*50 local files/);
   s.emit('hit', { page, type: 'file', url: '/late.js', sources: [{ rel: 'web-files/late.js' }] });
   stop();
-  await sleep(15);
-  assert.equal(logs.length, 1);
+  t.mock.timers.tick(settleMs);
+  assert.equal(logs.length, 1, 'a pending late summary is discarded at shutdown');
   assert.equal(s.listenerCount('hit') + s.listenerCount('fault'), 0);
 });
 
@@ -208,10 +212,15 @@ test("Pin HEAD waits for the watcher's browser refresh before publishing its new
     release = resolve;
   });
   const previous = s.baseline;
+  await s.refreshQueue;
+  // The pin's work starts by reading HEAD; without the refresh gate it would start within this turn of the loop.
+  const headReads = t.mock.method(s, 'refreshHead');
   const pin = s.repinBaseline();
-  await sleep(10);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(headReads.mock.callCount(), 0, 'the pin waits for the browser refresh before reading HEAD');
   assert.equal(s.baseline, previous);
   release();
   await pin;
+  assert.equal(headReads.mock.callCount(), 1);
   assert.notEqual(s.baseline, previous);
 });

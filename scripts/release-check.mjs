@@ -14,12 +14,24 @@ const DOCUMENTATION_ASSETS = new Set([
 
 const SAMPLE_COMPONENT_LICENSE =
   'examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js.LICENSE.txt';
+const CODE_APP_EXAMPLE_FILES = [
+  'examples/project/code-app/app.js',
+  'examples/project/code-app/index.html',
+  'examples/project/code-app/mirage.mjs',
+  'examples/project/code-app/power.config.json',
+  'examples/project/code-app/server.mjs',
+  'examples/project/code-app/solution/Other/Solution.xml',
+  'examples/project/code-app/solution/Entities/x_item/Entity.xml',
+];
 const MODEL_DRIVEN_FILES = new Set(
   [
     'app.mjs',
     'client-runtime.mjs',
     'pcf-runtime.mjs',
     'catalogue.mjs',
+    'metadata-response.mjs',
+    'metadata-worker-response.mjs',
+    'metadata-worker.mjs',
     'offline.mjs',
     'control-descriptors.mjs',
     'controls.mjs',
@@ -138,6 +150,7 @@ const COMPANY_QUALIFICATION_SOURCES = new Set(
     'test/currency-reference.test.mjs',
     'test/odata-permission-model.test.mjs',
     'test/odata-probes.test.mjs',
+    'test/temporary-cleanup.test.mjs',
   ].map((name) => `examples/company-operations/${name}`),
 );
 
@@ -241,6 +254,7 @@ export const REQUIRED_RELEASE_FILES = [
   'examples/company-operations/portal-security/deploy.mjs',
   'examples/company-operations/portal-security/reference-projections.mjs',
   'examples/company-operations/portal-security/package.mjs',
+  'examples/company-operations/test/temporary-cleanup.test.mjs',
   'examples/company-operations/portal-harness/compile.mjs',
   'examples/company-operations/portal-harness/runtime.mjs',
   'examples/company-operations/portal-harness/deploy.mjs',
@@ -266,6 +280,7 @@ export const REQUIRED_RELEASE_FILES = [
   'NOTICE',
   'licenses/bootstrap.txt',
   'licenses/jquery.txt',
+  'licenses/dompurify.txt',
   'licenses/sql4cds.txt',
   'licenses/xrm-portals-community-edition.txt',
   'mirage/cli.mjs',
@@ -274,6 +289,7 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/lib/project-config.mjs',
   'mirage/admin/index.html',
   'lense/source-inspection.mjs',
+  'lense/definition-query.mjs',
   'lense/inspection-evidence.mjs',
   'lense/inspection-evidence-ui.mjs',
   'lense/inspection-source-open.mjs',
@@ -310,6 +326,11 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/lib/flow-runtime.mjs',
   'mirage/lib/flow-triggers.mjs',
   'mirage/lib/committed-work.mjs',
+  'mirage/trace.mjs',
+  'mirage/lib/trace-store.mjs',
+  'mirage/lib/trace-settings.mjs',
+  'mirage/lib/trace-hosts.mjs',
+  'mirage/lib/sim-trace-routes.mjs',
   'mirage/lib/local-organization-service.mjs',
   'mirage/lib/bootstrap-plugins-compat.js',
   'mirage/lib/datetimepicker-compat.js',
@@ -331,6 +352,8 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/admin/view-flows.mjs',
   'mirage/admin/view-capabilities.mjs',
   'mirage/admin/view-packs.mjs',
+  'mirage/admin/view-activity.mjs',
+  'mirage/admin/activity.css',
   'mirage/admin/dashboard-map.mjs',
   'mirage/admin/dashboard-icons.mjs',
   'mirage/admin/dashboard.css',
@@ -356,6 +379,7 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/docs/code-components.md',
   'mirage/docs/operations.md',
   'mirage/docs/dataverse-plugins.md',
+  'mirage/docs/tracing.md',
   'mirage/testing/session.mjs',
   'docs/project-extensions.md',
   'docs/architecture.md',
@@ -366,6 +390,18 @@ export const REQUIRED_RELEASE_FILES = [
   'docs/faq.md',
   ...DOCUMENTATION_ASSETS,
   'examples/project/pack/pack.mjs',
+  'mirage/lib/code-apps-sdk.js',
+  'mirage/lib/code-apps-sdk.d.ts',
+  'mirage/lib/code-apps-client.js',
+  'mirage/lib/code-apps-client.d.ts',
+  'mirage/lib/code-apps-vite.mjs',
+  'mirage/lib/code-apps-vite.d.ts',
+  'mirage/lib/code-apps-workbench.mjs',
+  'mirage/lib/code-apps-workbench.js',
+  'mirage/lib/code-apps-workbench.css',
+  'lense/code-app-dev-servers.mjs',
+  'lense/code-app-dev-wrapper.mjs',
+  ...CODE_APP_EXAMPLE_FILES,
   'examples/project/AGENTS.md',
   'examples/project/test/portal.test.mjs',
   'examples/project/gitignore.template',
@@ -401,6 +437,7 @@ export function validateReleaseFiles(files) {
     'docs/design/power-pages-permission-test-harness.md',
     'docs/design/dataverse-plugin-observation.md',
     'docs/design/dataverse-api.md',
+    'docs/design/tracing.md',
   ]);
   const demoSources =
     /^examples\/project\/(?:portal|solution|code-solution|metadata|components|deployment)\/[a-zA-Z0-9/_.{}, +()-]+\.(?:yml|html|css|js|mjs|ts|xml|json|resx|md|sl|pcfproj|cdsproj)$/;
@@ -436,11 +473,15 @@ export function validateReleaseFiles(files) {
       !COMPANY_QUALIFICATION_SOURCES.has(name) &&
       !designDocuments.has(name) &&
       name !== 'mirage/lib/plugin-clr-host.cs' &&
+      name !== 'mirage/lib/code-apps-sdk.d.ts' &&
+      name !== 'mirage/lib/code-apps-client.d.ts' &&
+      name !== 'mirage/lib/code-apps-vite.d.ts' &&
       !demoSources.test(name.replaceAll('***', 'redacted-id')) &&
       !demoPluginSources.test(name) &&
       !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) &&
       !demoArtifacts.has(name) &&
       !demoEditorFiles.has(name) &&
+      !CODE_APP_EXAMPLE_FILES.includes(name) &&
       name !== 'examples/project/pack/fixtures.json' &&
       name !== SAMPLE_COMPONENT_LICENSE &&
       !DOCUMENTATION_ASSETS.has(name)
@@ -494,6 +535,14 @@ export function checkDocumentation(root) {
   // Template-relative links are checked after generation by installed-package smoke.
   for (const name of names) {
     const text = fs.readFileSync(path.join(root, name), 'utf8');
+    // Guides describe current behaviour. Evidence ledgers, benchmark results and
+    // test receipts belong in ignored storage or a private project.
+    if (
+      /-(?:feedback|receipts?|ledger|qualification)\.md$/.test(name) ||
+      /\b[0-9a-f]{40}\b/.test(text) ||
+      /\b(?:results?|verification|measurements?|receipts?|runs?)\b[^\n]{0,40}\bon 20\d\d-\d\d-\d\d\b/i.test(text)
+    )
+      throw new Error(`Evidence ledger or receipt in documentation: ${name}`);
     for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
       const target = match[1].split('#')[0];
       if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;

@@ -190,8 +190,9 @@
         /^\.[\w-]+$/.test(selector) &&
         (context == null || context.nodeType === 9)
       ) {
+        // jQuery reads the name after the dot as a class name (".1x" included), not as CSS.
         const output = results || [];
-        Array.prototype.push.apply(output, (context || document).querySelectorAll(selector));
+        Array.prototype.push.apply(output, (context || document).querySelectorAll('.' + CSS.escape(selector.slice(1))));
         return output;
       }
       return find.apply(this, arguments);

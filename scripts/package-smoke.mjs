@@ -5,8 +5,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { validateReleaseFiles } from './release-check.mjs';
-import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
+import { consumerStateIsOwned, verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
 import { packageDependencyEvidence } from './package-dependency-evidence.mjs';
+import { assertSmokeProcess } from './smoke-process.mjs';
+import { offlineSmokeEnv, runSmokeNpm } from './smoke-npm.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npm = process.env.npm_execpath;
@@ -14,18 +16,7 @@ if (!npm || !fs.existsSync(npm)) throw new Error('Run npm run release:smoke to u
 const directory = path.join(root, '.paqvilo', 'distribution');
 fs.mkdirSync(directory, { recursive: true });
 const work = fs.mkdtempSync(path.join(directory, 'smoke-'));
-const run = (args, cwd, timeout = 120_000) => {
-  const result = spawnSync(process.execPath, [npm, ...args], {
-    cwd,
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout,
-    maxBuffer: 4 * 1024 * 1024,
-  });
-  if (result.status !== 0)
-    throw new Error(result.error?.message ?? `${args[0]} failed:\n${result.stdout}\n${result.stderr}`);
-  return result.stdout;
-};
+const run = (args, cwd, timeout) => runSmokeNpm(npm, args, cwd, timeout);
 
 const packed = JSON.parse(run(['pack', '--json', '--ignore-scripts', '--pack-destination', work], root))[0];
 validateReleaseFiles(packed.files);
@@ -93,23 +84,23 @@ for (const options of [
   );
   if (init.status !== 0 || !JSON.parse(init.stdout).ok)
     throw new Error(`Installed init failed: ${init.stdout}\n${init.stderr}`);
+  const npmLogs = path.join(consumer, '.paqvilo', 'npm-logs');
+  fs.mkdirSync(npmLogs, { recursive: true });
   const bootstrapConsumer = () => {
     const result = spawnSync(process.execPath, [path.join(consumer, 'tools/bootstrap.mjs')], {
       cwd: consumer,
       env: {
-        ...process.env,
+        ...offlineSmokeEnv(),
         npm_execpath: npm,
-        npm_config_offline: 'true',
-        npm_config_audit: 'false',
-        npm_config_fund: 'false',
-        npm_config_update_notifier: 'false',
+        npm_config_logs_dir: npmLogs,
+        npm_config_timing: 'true',
       },
       encoding: 'utf8',
       windowsHide: true,
       timeout: 120000,
       maxBuffer: 4 * 1024 * 1024,
     });
-    if (result.status !== 0) throw new Error(`Installed consumer bootstrap failed: ${result.stdout}\n${result.stderr}`);
+    assertSmokeProcess(result, `Installed consumer bootstrap failed (npm logs: ${npmLogs})`);
   };
   bootstrapConsumer();
   const lockFile = path.join(consumer, 'package-lock.json'),
@@ -170,13 +161,13 @@ const demoHelp = spawnSync(process.execPath, [installed, 'mirage', 'demo', '--he
 if (demoHelp.status !== 0 || !demoHelp.stdout.includes('Copies a populated'))
   throw new Error(`Installed demo command is missing: ${demoHelp.stderr}`);
 const initialized = cli('mirage', 'init', '--site', 'example', '--json');
-const stateRoot = path.join(project, '.paqvilo') + path.sep;
-if (!initialized.file.startsWith(stateRoot))
+if (!consumerStateIsOwned(project, initialized.file))
   throw new Error('Project initialization wrote inside the installed toolkit.');
 let session;
 try {
   session = cli('mirage', 'start', '--site', 'example', '--port', '0', '--preset', 'example-demo', '--json');
-  if (!session.stateFile.startsWith(stateRoot)) throw new Error('Runtime state did not stay in the portal project.');
+  if (!consumerStateIsOwned(project, session.stateFile))
+    throw new Error('Runtime state did not stay in the portal project.');
   if (!cli('mirage', 'status', '--json').sessions.some((item) => item.pid === session.pid && item.ready))
     throw new Error('Project-scoped status did not discover its runtime.');
   const response = await fetch(session.url);

@@ -13,7 +13,7 @@ import {
   readLookupView,
 } from '../lib/platform.mjs';
 import { createWebFormSessions } from '../lib/form-service.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('exported advanced redirect steps retain an omitted record query name when rendered directly', async () => {
   const id = 'd6300000-0000-4000-8000-000000000001';
@@ -244,7 +244,7 @@ test('editable hidden lookups retain native navigation bindings without reading 
 });
 
 test('rich text adapters fetch source-bound configuration URLs and reject malformed source JSON', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'rte-config-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'rte-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'configuration.js');
   await fs.writeFile(file, JSON.stringify({ defaultSupportedProps: { height: 195 } }));
@@ -409,8 +409,11 @@ test('page trace propagation correlates same-origin fetch/XHR and preserves expl
   assert.equal(requests[3].headers['x-sim-parent-trace'], 'trace-parent');
   assert.equal(requests[4].headers['x-sim-parent-trace'], 'xhr-caller');
   assert.deepEqual(requests[5].headers, {});
-  // The trace id never reaches the DOM: the platform head has no such meta element.
-  assert.doesNotMatch(injectRuntime('<head></head>', 'token', 'rev', {}, 'trace<id'), /sim-trace-id/);
+  // The trace ids never reach the DOM: the platform head has no meta element for them and the raw
+  // audit id appears only inside the runtime script, escaped.
+  const injected = injectRuntime('<head></head>', 'token', 'rev', {}, 'trace<id', undefined, 'root<trace');
+  assert.doesNotMatch(injected, /<meta[^>]*trace/i);
+  assert.doesNotMatch(injected, /trace<id|root<trace/);
 });
 
 test('enhanced component views replace contextual conditions at every link depth', () => {
@@ -1274,7 +1277,7 @@ test('basic forms without exported form XML render an approximated native sectio
 
 test('FormXml section labels become fieldset aria-labels; legends follow showlabel', async (t) => {
   const { createSimulator } = await import('../server.mjs');
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'formxml-sections-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'formxml-sections-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portal = path.join(root, 'portal'),
     solution = path.join(root, 'solution');

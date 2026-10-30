@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { globalMetadataVersion } from './metadata-version.mjs';
 import { parseDataverseTop } from './dataverse-top.mjs';
 import { organizationRecord } from './organization-context.mjs';
@@ -6,6 +7,7 @@ import { assertDataverseRootBody } from './dataverse-reader-details.mjs';
 // properties, navigation, $ref and collection-bound actions. The Dataverse layer
 // authorizes each call here before the store runs under the bypass identity.
 import { DataError } from './data-error.mjs';
+import { isConnectorDataverseSpan } from './connector-definition.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
 import { parseEntityReference, parseFetchXml } from './data.mjs';
@@ -312,6 +314,121 @@ function keyViolation(mapping, data, error) {
   );
 }
 
+// Span names and operations of the dataverse spans (tracing): the message a route or internal entry runs.
+const OPERATION_LABEL = {
+  create: 'Create',
+  update: 'Update',
+  delete: 'Delete',
+  retrieve: 'Retrieve',
+  retrievemultiple: 'RetrieveMultiple',
+  associate: 'Associate',
+  disassociate: 'Disassociate',
+  action: 'Action',
+};
+// Tracing of a Web API dispatch (docs/design/tracing.md, D-R3-1, D-R3-2, D-R3-22).
+const GUID_TEXT = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
+// The record a keyed route names by primary key; an alternate key resolves in the store (data.mjs traceRecord).
+function routeRecordId(route) {
+  if (route?.key == null) return null;
+  try {
+    return parseKey(route.key)?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+// The kind of query a request carries (attribute `query`), or null.
+function queryKindOf(url) {
+  const has = (name) => url.searchParams.has(name);
+  if (has('fetchXml') || has('fetchxml')) return 'fetchxml';
+  if (has('savedQuery')) return 'savedquery';
+  if (has('userQuery')) return 'userquery';
+  if (has('$deltatoken')) return 'delta';
+  if (has('$apply')) return 'apply';
+  return ['$filter', '$select', '$orderby', '$top', '$skip', '$expand', '$count', '$search', '$skiptoken'].some(has)
+    ? 'odata'
+    : null;
+}
+// Level full: the body, the query options (credential-named values redacted by the store) and the headers that change the
+// answer.
+const DISPATCH_HEADERS = ['prefer', 'if-match', 'if-none-match'];
+function dispatchInput(c) {
+  const headers = Object.fromEntries(
+    DISPATCH_HEADERS.filter((name) => c.headers?.[name] != null).map((name) => [name, String(c.headers[name])]),
+  );
+  return {
+    ...(c.body === undefined ? {} : { body: c.body }),
+    query: c.url.searchParams,
+    ...(Object.keys(headers).length ? { headers } : {}),
+  };
+}
+// One bypass event per bypass header on the request: what it asked and which logic the local pipeline skipped for it.
+// BypassCustomPluginExecution true and BypassBusinessLogicExecution CustomSync skip the synchronous plug-in stages.
+const BYPASS_HEADERS = [
+  ['mscrm.bypasscustompluginexecution', 'MSCRM.BypassCustomPluginExecution'],
+  ['mscrm.bypassbusinesslogicexecution', 'MSCRM.BypassBusinessLogicExecution'],
+];
+function bypassEvents(span, c) {
+  if (!span) return;
+  for (const [name, header] of BYPASS_HEADERS) {
+    const value = c.headers?.[name];
+    if (value == null || String(value).trim() === '') continue;
+    const words = String(value)
+      .split(',')
+      .map((word) => word.trim().toLowerCase());
+    const skips =
+      c.bypassCustomPlugins === true &&
+      (name === 'mscrm.bypasscustompluginexecution' ? ['true', '1'].includes(words[0]) : words.includes('customsync'));
+    span.event('bypass', { attributes: { header, value: String(value), skipped: skips ? ['sync-plugins'] : [] } });
+  }
+}
+// The answer of a dispatch: its status, a single row's id, and for a collection page its row count, page number and
+// (when the answer carries them) total count and whether more records follow; the output only at level full.
+function dispatchAnswer(span, c, mapping, answer) {
+  if (!span) return;
+  const body =
+    answer?.body && typeof answer.body === 'object' && !Buffer.isBuffer(answer.body) && !answer.body.pipe
+      ? answer.body
+      : null;
+  const page = Array.isArray(body?.value);
+  if (!page && span.recordId == null && body?.[mapping.idColumn] != null)
+    span.setEntity(mapping.logicalName, String(body[mapping.idColumn]));
+  let pageNumber;
+  if (page) {
+    try {
+      pageNumber = decodeSkipToken(c.url.searchParams.get('$skiptoken') ?? '')?.pageNumber ?? 1;
+    } catch {
+      pageNumber = 1;
+    }
+  }
+  const total = page ? (body['@odata.count'] ?? body['@Microsoft.Dynamics.CRM.totalrecordcount']) : undefined;
+  span.set({
+    statusCode: answer?.status ?? null,
+    rowCount: page ? body.value.length : undefined,
+    pageNumber,
+    query: queryKindOf(c.url) ?? undefined,
+  });
+  span.output(() => ({
+    id: span.recordId,
+    rowCount: page ? body.value.length : null,
+    ...(total != null ? { totalCount: total } : {}),
+    ...(page ? { moreRecords: body['@odata.nextLink'] != null } : {}),
+    statusCode: answer?.status ?? null,
+  }));
+}
+
+const WEB_API_OPERATION = {
+  collection: { GET: 'retrievemultiple', POST: 'create' },
+  count: { GET: 'retrievemultiple' },
+  entity: { GET: 'retrieve', PATCH: 'update', DELETE: 'delete' },
+  property: { GET: 'retrieve', PUT: 'update', DELETE: 'update' },
+  member: { GET: 'retrieve', PUT: 'update', DELETE: 'update' },
+  value: { GET: 'retrieve' },
+  navigationCount: { GET: 'retrievemultiple' },
+  ref: { GET: 'retrieve', POST: 'associate', PUT: 'associate', DELETE: 'disassociate' },
+  navigationRef: { DELETE: 'disassociate' },
+  boundAction: { POST: 'action' },
+};
+
 // changeTrackingEnabled(logical) overrides the table's metadata flag; without it the flag is read from the mapping,
 // and an undefined flag keeps tracking allowed.
 // fieldSecurity is a getter for api.fieldSecurity (dataverse-fls): the extension installs after the handlers exist. Absent or
@@ -330,6 +447,59 @@ export function createRecordHandlers({
 }) {
   const authorize = (c, entity, operation, mapping, row) =>
     principals.authorize({ user: c.user, entity, operation, row, mapping });
+  // One dataverse span per internal entry and per Web API dispatch (docs/design/tracing.md); a plug-in step's nested SDK
+  // writes run on the same stack, so their spans nest under the step. c is the resolved context (internalContext).
+  // Record identity (D-R3-1): a primary key names the record at start; an alternate key or a create's id is named by the
+  // store as soon as it resolves the row (data.mjs traceRecord), and an internal entry's returned row names it otherwise.
+  // A Web API dispatch (dispatch: true) records its answer itself (dispatchAnswer).
+  const traced = (c, operation, entity, recordId, { sync, authorized, dispatch = false } = {}, input, run) => {
+    const traces = store.traces;
+    const current = traces?.enabled ? traces.current() : null;
+    // A bulk message has one span; its per-row writes open none (plugin-bulk.mjs). A flow Dataverse connector call is one
+    // dataverse span too (connector-runtime.mjs dataverseProvider, marked by markConnectorDataverseSpan): the entries it
+    // drives open none.
+    if (!traces?.enabled || current?.kind === 'bulk' || isConnectorDataverseSpan(current)) return run();
+    const user = c.portal ? null : c.user;
+    return traces.wrap(
+      {
+        kind: 'dataverse',
+        name: `${OPERATION_LABEL[operation] ?? operation} ${entity}`,
+        module: 'dataverse',
+        operation,
+        entity,
+        recordId: GUID_TEXT.test(String(recordId ?? '')) ? String(recordId).replace(/[{}]/g, '').toLowerCase() : null,
+        ...(user
+          ? {
+              actor: {
+                kind: user.applicationid ? 'app' : 'staff',
+                id: user.systemuserid ?? null,
+                name: user.fullname ?? null,
+              },
+            }
+          : {}),
+        attributes: {
+          sync: sync === true,
+          authorized: authorized === true,
+          method: c.method ?? null,
+          portal: c.portal ? true : undefined,
+          impersonatedBy: user?.impersonator?.systemuserid,
+          sdkUserId: c.method === 'SDK' ? (c.userId ?? undefined) : undefined,
+        },
+        input,
+      },
+      (span) => {
+        const result = run(span);
+        if (dispatch) return result;
+        const done = (value) => {
+          const id = (value && typeof value === 'object' ? value[store.resolveMapping(entity).idColumn] : null) ?? null;
+          if (id != null && span.recordId == null) span.setEntity(entity, String(id));
+          span.output(() => ({ id: span.recordId }));
+          return value;
+        };
+        return typeof result?.then === 'function' ? result.then(done) : done(result);
+      },
+    );
+  };
   const hookList = (name) => hooks.list?.(name) ?? [];
   const runHooks = (name, ...args) => {
     for (const hook of hookList(name)) hook(...args);
@@ -496,16 +666,27 @@ export function createRecordHandlers({
     String(id ?? '')
       .replace(/[{}]/g, '')
       .toLowerCase();
+  // A keyed table answers each row through its primary key; a table without that index is scanned once per request.
   function currencyHeld(c, mapping, id) {
     const holders = (c.currencyHolders ??= new Map());
-    if (!holders.has(mapping.logicalName)) {
-      const rows = store.state.tables[mapping.logicalName] ?? [];
-      holders.set(
-        mapping.logicalName,
-        new Set(rows.filter((row) => row.transactioncurrencyid != null).map((row) => keyOfId(row[mapping.idColumn]))),
-      );
+    if (!holders.has(mapping.logicalName)) holders.set(mapping.logicalName, { ids: new Map(), all: null });
+    const table = holders.get(mapping.logicalName),
+      key = keyOfId(id);
+    if (!table.all && !table.ids.has(key)) {
+      const stored = typeof id === 'string' ? store.primaryKeySubset(mapping, [id]) : null;
+      if (stored)
+        table.ids.set(
+          key,
+          stored.some((row) => row.transactioncurrencyid != null),
+        );
+      else {
+        const rows = store.state.tables[mapping.logicalName] ?? [];
+        table.all = new Set(
+          rows.filter((row) => row.transactioncurrencyid != null).map((row) => keyOfId(row[mapping.idColumn])),
+        );
+      }
     }
-    return holders.get(mapping.logicalName).has(keyOfId(id));
+    return table.all ? table.all.has(key) : table.ids.get(key);
   }
   // A write that gives a money column a non-null value stores the base currency on the row, once the organization has one.
   // A row never given a money value has no currency lookup; setting a money value supplies one.
@@ -1023,6 +1204,10 @@ export function createRecordHandlers({
 
   // allColumns: a read with no $select answers every column, and so does a write representation (unset ones as null); a $select list is projected as given.
   function entityBody(c, mapping, id, params, { allColumns = false } = {}) {
+    return projectPage(() => entityProjectedBody(c, mapping, id, params, { allColumns }));
+  }
+
+  function entityProjectedBody(c, mapping, id, params, { allColumns }) {
     const result = store.query(
       mapping.logicalName,
       params,
@@ -1376,6 +1561,10 @@ export function createRecordHandlers({
   }
 
   function fetchXmlPage(c, mapping, xml, { order = 'sorted' } = {}) {
+    return projectPage(() => fetchXmlProjectedPage(c, mapping, xml, { order }));
+  }
+
+  function fetchXmlProjectedPage(c, mapping, xml, { order = 'sorted' } = {}) {
     if (isElastic(mapping) && /<link-entity\b/i.test(xml))
       throw invalid('Link entities are not supported', '0x80048d0b');
     const logical = mapping.logicalName;
@@ -1517,6 +1706,11 @@ export function createRecordHandlers({
   async function getEntity(c) {
     const { mapping } = c;
     await sourceKey(c, mapping);
+    return projectPage(() => getEntityResult(c));
+  }
+
+  function getEntityResult(c) {
+    const { mapping } = c;
     const key = lookupKey(c, mapping, c.route.key);
     if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
     authorize(c, mapping.logicalName, 'read', mapping, key.row);
@@ -2492,7 +2686,11 @@ export function createRecordHandlers({
       } catch {
         continue;
       }
-      const row = store.tableRows(target.logicalName).find((r) => guidKey(r[target.idColumn]) === guidKey(value.id));
+      // The primary key index answers the target row; a table without one is scanned.
+      const keyed = typeof value.id === 'string' ? store.primaryKeySubset(target, [value.id]) : null;
+      const row = keyed
+        ? keyed[0]
+        : store.tableRows(target.logicalName).find((r) => guidKey(r[target.idColumn]) === guidKey(value.id));
       authorize(c, target.logicalName, 'appendto', target, row);
     }
   }
@@ -2501,7 +2699,7 @@ export function createRecordHandlers({
     const rows = store.tableRows(mapping.logicalName);
     const row = rows[store.rowIndex(mapping, rows, id, partitionId === undefined ? {} : { partitionId })];
     if (!row) throw notFoundRecord(mapping.logicalName, id);
-    return structuredClone(row);
+    return cloneStateData(row);
   };
 
   /**
@@ -2521,7 +2719,16 @@ export function createRecordHandlers({
    * - no store transaction of its own and no If-None-Match unless writeOptions carries it.
    */
   function createInternal(c, logical, data, options = {}) {
-    return drive(createSteps(internalContext(c), logical, data, options), options);
+    const context = internalContext(c);
+    return traced(
+      context,
+      'create',
+      logical,
+      null,
+      options,
+      () => data,
+      () => drive(createSteps(context, logical, data, options), options),
+    );
   }
   function* createSteps(c, logical, data, { authorized = false, writeOptions: extra = {}, sync = false }) {
     const mapping = store.resolveMapping(logical);
@@ -2553,7 +2760,16 @@ export function createRecordHandlers({
    * Returns the stored row. Same context, options and differences as createInternal; the primary key column is never written.
    */
   function updateInternal(c, logical, id, data, options = {}) {
-    return drive(updateSteps(internalContext(c), logical, id, data, options), options);
+    const context = internalContext(c);
+    return traced(
+      context,
+      'update',
+      logical,
+      id,
+      options,
+      () => data,
+      () => drive(updateSteps(context, logical, id, data, options), options),
+    );
   }
   function* updateSteps(
     c,
@@ -2590,7 +2806,10 @@ export function createRecordHandlers({
 
   /** Deletes one row through the Web API delete rules: delete authorization, the hooks, updateOptions (cascaded rows). */
   function removeInternal(c, logical, id, options = {}) {
-    return drive(removeSteps(internalContext(c), logical, id, options), options);
+    const context = internalContext(c);
+    return traced(context, 'delete', logical, id, options, undefined, () =>
+      drive(removeSteps(context, logical, id, options), options),
+    );
   }
   function* removeSteps(c, logical, id, { authorized = false, writeOptions: extra = {}, partitionId, sync = false }) {
     const mapping = store.resolveMapping(logical);
@@ -2629,16 +2848,28 @@ export function createRecordHandlers({
    * Signature: associateInternal(c, logical, id, navigation, relatedIds, options) -> null (or a promise of null without sync).
    */
   function associateInternal(c, logical, id, navigation, relatedIds, options = {}) {
-    return drive(
-      associationSteps(internalContext(c), logical, id, navigation, [relatedIds].flat(), true, options),
+    const context = internalContext(c);
+    return traced(
+      context,
+      'associate',
+      logical,
+      id,
       options,
+      () => ({ navigation, relatedIds }),
+      () => drive(associationSteps(context, logical, id, navigation, [relatedIds].flat(), true, options), options),
     );
   }
   /** The Disassociate counterpart of associateInternal: same context, arguments, options and rules. */
   function disassociateInternal(c, logical, id, navigation, relatedIds, options = {}) {
-    return drive(
-      associationSteps(internalContext(c), logical, id, navigation, [relatedIds].flat(), false, options),
+    const context = internalContext(c);
+    return traced(
+      context,
+      'disassociate',
+      logical,
+      id,
       options,
+      () => ({ navigation, relatedIds }),
+      () => drive(associationSteps(context, logical, id, navigation, [relatedIds].flat(), false, options), options),
     );
   }
   function* associationSteps(
@@ -2695,7 +2926,7 @@ export function createRecordHandlers({
           })),
         },
       };
-      const holder = structuredClone(existing),
+      const holder = cloneStateData(existing),
         inherited = store.pluginInTransaction;
       const phase = function* (stage) {
         if (
@@ -2758,9 +2989,14 @@ export function createRecordHandlers({
    */
   // A virtual table is never read from its local mirror here: handlers.virtualProviders (set by
   // dataverse-virtual-providers.mjs) answers the provider's synchronous retrieveSync or refuses with 501.
-  function readInternal(c, logical, id, { unmask = false, partitionId, ...getOptions } = {}) {
-    const context = internalContext(c),
-      mapping = store.resolveMapping(logical);
+  function readInternal(c, logical, id, options = {}) {
+    const context = internalContext(c);
+    return traced(context, 'retrieve', logical, id, { sync: true }, undefined, () =>
+      readRow(context, logical, id, options),
+    );
+  }
+  function readRow(context, logical, id, { unmask = false, partitionId, ...getOptions } = {}) {
+    const mapping = store.resolveMapping(logical);
     const virtual = handlers.virtualProviders?.readSync(context, mapping.logicalName, { single: true, id });
     if (virtual)
       return virtual.rows[0]
@@ -2870,7 +3106,22 @@ export function createRecordHandlers({
           (ctx.method === 'GET' || ctx.method === 'DELETE' ? parameter : ctx.body?.partitionid) ??
           null;
       }
-      const response = await dispatch(c);
+      const operation = WEB_API_OPERATION[c.route.kind]?.[ctx.method] ?? String(ctx.method).toLowerCase();
+      const tracing = store.traces?.enabled === true;
+      const response = await traced(
+        c,
+        operation,
+        mapping.logicalName,
+        tracing ? routeRecordId(c.route) : null,
+        { dispatch: true },
+        tracing ? () => dispatchInput(c) : undefined,
+        async (span) => {
+          bypassEvents(span, c);
+          const answer = await dispatch(c);
+          dispatchAnswer(span, c, mapping, answer);
+          return answer;
+        },
+      );
       if (isElastic(mapping) && ctx.method !== 'GET' && ctx.method !== 'DELETE' && response?.status < 400)
         response.headers = {
           ...response.headers,

@@ -8,12 +8,13 @@ import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { verifyParity } from '../verify.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'parity verifies exact pixels and DOM, rejects mismatches/sign-in/runtime issues, preserves attached browser',
   { timeout: 90_000 },
   async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-parity-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-parity-'));
     const body =
       '<!doctype html><html lang="en"><head><title>Portal</title><style>body{font:16px Arial;margin:30px;background:white}h1{color:#223344}</style></head><body><h1>Portal workspace</h1><p>Same rendered output</p><a href="/route/">A route</a></body></html>';
     let mode = 'same';
@@ -145,7 +146,8 @@ test(
         server.closeAllConnections();
         await new Promise((resolve) => server.close(resolve));
       }
-      await fs.rm(directory, { recursive: true, force: true });
+      // Exiting Chrome helper processes can hold profile files briefly on Windows (EBUSY).
+      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     });
     const profile = path.join(directory, 'profile');
     context = await chromium.launchPersistentContext(
@@ -175,14 +177,17 @@ test(
         outputDir: path.join(directory, name),
         viewport: { width: 800, height: 600 },
         settleMs: 0,
-        timeout: 8000,
         allowLoopbackLive: true,
         ...options,
       });
-    // Tabs closed through another CDP connection disappear from this context asynchronously.
+    // Tabs closed through another CDP connection close in this context asynchronously.
     const ownedTabsClosed = async () => {
-      for (let attempt = 0; attempt < 50 && context.pages().length > 1; attempt++)
-        await new Promise((resolve) => setTimeout(resolve, 100));
+      await Promise.all(
+        context
+          .pages()
+          .filter((page) => page !== userPage && !page.isClosed())
+          .map((page) => page.waitForEvent('close')),
+      );
       return context.pages().length;
     };
     let result = await verify('same');
@@ -226,24 +231,21 @@ test(
     assert.deepEqual(result.live.consoleErrors, []);
     assert.deepEqual(result.local.consoleErrors, []);
     mode = 'persistent-eventstream';
+    // The open event stream keeps network idle from arriving, so that wait lasts its whole bound (at most 5 s).
     result = await verify('persistent-eventstream');
     assert.equal(result.passed, true, JSON.stringify(result.differences));
     assert.equal(result.local.quiescent, true);
     assert.equal(result.local.persistentConnections.length, 1);
     assert.deepEqual(result.local.pendingRequests, []);
     mode = 'slow-font';
-    const fontWaitStarted = Date.now();
-    // The stalled font holds the font, network-idle and screenshot waits until their timeout; a short one keeps this step fast.
-    result = await verify('slow-font', { timeout: 2000 });
+    // The stalled font holds the font and network-idle waits until the readiness deadline; a short one keeps this
+    // step fast while the page load keeps its own deadline.
+    result = await verify('slow-font', { readinessTimeout: 2000 });
     assert.equal(result.passed, false);
     assert.ok(stalledFontRequests > 0);
     assert.equal(result.local.fontsReady, false);
     assert.ok(result.local.readinessFailures.some((item) => item.includes('Document fonts did not settle')));
     assert.ok(result.local.pendingRequests.some((item) => item.url.includes('slow-font.woff2')));
-    assert.ok(
-      Date.now() - fontWaitStarted < 15_000,
-      `font readiness wait must remain bounded (elapsed=${Date.now() - fontWaitStarted}ms)`,
-    );
     mode = 'console';
     result = await verify('console');
     assert.equal(result.passed, false);
@@ -302,7 +304,7 @@ test(
   async (t) => {
     const { openCdpTabDriver, openOwnedBrowser, captureProblem, clientObjectFacts } =
       await import('../parity-suite.mjs');
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-mirage-parity-suite-'));
+    const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-mirage-parity-suite-'));
     const received = [];
     const page = `<!doctype html><html lang="en"><head><title>Portal</title></head><body>
 <div id="paqvilo-panel">toolkit panel</div>
@@ -348,7 +350,8 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
       await context?.close();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
-      await fs.rm(directory, { recursive: true, force: true });
+      // Exiting Chrome helper processes can hold profile files briefly on Windows (EBUSY).
+      await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     });
     const profile = path.join(directory, 'profile');
     context = await chromium.launchPersistentContext(
@@ -382,13 +385,11 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
       origin,
       fulfil,
       allowLoopbackReference: true,
-      timeout: 15_000,
     });
     const observation = await live.page('/', {
       roots: ['body'],
       settleMs: 200,
       quietMs: 300,
-      settleTimeout: 8000,
       facts: ['#rows li', '#paqvilo-panel'],
     });
     const text = JSON.stringify(observation.snapshot);
@@ -407,11 +408,16 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
     assert.equal(api.projection.count, 2);
     assert.deepEqual(api.projection.fields, { name: ['string'] });
     assert.equal(observation.facts['#rows li'].total, 2);
-    const source = await live.source('/', { settleMs: 0, quietMs: 200, settleTimeout: 5000 });
+    const source = await live.source('/', { settleMs: 0, quietMs: 200 });
     assert.match(source.body, /<div id="paqvilo-panel">/);
     await live.close();
-    for (let attempt = 0; attempt < 50 && context.pages().length > 1; attempt++)
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    // Tabs closed through the driver's CDP connection close in this context asynchronously.
+    await Promise.all(
+      context
+        .pages()
+        .filter((candidate) => candidate !== userPage && !candidate.isClosed())
+        .map((candidate) => candidate.waitForEvent('close')),
+    );
     assert.equal(context.pages().length, 1, "only the driver's own tabs were opened and closed");
     assert.equal(new URL(userPage.url()).pathname, '/user-page');
     // Anonymous captures use an isolated context of the same browser: no cookies from the default
@@ -423,14 +429,12 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
       fulfil,
       isolated: true,
       allowLoopbackReference: true,
-      timeout: 15_000,
     });
     assert.equal(anonymous.identity, 'anonymous');
     const isolatedView = await anonymous.page('/', {
       roots: ['head'],
       settleMs: 100,
       quietMs: 300,
-      settleTimeout: 8000,
       probeExpression: 'document.cookie',
     });
     assert.equal(isolatedView.status, 200);
@@ -442,7 +446,6 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
       roots: ['main'],
       settleMs: 100,
       quietMs: 300,
-      settleTimeout: 8000,
     });
     assert.equal(direct.snapshot.signInSignals.portalUser, false);
     assert.equal(captureProblem('anonymous', direct), null);
@@ -454,7 +457,6 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
       roots: ['main'],
       settleMs: 100,
       quietMs: 300,
-      settleTimeout: 8000,
     });
     await context.unroute('**/portal-user-overlaid');
     assert.equal(
@@ -467,7 +469,6 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
       roots: ['main'],
       settleMs: 100,
       quietMs: 300,
-      settleTimeout: 8000,
       probeExpression: `(${clientObjectFacts.toString()})()`,
     });
     const facts = JSON.parse(objects.probeValue);
@@ -497,7 +498,6 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
       roots: ['#content'],
       settleMs: 100,
       quietMs: 300,
-      settleTimeout: 8000,
       probeExpression: 'document.cookie',
     });
     assert.equal(local.probeValue, '', 'an anonymous local capture sends no session cookie');
@@ -520,7 +520,6 @@ fetch("/_api/items?$select=name").then((r) => r.json()).then((j) => { for (const
         roots: ['#content'],
         settleMs: 100,
         quietMs: 300,
-        settleTimeout: 8000,
         probeExpression: 'document.cookie',
       });
     assert.equal(

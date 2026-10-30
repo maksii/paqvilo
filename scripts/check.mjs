@@ -2,7 +2,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import os from 'node:os';
+import { execFile } from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const files = [];
@@ -15,17 +16,32 @@ function walk(dir) {
   }
 }
 for (const dir of ['bin', 'lense', 'scripts', 'test', 'test-browser', 'mirage', 'examples']) walk(path.join(root, dir));
-let failed = false;
-for (const file of files) {
-  const result = spawnSync(process.execPath, ['--check', file], {
-    encoding: 'utf8',
-    windowsHide: true,
-    timeout: 10_000,
+// One `node --check` per file keeps Node's own format detection; run them on every core, report in file order.
+const check = (file) =>
+  new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      ['--check', file],
+      { encoding: 'utf8', windowsHide: true, timeout: 10_000 },
+      (error, _, stderr) =>
+        resolve(
+          error
+            ? `${path.relative(root, file)}: ${typeof error.code === 'string' || error.killed ? error.message : stderr}`
+            : null,
+        ),
+    );
   });
-  if (result.status !== 0) {
-    failed = true;
-    console.error(`${path.relative(root, file)}: ${result.error?.message ?? result.stderr}`);
-  }
-}
+const errors = new Array(files.length);
+let next = 0;
+await Promise.all(
+  Array.from({ length: Math.min(os.availableParallelism(), files.length) }, async () => {
+    while (next < files.length) {
+      const index = next++;
+      errors[index] = await check(files[index]);
+    }
+  }),
+);
+const failed = errors.some(Boolean);
+for (const error of errors) if (error) console.error(error);
 console.log(`Syntax checked ${files.length} JavaScript modules.`);
 process.exitCode = failed ? 1 : 0;

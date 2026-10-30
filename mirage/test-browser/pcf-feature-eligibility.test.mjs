@@ -4,12 +4,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { observedPage } from './shared-browser.mjs';
 import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('PCF required declarations never load a constructor while optional features retain host APIs', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pcf-features-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pcf-features-'));
   let server, browser;
   t.after(async () => {
     await browser?.close();
@@ -102,17 +102,8 @@ test('PCF required declarations never load a constructor while optional features
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  const page = await browser.newPage();
-  page.setDefaultTimeout(10000);
-  const errors = [],
-    external = [],
-    origin = `http://127.0.0.1:${server.address().port}`;
-  page.on('pageerror', (error) => errors.push(error.message));
-  page.on('request', (request) => {
-    if (!request.url().startsWith(origin + '/')) external.push(request.url());
-  });
-  await page.goto(origin, { timeout: 15000 });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const { page, errors, external } = await observedPage(origin, (launched) => (browser = launched));
   await page.waitForFunction(() => window.initCalls.length === 2);
   const state = await page.evaluate(async () => {
     const availability = Object.fromEntries(

@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { tempDir } from './fixture.mjs';
 
 const execute = promisify(execFile),
   cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
@@ -14,7 +14,7 @@ test(
   'standalone reuse retains effective platform and managed-identity settings in its launch identity',
   { timeout: 120000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-start-settings-'));
+    const root = await tempDir('paq-start-settings-');
     const project = path.join(root, 'project.json');
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
     const run = async (action) =>
@@ -28,9 +28,12 @@ test(
           })
         ).stdout,
       );
+    const started = [];
     t.after(async () => {
       try {
-        await run('stop');
+        // Every Mirage this test started is stopped through the command under test, not left running.
+        const { stopped } = await run('stop');
+        assert.deepEqual(stopped.map((item) => item.pid).sort(), [...started].sort());
       } finally {
         await fs.rm(root, { recursive: true, force: true });
       }
@@ -51,12 +54,14 @@ test(
     await write(1, 'imds');
     const first = await run('start'),
       reused = await run('start');
+    started.push(first.pid);
     assert.equal(reused.started, false);
     assert.equal(reused.pid, first.pid);
     await write(50, 'imds');
     const changedPlatform = await run('start');
     assert.equal(changedPlatform.started, true);
     assert.notEqual(changedPlatform.pid, first.pid);
+    started.push(changedPlatform.pid);
     assert.equal(
       (await status(changedPlatform)).platformSettings.find((item) => item.key === 'QueryLinkEntityLimit').value,
       50,
@@ -66,6 +71,7 @@ test(
     const changedIdentity = await run('start');
     assert.equal(changedIdentity.started, true);
     assert.notEqual(changedIdentity.pid, changedPlatform.pid);
+    started.push(changedIdentity.pid);
     assert.equal((await status(changedIdentity)).dataverse.managedIdentity.mode, 'appservice');
     assert.equal((await status(changedPlatform)).dataverse.managedIdentity.mode, 'imds');
   },

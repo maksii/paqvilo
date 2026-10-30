@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { DataStore, emptyState } from '../lib/data.mjs';
+import { createModelDrivenRecordService } from '../lib/dataverse-model-driven.mjs';
 import { createPrincipals, ensureSecurityModel, uuidV5 } from '../lib/dataverse-security.mjs';
 import {
   ensureFieldSecurity,
@@ -198,6 +199,44 @@ test('catalogue field rights reuse one metadata snapshot and immediately recheck
   assert.equal(f.api.fieldSecurity.capabilities(basic, 'widget', ['secret']).secret.read, false);
   source.source_secret.isSecured = false;
   assert.equal(f.api.fieldSecurity.capabilities(basic, 'widget', ['source_secret']).source_secret.read, true);
+});
+
+test('wide model-driven capabilities derive source metadata once per table and recheck source security', async () => {
+  let calls = 0;
+  const source = Object.fromEntries(
+    Array.from({ length: 257 }, (_, index) => [
+      'column' + index,
+      { dataverseType: 'nvarchar', isSecured: index === 0 },
+    ]),
+  );
+  const f = await setup(() => {
+    calls++;
+    return source;
+  });
+  const fields = { ...source };
+  const service = createModelDrivenRecordService({
+    organization: { store: f.store, principals: f.principals, api: f.api },
+    principal: () => f.user(BASIC_OID),
+  });
+  calls = 0;
+  const before = service.capabilities('widget', {}, { fields });
+  assert.ok(calls <= 2, `Expected at most two table metadata derivations, received ${calls}`);
+  assert.equal(before.fields.column0.secured, true);
+  assert.equal(before.fields.column0.read, false);
+  const compact = service.capabilities('widget', {}, { fields, compact: true });
+  assert.deepEqual(compact, before);
+  assert.equal(JSON.stringify(compact), JSON.stringify(before));
+  assert.ok(new Set(Object.values(compact.fields)).size <= 2, 'Private export rights reuse only boolean combinations.');
+  assert.ok(Object.isFrozen(compact.fields.column1));
+  assert.notEqual(before.fields.column1, before.fields.column2, 'Public field rights remain independently mutable.');
+  const raw = f.api.fieldSecurity.capabilities(f.user(BASIC_OID), 'widget', ['column1', 'column2']);
+  assert.notEqual(raw.column1, raw.column2, 'Public field-security API retains separate values.');
+  source.column0 = { dataverseType: 'nvarchar', isSecured: false };
+  calls = 0;
+  const after = service.capabilities('widget', {}, { fields });
+  assert.ok(calls <= 2);
+  assert.equal(after.fields.column0.secured, false);
+  assert.equal(after.fields.column0.read, after.read);
 });
 
 test('seeds dataverse-only field security mappings and the System Administrator profile once', async () => {

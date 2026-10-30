@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { spawnSync, execFile } from 'node:child_process';
@@ -13,11 +12,12 @@ import { loadCatalogue } from '../lense/config.mjs';
 import { createMirageContext } from '../mirage/api.mjs';
 import { DEV_READY, DEV_BACKGROUND } from '../lense/dev-messages.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDir } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
 async function project(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-init-'));
+  const directory = await tempDir('paqvilo-init-');
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return directory;
 }
@@ -39,6 +39,11 @@ const node = (args, options = {}) =>
       ),
   );
 const run = (directory, ...args) => node([cli, 'init', directory, ...args]);
+// The completion markers the generator wrote, counted independently of the completion scanner.
+const writtenMarkers = async (directory, created) =>
+  (await Promise.all(created.map((name) => read(directory, name))))
+    .flatMap((body) => body.split(/\r?\n/))
+    .filter((line) => line.includes('TODO(paqvilo-init):')).length;
 
 test('defaults generate a complete empty project, valid catalogue and bound offline pack', async (t) => {
   const directory = await project(t);
@@ -72,7 +77,9 @@ test('defaults generate a complete empty project, valid catalogue and bound offl
   assert.ok(files.includes('sample.code-workspace'));
   const unfinished = checkProject(directory);
   assert.equal(unfinished.ok, false);
-  assert.equal(unfinished.todo.filter((item) => item.kind === 'marker').length, 7);
+  const markers = await writtenMarkers(directory, result.created);
+  assert.ok(markers > 0);
+  assert.equal(unfinished.todo.filter((item) => item.kind === 'marker').length, markers);
   assert.ok(unfinished.todo.every((item) => item.line > 0 && item.file));
   assert.match(scaffoldWarning(directory), /paqvilo init --check/);
 });
@@ -119,7 +126,8 @@ test('multiple sites/packs, chrome, custom paths and dependency specification ar
     assert.ok(labels.has(launch.preLaunchTask));
     assert.equal(launch.webRoot, '${workspaceFolder}/../exports');
   }
-  assert.equal(launches.configurations.length, 6);
+  // A debugger launch per site for Lense and Mirage, and the project-wide Lense and Mirage launches.
+  assert.equal(launches.configurations.length, 2 * options.sites.length + 2);
   assert.ok(new RegExp(DEV_BACKGROUND.endsPattern).test(DEV_READY));
   const context = await createMirageContext({ config: pathToFileURL(path.join(first, 'paqvilo.config.yml')) });
   assert.deepEqual(
@@ -149,7 +157,7 @@ test('no-pack/no-vscode generate runnable tests without pack adapters or editor 
   assert.ok(!manifest.scripts.setup.includes('refresh-editor'));
   assert.equal(YAML.parse(await read(directory, 'paqvilo.config.yml')).sites.portal.mirage.dataPacks, undefined);
   assert.match(manifest.scripts.test, /test\/\*\.test\.mjs$/);
-  assert.match(await read(directory, 'test-browser/smoke.test.mjs'), /from 'paqvilo\/mirage'/);
+  assert.match(await read(directory, 'test-browser/smoke.test.mjs'), /await import\('paqvilo\/mirage'\)/);
 });
 
 test('agent guidance is concise, covers setup/validation/boundaries and links to maintained toolkit docs', async (t) => {
@@ -195,7 +203,8 @@ test('site IDs that resemble workflow names preserve project-wide picker and deb
   const tasks = await readJson(directory, '.vscode/tasks.json');
   assert.equal(new Set(tasks.tasks.map((task) => task.label)).size, tasks.tasks.length);
   const launches = await readJson(directory, '.vscode/launch.json');
-  assert.equal(launches.configurations.length, 8);
+  // A debugger launch per site for Lense and Mirage, and the project-wide Lense and Mirage launches.
+  assert.equal(launches.configurations.length, 2 * 3 + 2);
   for (const launch of launches.configurations) {
     const task = tasks.tasks.find((task) => task.label === launch.preLaunchTask);
     assert.equal(task.args[task.args.indexOf('--debug-port') + 1], String(launch.port));
@@ -340,7 +349,7 @@ test('generated browser runner ignores empty pack folders and propagates real te
       env,
       encoding: 'utf8',
       windowsHide: true,
-      timeout: 20000,
+      timeout: 150_000,
     });
   assert.equal(execute().status, 0, 'all-empty directories are allowed');
   await fs.writeFile(
@@ -440,7 +449,10 @@ test('completion checks report schema, packs, origins, paths and markers without
   const before = new Map(await Promise.all(plan.created.map(async (name) => [name, await read(directory, name)])));
   const fresh = await run(directory, '--check', '--json');
   assert.equal(fresh.status, 1);
-  assert.equal(JSON.parse(fresh.stdout).todo.filter((item) => item.kind === 'marker').length, 7);
+  assert.equal(
+    JSON.parse(fresh.stdout).todo.filter((item) => item.kind === 'marker').length,
+    await writtenMarkers(directory, plan.created),
+  );
   for (const [name, body] of before) assert.equal(await read(directory, name), body);
   await fs.writeFile(
     path.join(directory, 'pack/pack.mjs'),

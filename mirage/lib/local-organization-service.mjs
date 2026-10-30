@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { DataError } from './data-error.mjs';
 import { executeBulkRecords } from './plugin-bulk.mjs';
 import { associationBinding, executeAssociation, executeAssociationAsync } from './plugin-association.mjs';
@@ -97,7 +98,7 @@ export function validateServiceProfile(profile) {
 export function authorizeGrant(store, profile, entity, operation, row) {
   const logical = store.resolveMapping(entity).logicalName;
   const grants = profile.grants.filter((g) => g.entity === logical && g.operations.includes(operation));
-  if (!grants.some((g) => !g.predicate || g.predicate(structuredClone(row), operation) === true))
+  if (!grants.some((g) => !g.predicate || g.predicate(cloneStateData(row), operation) === true))
     fail(`Local backend profile denied ${operation} on ${logical}.`, 'LocalBackendPermissionDenied', 403);
   return logical;
 }
@@ -165,7 +166,7 @@ export function localOrganizationService(
       if (!row) fail('Record not found.', 'NotFound', 404);
       row[store.resolveMapping(entity).idColumn] ??= key;
       authorize(entity, 'read', row);
-      return structuredClone(records.projectInternal(context(), entity, row, { unmask, single: true }));
+      return cloneStateData(records.projectInternal(context(), entity, row, { unmask, single: true }));
     }
     const raw = store.get(entity, key, localIdentity, { skipPluginRead: true });
     if (!raw) fail('Record not found.', 'NotFound', 404);
@@ -174,7 +175,7 @@ export function localOrganizationService(
     const row = records
       ? records.readInternal(context(), entity, key, { ...options, unmask })
       : store.get(entity, key, localIdentity, options);
-    return structuredClone(row);
+    return cloneStateData(row);
   };
   const isChoiceList = (entity, key) => {
     const definition = store.fieldDefinition(entity, key);
@@ -293,7 +294,7 @@ export function localOrganizationService(
           'Predicate-backed queries support direct root fields only; navigation/aggregate needs a row-security adapter.',
         );
       const allowed = constrained
-        ? (row) => grants.some((g) => g.predicate(structuredClone(row), 'read') === true)
+        ? (row) => grants.some((g) => g.predicate(cloneStateData(row), 'read') === true)
         : undefined;
       const virtual = virtualRead(entity, {
         request: {
@@ -338,7 +339,7 @@ export function localOrganizationService(
       // A virtual table in the query is refused before the store reads its mirror (no request shape carries FetchXML).
       for (const name of tables) virtualRead(name, { fetchXml: true });
       const backendRowsFilter = (logical, row) =>
-        (grants.get(logical) ?? []).some((g) => !g.predicate || g.predicate(structuredClone(row), 'read') === true);
+        (grants.get(logical) ?? []).some((g) => !g.predicate || g.predicate(cloneStateData(row), 'read') === true);
       const secured = records?.secureInternal?.(context(), tables[0], { fetchXml: xml, unmask }) ?? {};
       const answer = store.fetchXml(xml, localIdentity, { ...options, backendRowsFilter, ...secured });
       return records && !answer.sdkCollection
@@ -466,7 +467,7 @@ export function localOrganizationService(
           store,
           entity,
           operation,
-          targets: structuredClone(targets),
+          targets: cloneStateData(targets),
           identity: localIdentity,
           responseToken,
           write,
@@ -496,7 +497,7 @@ export function localOrganizationService(
 
 /** SDK wire values carry their .NET type instead of erasing Money/lookups/options. */
 export function sdkValueToRecord(value) {
-  if (isExactNumeric(value)) return structuredClone(value);
+  if (isExactNumeric(value)) return cloneStateData(value);
   if (Array.isArray(value)) return value.map(sdkValueToRecord);
   if (!value || typeof value !== 'object') return value;
   switch (value.$type) {

@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, recordToSdkEntity, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   rootId = '20000000-0000-0000-0000-000000000001',
   childId = '30000000-0000-0000-0000-000000000001',
@@ -84,11 +85,11 @@ const run = (store, q, p = profile) =>
   dispatchSdkCall({ store, profile: p, message: { method: 'RetrieveMultiple', userId: user, arguments: [q] } });
 test(
   'Original CLR QueryExpression count controls survive both SDK codec directions and provider metadata',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-sdk-count-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-sdk-count-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'Count.cs'),
       assembly = path.join(root, 'Count.dll');
     await fs.writeFile(
@@ -98,19 +99,7 @@ test(
  public sealed class Observer:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var q=(QueryExpression)c.InputParameters["Query"];if(q.PageInfo.Count!=5||q.PageInfo.PageNumber!=1||q.ColumnSet.Columns.Count!=1||q.ColumnSet.Columns[0]!="title")throw new Exception("Query codec changed authored projection/page");if(c.Stage==40){var a=(EntityCollection)c.OutputParameters["BusinessEntityCollection"];if(a.TotalRecordCount!=(q.PageInfo.ReturnTotalRecordCount?5000:-1))throw new Exception("Incoming query count flag was lost");}}}
  }`,
     );
-    const built = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      [
-        '/nologo',
-        '/target:library',
-        '/out:' + assembly,
-        '/reference:' + sdk,
-        '/reference:System.Runtime.Serialization.dll',
-        source,
-      ],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    assert.equal(built.status, 0, built.stdout + built.stderr);
+    compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });
     const serviceProfile = {
         userId: user,
         evidence: 'Invented real CLR count codec source',

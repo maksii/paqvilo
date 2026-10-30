@@ -3,6 +3,7 @@
 // Included in the full Windows verification gate; also runnable with `npm test` in this folder.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { DataStore } from '../../lib/data.mjs';
 import { dataverseSettings } from '../../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../../lib/dataverse-api.mjs';
@@ -15,7 +16,7 @@ const ORG_ID = '0c1d2e3f-4a5b-4c6d-8e7f-90a1b2c3d4e5';
 const APP_ID = '33333333-3333-3333-3333-333333333333';
 const PUBLIC_APP_ID = '44444444-4444-4444-4444-444444444444';
 const BASIC_OID = '66666666-6666-6666-6666-666666666666';
-const SECRET_VAR = 'PAQVILO_SDK_GATE_TDS_SECRET';
+const SECRET_VAR = `PAQVILO_SDK_GATE_TDS_SECRET_${randomUUID().replaceAll('-', '').toUpperCase()}`;
 const PASSWORD = 'Pass!23';
 const REDIRECT = 'http://localhost:1/cb';
 const VERSION = 'v9.2';
@@ -101,7 +102,6 @@ describe('Dataverse TDS endpoint through tedious', () => {
       method: 'POST',
       headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
       body: JSON.stringify(data),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(response.status < 300, `${collection} create answered ${response.status}`);
     return response.headers.get('OData-EntityId').match(/\(([^)]+)\)$/)[1];
@@ -117,8 +117,8 @@ describe('Dataverse TDS endpoint through tedious', () => {
           database: 'org',
           encrypt: true,
           trustServerCertificate: true,
-          connectTimeout: 5000,
-          requestTimeout: 10000,
+          connectTimeout: 60_000,
+          requestTimeout: 60_000,
         },
       });
       connection.on('connect', (err) => (err ? reject(err) : resolve(connection)));

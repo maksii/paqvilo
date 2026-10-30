@@ -27,6 +27,17 @@ const immutable = (value) => {
 
 /** Bind trusted project packs once. No implicit adjacent module discovery. */
 export async function createMirageContext({ packs = [], config, site, env, repo, portal, metadata, ...options } = {}) {
+  const started = performance.now();
+  const phase = (name) => {
+    try {
+      Promise.resolve(options.onStartup?.({ phase: name, elapsedMs: Math.round(performance.now() - started) })).catch(
+        () => {},
+      );
+    } catch {
+      /* progress observer only */
+    }
+  };
+  phase('context-configuration');
   if (config instanceof URL) config = fileURLToPath(config);
   // A catalogue without a selected site is a pack binding for project tests. Do not
   // import an arbitrary default portal or require its checkout to exist.
@@ -63,6 +74,7 @@ export async function createMirageContext({ packs = [], config, site, env, repo,
   // A local-only catalogue target is not a live reference (same rule as mirage/cli.mjs).
   const origin = /^https:\/\//i.test(configuredOrigin ?? '') ? configuredOrigin : null;
   const lcid = project?.lcid ?? cfg?.mirageConfig.dataverse?.localeId ?? 1033;
+  phase('context-solution-import');
   const solutionScan =
     !metadata && solutionRoots.length ? await scanSolutionSources(solutionRoots, { order: solutionOrder }) : undefined;
   const solutionSchema = solutionScan ? buildSolutionSchema(solutionScan, { lcid }) : undefined;
@@ -80,6 +92,7 @@ export async function createMirageContext({ packs = [], config, site, env, repo,
   if (selected?.deploymentProfile && Object.keys(profileConfig.profiles).length)
     throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
   const activeProfiles = sourceDir ? await loadDeploymentProfiles(profileConfig) : null;
+  phase('context-portal-import');
   portal ??= sourceDir
     ? await importPortal(sourceDir, {
         deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : selected?.deploymentProfile,
@@ -88,6 +101,7 @@ export async function createMirageContext({ packs = [], config, site, env, repo,
       })
     : undefined;
   const portalDigest = sourceDir ? await sourceDirectoryDigest(sourceDir) : undefined;
+  phase('context-pack-binding');
   const loaded = await discoverPacks({ portal, packs, project, explicit: cfg?.mirageConfig?.dataPacks ?? allEntries });
   const library = presetLibrary({ packs: loaded, portal, metadata, options });
   class BoundDataStore extends DataStore {
@@ -102,12 +116,14 @@ export async function createMirageContext({ packs = [], config, site, env, repo,
       return super.applyPreset(name, { generatedPresets: library, ...settings });
     }
   }
+  phase('context-ready');
   return Object.freeze({
     packs: Object.freeze([...loaded]),
     presetLibrary: library,
     DataStore: BoundDataStore,
     createSimulator: (settings) =>
       createSimulator({
+        onStartup: options.onStartup,
         // Settings of every registered key (config-keys.mjs: project portal, project, catalogue site).
         ...runtimeOptions({ project, portal: selected, catalogue: cfg?.mirageConfig }),
         configuredSettings: configuredSettingKeys({ project, portal: selected, catalogue: cfg?.mirageConfig }),

@@ -56,6 +56,35 @@ function runtimeFixture(overrides = {}) {
   return { runtime: createFormClientRuntime(host), record, writes, requests, notices, state, host };
 }
 
+test('FormXml numeric booleans preserve source visibility, labels and disabled controls', () => {
+  const compile = (yes, no) =>
+    compileForm(
+      {
+        id: 'invented-form',
+        xml: `<form><tabs><tab name="visible" visible="${yes}"><columns><column><sections><section name="shown" visible="${yes}" showlabel="${no}"><rows><row><cell showlabel="${no}" visible="${yes}"><control id="locked" datafieldname="x_name" disabled="${yes}"/></cell><cell visible="${no}"><control id="hidden" datafieldname="x_name" disabled="${no}"/></cell><cell visible="${no}"/></row></rows></section><section name="hidden-section" visible="${no}"/></sections></column></columns></tab><tab name="hidden-tab" visible="${no}"/></tabs></form>`,
+      },
+      { x_name: { name: 'x_name', type: 'text' } },
+    );
+  const summary = (form) => [
+    form.tabs.map((tab) => tab.visible),
+    form.tabs[0].sections.map((section) => [section.visible, section.showLabel]),
+    form.tabs[0].sections[0].fields.map((field) => [field.visible, field.disabled, field.showLabel]),
+  ];
+  assert.deepEqual(summary(compile('1', '0')), summary(compile('true', 'false')));
+  assert.deepEqual(summary(compile('1', '0')), [
+    [true, false],
+    [
+      [true, false],
+      [false, true],
+    ],
+    [
+      [true, true, false],
+      [false, false, true],
+      [false, undefined, true],
+    ],
+  ]);
+});
+
 test('form client APIs dispatch async events, track edits and cancel OnSave without executing expressions', async () => {
   const { runtime, record, writes, notices } = runtimeFixture();
   let changes = 0;
@@ -356,6 +385,74 @@ test('form XML compiles native handler metadata and ribbon preserves unsupported
     assert.equal(evaluateRibbonRules([{ clauses: [{ type: 'FormStateRule', State }] }], { formType }), true);
   assert.equal(commands[1].supported, false);
   assert.deepEqual(commands[1].locations, ['grid']);
+});
+
+test('trusted source events honor XML Boolean words and numeric spellings without activating invalid flags', async () => {
+  const handler = (name, flags = '') =>
+    `<Handler libraryName="x_boolean_flags.js" functionName="Invented.${name}" ${flags}/>`;
+  const event = (body, flags = '') => `<event name="onload" ${flags}><Handlers>${body}</Handlers></event>`;
+  const form = compileForm(
+    {
+      id: 'boolean-events',
+      xml: `<form><formLibraries><Library name="x_boolean_flags.js"/></formLibraries><events>${
+        event(handler('inactive'), 'active="0"') +
+        event(handler('canonicalInactive'), 'active="false"') +
+        event(handler('invalidEvent'), 'active="TRUE"') +
+        event(
+          handler('disabled', 'enabled="0"') +
+            handler('canonicalDisabled', 'enabled="false"') +
+            handler('invalidHandler', 'enabled="yes"') +
+            handler('numeric', 'enabled="1" passExecutionContext="1" parameters="7"') +
+            handler('canonical', 'enabled="true" passExecutionContext="true"') +
+            handler('defaults') +
+            handler('withoutContext', 'passExecutionContext="0"') +
+            handler('invalidContext', 'passExecutionContext="yes"'),
+          'active="1"',
+        )
+      }</events></form>`,
+    },
+    {},
+  );
+  const calls = [],
+    scope = {
+      Invented: Object.fromEntries(
+        [
+          'inactive',
+          'canonicalInactive',
+          'invalidEvent',
+          'disabled',
+          'canonicalDisabled',
+          'invalidHandler',
+          'numeric',
+          'canonical',
+          'defaults',
+          'withoutContext',
+          'invalidContext',
+        ].map((name) => [name, (...args) => calls.push({ name, args })]),
+      ),
+    };
+  const { runtime } = runtimeFixture({
+    form,
+    scope,
+    extensions: {
+      trusted: true,
+      resources: [{ name: 'x_boolean_flags.js', type: 'script', url: '/_apps/resources/boolean-flags.js' }],
+    },
+    environment: {
+      location: { origin: 'http://127.0.0.1:1234', href: 'http://127.0.0.1:1234/main.aspx' },
+      document: { createElement: () => ({ remove() {} }), head: { append: (script) => script.onload() } },
+    },
+  });
+  await runtime.dispatch('onload');
+  assert.deepEqual(
+    calls.map((call) => call.name),
+    ['numeric', 'canonical', 'defaults', 'withoutContext', 'invalidContext'],
+  );
+  assert.equal(calls[0].args[0].getFormContext(), runtime.formContext);
+  assert.equal(calls[0].args[1], 7);
+  assert.equal(calls[1].args[0].getFormContext(), runtime.formContext);
+  assert.ok(calls.slice(2).every((call) => call.args.length === 0));
+  runtime.destroy();
 });
 
 test('save reentrancy is rejected during lifecycle events but allowed from ribbon-style form API calls', async () => {

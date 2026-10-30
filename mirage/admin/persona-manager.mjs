@@ -16,7 +16,7 @@ export function personaManagementPanel(report) {
   const owner = report.contextRuntime
     ? `<section class="panel section-gap"><h2>Isolated setup: ${h(report.contextRuntime.label)}</h2><p>Changes here belong to this copy. <a href="${h(report.contextRuntime.ownerOrigin)}/_sim/#identity">Return to the parent runtime to launch another setup or stop this copy.</a></p></section>`
     : '';
-  return `${owner}<details id="persona-management-panel" class="panel section-gap" data-persona-management><summary>Persona catalogue &amp; local runtimes</summary><div data-persona-management-body></div></details><section id="persona-scenarios-panel" class="panel section-gap"><h2>Catalogue scenarios</h2><p class="muted">Each scenario signs in a persona and opens its start page in one step. A scenario that brings its own preset or setup (context) runs in an isolated copy of this runtime, so this workspace's data is not changed.</p>${
+  return `${owner}<details id="persona-management-panel" class="panel section-gap" data-persona-management><summary>Persona catalogue &amp; local runtimes</summary><div data-persona-management-body></div></details><section id="persona-scenarios-panel" class="panel section-gap"><h2>Catalogue scenarios</h2><p class="note">Each scenario signs in a persona and opens its start page in one step. A scenario that brings its own preset or setup (context) runs in an isolated copy of this runtime, so this workspace's data is not changed.</p>${
     report.scenarios.length
       ? report.groups
           .map((group) => {
@@ -26,7 +26,7 @@ export function personaManagementPanel(report) {
               : '';
           })
           .join('')
-      : '<p>No catalogue scenarios. Add one in catalogue management or a data pack.</p>'
+      : '<p class="ui-empty">No catalogue scenarios. Add one in catalogue management or a data pack.</p>'
   }</section>${report.diagnostics.length ? `<section class="panel section-gap"><h2>Catalogue diagnostics</h2><ul>${report.diagnostics.map((d) => `<li><code>${h(d.code)}</code> ${h(d.key)} (${h(d.source)})</li>`).join('')}</ul></section>` : ''}`;
 }
 

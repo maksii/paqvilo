@@ -251,7 +251,6 @@ describe('plug-in registration over HTTP', () => {
   const call = (path, { token = appToken, method = 'GET', body } = {}) =>
     fetch(`${origin}/api/data/v9.2/${path}`, {
       method,
-      signal: AbortSignal.timeout(10_000),
       headers: {
         authorization: `Bearer ${token}`,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
@@ -393,6 +392,7 @@ describe('plug-in registration over HTTP', () => {
       method: 'POST',
       body: { secureconfig: 'probe-value' },
     });
+    assert.equal(secure.status, 204);
     const secureId = idFromLocation(secure);
     const error = await errorOf(
       await createStep({
@@ -408,6 +408,7 @@ describe('plug-in registration over HTTP', () => {
       method: 'POST',
       body: { name: 'Probe hook', url: 'http://127.0.0.1:9/probe', authtype: 5, contract: 8 },
     });
+    assert.equal(hook.status, 204);
     const hookId = idFromLocation(hook);
     const body = {
       configuration: '{"probe":true}',
@@ -504,6 +505,7 @@ describe('plug-in registration over HTTP', () => {
         'pluginassemblyid@odata.bind': `/pluginassemblies(${probeAssembly})`,
       },
     });
+    assert.equal(type.status, 204);
     const probeType = idFromLocation(type);
     const derived = await (await call(`plugintypes(${probeType})`)).json();
     assert.equal(derived.assemblyname, 'Contoso.Probe', 'the type takes the assembly name');
@@ -513,6 +515,7 @@ describe('plug-in registration over HTTP', () => {
       'plugintypeid@odata.bind': `/plugintypes(${probeType})`,
       'eventhandler_plugintype@odata.bind': `/plugintypes(${probeType})`,
     });
+    assert.equal(step.status, 204);
     const probeStep = idFromLocation(step);
     const image = await postImage(imageBody(probeStep, { imagetype: 1 }));
     assert.equal(image.status, 204);
@@ -840,7 +843,6 @@ describe('plug-in registration: pipeline', () => {
   const call = (path, { method = 'GET', body, prefer } = {}) =>
     fetch(`${origin}/api/data/v9.2/${path}`, {
       method,
-      signal: AbortSignal.timeout(10_000),
       headers: {
         authorization: `Bearer ${token}`,
         ...(body !== undefined ? { 'content-type': 'application/json' } : {}),

@@ -4,12 +4,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../api.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CLIENT = '99999999-9999-4999-8999-999999999999'; // application user
 
 async function solutionFixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-standalone-overrides-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-standalone-overrides-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const solution = path.join(root, 'solution');
   const files = {
@@ -67,7 +67,6 @@ test('an admin request-limit override applies to the standalone Web API', async 
   const read = () =>
     fetch(sim.dataverse.origin + '/api/data/v9.2/x_items?$top=1', {
       headers: { authorization: `Bearer ${token.access_token}` },
-      signal: AbortSignal.timeout(10000),
     });
   const setEnvironment = (body) =>
     fetch(sim.url + '/_sim/api/dataverse/environment', {

@@ -1,8 +1,10 @@
 import { isDeepStrictEqual } from 'node:util';
 import { seedPresetBody } from './solution-schema.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
+import { cloneStateData } from './state-clone.mjs';
 import {
   LAZY_PRESET,
+  OWNED_PRESET,
   defineLazyPreset,
   discoverPacks,
   genericPresets,
@@ -12,7 +14,7 @@ import {
   presetLibrary,
 } from './preset-registry.mjs';
 
-const clone = (value) => structuredClone(value);
+const clone = cloneStateData;
 const hasOwn = (object, key) => object != null && typeof object === 'object' && Object.hasOwn(object, key);
 
 /**
@@ -30,6 +32,10 @@ export const builtinPresets = presetLibrary({ packs: defaultPacks });
 
 const lazyMeta = (library, id) =>
   hasOwn(library, id) ? (Object.getOwnPropertyDescriptor(library, id).get?.[LAZY_PRESET] ?? null) : null;
+const instantiatePreset = (library, id, context) => {
+  const create = Object.getOwnPropertyDescriptor(library, id)?.get?.[OWNED_PRESET];
+  return create ? create(context) : cloneStateData(library[id], { forkTables: Boolean(context?.records) });
+};
 const compactDescriptor = (name, description, configurationPreset) => ({
   builtin: true,
   builtinVersion: 1,
@@ -52,7 +58,8 @@ const bodyKeys = [
 const isCompactDescriptor = (preset) => preset?.builtin === true && !bodyKeys.some((key) => hasOwn(preset, key));
 
 /** Refresh generated library entries; explicitly edited presets and mappings remain authoritative. */
-export function resolvePreset(state, name, generatedPresets = builtinPresets) {
+export function resolvePreset(state, name, generatedPresets = builtinPresets, context) {
+  const copySaved = (value) => cloneStateData(value, { forkTables: Boolean(context?.records) });
   const saved = state.presets?.[name];
   const generatedHas = hasOwn(generatedPresets, name);
   // Explicit project packs are absent from the compatibility library; their
@@ -70,13 +77,12 @@ export function resolvePreset(state, name, generatedPresets = builtinPresets) {
     return saved
       ? !library && isCompactDescriptor(saved)
         ? null
-        : clone(saved)
+        : copySaved(saved)
       : generatedHas
-        ? clone(generatedPresets[name])
+        ? instantiatePreset(generatedPresets, name, context)
         : null;
-  const generated = generatedHas ? generatedPresets[name] : library[name];
-  if (!generated) return saved ? clone(saved) : null;
-  const result = clone(generated);
+  const result = instantiatePreset(generatedHas ? generatedPresets : library, name, context);
+  if (!result) return saved ? copySaved(saved) : null;
   for (const [entity, mapping] of Object.entries(result.mappings ?? {})) {
     const existing = state.mappings?.[entity];
     if (existing?.userConfigured === true) result.mappings[entity] = clone(existing);
@@ -174,17 +180,23 @@ export function bootstrapPresetLibrary({
         throw new Error(`Preset '${id}' from data pack ${pack.id} duplicates an existing preset`);
       defineLazyPreset(library, id, entry, {
         pack: pack.id,
-        finish: (body) =>
-          seedPresetBody(
+        finish: (body, { owned = false } = {}) => {
+          // These sections are composed separately; cloning the whole body first
+          // temporarily duplicates every generated business row for no purpose.
+          const { mappings: bodyMappings, tables: bodyTables, ...rest } = body;
+          const copy = owned ? (value) => value : clone;
+          return seedPresetBody(
             {
-              ...clone(body),
+              ...copy(rest),
               id,
               builtin: true,
-              ...(body.mappings ? { mappings: { ...clone(importedMappings), ...clone(body.mappings) } } : {}),
-              ...(body.tables ? { tables: { ...clone(importedTables), ...clone(body.tables) } } : {}),
+              ...(bodyMappings ? { mappings: { ...clone(importedMappings), ...copy(bodyMappings) } } : {}),
+              ...(bodyTables ? { tables: { ...clone(importedTables), ...copy(bodyTables) } } : {}),
             },
             metadata?.schema,
-          ),
+            { owned: true },
+          );
+        },
       });
     }
   }

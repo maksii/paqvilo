@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-const candidate = fileURLToPath(new URL('../baseline-suite.mjs', import.meta.url));
+import { runBaselineCapture } from './support/baseline-capture-cli.mjs';
+import { makeTemporaryDirectory, assertTemporaryDirectory } from '../testing/owned-fixture.mjs';
+// A run takes one to two seconds; this bound only reports a hang (and its abort stops the child), whatever the runner's
+// --test-timeout. It is not a speed requirement.
+const RUN_TIMEOUT_MS = 60_000;
 
 async function fakeBridge() {
   const fs = await import('node:fs');
@@ -13,7 +15,8 @@ async function fakeBridge() {
   const marker = process.argv[2],
     mode = process.argv[3];
   let cleared = false;
-  const timer = setTimeout(() => process.exit(99), 5000);
+  // Only ends an orphan whose parent never closes stdin; it is longer than RUN_TIMEOUT_MS, so it never decides a result.
+  const timer = setTimeout(() => process.exit(99), 300_000);
   const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
   readline
     .createInterface({ input: process.stdin })
@@ -67,8 +70,8 @@ async function fakeBridge() {
       process.exit(0);
     });
 }
-async function run(script, mode) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline admin cleanup '));
+async function run(mode, signal) {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline admin cleanup '));
   try {
     const marker = path.join(directory, 'bridge-closed.txt');
     const hookMarker = path.join(directory, 'hook-events.txt');
@@ -96,67 +99,48 @@ async function run(script, mode) {
         scenarios: [{ id: 'fixture/read', persona: 'editor', steps: [{ goto: '/' }] }],
       }),
     );
-    const child = spawn(
-      process.execPath,
-      [script, 'capture', '--matrix', matrix, '--out', path.join(directory, 'out'), '--side', 'live'],
-      { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] },
+    const { code, output } = await runBaselineCapture(
+      ['--matrix', matrix, '--out', path.join(directory, 'out'), '--side', 'live'],
+      signal,
     );
-    let output = '',
-      timedOut = false;
-    child.stdout.on('data', (chunk) => {
-      output += chunk;
-    });
-    child.stderr.on('data', (chunk) => {
-      output += chunk;
-    });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, 7000);
-    let code;
-    try {
-      code = await new Promise((resolve, reject) => {
-        child.once('exit', resolve);
-        child.once('error', reject);
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    assert.equal(timedOut, false, output);
-    assert.equal(await fs.readFile(marker, 'utf8'), 'closed', 'owned bridge closed');
+    assert.equal(await fs.readFile(marker, 'utf8'), 'closed', `owned bridge closed\n${output}`);
     const events = (await fs.readFile(hookMarker, 'utf8')).trim().split('\n');
     return { code, events, output };
   } finally {
-    assert.ok(directory.startsWith(os.tmpdir() + path.sep));
-    await fs.rm(directory, { recursive: true, force: true });
+    const physical = await assertTemporaryDirectory(directory);
+    await fs.rm(physical, { recursive: true, force: true });
   }
 }
 
-test('baseline removes temporary admin after bridge cache failure', { timeout: 10000 }, async () => {
-  const result = await run(candidate, 'clear-error');
+test('baseline removes temporary admin after bridge cache failure', { timeout: RUN_TIMEOUT_MS }, async (t) => {
+  const result = await run('clear-error', t.signal);
   assert.equal(result.code, 2);
   assert.deepEqual(result.events, ['add', 'remove']);
   assert.match(result.output, /Invented cache bridge failure/);
 });
-test('baseline does not blindly remove membership after a failed add hook', { timeout: 10000 }, async () => {
-  const result = await run(candidate, 'add-error');
+test('baseline does not blindly remove membership after a failed add hook', { timeout: RUN_TIMEOUT_MS }, async (t) => {
+  const result = await run('add-error', t.signal);
   assert.equal(result.code, 2);
   assert.deepEqual(result.events, ['add']);
   assert.match(result.output, /Hook failed \(7\)/);
 });
-test('baseline retains primary cache error and explicit cleanup-hook failure', { timeout: 10000 }, async () => {
-  const result = await run(candidate, 'cleanup-error');
-  assert.equal(result.code, 2);
-  assert.deepEqual(result.events, ['add', 'remove']);
-  assert.match(result.output, /Invented cache bridge failure/);
-  assert.match(result.output, /admin role cleanup also failed/);
-  assert.match(result.output, /Hook failed \(9\)/);
-});
+test(
+  'baseline retains primary cache error and explicit cleanup-hook failure',
+  { timeout: RUN_TIMEOUT_MS },
+  async (t) => {
+    const result = await run('cleanup-error', t.signal);
+    assert.equal(result.code, 2);
+    assert.deepEqual(result.events, ['add', 'remove']);
+    assert.match(result.output, /Invented cache bridge failure/);
+    assert.match(result.output, /admin role cleanup also failed/);
+    assert.match(result.output, /Hook failed \(9\)/);
+  },
+);
 test(
   'baseline successful cache cycle removes admin before capture and closes owned bridge',
-  { timeout: 10000 },
-  async () => {
-    const result = await run(candidate, 'success');
+  { timeout: RUN_TIMEOUT_MS },
+  async (t) => {
+    const result = await run('success', t.signal);
     assert.equal(result.code, 0, result.output);
     assert.deepEqual(result.events, ['add', 'remove']);
   },

@@ -6,18 +6,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { createSimulator } from '../api.mjs';
 import { preflight } from '../lib/capability-report.mjs';
 import { assertProvider, preflightProvider } from '../lib/storage-provider.mjs';
 import { createMemoryStorage } from '../lib/storage-memory.mjs';
 import { createLocalDiskStorage } from '../lib/storage-local-disk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const MEMORY = new URL('../lib/storage-memory.mjs', import.meta.url).href;
 
 async function fixture(t, packSource) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'provider-preflight-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'provider-preflight-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'solution', 'Other'), { recursive: true });
   await fs.writeFile(
@@ -97,13 +99,14 @@ test('preflight({ packs }) loads module paths like createSimulator', async (t) =
   );
 });
 
-test('provider deadlines deliver an answer when a CLI has no other active handles', () => {
-  const child = spawnSync(
+// Regression: an unref'd deadline timer lets a process with no other handle exit (code 13, unsettled top-level await)
+// before the answer. A non-zero exit rejects with the child's stderr; the test's own deadline bounds a hung child.
+test('provider deadlines deliver an answer when a CLI has no other active handles', async (t) => {
+  const child = await promisify(execFile)(
     process.execPath,
     [fileURLToPath(new URL('./fixtures/hung-provider-preflight.mjs', import.meta.url))],
-    { encoding: 'utf8', timeout: 5000 },
+    { encoding: 'utf8', windowsHide: true, signal: t.signal },
   );
-  assert.equal(child.status, 0, child.stderr || child.error?.message);
   assert.deepEqual(JSON.parse(child.stdout), { ready: false, reason: 'No preflight answer within 20 ms.' });
 });
 
@@ -126,7 +129,7 @@ test('preflightProvider is bounded and the contract checks its shape', async (t)
     () => assertProvider(Object.assign(createMemoryStorage({ id: 'fx-bad' }), { preflight: true })),
     /preflight must be a function/,
   );
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'provider-preflight-disk-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'provider-preflight-disk-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const disk = createLocalDiskStorage({ root: path.join(root, 'blobs'), id: 'fx-disk' });
   assert.deepEqual(await preflightProvider(disk), { ready: true, reason: null });

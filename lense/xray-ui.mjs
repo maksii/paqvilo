@@ -1,11 +1,12 @@
 import { inspectionEvidenceRuntime, resolveInspectionEvidence } from './inspection-evidence.mjs';
 import { renderInspectionEvidence } from './inspection-evidence-ui.mjs';
 import { observePortalNode } from './portal-node-observation.mjs';
+import { definitionQuery } from './definition-query.mjs';
 
 // All embedded source is owned code; page data is passed as a separate argument.
 export const xrayUi = new Function(
   'data',
-  `const {resolveInspectionEvidence}=(${inspectionEvidenceRuntime.toString()})(); const renderInspectionEvidence=(${renderInspectionEvidence.toString()}); const observePortalNode=(${observePortalNode.toString()}); return (${xrayBrowserImpl.toString()})(data);`,
+  `const {resolveInspectionEvidence}=(${inspectionEvidenceRuntime.toString()})(); const renderInspectionEvidence=(${renderInspectionEvidence.toString()}); const observePortalNode=(${observePortalNode.toString()}); const definitionQuery=(${definitionQuery.toString()}); return (${xrayBrowserImpl.toString()})(data);`,
 );
 
 // Self-contained browser function, like panelUi. Never reads page text or input values.
@@ -256,6 +257,9 @@ function xrayBrowserImpl(data) {
     lastIdentity = null,
     lastScope = null,
     anchorQueued = false;
+  let statusMessage = '',
+    statusSelection = null,
+    feedbackEpoch = 0;
   const retainedObserver = new MutationObserver((records) => {
     if (!selected || disposed || !records.some((record) => !own(record.target) && record.attributeName !== 'style'))
       return;
@@ -265,7 +269,10 @@ function xrayBrowserImpl(data) {
       anchorQueued = false;
       if (!selected || disposed) return;
       if (!liveNode(selected)) detachSelection('node-replaced');
-      else if (!enabled) notifySelection(true, 'node-identity-changed');
+      else {
+        if (statusMessage && !statusCurrent(statusSelection)) clearStatus();
+        if (!enabled) notifySelection(true, 'node-identity-changed');
+      }
     });
   });
   const inspectionError = () => {
@@ -525,7 +532,7 @@ function xrayBrowserImpl(data) {
       try {
         const url = new URL(doc.URL);
         if (url.origin !== location.origin) return {};
-        const params = [...url.searchParams].map(([key, value]) => [key.toLowerCase(), value]);
+        const params = definitionQuery(url);
         const declarations = (keys) =>
           params.filter(([key, value]) => keys.includes(key) && value).map(([, value]) => value);
         const forms = declarations(['entityformid', 'formid']),
@@ -568,7 +575,13 @@ function xrayBrowserImpl(data) {
     ];
     const pageLists = (report?.components ?? []).filter((item) => item.kind === 'list'),
       allLists = [
-        ...pageLists,
+        ...pageLists.map((list) => ({
+          ...(report?.componentIndex?.lists ?? []).find(
+            (item) => norm(item.id ?? item.recordId) === norm(list.id ?? list.recordId),
+          ),
+          ...list,
+          pageReferenced: true,
+        })),
         ...(report?.componentIndex?.lists ?? []).filter(
           (list) => !pageLists.some((known) => norm(known.id ?? known.recordId) === norm(list.id ?? list.recordId)),
         ),
@@ -1053,9 +1066,57 @@ function xrayBrowserImpl(data) {
   };
   const dispatch = (action, detail = {}) =>
     host.dispatchEvent(new CustomEvent('paqvilo-xray', { bubbles: true, detail: { action, ...detail } }));
-  const setStatus = (message) => {
+  const feedbackIdentity = (evidence) => ({
+    owner: JSON.stringify(
+      evidence?.owner?.component &&
+        Object.fromEntries(
+          ['key', 'kind', 'entity', 'field', 'id', 'name'].map((key) => [key, evidence.owner.component[key]]),
+        ),
+    ),
+    refs: (evidence?.source?.refs ?? []).map((ref) => ({
+      key: ref.sourceKey ?? ref.key ?? ref.id,
+      sourceRevision: ref.sourceRevision,
+      contentRevision: ref.contentRevision,
+      region: ref.region && { start: ref.region.start, end: ref.region.end },
+    })),
+  });
+  const clearStatus = () => {
+    statusMessage = '';
+    statusSelection = null;
     const output = card.querySelector('.status');
-    if (output) output.textContent = message;
+    if (output) output.textContent = '';
+  };
+  const statusCurrent = (expected) => {
+    if (!enabled || disposed || !selected || !liveNode(selected) || !expected) return false;
+    const scope = getSelectionScope(selected);
+    if (
+      expected.anchorGeneration !== selectionGeneration ||
+      expected.feedbackEpoch !== feedbackEpoch ||
+      !['documentId', 'frameId', 'uiEpoch', 'sourceRevision'].every((key) => expected.scope?.[key] === scope[key])
+    )
+      return false;
+    const previous = expected.feedbackIdentity ?? feedbackIdentity(expected.identity?.evidence),
+      current = feedbackIdentity(identify(selected, scope).evidence);
+    return (
+      previous.owner === current.owner &&
+      previous.refs.every((ref) => current.refs.some((candidate) => JSON.stringify(candidate) === JSON.stringify(ref)))
+    );
+  };
+  const setStatus = (message, expected) => {
+    const current = expected ?? {
+      anchorGeneration: selectionGeneration,
+      scope: getSelectionScope(selected),
+      feedbackEpoch,
+      feedbackIdentity: selected ? feedbackIdentity(identify(selected, getSelectionScope(selected)).evidence) : null,
+    };
+    if (!statusCurrent(current)) {
+      if (!statusCurrent(statusSelection)) clearStatus();
+      return;
+    }
+    statusMessage = String(message ?? '');
+    statusSelection = current;
+    const output = card.querySelector('.status');
+    if (output) output.textContent = statusMessage;
   };
   const kindName = (kind) =>
     ({
@@ -1291,6 +1352,9 @@ function xrayBrowserImpl(data) {
               lists: b.exportedLists,
               views: report?.views ?? [],
               columns: report?.columns ?? b.fields,
+              quickForms: (report?.nativeComponents ?? []).filter((component) => component.kind === 'quickform'),
+              subgrids: (report?.nativeComponents ?? []).filter((component) => component.kind === 'subgrid'),
+              pageListId: report?.page?.listId,
             },
             sourceRefs: index.rows,
             sourceRefsByComponent: index.byComponent,
@@ -1344,10 +1408,11 @@ function xrayBrowserImpl(data) {
     if (
       !d.modelDriven &&
       node === selected &&
-      node.ownerDocument !== document &&
-      node.matches('input:not([type=hidden]):not([type=password]),select,textarea,output,label') &&
       (initial.owner.status === 'unavailable' || initial.source.status === 'unavailable') &&
-      initial.enclosing.some((row) => row.component?.kind === 'table')
+      ((node.ownerDocument !== document &&
+        node.matches('input:not([type=hidden]):not([type=password]),select,textarea,output,label') &&
+        initial.enclosing.some((row) => row.component?.kind === 'table')) ||
+        (b.grid?.table && b.grid?.name))
     ) {
       const key = JSON.stringify([scope, anchorGeneration]);
       if (!portalHydrations.has(key)) {
@@ -1805,14 +1870,20 @@ function xrayBrowserImpl(data) {
                 (item.evidence === 'observed-api-request' ? 'Observed request' : 'Literal source reference') +
                 '</p></div>' +
                 sourceRows([item, ...(item.sources ?? [])], 'Web API reference') +
-                sourceRows(
-                  (report?.permissionRules ?? [])
-                    .filter((rule) => item.entity && norm(rule.entity) === norm(item.entity))
-                    .map((rule) => ({
-                      ...rule,
-                      kind: 'permission',
-                      evidenceLabel: rule.scope + ' · effective access ' + (rule.effective ?? 'unknown'),
-                    })),
+                // A table's permission rules page like other context, once per table.
+                pageRows(
+                  'api-permissions:' + norm(item.entity),
+                  (report?.permissionRules ?? []).filter(
+                    (rule) => item.entity && norm(rule.entity) === norm(item.entity),
+                  ),
+                  (rules) =>
+                    sourceRows(
+                      rules.map((rule) => ({
+                        ...rule,
+                        kind: 'permission',
+                        evidenceLabel: rule.scope + ' · effective access ' + (rule.effective ?? 'unknown'),
+                      })),
+                    ),
                 ),
             )
             .join(''),
@@ -1868,6 +1939,10 @@ function xrayBrowserImpl(data) {
   };
   const renderCard = (preserve = false, measuredRect) => {
     if (!enabled) return;
+    if (!statusCurrent(statusSelection)) {
+      statusMessage = '';
+      statusSelection = null;
+    }
     // details.toggle is queued by the browser; capture the actual disclosure
     // state before replacing a card, even if the next pick arrives first.
     for (const item of card.querySelectorAll('details[data-disclosure]'))
@@ -1878,6 +1953,7 @@ function xrayBrowserImpl(data) {
     renderProgress();
     const focused =
       preserve && root.activeElement && card.contains(root.activeElement) ? { ...root.activeElement.dataset } : null;
+    const feedback = preserve ? (card.querySelector('.status')?.textContent ?? '') : '';
     const scroll = preserve ? (card.querySelector('.content')?.scrollTop ?? 0) : 0,
       open = preserve
         ? [...card.querySelectorAll('details[open]')].map(
@@ -1906,9 +1982,10 @@ function xrayBrowserImpl(data) {
       )
       .join(
         '',
-      )}${selected.localName === 'iframe' ? '<p class="note">Frame boundary: inner inspection requires an accessible same-origin document; cross-origin and sandbox restrictions are preserved.</p>' : ''}</details></div><div class="status" role="status"></div><div class="foot"><button data-action="parent" ${!parent(selected) || own(parent(selected)) ? 'disabled' : ''}>↑ Parent</button><button data-action="child" ${!child(selected) ? 'disabled' : ''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
+      )}${selected.localName === 'iframe' ? '<p class="note">Frame boundary: inner inspection requires an accessible same-origin document; cross-origin and sandbox restrictions are preserved.</p>' : ''}</details></div><div class="status" role="status">${esc(feedback)}</div><div class="foot"><button data-action="parent" ${!parent(selected) || own(parent(selected)) ? 'disabled' : ''}>↑ Parent</button><button data-action="child" ${!child(selected) ? 'disabled' : ''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
     // New content already starts at zero. Writing scrollTop=0 would force its first
     // layout during selection even though there is no scroll position to restore.
+    card.querySelector('.status').textContent = statusMessage;
     for (const item of card.querySelectorAll('details'))
       if (disclosureState.has(item.dataset.disclosure)) item.open = disclosureState.get(item.dataset.disclosure);
       else if (open.includes(item.dataset.disclosure ?? item.querySelector('summary')?.textContent)) item.open = true;
@@ -2483,6 +2560,9 @@ function xrayBrowserImpl(data) {
       schedule();
       animate();
     } else {
+      statusMessage = '';
+      statusSelection = null;
+      feedbackEpoch++;
       oneShot = false;
       releaseAnimationHook?.();
       releaseAnimationHook = null;
@@ -3028,7 +3108,16 @@ function xrayBrowserImpl(data) {
         anchorId: selected ? opaqueId(anchorIds, selected, 'anchor') : null,
         selectionGeneration,
         anchorGeneration: selectionGeneration,
+        feedbackEpoch,
         identity: lastIdentity,
+      };
+    },
+    feedbackState() {
+      return {
+        scope: getSelectionScope(selected),
+        anchorGeneration: selectionGeneration,
+        feedbackEpoch,
+        feedbackIdentity: selected ? feedbackIdentity(identify(selected, getSelectionScope(selected)).evidence) : null,
       };
     },
     clearSelection,

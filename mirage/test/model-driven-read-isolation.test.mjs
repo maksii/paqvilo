@@ -98,6 +98,8 @@ test('catalogue, saved-view selection and lookup formatting cannot observe metad
     finished = true;
     return results;
   });
+  // No event reports that a read is queued. The reads are in-memory, so one macrotask drains every microtask and
+  // timer-free continuation an unblocked read would need to finish.
   await new Promise((done) => setImmediate(done));
   assert.equal(finished, false);
   assert.equal(response, undefined, 'the catalogue must wait for the pending write');

@@ -4,6 +4,16 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDeepStrictEqual } from 'node:util';
+import { cloneStateData } from './state-clone.mjs';
+import fsSync from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve, basename } from 'node:path';
+import { RecordPageSession, pagedRecordsOf } from './record-tables.mjs';
+import { recordSources } from './record-sources.mjs';
+import { compactRecordGraph } from './record-compaction.mjs';
+import { privateRecordEqual } from './record-clone.mjs';
+import { collectRecordGarbage } from './record-file-lease.mjs';
+import { encodeRecordReferences } from './record-state.mjs';
 import { systemClock, systemIds } from './runtime-clock.mjs';
 import { currentRequest } from './request-context.mjs';
 import { takeNativeFormContactAssociation } from './native-form-association.mjs';
@@ -14,11 +24,21 @@ import { expressionOperator } from './extensions.mjs';
 import { createHash } from 'node:crypto';
 
 import { DataError } from './data-error.mjs';
+import {
+  activeAlternateKeys,
+  alternateKeyAttributes,
+  alternateKeyValues,
+  alternateKeyKinds,
+  alternateKeyOf,
+  duplicateAlternateKey,
+} from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
+import { traceDecision } from './dataverse-security.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
-import { stateDigest } from './state-stream.mjs';
+import { jsonChunks, stateDigest } from './state-stream.mjs';
+import { initializationFingerprint, initializationDelta, initializationEntries } from './state-initialization.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
 import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } from './platform-settings.mjs';
 import { platformConfig, applyPlatformConfig } from './platform-config.mjs';
@@ -74,9 +94,22 @@ import {
 } from './dataverse-values.mjs';
 // The store's query error type lives in data-error.mjs; this re-export keeps imports working.
 export { DataError };
-const clone = (value) => structuredClone(value);
+const clone = cloneStateData;
+const cloneInternal = (value) => cloneStateData(value, { forkTables: true });
 // Per async context, the transaction frame of each DataStore (see DataStore#transact).
 const transactionFrames = new AsyncLocalStorage();
+// Tracing (trace-store.mjs): a read inside one of these spans is already covered and opens no store span of its own.
+const COVERED_READS = new Set(['dataverse', 'store', 'read', 'bulk']);
+const READ_LABEL = { retrieve: 'Retrieve', retrievemultiple: 'RetrieveMultiple', fetchxml: 'FetchXml' };
+const FETCH_ENTITY = /<entity\s+name\s*=\s*["']([^"']{1,128})["']/;
+const rowCountOf = (value) =>
+  Array.isArray(value?.value)
+    ? value.value.length
+    : Array.isArray(value?.entities)
+      ? value.entities.length
+      : value == null
+        ? 0
+        : 1;
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const formattedAnnotation = '@OData.Community.Display.V1.FormattedValue';
 const lookupAnnotation = '@Microsoft.Dynamics.CRM.lookuplogicalname';
@@ -297,71 +330,149 @@ const insertSorted = (list, value) => {
   list.splice(low, 0, value);
 };
 /**
- * Ascending row positions by a derived key, for one row array: Map<key, positions>.
+ * Ascending row positions by a derived key, for one row array. Unique keys keep
+ * one scalar position; only duplicate keys retain a position array.
  * keyOf(row) answers a string key, null (the row can never match) or undefined (the row
  * cannot be keyed: a `wild` index keeps it in a list that every lookup also scans; any other
  * index becomes `linear` and callers scan). The maintenance methods answer false when the
  * owner should drop the index instead of updating it.
+ *
+ * Positions are kept as slots: a row keeps the slot it was indexed at, a removal marks its slot dead in a Fenwick tree of
+ * live slots, and a lookup maps a slot to its row position by counting the live slots before it (O(log n)). A removal is
+ * therefore O(log n), not a shift of every later position, so a cascade delete of n rows stays O(n log n). Until the first
+ * removal a slot is its position; the slots are renumbered once half of them are dead or the tree is full.
  */
 class RowKeyIndex {
   constructor(rows, keyOf, { frame, wild = false } = {}) {
     this.keyOf = keyOf;
     this.frame = frame;
-    this.wild = wild ? [] : null;
+    this.wildSlots = wild ? [] : null;
     this.map = new Map();
     this.linear = false;
     this.length = rows.length;
+    this.slots = rows.length; // the next slot
+    this.live = null; // Fenwick tree (1-based) of live slots, from the first removal on
+    this.dead = 0;
     for (let index = 0; index < rows.length; index++)
-      if (!this.add(keyOf(rows[index]), index)) {
+      if (!this.place(keyOf(rows[index]), index)) {
         this.linear = true;
         this.map.clear();
         break;
       }
   }
-  add(key, index) {
+  // The row position of a slot: the number of live slots before it.
+  position(slot) {
+    if (!this.dead) return slot;
+    let count = 0;
+    for (let i = slot; i > 0; i -= i & -i) count += this.live[i];
+    return count;
+  }
+  // The slot of a row position: the (position + 1)-th live slot (Fenwick descent).
+  slotOf(position) {
+    if (!this.dead) return position;
+    const tree = this.live,
+      size = tree.length - 1;
+    let slot = 0,
+      remaining = position + 1;
+    for (let step = 1 << Math.floor(Math.log2(size)); step; step >>= 1)
+      if (slot + step <= size && tree[slot + step] < remaining) {
+        slot += step;
+        remaining -= tree[slot];
+      }
+    return slot;
+  }
+  // Renumbers every slot to its row position and drops the tree.
+  compact() {
+    const renumber = (list) => {
+      for (let i = 0; i < list.length; i++) list[i] = this.position(list[i]);
+    };
+    this.map.forEach((list, key) => {
+      if (typeof list === 'number') this.map.set(key, this.position(list));
+      else renumber(list);
+    });
+    if (this.wildSlots) renumber(this.wildSlots);
+    this.slots = this.length;
+    this.live = null;
+    this.dead = 0;
+  }
+  /** The positions of the rows that cannot be keyed (a wild index), ascending; null for another index. */
+  get wild() {
+    return this.wildSlots && this.dead ? this.wildSlots.map((slot) => this.position(slot)) : this.wildSlots;
+  }
+  // Indexes key at slot.
+  place(key, slot) {
     if (key === null) return true;
     if (key === undefined) {
-      if (!this.wild) return false;
-      insertSorted(this.wild, index);
+      if (!this.wildSlots) return false;
+      insertSorted(this.wildSlots, slot);
       return true;
     }
     const list = this.map.get(key);
-    if (list) insertSorted(list, index);
-    else this.map.set(key, [index]);
+    if (list === undefined) this.map.set(key, slot);
+    else if (typeof list === 'number') this.map.set(key, list <= slot ? [list, slot] : [slot, list]);
+    else insertSorted(list, slot);
     return true;
   }
+  add(key, index) {
+    return this.place(key, this.slotOf(index));
+  }
   delete(key, index) {
-    const list = key === undefined ? this.wild : key === null ? null : this.map.get(key);
-    const at = list ? list.indexOf(index) : -1;
+    const slot = this.slotOf(index);
+    const list = key === undefined ? this.wildSlots : key === null ? null : this.map.get(key);
+    if (typeof list === 'number') {
+      if (list === slot) this.map.delete(key);
+      return;
+    }
+    const at = list ? list.indexOf(slot) : -1;
     if (at < 0) return;
     list.splice(at, 1);
     if (!list.length && key != null) this.map.delete(key);
+    else if (list.length === 1 && key != null) this.map.set(key, list[0]);
   }
   get(key) {
-    return this.map.get(key) ?? [];
+    const slots = this.map.get(key);
+    if (slots === undefined) return [];
+    if (typeof slots === 'number') return [this.position(slots)];
+    return this.dead ? slots.map((slot) => this.position(slot)) : slots;
   }
   appended(rows, row) {
     if (this.linear || this.length !== rows.length - 1) return false;
+    if (this.live && this.slots >= this.live.length - 1) this.compact();
+    const slot = this.slots++;
+    if (this.live) for (let i = slot + 1; i < this.live.length; i += i & -i) this.live[i]++;
     this.length = rows.length;
-    return this.add(this.keyOf(row), rows.length - 1);
+    return this.place(this.keyOf(row), slot);
   }
-  moved(rows, index, previousRow, row, previousKey = this.keyOf(previousRow)) {
+  moved(rows, index, previousRow, row, previousKey) {
     if (this.linear || this.length !== rows.length) return false;
+    // undefined is a valid captured wild key. A default parameter would
+    // re-read the already-mutated/null previous row and lose that distinction.
+    if (arguments.length < 5) previousKey = this.keyOf(previousRow);
     const key = this.keyOf(row);
     if (key === previousKey) return true;
-    if (previousKey === undefined && !this.wild) return false;
+    if (previousKey === undefined && !this.wildSlots) return false;
     this.delete(previousKey, index);
     return this.add(key, index);
   }
   removed(rows, index, row) {
     if (this.linear || this.length !== rows.length + 1) return false;
+    const slot = this.slotOf(index);
     this.delete(this.keyOf(row), index);
-    const shift = (list) => {
-      for (let i = 0; i < list.length; i++) if (list[i] > index) list[i]--;
-    };
-    for (const list of this.map.values()) shift(list);
-    if (this.wild) shift(this.wild);
+    if (!this.live) {
+      // Every slot before the first removal is live: the tree is built in O(n), with room to append as many again.
+      const size = Math.max(16, this.slots * 2),
+        tree = new Int32Array(size + 1);
+      for (let i = 1; i <= size; i++) {
+        if (i <= this.slots) tree[i] += 1;
+        const parent = i + (i & -i);
+        if (parent <= size) tree[parent] += tree[i];
+      }
+      this.live = tree;
+    }
+    for (let i = slot + 1; i < this.live.length; i += i & -i) this.live[i]--;
+    this.dead++;
     this.length = rows.length;
+    if (this.dead * 2 > this.slots) this.compact();
     return true;
   }
 }
@@ -375,47 +486,35 @@ const primaryKeyOf = (column) => {
     });
   return primaryKeyFns.get(column);
 };
-const duplicateAlternateKey = (key, attributes, values) =>
-  new DataError(
-    `A record that has the attribute values ${values.join(', ')} already exists. The entity key ${key.name ?? attributes.join('_')} requires that this set of attributes contains unique values. Select unique values and try again.`,
-    412,
-    'DuplicateRecord',
-    { innerCode: '0x80040237' },
-  );
-/** Alternate-key uniqueness index key: the store's equality per column; a row with an empty column never clashes. */
-const alternateKeyOf = (attributes) => (row) => {
-  const parts = [];
-  for (const name of attributes) {
-    const value = field(row, name);
-    if (value == null) return null;
-    parts.push(comparable(value));
-  }
-  return parts.join('\u0000');
-};
 /**
  * Key-segment lookup index key (findByKey): a bucket that every valuesEqual match shares. Only
  * plain non-date strings are bucketed (GUID key, else collation-folded text); other values are
  * `undefined` and stay in the index's always-scanned list. Candidates are verified with valuesEqual.
  */
-const keySegmentOf = (names) => (row) => {
+const keySegmentOf = (names, collation, kinds) => (row) => {
   const parts = [];
   let wild = false;
   for (const name of names) {
     const value = field(row, name);
-    const bucket = keySegmentBucket(value);
+    const bucket = keySegmentBucket(value, collation, kinds[name]);
     if (bucket === null) return null;
     if (bucket === undefined) wild = true;
     else parts.push(bucket);
   }
-  return wild ? undefined : parts.join('\u0000');
+  return wild ? undefined : JSON.stringify(parts);
 };
-const keySegmentBucket = (value) => {
+const keySegmentBucket = (value, collation, kind) => {
   if (value == null || isExactNumeric(value)) return value == null ? null : undefined;
   const raw = value && typeof value === 'object' && !Array.isArray(value) ? (value.id ?? value.value ?? value) : value;
   if (raw == null) return null;
-  if (typeof raw !== 'string' || looksLikeDate(raw)) return undefined;
+  if (
+    typeof raw !== 'string' ||
+    (kind && !['string', 'guid', 'lookup'].includes(kind)) ||
+    (kind !== 'string' && looksLikeDate(raw))
+  )
+    return undefined;
   const guid = guidKey(raw);
-  return guid ? `g${guid}` : `t${foldText(raw)}`;
+  return guid ? `g${guid}` : `t${foldText(raw, collation)}`;
 };
 /** Restore `current` to `saved` in place, keeping the identity of tables, rows and sections that callers hold. */
 const restoreInPlace = (current, saved) => {
@@ -662,7 +761,7 @@ function normalizeState(
 ) {
   const result = {
     ...emptyState(),
-    ...(owned ? (value) => value : clone)(
+    ...(owned ? (value) => value : cloneInternal)(
       state ? { ...state, presets: compactBuiltinPresets(state.presets ?? {}, presetLibrary) } : state,
     ),
     settings: { ...emptyState().settings, ...state?.settings },
@@ -686,6 +785,7 @@ function normalizeState(
   for (const [name, rows] of Object.entries(result.tables)) {
     safeName(name);
     if (!Array.isArray(rows)) throw new DataError(`Table ${name} must be an array`);
+    if (pagedRecordsOf(rows)) continue;
     for (const row of rows)
       if (!row || Array.isArray(row) || typeof row !== 'object') throw new DataError(`Invalid row in ${name}`);
   }
@@ -812,6 +912,31 @@ function normalizeState(
   return reconcilePermissionDiagnostics(applyPlatformConfig(result, platform));
 }
 
+// Temporary record directories of stores without a state file, by directory.
+// closeRecordStorage() removes an entry; process exit removes what remains.
+const temporaryRecordDirectories = new Map();
+const ownedTemporaryRecordDirectory = (directory) =>
+  dirname(directory) === fsSync.realpathSync.native(tmpdir()) &&
+  basename(directory).startsWith('paqvilo-record-state-');
+function removeTemporaryRecordDirectories() {
+  for (const [directory, session] of temporaryRecordDirectories)
+    try {
+      session.deref()?.close();
+      if (ownedTemporaryRecordDirectory(directory)) fsSync.rmSync(directory, { recursive: true, force: true });
+    } catch {
+      // Best effort: the process is exiting and an open handle keeps the files.
+    }
+  temporaryRecordDirectories.clear();
+}
+
+function traceRetentionError(original, persistence) {
+  const failure = new AggregateError([original, persistence], persistence.message, { cause: original });
+  failure.code = persistence.code ?? 'PluginTracePersistenceFailed';
+  failure.status = failure.statusCode = persistence.status ?? persistence.statusCode ?? 500;
+  failure.persistenceFailure = true;
+  return failure;
+}
+
 export class DataStore {
   constructor({
     file = null,
@@ -822,14 +947,19 @@ export class DataStore {
     storageAdapter = null,
     clock = systemClock,
     ids = systemIds,
+    unpublished = false,
+    ownedState = false,
   } = {}) {
     this.file = file;
     // The record pipeline's time and GUID source (runtime-clock.mjs); createOrganizationRuntime shares it with its API.
     this.clock = clock;
     this.ids = ids;
+    this.unpublished = unpublished;
     this.presetLibrary = presetLibrary;
     this.platformConfig = platformConfig(platform);
-    this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
+    // Hosts can adopt an already-detached composition result. Ordinary callers
+    // retain the constructor's detached-input contract.
+    this.state = normalizeState(state, this.presetLibrary, this.platformConfig, ownedState);
     this.persistedDigest = null;
     this.persistenceOptions = persistence;
     this.storageAdapter = storageAdapter;
@@ -918,6 +1048,7 @@ export class DataStore {
           true,
         );
         this.persistedDigest = this.storage.digest;
+        if (this.storage.recordSession) this.recordSession = this.storage.recordSession;
       } catch (error) {
         if (error.code !== 'ENOENT') throw error;
         this.persistedDigest = null;
@@ -926,12 +1057,194 @@ export class DataStore {
     }
     return this;
   }
-  snapshot(projection) {
+  recordContext() {
+    return { records: recordSources(() => this.ensureRecordSession()) };
+  }
+  ensureRecordSession() {
+    if (!this.recordSession) {
+      const directory = this.file
+        ? resolve(this.file) + '.records'
+        : fsSync.mkdtempSync(join(tmpdir(), 'paqvilo-record-state-'));
+      this.recordSession = new RecordPageSession(directory, { stateOwner: this.file ?? undefined });
+      if (!this.file) {
+        this.temporaryRecordDirectory = this.recordSession.directory;
+        if (!temporaryRecordDirectories.size) process.once('exit', removeTemporaryRecordDirectories);
+        temporaryRecordDirectories.set(this.temporaryRecordDirectory, new WeakRef(this.recordSession));
+      }
+    }
+    return this.recordSession;
+  }
+  closeRecordStorage() {
+    clearInterval(this.recordRetirementTimer);
+    this.recordRetirementTimer = null;
+    const errors = [];
+    for (const session of new Set([
+      this.recordSession,
+      this.storage?.recordSession,
+      ...(this.retiredRecordSessions ?? []),
+    ]))
+      try {
+        session?.close();
+      } catch (error) {
+        errors.push(error);
+      }
+    // Retain every owner for a retry and keep temporary files while any handle
+    // failed to close. One failure must not strand later sessions and leases.
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, 'Record storage sessions failed to close');
+    this.retiredRecordSessions?.clear();
+    this.recordSession = null;
+    if (this.temporaryRecordDirectory) {
+      const directory = this.temporaryRecordDirectory;
+      if (!ownedTemporaryRecordDirectory(directory))
+        throw Error('Temporary record directory is outside its owned root');
+      fsSync.rmSync(directory, { recursive: true, force: true });
+      this.temporaryRecordDirectory = null;
+      temporaryRecordDirectories.delete(directory);
+      if (!temporaryRecordDirectories.size) process.off('exit', removeTemporaryRecordDirectories);
+    }
+  }
+  /** Release record pages and remove a temporary record directory (closeRecordStorage). */
+  close() {
+    this.closeRecordStorage();
+  }
+  /**
+   * Run `fn(lease)` once earlier transactions settle; no transaction starts until
+   * it does. A transaction requested meanwhile first calls `lease.onContention()`
+   * once, synchronously, so `fn` can copy what it still reads from live state
+   * and settle; `lease.contended` is already true if that request preceded `fn`.
+   */
+  readLease(fn) {
+    const lease = { contended: false, onContention: null };
+    (this.readLeases ??= new Set()).add(lease);
+    const run = this.queue.then(() => fn(lease)).finally(() => this.readLeases.delete(lease));
+    this.queue = run.catch(() => {});
+    return run;
+  }
+  contendReadLeases() {
+    for (const lease of this.readLeases ?? [])
+      if (!lease.contended) {
+        lease.contended = true;
+        lease.onContention?.();
+      }
+  }
+  /**
+   * Stream a detached, consistent JSON export to `consume(chunks)` (an iterable of
+   * strings) without a second copy of plain tables. Sections are copied and paged
+   * tables forked; plain rows are encoded in place under a read lease. A
+   * transaction requested meanwhile first copies the rows not yet encoded, then
+   * runs while the export continues from that copy. `adjust(sections)` may edit
+   * the copied sections; `project` is the jsonChunks projection.
+   */
+  exportState(consume, { adjust, project } = {}) {
+    let writing;
+    return this.readLease(async (lease) => {
+      const { tables = {}, ...rest } = this.state,
+        sections = cloneStateData(rest, { forkTables: true }),
+        order = Object.keys(this.state),
+        sources = Object.entries(tables).map(([name, rows]) => ({
+          name,
+          rows: pagedRecordsOf(rows) ? pagedRecordsOf(rows).fork() : rows,
+          live: !pagedRecordsOf(rows),
+          offset: 0,
+        }));
+      (this.snapshotRevisions ??= new WeakMap()).set(sections, this.revision);
+      adjust?.(sections);
+      let table = 0,
+        row = 0,
+        failure = null;
+      // Copy every row not yet encoded: the rest of the current table and all later ones.
+      const detach = () => {
+        for (let index = table; index < sources.length; index++) {
+          const source = sources[index];
+          if (!source.live) continue;
+          const from = index === table ? row : 0;
+          source.rows = cloneStateData(source.rows.slice(from));
+          source.offset = from;
+          source.live = false;
+        }
+      };
+      const options = project ? { project } : {};
+      function* chunks() {
+        let text = '{',
+          first = true;
+        // A copy that failed during contention ends the export at its next chunk.
+        const flush = function* () {
+          yield text;
+          text = '';
+          if (failure) throw failure;
+        };
+        const append = function* (encoded) {
+          for (const chunk of encoded) {
+            text += chunk;
+            if (text.length >= 65536) yield* flush();
+          }
+        };
+        const member = function* (key, value) {
+          const encoded = jsonChunks(value, options),
+            head = encoded.next();
+          // A section that encodes to nothing (undefined) is omitted, as in JSON.
+          if (head.done) return;
+          text += (first ? '' : ',') + JSON.stringify(key) + ':';
+          first = false;
+          yield* append([head.value]);
+          yield* append(encoded);
+        };
+        for (const key of order) {
+          if (key !== 'tables') {
+            if (Object.hasOwn(sections, key)) yield* member(key, sections[key]);
+            continue;
+          }
+          text += (first ? '' : ',') + '"tables":{';
+          first = false;
+          for (table = 0; table < sources.length; table++) {
+            const source = sources[table];
+            text += (table ? ',' : '') + JSON.stringify(source.name) + ':';
+            if (pagedRecordsOf(source.rows)) yield* append(jsonChunks(source.rows, options));
+            else {
+              const length = source.offset + source.rows.length;
+              text += '[';
+              for (row = 0; row < length; row++) {
+                text +=
+                  (row ? ',' : '') + ([...jsonChunks(source.rows[row - source.offset], options)].join('') || 'null');
+                if (text.length >= 65536) yield* flush();
+              }
+              text += ']';
+            }
+          }
+          table = sources.length;
+          text += '}';
+        }
+        yield text + '}';
+      }
+      let released;
+      const contention = new Promise((resolve) => (released = resolve));
+      lease.onContention = () => {
+        // The requesting transaction is unrelated to this export and never sees its failure.
+        try {
+          detach();
+        } catch (error) {
+          failure = error;
+        }
+        released();
+      };
+      if (lease.contended) lease.onContention();
+      writing = consume(chunks());
+      await Promise.race([writing, contention]);
+    }).then(() => writing);
+  }
+  snapshot(projection, options) {
     if (projection === undefined) {
-      const snapshot = clone(this.state);
+      const snapshot = cloneStateData(this.state, options);
       (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
       return snapshot;
     }
+    const snapshot = cloneStateData(this.projectionOf(projection), options);
+    (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
+    return snapshot;
+  }
+  /** The live (uncopied) sections, tables and mappings a snapshot projection names. Callers must not mutate it. */
+  projectionOf(projection) {
     if (!projection || typeof projection !== 'object' || Array.isArray(projection))
       throw new DataError('Snapshot projection must name sections, tables or mappings');
     const selected = {};
@@ -948,9 +1261,7 @@ export class DataStore {
         }
       }
     }
-    const snapshot = clone(selected);
-    (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
-    return snapshot;
+    return selected;
   }
   // Provenance is local to this store and never serialized into state files.
   snapshotRevision(snapshot) {
@@ -983,6 +1294,8 @@ export class DataStore {
     return selected;
   }
   async save() {
+    const frame = transactionFrames.getStore();
+    if (frame?.store === this && frame.initializing && !frame.closed && !frame.committing) return;
     try {
       return await this.#saveState();
     } catch (error) {
@@ -995,12 +1308,12 @@ export class DataStore {
       throw Object.assign(new Error(error?.message ?? String(error), { cause: error }), { persistenceFailure: true });
     }
   }
-  async #saveState() {
+  async #saveState(selectedState = this.state) {
     if (this.storageAdapter) {
       const started = performance.now();
       // An unpromoted row transaction names the tables it wrote, so the adapter rehashes only those.
       await this.storageAdapter.save(
-        this.state,
+        selectedState,
         this.rowTransaction && !this.rowTransaction.promoted ? { tables: this.rowTransaction.touchedTables() } : {},
       );
       this.recordSave(performance.now() - started, 'simulation');
@@ -1010,6 +1323,46 @@ export class DataStore {
     this.ensureStorage();
     const saveStarted = performance.now();
     await mkdir(dirname(this.file), { recursive: true });
+    const intendedRecords = resolve(this.file) + '.records';
+    const recordDirectory = fsSync.existsSync(intendedRecords)
+      ? fsSync.realpathSync.native(intendedRecords)
+      : join(fsSync.realpathSync.native(dirname(intendedRecords)), basename(intendedRecords));
+    // A store that created pages before a state file was bound (an in-memory
+    // session) moves them next to the file on its first save.
+    if (this.recordSession && this.recordSession.directory !== recordDirectory) {
+      await this.storage.assertUnchanged();
+      const migrated = await compactRecordGraph(selectedState, recordDirectory, { stateOwner: this.file });
+      if (!migrated) {
+        // No published table uses the foreign session. Later tables start in
+        // the file's own directory instead of being migrated on every save.
+        (this.retiredRecordSessions ??= new Set()).add(this.recordSession);
+        this.recordSession = null;
+        this.scheduleRecordRetirement();
+      } else {
+        const previous = this.recordSession;
+        // Point the manager at its unpublished destination for this recursive
+        // save; the state graph itself remains on the preceding live pages.
+        this.recordSession = migrated.session;
+        let published = false;
+        try {
+          await this.#saveState(migrated.state);
+          published = migrated.publish();
+          if (published) {
+            this.storage.recordSession = migrated.session;
+            (this.retiredRecordSessions ??= new Set()).add(previous);
+            this.scheduleRecordRetirement();
+            return;
+          }
+        } finally {
+          if (!published) {
+            this.recordSession = previous;
+            migrated.session.close();
+          }
+        }
+        // Records changed while the copy was saved: copy the live tables again.
+        return this.#saveState(selectedState);
+      }
+    }
     const lockPath = `${this.file}.lock`,
       lockToken = `${process.pid}:${randomUUID()}`,
       temp = `${this.file}.${randomUUID()}.tmp`;
@@ -1035,13 +1388,28 @@ export class DataStore {
         lockHandle = null;
 
         await this.storage.assertUnchanged();
-        if (this.storage.journal && this.rowTransaction) {
-          await this.storage.appendChanges(this.rowTransaction.changes());
+        const initialization = transactionFrames.getStore();
+        if (
+          this.storage.journal &&
+          this.storage.canAppend(selectedState) &&
+          initialization?.store === this &&
+          !initialization.closed &&
+          initialization.initializationDelta
+        ) {
+          await this.storage.appendChanges(initializationEntries(initialization.initializationDelta), {
+            state: selectedState,
+          });
           this.persistedDigest = this.storage.digest;
           this.recordSave(performance.now() - saveStarted, 'journal');
           return;
         }
-        const prepared = await this.storage.prepareCheckpoint(temp, this.state);
+        if (this.storage.journal && this.storage.canAppend(selectedState) && this.rowTransaction) {
+          await this.storage.appendChanges(this.rowTransaction.changes(), { state: selectedState });
+          this.persistedDigest = this.storage.digest;
+          this.recordSave(performance.now() - saveStarted, 'journal');
+          return;
+        }
+        const prepared = await this.storage.prepareCheckpoint(temp, selectedState);
         // Recheck immediately before replacement to catch non-cooperating edits
         // made while the temporary snapshot was being prepared.
         await this.storage.assertUnchanged();
@@ -1095,11 +1463,51 @@ export class DataStore {
     this.ensureStorage();
     return this.storage.persistedDigest();
   }
+  /** Record identity (docs/design/tracing.md, D-R3-1): the first row a Dataverse operation addresses names its current
+   * `dataverse` span (a create as soon as its id is assigned, before its plug-in stages run, so the stage and step spans
+   * and every later span read it). A span that already names a record, or names another table, is left as it is. */
+  traceRecord(logical, id) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    if (span?.kind === 'dataverse' && span.recordId == null && id != null && span.entity === logical)
+      span.setEntity(logical, scalar(id));
+  }
+  /** The tracing of one commit (docs/design/tracing.md): a commit event on the current span; end(...) records the staged
+   * events and the save. null without a current span: a commit outside any span (job bookkeeping, startup) opens none. */
+  traceCommit() {
+    const current = this.traces?.enabled ? this.traces.current() : null;
+    if (!current) return null;
+    return {
+      fail: (error) =>
+        traceDecision(current, 'commit', { message: 'Save failed', attributes: { error: error?.code ?? 'Error' } }),
+      end: ({ attributes }) => traceDecision(current, 'commit', { attributes }),
+    };
+  }
   /** Serialize reads that may invoke backend plugin writes. Pure reads do not
    * change the persisted state or its revision. Invoke this only at a request
    * boundary; nested SDK reads already use their caller's synchronous frame. */
   readOperation(fn) {
     return this.transact(fn, { skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true });
+  }
+  /** Only a host-owned store with no published readers may initialize in place.
+   * Nested saves are deferred; a failed stage discards this store and leaves its
+   * durable checkpoint authoritative. Public transactions retain isolation. */
+  initialize(fn) {
+    if (!this.unpublished || this.initializationFailed)
+      throw new Error('Private initialization requires an unpublished, usable store.');
+    return this.transact(fn, {
+      isolated: true,
+      cloneResult: false,
+      skipSaveIfUnchanged: true,
+      privateInitialization: !this.storageAdapter,
+    });
+  }
+  isInitializing() {
+    const frame = transactionFrames.getStore();
+    return frame?.store === this && frame.initializing && !frame.closed;
+  }
+  completeInitialization() {
+    this.unpublished = false;
+    this.initializationFingerprintCache = null;
   }
   // A read hook that may run arbitrary plug-in code first captures its rollback
   // snapshot. Metadata consumers may reuse read inputs only before that point.
@@ -1125,7 +1533,7 @@ export class DataStore {
   promoteRowTransaction() {
     if (!this.rowTransaction) return;
     const transaction = this.rowTransaction;
-    this.pluginRollbackBoundary.backup = transaction.rollback(clone(this.state));
+    this.pluginRollbackBoundary.backup = transaction.rollback(cloneInternal(this.state));
     this.pluginRollbackBoundary.persistenceBackup ??= this.pluginRollbackBoundary.backup;
     transaction.promoted = true;
     this.rowTransaction = null;
@@ -1146,6 +1554,7 @@ export class DataStore {
       incremental = false,
       nested = false,
       isolated = false,
+      privateInitialization = false,
     } = {},
   ) {
     // ponytail: a nested throw that the caller catches keeps that call's partial writes;
@@ -1159,14 +1568,34 @@ export class DataStore {
         const result = await fn();
         return cloneResult ? clone(result) : result;
       })();
-    const frame = { store: this, working: null };
+    if (privateInitialization && (!this.unpublished || this.initializationFailed))
+      throw new Error('Private initialization requires an unpublished, usable store.');
+    this.contendReadLeases();
+    const frame = { store: this, working: null, initializing: privateInitialization };
     const run = this.queue.then(async () => {
+      let initializationDigest = null;
+      try {
+        if (privateInitialization && this.file)
+          initializationDigest = this.storage?.journal
+            ? this.initializationFingerprintCache?.file === this.file &&
+              this.initializationFingerprintCache.digest === this.persistedDigest
+              ? this.initializationFingerprintCache.value
+              : await initializationFingerprint(this._state)
+            : stateDigest(this._state, { sortKeys: true });
+      } catch (error) {
+        frame.closed = true;
+        this.initializationFailed = true;
+        this.unpublished = false;
+        this._state = emptyState();
+        this.initializationFingerprintCache = null;
+        throw error;
+      }
       transactionFrames.enterWith(frame);
       // ponytail: an isolated transaction works on a full clone of the committed state
       // and publishes it at commit. It is O(state) per changeset, a write that bypasses
       // transact is lost at commit, and an independent plugin commit inside it persists
       // the working copy. Use a change overlay before batch relies on any of these.
-      if (isolated) frame.working = clone(this._state);
+      if (isolated) frame.working = privateInitialization ? this._state : cloneInternal(this._state);
       // Arbitrary extension callbacks retain the established full rollback
       // boundary. Core CRUD/declarative handlers use the bounded undo journal.
       const rowTransaction = incremental ? new RowTransaction(this, { reuse: !isolated }) : null;
@@ -1175,7 +1604,13 @@ export class DataStore {
       const boundary = {
         // The committed graph is already the rollback copy of an isolated
         // working graph. A second whole-state clone cannot improve isolation.
-        backup: isolated ? this._state : lazyReadSnapshot || rowTransaction ? null : clone(this.state),
+        backup: privateInitialization
+          ? null
+          : isolated
+            ? this._state
+            : lazyReadSnapshot || rowTransaction
+              ? null
+              : cloneInternal(this.state),
         independentCommit: false,
         eventCount: 0,
       };
@@ -1183,7 +1618,7 @@ export class DataStore {
       if (lazyReadSnapshot)
         boundary.ensureSnapshot = () => {
           if (boundary.backup !== null) return;
-          boundary.backup = clone(this.state);
+          boundary.backup = cloneInternal(this.state);
           boundary.persistenceBackup = boundary.backup;
         };
       const previousBoundary = this.pluginRollbackBoundary,
@@ -1196,22 +1631,54 @@ export class DataStore {
       try {
         if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
         const result = await fn();
+        this.restorePluginTraceLogs(boundary);
         const staged = this.stageOnCommit(this.committedEventCandidates);
+        const journalInitialization = initializationDigest && typeof initializationDigest === 'object';
+        if (journalInitialization) {
+          const delta = await initializationDelta(initializationDigest, this.state);
+          frame.initializationDelta = delta.changes;
+          frame.initializationFingerprint = delta.fingerprint;
+        }
         if (
           staged.length ||
           !skipSaveIfUnchanged ||
           boundary.independentCommit ||
-          (boundary.backup !== null && !isDeepStrictEqual(this.state, boundary.backup))
+          (privateInitialization &&
+            (initializationDigest === null ||
+              (journalInitialization
+                ? frame.initializationDelta.length > 0
+                : stateDigest(this.state, { sortKeys: true }) !== initializationDigest))) ||
+          (boundary.backup !== null && !privateRecordEqual(this.state, boundary.backup))
         ) {
-          await this.save();
+          frame.committing = true;
+          const commit = this.traceCommit();
+          try {
+            await this.save();
+          } catch (error) {
+            commit?.fail(error);
+            throw error;
+          }
+          commit?.end({
+            attributes: {
+              eventsStaged: this.committedEventCandidates.length,
+              saveMs: this.lastSave?.durationMs ?? null,
+              saveMode: this.lastSave?.mode ?? null,
+            },
+          });
           this.committed(
             rowTransaction && !rowTransaction.promoted && !isolated ? rowTransaction.touchedTables() : null,
           );
           // Section copies the journal commit proved unchanged seed the next row transaction (RowTransaction reuse).
           const reusable = rowTransaction && !isolated ? rowTransaction.reusableSections() : null;
           if (reusable) this.sectionSnapshot = { ...reusable, revision: this.revision };
-        }
+        } else if (privateInitialization && this.file) await this.storage.assertUnchanged();
         if (isolated) this._state = frame.working;
+        if (journalInitialization)
+          this.initializationFingerprintCache = {
+            file: this.file,
+            digest: this.persistedDigest,
+            value: frame.initializationFingerprint,
+          };
         this.dispatchCommittedEvents(this.committedEventCandidates);
         this.afterStagedCommit(staged);
         for (const note of boundary.commitNotes ?? [])
@@ -1227,17 +1694,29 @@ export class DataStore {
         if (!rowTransaction?.promoted) rowTransaction?.rollback();
         this.rowIndexes = null;
         const rollback = error.persistenceFailure ? boundary.persistenceBackup : boundary.backup;
-        if (rollback !== null) this.state = clone(rollback);
+        if (!privateInitialization && rollback !== null) this.state = cloneInternal(rollback);
         for (const note of boundary.rollbackNotes ?? [])
           try {
             note(error);
           } catch {
             /* a note never changes the failure */
           }
+        if (privateInitialization) {
+          this.initializationFailed = true;
+          this.unpublished = false;
+          this._state = emptyState();
+          this.initializationFingerprintCache = null;
+          throw error;
+        }
+        // Trace facts are platform diagnostics, not business writes. Their own
+        // failed transaction journal must never replay aborted target changes.
+        const traceRetentionBackup = boundary.pluginTraceRows?.size ? cloneInternal(this.state) : null;
+        if (traceRetentionBackup) this.rowTransaction = null;
+        const retainedTraces = !error.persistenceFailure && this.restorePluginTraceLogs(boundary);
         // Elastic main operations commit independently, even inside a failed changeset or a failed PostOperation.
         // Restore only those rows after rollback: earlier standard-table writes remain transactional.
         if (!error.persistenceFailure && boundary.elasticWrites?.size) {
-          const retentionBackup = clone(this.state);
+          const retentionBackup = cloneInternal(this.state);
           try {
             for (const { mapping, row, removed } of boundary.elasticWrites.values()) {
               const rows = (this.state.tables[mapping.logicalName] ??= []);
@@ -1260,21 +1739,28 @@ export class DataStore {
             this.dispatchCommittedEvents(events);
             this.afterStagedCommit(staged);
           } catch (saveError) {
-            this.state = boundary.persistenceBackup ?? retentionBackup;
+            this.state = boundary.persistenceBackup ?? traceRetentionBackup ?? retentionBackup;
             this.rowIndexes = null;
+            if (traceRetentionBackup) throw traceRetentionError(error, saveError);
             throw saveError;
           }
-        } else if (!error.persistenceFailure && boundary.independentCommit && !isolated) {
+        } else if (!error.persistenceFailure && ((boundary.independentCommit && !isolated) || retainedTraces)) {
           try {
-            const events = this.committedEventCandidates.slice(0, boundary.eventCount),
+            const events =
+                boundary.independentCommit && !isolated
+                  ? this.committedEventCandidates.slice(0, boundary.eventCount)
+                  : [],
               staged = this.stageOnCommit(events);
             await this.save();
             this.committed();
+            if (isolated) this._state = frame.working;
             this.dispatchCommittedEvents(events);
             this.afterStagedCommit(staged);
           } catch (saveError) {
             if (boundary.persistenceBackup !== null) this.state = boundary.persistenceBackup;
+            else if (traceRetentionBackup) this.state = traceRetentionBackup;
             this.rowIndexes = null;
+            if (traceRetentionBackup) throw traceRetentionError(error, saveError);
             throw saveError;
           }
         }
@@ -1289,6 +1775,8 @@ export class DataStore {
         if (isolated) this.isolatedCount -= 1;
         frame.closed = true;
         frame.working = null;
+        frame.initializationDelta = null;
+        frame.initializationFingerprint = null;
       }
     });
     this.queue = run.catch(() => {});
@@ -1297,9 +1785,102 @@ export class DataStore {
   /** Rewrite a streamed checkpoint without copying the in-memory state. Queued
    * with writes; call during an idle period to bound append-journal disk usage. */
   compact() {
-    const run = this.queue.then(() => this.save());
+    this.contendReadLeases();
+    const run = this.queue.then(async () => {
+      const oldSession = this.recordSession ?? this.storage?.recordSession;
+      if (!oldSession) return this.save();
+      const compacted = await compactRecordGraph(this.state, oldSession.directory, oldSession.ownerKey);
+      if (!compacted) return this.save();
+      let published = false;
+      try {
+        await this.#saveState(compacted.state);
+        // Records changed while the checkpoint was written: keep and persist the live tables.
+        if (!compacted.publish()) return await this.#saveState();
+        published = true;
+        this.recordSession = compacted.session;
+        if (this.storage) this.storage.recordSession = compacted.session;
+        this.sectionSnapshot = null;
+        this.initializationFingerprintCache = null;
+        (this.retiredRecordSessions ??= new Set()).add(oldSession);
+        this.scheduleRecordRetirement();
+        await this.collectRecordStorage();
+      } finally {
+        if (!published) {
+          compacted.session.close();
+          await this.collectRecordStorage();
+        }
+      }
+    });
     this.queue = run.catch(() => {});
     return run;
+  }
+  retireRecordSessions() {
+    for (const session of this.retiredRecordSessions ?? []) {
+      if (session.hasLiveTables()) continue;
+      try {
+        session.close();
+        this.retiredRecordSessions.delete(session);
+      } catch (error) {
+        this.recordCleanupError = error;
+      }
+    }
+    if (!this.retiredRecordSessions?.size) {
+      clearInterval(this.recordRetirementTimer);
+      this.recordRetirementTimer = null;
+    }
+  }
+  /** Close retired sessions now; recheck the ones that still back live tables
+   * every 2 s (without holding the process open) until none remain. */
+  scheduleRecordRetirement() {
+    this.retireRecordSessions();
+    if (!this.retiredRecordSessions?.size || this.recordRetirementTimer) return;
+    this.recordRetirementTimer = setInterval(() => this.retireRecordSessions(), 2000);
+    this.recordRetirementTimer.unref();
+  }
+  async collectRecordStorage() {
+    const session = this.recordSession;
+    if (!session?.ownedDirectory) return (this.recordGarbageCollection = { skipped: 'unverified-directory' });
+    if (this.file) {
+      const intended = resolve(this.file) + '.records';
+      if (fsSync.lstatSync(intended).isSymbolicLink() || fsSync.realpathSync.native(intended) !== session.directory)
+        return { skipped: 'directory-identity' };
+    }
+    const lockPath = this.file ? this.file + '.lock' : null,
+      token = `${process.pid}:${randomUUID()}\n`;
+    let lock;
+    try {
+      if (lockPath) {
+        try {
+          lock = await open(lockPath, 'wx', 0o600);
+        } catch (error) {
+          if (error.code === 'EEXIST') return { skipped: 'active-writer' };
+          throw error;
+        }
+        await lock.writeFile(token);
+        await lock.close();
+        lock = null;
+        await this.storage.assertUnchanged();
+      }
+      const encoded = encodeRecordReferences({ op: 'section', key: 'state', value: this.state });
+      const published = new Set(
+        (encoded.recordRefs ?? []).flatMap((reference) => reference.table.files.map((file) => file.name)),
+      );
+      this.recordGarbageCollection = await collectRecordGarbage(session.directory, published);
+      return this.recordGarbageCollection;
+    } catch (error) {
+      // Collection follows a committed checkpoint. Its failure must not turn a
+      // successful publication into a business rollback against newer disk data.
+      this.recordCleanupError = error;
+      return { skipped: 'collection-failed', code: error.code ?? 'RecordCleanup' };
+    } finally {
+      await lock?.close().catch(() => {});
+      if (lockPath)
+        try {
+          if ((await readFile(lockPath, 'utf8')) === token) await unlink(lockPath);
+        } catch (error) {
+          if (error.code !== 'ENOENT') this.recordCleanupError = error;
+        }
+    }
   }
   // Row writes go through writeRow/mutateRow/insertRow/removeRow, which keep every cached
   // row index of that array (rowIndexes: rows -> Map<name, RowKeyIndex>) current.
@@ -1326,6 +1907,28 @@ export class DataStore {
     else rows.push(row);
     const indexes = this.rowIndexes?.get(rows);
     if (indexes?.size) for (const [name, entry] of indexes) if (!entry.appended(rows, row)) indexes.delete(name);
+  }
+  /** System-owned plug-in trace facts survive a business rollback. Never retain another table this way. */
+  appendPluginTraceLog(row) {
+    this.insertRow('plugintracelog', (this.state.tables.plugintracelog ??= []), row);
+    let boundary = this.pluginRollbackBoundary;
+    while (boundary?.parent) boundary = boundary.parent;
+    if (boundary) (boundary.pluginTraceRows ??= new Map()).set(row.plugintracelogid, clone(row));
+  }
+  /** Reconcile diagnostic facts after a savepoint rollback without duplicating traces already in its snapshot. */
+  restorePluginTraceLogs(boundary) {
+    while (boundary?.parent) boundary = boundary.parent;
+    if (!boundary?.pluginTraceRows?.size || !this.state.mappings?.plugintracelog) return false;
+    const rows = (this.state.tables.plugintracelog ??= []),
+      ids = new Set(rows.map((row) => row.plugintracelogid));
+    let restored = false;
+    for (const [id, row] of boundary.pluginTraceRows) {
+      if (ids.has(id)) continue;
+      this.insertRow('plugintracelog', rows, clone(row));
+      ids.add(id);
+      restored = true;
+    }
+    return restored;
   }
   removeRow(table, rows, index) {
     validateRowIndex(rows, index);
@@ -1378,6 +1981,8 @@ export class DataStore {
    * equality), through the primary-key index; null-safe linear scan for non-string ids.
    */
   rowPositions(mapping, rows, id, { scoped = false } = {}) {
+    const paged = pagedRecordsOf(rows)?.primaryPositions(mapping.idColumn, id);
+    if (paged !== undefined && paged !== null) return paged;
     const column = mapping.idColumn,
       linear = () => rows.flatMap((row, index) => (equal(row[column], id) ? [index] : []));
     // Non-string identifiers keep the coercive comparison of the linear scan.
@@ -1403,7 +2008,11 @@ export class DataStore {
   primaryKeySubset(mapping, ids) {
     const rows = this.tableRows(mapping.logicalName);
     if (rows !== this.state.tables[mapping.logicalName] || !ids.every((id) => typeof id === 'string')) return null;
-    if (this.rowKeyIndex(rows, `id\u0000${mapping.idColumn}`, primaryKeyOf(mapping.idColumn)).linear) return null;
+    if (
+      !pagedRecordsOf(rows)?.keyTree &&
+      this.rowKeyIndex(rows, `id\u0000${mapping.idColumn}`, primaryKeyOf(mapping.idColumn)).linear
+    )
+      return null;
     const positions = new Set();
     for (const id of ids) for (const position of this.rowPositions(mapping, rows, id)) positions.add(position);
     return [...positions].sort((a, b) => a - b).map((position) => rows[position]);
@@ -1462,7 +2071,7 @@ export class DataStore {
       commit: () => {
         this.rowTransaction = previousRows;
         if (!joined && previousBoundary) {
-          previousBoundary.backup = clone(this.state);
+          previousBoundary.backup = cloneInternal(this.state);
           previousBoundary.independentCommit = true;
           previousBoundary.eventCount = this.committedEventCandidates?.length ?? 0;
         }
@@ -1474,9 +2083,10 @@ export class DataStore {
         if (boundary.backup !== null) restoreInPlace(this.state, boundary.backup);
         else savepoint.rollback(this.state, restoreInPlace);
         this.rowIndexes = null;
+        this.restorePluginTraceLogs(boundary);
         if (this.committedEventCandidates) this.committedEventCandidates.length = boundary.eventCount;
         if (!joined && boundary.independentCommit && previousBoundary) {
-          previousBoundary.backup = clone(this.state);
+          previousBoundary.backup = cloneInternal(this.state);
           previousBoundary.independentCommit = true;
           previousBoundary.eventCount = boundary.eventCount;
         }
@@ -1562,6 +2172,10 @@ export class DataStore {
     this.deleteGuards.add(fn);
     return () => this.deleteGuards.delete(fn);
   }
+  /** The span (or request-context ids) current when `event` was recorded (tracing), or null. */
+  stagingSpan(event) {
+    return (event && typeof event === 'object' && this.stagingSpans?.get(event)) || null;
+  }
   recordCommittedEvent(entity, operation, row, attributes, details = {}) {
     if (
       !this.mutationObservers?.size &&
@@ -1580,6 +2194,10 @@ export class DataStore {
       chain: this.flowChain ? clone(this.flowChain) : null,
       correlationId: currentRequest()?.correlationId ?? null,
     };
+    // The staging span (tracing): kept beside the event, never in it (the event is persisted in asyncoperation.data), so a
+    // job staged from it remembers it as its parent (committed-work.mjs stage, stagingSpan).
+    const staging = this.traces?.enabled ? (this.traces.current() ?? currentRequest()) : null;
+    if (staging?.traceId) (this.stagingSpans ??= new WeakMap()).set(event, staging);
     for (const observer of this.mutationObservers ?? []) {
       const matched = observer.matches ? observer.matches(clone(event)) : true;
       if (matched && typeof matched.then === 'function') {
@@ -1665,8 +2283,16 @@ export class DataStore {
         // instead of copying it on the successful path; failed saves still restore
         // a detached copy through the ordinary transaction rollback.
         const boundary = this.pluginRollbackBoundary;
-        boundary.backup ??= this.state;
-        boundary.persistenceBackup ??= this.state;
+        const frame = transactionFrames.getStore();
+        if (frame?.store === this && frame.initializing) {
+          // No readers have been published. A failed initialization discards
+          // the store, so its superseded graph need not survive the streamed
+          // commit as a rollback input. The durable file remains authoritative.
+          this._state = next;
+        } else {
+          boundary.backup ??= this.state;
+          boundary.persistenceBackup ??= this.state;
+        }
         this.state = next;
         return returnSnapshot ? this.state : undefined;
       },
@@ -1835,6 +2461,19 @@ export class DataStore {
         'NotImplemented',
       );
   }
+  /**
+   * The lowercase names a table filter value stands for (DV-N4-2): the logical name and the entity set name of the mapped
+   * table it names either way (any case), else the value itself.
+   */
+  entityNames(name) {
+    const wanted = String(name ?? '')
+      .trim()
+      .toLowerCase();
+    for (const [logical, mapping] of Object.entries(this.state.mappings ?? {}))
+      if (logical.toLowerCase() === wanted || String(mapping?.entitySet ?? '').toLowerCase() === wanted)
+        return [logical.toLowerCase(), ...(mapping?.entitySet ? [String(mapping.entitySet).toLowerCase()] : [])];
+    return [wanted];
+  }
   resolveMapping(entity) {
     safeName(entity);
     let logical = entity;
@@ -1928,7 +2567,7 @@ export class DataStore {
    */
   permissionMemo() {
     const indexes = new Map(),
-      results = new Map(),
+      results = new WeakMap(),
       rules = new Map();
     const lookup = (logical, column, value) => {
       const key = `${logical}\u0000${column}`;
@@ -1974,11 +2613,9 @@ export class DataStore {
     const visit = `${mapping.logicalName}:${scalar(row?.[mapping.idColumn])}:${operation}:${permissionId ?? '*'}`;
     if (chain.has(visit)) throw new DataError('Cyclic parent table permission', 400, 'InvalidPermission');
     const rowId = row?.[mapping.idColumn];
-    const cacheKey =
-      rowId == null
-        ? null
-        : `${mapping.logicalName}\u0000${comparable(rowId)}\u0000${operation}\u0000${permissionId ?? '*'}`;
-    if (cacheKey != null && memo.results.has(cacheKey)) return memo.results.get(cacheKey);
+    const cacheKey = rowId == null ? null : `${mapping.logicalName}\u0000${operation}\u0000${permissionId ?? '*'}`;
+    const cached = row && typeof row === 'object' ? memo.results.get(row) : null;
+    if (cacheKey != null && cached?.has(cacheKey)) return cached.get(cacheKey);
     const nextChain = new Set([...chain, visit]);
     const result = memo
       .rules(mapping.logicalName, operation, identity)
@@ -2029,11 +2666,18 @@ export class DataStore {
         }
         throw new DataError(`Unsupported permission scope ${scope}`);
       });
-    if (cacheKey != null) memo.results.set(cacheKey, result);
+    if (cacheKey != null && row && typeof row === 'object') {
+      let answers = memo.results.get(row);
+      if (!answers) memo.results.set(row, (answers = new Map()));
+      answers.set(cacheKey, result);
+    }
     return result;
   }
   assertAllowed(entity, operation, row, identity, related) {
-    if (!this.allowed(entity, operation, row, identity)) {
+    const memo = this.permissionMemo();
+    if (this.allowed(entity, operation, row, identity, new Set(), null, memo))
+      this.tracePermission(entity, operation, identity, memo, { result: 'allow' });
+    else {
       const permissions = this.rules(entity, operation, identity).map((grant) => {
         const permission = { id: grant.id, name: grant.name ?? grant.id, scope: grant.scope ?? 'global' };
         for (const key of ['field', 'relationship', 'relationshipName', 'parentPermissionId'])
@@ -2061,6 +2705,8 @@ export class DataStore {
       const message =
         `Table permission denies ${operation} on ${entity}` +
         (descriptions.length ? ': ' + descriptions.join('; ') : '');
+      const model = this.portalAuthorization?.describe().model ?? 'standard';
+      this.traceDenial({ table: entity, operation, model, permissions, message });
       throw new DataError(message, 403, 'PermissionDenied', {
         operation,
         table: entity,
@@ -2072,18 +2718,126 @@ export class DataStore {
           table: entity,
           permissions,
           message,
-          model: this.portalAuthorization?.describe().model ?? 'standard',
+          model,
         },
         ...(related ? { related } : {}),
       });
     }
   }
+  /** A table permission denial (tracing): an event on the current span, else a dedicated permission span with status denied. */
+  traceDenial({ table, operation, model, permissions, message }) {
+    const traces = this.traces;
+    if (!traces?.enabled) return;
+    const attributes = {
+      table,
+      operation,
+      result: 'deny',
+      model,
+      permissions: permissions.map((grant) => grant.name),
+      code: 'TABLE_PERMISSION_DENIED',
+    };
+    const current = traces.current();
+    if (current) traceDecision(current, 'permission', { message, attributes });
+    else
+      traces
+        .start({ kind: 'permission', name: `Deny ${operation} ${table}`, module: 'security', operation, entity: table })
+        .event('permission', { message, attributes })
+        .end({ status: 'denied', error: { code: 'PermissionDenied', message } });
+  }
+  /**
+   * One permission event on the current span (tracing, docs/design/tracing.md): an allowed assertAllowed decision
+   * (facts { result: 'allow' }; a denial is traceDenial) or one permission-filtering read call (facts { result: 'filtered',
+   * rows, allowed }), never one per row. The table's rules come from `memo`, so a call that evaluated them computes them once.
+   */
+  tracePermission(entity, operation, identity, memo, facts) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    if (!span) return;
+    const table = this.resolveMapping(entity).logicalName;
+    traceDecision(span, 'permission', {
+      attributes: {
+        table,
+        operation,
+        ...facts,
+        model: this.portalAuthorization?.describe().model ?? 'standard',
+        permissions: memo.rules(table, operation, identity ?? {}).map((grant) => grant.name ?? grant.id),
+      },
+    });
+  }
+  /** tracePermission for a filtering read: `rows` were considered, `allowed` of them are visible (admin and permissive record none). */
+  traceFiltered(entity, identity, rows, allowed, memo) {
+    if (!this.traces?.enabled || identity?.admin || this.state.settings.permissionMode === 'permissive') return;
+    this.tracePermission(entity, 'read', identity, memo, {
+      result: 'filtered',
+      rows: pagedRecordsOf(rows)?.present ?? rows.length,
+      allowed,
+    });
+  }
   rows(entity, identity = {}, subset) {
     const m = this.resolveMapping(entity);
     const memo = this.permissionMemo();
-    return (subset ?? this.tableRows(m.logicalName)).filter((r) =>
-      this.allowed(m.logicalName, 'read', r, identity, new Set(), null, memo),
-    );
+    const rows = subset ?? this.tableRows(m.logicalName);
+    const kept = this.permittedRows(m, rows, identity, memo);
+    this.traceFiltered(m.logicalName, identity, rows, kept.length, memo);
+    return kept;
+  }
+  permittedRows(m, rows, identity, memo) {
+    if (this.allowed === DataStore.prototype.allowed) {
+      if (identity.admin || this.state.settings.permissionMode === 'permissive') return rows.filter(() => true);
+      const length = rows.length;
+      let present = false;
+      for (let index = 0; index < length; index++)
+        if (index in rows) {
+          present = true;
+          break;
+        }
+      if (!present) return [];
+      const rules = memo.rules(m.logicalName, 'read', identity);
+      if (!rules.length) return [];
+      if ((rules[0].scope ?? 'global') === 'global') return rows.filter(() => true);
+    }
+    return rows.filter((r) => this.allowed(m.logicalName, 'read', r, identity, new Set(), null, memo));
+  }
+  /** Exact permission-filtered count without materializing the visible rows; one `filtered` permission event per call. */
+  rowCount(entity, identity = {}, subset) {
+    const m = this.resolveMapping(entity);
+    const rows = subset ?? this.tableRows(m.logicalName);
+    const unrestricted = identity.admin || this.state.settings.permissionMode === 'permissive';
+    const memo = unrestricted ? null : this.permissionMemo();
+    const count = this.permittedCount(m, rows, identity, unrestricted, memo);
+    this.traceFiltered(m.logicalName, identity, rows, count, memo);
+    return count;
+  }
+  permittedCount(m, rows, identity, unrestricted, memo) {
+    const length = rows.length;
+    const storedCount = pagedRecordsOf(rows)?.present;
+    if (storedCount === 0 || (unrestricted && storedCount !== undefined)) return storedCount;
+    // A missing grant and an unconditional first grant cannot depend on row
+    // contents. Keep custom per-row authorization hooks on the ordinary path.
+    if (!unrestricted && this.allowed === DataStore.prototype.allowed) {
+      let present = false;
+      for (let index = 0; index < length; index++)
+        if (index in rows) {
+          present = true;
+          break;
+        }
+      if (!present) return 0;
+      const rules = memo.rules(m.logicalName, 'read', identity);
+      if (!rules.length) return 0;
+      if ((rules[0].scope ?? 'global') === 'global') {
+        if (storedCount !== undefined) return storedCount;
+        let count = 0;
+        for (let index = 0; index < length; index++) if (index in rows) count++;
+        return count;
+      }
+    }
+    let count = 0;
+    for (let index = 0; index < length; index++)
+      if (
+        index in rows &&
+        (unrestricted || this.allowed(m.logicalName, 'read', rows[index], identity, new Set(), null, memo))
+      )
+        count++;
+    return count;
   }
   relationshipMatches(row, target, rel) {
     if (!rel.intersect) return field(row, rel.from) != null && equal(field(row, rel.from), field(target, rel.to));
@@ -2143,10 +2897,53 @@ export class DataStore {
     return out;
   }
   get(entity, id, identity = {}, options = {}) {
+    return this.tracedRead(
+      'retrieve',
+      entity,
+      () => ({ id }),
+      options,
+      () => this.readRecord(entity, id, identity, options),
+      id,
+    );
+  }
+  /**
+   * One store span per read call that no Dataverse, store or Liquid read span already covers (docs/design/tracing.md):
+   * entity, operation, rowCount and portalRequest; the query is captured only at level full. A FetchXML read is operation
+   * retrievemultiple with attribute query: 'fetchxml' (the label stays FetchXml).
+   */
+  tracedRead(operation, entity, input, options, read, recordId = null) {
+    const traces = this.traces;
+    if (!traces?.enabled || COVERED_READS.has(traces.current()?.kind)) return read();
+    return traces.wrap(
+      {
+        kind: 'store',
+        name: `${READ_LABEL[operation]} ${entity ?? ''}`.trim(),
+        module: 'dataverse',
+        operation: operation === 'fetchxml' ? 'retrievemultiple' : operation,
+        entity,
+        recordId: recordId == null ? null : String(scalar(recordId)),
+        attributes: {
+          portalRequest: options.portalRequest === true,
+          ...(operation === 'fetchxml' ? { query: 'fetchxml' } : {}),
+        },
+        input,
+      },
+      (span) => {
+        const result = read();
+        const count = (value) => {
+          span.set({ rowCount: rowCountOf(value) });
+          return value;
+        };
+        return typeof result?.then === 'function' ? result.then(count) : count(result);
+      },
+    );
+  }
+  readRecord(entity, id, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
     const rows = this.tableRows(m.logicalName);
     let row = rows[this.rowIndex(m, rows, id, options)];
     if (!row) return null;
+    this.traceRecord(m.logicalName, row[m.idColumn]);
     this.assertAllowed(m.logicalName, 'read', row, identity);
     // A portal read (forms, Liquid entity reads) sees what a Dataverse read answers: computed columns hold their value and
     // lookups are entity references carrying the target's primary name.
@@ -2399,12 +3196,43 @@ export class DataStore {
       const mask = maskOf(name);
       return mask ? computed.map(mask) : computed;
     };
+    const readCopies = (rows) => {
+      const paged = pagedRecordsOf(rows);
+      if (!paged) return rows;
+      const out = [];
+      for (let index = 0; index < paged.length; index++) if (paged.id(index)) out.push(paged.raw(index));
+      return out;
+    };
+    const visibleRows = (name, subset) => {
+      const source = subset ?? this.tableRows(name),
+        paged = pagedRecordsOf(source);
+      // Query filters, calculations and masks are read-only. Decode private
+      // values directly instead of retaining a mutable facade for every row.
+      // Public rows() and custom authorization hooks keep stored-row semantics.
+      if (!paged || this.allowed !== DataStore.prototype.allowed) return this.rows(name, identity, source);
+      const memo = this.permissionMemo();
+      let unrestricted = identity.admin || this.state.settings.permissionMode === 'permissive';
+      if (!unrestricted && paged.present) {
+        const rules = memo.rules(name, 'read', identity);
+        if (!rules.length) {
+          this.traceFiltered(name, identity, source, 0, memo);
+          return [];
+        }
+        unrestricted = (rules[0].scope ?? 'global') === 'global';
+      }
+      const rows = readCopies(source),
+        kept = unrestricted
+          ? rows
+          : rows.filter((row) => this.allowed(name, 'read', row, identity, new Set(), null, memo));
+      this.traceFiltered(name, identity, source, kept.length, memo);
+      return kept;
+    };
     const readRows = (logical, node, subset) => {
       const name = this.resolveMapping(logical).logicalName;
       if (options.permissionLinkNodes?.has(node) || options.rawQueryNodes?.has(node))
-        return backend(name, subset ?? this.tableRows(name));
-      if (subset) return backend(name, this.rows(name, identity, subset));
-      if (!readable.has(name)) readable.set(name, backend(name, this.rows(name, identity)));
+        return backend(name, readCopies(subset ?? this.tableRows(name)));
+      if (subset) return backend(name, visibleRows(name, subset));
+      if (!readable.has(name)) readable.set(name, backend(name, visibleRows(name)));
       return readable.get(name);
     };
     const key = (value) => {
@@ -2429,6 +3257,10 @@ export class DataStore {
       const target = this.resolveMapping(rel.entity);
       const value = key(columnValue(row, rel.from));
       if (value == null) return [];
+      if (!rel.intersect && rel.to === target.idColumn && !isElastic(target)) {
+        const subset = this.primaryKeySubset(target, [value]);
+        if (subset) return readRows(target.logicalName, undefined, subset);
+      }
       const targets = indexBy(`t\u0000${target.logicalName}\u0000${rel.to}`, readRows(target.logicalName), rel.to);
       if (!rel.intersect) {
         const found = targets.get(value) ?? [];
@@ -2454,7 +3286,8 @@ export class DataStore {
           }
       return out;
     };
-    const names = new Map();
+    const names = new Map(),
+      requestedNames = new Map();
     const lookupName = (reference) => {
       if (!reference) return undefined;
       if (reference.name != null) return reference.name;
@@ -2465,6 +3298,21 @@ export class DataStore {
         mapping = this.resolveMapping(logical);
       } catch {
         return undefined;
+      }
+      const rows = this.tableRows(mapping.logicalName),
+        stored = pagedRecordsOf(rows);
+      const identifier = key(reference.id);
+      if (identifier == null) return undefined;
+      const positions = stored?.primaryPositions(mapping.idColumn, identifier);
+      if (positions !== undefined && positions !== null) {
+        // The ordinary index retains the last duplicate's label. Cache only
+        // requested IDs; label formatting must not decode a complete target.
+        let namesOf = requestedNames.get(mapping.logicalName);
+        if (!namesOf) requestedNames.set(mapping.logicalName, (namesOf = new Map()));
+        const id = identifier;
+        if (!namesOf.has(id))
+          namesOf.set(id, positions.length ? primaryNameValue(mapping, rows[positions.at(-1)]) : undefined);
+        return namesOf.get(id);
       }
       if (!names.has(mapping.logicalName)) {
         const index = new Map();
@@ -2640,6 +3488,15 @@ export class DataStore {
    * Web API grammar; the default "extended" dialect serves internal reads.
    */
   query(entity, params = {}, identity = {}, paging, options = {}) {
+    return this.tracedRead(
+      'retrievemultiple',
+      entity,
+      () => params,
+      options,
+      () => this.queryRecords(entity, params, identity, paging, options),
+    );
+  }
+  queryRecords(entity, params = {}, identity = {}, paging, options = {}) {
     const p = params instanceof URLSearchParams ? Object.fromEntries(params) : params;
     if (p.fetchXml || p.fetchxml) return this.queryCore(entity, params, identity, paging, options);
     // Column security of the reading principal on every returned row (portal-authorization.mjs maskRow), as get() and fetchXml().
@@ -3153,19 +4010,23 @@ export class DataStore {
         'InvalidKey',
         { innerCode: '0x80040203' },
       );
+    const collation = this.querySettings().collation;
+    const kinds = Object.fromEntries(
+      names.map((name) => [name, fieldKind(this.fieldDefinition(mapping.logicalName, name))]),
+    );
     const matches = (row) =>
       names.every((name) =>
         isElastic(mapping) && name === 'partitionid'
           ? samePartition(row[name], parts[name])
-          : valuesEqual(field(row, name), parts[name]),
+          : valuesEqual(field(row, name), parts[name], { collation, kind: kinds[name] }),
       );
     // Within one transaction (UpsertMultiple, key upserts) candidates come from the key-segment index.
-    const literal = names.map((name) => keySegmentBucket(parts[name]));
+    const literal = names.map((name) => keySegmentBucket(parts[name], collation, kinds[name]));
     if (!isElastic(mapping) && literal.every((bucket) => typeof bucket === 'string')) {
-      const name = `ks\u0000${names.join('\u0000')}`;
-      const index = this.rowKeyIndex(rows, name, keySegmentOf(names), { scoped: true, wild: true });
+      const name = `ks\u0000${JSON.stringify([collation, names, kinds])}`;
+      const index = this.rowKeyIndex(rows, name, keySegmentOf(names, collation, kinds), { scoped: true, wild: true });
       if (index && !index.linear) {
-        const bucketed = index.get(literal.join('\u0000'));
+        const bucketed = index.get(JSON.stringify(literal));
         const candidates = index.wild.length
           ? [...new Set([...bucketed, ...index.wild])].sort((a, b) => a - b)
           : bucketed;
@@ -3280,11 +4141,14 @@ export class DataStore {
           this.evaluate(value, context),
         ]);
         if (!matches.length) throw new DataError('Plugin find requires explicit matching fields', 400, 'InvalidPlugin');
-        const record = this.tableRows(mapping.logicalName).find(
-          (row) =>
-            matches.every(([key, value]) => equal(field(row, key), value)) &&
-            this.allowed(mapping.logicalName, 'read', row, context.identity),
-        );
+        const memo = this.permissionMemo(),
+          candidates = this.tableRows(mapping.logicalName).filter((row) =>
+            matches.every(([key, value]) => equal(field(row, key), value)),
+          ),
+          record = candidates.find((row) =>
+            this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
+          );
+        this.traceFiltered(mapping.logicalName, context.identity, candidates, record ? 1 : 0, memo);
         return clone(record ? (args[1] ? field(record, safeName(String(args[1]))) : record) : null);
       }
       case 'findMany': {
@@ -3295,14 +4159,18 @@ export class DataStore {
         ]);
         if (!matches.length)
           throw new DataError('Plugin findMany requires explicit matching fields', 400, 'InvalidPlugin');
-        const records = this.tableRows(mapping.logicalName).filter(
-          (row) =>
+        const memo = this.permissionMemo(),
+          candidates = this.tableRows(mapping.logicalName).filter((row) =>
             matches.every(([key, value]) =>
               Array.isArray(value)
                 ? value.some((candidate) => equal(field(row, key), candidate))
                 : equal(field(row, key), value),
-            ) && this.allowed(mapping.logicalName, 'read', row, context.identity),
-        );
+            ),
+          ),
+          records = candidates.filter((row) =>
+            this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
+          );
+        this.traceFiltered(mapping.logicalName, context.identity, candidates, records.length, memo);
         if (records.length > 1024) throw new DataError('Plugin findMany exceeds 1024 records', 400, 'InvalidPlugin');
         return clone(records.map((row) => (args[1] ? field(row, safeName(String(args[1]))) : row)));
       }
@@ -3352,47 +4220,101 @@ export class DataStore {
         (p.entity === entity || p.entity === '*') &&
         (p.operations ?? ['create', 'update']).includes(operation),
     )) {
-      if (p.when && !compileFilter(p.when)(row)) continue;
-      for (const [key, expr] of Object.entries(p.defaults ?? {}))
-        if (row[key] == null) {
-          safeName(key);
-          row[key] = this.evaluate(expr, context);
-        }
-      for (const [key, expr] of Object.entries(p.set ?? {})) {
-        safeName(key);
-        row[key] = this.evaluate(expr, context);
+      const started = performance.now(),
+        changes = [];
+      const evaluated = (result, extra = {}) =>
+        this.ruleEvaluated({
+          rule: String(p.id ?? p.name ?? 'plugin'),
+          table: entity,
+          operation,
+          result,
+          changes,
+          secondaryEffects: result === 'applied' ? (p.secondary ?? []).length : 0,
+          durationMs: Math.round((performance.now() - started) * 100) / 100,
+          ...extra,
+        });
+      if (p.when && !compileFilter(p.when)(row)) {
+        evaluated('skipped');
+        continue;
       }
-      for (const v of p.validate ?? []) {
-        const value = field(row, v.field ?? '');
-        let valid = true;
-        if (v.required) valid = value != null && value !== '';
-        if (v.pattern) valid = valid && new RegExp(v.pattern).test(String(value ?? ''));
-        if (v.min != null) valid = valid && Number(value) >= v.min;
-        if (v.max != null) valid = valid && Number(value) <= v.max;
-        if (v.oneOf) valid = valid && v.oneOf.some((x) => equal(x, value));
-        if (v.assert) valid = valid && compileFilter(v.assert)(row);
-        if (v.unique) {
-          const m = this.resolveMapping(entity);
-          valid =
-            valid &&
-            !(this.state.tables[entity] ?? []).some(
-              (r) => !equal(r[m.idColumn], row[m.idColumn]) && equal(field(r, v.field), value),
-            );
-        }
-        if (!valid)
-          throw new DataError(
-            v.message ?? `Plugin ${p.id ?? 'validation'} rejected ${v.field ?? 'record'}`,
-            400,
-            'PluginValidation',
-            {
-              innerCode: String(v.innerCode ?? '0x80040265').toLowerCase(),
-              ...(typeof v.message === 'string' && v.message.trim() ? { declaredValidationMessage: true } : {}),
-            },
-          );
+      try {
+        this.applyRule(p, row, context, changes, entity);
+      } catch (error) {
+        evaluated('rejected', { error: { code: error.code ?? 'PLUGIN_ERROR', message: error.message } });
+        throw error;
       }
+      evaluated('applied');
       secondary.push(...(p.secondary ?? []).map((action) => ({ action, context })));
     }
     return secondary;
+  }
+  /**
+   * One declarative plugin rule's evaluation { rule, table, operation, result: applied|skipped|rejected, changes,
+   * secondaryEffects, durationMs, error? } (D-M-4): a `rule` event on the current span, then onRuleEvaluated (the host's
+   * `plugin` log line), so both come from this one hook. Trace level off costs one property read here.
+   */
+  ruleEvaluated(evaluation) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    // Under a bulk span the evaluations of every row are one rule event and the span's `rules` counts (traceDecision).
+    traceDecision(span, 'rule', {
+      message: `${evaluation.rule} ${evaluation.result}`,
+      attributes: {
+        rule: evaluation.rule,
+        table: evaluation.table,
+        operation: evaluation.operation,
+        result: evaluation.result,
+        changes: evaluation.changes,
+        secondaryEffects: evaluation.secondaryEffects,
+        ...(evaluation.error ? { code: evaluation.error.code, message: evaluation.error.message } : {}),
+      },
+    });
+    try {
+      this.onRuleEvaluated?.(evaluation, span);
+    } catch {
+      /* an observer failure never affects the write */
+    }
+  }
+  // The defaults, set and validate parts of one plugin rule on row; the names it assigns are pushed to changes.
+  applyRule(p, row, context, changes, entity) {
+    for (const [key, expr] of Object.entries(p.defaults ?? {}))
+      if (row[key] == null) {
+        safeName(key);
+        row[key] = this.evaluate(expr, context);
+        changes.push(key);
+      }
+    for (const [key, expr] of Object.entries(p.set ?? {})) {
+      safeName(key);
+      row[key] = this.evaluate(expr, context);
+      if (!changes.includes(key)) changes.push(key);
+    }
+    for (const v of p.validate ?? []) {
+      const value = field(row, v.field ?? '');
+      let valid = true;
+      if (v.required) valid = value != null && value !== '';
+      if (v.pattern) valid = valid && new RegExp(v.pattern).test(String(value ?? ''));
+      if (v.min != null) valid = valid && Number(value) >= v.min;
+      if (v.max != null) valid = valid && Number(value) <= v.max;
+      if (v.oneOf) valid = valid && v.oneOf.some((x) => equal(x, value));
+      if (v.assert) valid = valid && compileFilter(v.assert)(row);
+      if (v.unique) {
+        const m = this.resolveMapping(entity);
+        valid =
+          valid &&
+          !(this.state.tables[entity] ?? []).some(
+            (r) => !equal(r[m.idColumn], row[m.idColumn]) && equal(field(r, v.field), value),
+          );
+      }
+      if (!valid)
+        throw new DataError(
+          v.message ?? `Plugin ${p.id ?? 'validation'} rejected ${v.field ?? 'record'}`,
+          400,
+          'PluginValidation',
+          {
+            innerCode: String(v.innerCode ?? '0x80040265').toLowerCase(),
+            ...(typeof v.message === 'string' && v.message.trim() ? { declaredValidationMessage: true } : {}),
+          },
+        );
+    }
   }
   applySecondary(effects) {
     for (const { action, context } of effects) {
@@ -3521,14 +4443,18 @@ export class DataStore {
    * indexes in Dataverse. Keys with an empty column are not compared here.
    */
   assertAlternateKeys(mapping, row, rows, ownIndex) {
-    for (const key of (mapping.alternateKeys ?? []).filter((k) => (k.indexStatus ?? 'Active') === 'Active')) {
-      const attributes = key.attributes ?? key.keyAttributes ?? [];
+    const keys = activeAlternateKeys(mapping);
+    if (!keys.length) return;
+    const collation = this.querySettings().collation;
+    for (const key of keys) {
+      const attributes = alternateKeyAttributes(key);
       if (!attributes.length) continue;
-      const values = attributes.map((name) => scalar(field(row, name)));
+      const values = alternateKeyValues(row, attributes);
       if (values.some((value) => value == null || value === '')) continue;
       // Within one transaction the key-tuple index makes bulk creates and key upserts O(1) per row.
-      const name = `ak\u0000${attributes.join('\u0000')}`,
-        keyOf = alternateKeyOf(attributes),
+      const kinds = alternateKeyKinds(mapping, attributes);
+      const name = `ak\u0000${JSON.stringify([collation, attributes, kinds])}`,
+        keyOf = alternateKeyOf(attributes, collation, kinds),
         wanted = keyOf(row);
       const index = this.rowKeyIndex(rows, name, keyOf, { scoped: true });
       const candidates = index?.get(wanted);
@@ -3545,9 +4471,7 @@ export class DataStore {
       if (index) this.dropRowKeyIndex(rows, name);
       const clash = rows.some(
         (other, index) =>
-          index !== ownIndex &&
-          !equal(other[mapping.idColumn], row[mapping.idColumn]) &&
-          attributes.every((name, position) => equal(field(other, name), values[position])),
+          index !== ownIndex && !equal(other[mapping.idColumn], row[mapping.idColumn]) && keyOf(other) === wanted,
       );
       if (clash) throw duplicateAlternateKey(key, attributes, values);
     }
@@ -3711,6 +4635,7 @@ export class DataStore {
     if (appUser && !own(row, 'createdby'))
       row.createdby = { id: this.observed?.portalApplicationUserId ?? null, logical_name: 'systemuser', name: appUser };
     row[m.idColumn] ??= this.ids.uuid();
+    this.traceRecord(m.logicalName, row[m.idColumn]);
     if (isElastic(m)) assertElasticRecord(row);
     if (
       isElastic(m)
@@ -3879,6 +4804,7 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const index = this.rowIndex(m, rows, id, { ...options, partitionId: options.partitionId ?? data.partitionid });
     if (index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    this.traceRecord(m.logicalName, rows[index][m.idColumn]);
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, 'update', rows[index], identity);
     const changes = this.normalizeRecord(m, data, identity);
@@ -4088,6 +5014,7 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const index = this.rowIndex(m, rows, id, options);
     if (index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    this.traceRecord(m.logicalName, rows[index][m.idColumn]);
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, 'delete', rows[index], identity);
     // Dataverse deletes hand the deleted rows (children first, root last) to the recycle bin; portal deletes never collect them.
@@ -4213,35 +5140,36 @@ export class DataStore {
   referencesTo(logical, identity = {}, scope) {
     const graph = scope ? this.relationshipGraph(scope) : null;
     if (graph?.references.has(logical)) return graph.references.get(logical);
-    const found = new Map();
-    const add = (reference) => {
-      const key = `${reference.entity}\u0000${reference.column}`;
-      const existing = found.get(key);
-      if (!existing || (!existing.cascade && reference.cascade)) found.set(key, reference);
-    };
+    const references = this.referencesByTable(identity, logical).get(logical) ?? [];
+    graph?.references.set(logical, references);
+    return references;
+  }
+  /** referencesTo of every table (or of `only`) from one pass over the relationships: Map logical -> references. */
+  referencesByTable(identity = {}, only) {
+    const tables = new Map();
     for (const [owner, ownerMapping] of Object.entries(this.state.mappings ?? {}))
       for (const rel of Object.values(this.relationshipsFor(ownerMapping ?? {}, identity))) {
         if (!rel || rel.intersect || !rel.entity || !rel.from || !rel.to) continue;
-        if (rel.many === false && rel.entity === logical)
-          add({
-            entity: owner,
-            column: rel.from,
-            targetColumn: rel.to,
-            cascade: rel.cascade,
-            schemaName: rel.schemaName,
-          });
-        else if (rel.many !== false && owner === logical)
-          add({
-            entity: rel.entity,
-            column: rel.to,
-            targetColumn: rel.from,
-            cascade: rel.cascade,
-            schemaName: rel.schemaName,
-          });
+        // A single-valued lookup references its target; a collection references its owner.
+        const single = rel.many === false,
+          logical = single ? rel.entity : owner;
+        if (only !== undefined && logical !== only) continue;
+        const reference = single
+          ? { entity: owner, column: rel.from, targetColumn: rel.to, cascade: rel.cascade, schemaName: rel.schemaName }
+          : {
+              entity: rel.entity,
+              column: rel.to,
+              targetColumn: rel.from,
+              cascade: rel.cascade,
+              schemaName: rel.schemaName,
+            };
+        let found = tables.get(logical);
+        if (!found) tables.set(logical, (found = new Map()));
+        const key = `${reference.entity}\u0000${reference.column}`;
+        const existing = found.get(key);
+        if (!existing || (!existing.cascade && reference.cascade)) found.set(key, reference);
       }
-    const references = [...found.values()];
-    graph?.references.set(logical, references);
-    return references;
+    return new Map([...tables].map(([logical, found]) => [logical, [...found.values()]]));
   }
   /**
    * The relationship graph one delete operation walks: referencesTo per table and the
@@ -4390,7 +5318,7 @@ export class DataStore {
     };
   }
   async applyPreset(name, { generatedPresets = this.presetLibrary, returnSnapshot = true } = {}) {
-    const preset = resolvePreset(this.state, name, generatedPresets);
+    const preset = resolvePreset(this.state, name, generatedPresets, this.recordContext());
     if (!preset) throw new DataError(`Unknown preset ${name}`, 404);
     if (preset.personaCatalog !== undefined) validatePersonaCatalog(preset.personaCatalog, `Preset ${name}`);
     return this.transact(
@@ -4444,6 +5372,15 @@ export class DataStore {
     return preview;
   }
   fetchXml(xml, identity = {}, options = {}) {
+    return this.tracedRead(
+      'fetchxml',
+      this.traces?.enabled && typeof xml === 'string' ? (FETCH_ENTITY.exec(xml)?.[1] ?? null) : null,
+      () => xml,
+      options,
+      () => this.fetchXmlRecords(xml, identity, options),
+    );
+  }
+  fetchXmlRecords(xml, identity = {}, options = {}) {
     // Column security of the reading principal on every returned row, link-entity and aliased column included
     // (portal-authorization.mjs maskRow), as get() and query().
     // A condition, order, aggregate or distinct over a column it reads masked is refused first (assertOperands, 0x80041155).
@@ -4902,7 +5839,7 @@ export function parseKeySegment(key) {
     parts[name] = raw.startsWith("'")
       ? raw.slice(1, -1).replace(/''/g, "'")
       : /^-?\d+(?:\.\d+)?$/.test(raw)
-        ? Number(raw)
+        ? parseNumericLiteral(raw)
         : raw.replace(/^\{(.*)\}$/, '$1');
   }
   return parts;
@@ -5047,7 +5984,7 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       return email ? value.trim().toLowerCase() || null : value;
     }
     case 'integer': {
-      const int64 = String(definition.dataverseType ?? '').toLowerCase() === 'bigint';
+      const int64 = String(definition.dataverseType ?? definition.type ?? '').toLowerCase() === 'bigint';
       const type = int64 ? 'Edm.Int64' : 'Edm.Int32';
       if (int64 && (isExactNumeric(value) || (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim())))) {
         const parts = decimalParts(typeof value === 'string' ? value.trim() : value);

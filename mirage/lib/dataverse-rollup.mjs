@@ -1,3 +1,4 @@
+import { cloneStateData } from './state-clone.mjs';
 import { validateDerivedColumns } from './derived-columns.mjs';
 // Rollup columns (SourceType 2) in the Dataverse API: the state and date columns are maintained, the value is recalculated on demand.
 //
@@ -46,6 +47,9 @@ import { DataError } from './data-error.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
 import { onceReporter, packOverrides } from './dataverse-addon-common.mjs';
+// runJob is imported when a job runs: a static import of dataverse-async.mjs would close an import cycle through
+// dataverse-security.mjs and data.mjs (config-keys.mjs loads this module early).
+const runJob = async (...args) => (await import('./dataverse-async.mjs')).runJob(...args);
 
 const ROLLUP = 2;
 const STATE = { notCalculated: 0, calculated: 1, overflowError: 2 };
@@ -254,19 +258,24 @@ function rollupsSourcedFrom(api, state, child) {
   return memo.sources.get(child) ?? [];
 }
 
-/** The mass recalculation: every rollup column whose state is NotCalculated (0), row by row. Returns the count recalculated. */
-async function recalculateStale(api) {
-  let count = 0;
+// Every rollup column whose state is NotCalculated (0), as [table, id, column], read lazily (each state when it is reached).
+function* staleColumns(api) {
   for (const logical of Object.keys(api.store.state.mappings)) {
     const columns = Object.keys(rollupColumnsOf(api, logical));
     if (!columns.length) continue;
     const mapping = api.store.resolveMapping(logical);
     for (const row of [...api.store.tableRows(logical)])
-      for (const column of columns) {
-        if (row[`${column}_state`] !== STATE.notCalculated) continue;
-        await recalculate(api, logical, row[mapping.idColumn], column);
-        count += 1;
-      }
+      for (const column of columns)
+        if (row[`${column}_state`] === STATE.notCalculated) yield [logical, row[mapping.idColumn], column];
+  }
+}
+
+/** The mass recalculation: every rollup column whose state is NotCalculated (0), row by row. Returns the count recalculated. */
+async function recalculateStale(api) {
+  let count = 0;
+  for (const [logical, id, column] of staleColumns(api)) {
+    await recalculate(api, logical, id, column);
+    count += 1;
   }
   return count;
 }
@@ -274,10 +283,16 @@ async function recalculateStale(api) {
 // The recurring task re-arms itself after each run; a failed run is reported and the next one still comes.
 function scheduleMass(api, state) {
   if (!api.scheduler?.schedule) return;
+  // Tracing: a run with stale columns is a job root (dataverse-async.mjs runJob, kind rollup-mass) whose rows event counts
+  // the recalculated columns; a run with nothing stale records nothing.
   const run = async () => {
     state.massHandle = null;
     try {
-      await recalculateStale(api);
+      if (!staleColumns(api).next().done)
+        await runJob(api.store, { name: MASS_JOB, kind: 'rollup-mass' }, async (span) => {
+          const rows = await recalculateStale(api);
+          span?.event('rows', { attributes: { operation: 'recalculate', rows } });
+        });
     } catch (error) {
       state.reporter.report(
         { code: 'ROLLUP_MASS_RECALCULATION_FAILED', message: error.message },
@@ -336,7 +351,7 @@ export async function recalculate(api, table, id, column) {
         if (override) {
           // A pack function is arbitrary code: the write's row journal becomes a full backup first, as a plug-in step does.
           api.store.promoteRowTransaction();
-          const answer = override(structuredClone(row), { table: logical, column: name });
+          const answer = override(cloneStateData(row), { table: logical, column: name });
           if (isThenable(answer))
             report(state, {
               code: 'ROLLUP_UNSUPPORTED',

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { prepareNativeControls } from './native-controls-fixture.mjs';
 
 const chrome = sharedBrowser();
 // Control-only tests render into one shared simulator page origin; saved-record tests own theirs.
@@ -13,11 +14,9 @@ let sharedApp;
 async function fixture(t, { timezoneId = 'America/New_York' } = {}) {
   const { origin } = await (sharedApp ??= modelDrivenFixture(scope));
   const page = await chrome.page(t, { timezoneId, viewport: { width: 1200, height: 900 } });
-  page.setDefaultTimeout(5000);
-  await page.goto(origin + '/main.aspx');
-  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready');
+  await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
     const form = document.createElement('form');
     form.style.width = '900px';
@@ -244,7 +243,7 @@ test('date-time controls preserve independent wall time, convert user-local valu
   assert.equal(await page.evaluate(() => window.fields.independent.read()), '2024-02-29T23:45:00.000Z');
   assert.equal(await page.evaluate(() => window.submits), 0);
   const dateOnly = await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const renderControl = window.renderFixtureControl;
     const control = renderControl(
       { name: 'x_date', type: 'date', dateTimeBehavior: 'DateOnly' },
       '2026-06-15T14:30:00Z',
@@ -382,6 +381,50 @@ test('time choices use the observed half-hour list while retaining arbitrary typ
   assert.equal(await page.evaluate(() => window.submits), 0);
 });
 
+// Preserve evidence when a saved-record page fails to boot or render its date control.
+function savedPageDiagnostics(page) {
+  const events = [],
+    metadata = [];
+  page.on('pageerror', (error) => events.push({ type: 'pageerror', message: error.message }));
+  page.on('console', (message) => {
+    if (message.type() === 'error') events.push({ type: 'console', message: message.text() });
+  });
+  page.on('requestfailed', (request) =>
+    events.push({
+      type: 'requestfailed',
+      path: new URL(request.url()).pathname,
+      failure: request.failure()?.errorText,
+    }),
+  );
+  page.on('response', (response) => {
+    const pathname = new URL(response.url()).pathname;
+    if (!pathname.startsWith('/_apps/') && !['/_sim/api/dataverse/session', '/_sim/api/status'].includes(pathname))
+      return;
+    events.push({ type: 'response', path: pathname, status: response.status() });
+    if (pathname === '/_apps/api/metadata/x_item')
+      response
+        .text()
+        .then((body) => metadata.push(body.slice(0, 12000)))
+        .catch((error) => events.push({ type: 'metadata-read', message: error.message }));
+  });
+  return async () => ({
+    events,
+    metadata,
+    page: await page
+      .evaluate(() => ({
+        state: document.documentElement.dataset.mirageAppState,
+        notice: document.querySelector('#notice')?.textContent,
+        body: document.body?.innerText.slice(0, 4000),
+        controls: [...document.querySelectorAll('[role=combobox]')].map((element) => ({
+          label: element.getAttribute('aria-label'),
+          value: element.value,
+          hidden: element.hidden,
+        })),
+      }))
+      .catch((error) => ({ error: error.message })),
+  });
+}
+
 for (const kind of ['portal', 'model-driven'])
   test(`saved UserLocal controls honor an explicit organization offset independently of the PCF browser zone in ${kind}`, async (t) => {
     const { sim, origin, solutionDir } = await modelDrivenFixture(
@@ -410,28 +453,37 @@ for (const kind of ['portal', 'model-driven'])
       sim.store.state.tables.x_item[0].x_appointment = '2026-10-22T09:30:00Z';
     });
     const page = await chrome.page(t, { timezoneId: 'Europe/Kyiv' });
-    await page.goto(
-      origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-    );
-    const time = page.getByRole('combobox', { name: 'Appointment Time', exact: true });
-    await time.waitFor();
-    assert.equal(
-      await time.inputValue(),
-      '9:30 AM',
-      'the configured staff offset takes precedence over browser Kyiv time',
-    );
-    assert.equal(
-      await page.evaluate(() => new Date('2026-10-22T09:30:00Z').getHours()),
-      12,
-      'source PCFs still receive their actual browser environment',
-    );
-    await time.fill('10:47 AM');
-    await time.press('Enter');
-    await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
-    const saved = await (await fetch(origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).json();
-    assert.equal(new Date(saved.row.x_appointment).toISOString(), '2026-10-22T10:47:00.000Z');
-    await page.reload();
-    await time.waitFor();
-    assert.equal(await time.inputValue(), '10:47 AM');
+    const evidence = savedPageDiagnostics(page);
+    try {
+      await page.goto(
+        origin +
+          '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      );
+      const time = page.getByRole('combobox', { name: 'Appointment Time', exact: true });
+      await time.waitFor();
+      assert.equal(
+        await time.inputValue(),
+        '9:30 AM',
+        'the configured staff offset takes precedence over browser Kyiv time',
+      );
+      assert.equal(
+        await page.evaluate(() => new Date('2026-10-22T09:30:00Z').getHours()),
+        12,
+        'source PCFs still receive their actual browser environment',
+      );
+      await time.fill('10:47 AM');
+      await time.press('Enter');
+      await page.getByRole('button', { name: 'Save', exact: true }).click();
+      await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+      const saved = await (
+        await fetch(origin + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')
+      ).json();
+      assert.equal(new Date(saved.row.x_appointment).toISOString(), '2026-10-22T10:47:00.000Z');
+      await page.reload();
+      await time.waitFor();
+      assert.equal(await time.inputValue(), '10:47 AM');
+    } catch (error) {
+      t.diagnostic(`Saved-record page evidence (${kind}): ${JSON.stringify(await evidence())}`);
+      throw error;
+    }
   });

@@ -543,23 +543,36 @@ const columnCell = (column, table) =>
     id: `${table}:${column.name}`,
   });
 function section(name, title, cells, { columns = 1, showlabel = true, visible = true, labelwidth = 115 } = {}) {
-  // Multi-column sections place `columns` cells per row; a cell that spans the row stands alone.
+  // A row-spanning control keeps its columns occupied in subsequent rows. Without
+  // those rows the platform creates implicit columns with zero available width.
   const rows = [];
+  const occupied = Array(columns).fill(0);
   let row = [];
+  let cursor = 0;
+  const finishRow = () => {
+    rows.push(row);
+    row = [];
+    cursor = 0;
+    for (let index = 0; index < columns; index++) occupied[index] = Math.max(0, occupied[index] - 1);
+  };
+  const nextColumn = (width) => {
+    let start = cursor;
+    while (start < columns && occupied[start] > 0) start++;
+    return start + width <= columns && occupied.slice(start, start + width).every((span) => span === 0) ? start : -1;
+  };
   for (const item of cells) {
-    const spans = /colspan="(\d+)"/.exec(item)?.[1];
-    const width = spans ? Number(spans) : 1;
-    if (width >= columns || row.length + width > columns) {
-      if (row.length) rows.push(row);
-      row = [];
-    }
+    const width = Number(/colspan="(\d+)"/.exec(item)?.[1] ?? 1);
+    const height = Number(/rowspan="(\d+)"/.exec(item)?.[1] ?? 1);
+    if (width > columns) throw new Error(`Cell span exceeds section ${name}'s declared columns`);
+    let start;
+    while ((start = nextColumn(width)) < 0) finishRow();
     row.push(item);
-    if (row.reduce((sum, c) => sum + Number(/colspan="(\d+)"/.exec(c)?.[1] ?? 1), 0) >= columns) {
-      rows.push(row);
-      row = [];
-    }
+    for (let index = start; index < start + width; index++) occupied[index] = height;
+    cursor = start + width;
+    if (occupied.every((span) => span > 0)) finishRow();
   }
-  if (row.length) rows.push(row);
+  if (row.length) finishRow();
+  while (occupied.some((span) => span > 0)) finishRow();
   return `<section name="${name}" id="${braced(`section:${name}`)}" showlabel="${showlabel}" showbar="false" columns="${'1'.repeat(columns)}" layout="varwidth" celllabelposition="Top" labelwidth="${labelwidth}"${visible ? '' : ' visible="false"'}>${label(title)}<rows>${rows.map((items) => `<row>${items.join('')}</row>`).join('')}</rows></section>`;
 }
 function tab(name, title, sections, { expanded = true, visible = true, showlabel = true } = {}) {

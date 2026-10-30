@@ -18,7 +18,15 @@ const shadow = (dataverseType, parent, extra = {}) =>
 const regularCustom = (source) => !source.def && /^[a-z0-9]+_/.test(source.logical);
 
 /** Explicit Solution/standard field facts always win over an inferred platform default. */
-export function implicitAttributes(source, declared, { targetFields = standardFields } = {}) {
+export function implicitAttributes(
+  source,
+  declared,
+  {
+    targetFields = standardFields,
+    targetHasPhonetic = (target) =>
+      Object.keys(targetFields(target) ?? {}).some((column) => /^yomi(?:name|fullname)$/.test(column)),
+  } = {},
+) {
   const tableType =
     source.s?.tableType ?? source.m?.tableType ?? source.m?.dataverseMetadata?.TableType ?? source.def?.tableType;
   if (
@@ -91,12 +99,7 @@ export function implicitAttributes(source, declared, { targetFields = standardFi
           dataverseMetadata: { AttributeOf: name, IsLogical: false, IsValidODataAttribute: false },
         };
       // Phonetic companions require evidence on the target table; custom targets are not guessed.
-      if (
-        targets.some((target) =>
-          Object.keys(targetFields(target) ?? {}).some((column) => /^yomi(?:name|fullname)$/.test(column)),
-        )
-      )
-        generated[name + 'yominame'] = shadow('nvarchar', name, { maxLength: 100 });
+      if (targets.some(targetHasPhonetic)) generated[name + 'yominame'] = shadow('nvarchar', name, { maxLength: 100 });
     } else if (['bit', 'boolean', 'picklist', 'multiselectpicklist', 'state', 'status'].includes(type)) {
       generated[name + 'name'] = shadow('virtual', name);
     } else if (type === 'file') {

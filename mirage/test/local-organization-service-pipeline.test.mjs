@@ -47,9 +47,9 @@ async function storeWith(t, extensions = []) {
 
 test('an SDK write runs synchronous rule hooks inline and reports a failed asynchronous remainder as SDK_DEFERRED_EFFECT', async (t) => {
   const seen = [];
-  let settle;
-  const finished = new Promise((resolve) => {
-    settle = resolve;
+  let reportedDeferred;
+  const reported = new Promise((resolve) => {
+    reportedDeferred = resolve;
   });
   const invented = {
     name: 'x-invented-hooks',
@@ -65,14 +65,18 @@ test('an SDK write runs synchronous rule hooks inline and reports a failed async
       api.recordHooks.add('afterWrite', async (c, mapping) => {
         if (mapping.logicalName !== 'x_item') return;
         await null;
-        settle();
         throw new Error('invented asynchronous side effect failed');
       });
     },
   };
   const store = await storeWith(t, [invented]);
   const diagnostics = [];
-  const sdk = localOrganizationService(store, profile, undefined, { diagnostic: (note) => diagnostics.push(note) });
+  const sdk = localOrganizationService(store, profile, undefined, {
+    diagnostic: (note) => {
+      diagnostics.push(note);
+      if (note.code === 'SDK_DEFERRED_EFFECT') reportedDeferred();
+    },
+  });
   assert.equal(sdk.profile.pipeline.level, 'behaviour');
   assert.equal(sdk.profile.pipeline.asyncHookEffects, 'contract');
   const row = sdk.create('x_item', { x_name: 'kept' });
@@ -91,8 +95,8 @@ test('an SDK write runs synchronous rule hooks inline and reports a failed async
     0,
     'a refusing rule rolls the call back',
   );
-  await finished;
-  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(diagnostics.length, 0, 'the asynchronous remainder finishes after the call returns');
+  await reported;
   const deferred = diagnostics.filter((note) => note.code === 'SDK_DEFERRED_EFFECT');
   assert.equal(deferred.length, 1);
   assert.equal(deferred[0].entity, 'x_item');

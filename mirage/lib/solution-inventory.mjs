@@ -13,6 +13,7 @@
 // (https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/canvasapp), so a larger .msapp is
 // listed by name and size only.
 import YAML from 'yaml';
+import { CANVAS_ASSETS } from './canvas-assets.mjs';
 import { parseSolutionXml, serializeXml } from './solution-xml.mjs';
 import { yamlNode } from './solution-yaml.mjs';
 import { readCanvasSource, canvasInventoryRecord } from './canvas-source.mjs';
@@ -881,6 +882,8 @@ export function mergeInventory(records) {
         current.reason = record.reason;
         current.tree = record.tree;
         current.unsupported = record.unsupported;
+        current.sourceDiagnostics = record.sourceDiagnostics;
+        current[CANVAS_ASSETS] = record[CANVAS_ASSETS];
         current.canvas = record.canvas;
         current.msapp = record.msapp;
         current.diagnostics = record.diagnostics;
@@ -993,8 +996,10 @@ export async function canvasMsappRecord(bytes, { name, size = bytes?.length ?? n
       screens: source.screens.map((screen) => screen.name),
       components: source.components.map((component) => component.name),
       dataSources: source.dataSources,
+      ...(source.enums ? { enums: source.enums } : {}),
       formulas: source.formulas,
       diagnostics: source.diagnostics,
+      ...(source.assetDiagnostics?.length ? { assetDiagnostics: source.assetDiagnostics } : {}),
     },
   };
 }

@@ -1,4 +1,5 @@
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -12,8 +13,11 @@ import { createSimulator } from '../mirage/server.mjs';
 import { createFixture } from './fixture.mjs';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 
+// `paqvilo mirage dev|start` exports MIRAGE_SETUP_RUNTIME to its child; inherited here it would rename restart commands.
+delete process.env.MIRAGE_SETUP_RUNTIME;
+
 async function work(t, prefix = 'paqvilo-setup-unit-') {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), prefix));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return directory;
 }
@@ -665,12 +669,8 @@ test('linked project files outside the catalogue folder, under .paqvilo/ or not 
     await fs.readFile(path.join(directory, '.paqvilo', 'session-77777777.json'), 'utf8'),
     /never-return-discovery/,
   );
-  const link = path.join(directory, 'linked');
-  try {
-    await fs.symlink(outside, link, 'junction');
-  } catch {
-    return t.diagnostic('symbolic links are unavailable here');
-  }
+  // A Windows junction and a POSIX directory link need no symlink privilege.
+  await fs.symlink(outside, path.join(directory, 'linked'), 'junction');
   await fs.writeFile(
     path.join(outside, 'escape.project.yml'),
     'version: 2\nruntime:\n  kind: model-driven\nsolutions: []\nenvironmentVariables:\n  x_Escaped: never-return-link\n',
@@ -859,6 +859,12 @@ test('restart drift names the running site and command, is unknown when the iden
     ownedFixture(t).add(() => server.close());
     const value = await fetch(base + '/_setup/api/status').then((response) => response.json());
     assert.match(value.runtime.restartCommand, /^npx paqvilo mirage dev --config .* --site beta$/);
+    // The variable describes the Mirage child it was set for; an inheriting Lense keeps its own command.
+    const inheriting = await createSetupHandler({ store, runtime: { product: 'Lense', site: 'portal' } });
+    const lenseHost = await serve(t, inheriting);
+    ownedFixture(t).add(() => lenseHost.server.close());
+    const lenseValue = await fetch(lenseHost.base + '/_setup/api/status').then((response) => response.json());
+    assert.match(lenseValue.runtime.restartCommand, /^npx paqvilo lense dev --config .* --site portal$/);
   } finally {
     if (previous === undefined) delete process.env.MIRAGE_SETUP_RUNTIME;
     else process.env.MIRAGE_SETUP_RUNTIME = previous;

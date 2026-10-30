@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { persistNativeReadHistory } from '../portal-harness/native-history.mjs';
 import { decodeArtifact } from '../portal-harness/core.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 const plan = { id: 'invented', pageSize: 10, fields: [{ name: 'widgetid', source: 'widgetid', type: 'guid' }] },
   manifest = { choices: { pqvd_runstate: { Completed: 1 } } };
 function clientFor() {
@@ -25,7 +26,7 @@ function clientFor() {
   };
 }
 test('native history preserves exact bytes, typed rows, operation ownership and finished run index', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'native-history-')),
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-history-')),
     capture = {
       runId: 'run',
       actorRoles: ['Reader'],
@@ -67,7 +68,7 @@ test('native history preserves exact bytes, typed rows, operation ownership and 
   }
 });
 test('XML-only history never invents successful empty retrieval results', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'native-history-')),
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-history-')),
     capture = {
       runId: 'run',
       actorRoles: ['Reader'],
@@ -94,7 +95,7 @@ test('XML-only history never invents successful empty retrieval results', async 
   }
 });
 test('native history preserves exact unsafe numeric wire tokens and flat platform errors', async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'native-history-')),
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-history-')),
     numericPlan = {
       id: 'invented',
       pageSize: 10,

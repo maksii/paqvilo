@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const CLIENT = '99999999-9999-4999-8999-999999999998';
 const ITEM = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -35,8 +36,10 @@ async function body(response, expected = 200) {
   return text ? JSON.parse(text) : null;
 }
 async function pack(t, level) {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'mirage-simulation-runtime-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  // Persistence refuses declared files below a symbolic link (lib/transactional-files.mjs), and a runner's temporary
+  // directory may be one (a symlinked TMPDIR, macOS /var): start from its real path.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), 'mirage-simulation-runtime-')));
+  ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'data.json'),
     module = path.join(root, 'pack.mjs');
   await fs.writeFile(
@@ -97,14 +100,12 @@ async function client(sim) {
           ...(value ? { 'content-type': 'application/json', prefer: 'return=representation' } : {}),
         },
         ...(value ? { body: JSON.stringify(value) } : {}),
-        signal: AbortSignal.timeout(15000),
       }),
     ui: (method, suffix, value, etag) =>
       fetch(sim.url + '/_apps/api' + suffix, {
         method,
         headers: { ...headers, ...(etag ? { 'if-match': etag } : {}) },
         ...(value ? { body: JSON.stringify(value) } : {}),
-        signal: AbortSignal.timeout(15000),
       }),
   };
 }
@@ -153,7 +154,6 @@ for (const level of ['dry-run', 'simulation', 'deep'])
     // private checkpoint to survive a restart.
     if (level !== 'dry-run') await fs.rm(fixture.stateFile);
     const restarted = await fixture.start();
-    t.after(() => restarted.close());
     assert.equal(
       restarted.store.tableRows('x_item')[0].x_name,
       level === 'dry-run' ? 'Pack source' : 'Changed in model app',
@@ -191,7 +191,6 @@ test('deep source-table columns survive source reload and checkpoint-free restar
   await sim.close();
   await fs.rm(fixture.stateFile);
   sim = await fixture.start();
-  t.after(() => sim.close());
   c = await client(sim);
   const metadata = await body(
     await c.org('GET', "/EntityDefinitions(LogicalName='x_item')/Attributes(LogicalName='new_extra')"),
@@ -207,9 +206,9 @@ test('deep source-table columns survive source reload and checkpoint-free restar
 });
 
 test('deep declared operation schema keeps source API edits and deletions after reload and checkpoint-free restart', async (t) => {
+  // The custom APIs are part of the sources from the first start, so the fixture starts no runtime of its own.
   const data = await pack(t, 'deep'),
-    fixture = await modelDrivenFixture(t, data.options);
-  await fixture.sim.close();
+    fixture = await modelDrivenFixture(t, { ...data.options, defer: true });
   const files = new Map();
   for (const name of ['new_Kept', 'new_Deleted']) {
     const file = path.join(fixture.solutionDir, 'customapis', name, 'customapi.xml');
@@ -219,7 +218,6 @@ test('deep declared operation schema keeps source API edits and deletions after 
     files.set(file, xml);
   }
   let sim = await fixture.start();
-  t.after(() => sim.close());
   let c = await client(sim);
   const keep = sim.store.tableRows('customapi').find((row) => row.uniquename === 'new_Kept');
   const remove = sim.store.tableRows('customapi').find((row) => row.uniquename === 'new_Deleted');

@@ -9,7 +9,7 @@ import { createSimulator } from '../api.mjs';
 import { signInHeaders } from '../testing.mjs';
 import { describe as serverLogicDescribe } from '../lib/exported-operations.mjs';
 import { platformChangeDiagnostics } from '../lib/platform-changes.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '77777777-7777-4777-8777-777777777761',
   CASE = '77777777-7777-4777-8777-777777777760',
@@ -29,7 +29,7 @@ const siteSettings = (settings) =>
     .join('\n') || '[]';
 
 async function host(t, { files = {}, settings = [], initial = {}, authorization = 0 }) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'portal-host-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'portal-host-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   await write(root, {
     'solution/Other/Solution.xml':
@@ -95,7 +95,6 @@ async function host(t, { files = {}, settings = [], initial = {}, authorization 
   const sim = await createSimulator({
     sourceDir: path.join(root, 'portal'),
     solutionRoots: [path.join(root, 'solution')],
-    stateFile: path.join(root, 'state.json'),
     port: 0,
     watch: false,
     initial: state,
@@ -127,17 +126,33 @@ const LOGIC = `async function get(){ const out = {};
   out.bound = JSON.parse(Server.Connector.Dataverse.InvokeCustomApi('post', 'x_items(${ITEM})/Microsoft.Dynamics.CRM.x_Bound', ''));
   out.cloud = JSON.parse(await Server.Connector.HttpClient.GetAsync('https://api.example.test/x', {}));
   return JSON.stringify(out); }`;
-async function serverLogicHost(t, { settings = [], itemRead = false, expectedStatus = 200 } = {}) {
+async function serverLogicHost(
+  t,
+  {
+    settings = [],
+    itemRead = false,
+    expectedStatus = 200,
+    logic = LOGIC,
+    permissions = [],
+    files = {},
+    authorization = 0,
+  } = {},
+) {
   const sim = await host(t, {
     settings,
+    authorization,
     files: {
       'portal/sample.serverlogic.yml': `adx_serverlogicid: sample\nadx_name: sample\nadx_serverlogic_adx_webrole:\n- ${ROLE}`,
-      'portal/sample.js': LOGIC,
+      'portal/sample.js': logic,
+      ...files,
     },
     initial: {
-      permissions: itemRead
-        ? [{ id: 'item', entity: 'x_item', scope: 'global', roles: ['Member'], operations: ['read'] }]
-        : [],
+      permissions: [
+        ...(itemRead
+          ? [{ id: 'item', entity: 'x_item', scope: 'global', roles: ['Member'], operations: ['read'] }]
+          : []),
+        ...permissions,
+      ],
     },
   });
   const csrf = sim.csrf;
@@ -205,41 +220,32 @@ test("InvokeCustomApi runs as the portal application user and needs the caller's
   assert.equal(record.principal, 'portal-application-user');
 });
 
+// Regression: the application user is provisioned before the bounded run starts. Its one-time creation is a persisted
+// transaction; done lazily inside the first InvokeCustomApi it spent the exported code's local time limit and a loaded
+// Windows runner answered 501 "Script execution timed out". Code that never calls a custom API already sees it.
+test('the site application user is provisioned before exported server logic runs', async (t) => {
+  const { data } = await serverLogicHost(t, {
+    logic:
+      "function get(){ return Server.Connector.Dataverse.RetrieveMultipleRecords('systemusers', '?$select=fullname'); }",
+    permissions: [{ id: 'users', entity: 'systemuser', scope: 'global', roles: ['Member'], operations: ['read'] }],
+  });
+  assert.equal(data.StatusCode, 200, JSON.stringify(data));
+  assert.ok(
+    JSON.parse(data.Body).value.some((user) => user.fullname === '# Portals-Invented host'),
+    data.Body,
+  );
+});
+
 // Under enhanced authorization Dataverse operations run on behalf of the site user by impersonation, not as the
 // application user. x_Gated needs a privilege only System Administrator holds.
 test('under enhanced authorization InvokeCustomApi runs as the mapped site user and the bound row needs table-permission read', async (t) => {
-  const gated = {
+  const files = {
     'solution/customapis/x_Gated/customapi.xml':
       '<customapi uniquename="x_Gated"><bindingtype>0</bindingtype><isfunction>0</isfunction><name>x_Gated</name><executeprivilegename>prvActOnBehalfOfAnotherUser</executeprivilegename></customapi>',
-    'portal/sample.serverlogic.yml': `adx_serverlogicid: sample\nadx_name: sample\nadx_serverlogic_adx_webrole:\n- ${ROLE}`,
-    'portal/sample.js': `function get(){ return JSON.stringify({ gated: JSON.parse(Server.Connector.Dataverse.InvokeCustomApi('post', 'x_Gated', '{}')), bound: JSON.parse(Server.Connector.Dataverse.InvokeCustomApi('post', 'x_items(${ITEM})/Microsoft.Dynamics.CRM.x_Bound', '')) }); }`,
   };
+  const logic = `function get(){ return JSON.stringify({ gated: JSON.parse(Server.Connector.Dataverse.InvokeCustomApi('post', 'x_Gated', '{}')), bound: JSON.parse(Server.Connector.Dataverse.InvokeCustomApi('post', 'x_items(${ITEM})/Microsoft.Dynamics.CRM.x_Bound', '')) }); }`;
   const run = async (authorization, itemRead) => {
-    const sim = await host(t, {
-      authorization,
-      files: gated,
-      initial: {
-        permissions: itemRead
-          ? [{ id: 'item', entity: 'x_item', scope: 'global', roles: ['Member'], operations: ['read'] }]
-          : [],
-      },
-    });
-    const csrf = sim.csrf;
-    for (const item of (await (await fetch(sim.url + '/__sim/api/operations')).json()).items.filter(
-      (entry) => entry.kind === 'server-logic',
-    ))
-      await fetch(sim.url + '/__sim/api/operations/' + encodeURIComponent(item.key), {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf },
-        body: '{"mode":"exported"}',
-      });
-    const member = signInHeaders(sim, 'alex', { roles: ['Member'] });
-    const body = await (
-      await fetch(sim.url + '/_api/serverlogics/sample', {
-        headers: { ...member, __RequestVerificationToken: await token(sim, member) },
-      })
-    ).json();
-    const data = JSON.parse(body.data);
+    const { data } = await serverLogicHost(t, { authorization, itemRead, files, logic });
     return [data.gated.StatusCode, data.bound.StatusCode];
   };
   const [standardGated] = await run(0, true);

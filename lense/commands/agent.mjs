@@ -235,7 +235,6 @@ export default async function agent(_cfg, args, positionals = []) {
   if (action === 'screenshot' && (!args.output || path.extname(args.output).toLowerCase() !== '.png'))
     throw argument('agent screenshot requires --output <file.png>');
   if (pageActions.includes(action)) integer(args['page-id'], '--page-id', undefined, 1, Number.MAX_SAFE_INTEGER);
-  const discovery = await readDiscovery(args.session);
   const page = `/v1/pages/${encodeURIComponent(args['page-id'])}`;
   let route;
   let body;
@@ -287,6 +286,7 @@ export default async function agent(_cfg, args, positionals = []) {
       body = {};
       break;
   }
+  const discovery = await readDiscovery(args.session);
   let handle;
   const output = args.output ? path.resolve(args.output) : null;
   if (output) {

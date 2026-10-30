@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LiveBridge, normalizeLiveRecord, validateLivePath } from '../lib/live.mjs';
 import { AssetCache } from '../lib/asset-cache.mjs';
 import { parseFetchXml } from '../lib/data.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const origin = 'https://portal.example.test';
 function response({
@@ -546,7 +547,7 @@ test('native FetchXML rejects mismatched mappings and preserves literal percent 
 });
 
 test('asset cache captures verified static bytes, persists digest metadata and follows only same-origin static redirects', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-assets-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-assets-'));
   try {
     const { bridge } = bridgeWith((url) =>
       url.endsWith('first.css')
@@ -594,7 +595,7 @@ test('asset cache captures verified static bytes, persists digest metadata and f
 });
 
 test('proven empty JavaScript response preserves observed bytes with explicit inference diagnostic', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-assets-empty-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-assets-empty-'));
   try {
     const { bridge } = bridgeWith((url) => response({ headers: {}, body: '', url }));
     const cache = await new AssetCache({ directory, origin }).init();
@@ -609,7 +610,7 @@ test('proven empty JavaScript response preserves observed bytes with explicit in
 });
 
 test('asset capture rejects login HTML, mismatched types, sensitive query parameters and cross-origin redirects', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-assets-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-assets-'));
   try {
     const { bridge } = bridgeWith((url) =>
       url.includes('redirect')
@@ -654,7 +655,7 @@ test('asset capture rejects login HTML, mismatched types, sensitive query parame
 });
 
 test('Microsoft platform CDN capture uses isolated anonymous requests and rejects other origins and paths', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-assets-public-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-assets-public-'));
   try {
     const calls = [];
     const fetchImpl = async (url, options) => {
@@ -689,7 +690,7 @@ test('Microsoft platform CDN capture uses isolated anonymous requests and reject
 });
 
 test('CSS platform capture follows font dependencies and explicitly reports external dependency exclusion', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'pp-assets-css-'));
+  const directory = await makeTemporaryDirectory(join(tmpdir(), 'pp-assets-css-'));
   try {
     const calls = [];
     const fetchImpl = async (url) => {

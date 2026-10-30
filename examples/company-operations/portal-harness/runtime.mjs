@@ -116,7 +116,8 @@ export async function reconcileBackendArtifact({
   return finish('timeout');
 }
 
-export function createRunner({ manifest, context, request, notify = () => {}, stopped = () => false }) {
+// `clock` ({ now, sleep }) replaces the wall clock of backend reconciliation; tests pass a virtual one.
+export function createRunner({ manifest, context, request, notify = () => {}, stopped = () => false, clock = {} }) {
   const originalRequest = request;
   request = (args) => {
     if (!args.body) return originalRequest(args);
@@ -800,6 +801,7 @@ export function createRunner({ manifest, context, request, notify = () => {}, st
           read: ({ signal }) => backendEvents(op.pqvd_testoperationid, signal, true),
           artifactType: 'AsyncContext',
           stopped,
+          ...clock,
         });
         const { events, ...state } = reconciled;
         result.backendEvents = events;

@@ -136,7 +136,7 @@ export function initialState({ tables = {}, mappings = {} } = {}) {
 }
 
 export async function simulator(t, settings = LOCAL_PROVIDER, state = initialState(), options = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-external-'));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'pp-external-')));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles(settings))) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });

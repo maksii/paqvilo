@@ -2,31 +2,29 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { pluginFixture, pluginId } from './plugin-fixture.mjs';
 import { createSimulator } from '../server.mjs';
 import { clrHostPoolStatus } from '../lib/plugin-clr.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 
 test(
   'CLR mode changes reuse owned hosts, close disabled hosts and preserve another instance',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
+    // The plug-in fixture's directory (CLR cache included) is removed only after the runtimes below have closed.
     const fixture = await pluginFixture(t),
       initial = fixture.app.store.snapshot();
     await fixture.app.close();
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(fixture.dir, 'Original.cs'),
       assembly = path.join(fixture.dir, 'Invented.WidgetRules.dll');
     await fs.writeFile(
       source,
       'using System;using Microsoft.Xrm.Sdk;namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));((Entity)c.InputParameters["Target"])["fx_note"]="Original completed";}}}',
     );
-    const built = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    assert.equal(built.status, 0, built.stdout + built.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const user = '10000000-0000-0000-0000-000000000001',
       key = 'plugin-step:' + pluginId(3),
       descriptor = {
@@ -38,7 +36,7 @@ test(
         sdkAssembly: path.basename(sdk),
         cacheRoot: path.join(fixture.dir, 'cache'),
         persistentHost: true,
-        timeoutMs: 10000,
+        timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
         context: { initiatingUserId: user, organizationId: user, businessUnitId: user },
         serviceProfile: { userId: user, evidence: 'Invented owned lifecycle fixture', grants: [] },
       };
@@ -59,9 +57,9 @@ test(
         packs: [pack],
       });
     const first = await make();
-    t.after(() => first.close());
+    ownedFixture(t).add(() => first.close());
     const second = await make();
-    t.after(() => second.close());
+    ownedFixture(t).add(() => second.close());
     const configure = (app, body, method = 'PATCH') =>
       fetch(app.url + '/__sim/api/operations/' + encodeURIComponent(key), {
         method,

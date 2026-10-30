@@ -116,7 +116,7 @@ catalogues survive restart and state export.
 ## Picking and management
 
 Sign-in renders groups/subgroups and submit buttons on the server and works without
-JavaScript. With a catalogue, `/_sim/#identity` uses the same picker for browser
+JavaScript. With a catalogue, `/_sim/#access` uses the same picker for browser
 identity and a chooser dialog for **Contact personas**. Without one, the existing
 list/select UI remains.
 

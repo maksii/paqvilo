@@ -590,7 +590,11 @@ test('RetrieveCurrentOrganization returns the organization detail', async () => 
     execOne('RetrieveCurrentOrganizationRequest', 'RetrieveCurrentOrganization', [pair('AccessType', int('0'))]),
   );
   assert.equal(res.status, 200, res.body);
-  assert.match(res.body, /i:type="g:RetrieveCurrentOrganizationResponse"|<b:key>Detail<\/b:key>/);
+  assert.match(
+    res.body,
+    /xmlns:r="http:\/\/schemas.microsoft.com\/crm\/2011\/Contracts" i:type="r:RetrieveCurrentOrganizationResponse"/,
+  );
+  assert.match(res.body, /<b:key>Detail<\/b:key>/);
   // OrganizationDetail is xrm/2014 (SDK docs): typed and prefixed x14, members in DataContract (alphabetical) order.
   assert.match(res.body, /<b:value i:type="x14:OrganizationDetail">/);
   assert.match(res.body, /<x14:UniqueName>testorg<\/x14:UniqueName>/);
@@ -609,6 +613,21 @@ test('RetrieveCurrentOrganization returns the organization detail', async () => 
     'TenantId',
     'UniqueName',
     'UrlName',
+  ]);
+  // Value-type members (Guid, OrganizationType, OrganizationState) cannot be nil for the SDK's DataContract reader, and
+  // CrmServiceClient reads the published endpoints right after connecting.
+  assert.match(res.body, /<x14:DatacenterId>00000000-0000-0000-0000-000000000000<\/x14:DatacenterId>/);
+  assert.match(res.body, /<x14:OrganizationType>Default<\/x14:OrganizationType>/);
+  assert.match(res.body, /<x14:State>Enabled<\/x14:State>/);
+  const endpoints = [
+    ...res.body.matchAll(
+      /<x14:KeyValuePairOfEndpointTypestringyDL0RVHi><b:key>(\w+)<\/b:key><b:value>([^<]+)<\/b:value><\/x14:KeyValuePairOfEndpointTypestringyDL0RVHi>/g,
+    ),
+  ].map((m) => [m[1], m[2]]);
+  assert.deepEqual(endpoints, [
+    ['OrganizationService', `${ORIGIN}/XRMServices/2011/Organization.svc`],
+    ['OrganizationDataService', `${ORIGIN}/XRMServices/2011/OrganizationData.svc`],
+    ['WebApplication', `${ORIGIN}/`],
   ]);
 });
 

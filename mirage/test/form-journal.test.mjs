@@ -6,10 +6,10 @@ import { tmpdir } from 'node:os';
 import { createSimulator } from '../server.mjs';
 import { readStateFile } from '../lib/state-storage.mjs';
 import { nativeFormControlIds } from '../lib/native-postback.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 async function fixture(t, { wizard = false, attachments = false, ...options } = {}) {
-  const root = await fs.mkdtemp(path.join(tmpdir(), 'mirage-form-journal-'));
+  const root = await makeTemporaryDirectory(path.join(tmpdir(), 'mirage-form-journal-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'website.yml': 'adx_websiteid: site\nadx_name: Invented feedback',
@@ -83,7 +83,8 @@ test('native edit, JSON insert and multistep writes use the journal and survive 
   );
   await app.close();
   const restarted = await createSimulator(settings);
-  t.after(() => restarted.close());
+  // Owned like the fixture's own app: closed before its state directory is removed.
+  ownedFixture(t).add(() => restarted.close());
   assert.deepEqual(
     restarted.store.state.tables.item.map((row) => row.title),
     ['Edited', 'Inserted'],
@@ -174,7 +175,7 @@ test('attachment rejection after the primary form row rolls back the entire unit
     if (trusted) assert.equal(handlerCalls, 2, 'the rejecting attachment follows the primary row and trusted handler');
     await app.close();
     const restarted = await createSimulator(settings);
-    t.after(() => restarted.close());
+    ownedFixture(t).add(() => restarted.close());
     // A restart moves the inline note body to the annotations storage route (dataverse-storage-routing.mjs migration);
     // the rows are otherwise unchanged.
     const rows = (tables) => ({

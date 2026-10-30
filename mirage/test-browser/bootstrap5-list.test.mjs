@@ -8,7 +8,7 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 let browser;
 before(async () => {
@@ -35,7 +35,7 @@ async function launch(
   t,
   { search = true, configured = true, operations = ['read', 'create', 'update', 'delete'] } = {},
 ) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bootstrap5-list-browser-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'bootstrap5-list-browser-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const jquery = await fs.readFile(
     path.join(path.dirname(require.resolve('jquery/package.json')), 'dist', 'jquery.min.js'),
@@ -250,7 +250,7 @@ test('Bootstrap 5 lists: a header sort re-marks the header in place', async (t) 
   await grid
     .page()
     .waitForFunction(() => document.querySelectorAll('.entity-grid thead th')[1].classList.contains('sort'));
-  await grid.locator('thead th.sort-asc').nth(0).waitFor();
+  await grid.locator('thead th.sort-asc', { hasText: 'City' }).waitFor();
   await grid
     .page()
     .waitForFunction(() => document.querySelector('.entity-grid thead th a')?.getAttribute('style') === '');

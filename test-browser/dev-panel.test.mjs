@@ -10,13 +10,23 @@ import { OverlaySession } from '../lense/session.mjs';
 import { enablePanel } from '../lense/panel.mjs';
 import { devDialogs } from '../lense/dev-dialogs.mjs';
 
+const UNANSWERED_DIALOG_MS = 75;
+
 let browser;
 before(async () => {
   browser = await chromium.launch(browserLaunchOptions({ headless: true }));
 });
 after(() => browser?.close());
 
-async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) {
+// Panel problems are recorded from Playwright and DevTools listeners without a public
+// signal, so poll the recorded list until the expected rows arrive or the fixture closes the page.
+async function problems(panel, page, ready) {
+  while (!ready(panel.stateFor(page).problems) && !page.isClosed()) await new Promise((r) => setTimeout(r, 20));
+  return panel.stateFor(page).problems;
+}
+
+// `beforePanel(context, t)`: runs after the context exists and before the panel attaches (to stub a DevTools session).
+async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}, { beforePanel } = {}) {
   const fx = createFixture();
   let context, panel;
   const server = http.createServer((req, res) => {
@@ -42,6 +52,7 @@ async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) 
     }
     res.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html>' + html);
   });
+  ownedFixture(t).add(() => context?.unrouteAll({ behavior: 'wait' }));
   ownedFixture(t).add(async () => {
     await panel?.dispose();
   });
@@ -61,7 +72,6 @@ async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) 
   await once(server, 'listening');
   const origin = 'http://127.0.0.1:' + server.address().port;
   context = await browser.newContext({ viewport: { width: 1000, height: 700 }, ...contextOptions });
-  context.setDefaultTimeout(10000);
   const session = new OverlaySession({
     sourceDir: fx.dir,
     origin,
@@ -70,6 +80,7 @@ async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) 
     siteName: 'invented',
     envName: 'local',
   });
+  beforePanel?.(context, t);
   panel = enablePanel(context, session);
   await context.route('**/__paqvilo/api/**', (route) =>
     session.api(route, new URL(route.request().url()).pathname.split('/').at(-1)),
@@ -80,6 +91,99 @@ async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) 
   await panel.draw(page);
   return { page, context, session, panel, origin, fx };
 }
+
+// A coalesced draw can finish an older snapshot; the DOM render is the evidence readiness signal.
+async function showPanelTab(page, panel, tab, requiredText) {
+  await panel.draw(page);
+  await page.locator('#paqvilo-panel .pill').click();
+  await page.locator(`#paqvilo-panel [data-v=${tab}]`).click();
+  await page.evaluate(
+    ({ tab, requiredText }) =>
+      new Promise((resolve) => {
+        const host = document.getElementById('paqvilo-panel');
+        const complete = () => {
+          const root = host.shadowRoot;
+          if (
+            root.querySelector(`[data-v=${tab}]`)?.getAttribute('aria-selected') !== 'true' ||
+            !(root.querySelector('.body')?.textContent ?? '').includes(requiredText)
+          )
+            return;
+          host.removeEventListener('paqvilo-panel-render', complete);
+          resolve();
+        };
+        host.addEventListener('paqvilo-panel-render', complete);
+        complete();
+      }),
+    { tab, requiredText },
+  );
+}
+
+test('panel fixture drains an API request held before dispatch before retiring its API', async (t) => {
+  const held = Promise.withResolvers(),
+    release = Promise.withResolvers(),
+    boundary = Promise.withResolvers(),
+    dispatched = Promise.withResolvers(),
+    hooks = [],
+    errors = [];
+  let cleanup, replyStatus;
+  const owner = ownedFixture(t);
+  owner.add(() => release.resolve());
+  owner.add(() => (cleanup ??= hooks[0]?.()));
+  const newContext = browser.newContext.bind(browser);
+  t.mock.method(browser, 'newContext', async (...args) => {
+    const context = await newContext(...args),
+      route = context.route.bind(context),
+      unrouteAll = context.unrouteAll.bind(context);
+    t.mock.method(context, 'unrouteAll', (...options) => {
+      boundary.resolve('transport draining');
+      return unrouteAll(...options);
+    });
+    t.mock.method(context, 'route', (pattern, delegate, ...options) =>
+      route(
+        pattern,
+        async (requestRoute) => {
+          if (!requestRoute.request().url().endsWith('/retiring-probe')) return delegate(requestRoute);
+          held.resolve();
+          await release.promise;
+          const fulfill = requestRoute.fulfill.bind(requestRoute);
+          t.mock.method(requestRoute, 'fulfill', (response) => {
+            replyStatus = response.status;
+            return fulfill(response);
+          });
+          try {
+            await delegate(requestRoute);
+          } catch (error) {
+            errors.push(error);
+            await requestRoute.abort().catch(() => {});
+          } finally {
+            dispatched.resolve();
+          }
+        },
+        ...options,
+      ),
+    );
+    return context;
+  });
+  const { page, session, panel } = await fixture({ after: (hook) => hooks.push(hook) });
+  const dispose = panel.dispose.bind(panel);
+  t.mock.method(panel, 'dispose', () => {
+    boundary.resolve('panel retiring');
+    return dispose();
+  });
+  const request = page.evaluate(() => fetch('/__paqvilo/api/retiring-probe').catch(() => {})).catch(() => {});
+  await held.promise;
+  cleanup = hooks[0]();
+  // Release at the first actual ownership boundary: the previous order already retired session.api here.
+  await boundary.promise;
+  release.resolve();
+  await dispatched.promise;
+  await cleanup;
+  await request;
+  assert.deepEqual(errors, [], 'an accepted route cannot dereference an already-retired panel API');
+  assert.equal(replyStatus, 403, 'the held unauthenticated request still receives its ordinary refusal');
+  assert.equal(session.api, null, 'the panel API is retired after transport draining');
+  assert.equal(page.isClosed(), true);
+});
 
 test('Issues reports changed Liquid when markup previews are disabled and clears it after reverting', async (t) => {
   const { page, panel, session, fx } = await fixture(t);
@@ -129,9 +233,7 @@ test('chunked and sized JSON failures retain escaped details; oversized bodies k
       );
     else await original;
   }
-  const deadline = Date.now() + 5000;
-  while (panel.stateFor(page).problems.length < 3 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
-  const rows = panel.stateFor(page).problems;
+  const rows = await problems(panel, page, (list) => list.length >= 3);
   assert.equal(rows.length, 3);
   assert.equal(rows.find((row) => row.text.endsWith('/error-large')).where, '');
   for (const route of ['/error-small', '/error-sized'])
@@ -143,20 +245,40 @@ test('chunked and sized JSON failures retain escaped details; oversized bodies k
       .then(() => (window.hangingDone = true))
       .catch(() => {});
   });
-  const bodyDeadline = Date.now() + 5000;
-  while (!panel.stateFor(page).problems.some((row) => row.text.endsWith('/error-hanging')) && Date.now() < bodyDeadline)
-    await page.waitForTimeout(20);
-  assert.equal(panel.stateFor(page).problems.find((row) => row.text.endsWith('/error-hanging'))?.status, 400);
+  const hanging = await problems(panel, page, (list) => list.some((row) => row.text.endsWith('/error-hanging')));
+  assert.equal(hanging.find((row) => row.text.endsWith('/error-hanging'))?.status, 400);
   assert.equal(
     await page.evaluate(() => window.hangingDone),
     false,
     'observation must not cancel or finish the original stalled response',
   );
-  await panel.draw(page);
-  await page.locator('#paqvilo-panel .pill').click();
-  await page.locator('#paqvilo-panel [data-v=issues]').click();
+  await showPanelTab(page, panel, 'issues', '<img src=x onerror=alert(1)> Missing parent');
   assert.equal(await page.locator('#paqvilo-panel img').count(), 0);
   assert.match(await page.locator('#paqvilo-panel .body').innerText(), /<img src=x onerror=alert\(1\)> Missing parent/);
+});
+
+// Hosted CI (a loaded Windows runner): the DevTools response observer could not attach in time, so the panel fell back
+// to Playwright's response event and lost the error message of a failed request. The fallback now reads a small JSON
+// body of declared size; a chunked or oversized body keeps only the HTTP metadata.
+test('without the DevTools observer, a sized JSON failure keeps its escaped details and a chunked one its HTTP row', async (t) => {
+  const { page, panel } = await fixture(t, undefined, undefined, {
+    beforePanel: (context, t) =>
+      t.mock.method(context, 'newCDPSession', async () => {
+        throw new Error('Invented DevTools attach failure');
+      }),
+  });
+  for (const route of ['/error-sized', '/error-small']) {
+    const original = page.waitForResponse((response) => new URL(response.url()).pathname === route);
+    await page.evaluate(async (route) => {
+      await (await fetch(route)).text();
+    }, route);
+    await original;
+  }
+  const rows = await problems(panel, page, (list) => list.length >= 2);
+  assert.match(rows.find((row) => row.text.endsWith('/error-sized')).where, /<img.*Missing parent · Internal cause/);
+  assert.equal(rows.find((row) => row.text.endsWith('/error-small')).where, '');
+  await showPanelTab(page, panel, 'issues', '<img src=x onerror=alert(1)> Missing parent');
+  assert.equal(await page.locator('#paqvilo-panel img').count(), 0);
 });
 
 test('interactive dialogs await an answer and headless dismissals produce one panel activity event', async (t) => {
@@ -173,27 +295,30 @@ test('interactive dialogs await an answer and headless dismissals produce one pa
       return value;
     });
   const dialog = await dialogEvent;
-  await new Promise((r) => setTimeout(r, 75));
+  // No event marks "nobody answered"; an automated answer would settle within this short window.
+  await new Promise((r) => setTimeout(r, UNANSWERED_DIALOG_MS));
   assert.equal(settled, false);
   await dialog.accept();
   assert.equal(await result, true);
   config.browser.headless = true;
   const events = [];
   session.on('dialog', (event) => events.push(event));
+  // The page resumes when the browser receives the dismissal; the activity event is emitted
+  // once Node has the acknowledgement, so wait for that event instead of a fixed delay.
+  const recorded = async (count) => {
+    while (events.length < count) await once(session, 'dialog');
+  };
   assert.equal(await page.evaluate(() => confirm('Automated invented item?')), false);
-  const deadline = Date.now() + 1000;
-  while (events.length < 1 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+  await recorded(1);
   assert.equal(events.length, 1);
   assert.equal(events[0].type, 'confirm');
   assert.equal(events[0].message, 'Automated invented item?');
   assert.equal(panel.stateFor(page).activity.filter((row) => row.type === 'dialog').length, 1);
-  await panel.draw(page);
-  await page.locator('#paqvilo-panel .pill').click();
-  await page.locator('#paqvilo-panel [data-v=activity]').click();
+  await showPanelTab(page, panel, 'activity', 'DIALOG');
   assert.match(await page.locator('#paqvilo-panel .body').innerText(), /DIALOG/);
   assert.equal(await page.evaluate(() => prompt('Invented prompt')), null);
   await page.evaluate(() => alert('Invented alert'));
-  await new Promise((r) => setTimeout(r, 30));
+  await recorded(3);
   assert.deepEqual(
     events.map((row) => row.type),
     ['confirm', 'prompt', 'alert'],
@@ -233,15 +358,11 @@ test('collapsed pill relocates after scroll/resize and selects the least obstruc
     '<style>body{height:2200px;margin:0}a{position:absolute;left:12px;top:1000px;width:280px;height:40px;background:red}</style><a id="moving" href="#clicked">Moving link</a>',
   );
   const clear = () =>
-    page.waitForFunction(
-      () => {
-        const a = document.querySelector('#moving').getBoundingClientRect(),
-          b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
-        return !(a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top);
-      },
-      null,
-      { timeout: 3000 },
-    );
+    page.waitForFunction(() => {
+      const a = document.querySelector('#moving').getBoundingClientRect(),
+        b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
+      return !(a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top);
+    });
   await page.evaluate(() => scrollTo(0, 350));
   await clear();
   await page.setViewportSize({ width: 1000, height: 500 });
@@ -267,14 +388,10 @@ test('collapsed pill relocates after scroll/resize and selects the least obstruc
     dispatchEvent(new Event('resize'));
   });
   // The bottom-right corner holds one control and wins over corners with two or three.
-  await page.waitForFunction(
-    () => {
-      const b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
-      return b.x > 500 && b.y > 250;
-    },
-    null,
-    { timeout: 3000 },
-  );
+  await page.waitForFunction(() => {
+    const b = document.querySelector('#paqvilo-panel').shadowRoot.querySelector('.pill').getBoundingClientRect();
+    return b.x > 500 && b.y > 250;
+  });
   await page.keyboard.press('Alt+Shift+L');
   const notice = page.locator('#paqvilo-panel .float');
   assert.equal(await notice.getAttribute('role'), 'status');
@@ -363,13 +480,7 @@ test('browser CORS console errors keep the page path without a synthetic line; s
     `<style>@font-face{font-family:Invented;src:url('${external}/font.woff2')}h1{font-family:Invented}</style><h1>Font</h1><script>console.error('First line script');fetch('${external}/data').catch(()=>{});</script>`,
   );
   await page.waitForFunction(() => document.fonts.status === 'loaded');
-  const deadline = Date.now() + 5000;
-  while (
-    panel.stateFor(page).problems.filter((item) => /CORS policy/.test(item.text)).length < 2 &&
-    Date.now() < deadline
-  )
-    await page.waitForTimeout(20);
-  const rows = panel.stateFor(page).problems,
+  const rows = await problems(panel, page, (list) => list.filter((item) => /CORS policy/.test(item.text)).length >= 2),
     cors = rows.filter((item) => /CORS policy/.test(item.text));
   assert.equal(cors.length, 2, JSON.stringify(rows));
   assert.ok(
@@ -378,3 +489,93 @@ test('browser CORS console errors keep the page path without a synthetic line; s
   );
   assert.match(rows.find((item) => item.text === 'First line script').where, /:1/);
 });
+
+for (const tab of ['activity', 'issues'])
+  test(`coalesced panel draw waits for ${tab} evidence actually rendered in the browser`, async (t) => {
+    const held = Promise.withResolvers(),
+      releaseOld = Promise.withResolvers(),
+      fresh = Promise.withResolvers(),
+      releaseFresh = Promise.withResolvers();
+    ownedFixture(t).add(() => {
+      releaseOld.resolve();
+      releaseFresh.resolve();
+    });
+    const { page, context, session, panel, origin } = await fixture(t);
+    const requiredText =
+      tab === 'activity'
+        ? 'confirm dialog dismissed: Controlled coalesced dialog'
+        : '<img src=x onerror=alert(1)> Missing parent';
+    const updated = (value) =>
+      tab === 'activity'
+        ? value.activity.some((row) => row.type === 'dialog')
+        : value.problems.some((row) => row.text.endsWith('/error-small'));
+    const evaluate = page.evaluate.bind(page);
+    let heldOld = false,
+      observedStaleEnrollment = false;
+    t.mock.method(page, 'evaluate', async (fn, value, ...rest) => {
+      if (value && typeof value.token === 'string' && Array.isArray(value.activity)) {
+        // Capture what a protocol call had already serialized before Node records the event.
+        const captured = structuredClone(value);
+        if (!updated(captured) && !heldOld) {
+          heldOld = true;
+          held.resolve();
+          await releaseOld.promise;
+        } else if (updated(captured)) {
+          fresh.resolve();
+          await releaseFresh.promise;
+        }
+        return evaluate(fn, captured, ...rest);
+      }
+      return evaluate(fn, value, ...rest);
+    });
+    await page.exposeBinding('__panelRenderWaitEnrolled', (_source, stale) => {
+      observedStaleEnrollment = stale;
+      releaseFresh.resolve();
+    });
+    await page.evaluate((requiredText) => {
+      const host = document.getElementById('paqvilo-panel'),
+        add = host.addEventListener;
+      host.addEventListener = function (type, ...args) {
+        const result = Reflect.apply(add, this, [type, ...args]);
+        // Release the real successor only after the DOM observer has enrolled, without a timer race.
+        if (type === 'paqvilo-panel-render')
+          void window.__panelRenderWaitEnrolled(
+            !host.shadowRoot.querySelector('.body').textContent.includes(requiredText),
+          );
+        return result;
+      };
+    }, requiredText);
+    const old = panel.draw(page);
+    await held.promise;
+    if (tab === 'activity') {
+      const stop = devDialogs(context, {
+        configs: new Map([[origin, { origin, browser: { headless: true } }]]),
+        sessionFor: () => session,
+      });
+      t.after(stop);
+      const recorded = once(session, 'dialog');
+      assert.equal(await page.evaluate(() => confirm('Controlled coalesced dialog')), false);
+      await recorded;
+      assert.equal(panel.stateFor(page).activity.filter((row) => row.type === 'dialog').length, 1);
+    } else {
+      await page.evaluate(async () => {
+        await (await fetch('/error-small')).text();
+      });
+      const rows = await problems(panel, page, (list) => list.some((row) => row.text.endsWith('/error-small')));
+      assert.equal(rows.filter((row) => row.text.endsWith('/error-small')).length, 1);
+      assert.match(rows.find((row) => row.text.endsWith('/error-small')).where, /<img.*Missing parent/);
+    }
+    const visible = showPanelTab(page, panel, tab, requiredText);
+    releaseOld.resolve();
+    await visible;
+    await old;
+    const rendered = await page.locator('#paqvilo-panel .body').innerText();
+    assert.ok(rendered.includes(requiredText), rendered);
+    if (tab === 'issues') assert.equal(await page.locator('#paqvilo-panel img').count(), 0);
+    await fresh.promise;
+    assert.equal(
+      observedStaleEnrollment,
+      true,
+      'the actual render listener enrolls while the UI still has the old snapshot',
+    );
+  });

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
-import { constants } from 'node:fs';
+import { constants, cpSync } from 'node:fs';
 import { assertScaffoldPath, prepareScaffoldDirectory } from '../scaffold.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -13,21 +13,30 @@ const MARKER = '.paqvilo/demo.json';
 
 // A fresh Git checkout must serve the same bytes as the copied scaffold.
 // Normalize text at the boundary instead of inheriting the toolkit checkout's autocrlf.
+// Files are normalized 32 at a time: one at a time took about 16 s for the demo on a loaded Windows machine.
 async function normalizeText(directory) {
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    const file = path.join(directory, entry.name);
-    if (entry.isDirectory()) await normalizeText(file);
-    else if (
-      entry.isFile() &&
-      /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv|svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i.test(
-        entry.name,
+  const files = [];
+  const walk = async (folder) => {
+    for (const entry of await fs.readdir(folder, { withFileTypes: true })) {
+      const file = path.join(folder, entry.name);
+      if (entry.isDirectory()) await walk(file);
+      else if (
+        entry.isFile() &&
+        /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv|svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i.test(
+          entry.name,
+        )
       )
-    ) {
-      const bytes = await fs.readFile(file);
-      if (!bytes.includes(0) && bytes.includes(13))
-        await fs.writeFile(file, bytes.toString('utf8').replace(/\r\n?/g, '\n'));
+        files.push(file);
     }
-  }
+  };
+  await walk(directory);
+  const normalize = async (file) => {
+    const bytes = await fs.readFile(file);
+    if (!bytes.includes(0) && bytes.includes(13))
+      await fs.writeFile(file, bytes.toString('utf8').replace(/\r\n?/g, '\n'));
+  };
+  for (let index = 0; index < files.length; index += 32)
+    await Promise.all(files.slice(index, index + 32).map(normalize));
 }
 
 async function prepareEditorFiles(target) {
@@ -82,6 +91,7 @@ export async function prepareDemo(directory) {
     'portal',
     'solution',
     'code-solution',
+    'code-app',
     'metadata',
     'pack',
     'test',
@@ -94,7 +104,8 @@ export async function prepareDemo(directory) {
     'README.md',
     'AGENTS.md',
   ]) {
-    await fs.cp(path.join(STARTER, name), path.join(target, name), {
+    // Synchronous on purpose: on Windows async fs.cp took 20-30 s for the ~2,000-file sample, cpSync under 2 s.
+    cpSync(path.join(STARTER, name), path.join(target, name), {
       recursive: true,
       errorOnExist: true,
       force: false,
@@ -112,6 +123,7 @@ export async function prepareDemo(directory) {
   await fs.copyFile(path.join(STARTER, 'editor-workspace.mjs'), path.join(target, 'editor-workspace.mjs'));
   await normalizeText(target);
   const { version, dependencies } = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
+  const example = JSON.parse(await fs.readFile(path.join(STARTER, 'package.json'), 'utf8'));
   await fs.writeFile(
     path.join(target, 'package.json'),
     JSON.stringify(
@@ -124,12 +136,15 @@ export async function prepareDemo(directory) {
           dev: 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0',
           'dev:debug': 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0 --debug-port 9222',
           lense: 'paqvilo lense dev --config ./paqvilo.config.yml --site example',
+          'code-app:mirage': example.scripts['code-app:mirage'],
+          'code-app:dev': example.scripts['code-app:dev'],
           test: 'node --test test/*.test.mjs',
         },
         devDependencies: {
           paqvilo: version,
           yaml: dependencies.yaml,
           'playwright-core': dependencies['playwright-core'],
+          '@microsoft/power-apps': example.devDependencies['@microsoft/power-apps'],
         },
       },
       null,
@@ -165,9 +180,20 @@ Close the browser or press Ctrl+C to stop. --headless and --debug-port are also 
 Use --scaffold to prepare the project and VS Code workspace without starting a browser.`);
     return;
   }
+  for (const [key, value] of Object.entries(values)) {
+    const entries = Array.isArray(value) ? value : [value];
+    if (entries.some((item) => typeof item === 'string' && !item.trim()))
+      throw new Error(`--${key} must not be empty or whitespace`);
+  }
   if (values.browser && !['msedge', 'chrome', 'chromium'].includes(values.browser))
     throw new Error('--browser must be msedge, chrome or chromium');
-  if (values['debug-port'] && !/^\d+$/.test(values['debug-port'])) throw new Error('--debug-port must be an integer');
+  if (
+    values['debug-port'] !== undefined &&
+    (!/^\d+$/.test(values['debug-port']) || Number(values['debug-port']) > 65535)
+  )
+    throw new Error('--debug-port must be an integer between 0 and 65535');
+  if (values.scaffold && (values.browser !== undefined || values.headless || values['debug-port'] !== undefined))
+    throw new Error('--scaffold cannot be combined with browser, headless or debug-port options');
   const demo = await prepareDemo(values.dir);
   if (values.scaffold) {
     console.log(

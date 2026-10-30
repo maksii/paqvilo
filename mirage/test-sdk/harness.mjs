@@ -1,19 +1,21 @@
 // Shared harness for SDK verification gates: starts the simulated Dataverse API over an
 // in-memory DataStore with invented tables and one confidential application registration.
-// Gates are opt-in (`npm run test:sdk`); they never run inside `npm run validate`.
+// `npm run test:sdk` runs every gate; scripts/ci.mjs runs those whose clients CI installs from locked manifests.
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { certificateThumbprints, newClientSecret } from '../lib/dataverse-auth.mjs';
 import { ensureCertificate } from '../lib/dataverse-tls.mjs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { fileURLToPath } from 'node:url';
 
 // Certificates live under the ignored .paqvilo/ tree: Mirage fingerprints every other directory at startup.
-const CA_FILE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.paqvilo/sdk-gates/dataverse-ca.pem');
+const CERTIFICATE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.paqvilo/sdk-gates');
 
 const GATE_APP_ID = '11111111-1111-1111-1111-111111111111';
-const SECRET_VARIABLE = 'PAQVILO_SDK_GATE_SECRET';
 
 export function gateState() {
   const state = emptyState();
@@ -87,10 +89,15 @@ export function gateState() {
 }
 
 /** Start the simulator; returns connection facts plus the one-time client secret. */
-export async function startGate({ port = 0, tls = false, state = gateState(), serviceProtection = null } = {}) {
-  const certificate = tls ? await ensureCertificate(CA_FILE) : null;
+export async function startGate({
+  port = 0,
+  host = '127.0.0.1',
+  tls = false,
+  state = gateState(),
+  serviceProtection = null,
+} = {}) {
   const secret = newClientSecret();
-  process.env[SECRET_VARIABLE] = secret;
+  const secretVariable = `PAQVILO_SDK_GATE_SECRET_${randomUUID().replaceAll('-', '').toUpperCase()}`;
   const store = new DataStore({ state });
   await store.init?.();
   const settings = dataverseSettings({
@@ -103,18 +110,39 @@ export async function startGate({ port = 0, tls = false, state = gateState(), se
       {
         appId: GATE_APP_ID,
         displayName: 'SDK gate client',
-        secretEnvironmentVariable: SECRET_VARIABLE,
+        secretEnvironmentVariable: secretVariable,
         roles: ['System Administrator'],
       },
     ],
     ...(serviceProtection ? { serviceProtection } : {}),
   });
-  const api = await startDataverseApi({
-    store,
-    settings,
-    tls: certificate ? { key: certificate.key, cert: certificate.cert } : null,
-  });
-  delete process.env[SECRET_VARIABLE];
+  let certificateRoot = null,
+    certificate = null;
+  try {
+    if (tls) {
+      await fs.mkdir(CERTIFICATE_ROOT, { recursive: true });
+      certificateRoot = await makeTemporaryDirectory(path.join(CERTIFICATE_ROOT, 'gate-ca-'));
+      certificate = await ensureCertificate(path.join(certificateRoot, 'ca.pem'));
+    }
+  } catch (error) {
+    if (certificateRoot) await fs.rm(certificateRoot, { recursive: true, force: true });
+    throw error;
+  }
+  process.env[secretVariable] = secret;
+  let api;
+  try {
+    api = await startDataverseApi({
+      store,
+      settings,
+      host,
+      tls: certificate ? { key: certificate.key, cert: certificate.cert } : null,
+    });
+  } catch (error) {
+    if (certificateRoot) await fs.rm(certificateRoot, { recursive: true, force: true });
+    throw error;
+  } finally {
+    delete process.env[secretVariable];
+  }
   return {
     api,
     store,
@@ -129,7 +157,10 @@ export async function startGate({ port = 0, tls = false, state = gateState(), se
     clientSecret: secret,
     scope: `${api.origin}/.default`,
     requests: () => api.requests(),
-    close: () => api.close(),
+    close: async () => {
+      await api.close();
+      if (certificateRoot) await fs.rm(certificateRoot, { recursive: true, force: true });
+    },
   };
 }
 

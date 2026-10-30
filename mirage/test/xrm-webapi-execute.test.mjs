@@ -8,13 +8,13 @@ import { createWebApiExecute } from '../lib/model-driven/client-runtime.mjs';
 import { createModelDrivenWebApi } from '../lib/dataverse-model-driven.mjs';
 import { createModelDrivenHandler } from '../lib/model-driven/http.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ENTITY =
   '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel><MaxLength>20</MaxLength></attribute></attributes></entity></EntityInfo></Entity>';
 
 async function organizationFixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xrm-execute-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'xrm-execute-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
     'solution/Other/Solution.xml':

@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -12,6 +12,7 @@ import {
   buildSite,
   readIdentity,
 } from '../baseline/site.mjs';
+import { makeTemporaryDirectory } from 'paqvilo/mirage/testing/owned-fixture.mjs';
 
 const snapshot = async (dir) => {
   const files = {};
@@ -23,46 +24,42 @@ const snapshot = async (dir) => {
   return files;
 };
 
-test('baseline site generator is deterministic and cites existing catalog ids', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline-site-'));
-  try {
-    const runs = [];
-    for (const n of [1, 2]) {
-      const out = path.join(tmp, `site${n}`),
-        manifest = path.join(tmp, `manifest${n}.json`);
-      await writeSite(out, manifest);
-      runs.push({ files: await snapshot(out), manifest: await fs.readFile(manifest) });
-    }
-    assert.deepEqual(Object.keys(runs[1].files).sort(), Object.keys(runs[0].files).sort());
-    for (const [name, bytes] of Object.entries(runs[0].files)) assert.ok(bytes.equals(runs[1].files[name]), name);
-    assert.ok(runs[0].manifest.equals(runs[1].manifest));
-    const manifest = JSON.parse(runs[0].manifest);
-    assert.ok(manifest.records.length > 0);
-    assert.deepEqual(await unknownCatalogIds(manifest), []);
-    // Pages are visibility locations; every other record cites what it exercises.
-    for (const record of manifest.records)
-      assert.ok(
-        record.kind === 'webpage' ? record.path : record.catalog.length,
-        `${record.kind} ${record.name} cites catalog ids`,
-      );
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
+// Two independent writes, read-only afterwards: the determinism check compares them, the coverage check reads one.
+let tmp;
+const runs = [];
+before(async () => {
+  tmp = await makeTemporaryDirectory(path.join(os.tmpdir(), 'baseline-site-'));
+  for (const n of [1, 2]) {
+    const out = path.join(tmp, `site${n}`),
+      manifest = path.join(tmp, `manifest${n}.json`);
+    await writeSite(out, manifest);
+    runs.push({ files: await snapshot(out), manifest: await fs.readFile(manifest) });
   }
 });
+after(() => tmp && fs.rm(tmp, { recursive: true, force: true }));
 
-test('every catalog item is exercised, not expressible with a reason, or documentation only', async () => {
-  const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'baseline-site-'));
-  try {
-    await writeSite(path.join(tmp, 'site'), path.join(tmp, 'manifest.json'));
-    const manifest = JSON.parse(await fs.readFile(path.join(tmp, 'manifest.json'), 'utf8'));
-    assert.deepEqual(unaccountedCatalogIds(manifest), []);
-    assert.deepEqual(contradictoryCatalogIds(manifest), []);
-    for (const entry of [...manifest.notExpressed, ...manifest.documentationOnly]) {
-      assert.ok(entry.reason, 'reason');
-      assert.ok(entry.sources.length, `sources for ${entry.catalog[0]}`);
-    }
-  } finally {
-    await fs.rm(tmp, { recursive: true, force: true });
+test('baseline site generator is deterministic and cites existing catalog ids', async () => {
+  assert.deepEqual(Object.keys(runs[1].files).sort(), Object.keys(runs[0].files).sort());
+  for (const [name, bytes] of Object.entries(runs[0].files)) assert.ok(bytes.equals(runs[1].files[name]), name);
+  assert.ok(runs[0].manifest.equals(runs[1].manifest));
+  const manifest = JSON.parse(runs[0].manifest);
+  assert.ok(manifest.records.length > 0);
+  assert.deepEqual(await unknownCatalogIds(manifest), []);
+  // Pages are visibility locations; every other record cites what it exercises.
+  for (const record of manifest.records)
+    assert.ok(
+      record.kind === 'webpage' ? record.path : record.catalog.length,
+      `${record.kind} ${record.name} cites catalog ids`,
+    );
+});
+
+test('every catalog item is exercised, not expressible with a reason, or documentation only', () => {
+  const manifest = JSON.parse(runs[0].manifest);
+  assert.deepEqual(unaccountedCatalogIds(manifest), []);
+  assert.deepEqual(contradictoryCatalogIds(manifest), []);
+  for (const entry of [...manifest.notExpressed, ...manifest.documentationOnly]) {
+    assert.ok(entry.reason, 'reason');
+    assert.ok(entry.sources.length, `sources for ${entry.catalog[0]}`);
   }
 });
 

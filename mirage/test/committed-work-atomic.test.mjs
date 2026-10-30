@@ -8,7 +8,7 @@ import { builtInKey } from '../lib/dataverse-elastic.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { committedJobs, stageCommittedJobs } from '../lib/committed-work.mjs';
 import { createScheduler, fixedClock, storeScheduler } from '../lib/runtime-clock.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // Dataverse saves the asynchronous context in the System Job (AsyncOperation) table as part
 // of processing the event, so a committed write always carries its Ready job (or the write does not happen).
@@ -77,7 +77,7 @@ async function open(file, state) {
 }
 
 async function fixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'committed-atomic-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'committed-atomic-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'state.json');
   const opened = await open(file, invented());
@@ -114,7 +114,7 @@ test('the Ready job row is saved in the same commit as its triggering row and a 
   assert.equal(ticks(store), 1, 'the post-commit path only schedules the run');
   // A process exit now: a new runtime on the same file finds the staged job and runs it.
   const restarted = await open(file);
-  t.after(() => restarted.runner.close());
+  ownedFixture(t).add(() => restarted.runner.close());
   committedJobs(restarted.store).resume();
   await restarted.store.scheduler.runDue();
   assert.equal(jobsOf(restarted.store.state).length, 0);

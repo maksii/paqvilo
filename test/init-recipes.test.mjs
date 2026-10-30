@@ -1,18 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { loadCatalogue, loadConfig, resolveMirageConfig } from '../lense/config.mjs';
 import { createMirageContext } from '../mirage/api.mjs';
+import { tempDir, withoutToolkitEnvironment } from './fixture.mjs';
 
 const write = async (directory, file, text) => {
   await fs.mkdir(path.dirname(path.join(directory, file)), { recursive: true });
   await fs.writeFile(path.join(directory, file), text);
 };
 async function project(t) {
-  const base = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-recipes-'));
+  const base = await tempDir('paqvilo-recipes-');
   t.after(() => fs.rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const directory = path.join(base, 'project');
   await prepareProject(directory, { name: 'sample-data', packs: ['sample-data'], noVscode: true });
@@ -113,6 +113,7 @@ test('recipe relocation and personal worktree overrides retain documented path b
 
 test('site-owned and shared pack matching keep positive/negative identity boundaries while source-free binding remains usable', async (t) => {
   const { base, directory, config } = await project(t);
+  withoutToolkitEnvironment(t);
   await write(
     directory,
     'pack/pack.mjs',

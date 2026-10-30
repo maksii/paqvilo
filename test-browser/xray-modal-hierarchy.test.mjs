@@ -20,7 +20,7 @@ after(() => browser?.close());
 
 test('opening, replacing and reopening an actual modal form keeps field context and highlights inside its own frame', async (t) => {
   const fx = inspectionFixture();
-  let app, context, panel, detach;
+  let app, context, panel, detach, openGate, openEntered;
   const opened = [];
   t.after(async () => {
     await panel?.dispose();
@@ -78,7 +78,6 @@ test('opening, replacing and reopening an actual modal form keeps field context 
     },
   });
   context = await browser.newContext({ viewport: { width: 1400, height: 1000 } });
-  context.setDefaultTimeout(8000);
   const page = await context.newPage();
   const session = new OverlaySession({
     sourceDir: fx.portal,
@@ -97,6 +96,8 @@ test('opening, replacing and reopening an actual modal form keeps field context 
   panel = enablePanel(context, session, {
     open: async (...args) => {
       opened.push(args);
+      openEntered?.();
+      await openGate;
       return null;
     },
   });
@@ -111,7 +112,8 @@ test('opening, replacing and reopening an actual modal form keeps field context 
     });
   }
   const pill = page.locator('#paqvilo-panel .pill');
-  await pill.waitFor();
+  // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+  await page.locator('#paqvilo-panel').locator('.pill:visible, .wrap.open').first().waitFor();
   if (await pill.isVisible()) await pill.click();
   await page.locator('#paqvilo-panel .tabs [data-act=tab][data-v=runtime]').click();
   await page.locator('#paqvilo-panel [data-act=xray]').click();
@@ -215,6 +217,20 @@ test('opening, replacing and reopening an actual modal form keeps field context 
       document.getElementById('paqvilo-xray').shadowRoot.querySelector('.enclosing-form')?.dataset.componentKey ===
       'basic-form:other-editor',
   );
+  // Gate a late evidence refresh on the actual editor response. A refreshed
+  // card must retain that response for the same selected field and document.
+  await page.evaluate(() => {
+    const tools = document.getElementById('paqvilo-xray').__px,
+      status = tools.status;
+    window.editorResponseRefreshes = 0;
+    tools.status = (message, expected) => {
+      status(message, expected);
+      if (message.startsWith('Opened ')) {
+        window.editorResponseRefreshes++;
+        tools.refreshSelection('controlled-editor-response-refresh');
+      }
+    };
+  });
   await card
     .locator('[data-evidence-role=source]')
     .getByRole('button', { name: 'Open source', exact: true })
@@ -223,10 +239,46 @@ test('opening, replacing and reopening an actual modal form keeps field context 
   await page.waitForFunction(() =>
     document.getElementById('paqvilo-xray').shadowRoot.querySelector('.status')?.textContent.includes('Opened'),
   );
+  assert.equal(await page.evaluate(() => window.editorResponseRefreshes), 1);
   assert.equal(fs.realpathSync(opened[0][1]), fs.realpathSync(path.join(other, 'Entity.xml')));
   assert.equal(
     await selectionEvidenceCurrent(page, oldScope),
     false,
     'the previous modal selection never authorizes an editor action',
+  );
+  // Hold the editor callback after admission, then replace the selection before
+  // its response. That completed action must not label the new selection.
+  let releaseOpen;
+  openGate = new Promise((resolve) => (releaseOpen = resolve));
+  const entered = new Promise((resolve) => (openEntered = resolve));
+  t.after(() => releaseOpen());
+  await card
+    .locator('[data-evidence-role=source]')
+    .getByRole('button', { name: 'Open source', exact: true })
+    .first()
+    .click();
+  await entered;
+  await select();
+  releaseOpen();
+  await page.waitForFunction(() => window.editorResponseRefreshes === 2);
+  assert.equal(await card.locator('.status').textContent(), '');
+  assert.equal(opened.length, 2);
+  assert.equal(
+    await page.evaluate(() => {
+      const tools = document.getElementById('paqvilo-xray').__px;
+      // One-shot picking deliberately retains its selection while disabled.
+      tools.pickOnce();
+      tools.select(document.querySelector('iframe').contentDocument.getElementById('fx_title'));
+      tools.toggle(true);
+      const beforeDisabled = tools.selectionState();
+      tools.status('Current feedback');
+      tools.toggle(false);
+      tools.toggle(true);
+      if (tools.selectionState().anchorGeneration !== beforeDisabled.anchorGeneration)
+        throw new Error('The retained selection must not change to exercise the disabled feedback boundary.');
+      tools.status('Stale editor feedback', beforeDisabled);
+      return document.getElementById('paqvilo-xray').shadowRoot.querySelector('.status').textContent;
+    }),
+    '',
   );
 });

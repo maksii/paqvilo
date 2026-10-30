@@ -2197,5 +2197,26 @@
         "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/219"
       }
     ]
+  },
+  "testPerformanceAuditReview": {
+    "reviewedAt": "2026-10-26",
+    "sourceHead": "05fb8f31317e4ed6425cc8c89a4038077a27e70e",
+    "reviewStatus": "Review of the CodeQL findings raised on PR #22 (test suite audit). Three js/file-system-race findings in mirage/test/state-storage-windows.test.mjs were fixed in code by performing every stat, read and write of the edited state file through one descriptor. One js/disabling-certificate-validation finding is a reviewed test-only loopback observation recorded below.",
+    "entries": [
+      {
+        "number": 325,
+        "rule": "js/disabling-certificate-validation",
+        "originalLocation": {
+          "path": "mirage/test/dataverse-tds-generated-certificate.test.mjs",
+          "start_line": 13,
+          "end_line": 13
+        },
+        "disposition": "false-positive",
+        "dismissalReason": "used in tests",
+        "evidence": "The regression connects only to host 127.0.0.1 on the TDS port of the simulator it started in the same test, sends no data and reads the presented certificate with getPeerCertificate(). The endpoint generates its self-signed certificate in memory at the first handshake (mirage/lib/dataverse-tds.mjs) and exposes no trust anchor, so the observed certificate cannot be pinned in advance; with validation enabled Node rejects with DEPTH_ZERO_SELF_SIGNED_CERT before the certificate is observable. This matches the documented client setting for this loopback endpoint (trustServerCertificate in mirage/test/dataverse-tds-integration.test.mjs, dataverse-tds-protocol.test.mjs and mirage/test-sdk/tds/gate.test.mjs). No production code disables certificate validation.",
+        "verification": "mirage/test/dataverse-tds-generated-certificate.test.mjs asserts a SHA-256 fingerprint, identical certificates across connections and the 127.0.0.1 subjectAltName; mirage/lib/dataverse-tds.mjs createSelfSignedCertificate on first handshake.",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/325"
+      }
+    ]
   }
 }

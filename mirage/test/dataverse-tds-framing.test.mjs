@@ -16,7 +16,6 @@ import {
   writeMessage,
 } from '../lib/dataverse-tds-framing.mjs';
 
-const TIMEOUT = 15_000;
 const VERSION = Buffer.from([12, 0, 0x07, 0xd0, 0, 0]);
 
 function collect() {
@@ -175,7 +174,7 @@ test('detectTdsMode separates TLS-first strict connections from PRELOGIN', () =>
   assert.equal(detectTdsMode(Buffer.from([0x01])), null);
 });
 
-test('PRELOGIN-wrapped TLS 1.2 handshake carries a multi-packet reply both ways', { timeout: TIMEOUT }, async (t) => {
+test('PRELOGIN-wrapped TLS 1.2 handshake carries a multi-packet reply both ways', async (t) => {
   const { key, cert } = createSelfSignedCertificate();
   const secureContext = tls.createSecureContext({ key, cert, maxVersion: 'TLSv1.2' });
   let resolveServerTls;
@@ -227,43 +226,39 @@ test('PRELOGIN-wrapped TLS 1.2 handshake carries a multi-packet reply both ways'
   assert.deepEqual(fromClient.payload, query);
 });
 
-test(
-  'TDS 8 strict: TLS first on the raw socket, ALPN tds/8.0, PRELOGIN inside TLS',
-  { timeout: TIMEOUT },
-  async (t) => {
-    const { key, cert } = createSelfSignedCertificate();
-    const secureContext = tls.createSecureContext({ key, cert });
-    const server = net.createServer((socket) => {
-      socket.once('data', async (first) => {
-        assert.equal(detectTdsMode(first), 'tds8');
-        const tlsSocket = acceptTls(socket, { secureContext, initial: first, strict: true });
-        await once(tlsSocket, 'secure');
-        assert.equal(tlsSocket.alpnProtocol, 'tds/8.0');
-        const prelogin = await nextMessage(tlsSocket);
-        assert.equal(prelogin.type, TDS.PRELOGIN);
-        writeMessage(tlsSocket, TDS.TABULAR, encodePrelogin({ version: VERSION, encryption: 0x01 }));
-      });
+test('TDS 8 strict: TLS first on the raw socket, ALPN tds/8.0, PRELOGIN inside TLS', async (t) => {
+  const { key, cert } = createSelfSignedCertificate();
+  const secureContext = tls.createSecureContext({ key, cert });
+  const server = net.createServer((socket) => {
+    socket.once('data', async (first) => {
+      assert.equal(detectTdsMode(first), 'tds8');
+      const tlsSocket = acceptTls(socket, { secureContext, initial: first, strict: true });
+      await once(tlsSocket, 'secure');
+      assert.equal(tlsSocket.alpnProtocol, 'tds/8.0');
+      const prelogin = await nextMessage(tlsSocket);
+      assert.equal(prelogin.type, TDS.PRELOGIN);
+      writeMessage(tlsSocket, TDS.TABULAR, encodePrelogin({ version: VERSION, encryption: 0x01 }));
     });
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const client = tls.connect({
-      host: '127.0.0.1',
-      port: server.address().port,
-      servername: 'localhost',
-      ca: cert,
-      ALPNProtocols: ['tds/8.0'],
-    });
-    t.after(() => {
-      client.destroy();
-      server.close();
-    });
-    await once(client, 'secureConnect');
-    assert.equal(client.alpnProtocol, 'tds/8.0');
-    writeMessage(client, TDS.PRELOGIN, encodePrelogin({ version: VERSION, encryption: 0x01, mars: 0x00 }));
-    const reply = await nextMessage(client);
-    assert.equal(reply.type, TDS.TABULAR);
-    assert.equal(decodePrelogin(reply.payload).encryption[0], 0x01);
-  },
-);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const client = tls.connect({
+    host: '127.0.0.1',
+    port: server.address().port,
+    servername: 'localhost',
+    ca: cert,
+    ALPNProtocols: ['tds/8.0'],
+  });
+  t.after(() => {
+    client.destroy();
+    server.close();
+  });
+  await once(client, 'secureConnect');
+  assert.equal(client.alpnProtocol, 'tds/8.0');
+  writeMessage(client, TDS.PRELOGIN, encodePrelogin({ version: VERSION, encryption: 0x01, mars: 0x00 }));
+  const reply = await nextMessage(client);
+  assert.equal(reply.type, TDS.TABULAR);
+  assert.equal(decodePrelogin(reply.payload).encryption[0], 0x01);
+});
 
 test('readPackets yields reassembled messages from a stream', async () => {
   const payload = Buffer.from('x'.repeat(3000));

@@ -1,9 +1,11 @@
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import nativeFs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { modelDrivenFixture } from './model-driven-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { scanSolutionSources } from '../lib/solution-schema.mjs';
 import { solutionApps, appCatalogue } from '../lib/model-driven/catalogue.mjs';
@@ -14,11 +16,123 @@ import { columnIcon } from '../lib/model-driven/icons.mjs';
 // Read-only HTTP tests share one runtime; tests that write or restart start their own.
 let shared;
 const cleanup = [];
+
+test('lazy table bodies retain provenance without reopening every root client resource', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-catalogue-resources-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'invented.js');
+  await fs.writeFile(file, '// Invented client resource\n');
+  const metadata = {
+    entities: Object.fromEntries(
+      Array.from({ length: 32 }, (_, i) => ['x_item' + i, { fields: { x_name: { dataverseType: 'nvarchar' } } }]),
+    ),
+  };
+  const mappings = Object.fromEntries(Object.keys(metadata.entities).map((name) => [name, { nameColumn: 'x_name' }]));
+  const options = {
+    metadata,
+    mappings,
+    providers: [],
+    clientExtensions: { resources: [{ name: 'invented.js', sourceFile: file }] },
+  };
+  const eager = appCatalogue(options);
+  const catalogue = appCatalogue({ ...options, lazy: true });
+  assert.deepEqual(catalogue.provenanceRefs, eager.provenanceRefs);
+  assert.ok(catalogue.provenanceRefs.some((ref) => ref.componentKey === 'resource:invented.js'));
+  const open = nativeFs.openSync;
+  let resourceReads = 0;
+  try {
+    nativeFs.openSync = (target, ...args) => {
+      if (path.resolve(String(target)) === file) resourceReads++;
+      return open(target, ...args);
+    };
+    for (const name of Object.keys(catalogue.tables)) assert.deepEqual(catalogue.tables[name], eager.tables[name]);
+  } finally {
+    nativeFs.openSync = open;
+  }
+  assert.equal(
+    resourceReads,
+    0,
+    'Root resource references are computed once; table source references remain complete.',
+  );
+});
 before(async () => {
   shared = await modelDrivenFixture({ after: (fn) => cleanup.push(fn) });
 });
 after(async () => {
   for (const fn of cleanup) await fn();
+});
+// Tests that only import edited Solution sources change a private copy of the shared fixture's Solution, without
+// starting a runtime for it.
+async function solutionCopy(t) {
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-solution-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const solutionDir = path.join(root, 'solution');
+  await fs.cp(shared.solutionDir, solutionDir, { recursive: true });
+  return { solutionDir };
+}
+
+test('lazy table construction retains the full imported source, application, lookup and control contract', async () => {
+  const scan = await scanSolutionSources([shared.solutionDir]);
+  const imported = await importSolutionMetadata([shared.solutionDir], { scan });
+  const options = {
+    metadata: { ...imported, modelDrivenApps: solutionApps(scan) },
+    mappings: {
+      x_item: { idColumn: 'x_itemid', nameColumn: 'x_name' },
+      x_related: { idColumn: 'x_relatedid', fields: { x_name: { type: 'text' } } },
+    },
+    settings: { timeZoneOffsetMinutes: 120 },
+    clientExtensions: { trusted: true, resources: [], pcf: [] },
+    canvasApps: ['x_invented_page'],
+  };
+  const eager = appCatalogue(options),
+    lazy = appCatalogue({ ...options, lazy: true });
+  assert.ok(eager.tables.x_item.provenanceRefs.length, 'The comparison includes imported source references');
+  for (const name of Object.keys(eager.tables).reverse()) assert.deepEqual(lazy.tables[name], eager.tables[name], name);
+  assert.deepEqual(JSON.parse(JSON.stringify(lazy)), JSON.parse(JSON.stringify(eager)));
+});
+
+test('the lazy table index does not normalize every unrelated field and control', () => {
+  let reads = 0,
+    relationshipReads = 0;
+  const field = {
+    dataverseType: 'nvarchar',
+    get format() {
+      reads++;
+      return 'email';
+    },
+  };
+  const mappings = Object.fromEntries(
+    Array.from({ length: 64 }, (_, i) => [
+      'x_wide' + i,
+      {
+        idColumn: 'x_id',
+        nameColumn: 'x_name',
+        fields: Object.fromEntries(Array.from({ length: 128 }, (_, j) => ['x_value' + j, field])),
+        relationships: Object.fromEntries(
+          Array.from({ length: 128 }, (_, j) => [
+            'x_link' + j,
+            {
+              entity: 'x_target',
+              get alias() {
+                relationshipReads++;
+                return 'Invented target';
+              },
+            },
+          ]),
+        ),
+      },
+    ]),
+  );
+  const lazy = appCatalogue({ mappings, lazy: true });
+  assert.equal(Object.keys(lazy.tables).length, 64);
+  assert.equal(reads, 0, 'Navigation headers do not prepare unrelated field controls');
+  assert.equal(relationshipReads, 0, 'Navigation headers do not copy unrelated relationship bodies');
+  const selected = lazy.tables.x_wide0;
+  assert.equal(Object.keys(selected.fields).length, 130);
+  assert.ok(reads > 0 && reads <= 128, `Only selected fields were prepared (${reads})`);
+  assert.equal(selected.fields.x_value127.format, 'email');
+  assert.equal(relationshipReads, 128, 'The selected table retains all relationship definitions');
+  assert.equal(selected.relationships.x_link127.alias, 'Invented target');
 });
 
 test('source navigation admits bounded imported table-view pages and leaves remote or unknown destinations unavailable', () => {
@@ -154,7 +268,7 @@ test('application cards retain exported localized descriptions and icon identiti
 });
 
 test('exported collection-name tags localize table labels even when a provider already defines the table', async (t) => {
-  const { solutionDir } = await modelDrivenFixture(t);
+  const { solutionDir } = await solutionCopy(t);
   const entityFile = path.join(solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(
     entityFile,
@@ -354,7 +468,11 @@ test('model-driven app catalogue imports solution navigation, forms and views al
   assert.equal(catalogue.tables.x_item.rows, undefined);
   const shell = await fetch(origin + '/main.aspx');
   assert.equal(shell.status, 200);
-  assert.match(await shell.text(), /<title>Mirage Apps<\/title>[\s\S]*<strong>Mirage Apps<\/strong>/);
+  const shellText = await shell.text();
+  assert.match(shellText, /<title>Mirage Apps<\/title>[\s\S]*<strong>Mirage Apps<\/strong>/);
+  // The shell names its own icon (its img-src allows data:), so a browser never asks the portal origin for /favicon.ico.
+  assert.match(shellText, /<link\s+rel="icon"\s+href="data:image\/svg\+xml,/);
+  assert.match(shell.headers.get('content-security-policy'), /img-src 'self' data:/);
   assert.equal(catalogue.apps.find((app) => app.id === 'power-pages-management')?.name, 'Mirage Site Manager');
   assert.equal(
     catalogue.apps.find((app) => app.id === 'power-pages-management')?.uniqueName,
@@ -472,7 +590,7 @@ test('management edits recompile the local portal, persist across restarts, and 
   );
   await fixture.sim.close();
   const restarted = await fixture.start();
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   assert.match(await (await fetch((restarted.origin ?? restarted.url) + '/')).text(), /Changed locally/);
 });
 
@@ -551,14 +669,14 @@ test('sparse customization overlays retain later source changes to untouched sib
     'adx_sitesettingid: 66666666-6666-4666-8666-666666666666\nadx_name: Example/NewSourceName\nadx_value: New source value',
   );
   const restarted = await fixture.start();
-  t.after(() => restarted.close());
+  ownedFixture(t).add(() => restarted.close());
   const read = await (await fetch(restarted.url + endpoint)).json();
   assert.equal(read.row.adx_name, 'Example/NewSourceName');
   assert.equal(read.row.adx_value, 'Local value');
 });
 
 test('monolithic solution metadata imports app forms, views and navigation with no portal-form dependency', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-embedded-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-embedded-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'embedded.xml');
   await fs.writeFile(
@@ -580,7 +698,7 @@ test('monolithic solution metadata imports app forms, views and navigation with 
 });
 
 test('table default desktop grid pagination flows from source facts into the app catalogue without form PCF leakage', async (t) => {
-  const { solutionDir } = await modelDrivenFixture(t);
+  const { solutionDir } = await solutionCopy(t);
   const entityFile = path.join(solutionDir, 'Entities/x_item/Entity.xml'),
     original = await fs.readFile(entityFile, 'utf8');
   const config = (name, factor, value) =>

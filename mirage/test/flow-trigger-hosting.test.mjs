@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,7 +12,9 @@ import { createFlowTriggerRunner, nextOccurrence } from '../lib/flow-triggers.mj
 import { inspectFlowTrigger } from '../lib/flow-runtime.mjs';
 import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 import { createFlowRoutes } from '../lib/sim-flow-routes.mjs';
+import { serveRoutes } from './support/route-server.mjs';
 import { PACK_EXPORTS } from '../lib/pack-exports.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // Recurrence and pack connector triggers are hosted by the trigger runner (opt-in: exported mode plus explicit
 // local activation); HTTP Request and manual flows start on demand through /_sim/api.
@@ -85,7 +86,7 @@ async function host(t, { overrides = {}, extra = {}, file = null } = {}) {
   const store = await new DataStore({ file, state: emptyState(), clock, ids: sequentialIds() }).init();
   const scheduler = createScheduler({ clock, manual: true });
   storeScheduler(store, scheduler);
-  t.after(() => scheduler.close());
+  ownedFixture(t).add(() => scheduler.close());
   const pack = {
     id: 'fx-pack',
     flowTriggers: {
@@ -125,7 +126,7 @@ async function host(t, { overrides = {}, extra = {}, file = null } = {}) {
   const runs = createHostFlowRuns({ store, clock, scheduler, approvals: connectors.approvals, flowOf: cloudFlow });
   const api = { store };
   runs.attach(api);
-  t.after(() => runs.close());
+  ownedFixture(t).add(() => runs.close());
   const runner = createFlowTriggerRunner({
     store,
     items,
@@ -134,12 +135,27 @@ async function host(t, { overrides = {}, extra = {}, file = null } = {}) {
     connectors,
     diagnostic: (n) => notes.push(n),
   });
-  t.after(() => runner.close());
+  ownedFixture(t).add(() => runner.close());
   return { store, scheduler, runs, runner, notes, overrides, subscriptions, unsubscribed, api, clock, polls };
 }
 const enable = (overrides, id) => {
   overrides['cloud-flow:' + id] = { mode: 'exported', activation: 'local-enabled' };
 };
+
+async function flowRouteClient(t, api, runs) {
+  const routes = createFlowRoutes({ api: { ...api, flowRuns: runs }, csrf: () => 'invented-csrf' });
+  const origin = await serveRoutes(t, routes);
+  const call = async (method, path, body, csrf = true) => {
+    const response = await fetch(origin + path, {
+      method,
+      headers: { 'content-type': 'application/json', ...(csrf ? { 'x-sim-csrf': 'invented-csrf' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    const text = await response.text();
+    return { status: response.status, headers: response.headers, body: text ? JSON.parse(text) : null };
+  };
+  return call;
+}
 
 test('a Recurrence flow fires on the manual scheduler only after local activation, and deactivation cancels its timer', async (t) => {
   const { scheduler, runs, runner, overrides } = await host(t);
@@ -334,8 +350,8 @@ test('a Dataverse action trigger runs a tracked flow with the action inputs and 
     }).errors.join(' '),
     /Unsupported Dataverse action trigger parameter: x_other/,
   );
-  const file = path.join(await fs.mkdtemp(path.join(os.tmpdir(), 'flow-action-trigger-')), 'state.json');
-  t.after(() => fs.rm(path.dirname(file), { recursive: true, force: true }));
+  const file = path.join(await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-action-trigger-')), 'state.json');
+  ownedFixture(t).remove(() => fs.rm(path.dirname(file), { recursive: true, force: true }));
   const first = await host(t, { extra: { [PERFORMED]: wrap(definition) }, file });
   enable(first.overrides, PERFORMED);
   assert.equal((await first.runner.syncTriggers()).find((h) => h.processId === PERFORMED).state, 'subscribed');
@@ -368,9 +384,8 @@ test('a Dataverse action trigger runs a tracked flow with the action inputs and 
   enable(second.overrides, PERFORMED);
   await second.runner.syncTriggers();
   committedJobs(second.store).resume();
+  // runDue() runs the resumed job on the manual scheduler and returns once its run settled.
   await second.scheduler.runDue();
-  for (let i = 0; i < 50 && !second.runs.list({ processId: PERFORMED }).some((r) => r.status === 'Succeeded'); i++)
-    await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(
     second.runs.list({ processId: PERFORMED }).map((r) => [r.status, r.triggertype]),
     [['Succeeded', 'Automated']],
@@ -399,25 +414,7 @@ test('a pack flowTriggers entry is subscribed on activation, fires tracked runs 
 test('POST /_sim/api/flow-runs starts a tracked run of a Button, Http or Recurrence flow (403 without csrf); an HTTP Request trigger answers its Response', async (t) => {
   const { runs, overrides, api } = await host(t);
   for (const id of [BUTTON, HTTP_FLOW, RECURRING]) overrides['cloud-flow:' + id] = { mode: 'exported' };
-  const routes = createFlowRoutes({ api: { ...api, flowRuns: runs }, csrf: () => 'invented-csrf' });
-  const server = http.createServer(async (req, res) => {
-    if (!(await routes(req, res, new URL(req.url, 'http://127.0.0.1')))) {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  const call = async (method, path, body, csrf = true) => {
-    const response = await fetch(origin + path, {
-      method,
-      headers: { 'content-type': 'application/json', ...(csrf ? { 'x-sim-csrf': 'invented-csrf' } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    });
-    const text = await response.text();
-    return { status: response.status, headers: response.headers, body: text ? JSON.parse(text) : null };
-  };
+  const call = await flowRouteClient(t, api, runs);
   assert.equal((await call('POST', '/_sim/api/flow-runs', { processId: BUTTON }, false)).status, 403);
   assert.equal(runs.list().length, 0);
   const button = await call('POST', '/_sim/api/flow-runs', { processId: BUTTON, input: { x_name: 'pressed' } });
@@ -452,4 +449,61 @@ test('POST /_sim/api/flow-runs starts a tracked run of a Button, Http or Recurre
     (await call('GET', '/_sim/api/flow-triggers', null, false)).body.find((h) => h.processId === RECURRING).state,
     'inactive',
   );
+});
+
+test('recurrence and pack conditions skip before tracked-run creation and report dynamic errors explicitly', async (t) => {
+  const recurrence = structuredClone(WORKFLOWS[RECURRING]);
+  recurrence.definition.properties.definition.triggers.tick.conditions = [{ expression: '@false' }];
+  const hooked = structuredClone(WORKFLOWS[HOOKED]);
+  hooked.definition.properties.definition.triggers.hook.conditions = [
+    { expression: "@equals(triggerBody()?['enabled'],true)" },
+  ];
+  const { scheduler, runs, runner, overrides, subscriptions, notes, store } = await host(t, {
+    extra: { [RECURRING]: recurrence, [HOOKED]: hooked },
+  });
+  enable(overrides, RECURRING);
+  enable(overrides, HOOKED);
+  await runner.syncTriggers();
+  await scheduler.advance(3600000);
+  // The tick itself must fire and be skipped by its condition, not merely never arm.
+  assert.ok(notes.some((note) => note.code === 'FLOW_TRIGGER_SKIPPED' && note.trigger === 'recurrence'));
+  await subscriptions[0].fire({ enabled: false });
+  assert.equal(runs.list().length, 0);
+  assert.equal(store.state.tables.flowrun?.length ?? 0, 0);
+  await subscriptions[0].fire({ enabled: true });
+  assert.equal(runs.list({ processId: HOOKED }).length, 1);
+  assert.ok(notes.some((note) => note.code === 'FLOW_TRIGGER_SKIPPED'));
+  hooked.definition.properties.definition.triggers.hook.conditions = [{ expression: "@triggerBody()['missing']" }];
+  await runner.syncTriggers();
+  await subscriptions.at(-1).fire({ enabled: false });
+  assert.equal(runs.list().length, 1);
+  assert.ok(notes.some((note) => note.code === 'FLOW_TRIGGER_FAILED' && note.error.code === 'LocalFlowExpression'));
+});
+
+test('HTTP condition false answers a local skipped acknowledgement without creating phantom run history', async (t) => {
+  const workflow = structuredClone(WORKFLOWS[HTTP_FLOW]);
+  workflow.definition.properties.definition.triggers.request.conditions = [
+    { expression: "@equals(triggerBody()?['enabled'],true)" },
+  ];
+  const { runs, api, overrides } = await host(t, { extra: { [HTTP_FLOW]: workflow } });
+  overrides['cloud-flow:' + HTTP_FLOW] = { mode: 'exported' };
+  const request = await flowRouteClient(t, api, runs);
+  const call = async (suffix, body) => {
+    const { status, body: result } = await request('POST', '/_sim/api/' + suffix, body);
+    return { status, body: result };
+  };
+  assert.deepEqual(await call('flow-runs', { processId: HTTP_FLOW, input: { enabled: false } }), {
+    status: 202,
+    body: { runId: null, status: 'Skipped', reason: 'TriggerConditionFalse' },
+  });
+  const skipped = await call('flow-triggers/' + HTTP_FLOW, { enabled: false });
+  assert.deepEqual(skipped, { status: 202, body: { runId: null, status: 'Skipped' } });
+  assert.equal(runs.list().length, 0);
+  const accepted = await call('flow-triggers/' + HTTP_FLOW, { enabled: true, x_name: 'accepted' });
+  assert.deepEqual(accepted, { status: 201, body: { echo: 'accepted' } });
+  assert.equal(runs.list().length, 1);
+  workflow.definition.properties.definition.triggers.request.conditions = [{ expression: "@'not a boolean'" }];
+  const invalid = await call('flow-triggers/' + HTTP_FLOW, {});
+  assert.equal(invalid.body.error.code, 'LocalFlowExpression');
+  assert.equal(runs.list().length, 1);
 });

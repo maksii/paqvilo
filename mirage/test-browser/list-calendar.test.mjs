@@ -7,20 +7,24 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { AssetCache } from '../lib/asset-cache.mjs';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
 
 const chrome = sharedBrowser();
+// The calendar tests only read, so tests on the same list and Bootstrap version share one simulator; each opens
+// its own context (a fresh browser cache, so the recorded template requests stay per test).
+const scope = fileScope();
+const sites = new Map();
 
 const SITE = '4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e70';
 const YEAR = '1b000000-0000-4000-8000-000000000011';
 const MONTH = '1b000000-0000-4000-8000-000000000012';
 const CONTACT = 'c0000000-0000-4000-8000-000000000011';
 
-async function open(t, list, { width = 1200, bootstrapV5 = true, capturedCss = null } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'list-calendar-browser-'));
-  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
+async function site(owner, list, bootstrapV5, capturedCss) {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'list-calendar-browser-'));
+  ownedFixture(owner).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const calendar =
     'adx_calendar_enabled: true\nadx_calendar_startdatefieldname: opens\nadx_calendar_summaryfieldname: name\nadx_calendar_descriptionfieldname: city';
   const files = {
@@ -84,7 +88,14 @@ async function open(t, list, { width = 1200, bootstrapV5 = true, capturedCss = n
     });
   }
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, 'state.json'), initial, watch: false });
-  ownedFixture(t).add(() => app.close());
+  ownedFixture(owner).add(() => app.close());
+  return app;
+}
+
+async function open(t, list, { width = 1200, bootstrapV5 = true, capturedCss = null } = {}) {
+  const key = list + ':' + bootstrapV5;
+  if (capturedCss === null && !sites.has(key)) sites.set(key, site(scope, list, bootstrapV5, null));
+  const app = await (capturedCss === null ? sites.get(key) : site(t, list, bootstrapV5, capturedCss));
   const context = await chrome.browser.newContext({ timezoneId: 'UTC', viewport: { width, height: 900 } });
   ownedFixture(t).add(() => context.close());
   await signInContext(context, app, CONTACT, { roles: ['Editor'] });

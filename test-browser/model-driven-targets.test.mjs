@@ -1,23 +1,27 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
-import net from 'node:net';
 import { once } from 'node:events';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
 
 const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function modelTargetsFixture(t) {
+  t.diagnostic('model-target phase: fixture');
   const owner = ownedFixture(t);
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-model-targets-'));
-  owner.remove(() => fs.rm(directory, { recursive: true, force: true }));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-model-targets-'));
+  // The CLI's owned browser profile lives in this directory.
+  owner.remove(() => fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const methods = [],
     documentReads = [0, 0],
     nativeReads = [0, 0],
@@ -138,11 +142,7 @@ async function modelTargetsFixture(t) {
       })),
     }),
   );
-  const listener = net.createServer();
-  listener.listen(0, '127.0.0.1');
-  await once(listener, 'listening');
-  const debugPort = listener.address().port;
-  await new Promise((resolve) => listener.close(resolve));
+  const debugPort = await freeDebugPort();
   const env = Object.fromEntries(
     Object.entries(process.env).filter(
       ([key]) =>
@@ -218,14 +218,12 @@ async function modelTargetsFixture(t) {
         .map((name) => fs.readFile(path.join(agents, name), 'utf8').then(JSON.parse)),
     );
   };
-  await wait(async () => {
-    try {
-      return (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).ok;
-    } catch {
-      return false;
-    }
-  }, 'owned CDP listener');
+  // Printed after the owned browser (with its debugging port) and the agent discovery file exist,
+  // so neither a starting CDP listener nor a partially written discovery file is observed.
+  await wait(() => /^Opening model-driven app at /m.test(output), 'owned browser and agent');
+  t.diagnostic('model-target phase: owned CLI started');
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
+  t.diagnostic('model-target phase: CDP connected');
   const page = await wait(
     () =>
       browser
@@ -234,10 +232,9 @@ async function modelTargetsFixture(t) {
         .find((page) => page.url().startsWith(origins[0])),
     'initial target page',
   );
-  page.setDefaultTimeout(10000);
   await page.waitForFunction(() => window.targetRevision === 'initial');
   await page.locator('#paqvilo-panel').waitFor();
-  await wait(async () => (await discoveries()).length > 0, 'owned agent');
+  t.diagnostic('model-target phase: initial local application');
   const initialAgents = await discoveries();
   assert.equal(initialAgents.length, 1);
   assert.equal(initialAgents[0].pid, child.pid);
@@ -272,6 +269,8 @@ test(
       const host = page.locator('#paqvilo-panel');
       const open = async () => {
         await host.waitFor();
+        // Decide on a drawn state (collapsed pill or open panel), not on a panel still being drawn.
+        await host.locator('.pill:visible, .wrap.open').first().waitFor();
         if (!(await host.locator('.wrap.open').count())) await page.keyboard.press('Alt+Shift+P');
         await host.locator('.wrap.open').waitFor();
       };
@@ -329,6 +328,7 @@ test(
         throw error;
       }
       await page.waitForFunction(() => window.targetRevision === 'initial');
+      t.diagnostic('model-target phase: review local application');
       await open();
       assert.equal(await selector.inputValue(), '1');
       assert.equal(
@@ -354,7 +354,9 @@ test(
         assert.ok(!response || !response.ok, 'retired origin agent is not still authorized');
       }
       await fs.writeFile(f.js, 'window.targetRevision="review-save";');
+      t.diagnostic('model-target phase: source refresh requested');
       await page.waitForFunction(() => window.targetRevision === 'review-save');
+      t.diagnostic('model-target phase: source refresh applied');
       assert.equal(new URL(page.url()).origin, origins[1], 'source save reloads the selected reference');
       assert.equal(f.nativeReads[1], 0, 'review mapping overlays its own resource URL');
       await open();
@@ -364,6 +366,7 @@ test(
         page.locator('[data-target-go]').click(),
       ]);
       await page.waitForFunction(() => window.targetRevision === 'review-save');
+      t.diagnostic('model-target phase: development local application');
       await open();
       assert.equal(await selector.inputValue(), '0');
       const agents = await f.discoveries();
@@ -378,6 +381,7 @@ test(
         body: '{}',
       });
       assert.equal(stopped.status, 200);
+      t.diagnostic('model-target phase: owned stop accepted');
       assert.equal((await f.closed).code, 0, f.getOutput());
       assert.deepEqual(await f.discoveries(), []);
       assert.ok(

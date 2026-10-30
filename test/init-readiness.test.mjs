@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync, execFile } from 'node:child_process';
@@ -14,6 +13,7 @@ import {
 } from '../lense/project-check.mjs';
 import { developmentScript, developmentWorkflows } from '../lense/project-workflows.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDir } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const env = Object.fromEntries(
@@ -40,7 +40,7 @@ const write = async (directory, file, body) => {
 };
 const configFile = 'paqvilo.config.json';
 async function fixture(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-ready-'));
+  const directory = await tempDir('paqvilo-ready-');
   t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   const config = {
     sourceRoot: './sources',
@@ -342,24 +342,22 @@ test('adoption reports indexed private paths even when ignore rules are correct 
   );
 });
 
-test(
-  'completion excludes Windows case aliases of private paths while retaining the public environment example',
-  { skip: process.platform !== 'win32' },
-  async (t) => {
-    const { directory } = await fixture(t);
-    await write(directory, '.ENV.FIXTURE', 'TODO(paqvilo-init): private alias must not be scanned');
-    await write(directory, '.PAQVILO/private.txt', 'TODO(paqvilo-init): private evidence alias must not be scanned');
-    await write(directory, '.ENV.EXAMPLE', 'TODO(paqvilo-init): public example should be scanned');
-    const git = (args) => spawnSync('git', ['-C', directory, ...args], { env, encoding: 'utf8', windowsHide: true });
-    assert.equal(git(['init', '-q']).status, 0);
-    assert.equal(git(['add', '-f', '.ENV.FIXTURE', '.PAQVILO/private.txt', '.ENV.EXAMPLE']).status, 0);
-    const markers = scaffoldMarkers(directory);
-    assert.deepEqual(
-      markers.map((item) => item.file),
-      ['.ENV.EXAMPLE'],
-    );
-  },
-);
+test('completion follows the platform path case rules for private paths and the public environment example', async (t) => {
+  const { directory } = await fixture(t);
+  await write(directory, '.ENV.FIXTURE', 'TODO(paqvilo-init): private alias must not be scanned');
+  await write(directory, '.PAQVILO/private.txt', 'TODO(paqvilo-init): private evidence alias must not be scanned');
+  await write(directory, '.ENV.EXAMPLE', 'TODO(paqvilo-init): public example should be scanned');
+  const git = (args) => spawnSync('git', ['-C', directory, ...args], { env, encoding: 'utf8', windowsHide: true });
+  assert.equal(git(['init', '-q']).status, 0);
+  assert.equal(git(['add', '-f', '.ENV.FIXTURE', '.PAQVILO/private.txt', '.ENV.EXAMPLE']).status, 0);
+  const markers = scaffoldMarkers(directory);
+  // Windows paths are case-insensitive: the upper-case names are aliases of .env.fixture, .paqvilo and .env.example.
+  // POSIX paths are case-sensitive: .PAQVILO is an ordinary folder, and neither .ENV file is the public example.
+  assert.deepEqual(
+    markers.map((item) => item.file),
+    process.platform === 'win32' ? ['.ENV.EXAMPLE'] : ['.PAQVILO/private.txt'],
+  );
+});
 
 test('readiness validates project-owned paths without importing project packs', async (t) => {
   const { directory, config, save } = await fixture(t);

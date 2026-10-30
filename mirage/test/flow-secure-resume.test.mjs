@@ -12,6 +12,7 @@ import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { createHostFlowRuns } from '../lib/flow-runs.mjs';
 import { runTrackedFlow } from '../lib/flow-runtime.mjs';
 import { VAULT_KEY_FILE } from '../lib/flow-vault.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FLOW = '77777777-7777-4777-8777-0000000000a5';
 const manual = { manual: { type: 'Request', kind: 'Button', inputs: { schema: { type: 'object' } } } };
@@ -41,7 +42,7 @@ async function host(t, { state, definition, operations, stateDirectory }) {
     runs.close();
     scheduler.close();
   };
-  t.after(close);
+  ownedFixture(t).add(close);
   return {
     store,
     scheduler,
@@ -62,8 +63,8 @@ async function host(t, { state, definition, operations, stateDirectory }) {
 }
 
 test('a run with secured outputs resumes after a restart over the same state directory', async (t) => {
-  const stateDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'flow-secure-resume-'));
-  t.after(() => fs.rm(stateDirectory, { recursive: true, force: true }));
+  const stateDirectory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'flow-secure-resume-'));
+  ownedFixture(t).remove(() => fs.rm(stateDirectory, { recursive: true, force: true }));
   const received = [];
   const operations = {
     Issue: () => ({ statusCode: 200, body: { token: 'invented-secret-token' } }),

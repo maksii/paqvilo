@@ -13,7 +13,7 @@ import {
   calendarLanguageScript,
   parseCalendarPath,
 } from '../lib/list-views.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f';
 const LIST = '1b000000-0000-4000-8000-000000000001';
@@ -72,7 +72,7 @@ test('calendar list settings, markup shell and resources follow the exported lis
 });
 
 test('calendar event feed returns rows in the requested period with summary and description', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'list-calendar-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'list-calendar-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Calendar`,

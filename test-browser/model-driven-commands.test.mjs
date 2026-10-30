@@ -98,11 +98,14 @@ test('explicit custom commands await async results, keep values browser-only and
   await page.evaluate(() =>
     document.getElementById('paqvilo-model-inspector').__paqModelCommands.run({
       requestId: 'retired',
-      code: 'window.retiredStarted=true; await new Promise(r=>setTimeout(r,20)); window.retiredFinished=true; return "retired-result";',
+      code: 'window.retiredStarted=true; await new Promise(resolve=>{window.releaseRetired=resolve;}); window.retiredFinished=true; return "retired-result";',
     }),
   );
   await page.waitForFunction(() => window.retiredStarted);
-  await page.evaluate(() => document.getElementById('paqvilo-model-inspector').__paqModelCommands.dispose());
+  await page.evaluate(() => {
+    document.getElementById('paqvilo-model-inspector').__paqModelCommands.dispose();
+    window.releaseRetired();
+  });
   await page.waitForFunction(() => window.retiredFinished);
   assert.deepEqual(await page.evaluate(() => [Boolean(window.results.unstarted), Boolean(window.results.retired)]), [
     false,

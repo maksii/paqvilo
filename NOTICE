@@ -14,5 +14,7 @@ Third-party material keeps its own license. License texts are in licenses/.
   licenses/wet-boew-power-pages-template.txt
   https://github.com/alfredofosu/wet-boew-power-pages-template
 - npm dependencies are installed separately and keep their own licenses.
+- DOMPurify, embedded in compatibility rich text editors: Apache-2.0 OR MPL-2.0,
+  licenses/dompurify.txt, https://github.com/cure53/DOMPurify
 
 Paqvilo is independent of Microsoft. Power Pages, Power Apps and Dataverse are Microsoft products.

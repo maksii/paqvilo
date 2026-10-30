@@ -165,6 +165,108 @@ async function failure(promise) {
 
 const lowerId = (value) => String(value?.id ?? value).toLowerCase();
 
+test('wide single-record reads reuse metadata during projection and observe later changes', async (t) => {
+  const fields = {
+    widgetid: { dataverseType: 'primarykey' },
+    name: text,
+    statuscode: { dataverseType: 'status', options: [{ value: 1, label: 'First' }] },
+    ...Object.fromEntries(Array.from({ length: 200 }, (_, i) => ['extra' + i, text])),
+  };
+  let reads = 0;
+  const runtime = await setup({
+    metadata: {
+      recordFields: () => {
+        reads++;
+        return fields;
+      },
+    },
+    metadataFields: () => fields,
+  });
+  t.after(() => runtime.handlers.close());
+  const id = randomUUID();
+  runtime.store.state.tables.widget.push({
+    widgetid: id,
+    name: 'Wide',
+    statuscode: 1,
+    ...Object.fromEntries(Array.from({ length: 200 }, (_, i) => ['extra' + i, 'Value ' + i])),
+  });
+  const url = `/api/data/${VERSION}/widgets(${id})`;
+  const headers = { Prefer: 'odata.include-annotations="OData.Community.Display.V1.FormattedValue"' };
+  const first = await runtime.send('GET', url, { headers });
+  assert.equal(first.body.extra199, 'Value 199');
+  assert.ok(reads <= 2, `Metadata resolved ${reads} times for one record`);
+  fields.statuscode.options[0].label = 'Second';
+  reads = 0;
+  const second = await runtime.send('GET', url, { headers });
+  assert.equal(second.body['statuscode@OData.Community.Display.V1.FormattedValue'], 'Second');
+  assert.ok(reads <= 2);
+});
+
+test('a single-record read checks only its own row for a stored currency, not every row of the table', async (t) => {
+  const runtime = await setup();
+  t.after(() => runtime.handlers.close());
+  let currencyReads = 0;
+  const counted = (row) =>
+    Object.defineProperty(row, 'transactioncurrencyid', {
+      enumerable: true,
+      configurable: true,
+      get: () => {
+        currencyReads++;
+        return null;
+      },
+    });
+  const ids = Array.from({ length: 2000 }, () => randomUUID());
+  for (const id of ids) runtime.store.state.tables.widget.push(counted({ widgetid: id, name: 'Invented' }));
+  const url = `/api/data/${VERSION}/widgets(${ids[1500]})`;
+  assert.equal((await runtime.send('GET', url)).status, 200);
+  currencyReads = 0;
+  const response = await runtime.send('GET', url);
+  assert.equal(response.status, 200);
+  assert.ok(currencyReads <= 4, `One record read the currency of ${currencyReads} rows`);
+});
+
+test('wide FetchXML pages derive record metadata per table and refresh it on the next request', async (t) => {
+  const fields = {
+    widgetid: { dataverseType: 'primarykey' },
+    name: text,
+    statuscode: { dataverseType: 'status', options: [{ value: 1, label: 'First' }] },
+    ...Object.fromEntries(Array.from({ length: 80 }, (_, i) => ['extra' + i, text])),
+  };
+  let reads = 0;
+  const runtime = await setup({
+    metadata: {
+      recordFields: () => {
+        reads++;
+        return fields;
+      },
+    },
+    metadataFields: () => fields,
+  });
+  t.after(() => runtime.handlers.close());
+  runtime.store.state.tables.widget.push(
+    ...Array.from({ length: 25 }, (_, i) => ({
+      widgetid: randomUUID(),
+      name: 'Wide ' + i,
+      statuscode: 1,
+      ...Object.fromEntries(Array.from({ length: 80 }, (_, j) => ['extra' + j, 'Value ' + j])),
+    })),
+  );
+  const url =
+    `/api/data/${VERSION}/widgets?fetchXml=` +
+    encodeURIComponent('<fetch count="25"><entity name="widget"><all-attributes/></entity></fetch>');
+  const headers = { Prefer: 'odata.include-annotations="OData.Community.Display.V1.FormattedValue"' };
+  const first = await runtime.send('GET', url, { headers });
+  assert.equal(first.status, 200);
+  assert.equal(first.body.value.length, 25);
+  assert.equal(first.body.value[0].extra79, 'Value 79');
+  assert.ok(reads <= 2, `Metadata resolved ${reads} times for one table's page`);
+  fields.statuscode.options[0].label = 'Second';
+  reads = 0;
+  const second = await runtime.send('GET', url, { headers });
+  assert.equal(second.body.value[0]['statuscode@OData.Community.Display.V1.FormattedValue'], 'Second');
+  assert.ok(reads <= 2);
+});
+
 test('wide read definitions resolve original metadata once per list and retain observed option labels', async (t) => {
   const fields = {
     widgetid: { dataverseType: 'uniqueidentifier' },
@@ -202,8 +304,9 @@ test('wide read definitions resolve original metadata once per list and retain o
   assert.equal(result.body['statuscode@OData.Community.Display.V1.FormattedValue'], 'Observed active');
   assert.equal(result.body.extra79, 'Value 79');
   assert.ok(definitionsRead > 0);
+  // One source resolution per definition list; resolving per field would read it once for each of the 80+ columns.
   assert.ok(
-    originalRead <= definitionsRead + 10,
+    originalRead <= definitionsRead,
     `${originalRead} source resolutions for ${definitionsRead} definition lists`,
   );
 });
@@ -357,6 +460,42 @@ test('entity GET by GUID and by alternate key, with 404 for a missing row', asyn
   const missing = await failure(t.send('GET', `/api/data/${VERSION}/widgets(${MISSING})`));
   assert.equal(missing.status, 404);
   assert.equal(missing.message, `widget With Id = ${MISSING} Does Not Exist`);
+});
+
+test('an organization-service lookup finds its target row through the primary key instead of scanning the target table', async () => {
+  const t = await setup();
+  let idReads = 0;
+  const ids = Array.from({ length: 2000 }, () => randomUUID());
+  for (const id of ids)
+    t.store.state.tables.widget.push(
+      Object.defineProperty({ name: 'Invented' }, 'widgetid', {
+        enumerable: true,
+        configurable: true,
+        get: () => {
+          idReads++;
+          return id;
+        },
+      }),
+    );
+  // An organization-service create names its lookup as { id, logical_name } and checks appendTo on that row.
+  const context = {
+    user: t.admin,
+    caller: t.admin,
+    url: new URL(ORIGIN),
+    origin: ORIGIN,
+    version: VERSION,
+    identity: { admin: true, id: t.admin.systemuserid, systemUserId: t.admin.systemuserid },
+  };
+  const bind = (name) =>
+    t.handlers.createInternal(context, 'gadget', {
+      name,
+      widgetid: { id: ids.at(-1), logical_name: 'widget' },
+    });
+  await bind('First');
+  idReads = 0;
+  await bind('Second');
+  assert.equal(t.store.state.tables.gadget.at(-1).widgetid.id, ids.at(-1));
+  assert.ok(idReads < 200, `One lookup bind read the id of ${idReads} target rows`);
 });
 
 test('POST creates with OData-EntityId, honours return=representation and binds absolute references', async () => {

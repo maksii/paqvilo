@@ -4,13 +4,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { chromium } from 'playwright-core';
-import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { observedPage } from './shared-browser.mjs';
 import { importCodeComponents, renderCodeComponent } from '../lib/code-components.mjs';
-import { ownedFixture, drainFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('PCF localized instances keep languages, missing keys and empty labels across updates and teardown', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pcf-localization-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pcf-localization-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const dir = path.join(root, 'Controls', 'tst_Synthetic.Localized');
   await fs.mkdir(path.join(dir, 'strings'), { recursive: true });
@@ -100,17 +99,8 @@ test('PCF localized instances keep languages, missing keys and empty labels acro
         }),
     ]),
   );
-  browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  const page = await browser.newPage();
-  page.setDefaultTimeout(10000);
-  const errors = [],
-    external = [],
-    origin = `http://127.0.0.1:${server.address().port}`;
-  page.on('pageerror', (error) => errors.push(error.message));
-  page.on('request', (request) => {
-    if (!request.url().startsWith(origin + '/')) external.push(request.url());
-  });
-  await page.goto(origin, { timeout: 15000 });
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const { page, errors, external } = await observedPage(origin, (launched) => (browser = launched));
   await page.waitForFunction(() => window.inits.length === 4 && Object.keys(window.views).length === 4);
   const state = await page.evaluate(() =>
     Object.fromEntries(

@@ -164,12 +164,17 @@ test('provider dispatch passes the caller context and maps errors to documented 
     'connectorId',
     'correlationId',
     'durationMs',
+    'entity',
+    'message',
+    'name',
     'operationId',
     'principalId',
     'provider',
     'reference',
     'status',
   ]);
+  // The human facts (D-M-2 Findings) name the operation, never a parameter value.
+  assert.equal(invokes[0].name, invokes[0].operationId);
   assert.equal(invokes[0].principalId, USER);
   assert.equal(invokes[1].error, 'ProviderFailed');
   assert.doesNotMatch(JSON.stringify(notes), /x-hidden-value/);

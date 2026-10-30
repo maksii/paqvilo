@@ -3,14 +3,15 @@
 // handlers as the caller, so table permissions, field security, business units, sharing and service protection apply.
 //
 // startDataverseTds({ store, authority, principals, records, limits, metadataFields, clock, origin, tlsOrigin, tenantId,
-//                     version, tls, host, port, enabled }) -> { port, close() }
+//                     version, tls, host, port, enabled, traces }) -> { port, close() }
+//   traces the trace store (default store.traces): one root span per statement (host tds).
 //   tls   { key, cert } shared with the HTTPS listener, or null: an in-memory certificate is then generated.
 //   enabled false (tds.enabled): the listener still runs, as Dataverse keeps the endpoint reachable, and every login is refused.
 //   The caller starts this after the HTTP listeners, so origin and tlsOrigin are known.
 import { randomUUID } from 'node:crypto';
 import { createSecureContext } from 'node:tls';
 import { DataError } from './data-error.mjs';
-import { ensureCertificate } from './dataverse-tls.mjs';
+import { createSelfSignedCertificate } from './dataverse-tls.mjs';
 import { createTdsServer } from './dataverse-tds-protocol.mjs';
 import { buildCatalog, projectRow } from './dataverse-tds-catalog.mjs';
 import { executeBatch } from './dataverse-tds-sql-eval.mjs';
@@ -34,6 +35,8 @@ const TIMEOUT = {
     'Timeout expired. The timeout period elapsed prior to completion of the operation or the server is not responding.',
 };
 const sqlError = (number, message, cls = 16) => ({ number, message, state: 1, class: cls });
+// A failed statement's error on its span: the SQL error number as the code, or the record handlers' own error.
+const sqlFailure = (error) => (error?.number != null ? { code: String(error.number), message: error.message } : error);
 const refOf = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? undefined;
 // The Web API attribute behind a catalog column: lookup columns read `_name_value`, so the select names the lookup.
 const attributeOf = (column) => column.source.attribute.replace(/^_(.+)_value$/, '$1');
@@ -113,11 +116,18 @@ export async function startDataverseTds({
   host,
   port,
   enabled = true,
+  traces = store.traces,
 }) {
-  const certificate = tls ?? (await ensureCertificate(null));
   // Wrapped (TDS 7.x) TLS is capped at 1.2; strict (TDS 8) TLS takes the defaults.
-  const secureContext = createSecureContext({ key: certificate.key, cert: certificate.cert, maxVersion: 'TLSv1.2' });
-  const strictSecureContext = createSecureContext({ key: certificate.key, cert: certificate.cert });
+  const contextsOf = (certificate) => ({
+    wrapped: createSecureContext({ key: certificate.key, cert: certificate.cert, maxVersion: 'TLSv1.2' }),
+    strict: createSecureContext({ key: certificate.key, cert: certificate.cert }),
+  });
+  // A shared certificate is checked at start. The in-memory one is generated at the first handshake: its
+  // 2048-bit key pair would otherwise block every start, and most runtimes never receive a TDS connection.
+  let contexts = tls ? contextsOf(tls) : null;
+  const secureContext = () => (contexts ??= contextsOf(createSelfSignedCertificate())).wrapped;
+  const strictSecureContext = () => (contexts ??= contextsOf(createSelfSignedCertificate())).strict;
   const stsUrl = `${tlsOrigin ?? origin}/${tenantId}`;
   const apiVersion = `v${version.split('.').slice(0, 2).join('.')}`;
 
@@ -212,6 +222,54 @@ export async function startDataverseTds({
       return rows.map((formatted) => projectRow(table, null, formatted));
     }
 
+    // Tracing (D-R3-8): each statement is a root `http` span on host `tds`, named by its text with literals redacted; the
+    // entity reads it makes are its children. At full the span keeps the text, the parameters and the result shape.
+    const tracing = traces?.enabled === true;
+    const actor = tracing
+      ? { kind: appId ? 'app' : 'staff', id: user.systemuserid, name: user.fullname ?? null }
+      : null;
+    let statements = 0;
+    const root = (name, attributes, input) =>
+      traces.start({
+        kind: 'http',
+        name,
+        module: 'dataverse',
+        operation: 'query',
+        traceId: null,
+        actor,
+        session: { visitorId: null, sessionKey: null },
+        origin: { host: 'tds', portal: null, preset: null },
+        attributes: { actorKind: actor.kind, actorId: actor.id, appId: appId ?? undefined, ...attributes },
+        input,
+      });
+    const statement = tracing
+      ? async (node, run) => {
+          statements += 1;
+          const source = node.source;
+          const span = root(
+            source.redacted,
+            { sql: source.redacted, statementType: node.type, line: node.line },
+            () => ({ sql: source.text, params }),
+          );
+          try {
+            const outcome = await traces.run(span, run);
+            span.set({ rowCount: outcome.rowCount, resultSets: outcome.resultSets.length });
+            span.output(() => ({
+              rowCount: outcome.rowCount,
+              resultSets: outcome.resultSets.map((set) => ({
+                columns: (set.columns ?? []).map((column) => column.name),
+                rows: set.rows?.length ?? 0,
+              })),
+            }));
+            span.end();
+            return outcome;
+          } catch (error) {
+            span.fail(sqlFailure(timedOut ? TIMEOUT : error));
+            throw error;
+          }
+        }
+      : null;
+
     try {
       const catalog = buildCatalog({ store, metadataFields });
       return await executeBatch(sql, {
@@ -222,8 +280,12 @@ export async function startDataverseTds({
         signal: controller.signal,
         now: () => new Date(clock()),
         collation: store.querySettings().collation,
+        statement,
       });
     } catch (error) {
+      // A batch that failed before any statement ran (a syntax error) is one root with the batch text at full only.
+      if (tracing && statements === 0)
+        root('SQL batch', { statementType: null }, () => ({ sql, params })).fail(sqlFailure(error));
       if (timedOut) throw TIMEOUT;
       if (error instanceof DataError) throw sqlError(50000, error.message);
       throw error;

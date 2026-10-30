@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildPreflightReport, preflightExitCode, preflight } from '../lib/capability-report.mjs';
 import { createCapabilityRegistry } from '../lib/capability-registry.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // A fake source graph with one requirement of every graph status and one satisfied component node.
 function fakeGraph() {
@@ -203,7 +204,7 @@ test('exit code 2 when no report was produced', () => {
 });
 
 test('configured values never appear in the report', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'capability-report-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'capability-report-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const secret = 'INVENTED-SECRET-7f3a9c';
   await fs.mkdir(path.join(root, 'Other'), { recursive: true });

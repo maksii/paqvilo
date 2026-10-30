@@ -3,17 +3,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk } from './fixtures/clr-sdk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test(
   'Installed SDK query paging codec preserves constructor, omitted, null and populated states',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-query-paging-'));
+    const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-query-paging-'));
     t.after(() => fs.rm(dir, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(dir, 'PagingProbe.cs'),
       exe = path.join(dir, 'PagingProbe.exe');
     await fs.copyFile(sdk, path.join(dir, 'Microsoft.Xrm.Sdk.dll'));
@@ -37,8 +39,10 @@ var counted=By();counted.PageInfo=new PagingInfo{ReturnTotalRecordCount=true};Ro
 }}`,
     );
     const host = fileURLToPath(new URL('../lib/plugin-clr-host.cs', import.meta.url));
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
+    // An executable over two sources with /main, which compileClr (one library source) does not build.
+    const csc = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe');
+    await promisify(execFile)(
+      csc,
       [
         '/nologo',
         '/target:exe',
@@ -51,16 +55,10 @@ var counted=By();counted.PageInfo=new PagingInfo{ReturnTotalRecordCount=true};Ro
         host,
         source,
       ],
-      { encoding: 'utf8', windowsHide: true, timeout: 20000, maxBuffer: 256 * 1024 },
+      { encoding: 'utf8', windowsHide: true, signal: t.signal },
     );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
-    const result = spawnSync(exe, [], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: ORDINARY_CLR_TIMEOUT_MS,
-      maxBuffer: 256 * 1024,
-    });
-    assert.equal(result.status, 0, result.stdout + result.stderr);
+    // A non-zero exit rejects with the probe's stdout and stderr; the test's own deadline bounds a hung probe.
+    const result = await promisify(execFile)(exe, [], { encoding: 'utf8', windowsHide: true, signal: t.signal });
     assert.deepEqual(JSON.parse(result.stdout), [
       'QueryByAttribute-constructor',
       'QueryExpression-constructor',

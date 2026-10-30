@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createSimulator} from '../../server.mjs';
+import {ownedFixture} from '../../testing/owned-fixture.mjs';
 export const parentId='11111111-1111-1111-1111-111111111111';
 export const otherParentId='22222222-2222-2222-2222-222222222222';
 export const pendingId='33333333-3333-3333-3333-333333333333';
@@ -18,7 +19,8 @@ export function model(){
   return {portal,schemas,state,settings};
 }
 export async function simulatorFixture(t){
-  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'native-grid-'));
+  const directory=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'native-grid-')));
+  ownedFixture(t).remove(()=>fs.rm(directory,{recursive:true,force:true}));
   const {state,settings}=model();
   const files={
     'website.yml':'adx_websiteid: site\nadx_name: Test',
@@ -36,6 +38,6 @@ export async function simulatorFixture(t){
   files['Main.webtemplate.source.html']=bridge+files['Main.webtemplate.source.html'];
   for(const [name,contents]of Object.entries(files))await fs.writeFile(path.join(directory,name),contents);
   const app=await createSimulator({sourceDir:directory,stateFile:path.join(directory,'state.json'),initial:state,watch:false});
-  t.after(async()=>{await app.close();await fs.rm(directory,{recursive:true,force:true});});
+  ownedFixture(t).add(()=>app.close());
   return app;
 }

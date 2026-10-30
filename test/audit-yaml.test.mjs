@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tmpdir } from 'node:os';
 import { inspectSourceYaml } from '../lense/commands/doctor.mjs';
+import { tempDirSync } from './fixture.mjs';
 
 test('source YAML diagnostics skip state, Git, dependencies and deployment profiles by directory name', (t) => {
-  const root = fs.mkdtempSync(path.join(tmpdir(), 'paqvilo-yaml-audit-'));
+  const root = tempDirSync('paqvilo-yaml-audit-');
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const damaged = 'adx_name: One\nadx_name: Two\n';
   for (const directory of [

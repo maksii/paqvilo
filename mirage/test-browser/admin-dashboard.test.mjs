@@ -1,4 +1,4 @@
-// The /_sim/ Infrastructure dashboard against a fake JSON host: topology, node drawer,
+// The /_sim/ Health dashboard against a fake JSON host: topology, node drawer,
 // on-demand preflight, polling, the 503 "starting" state, 390 px layout, and the 404 fallback of an older host.
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -167,7 +167,6 @@ async function open(t, origin, { clock = false } = {}) {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   t.after(() => context.close());
   const page = await context.newPage();
-  page.setDefaultTimeout(10_000);
   // The dashboard polls every 5 s; a fake page clock lets the test trigger each poll.
   if (clock) await page.clock.install();
   const errors = [];
@@ -188,14 +187,18 @@ test(
           : res.end(JSON.stringify(payload(count))),
     });
     const { page, errors } = await open(t, origin, { clock: true });
-    await page.getByRole('heading', { name: 'Infrastructure', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Health', exact: true }).waitFor();
     await page.getByText('The runtime is still starting.', { exact: false }).waitFor();
     assert.equal(
-      await page.getByRole('link', { name: 'Infrastructure', exact: false }).getAttribute('aria-current'),
+      await page.locator('#navigation').getByRole('link', { name: 'Health', exact: true }).getAttribute('aria-current'),
       'page',
     );
 
     await page.getByRole('button', { name: 'Refresh now', exact: true }).click();
+    // D-M-9: banner, compact tiles, then the map as a collapsible card that is open by default.
+    await page.locator('.dm-hero').waitFor();
+    await page.locator('.dm-kpi').first().waitFor();
+    assert.equal(await page.locator('[data-ui-section="health:map"]').evaluate((node) => node.open), true);
     await page.locator('[data-node]').first().waitFor();
     assert.equal(await page.locator('[data-node]').count(), nodes.length, 'one node per payload node');
     const requests = page.locator('.dm-kpi[data-kpi="requests"] .dm-kpi-value');
@@ -205,6 +208,8 @@ test(
     await page.locator('[data-node="host:portal"]').click();
     const drawer = page.locator('#dashboard-node-detail .ui-drawer');
     await drawer.getByRole('heading', { name: 'Power Pages site', exact: true }).waitFor();
+    // The node still names the old #overview address: the drawer opens the view that replaced it.
+    assert.equal(await drawer.getByRole('link', { name: 'Open Home →' }).getAttribute('href'), '#home');
     assert.equal(
       await page.evaluate(() => document.activeElement?.matches('.ui-drawer')),
       true,
@@ -276,15 +281,11 @@ test(
   },
 );
 
-test(
-  'a host answering 404 for the dashboard hides Infrastructure and lands on the overview',
-  { timeout: 60_000 },
-  async (t) => {
-    const { origin } = await host(t, { dashboard: (res) => res.writeHead(404).end('{}') });
-    const { page, errors } = await open(t, origin);
-    await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
-    assert.equal(await page.getByRole('link', { name: 'Infrastructure', exact: false }).count(), 0);
-    await page.getByRole('link', { name: 'Data records', exact: true }).waitFor();
-    assert.deepEqual(errors, []);
-  },
-);
+test('a host answering 404 for the dashboard hides Health and lands on Home', { timeout: 60_000 }, async (t) => {
+  const { origin } = await host(t, { dashboard: (res) => res.writeHead(404).end('{}') });
+  const { page, errors } = await open(t, origin);
+  await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
+  assert.equal(await page.locator('#navigation').getByRole('link', { name: 'Health', exact: true }).count(), 0);
+  await page.getByRole('link', { name: 'Data records', exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});

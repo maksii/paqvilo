@@ -14,7 +14,7 @@ import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { createPowerFxEvaluator } from '../lib/canvas-power-fx.mjs';
 import { importSolutionData } from '../lib/solution-data.mjs';
 import { parseCustomApiFiles, parseFxExpressionFiles } from '../lib/dataverse-customapi.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const FX = '77777777-7777-4777-8777-777777777741';
@@ -40,7 +40,7 @@ const files = {
 };
 
 async function organization(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'customapi-fxexpression-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'customapi-fxexpression-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, text] of Object.entries(files)) {
     await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true });

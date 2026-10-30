@@ -334,7 +334,9 @@ export function seed(store) {
 
 export function install(api) {
   api.recordHooks?.add('beforeWrite', standardCreateDefaults);
-  return api.store.transact(() => seed(api.store));
+  // Organization composition discards installer results. Its unpublished graph
+  // needs no returned snapshot; public install/reset calls remain detached.
+  return api.store.transact(() => seed(api.store), { cloneResult: !api.store.isInitializing?.() });
 }
 
 export function reset(api) {

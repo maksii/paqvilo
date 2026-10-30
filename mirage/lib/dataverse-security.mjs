@@ -1,7 +1,7 @@
 import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse security model: organization, business units, roles, privileges
 // and the depth-based checks the Dataverse layer runs before it calls the store.
-import { createHash } from 'node:crypto';
+import { hash } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { standardTable } from './solution-standard.mjs';
 import { relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
@@ -55,6 +55,77 @@ const ROLE_NAMES = ['System Administrator', 'System Customizer', 'Basic User'];
 // except the three System Administrator only privileges: the two bypass privileges and prvBulkDelete (a system
 // administrator has BulkDelete by default; other users, System Customizer included, must be granted it).
 const SYSTEM_ADMINISTRATOR_ONLY = new Set(['prvBypassCustomPlugins', 'prvBypassCustomBusinessLogic', 'prvBulkDelete']);
+
+// Under a bulk span (one span per bulk message or BulkDelete job; docs/design/tracing.md, D-R3-11) the per-row permission
+// decisions and commits are never one event each: the first of each type is one event (`permission` result 'evaluated',
+// `commit`; a first denial keeps its own deny event with the reason), and the running counts are the span's structured
+// attributes `permissions` { evaluated, allowed, denied, filtered, tables } and `commits` { count, failed, eventsStaged };
+// declarative `rule` and `business-rule` evaluations likewise ({ count, failed, tables, ids } as `rules`, `businessRules`).
+const bulkTallies = new WeakMap();
+/**
+ * Records one permission decision or commit (`type` 'permission' | 'commit', its event attributes and message) on span: an
+ * aggregate on a bulk span, else one event. Returns span.
+ */
+export function traceDecision(span, type, { attributes = {}, message } = {}) {
+  if (!span) return span;
+  if (span.kind !== 'bulk') return span.event(type, { message, attributes });
+  let tally = bulkTallies.get(span);
+  if (!tally) {
+    tally = {
+      permissions: { evaluated: 0, allowed: 0, denied: 0, filtered: 0, tables: [] },
+      first: new Set(),
+    };
+    bulkTallies.set(span, tally);
+  }
+  if (type === 'permission') {
+    const counts = tally.permissions,
+      result = attributes.result;
+    counts.evaluated++;
+    if (result === 'allow') counts.allowed++;
+    else if (result === 'deny') counts.denied++;
+    else if (result === 'filtered') counts.filtered++;
+    if (attributes.table && !counts.tables.includes(attributes.table) && counts.tables.length < 100)
+      counts.tables.push(attributes.table);
+    if (!tally.first.has('permission')) {
+      tally.first.add('permission');
+      span.event('permission', {
+        attributes: {
+          result: 'evaluated',
+          table: attributes.table,
+          operation: attributes.operation,
+          model: attributes.model,
+          aggregated: true,
+        },
+      });
+    }
+    if (result === 'deny' && !tally.first.has('deny')) {
+      tally.first.add('deny');
+      span.event('permission', { message, attributes });
+    }
+    return span.set({ permissions: counts });
+  }
+  // A commit, a declarative rule or a business rule: { count, failed, tables, ids (the first ten records) } under the
+  // attribute TALLIED names (a commit also sums eventsStaged).
+  const counts = (tally[type] ??= {
+    count: 0,
+    failed: 0,
+    ...(type === 'commit' ? { eventsStaged: 0 } : { tables: [], ids: [] }),
+  });
+  counts.count++;
+  if (attributes.error || attributes.mode === 'error' || attributes.result === 'rejected') counts.failed++;
+  if (type === 'commit') counts.eventsStaged += Number(attributes.eventsStaged) || 0;
+  else {
+    if (attributes.table && !counts.tables.includes(attributes.table) && counts.tables.length < 100)
+      counts.tables.push(attributes.table);
+    if (attributes.recordId != null && counts.ids.length < 10) counts.ids.push(String(attributes.recordId));
+  }
+  if (!tally.first.has(type)) {
+    tally.first.add(type);
+    span.event(type, { message, attributes: { ...attributes, aggregated: true } });
+  }
+  return span.set({ [TALLIED[type] ?? `${type}s`]: counts });
+}
+const TALLIED = { commit: 'commits', rule: 'rules', 'business-rule': 'businessRules' };
 const GLOBAL_PRIVILEGES = [
   'prvActOnBehalfOfAnotherUser',
   'prvBypassCustomPlugins',
@@ -256,15 +327,20 @@ const declaredOnly = (values, mapping) =>
   mapping?.fields
     ? Object.fromEntries(Object.entries(values).filter(([name]) => Object.hasOwn(mapping.fields, name)))
     : values;
+const namespaceBytes = new Map();
 /** RFC 4122 version 5 (SHA-1, name-based) GUID, lowercase. */
 export function uuidV5(namespace, name) {
-  const hex = String(namespace).replace(/[{}-]/g, '');
-  if (!/^[0-9a-f]{32}$/i.test(hex)) throw new DataError(`Invalid namespace GUID: ${namespace}`, 400, 'InvalidRequest');
-  const bytes = createHash('sha1')
-    .update(Buffer.from(hex, 'hex'))
-    .update(String(name), 'utf8')
-    .digest()
-    .subarray(0, 16);
+  let prefix = namespaceBytes.get(namespace);
+  if (!prefix) {
+    const hex = String(namespace).replace(/[{}-]/g, '');
+    if (!/^[0-9a-f]{32}$/i.test(hex))
+      throw new DataError(`Invalid namespace GUID: ${namespace}`, 400, 'InvalidRequest');
+    prefix = Buffer.from(hex, 'hex');
+    // A process sees a few namespaces (its organizations and fixed ones); the bound only caps memory.
+    if (typeof namespace === 'string' && namespaceBytes.size < 256) namespaceBytes.set(namespace, prefix);
+  }
+  // One-shot SHA-1 of the namespace bytes and the UTF-8 name: the same digest without a Hash object per id.
+  const bytes = hash('sha1', Buffer.concat([prefix, Buffer.from(String(name), 'utf8')]), 'buffer').subarray(0, 16);
   bytes[6] = (bytes[6] & 0x0f) | 0x50;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
   const h = bytes.toString('hex');
@@ -1319,6 +1395,13 @@ function privilegeMapOf(idx, uid) {
   return map;
 }
 
+function privilegeCountOf(idx, uid) {
+  const { direct, team } = grantsOf(idx, uid);
+  let count = direct.size;
+  for (const name of team.keys()) if (!direct.has(name)) count++;
+  return count;
+}
+
 function chainOf(idx, root) {
   if (!idx.chains.has(root)) {
     const out = new Set(),
@@ -1535,7 +1618,7 @@ function privilegeDenied(idx, settings, user, logical, name, schema) {
   const uid = key(user.systemuserid);
   return privilegeDeniedError(user, name, logical, {
     roleCount: rolesOf(idx, uid).size,
-    privilegeCount: privilegeMapOf(idx, uid).size,
+    privilegeCount: privilegeCountOf(idx, uid),
     objectTypeCode: settings?.objectTypeCode?.(logical) ?? DEFAULT_OTC,
     displayName: schema?.displayName ?? logical,
   });
@@ -1659,7 +1742,12 @@ function parentRowOf(store, logical, row) {
   const find = (table, id) => {
     const idColumn =
       store.state.mappings[table]?.idColumn ?? standardTableDef(table)?.primaryIdAttribute ?? `${table}id`;
-    const hit = (store.state.tables[table] ?? []).find((r) => sameId(r[idColumn], id) || sameId(r.activityid, id));
+    // A row keyed by the id is found through the primary key index; the scan also finds a row by its activityid.
+    const mapping = store.state.mappings[table];
+    const keyed =
+      mapping && typeof id === 'string' ? store.primaryKeySubset({ ...mapping, logicalName: table }, [id]) : null;
+    const hit =
+      keyed?.[0] ?? (store.state.tables[table] ?? []).find((r) => sameId(r[idColumn], id) || sameId(r.activityid, id));
     return hit ? { logical: table, row: hit } : null;
   };
   if (logical === 'activityparty') {
@@ -1717,13 +1805,14 @@ export function createPrincipals(store, settings = {}) {
     const owned = ownershipOf(logical, schema, m) === 'user';
     const grants = names.flatMap((n) => grantsNamed(index, user, n, { hierarchy: (Boolean(row) || filter) && owned }));
     if (!grants.length) throw privilegeDenied(index, settings, user, logical, name, schema);
-    if (!row || ownershipOf(logical, schema, m) === 'org') return { m, grants, depth: deepest(grants) };
+    if (!row || ownershipOf(logical, schema, m) === 'org')
+      return { m, grants, depth: deepest(grants), privilege: name };
     const idColumn = m.idColumn ?? `${logical}id`;
     const admitting = grants.filter((g) => g.admits(row));
-    if (admitting.length) return { m, grants: admitting, depth: deepest(admitting) };
+    if (admitting.length) return { m, grants: admitting, depth: deepest(admitting), privilege: name };
     if (!sharedWith(index, key(user.systemuserid), row, idColumn, OPERATION_RIGHT[operation] ?? operation))
       throw accessDenied(user, operation, row, idColumn, logical);
-    return { m, grants, depth: deepest(grants) };
+    return { m, grants, depth: deepest(grants), privilege: name };
   }
 
   return {
@@ -1786,9 +1875,23 @@ export function createPrincipals(store, settings = {}) {
      * assign with a team `target` also checks that the team can own records (an access team cannot).
      */
     authorize(options) {
-      const { depth } = gate(options.user, options.entity, options.operation, options);
-      if (options.operation === 'assign' && options.target?.logical_name === 'team')
-        assertTeamCanOwn(store, options.target.id);
+      // Tracing: the decision is an event on the current span (docs/design/tracing.md), never a span of its own.
+      // At level off the store is never asked for its current span (one property read).
+      const span = store.traces?.enabled ? store.traces.current() : null;
+      const decided = (result, facts) =>
+        traceDecision(span, 'permission', {
+          attributes: { table: options.entity, operation: options.operation, result, model: 'dataverse', ...facts },
+        });
+      let depth, privilege;
+      try {
+        ({ depth, privilege } = gate(options.user, options.entity, options.operation, options));
+        if (options.operation === 'assign' && options.target?.logical_name === 'team')
+          assertTeamCanOwn(store, options.target.id);
+      } catch (error) {
+        decided('deny', { depth: null, privilege: error.details?.privilege ?? null, code: error.code ?? null });
+        throw error;
+      }
+      decided('allow', { depth, privilege: privilege ?? null });
       return depth;
     },
 

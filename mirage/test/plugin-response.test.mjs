@@ -4,12 +4,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { createHash } from 'node:crypto';
 import { captureSdkResponse, handoffPluginResponse } from '../lib/plugin-response.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001',
   changed = '20000000-0000-0000-0000-000000000002',
@@ -201,11 +202,11 @@ test('Cascaded same-table child Delete outputs do not become root SDK Delete Res
 
 test(
   'Original DLL SDK callers receive post-operation Results, deletions, typed custom values and isolated nested/failing responses',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-original-response-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-original-response-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'ResponseOriginal.cs'),
       assembly = path.join(root, 'ResponseOriginal.dll');
     await fs.writeFile(
@@ -228,21 +229,7 @@ else if(c.MessageName=="CreateMultiple")output["Ids"]=new[]{new Guid("${changed}
 else{var e=c.MessageName=="Retrieve"?(Entity)output["BusinessEntity"]:((EntityCollection)output["BusinessEntityCollection"]).Entities[0];if(c.OwningExtension.Name=="Last observer"){if(e.GetAttributeValue<string>("title")!="Handler changed")throw new Exception("Ranked read became stale");output["last"]=new OptionSetValue(7);}else e["title"]="CLR changed";}}}
 }`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      build = spawnSync(
-        compiler,
-        [
-          '/nologo',
-          '/target:library',
-          '/out:' + assembly,
-          '/reference:' + sdk,
-          '/reference:System.ServiceModel.dll',
-          '/reference:System.Runtime.Serialization.dll',
-          source,
-        ],
-        { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000 },
-      );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk, 'System.ServiceModel.dll', 'System.Runtime.Serialization.dll'] });
     const descriptor = (typeName) => ({
       trust: 'execute-local-assembly',
       root,
@@ -357,7 +344,7 @@ else{var e=c.MessageName=="Retrieve"?(Entity)output["BusinessEntity"]:((EntityCo
       if (mode === 'read') assert.equal(store.snapshot().tables.secondary[0].title, 'Read stored');
     }
     const hosts = notes.filter((note) => note.code === 'PLUGIN_CLR_HOST_STOPPED');
-    assert.ok(hosts.length >= 20);
+    assert.equal(hosts.length, 24, 'one owned host per CLR step invocation of the scenarios above');
     assert.ok(hosts.every((note) => note.absenceVerified));
     if (process.env.PAQ_TEST_CLR_EVIDENCE) {
       const hash = async (file) =>

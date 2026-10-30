@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { chromium } from 'playwright-core';
+import { windowsLaunchOptions } from '../mirage/lib/browser-launch.mjs';
 import { interceptOrigin } from './intercept.mjs';
 import { createInspectionProvenanceTransport } from './inspection-provenance-transport.mjs';
 import { refreshUrl } from './navigation.mjs';
@@ -54,20 +55,23 @@ export async function openBrowser(cfg, overrides = {}) {
   if (debugPort) args.push(`--remote-debugging-port=${debugPort}`, '--remote-debugging-address=127.0.0.1');
   let context;
   try {
-    context = await chromium.launchPersistentContext(profileDir, {
-      channel: b.channel === 'chromium' ? undefined : b.channel,
-      headless,
-      // Desktop sessions use the browser sandbox. Linux headless fixture runners can
-      // run inside containers without an available Chromium user-namespace sandbox.
-      chromiumSandbox: process.platform === 'win32' || !headless,
-      viewport: headless ? { width: 1440, height: 900 } : null,
-      // a service worker would answer requests before the overlay sees them
-      serviceWorkers: 'block',
-      // An explicit development opt-in is needed when local edits invalidate the portal's CSP.
-      bypassCSP: Boolean(b.bypassCSP),
-      ignoreDefaultArgs: ['--enable-automation'],
-      args,
-    });
+    context = await chromium.launchPersistentContext(
+      profileDir,
+      windowsLaunchOptions({
+        channel: b.channel === 'chromium' ? undefined : b.channel,
+        headless,
+        // Desktop sessions use the browser sandbox. Linux headless fixture runners can
+        // run inside containers without an available Chromium user-namespace sandbox.
+        chromiumSandbox: process.platform === 'win32' || !headless,
+        viewport: headless ? { width: 1440, height: 900 } : null,
+        // a service worker would answer requests before the overlay sees them
+        serviceWorkers: 'block',
+        // An explicit development opt-in is needed when local edits invalidate the portal's CSP.
+        bypassCSP: Boolean(b.bypassCSP),
+        ignoreDefaultArgs: ['--enable-automation'],
+        args,
+      }),
+    );
   } catch (err) {
     const first = err.message.split('\n')[0];
     if (

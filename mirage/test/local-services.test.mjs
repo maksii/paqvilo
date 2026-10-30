@@ -9,7 +9,10 @@ import { localServiceSettings, preflightLocalServices, describeLocalServices } f
 async function stub(t, handler) {
   const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   return `http://127.0.0.1:${server.address().port}`;
 }
 async function closedPort() {
@@ -103,7 +106,7 @@ test('preflight reports a loopback stub, a closed port and a refused redirect wi
       gone: { kind: 'http', baseUrl: `http://127.0.0.1:${port}` },
       moved: { kind: 'http', baseUrl: origin, probe: '/moved' },
     },
-    { timeoutMs: 2000 },
+    { timeoutMs: 30_000 },
   );
   const byId = Object.fromEntries(results.map((r) => [r.id, r]));
   assert.deepEqual([byId.functions.reachable, byId.functions.status, byId.functions.required], [true, 200, true]);

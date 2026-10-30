@@ -1,4 +1,5 @@
-import { ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+import { makeTemporaryDirectorySync, ownedFixture, drainFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,18 +9,22 @@ import http from 'node:http';
 import { once } from 'node:events';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { loadDevTargets } from '../lense/config.mjs';
 import { openBrowser } from '../lense/browser.mjs';
 import { startDevSessions } from '../lense/dev-sessions.mjs';
 import { readDiscovery } from '../lense/commands/agent.mjs';
 import { createFixture, HOME_ID } from '../test/fixture.mjs';
+import { servesAgentSession } from './helpers/agent-endpoint.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
 
 const APP = 'web-files/app.js';
 const CSS = 'web-files/theme.css';
 const script = (value) => `window.localSite = ${JSON.stringify(value)};\n`;
 const style = (color) => `#theme { color: ${color}; }\n`;
+// lense/dev-sessions.mjs rebuilds a failed portal activation only after this interval.
+const ACTIVATION_RETRY_COOLDOWN_MS = 5000;
 
 async function serve(name, servers, { redirectTo, markup = '' } = {}) {
   const requests = [];
@@ -55,7 +60,7 @@ test(
   'headless checks preserve the saved headed window placement in owned and selected external profiles',
   { timeout: 60_000 },
   async (t) => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-headless-placement-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-headless-placement-'));
     const servers = [];
     let browser;
     ownedFixture(t).add(async () => {
@@ -70,7 +75,7 @@ test(
       );
     });
     ownedFixture(t).remove(async () => {
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
     const fixture = await serve('placement', servers);
     const launch = chromium.launchPersistentContext;
@@ -136,7 +141,7 @@ test(
   'one catalogue browser isolates lazy portal sessions, environments, panels, APIs and source refreshes',
   { timeout: 180_000 },
   async (t) => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-multi-portal-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-multi-portal-'));
     const alpha = createFixture();
     const beta = createFixture();
     const servers = [];
@@ -168,7 +173,7 @@ test(
       beta.cleanup();
     });
     ownedFixture(t).remove(async () => {
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
     const [alphaDev, alphaTest, betaDev, betaExtra, foreign] = await Promise.all(
       ['alpha-dev', 'alpha-test', 'beta-dev', 'beta-extra', 'foreign'].map((name) => serve(name, servers)),
@@ -241,7 +246,6 @@ test(
       'all-portal mode uses a dedicated catalogue profile',
     );
     const { context } = browser;
-    context.setDefaultTimeout(20_000);
     const contextPageListeners = context.listenerCount('page');
     const errors = [];
     const observe = (page) => page.on('pageerror', (error) => errors.push(error.message));
@@ -346,7 +350,7 @@ test(
         window.keepOnCssSwap = true;
       });
     }
-    const refreshed = (record) => once(record.session, 'refreshed', { signal: AbortSignal.timeout(30_000) });
+    const refreshed = (record) => once(record.session, 'refreshed');
     const cssRefreshes = [refreshed(alphaRecord), refreshed(alphaTestRecord)];
     alpha.write(CSS, style('rgb(70, 80, 90)'));
     for (const [event] of await Promise.all(cssRefreshes)) assert.equal(event.how, 'css');
@@ -482,15 +486,7 @@ test(
     for (const discovery of discoveries)
       assert.equal(fs.existsSync(discovery.file), false, 'agent discovery is removed');
     for (const discovery of discoveries)
-      await assert.rejects(
-        fetch(discovery.endpoint + '/v1/session', {
-          redirect: 'error',
-          headers: { authorization: `Bearer ${discovery.token}` },
-          signal: AbortSignal.timeout(1000),
-        }),
-        /fetch failed/,
-        'agent API listener is closed',
-      );
+      assert.equal(await servesAgentSession(discovery), false, 'agent API listener is closed');
     context.off('page', observe);
     assert.equal(
       context.listenerCount('page'),
@@ -532,7 +528,7 @@ test(
   'all-day navigation retains template edits after commit and recovers a restored checkout without restart',
   { timeout: 90_000 },
   async (t) => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-all-day-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-all-day-'));
     const alpha = createFixture();
     const beta = createFixture();
     const hidden = `${beta.dir}-temporarily-missing`;
@@ -563,7 +559,7 @@ test(
       beta.cleanup();
     });
     ownedFixture(t).remove(async () => {
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
     const header = 'web-templates/header/Header.webtemplate.source.html';
     const original = '<h2 id="work-status">Initial status</h2>\n';
@@ -636,8 +632,11 @@ test(
     assert.equal(runtime.active.size, 1, 'an unavailable unused portal does not stop the working portal');
     assert.ok(logs.some((line) => line.includes('Restore the checkout and reload')));
     fs.renameSync(hidden, beta.dir);
-    // dev-sessions retries a failed activation only after its 5 s cooldown.
-    await new Promise((resolve) => setTimeout(resolve, 5100));
+    // dev-sessions retries a failed activation only after its 5 s wall-clock cooldown. Move
+    // the clock forward past it instead of sleeping; a forward jump is ordinary elapsed time
+    // for every other Date-based measurement in this process.
+    const realNow = Date.now;
+    t.mock.method(Date, 'now', () => realNow.call(Date) + ACTIVATION_RETRY_COOLDOWN_MS);
     await main.goto(betaServer.origin);
     await main.waitForFunction(() => window.localSite === 'beta-restored');
     assert.equal(runtime.active.size, 2, 'the restored portal activates in the same browser');
@@ -652,7 +651,7 @@ test(
   'actual dev CLI activates catalogue navigation and agent stop tears down the whole browser',
   { timeout: 90_000 },
   async (t) => {
-    const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-multi-cli-'));
+    const work = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'pp-multi-cli-'));
     const fixture = createFixture();
     const servers = [];
     const toolkit = fileURLToPath(new URL('..', import.meta.url));
@@ -668,9 +667,9 @@ test(
           !['NODE_OPTIONS', 'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NODE_USE_ENV_PROXY'].includes(key),
       ),
     );
-    const waitFor = async (check, message, timeout = 30_000) => {
-      const deadline = Date.now() + timeout;
-      while (Date.now() < deadline) {
+    // Polls until the check passes; only the test's own timeout ends a wait that never does.
+    const waitFor = async (check, message) => {
+      while (!t.signal.aborted) {
         if (child?.exitCode !== null) throw new Error(`dev exited early (${child?.exitCode}): ${output}`);
         const result = await check();
         if (result) return result;
@@ -704,7 +703,7 @@ test(
         await new Promise((resolve) => server.close(resolve));
       }
       fixture.cleanup();
-      fs.rmSync(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      fs.rmSync(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
     const beta = await serve('cli-beta', servers);
     const alpha = await serve('cli-alpha', servers, { redirectTo: beta.origin });
@@ -724,16 +723,12 @@ test(
     );
     // The process executes the actual CLI. A test-only preload restricts Chromium background
     // traffic; production launch/config/runtime/agent/shutdown code runs without substitution.
-    const preload = path.join(work, 'loopback-browser.mjs');
-    fs.writeFileSync(
-      preload,
-      `import { chromium } from ${JSON.stringify(import.meta.resolve('playwright-core'))};\nconst launch = chromium.launchPersistentContext;\nchromium.launchPersistentContext = function(profile, options) { return launch.call(this, profile, {...options, proxy: {server: ${JSON.stringify(alpha.origin)}, bypass: '127.0.0.1,localhost'}, args: [...options.args, '--disable-background-networking', '--disable-component-update', '--disable-sync', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost']}); };\n`,
-    );
+    const preload = new URL('./helpers/browser-loopback-preload.mjs', import.meta.url).href;
     child = spawn(
       process.execPath,
       [
         '--import',
-        pathToFileURL(preload).href,
+        preload,
         'lense/cli.mjs',
         'dev',
         '--config',
@@ -744,7 +739,12 @@ test(
         '--debug-port',
         '0',
       ],
-      { cwd: toolkit, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
+      {
+        cwd: toolkit,
+        env: { ...env, PAQVILO_TEST_LOOPBACK_PROXY: alpha.origin },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      },
     );
     childDone = new Promise((resolve, reject) => {
       child.once('exit', (code, signal) => resolve({ code, signal }));
@@ -803,16 +803,10 @@ test(
     const stopped = await promisify(execFile)(
       process.execPath,
       ['lense/cli.mjs', 'agent', 'stop', '--session', betaAgent.file],
-      { cwd: toolkit, env, windowsHide: true, timeout: 15_000 },
+      { cwd: toolkit, env, windowsHide: true, signal: t.signal },
     );
     assert.ok(JSON.parse(stopped.stdout), 'the actual agent CLI returns structured stop output');
-    let exitTimer;
-    const finished = await Promise.race([
-      childDone,
-      new Promise((_, reject) => {
-        exitTimer = setTimeout(() => reject(new Error(`dev did not stop: ${output}`)), 15_000);
-      }),
-    ]).finally(() => clearTimeout(exitTimer));
+    const finished = await childDone;
     assert.equal(finished.code, 0, output);
     for (const discovery of discoveries)
       assert.equal(fs.existsSync(discovery.file), false, 'stop from one portal removes every browser-owned agent');

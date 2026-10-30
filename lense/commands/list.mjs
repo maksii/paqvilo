@@ -10,6 +10,16 @@ import { scanSolutionSources } from '../../mirage/lib/solution-schema.mjs';
 import { inventoryCounts } from '../model-driven.mjs';
 import { miragePaths } from './mirage.mjs';
 
+// Catalogue URLs and first-tab paths may contain private query values. They are
+// displayed for selection, but the query itself is not needed to identify them.
+function displayLocation(value) {
+  if (typeof value !== 'string') return value;
+  const query = value.indexOf('?');
+  const fragment = value.indexOf('#');
+  const end = [query, fragment].filter((index) => index >= 0).reduce((a, b) => Math.min(a, b), value.length);
+  return value.slice(0, end) + (query >= 0 && (fragment < 0 || query < fragment) ? '?[redacted]' : '');
+}
+
 /** Portal extracts in the repository, whether configured or not. */
 export function discoverExtracts(startDir) {
   let root = startDir;
@@ -88,7 +98,12 @@ export default async function list(_cfg, args) {
     source: site.sourceDir,
     format: site.sourceDir ? detectFormat(site.sourceDir) : null,
     defaultEnv: site.defaultEnv ?? Object.keys(site.environments)[0] ?? null,
-    environments: Object.entries(site.environments).map(([env, e]) => ({ name: env, ...e })),
+    environments: Object.entries(site.environments).map(([env, e]) => ({
+      name: env,
+      ...e,
+      url: displayLocation(e.url),
+      ...(e.startPath !== undefined ? { startPath: displayLocation(e.startPath) } : {}),
+    })),
     mirage: mirageOf(site),
     mirageOnly: mirageOnlySite(site),
   }));
@@ -100,6 +115,7 @@ export default async function list(_cfg, args) {
     miragePaths(null, { config: catalogue.configFile }).discoveryRoot,
     'cache/solution-discovery.json',
   );
+  const writesFiles = new Set();
   for (const site of sites) {
     const roots = site.mirage.resolved.solutionRoots;
     if (!roots.length) continue;
@@ -109,7 +125,7 @@ export default async function list(_cfg, args) {
         order: site.mirage.resolved.solutionOrder ?? 'derived',
       });
       try {
-        await scan.cache?.save({ prune: false });
+        if (await scan.cache?.save({ prune: false })) writesFiles.add(cacheFile);
       } catch {
         /* the cache only saves parsing time */
       }
@@ -136,12 +152,18 @@ export default async function list(_cfg, args) {
       source: target.sourceDir,
       scope: target.site.scope,
       baseline: target.site.markup.baseline,
-      startPath: target.site.startPath,
+      startPath: displayLocation(target.site.startPath),
       caution: target.caution,
       initial: target === inEffect,
     })),
   };
   const profileInfo = inEffect ? browserProfileInfo(inEffect) : null;
+  const settings = Object.fromEntries(
+    Object.entries(catalogue.settings.values).map(([key, value]) => [
+      key,
+      key === 'PAQVILO_START_PATH' || /^(?:https?|wss?):\/\//i.test(value) ? displayLocation(value) : value,
+    ]),
+  );
 
   if (args.json) {
     let resolved;
@@ -158,6 +180,7 @@ export default async function list(_cfg, args) {
           ok: usable,
           errors: usable ? [] : [{ code: problemCode, message: problem ?? 'No usable site and environment' }],
           offline: true,
+          writesFiles: [...writesFiles],
           sourceRoot: catalogue.sourceRoot,
           resolved,
           sites,
@@ -198,7 +221,7 @@ export default async function list(_cfg, args) {
           },
           coverage,
           problem,
-          settings: catalogue.settings.values,
+          settings,
           ...(args.settings
             ? {
                 supportedSettings: {
@@ -287,7 +310,7 @@ export default async function list(_cfg, args) {
       `  ${target.initial ? '*' : ' '} ${target.site} @ ${target.env}  ${target.origin}  <- ${rel(target.source)}`,
     );
 
-  const set = Object.entries(catalogue.settings.values);
+  const set = Object.entries(settings);
   if (set.length) {
     console.log('\nyour settings:');
     for (const [key, value] of set) console.log(`  ${key}=${value}   (${catalogue.settings.origin[key]})`);

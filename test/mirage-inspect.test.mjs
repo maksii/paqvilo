@@ -2,11 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { createFixture } from './fixture.mjs';
+import { runToolkit } from './toolkit-cli.mjs';
 import { inspectProcessResult } from '../lense/commands/mirage.mjs';
-import { withProcessSlot } from '../mirage/test/process-slots.mjs';
 
 test('Lense Mirage inspect retains invalid-source diagnostic reports and the failing exit status', async (t) => {
   const fixture = createFixture();
@@ -20,22 +18,8 @@ test('Lense Mirage inspect retains invalid-source diagnostic reports and the fai
       sites: { invented: { source: '.', environments: { local: 'http://127.0.0.1:8787' } } },
     }),
   );
-  const cli = fileURLToPath(new URL('../lense/cli.mjs', import.meta.url));
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_') && !key.startsWith('GIT_')),
-  );
-  const run = (...args) =>
-    withProcessSlot(
-      () =>
-        new Promise((resolve) =>
-          execFile(
-            process.execPath,
-            [cli, 'mirage', 'inspect', '--config', config, ...args],
-            { encoding: 'utf8', windowsHide: true, env, timeout: 15000 },
-            (error, stdout, stderr) => resolve({ status: error ? error.code : 0, stdout, stderr }),
-          ),
-        ),
-    );
+  // runToolkit's hang guard leaves room for a loaded machine, where one inspect has taken longer than 15 s.
+  const run = (...args) => runToolkit('mirage', 'inspect', '--config', config, ...args);
   const [result, human] = await Promise.all([run('--json'), run()]);
   assert.equal(result.status, 1, result.stdout + result.stderr);
   const report = JSON.parse(result.stdout);
@@ -44,14 +28,19 @@ test('Lense Mirage inspect retains invalid-source diagnostic reports and the fai
   assert.equal(report.ok, false);
   assert.equal(report.offline, true);
   assert.deepEqual(report.writesFiles, []);
-  assert.ok(report.pages.length > 0);
+  assert.deepEqual(
+    report.pages.map((page) => page.url).sort(),
+    ['/', '/', '/about-us/', '/scripts/'],
+    'the fixture pages are still reported beside the diagnostic',
+  );
   assert.ok(
     report.diagnostics.some(
       (item) => item.code === 'invalid-yaml' && path.basename(item.file) === 'broken.sitesetting.yml',
     ),
   );
   assert.ok(report.errors.some((item) => item.code === 'invalid-yaml' && typeof item.message === 'string'));
-  assert.equal(human.status, 1);
+  assert.equal(human.status, 1, `stdout: ${human.stdout}\nstderr: ${human.stderr}`);
+  assert.ok(human.stdout, `inspect returned no report (status ${human.status}); stderr: ${human.stderr}`);
   assert.ok(JSON.parse(human.stdout).diagnostics.some((item) => item.code === 'invalid-yaml'));
   fs.unlinkSync(fixture.file('broken.sitesetting.yml'));
   const healthy = await run('--json');

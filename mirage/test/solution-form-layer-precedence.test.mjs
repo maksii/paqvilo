@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const FORM = '77777777-7777-4777-8777-777777777777';
 const manifest = (name) =>
@@ -14,7 +15,7 @@ const systemForm = (label) =>
   `<systemform><formid>{${FORM}}</formid><type>2</type><LocalizedNames><LocalizedName description="${label}" languagecode="1033"/></LocalizedNames><form><tabs><tab name="${label}"/></tabs></form></systemform>`;
 
 async function layers(t, { fileIn, embeddedIn }) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'solution-form-precedence-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'solution-form-precedence-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const write = async (relative, text) => {
     await fs.mkdir(path.dirname(path.join(root, relative)), { recursive: true });

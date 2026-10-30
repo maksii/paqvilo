@@ -1,17 +1,18 @@
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { DataStore } from '../lib/data.mjs';
 import { prepareClrRuntime, validateClrDescriptor, dispatchSdkCall, recordToSdkEntity } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { sdkValueToRecord, localOrganizationService } from '../lib/local-organization-service.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
 const user = '10000000-0000-0000-0000-000000000001',
   rowId = '20000000-0000-0000-0000-000000000001',
   stepId = '30000000-0000-0000-0000-000000000001';
@@ -214,10 +215,10 @@ test('Internal backend Delete authorization does not dispatch a phantom Retrieve
 });
 test(
   'Original compiled DLL executes context, service calls, images and rollback; timeout closes its host',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
-      root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-clr-fixture-'));
+    const sdk = clrSdk(),
+      root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-clr-fixture-'));
     ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
     const source = path.join(root, 'Original.cs');
     await fs.writeFile(
@@ -225,22 +226,9 @@ test(
       `using System;using System.Threading;using System.ServiceModel;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;
 namespace Invented {public sealed class Original:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var trace=(ITracingService)services.GetService(typeof(ITracingService));var target=(Entity)c.InputParameters["Target"];var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);trace.Trace("Original DLL stage {0}",c.Stage);try{service.Retrieve("secondary",new Guid("20000000-0000-0000-0000-000000000099"),new ColumnSet("title"));throw new InvalidPluginExecutionException("Missing SDK fault");}catch(FaultException<OrganizationServiceFault> fault){if(fault.Detail.ErrorCode!=unchecked((int)0x80040217))throw new InvalidPluginExecutionException("Wrong SDK fault code");}if(target.GetAttributeValue<string>("title")=="timeout")Thread.Sleep(10000);if(c.MessageName=="Update"&&c.PreEntityImages["before"].GetAttributeValue<string>("title")!="Good")throw new InvalidPluginExecutionException("Image mismatch");if(target.GetAttributeValue<string>("title")=="prevalidation-reject"){if(c.IsInTransaction)throw new InvalidPluginExecutionException("Wrong top-level transaction flag");var independent=new Entity("secondary",new Guid("${rowId}"));independent["title"]="Independent";service.Update(independent);throw new InvalidPluginExecutionException("Top-level PreValidation rejection");}c.SharedVariables["beforeRpc"]=new Money(19.25m);var row=service.Retrieve("secondary",new Guid("${rowId}"),new ColumnSet("title"));row["title"]="Changed";service.Update(row);var query=new QueryExpression("secondary"){ColumnSet=new ColumnSet("title")};query.Criteria.AddCondition("title",ConditionOperator.Equal,"Changed");var selected=service.RetrieveMultiple(query);if(selected.Entities.Count!=1||selected.Entities[0].Id!=new Guid("${rowId}")||selected.Entities[0].Attributes.Contains("secondaryid"))throw new InvalidPluginExecutionException("Query mismatch");c.SharedVariables["seen"]=new Money(7.5m);c.SharedVariables["long"]=9007199254740993L;c.SharedVariables["multi"]=new OptionSetValueCollection{new OptionSetValue(2),new OptionSetValue(4)};c.OutputParameters["probe"]=new OptionSetValue(3);if(target.GetAttributeValue<string>("title")=="reject")throw new InvalidPluginExecutionException("Original DLL rejected after service write");target["title"]=target.GetAttributeValue<string>("title").Trim();}}public sealed class Reader:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if((long)c.SharedVariables["long"]!=9007199254740993L||((OptionSetValueCollection)c.SharedVariables["multi"])[1].Value!=4||((Money)c.SharedVariables["seen"]).Value!=7.5m||((OptionSetValue)c.OutputParameters["probe"]).Value!=3)throw new InvalidPluginExecutionException("Typed frame did not survive rank/stage");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Reader stage {0}",c.Stage);}}public sealed class RetrieveObserver:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(c.MessageName!="Retrieve"||((EntityReference)c.InputParameters["Target"]).Id!=new Guid("${rowId}")||!(c.InputParameters["ColumnSet"] is ColumnSet))throw new InvalidPluginExecutionException("Retrieve input context mismatch");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original Retrieve stage {0}",c.Stage);if(c.Stage==40){var row=(Entity)c.OutputParameters["BusinessEntity"];if(row.Id==Guid.Empty)throw new InvalidPluginExecutionException("Retrieve identity lost");row["title"]="Retrieve observed";}}}public sealed class QueryObserver:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var trace=(ITracingService)services.GetService(typeof(ITracingService));if(c.MessageName!="RetrieveMultiple")throw new InvalidPluginExecutionException("Wrong read message");var query=c.InputParameters["Query"];if(!(query is QueryExpression)&&!(query is FetchExpression)&&!(query is QueryByAttribute))throw new InvalidPluginExecutionException("Untyped query");if(query is QueryExpression&&((QueryExpression)query).LinkEntities.Count>0){var l=((QueryExpression)query).LinkEntities[0];if(l.EntityAlias!="joined"||l.LinkCriteria.Conditions.Count!=1||l.LinkEntities[0].EntityAlias!="nested"||l.LinkEntities[0].JoinOperator!=JoinOperator.LeftOuter)throw new InvalidPluginExecutionException("Linked context shape lost");}trace.Trace("Original query {0} stage {1}",query.GetType().Name,c.Stage);if(c.Stage==20){var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var observed=service.Retrieve("secondary",new Guid("${rowId}"),new ColumnSet("title"));if(observed.Id==Guid.Empty)throw new InvalidPluginExecutionException("Read-only RPC lost identity");c.SharedVariables["queryType"]=query.GetType().Name;}else{if((string)c.SharedVariables["queryType"]!=query.GetType().Name)throw new InvalidPluginExecutionException("Read frame lost shared value");var rows=(EntityCollection)c.OutputParameters["BusinessEntityCollection"];if(rows.Entities.Count!=1||rows.Entities[0].Id!=new Guid("${rowId}"))throw new InvalidPluginExecutionException("Read output lost identity");rows.Entities[0]["title"]="Observed by original DLL";if(query is FetchExpression){rows.MoreRecords=true;rows.PagingCookie="<cookie page='2' />";rows.TotalRecordCount=7;}}}}public sealed class LinkedOriginal:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var q=new QueryExpression("secondary"){ColumnSet=new ColumnSet("title")};var link=q.AddLink("tertiary","secondaryid","secondaryid",JoinOperator.Inner);link.EntityAlias="joined";link.Columns=new ColumnSet("amount");link.LinkCriteria.AddCondition("amount",ConditionOperator.GreaterThan,10m);var nested=link.AddLink("fourth","tertiaryid","tertiaryid",JoinOperator.LeftOuter);nested.LinkFromEntityName="tertiary";nested.EntityAlias="nested";nested.Columns=new ColumnSet("flag");var rows=service.RetrieveMultiple(q);if(rows.Entities.Count!=1||rows.Entities[0].Id!=new Guid("20000000-0000-0000-0000-000000000001")||((Money)((AliasedValue)rows.Entities[0]["joined.amount"]).Value).Value!=12.5m||((OptionSetValue)((AliasedValue)rows.Entities[0]["nested.flag"]).Value).Value!=2)throw new InvalidPluginExecutionException("Linked typed query result mismatch");var fetch=service.RetrieveMultiple(new FetchExpression("<fetch><entity name='secondary'><attribute name='title' alias='base_label'/><link-entity name='tertiary' from='secondaryid' to='secondaryid' alias='f'><attribute name='amount'/></link-entity></entity></fetch>"));if(fetch.Entities[0].Id==Guid.Empty||!(fetch.Entities[0]["base_label"] is AliasedValue)||((Money)((AliasedValue)fetch.Entities[0]["f.amount"]).Value).Value!=12.5m)throw new InvalidPluginExecutionException("Fetch alias type mismatch");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original linked query completed");}}public sealed class AsyncOriginal:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(c.Mode!=1||c.Stage!=40||c.IsInTransaction)throw new InvalidPluginExecutionException("Wrong async context");var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var row=new Entity("secondary",new Guid("20000000-0000-0000-0000-000000000001"));row["title"]="Async committed";service.Update(row);((ITracingService)services.GetService(typeof(ITracingService))).Trace("Async original wrote independently");throw new InvalidPluginExecutionException("Async original later failed");}}public sealed class Nested:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));if(!c.IsInTransaction)throw new InvalidPluginExecutionException("Nested PreValidation must join transaction");if(c.ParentContext==null||c.ParentContext.MessageName!="Create"||c.ParentContext.PrimaryEntityName!="widget"||((Money)c.ParentContext.SharedVariables["beforeRpc"]).Value!=19.25m||c.CorrelationId!=c.ParentContext.CorrelationId||c.Depth!=c.ParentContext.Depth+1)throw new InvalidPluginExecutionException("Live ParentContext was not preserved at SDK call");((ITracingService)services.GetService(typeof(ITracingService))).Trace("Nested PreValidation joined");var service=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var row=new Entity("tertiary",new Guid("70000000-0000-0000-0000-000000000001"));row["title"]="Nested write";service.Update(row);if(((Entity)c.InputParameters["Target"]).GetAttributeValue<string>("title")=="Changed")throw new InvalidPluginExecutionException("Nested PreValidation rejected after write");}}}`,
     );
-    const compiler = path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      assembly = path.join(root, 'Original.dll');
-    const build = spawnSync(
-      compiler,
-      [
-        '/nologo',
-        '/target:library',
-        '/out:' + assembly,
-        '/reference:' + sdk,
-        '/reference:System.Runtime.Serialization.dll',
-        '/reference:System.ServiceModel.dll',
-        source,
-      ],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000 },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    const assembly = compileClr(source, path.join(root, 'Original.dll'), {
+      references: [sdk, 'System.Runtime.Serialization.dll', 'System.ServiceModel.dll'],
+    });
     const runtime = await prepareClrRuntime({
       trust: 'execute-local-assembly',
       root,
@@ -276,9 +264,8 @@ namespace Invented {public sealed class Original:IPlugin {public void Execute(IS
       },
       runtimes = new Map([[stepId, runtime]]),
       handlers = new Map();
-    const readerRuntime = await prepareClrRuntime({ ...runtime.descriptor, typeName: 'Invented.Reader' }),
-      nestedRuntime = await prepareClrRuntime({
-        ...runtime.descriptor,
+    const readerRuntime = retypeClrRuntime(runtime, { typeName: 'Invented.Reader' }),
+      nestedRuntime = retypeClrRuntime(runtime, {
         typeName: 'Invented.Nested',
         serviceProfile: {
           ...profile,
@@ -393,7 +380,7 @@ namespace Invented {public sealed class Original:IPlugin {public void Execute(IS
     const timeoutStops = notes.slice(timeoutNotes).filter((n) => n.code === 'PLUGIN_CLR_HOST_STOPPED');
     assert.equal(timeoutStops.length, 1);
     assert.equal(timeoutStops[0].absenceVerified, true);
-    const queryRuntime = await prepareClrRuntime({ ...runtime.descriptor, typeName: 'Invented.QueryObserver' });
+    const queryRuntime = retypeClrRuntime(runtime, { typeName: 'Invented.QueryObserver' });
     const queryPre = {
         ...step,
         id: '30000000-0000-0000-0000-000000000005',
@@ -437,7 +424,7 @@ namespace Invented {public sealed class Original:IPlugin {public void Execute(IS
     assert.equal(fetch.total_record_count, 7);
     assert.ok(notes.some((n) => n.message === 'Original query FetchExpression stage 40'));
     t.diagnostic('CLR subcase: ordinary Retrieve observers');
-    const retrieveRuntime = await prepareClrRuntime({ ...runtime.descriptor, typeName: 'Invented.RetrieveObserver' }),
+    const retrieveRuntime = retypeClrRuntime(runtime, { typeName: 'Invented.RetrieveObserver' }),
       retrievePre = {
         ...queryPre,
         id: '30000000-0000-0000-0000-000000000007',
@@ -453,7 +440,7 @@ namespace Invented {public sealed class Original:IPlugin {public void Execute(IS
     assert.equal(store.snapshot().tables.secondary[0].title, 'Independent');
     assert.ok(notes.some((n) => n.message === 'Original Retrieve stage 40'));
     t.diagnostic('CLR subcase: asynchronous postoperation independent persistence');
-    const asyncRuntime = await prepareClrRuntime({ ...runtime.descriptor, typeName: 'Invented.AsyncOriginal' }),
+    const asyncRuntime = retypeClrRuntime(runtime, { typeName: 'Invented.AsyncOriginal' }),
       asyncStep = {
         ...step,
         id: '30000000-0000-0000-0000-000000000009',
@@ -503,11 +490,7 @@ namespace Invented {public sealed class Original:IPlugin {public void Execute(IS
           { entity: 'fourth', operations: ['read'] },
         ],
       },
-      linkedRuntime = await prepareClrRuntime({
-        ...runtime.descriptor,
-        typeName: 'Invented.LinkedOriginal',
-        serviceProfile: linkedProfile,
-      }),
+      linkedRuntime = retypeClrRuntime(runtime, { typeName: 'Invented.LinkedOriginal', serviceProfile: linkedProfile }),
       linkedStep = { ...step, id: '30000000-0000-0000-0000-000000000010', typeName: 'Invented.LinkedOriginal' };
     runtimes.set(linkedStep.id, linkedRuntime);
     plugins = { steps: [linkedStep, queryPre, queryPost] };

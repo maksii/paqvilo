@@ -79,7 +79,6 @@ export async function contractModuleFixture(
         ...headers,
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(10000),
     });
   const json = async (response, status) => {
     const text = await response.text();

@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser, fileScope } from './shared-browser.mjs';
+import { prepareNativeControls } from './native-controls-fixture.mjs';
 
 const chrome = sharedBrowser();
 // Tests that only render controls or read records share one simulator; tests that write own theirs.
@@ -14,9 +15,9 @@ const readOnlyApp = () => (sharedApp ??= modelDrivenFixture(scope));
 test('duration choices and typed units preserve numeric minutes, keyboard focus and validation', async (t) => {
   const { origin } = await readOnlyApp();
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  await page.goto(origin + '/main.aspx');
+  await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const renderControl = window.renderFixtureControl;
     const form = document.createElement('form');
     form.innerHTML = '<div class="field"></div><button type="button" id="next">Next</button>';
     document.body.replaceChildren(form);
@@ -101,8 +102,7 @@ test('duration choices and typed units preserve numeric minutes, keyboard focus 
 });
 
 test('exported duration formats create the duration control and save whole minutes through the staff API', async (t) => {
-  const source = await modelDrivenFixture(t);
-  await source.sim.close();
+  const source = await modelDrivenFixture(t, { defer: true });
   const file = path.join(source.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(
     file,
@@ -112,7 +112,6 @@ test('exported duration formats create the duration control and save whole minut
     ),
   );
   const sim = await source.start();
-  t.after(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t);
   await page.goto(
@@ -162,9 +161,9 @@ test('exported duration formats create the duration control and save whole minut
 test('opening duration below a sticky form header restores the field and full popup while keyboard scrolling stays inside the list', async (t) => {
   const { origin } = await readOnlyApp();
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  await page.goto(origin + '/main.aspx');
+  await prepareNativeControls(page, origin);
   await page.evaluate(async () => {
-    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    const renderControl = window.renderFixtureControl;
     document.body.replaceChildren();
     const root = document.createElement('div');
     root.className = 'record-content';
@@ -225,5 +224,7 @@ test('opening duration below a sticky form header restores the field and full po
   assert.equal(await page.evaluate(() => window.control.read()), 4320);
   await input.click();
   await page.getByRole('listbox', { name: 'Duration duration options', exact: true }).waitFor();
+  // Scroll events queued by opening are dispatched in the next rendering step, before its animation frame callbacks.
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   assert.equal(await input.getAttribute('aria-expanded'), 'true', 'mouse opening survives queued focus scrolling');
 });

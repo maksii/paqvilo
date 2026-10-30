@@ -153,7 +153,7 @@ export async function runtimePerformance({
           const pending = fetch(sim.url + '/_apps/api', { signal: AbortSignal.timeout(catalogueBudgetMs) })
             .then(async (response) => {
               if (!response.ok) throw Error(`Catalogue ${response.status}`);
-              return response.json();
+              return response.text();
             })
             .finally(() => {
               complete = true;
@@ -187,9 +187,15 @@ export async function runtimePerformance({
             checkBudget(durationMs, heartbeatBudgetMs, { tables, phase, warmth, stage: 'status heartbeat' });
             if (!complete) await new Promise((resolve) => setTimeout(resolve, 5));
           } while (!complete);
-          let value;
+          let value, catalogueParseMs;
           try {
-            value = await pending;
+            // Finish server heartbeats before parsing the response in this same
+            // Node process. Consumer JSON.parse must not be attributed to a
+            // blocked server; its cost remains in the total response duration.
+            const text = await pending,
+              parseAt = performance.now();
+            value = JSON.parse(text);
+            catalogueParseMs = performance.now() - parseAt;
           } catch (error) {
             if (strictBudgets) throw error;
             findings.push({
@@ -219,6 +225,7 @@ export async function runtimePerformance({
           catalogue.push({
             warmth,
             durationMs: Math.round(durationMs),
+            parseMs: Math.round(catalogueParseMs),
             maxHeartbeatMs: Math.round(Math.max(...heartbeat)),
             heartbeats: heartbeat.length,
             heartbeatErrors,

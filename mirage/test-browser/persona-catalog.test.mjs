@@ -79,37 +79,33 @@ test(
   },
 );
 
-test(
-  'native grouped sign-in remains usable without JS; browser automation applies context options',
-  { timeout: 30000 },
-  async (t) => {
-    const { app } = await personaFixture(t);
-    const context = await browser.newContext({ javaScriptEnabled: false });
-    t.after(() => context.close());
-    const page = await context.newPage();
-    await page.goto(app.url + '/SignIn');
-    await page.locator('[data-persona-group="group-0"]').waitFor();
-    await page.locator('[data-persona-row="person-1"] [name="personaKey"]').first().click();
-    await page.waitForURL(app.url + '/');
-    const session = await context.request.get(app.url + '/_sim/api/session').then((r) => r.json());
-    assert.equal(session.contactId, contactId(1));
-    await context.close();
-    const opened = await createPersonaBrowserContext(browser, {
-      origin: app.url,
-      personaKey: 'person-2',
-      instanceKey: 'browser-test',
-    });
-    assert.notEqual(opened.origin, app.url);
-    assert.deepEqual(opened.context.pages(), []);
-    t.after(() => opened.context.close());
-    const childPage = await opened.context.newPage();
-    assert.deepEqual(childPage.viewportSize(), { width: 1100, height: 750 });
-    await childPage.goto(opened.url);
-    assert.equal(await childPage.evaluate(() => navigator.language), 'fr-FR');
-    assert.equal(await childPage.locator('h1').textContent(), 'Context greeting');
-    await opened.context.close();
-  },
-);
+test('native grouped sign-in remains usable without JS; browser automation applies context options', async (t) => {
+  const { app } = await personaFixture(t);
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  t.after(() => context.close());
+  const page = await context.newPage();
+  await page.goto(app.url + '/SignIn');
+  await page.locator('[data-persona-group="group-0"]').waitFor();
+  await page.locator('[data-persona-row="person-1"] [name="personaKey"]').first().click();
+  await page.waitForURL(app.url + '/');
+  const session = await context.request.get(app.url + '/_sim/api/session').then((r) => r.json());
+  assert.equal(session.contactId, contactId(1));
+  await context.close();
+  const opened = await createPersonaBrowserContext(browser, {
+    origin: app.url,
+    personaKey: 'person-2',
+    instanceKey: 'browser-test',
+  });
+  assert.notEqual(opened.origin, app.url);
+  assert.deepEqual(opened.context.pages(), []);
+  t.after(() => opened.context.close());
+  const childPage = await opened.context.newPage();
+  assert.deepEqual(childPage.viewportSize(), { width: 1100, height: 750 });
+  await childPage.goto(opened.url);
+  assert.equal(await childPage.evaluate(() => navigator.language), 'fr-FR');
+  assert.equal(await childPage.locator('h1').textContent(), 'Context greeting');
+  await opened.context.close();
+});
 
 test(
   'a pending persona launch keeps the picker and its caption bound to the submitted persona',
@@ -119,7 +115,6 @@ test(
     const context = await browser.newContext();
     t.after(() => context.close());
     const page = await context.newPage();
-    page.setDefaultTimeout(10000);
     await page.goto(app.url + '/_sim/#identity');
     const picker = page.locator('#browser-persona-picker');
     await picker.locator('[data-persona-result-count]').waitFor();

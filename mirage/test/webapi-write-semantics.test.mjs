@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { DataStore } from '../lib/data.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const G = (n) => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const SETTINGS = {
@@ -136,7 +136,7 @@ function fixture({ cascadeDelete } = {}) {
 }
 
 async function start(t, { state = fixture(), settings = SETTINGS } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-write-semantics-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-write-semantics-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Write semantics\n');
   await fs.writeFile(path.join(directory, 'sitesetting.yml'), settingsYaml(settings));

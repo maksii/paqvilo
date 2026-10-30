@@ -1,3 +1,4 @@
+import { reportCliError } from './cli-output.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -5,6 +6,7 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { chromium } from 'playwright-core';
+import { windowsLaunchOptions } from './lib/browser-launch.mjs';
 import { loadCatalogue, loadConfig } from '../lense/config.mjs';
 import { miragePaths, discoveries, samePath } from '../lense/commands/mirage.mjs';
 import { createSimulator } from './server.mjs';
@@ -28,7 +30,13 @@ export function captureCdpUrl(value) {
   return url.origin;
 }
 
-async function launchCaptureBrowser(channel) {
+// Windows keeps files of a closed browser busy for seconds (2-12 s observed with the sandbox: chrome_debug.log).
+// The profile removal retries without blocking the event loop, up to 11 s of linear backoff.
+const removeProfile = (directory) =>
+  fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+
+/** A headless browser on a temporary profile with a loopback CDP port; close() removes the profile. */
+export async function launchCaptureBrowser(channel) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-shell-'));
   let context;
   try {
@@ -36,24 +44,27 @@ async function launchCaptureBrowser(channel) {
     await new Promise((resolve) => probe.listen(0, '127.0.0.1', resolve));
     const port = probe.address().port;
     await new Promise((resolve) => probe.close(resolve));
-    context = await chromium.launchPersistentContext(directory, {
-      headless: true,
-      ...(channel !== 'chromium' ? { channel } : {}),
-      args: [`--remote-debugging-port=${port}`],
-    });
+    context = await chromium.launchPersistentContext(
+      directory,
+      windowsLaunchOptions({
+        headless: true,
+        ...(channel !== 'chromium' ? { channel } : {}),
+        args: [`--remote-debugging-port=${port}`],
+      }),
+    );
     return {
       cdp: `http://127.0.0.1:${port}`,
       close: async () => {
         try {
           await context.close();
         } finally {
-          await fs.rm(directory, { recursive: true, force: true });
+          await removeProfile(directory);
         }
       },
     };
   } catch (error) {
     await context?.close().catch(() => {});
-    await fs.rm(directory, { recursive: true, force: true });
+    await removeProfile(directory);
     throw error;
   }
 }
@@ -359,7 +370,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     console.log(JSON.stringify(report, null, 2));
     process.exitCode = captureExitCode(report, values);
   } catch (error) {
-    console.error(captureFailure(error).message);
+    reportCliError(captureFailure(error));
     process.exitCode = 1;
   }
 }

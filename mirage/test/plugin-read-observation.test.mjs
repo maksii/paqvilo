@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { clrContext, dispatchSdkCall, prepareClrRuntime, recordToSdkEntity } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const writer = '10000000-0000-0000-0000-000000000002',
   user = '10000000-0000-0000-0000-000000000001',
@@ -391,11 +392,11 @@ test('SDK frames retain independently computed cookies and RowVersion metadata w
 
 test(
   'Original CLR read recorder sees portal context in all three stages and records through SDK with nested identity cleared',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-read-observation-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paq-read-observation-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       assembly = path.join(root, 'Recorder.dll'),
       source = path.join(root, 'Recorder.cs');
     await fs.writeFile(
@@ -405,19 +406,7 @@ test(
  public sealed class Audit:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext2)services.GetService(typeof(IPluginExecutionContext2));var parent=(IPluginExecutionContext2)c.ParentContext;if(c.UserId!=new Guid("${writer}")||c.InitiatingUserId!=new Guid("${user}")||c.IsPortalsClientCall||c.PortalsContactId!=Guid.Empty||c.Depth!=2||!c.IsInTransaction||parent.IsInTransaction||!parent.IsPortalsClientCall||parent.PortalsContactId!=new Guid("${contact}")||c.CorrelationId!=parent.CorrelationId)throw new InvalidPluginExecutionException("Nested recording context mismatch");((Entity)c.InputParameters["Target"])["note"]="nested SDK identity cleared";}}
  }`,
     );
-    const result = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      [
-        '/nologo',
-        '/target:library',
-        '/out:' + assembly,
-        '/reference:' + sdk,
-        '/reference:System.Runtime.Serialization.dll',
-        source,
-      ],
-      { encoding: 'utf8', windowsHide: true },
-    );
-    assert.equal(result.status, 0, result.stdout + result.stderr);
+    compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });
     const descriptor = {
       trust: 'execute-local-assembly',
       root,

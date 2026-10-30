@@ -7,7 +7,7 @@ import { createSimulator } from '../api.mjs';
 import { staffContext } from '../lib/staff-session.mjs';
 import { createFormClientRuntime } from '../lib/model-driven/client-runtime.mjs';
 import { pcfUserSettings, staffFormatting, ANONYMOUS_STAFF_CONTEXT } from '../lib/model-driven/pcf-runtime.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const USER = '77777777-7777-4777-8777-777777777777',
   ROLE = '77777777-7777-4777-8777-777777777778',
@@ -137,7 +137,7 @@ test('an unknown session answers the documented anonymous context', () => {
 });
 
 test('the staff session payload carries the server-built context and record capabilities flag secured columns', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'staff-context-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'staff-context-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const entity =
     '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes>' +

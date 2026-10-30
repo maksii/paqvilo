@@ -4,12 +4,124 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { sharedBrowser } from './shared-browser.mjs';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 const chrome = sharedBrowser();
 
+test('a staff refresh failure during held cold metadata exposes recovery instead of abandoning the grid', async (t) => {
+  const held = Promise.withResolvers(),
+    release = Promise.withResolvers();
+  ownedFixture(t).add(() => release.resolve());
+  const { origin } = await modelDrivenFixture(t);
+  const page = await chrome.page(t),
+    errors = [];
+  let sessions = 0,
+    indexes = 0;
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.route('**/_sim/api/dataverse/session', async (route) => {
+    const response = await route.fetch(),
+      json = await response.json();
+    if (++sessions === 2) json.current.name = 'Invented updated staff name';
+    await route.fulfill({ response, json });
+  });
+  await page.route('**/_apps/api/index', async (route) => {
+    if (++indexes === 2)
+      return route.fulfill({ status: 503, json: { error: { message: 'Invented cold staff catalogue refusal' } } });
+    await route.continue();
+  });
+  await page.route('**/_apps/api/metadata/x_item', async (route) => {
+    const response = await route.fetch();
+    held.resolve();
+    await release.promise;
+    await route.fulfill({ response });
+  });
+  const navigation = page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await held.promise;
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await page.locator('#notice').filter({ hasText: 'Invented cold staff catalogue refusal' }).waitFor();
+  release.resolve();
+  await navigation;
+  assert.equal(
+    await page.locator('html').getAttribute('data-mirage-app-state'),
+    'error',
+    'a failed identity refresh must retire the abandoned cold route and expose a retry',
+  );
+  assert.equal(await page.getByRole('button', { name: 'Copper', exact: true }).count(), 0);
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  assert.equal(await page.locator('html').getAttribute('data-mirage-app-state'), 'ready');
+  assert.equal(await page.locator('#notice').textContent(), '');
+  assert.deepEqual(errors, []);
+});
+
+for (const outcome of ['success', 'failure'])
+  test(`a late staff catalogue ${outcome} preserves a newer accepted application route`, async (t) => {
+    const held = Promise.withResolvers(),
+      release = Promise.withResolvers();
+    ownedFixture(t).add(() => release.resolve());
+    const { origin } = await modelDrivenFixture(t);
+    const page = await chrome.page(t);
+    let sessions = 0,
+      indexes = 0;
+    await page.addInitScript(() => {
+      const fetch = window.fetch.bind(window);
+      let indexes = 0;
+      window.fetch = async (...args) => {
+        const response = await fetch(...args);
+        if (new URL(args[0], location.href).pathname !== '/_apps/api/index' || ++indexes !== 2) return response;
+        const json = response.json.bind(response);
+        response.json = async () => {
+          try {
+            return await json();
+          } finally {
+            window.__inventedStaffRefreshParsed = true;
+          }
+        };
+        return response;
+      };
+    });
+    await page.route('**/_sim/api/dataverse/session', async (route) => {
+      const response = await route.fetch(),
+        json = await response.json();
+      if (++sessions === 2) json.current.name = 'Invented updated staff name';
+      await route.fulfill({ response, json });
+    });
+    await page.route('**/_apps/api/index', async (route) => {
+      if (++indexes !== 2) return route.continue();
+      const response = await route.fetch();
+      held.resolve();
+      await release.promise;
+      await route.fulfill(
+        outcome === 'success'
+          ? { response }
+          : { status: 503, json: { error: { message: 'Invented superseded staff catalogue refusal' } } },
+      );
+    });
+    await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+    await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await held.promise;
+    await page.getByRole('button', { name: 'Application', exact: true }).click();
+    await page
+      .getByRole('dialog', { name: 'Apps', exact: true })
+      .getByRole('button', { name: 'Example workspace', exact: true })
+      .click();
+    const copper = page.getByRole('button', { name: 'Copper', exact: true });
+    await copper.waitFor();
+    const accepted = await copper.elementHandle();
+    release.resolve();
+    await page.waitForFunction(() => window.__inventedStaffRefreshParsed === true);
+    assert.equal(
+      await accepted.evaluate((node) => node.isConnected),
+      true,
+      'the accepted route retains its grid nodes',
+    );
+    assert.equal(await page.locator('html').getAttribute('data-mirage-app-state'), 'ready');
+    assert.equal(await page.locator('#notice').textContent(), '');
+  });
+
 test('native shell selectors filter, navigate, dismiss and preserve keyboard focus', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const appRoot = path.join(fixture.solutionDir, 'AppModules/x_review');
   await fs.mkdir(appRoot, { recursive: true });
   await fs.writeFile(
@@ -33,8 +145,71 @@ test('native shell selectors filter, navigate, dismiss and preserve keyboard foc
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
+  const startup = { requests: [], responses: [], failures: [], metadata: [] },
+    startupAt = performance.now();
+  const relevant = (url) =>
+    /^\/(?:_apps\/api\/(?:index|metadata\/x_item|tables\/x_item)|_sim\/api\/(?:dataverse\/session|status))$/.test(
+      url.pathname,
+    );
+  const record = (rows, value) => {
+    if (rows.length < 20) rows.push(value);
+  };
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (!relevant(url)) return;
+    let view;
+    try {
+      view = JSON.parse(url.searchParams.get('query') ?? '{}').view;
+    } catch {
+      /* Keep malformed query values out of diagnostics. */
+    }
+    record(startup.requests, {
+      path: url.pathname,
+      atMs: Math.round(performance.now() - startupAt),
+      ...(view ? { view } : {}),
+    });
+  });
+  page.on('response', (response) => {
+    const url = new URL(response.url());
+    if (relevant(url))
+      record(startup.responses, {
+        path: url.pathname,
+        status: response.status(),
+        atMs: Math.round(performance.now() - startupAt),
+      });
+  });
+  page.on('requestfailed', (request) => {
+    const url = new URL(request.url());
+    if (relevant(url)) record(startup.failures, { path: url.pathname, error: request.failure()?.errorText });
+  });
+  page.on('requestfinished', async (request) => {
+    if (new URL(request.url()).pathname !== '/_apps/api/metadata/x_item') return;
+    try {
+      const response = await request.response();
+      if (!response?.ok()) return;
+      const metadata = await response.json();
+      record(startup.metadata, { views: metadata.views?.map(({ id, name, isDefault }) => ({ id, name, isDefault })) });
+    } catch {
+      /* The request itself remains in the bounded response/failure trail. */
+    }
+  });
+
   await page.goto((sim.origin ?? sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
-  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  try {
+    await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  } catch (error) {
+    const shell = await page
+      .evaluate(() => ({
+        state: document.documentElement.dataset.mirageAppState,
+        notice: document.querySelector('#notice')?.textContent?.slice(0, 1000),
+        view: document.querySelector('.view-select')?.textContent,
+        content: document.querySelector('#content')?.textContent?.slice(0, 3000),
+      }))
+      .catch(() => ({ state: 'unavailable' }));
+    throw new Error('Initial Copper grid did not render: ' + JSON.stringify({ startup, shell, errors }), {
+      cause: error,
+    });
+  }
   const apps = page.getByRole('button', { name: 'Application', exact: true });
   await apps.click();
   const modal = page.getByRole('dialog', { name: 'Apps', exact: true });
@@ -132,17 +307,156 @@ test('native shell selectors filter, navigate, dismiss and preserve keyboard foc
   assert.deepEqual(errors, []);
 });
 
+test(
+  'Apps Refresh preserves pending startup metadata, refreshed apps and an active form draft',
+  { timeout: 60000 },
+  async (t) => {
+    const metadataGate = Promise.withResolvers(),
+      metadataRequested = Promise.withResolvers();
+    ownedFixture(t).add(() => metadataGate.resolve());
+    const fixture = await modelDrivenFixture(t, { defer: true });
+    const appRoot = path.join(fixture.solutionDir, 'AppModules/x_review');
+    await fs.mkdir(appRoot, { recursive: true });
+    await fs.writeFile(
+      path.join(appRoot, 'AppModule.xml'),
+      '<AppModule><UniqueName>x_review</UniqueName><AppModuleId>{88888888-8888-4888-8888-888888888888}</AppModuleId><LocalizedNames><LocalizedName description="Review workspace" languagecode="1033"/></LocalizedNames><AppModuleComponents><AppModuleComponent type="1" schemaName="x_child"/></AppModuleComponents></AppModule>',
+    );
+    const sim = await fixture.start();
+    const page = await chrome.page(t);
+    let indexReads = 0,
+      metadataReads = 0,
+      tableMetadataReads = 0,
+      writes = 0;
+    page.on('request', (request) => {
+      if (new URL(request.url()).pathname.startsWith('/_apps/api/metadata/')) tableMetadataReads++;
+      if (request.method() === 'PATCH' && new URL(request.url()).pathname.startsWith('/_apps/api/tables/')) writes++;
+    });
+    await page.route('**/_apps/api/index', async (route) => {
+      const response = await route.fetch(),
+        json = await response.json();
+      if (++indexReads === 1) {
+        json.apps = json.apps.filter((app) => app.uniqueName !== 'x_review');
+        delete json.tables.x_child;
+      }
+      await route.fulfill({ response, json });
+    });
+    await page.route('**/_apps/api/metadata/x_item', async (route) => {
+      metadataReads++;
+      if (metadataReads !== 1) return route.continue();
+      const response = await route.fetch();
+      metadataRequested.resolve();
+      await metadataGate.promise;
+      await route.fulfill({ response });
+    });
+    const navigation = page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+    await metadataRequested.promise;
+    const applications = page.getByRole('button', { name: 'Application', exact: true });
+    await applications.click();
+    const modal = page.getByRole('dialog', { name: 'Apps', exact: true });
+    await modal.waitFor();
+    assert.equal(await modal.getByRole('button', { name: 'Review workspace', exact: true }).count(), 0);
+    await modal.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await modal.getByRole('button', { name: 'Review workspace', exact: true }).waitFor();
+    assert.match(page.url(), /appname=x_example/);
+    metadataGate.resolve();
+    await navigation;
+    await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready');
+    assert.match(await page.locator('#content').textContent(), /Copper/);
+    await modal.getByRole('button', { name: 'Review workspace', exact: true }).click();
+    await page.waitForURL(/appname=x_review/);
+    await page.getByRole('button', { name: 'Copper child', exact: true }).click();
+    const name = page.getByLabel('Name', { exact: true });
+    await name.fill('Unsaved picker draft');
+    const activeField = await name.elementHandle(),
+      activeUrl = page.url(),
+      readsBeforeRefresh = tableMetadataReads;
+    await applications.click();
+    await modal.getByRole('button', { name: 'Refresh', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('#dialog .app-picker-toolbar button[aria-busy="true"]'));
+    await modal.getByRole('button', { name: 'Example workspace', exact: true }).click();
+    const discard = page.getByRole('dialog', { name: 'Unsaved changes', exact: true });
+    await discard.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await discard.waitFor({ state: 'hidden' });
+    assert.equal(page.url(), activeUrl);
+    assert.equal(
+      await activeField.evaluate((node) => node.isConnected),
+      true,
+      'refreshing app availability does not replace the active form',
+    );
+    assert.equal(await name.inputValue(), 'Unsaved picker draft');
+    assert.equal(tableMetadataReads, readsBeforeRefresh, 'the active table metadata remains loaded');
+    assert.equal(writes, 0, 'refreshing the app list cannot save the draft');
+    assert.equal(
+      sim.store.state.tables.x_child.find((row) => row.x_childid === 'dddddddd-dddd-4ddd-8ddd-dddddddddddd')?.x_name,
+      'Copper child',
+    );
+  },
+);
+
+test(
+  'selecting the current app while initial metadata is pending starts a usable route',
+  { timeout: 60000 },
+  async (t) => {
+    const held = Promise.withResolvers(),
+      release = Promise.withResolvers(),
+      retried = Promise.withResolvers();
+    ownedFixture(t).add(() => release.resolve());
+    const { origin } = await modelDrivenFixture(t);
+    const page = await chrome.page(t);
+    let reads = 0;
+    await page.route('**/_apps/api/metadata/x_item', async (route) => {
+      if (++reads !== 1) {
+        retried.resolve();
+        return route.continue();
+      }
+      const response = await route.fetch();
+      held.resolve();
+      await release.promise;
+      await route.fulfill({ response });
+    });
+    const navigation = page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+    await held.promise;
+    await page.getByRole('button', { name: 'Application', exact: true }).click();
+    const failed = page
+      .waitForFunction(() => document.querySelector('#notice')?.textContent.includes('Cannot read properties'))
+      .then(() => {
+        throw Error('The enabled current-app card read table.entity before initial metadata was available.');
+      });
+    await page
+      .getByRole('dialog', { name: 'Apps', exact: true })
+      .getByRole('button', { name: 'Example workspace', exact: true })
+      .click();
+    await Promise.race([retried.promise, failed]);
+    await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+    release.resolve();
+    await navigation;
+    assert.match(page.url(), /appname=x_example/);
+    assert.equal(await page.getByRole('button', { name: 'Copper', exact: true }).isVisible(), true);
+    assert.equal(await page.locator('#notice').textContent(), '');
+  },
+);
+
 test('column menu applies sorting, reordering, widths and column-specific filters', async (t) => {
   const { origin } = await modelDrivenFixture(t);
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
-  // Keep the old Copper row visible while a filtered refresh is in flight.
-  // Waiting for that row alone cannot prove the new grid was applied.
+  // Hold the filtered refresh: the old Copper row stays visible while it is in flight, so waiting for that row
+  // alone cannot prove the new grid was applied.
+  let releaseFilter, filterRequested;
+  const filterGate = new Promise((resolve) => {
+    releaseFilter = resolve;
+  });
+  const filterHeld = new Promise((resolve) => {
+    filterRequested = resolve;
+  });
+  t.after(() => releaseFilter());
   await page.route('**/_apps/api/tables/x_item?*', async (route) => {
     const query = JSON.parse(new URL(route.request().url()).searchParams.get('query') ?? '{}');
-    if (query.filters?.some((filter) => filter.value === 'Copper'))
-      await new Promise((resolve) => setTimeout(resolve, 150));
+    if (query.filters?.some((filter) => filter.value === 'Copper')) {
+      filterRequested();
+      await filterGate;
+    }
     await route.continue();
   });
   const gridChange = async (action) => {
@@ -223,14 +537,22 @@ test('column menu applies sorting, reordering, widths and column-specific filter
   );
   assert.equal(await page.getByRole('button', { name: 'Filter 1 column', exact: true }).textContent(), 'Name');
   await page.getByLabel('Filter 1 value').fill('Copper');
-  await gridChange(() => page.getByRole('button', { name: 'Apply', exact: true }).click());
+  await gridChange(async () => {
+    await page.getByRole('button', { name: 'Apply', exact: true }).click();
+    await filterHeld;
+    assert.equal(
+      await page.locator('tbody').getByText('Silver', { exact: true }).count(),
+      1,
+      'the previous rows remain rendered while the filtered read is in flight',
+    );
+    releaseFilter();
+  });
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Silver', exact: true }).count(), 0);
 });
 
 test('filter drawer uses typed scalar values, literal contains, null conditions and isolated drafts', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const entityFile = path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml');
   const labels = (label) => `<displaynames><displayname description="${label}" languagecode="1033"/></displaynames>`;
   const option = (value, label) =>
@@ -255,7 +577,6 @@ test('filter drawer uses typed scalar values, literal contains, null conditions 
     assert.equal(response.status, 201, await response.clone().text());
   }
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  page.setDefaultTimeout(5000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
@@ -336,8 +657,7 @@ test('filter drawer uses typed scalar values, literal contains, null conditions 
 });
 
 test('new required owner controls default to the active organization staff principal', async (t) => {
-  const initial = await modelDrivenFixture(t);
-  await initial.sim.close();
+  const initial = await modelDrivenFixture(t, { defer: true });
   const entityFile = path.join(initial.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(
     entityFile,
@@ -461,8 +781,7 @@ test('new required owner controls default to the active organization staff princ
 });
 
 test('subgrid exported view picker preserves its named parent relationship across view and search changes', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const formFile = path.join(fixture.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
   await fs.writeFile(
     formFile,
@@ -526,7 +845,6 @@ test('subgrid exported view picker preserves its named parent relationship acros
     assert.equal(response.status, 201, await response.clone().text());
   }
   const page = await chrome.page(t);
-  page.setDefaultTimeout(5000);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=' + parent);
   await page.getByRole('tab', { name: 'Related items', exact: true }).click();
   const grid = page.locator('.related-grid'),
@@ -571,8 +889,7 @@ test('subgrid exported view picker preserves its named parent relationship acros
 });
 
 test('populated grids preserve source widths, numeric alignment, compact rows and typed owner navigation', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const entityFile = path.join(fixture.solutionDir, 'Entities/x_item/Entity.xml');
   await fs.writeFile(
     entityFile,
@@ -677,18 +994,47 @@ test('populated grids preserve source widths, numeric alignment, compact rows an
 });
 
 test('a view without its primary-name column opens the selected record by double-clicking a data cell', async (t) => {
-  const fixture = await modelDrivenFixture(t);
-  await fixture.sim.close();
+  const fixture = await modelDrivenFixture(t, { defer: true });
   const view = path.join(fixture.solutionDir, 'Entities/x_item/SavedQueries/items.xml');
   await fs.writeFile(view, (await fs.readFile(view, 'utf8')).replace('<cell name="x_name" width="200"/>', ''));
   const sim = await fixture.start();
   t.after(() => sim.close());
   const page = await chrome.page(t);
+  const diagnostics = { responses: [], failures: [], pageErrors: [] };
+  const relevant = (url) => /\/_apps\/api\/(?:metadata\/x_item|tables\/x_item)(?:[/?]|$)/.test(url);
+  const cleanUrl = (url) => {
+    const parsed = new URL(url);
+    return parsed.origin + parsed.pathname;
+  };
+  const record = (list, entry) => {
+    if (list.length < 20) list.push(entry);
+  };
+  page.on('response', (response) => {
+    if (relevant(response.url()))
+      record(diagnostics.responses, { url: cleanUrl(response.url()), status: response.status() });
+  });
+  page.on('requestfailed', (request) => {
+    if (relevant(request.url()))
+      record(diagnostics.failures, {
+        url: cleanUrl(request.url()),
+        error: (request.failure()?.errorText ?? '').slice(0, 500),
+      });
+  });
+  page.on('pageerror', (error) => record(diagnostics.pageErrors, error.message.slice(0, 500)));
   await page.goto(sim.url + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const row = page
     .locator('tbody tr')
     .filter({ has: page.getByRole('checkbox', { name: 'Select Copper', exact: true }) });
-  await row.waitFor();
+  try {
+    await row.waitFor();
+  } catch (error) {
+    const grid = await page
+      .evaluate(() => (document.querySelector('main') ?? document.body)?.innerText.slice(0, 3000) ?? 'unavailable')
+      .catch(() => 'unavailable');
+    throw new Error(`Grid did not render Copper: ${JSON.stringify({ ...diagnostics, grid: grid.slice(0, 3000) })}`, {
+      cause: error,
+    });
+  }
   assert.equal(await row.getByRole('button').count(), 0);
   await row.locator('td').nth(1).dblclick();
   await page.getByRole('heading', { name: 'Copper', exact: true }).waitFor();
@@ -751,7 +1097,6 @@ test('authored app areas isolate their groups and 137 records paginate through s
   t.after(() => sim.close());
   const origin = sim.origin ?? sim.url;
   const page = await chrome.page(t, { viewport: { width: 1582, height: 1000 } });
-  page.setDefaultTimeout(6000);
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const change = async (action, entity, expectedPage, expectedCount, expectedTotal) => {

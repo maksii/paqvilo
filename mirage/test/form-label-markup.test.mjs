@@ -10,6 +10,7 @@ import os from 'node:os';
 import { loadConfig } from '../../lense/config.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInHeaders } from '../testing/session.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 test('authored form labels preserve presentation markup and strip executable content', async () => {
   const { portal, schemas, state } = model();
@@ -43,7 +44,7 @@ test('authored form labels preserve presentation markup and strip executable con
 });
 
 test('catalogue observations reach actual form rendering and runtime status', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-label-config-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-label-config-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   await fs.mkdir(path.join(root, 'web-pages'));
   for (const [file, body] of Object.entries({

@@ -2,6 +2,14 @@
 
 Mirage supports FetchXML, portal Web API and list OData contracts over local state. Queries use imported mappings, relationship metadata, column types and permission scopes. Results support platform-shaped choice/lookup values, paging, counts, expansion and error envelopes. Unsupported constructs and unresolved mappings fail with diagnostics rather than silently querying unrelated tables.
 
+The read-only SQL evaluator's `LIKE` uses the configured `CI_AI` or `CI_AS`
+text folding for literal characters and character sets. `ESCAPE` requires one
+character; a pattern ending in an unmatched escape never matches, and null
+operands retain SQL unknown semantics. These cases follow the documented
+[SQL pattern contract](https://learn.microsoft.com/en-us/sql/t-sql/language-elements/like-transact-sql)
+and [Dataverse accent sensitivity](https://learn.microsoft.com/en-us/power-platform/admin/language-collations).
+This bounded folding model does not establish full linguistic collation parity.
+
 Local identities come from request sessions. Exported table permissions, web roles and parent/contact/account/self relationships control queries and writes when enforcement is enabled. Page access and table access are separate concerns. Metadata/scaffold discovery does not grant a persona permission to business rows.
 
 The local store simulates create/update/delete, validation, bindings, declared backend rules and atomic state-file writes. [Dataverse plugin registrations](dataverse-plugins.md) are imported from selected Solutions; supported write/read stages can execute an explicitly trusted original CLR assembly, project model or mock, or be disabled. Unconfigured steps report skipped business logic. Top-level PreValidation SDK writes and asynchronous SDK requests commit independently; nested PreValidation and stages 20/40 join their caller transaction. [Operations](operations.md) inventories exports and runs supported basic imported request or Dataverse row-trigger flows with separate backend profiles. Completed connector writes survive a later failed action. Unsupported connectors/settings require explicit local choices. New states contain no business records from references.
@@ -15,6 +23,26 @@ These internal writers write system-owned rows directly to the store, deliberate
 An exported unsupported server-logic endpoint answers HTTP 501 with the camelCase fields `requestId`, `success`, `serverLogicName`, `data` and `error`. This is an explicit unsupported result, not a successful execution.
 
 Use `webapi-inventory`, `bootstrap-report` and `portal-matrix` to find source calls, unresolved table identities and schema gaps. Use a project-owned parity plan for read-only comparisons against an authorized reference browser. Local correctness and live parity are reported separately.
+
+## Access-team membership
+
+`AddUserToRecordTeam` reuses the system-managed access team for a record/template
+while it has members. Removing its final member deletes the team and its record
+share in the same local transaction; adding a member afterward creates a fresh
+team identity from the runtime's ID source. Other members, independent user
+shares and manually managed teams keep their existing access. This follows the
+lifecycle in Microsoft's [Access Teams whitepaper](https://www.microsoft.com/en-us/download/details.aspx?id=41190).
+
+`RemoveUserFromRecordTeam` returns 204 with no body; it does not return the
+`AccessTeamId` declared by Microsoft's [action contract](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/removeuserfromrecordteam?view=dataverse-latest).
+
+## Choosing a read-only reference
+
+An organization Dataverse CLI can supplement explicitly authorized, bounded organization API comparisons. Qualify the selected CLI version, effective identity, exact request and response shape against an independent signed-in browser capture before using its output as evidence. A scriptable JSON option alone does not establish raw OData, HTTP status, headers, annotations or continuation fidelity. Keep the original captures separately; record unavailable fields as limitations rather than normalizing them away.
+
+Organization-user results do not establish Power Pages portal-session authorization, query rewriting or portal error behavior. The [portal Web API](https://learn.microsoft.com/en-us/power-pages/configure/web-api-overview) applies its own enabled table/field settings, permissions and session rules. Keep separate portal-persona captures for those claims, including when a CLI and browser read the same records.
+
+Microsoft's preview [Dataverse CLI](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/cli/) is not a Paqvilo dependency or an automatically selected reference. Review its current authentication, tenant consent and environment prerequisites with the owner before adoption; this guide does not authorize changing them. A project experiment should select reviewed record IDs and bounded read-only cases, verify the intended organization and user, compare several fresh captures with the same Mirage query, and preserve failures and output-shape differences. Keep identities, identifiers, query values, credentials and evidence in the project; never put them in toolkit fixtures or public reports.
 
 ## Permission queries and recording
 
@@ -168,3 +196,59 @@ and true DateOnly values never apply the UserLocal offset. The profile applies t
 Web API annotations only; it does not infer or change browser controls or query calendars.
 Rule fields follow Microsoft's [timezonerule reference](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/timezonerule?view=dataverse-latest)
 and [Windows transition/bias definition](https://learn.microsoft.com/en-us/windows/win32/api/timezoneapi/ns-timezoneapi-dynamic_time_zone_information).
+
+## Compare compiled portal grants
+
+`comparePermissionModels(before, after)` from `paqvilo/mirage/fixtures` compares
+two full `buildPermissionModel` results. Load each local source revision with its
+own selected metadata, settings and observed profile before compiling it. The
+admin permission tree alone is insufficient: it omits resolved relationship
+descriptors and some role identities used by the comparison.
+
+```js
+import { comparePermissionModels } from 'paqvilo/mirage/fixtures';
+
+const report = comparePermissionModels(beforeModel, afterModel);
+if (report.status !== 'unchanged') {
+  // The external project decides whether these changes satisfy its policy.
+  console.log(report.summary, report.changes, report.diagnostics);
+}
+```
+
+The versioned JSON report has `domain: 'compiled-portal-table-grants'`, a
+`status`, counts by classification, changed grant cells and diagnostics. A cell
+is an exact role ID, logical table and operation. Evidence lists contributing
+permission IDs, source paths and resolved predicates; display names, record
+values and unrelated input properties are omitted. Inputs are never changed.
+
+Comparison ignores ordering, display-label changes, source-file moves and
+equivalent splits of the same grants. Parent paths are compared structurally,
+including their read requirement and inherited role association. A global grant
+covers the same cell's scoped grants. Adding a predicate to a union cannot
+reduce that union; removing it cannot expand it. These provable inclusion
+directions are reported as `wider` or `narrower`. Independent directions produce
+`mixed`. This describes potential grant coverage; no row is read, so the report
+does not assert that a newly reachable record actually exists.
+
+Different contact/account/parent predicates are not ranked by a guessed scope
+ordering. They produce `indeterminate` unless exact predicate inclusion or a
+global grant proves the direction. Missing/ambiguous roles, unknown scopes,
+unresolved relationships, disabled compilation errors, cycles and observed
+orphan profiles also prevent qualification. Source-mode, association-policy,
+default-role, membership and persona/account changes are explicit diagnostics:
+the same declared grant can reach different people under those changes.
+
+This is a configuration comparison, not another authorization evaluator. It
+does not determine live/deployed access, execute queries, combine page access
+rules or Web API enabled-column policy, or reproduce enhanced authorization's
+additional Dataverse role checks. Use the existing runtime APIs and project
+acceptance fixtures for those layers. A report with `status: 'indeterminate'`
+must not be treated as a successful no-widening assertion.
+
+Inputs must be complete compiled models with known source mode, permission,
+role, membership, persona and diagnostic arrays and a settings object. The
+helper bounds models to 10,000 permissions, arrays/grant cells to 100,000 entries
+and parent paths to 64 levels. Both models share a 1,000,000-unit work budget,
+precharged for array sorting and nested role lists before expanding grants;
+repeated references do not bypass it. Invalid shapes or excess bounds fail explicitly.
+Projects own requirements such as which roles may access which tables.

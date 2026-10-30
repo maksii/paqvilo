@@ -1,3 +1,4 @@
+import { validateCanvasDisplay } from './canvas-display.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { contentPolicyDefaults } from './content-policy-defaults.mjs';
@@ -171,6 +172,7 @@ export function observedConfig(value, label = 'observed') {
         'headers',
         'azureAdAuthority',
         'codeComponents',
+        'canvasDisplay',
         'sdkMessages',
         'pluginSources',
         'formSubmissionErrorMessage',
@@ -186,6 +188,8 @@ export function observedConfig(value, label = 'observed') {
     )
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
+  if (value.canvasDisplay !== undefined)
+    observed.canvasDisplay = validateCanvasDisplay(value.canvasDisplay, `${label}.canvasDisplay`);
   if (value.webApiFetchXmlTransport != null) {
     const transport = value.webApiFetchXmlTransport,
       limits = ['maxHeaderXmlBytes', 'maxUrlXmlBytes', 'maxConstructedXmlBytes'];
@@ -845,5 +849,7 @@ export async function bootstrapProject(project, { lcid = project.lcid ?? 1033, c
   const solutionData = await importSolutionData(project.solutionRoots, { ...shared, lcid });
   await cache.save();
   await portalCache.save();
+  cache.release();
+  portalCache.release();
   return { project, portals, solutionData };
 }

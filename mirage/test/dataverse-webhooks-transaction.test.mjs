@@ -5,19 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { DataStore, emptyState } from '../lib/data.mjs';
-import { dataverseSettings } from '../lib/dataverse-settings.mjs';
-import { startDataverseApi } from '../lib/dataverse-api.mjs';
-import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
 import { webhookDelivery } from '../lib/dataverse-webhooks.mjs';
-import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
-import {
-  pluginCatalogue,
-  pluginPhaseRequiresCheckpoint,
-  pluginStepMatchesEntity,
-  runPluginPhase,
-} from '../lib/exported-plugins.mjs';
+import { widgetApi, wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 
 const WIDGET = 'bbbbbbbb-0000-4000-8000-000000000073';
 const ENDPOINT = 'cccccccc-0000-4000-8000-000000000073';
@@ -40,30 +29,16 @@ test('IsInTransaction and Mode follow the pipeline stage, its transaction and th
     });
   });
   await new Promise((resolve) => receiver.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => receiver.close(resolve)));
+  // after hooks run in registration order, so this one runs while the API may still hold keep-alive sockets to it.
+  t.after(
+    () =>
+      new Promise((resolve) => {
+        receiver.close(resolve);
+        receiver.closeAllConnections();
+      }),
+  );
 
-  const state = emptyState();
-  state.mappings.x_widget = {
-    logicalName: 'x_widget',
-    entitySet: 'x_widgets',
-    idColumn: 'x_widgetid',
-    nameColumn: 'x_name',
-    userConfigured: true,
-    fields: { x_name: { dataverseType: 'nvarchar' } },
-    relationships: {},
-  };
-  state.tables.x_widget = [];
-  const store = await new DataStore({ state }).init();
-  const api = await startDataverseApi({
-    store,
-    settings: dataverseSettings({ enabled: true }),
-    log: () => {},
-    extensions: [...EXTENSIONS],
-  });
-  const messageId = store.tableRows('sdkmessage').find((row) => row.name === 'Create').sdkmessageid;
-  const filterId = store
-    .tableRows('sdkmessagefilter')
-    .find((row) => row.sdkmessageid === messageId && row.primaryobjecttypecode === 'x_widget').sdkmessagefilterid;
+  const { store, api, messageId, filterId } = await widgetApi('x');
   await store.create(
     'serviceendpoint',
     {
@@ -95,28 +70,7 @@ test('IsInTransaction and Mode follow the pipeline stage, its transaction and th
     );
   }
   const webhooks = webhookDelivery(store);
-  const steps = () =>
-    pluginCatalogue({
-      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
-      handlers: new Map(),
-    });
-  store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store, items: steps(), handlers: new Map(), webhooks }),
-    ({ entity, operation }) =>
-      steps().some(
-        (item) =>
-          item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation,
-      ),
-    (context) => pluginPhaseRequiresCheckpoint(steps(), context),
-  );
-  const runner = createAsyncPluginRunner({
-    store,
-    items: steps,
-    handlers: new Map(),
-    runtimes: new Map(),
-    webhooks,
-    systemJobs: () => true,
-  });
+  const runner = wireRegisteredSteps(store, webhooks);
   t.after(async () => {
     await runner.close();
     await api.close();

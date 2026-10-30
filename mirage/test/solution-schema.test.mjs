@@ -16,6 +16,8 @@ import { discoverSolutionRoots, resolveSolutionRoots, solutionWatchFilter } from
 import { SolutionFileCache, shareSolutionParses } from '../lib/solution-cache.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { bootstrapReport, formatReport, resolveReportInputs } from '../bootstrap-report.mjs';
+import { settleFileTimes } from './support/file-times.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const STANDARD = ['createdon', 'createdby', 'modifiedon', 'modifiedby', 'statecode', 'statuscode'];
 
@@ -72,7 +74,7 @@ const solution = (name) =>
   `<ImportExportXml><SolutionManifest><UniqueName>${name}</UniqueName><Version>1.0.0.0</Version><Managed>2</Managed><Publisher><CustomizationPrefix>sample</CustomizationPrefix></Publisher><RootComponents /></SolutionManifest></ImportExportXml>`;
 
 async function tree(t, files) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-solution-schema-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-solution-schema-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(files)) {
     const file = path.join(root, name);
@@ -556,6 +558,8 @@ test('Web API tables receive complete column metadata on their mapping; user map
 });
 
 test('parsed files are cached by file identity and re-read after any change', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  const settled = settleFileTimes(t);
   const root = await tree(t, {
     'Entities/sample_item/Entity.xml': entityXml('sample_item', { set: 'sample_items', full: true }),
   });
@@ -568,6 +572,8 @@ test('parsed files are cached by file identity and re-read after any change', as
   assert.deepEqual(scan.cache.stats, { hits: 1, misses: 0 });
   const file = path.join(root, 'Entities/sample_item/Entity.xml');
   const original = await fs.readFile(file, 'utf8');
+  // A same-size edit, possibly in the same file-time tick: the real clock lets the racy window catch it.
+  settled.restore();
   await fs.writeFile(file, original.replace('sample_items', 'sample_xtems'));
   scan = await scanSolutionSources([root], { cacheFile });
   assert.equal(scan.cache.stats.misses, 1);
@@ -758,7 +764,7 @@ test('solution repositories are discovered next to the portal repository without
 test('the watch filter matches layers whose root was given in another spelling (8.3 short name, junction)', async (t) => {
   // chokidar reports paths in the spelling a root was given (the Windows 8.3 short form
   // of os.tmpdir(), a junction or symbolic link), while scanned layer directories are real paths.
-  const given = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-watch-spelling-'));
+  const given = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-watch-spelling-'));
   const alias = given + '-alias';
   t.after(async () => {
     await fs.rm(alias, { force: true });
@@ -1204,6 +1210,8 @@ test('case relationships come from Learn and document management creates <table>
 });
 
 test('while a share is open several caches of one process parse a Solution root once', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const root = await tree(t, {
     'Entities/sample_item/Entity.xml': entityXml('sample_item', { set: 'sample_items', full: true }),
     'Entities/sample_other/Entity.xml': entityXml('sample_other', { set: 'sample_others', full: true }),

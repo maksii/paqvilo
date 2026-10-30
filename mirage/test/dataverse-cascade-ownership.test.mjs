@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EXTENSION } from '../lib/dataverse-cascade.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
+import { cascadeMappings } from './support/parent-child-tables.mjs';
 
 const PARENT = '55555555-5555-4555-8555-555555555511',
   CHILD = '55555555-5555-4555-8555-555555555512';
@@ -13,31 +14,9 @@ const TEAM = '66666666-6666-4666-8666-666666666613';
 const owner = (id) => ({ id, logical_name: 'systemuser', name: 'Invented' });
 
 async function setup(t) {
-  const link = { from: 'x_parentid', to: 'x_parentid', cascade: { assign: 'Cascade' } };
   const fixture = await contractModuleFixture(t, {
     extension: EXTENSION,
-    mappings: {
-      x_parent: {
-        logicalName: 'x_parent',
-        entitySet: 'x_parents',
-        idColumn: 'x_parentid',
-        nameColumn: 'x_name',
-        relationships: { children: { entity: 'x_child', many: true, ...link } },
-        fields: { x_name: { dataverseType: 'nvarchar' }, ownerid: { dataverseType: 'owner' } },
-      },
-      x_child: {
-        logicalName: 'x_child',
-        entitySet: 'x_children',
-        idColumn: 'x_childid',
-        nameColumn: 'x_name',
-        relationships: { parent: { entity: 'x_parent', many: false, ...link } },
-        fields: {
-          x_name: { dataverseType: 'nvarchar' },
-          x_parentid: { dataverseType: 'lookup' },
-          ownerid: { dataverseType: 'owner' },
-        },
-      },
-    },
+    mappings: cascadeMappings({ assign: 'Cascade' }),
     tables: {
       x_parent: [{ x_parentid: PARENT, x_name: 'Invented parent', ownerid: owner(ONE) }],
       x_child: [

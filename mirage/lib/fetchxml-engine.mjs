@@ -1,3 +1,6 @@
+import { cloneStateData } from './state-clone.mjs';
+// Projected column values are mostly scalars: only structured values need a detached copy.
+const copyValue = (value) => (value !== null && typeof value === 'object' ? cloneStateData(value) : value);
 // Local FetchXML evaluation with Dataverse semantics. The store supplies
 // permission-filtered rows and metadata; this module never bypasses them.
 import { DataError } from './data-error.mjs';
@@ -1214,8 +1217,24 @@ export function executeFetch(plan, ctx) {
   };
   if (ctx.equalRows) for (const filter of children(root, 'filter')) narrow(filter);
   // Storage order: a distinct bucket answers its first stored row's value, as OData groupby and TDS DISTINCT do.
-  const storageOrder = new Map(inputs.map((base, index) => [base, index]));
-  let rows = pkSort(inputs, rootMapping.idColumn).map((base) => ({ base, aliases: {} }));
+  const storageOrder = plan.distinct ? new Map(inputs.map((base, index) => [base, index])) : null;
+  // A flat ordinary query sorts by these same valid primary keys below. Its
+  // initial full PK sort cannot change the final order or duplicate-key ties.
+  // Keep historical input ordering for joins, aggregates, distinct and malformed
+  // legacy IDs, where it participates in selection semantics.
+  const finalOrderSuffices =
+    !plan.aggregate &&
+    !plan.distinct &&
+    !plan.links.length &&
+    inputs.every(
+      (row) =>
+        typeof row[rootMapping.idColumn] === 'string' &&
+        /^\{?[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}\}?$/i.test(row[rootMapping.idColumn]),
+    );
+  let rows = (finalOrderSuffices ? inputs : pkSort(inputs, rootMapping.idColumn)).map((base) => ({
+    base,
+    aliases: {},
+  }));
   const rootFilter = compileFilters(root, null);
   const pushdown = rootFilter && !children(root, 'filter').some((f) => referencesOtherAlias(f, null));
   if (pushdown) rows = rows.filter(rootFilter);
@@ -1360,7 +1379,10 @@ export function executeFetch(plan, ctx) {
   collectLinkOrders(root);
 
   const total = { value: 0 };
-  let entities, keys, cookieSupported;
+  let entities,
+    keys,
+    cookieSupported,
+    deferredProjection = false;
   if (plan.aggregate) {
     ({ entities, keys } = aggregateRows());
     cookieSupported = false;
@@ -1399,7 +1421,11 @@ export function executeFetch(plan, ctx) {
       }
       return a.index - b.index;
     });
-    let projected = keyed.map((entry) => ({ entity: project(entry.row), entry }));
+    // Distinct needs every projected value to form equality buckets. Ordinary
+    // pages need only their returned values; copying every off-page payload
+    // made a 50-row grid allocate an entire large table again.
+    deferredProjection = !plan.distinct;
+    let projected = keyed.map((entry) => ({ entity: deferredProjection ? entry.row : project(entry.row), entry }));
     if (plan.distinct) {
       // One row per equality bucket, at the bucket's first position in this order, with the value of the bucket's first
       // stored row (the equalityKey contract: the emitted value is the first row's original value).
@@ -1449,7 +1475,7 @@ export function executeFetch(plan, ctx) {
     end = Math.min(start + plan.pageSize, entities.length);
     more = entities.length > start + plan.pageSize;
   }
-  const pageEntities = entities.slice(start, end);
+  const pageEntities = deferredProjection ? entities.slice(start, end).map(project) : entities.slice(start, end);
   if (plan.top == null && cookieSupported && pageEntities.length)
     pagingCookie = buildCookie(plan.page, keys.slice(start, end));
   else if (
@@ -1495,18 +1521,18 @@ export function executeFetch(plan, ctx) {
     if (!plan.distinct && row.base[pk] != null) out[pk] = row.base[pk];
     if (rootAll)
       for (const [key, value] of Object.entries(row.base))
-        if (!isEmpty(value) && !key.includes('@')) out[key] = structuredClone(value);
+        if (!isEmpty(value) && !key.includes('@')) out[key] = copyValue(value);
     for (const alias of allAttributeAliases) {
       if (alias == null) continue;
       for (const [key, value] of Object.entries(row.aliases[alias] ?? {}))
-        if (!isEmpty(value) && !key.includes('@')) out[`${alias}.${key}`] = structuredClone(value);
+        if (!isEmpty(value) && !key.includes('@')) out[`${alias}.${key}`] = copyValue(value);
     }
     // Distinct queries don't add the primary key implicitly; an explicitly
     // selected key (attribute element or all-attributes) is an ordinary column.
     for (const column of columns) {
       const source = column.alias == null ? row.base : row.aliases[column.alias];
       const value = fieldValue(source, column.attribute);
-      if (!isEmpty(value)) out[column.key] = structuredClone(value);
+      if (!isEmpty(value)) out[column.key] = copyValue(value);
       else delete out[column.key];
     }
     return out;
@@ -1547,7 +1573,7 @@ export function executeFetch(plan, ctx) {
     const out = [...buckets.values()].map((bucket) => {
       const entity = {};
       groups.forEach((column, index) => {
-        if (bucket.values[index] != null) entity[column.key] = structuredClone(bucket.values[index]);
+        if (bucket.values[index] != null) entity[column.key] = copyValue(bucket.values[index]);
       });
       for (const column of aggregates) {
         let values = bucket.rows.map((row) => read(row, column)).filter((value) => !isEmpty(value));
@@ -1598,7 +1624,7 @@ export function executeFetch(plan, ctx) {
             keyed.sort((a, b) => compareSortKeys(a.key, b.key, collation));
             const chosen = column.aggregate === 'min' ? keyed[0].value : keyed.at(-1).value;
             const date = parseDateValue(chosen);
-            result = typeof chosen === 'string' && date && !date.dateOnly ? isoUtc(date.ms) : structuredClone(chosen);
+            result = typeof chosen === 'string' && date && !date.dateOnly ? isoUtc(date.ms) : copyValue(chosen);
             break;
           }
         }

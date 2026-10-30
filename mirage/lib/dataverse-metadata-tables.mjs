@@ -22,7 +22,7 @@ import {
 } from './dataverse-metadata-relationships.mjs';
 import { grantTablePrivileges, revokeTablePrivileges, uuidV5 } from './dataverse-security.mjs';
 import { pluralizeEntitySetName } from './solution-standard.mjs';
-import { equalityKey } from './dataverse-values.mjs';
+import { alternateKeyOf, alternateKeyValues, alternateKeyKinds } from './alternate-key-values.mjs';
 import {
   assertElasticColumn,
   assertElasticKey,
@@ -590,10 +590,15 @@ function deleteKey(c, key, keyId) {
 function keyDuplicates(api, logical, key) {
   const seen = new Map();
   const duplicates = [];
+  const keyOf = alternateKeyOf(
+    key.attributes,
+    api.store.state.settings?.collation,
+    alternateKeyKinds(api.store.state.mappings[logical], key.attributes),
+  );
   for (const row of api.store.state.tables?.[logical] ?? []) {
-    const values = key.attributes.map((name) => row[name]);
-    if (values.some((value) => value == null || value === '')) continue;
-    const tuple = values.map((value) => equalityKey(value)).join('\u0001');
+    const values = alternateKeyValues(row, key.attributes);
+    const tuple = keyOf(row);
+    if (tuple === null) continue;
     // The first row's values name the duplicate tuple.
     if (!seen.has(tuple)) seen.set(tuple, values);
     else if (seen.get(tuple) !== true) {

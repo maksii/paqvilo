@@ -1,3 +1,4 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -82,7 +83,7 @@ test('config refuses missing references, duplicate origins, unsafe paths and non
 });
 
 test('all declared maps are validated before any target revision can be published', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-target-maps-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-target-maps-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const mapFile = path.join(dir, 'map.json');
   const targets = [
@@ -186,7 +187,7 @@ test('every activated local-simulation target receives its declared Mirage resou
 });
 
 test('real Solution import native Diff uses declared names rather than importer URL keys and releases bytes on retirement', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-import-native-diff-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-import-native-diff-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const resources = path.join(root, 'WebResources');
   await fs.mkdir(resources);

@@ -1,26 +1,27 @@
+import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 // Exercise the newcomer command itself, including browser launch and owned runtime cleanup.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import net from 'node:net';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import { once } from 'node:events';
+import { promisify } from 'node:util';
 import { chromium } from 'playwright-core';
 import { fileURLToPath } from 'node:url';
+import { childOutput } from './helpers/child-output.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
+import { DEV_READY } from '../lense/dev-messages.mjs';
 
 test(
   'demo command opens a populated browser, supports the walkthrough and stops its Mirage',
   { timeout: 180_000 },
   async (t) => {
-    const work = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-demo-browser-'));
+    const work = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-demo-browser-'));
     const directory = path.join(work, 'example');
-    const listener = net.createServer();
-    listener.listen(0, '127.0.0.1');
-    await once(listener, 'listening');
-    const debugPort = listener.address().port;
-    await new Promise((resolve) => listener.close(resolve));
+    const debugPort = await freeDebugPort();
     const cli = process.env.PAQVILO_DEMO_CLI || fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
     const child = spawn(
@@ -39,14 +40,8 @@ test(
       ],
       { cwd: work, env, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
     );
-    let output = '',
-      browser;
-    child.stdout.on('data', (data) => {
-      output += data;
-    });
-    child.stderr.on('data', (data) => {
-      output += data;
-    });
+    const output = childOutput(child);
+    let browser, releaseDemoRuntime;
     const exited = once(child, 'exit');
     const closeOwnedBrowser = async () => {
       if (!browser?.isConnected()) return;
@@ -57,6 +52,7 @@ test(
       await disconnected;
     };
     t.after(async () => {
+      await releaseDemoRuntime?.();
       await closeOwnedBrowser().catch(() => {});
       await browser?.close().catch(() => {});
       if (child.exitCode === null) child.kill('SIGTERM');
@@ -80,30 +76,37 @@ test(
         );
         await once(cleanup, 'exit');
       }
-      await fs.rm(work, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      await fs.rm(work, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES });
     });
-    const deadline = Date.now() + 120_000;
-    while (Date.now() < deadline) {
-      if (child.exitCode !== null) throw new Error(`Demo exited before opening its browser: ${output}`);
-      try {
-        if ((await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(1000) })).ok)
-          break;
-      } catch {
-        /* browser starting */
-      }
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
+    // dev prints its debugger port once the owned browser is listening on it.
+    await output.waitFor(new RegExp(`debugger\\s+port ${debugPort}\\b`), {
+      label: 'Demo opening its browser',
+    });
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`);
     const context = browser.contexts()[0];
-    context.setDefaultTimeout(15_000);
     // The normal dev lifecycle creates and navigates the first tab itself.
-    let page;
-    while (Date.now() < deadline) {
-      page = context.pages().find((candidate) => /^http:\/\/127\.0\.0\.1:\d+\/$/.test(candidate.url()));
-      if (page) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    const home = (candidate) => /^http:\/\/127\.0\.0\.1:\d+\/$/.test(candidate.url());
+    const page =
+      context.pages().find(home) ??
+      (await new Promise((resolve) => {
+        const watched = new Map();
+        const watch = (candidate) => {
+          const navigated = (frame) => {
+            if (frame !== candidate.mainFrame() || !home(candidate)) return;
+            for (const [tab, listener] of watched) tab.off('framenavigated', listener);
+            context.off('page', watch);
+            resolve(candidate);
+          };
+          watched.set(candidate, navigated);
+          candidate.on('framenavigated', navigated);
+        };
+        context.pages().forEach(watch);
+        context.on('page', watch);
+      }));
     assert.ok(page, 'the command must open and navigate a browser without a manual console link');
+    // The tab can show the start page before the command's own startup navigation and resource wait finish;
+    // interact only once the command reports the session ready.
+    await output.waitFor(new RegExp(DEV_READY.replaceAll('.', String.raw`\.`)), { label: 'Demo reporting ready' });
     const url = new URL(page.url()).origin;
     // Keep the CLI's own interception intact. These authored sources and sign-in use only loopback.
     const errors = [];
@@ -131,14 +134,79 @@ test(
     }
     await evidence('demo-anonymous');
     await page.getByRole('link', { name: 'Sign in to try CRUD', exact: true }).click();
-    await page
+    const runtimeDebugger = await context.newCDPSession(page);
+    await runtimeDebugger.send('Debugger.enable');
+    const runtimeBreakpoint = await runtimeDebugger.send('Debugger.setBreakpointByUrl', {
+      urlRegex: 'demo-runtime\\.js(?:\\?.*)?$',
+      lineNumber: 2,
+    });
+    releaseDemoRuntime = async () => {
+      await runtimeDebugger
+        .send('Debugger.removeBreakpoint', { breakpointId: runtimeBreakpoint.breakpointId })
+        .catch(() => {});
+      await runtimeDebugger.send('Debugger.resume').catch(() => {});
+      await runtimeDebugger.detach().catch(() => {});
+    };
+    let runtimePaused = once(runtimeDebugger, 'Debugger.paused');
+    const signingIn = page
       .locator('.paqvilo-mirage-persona')
       .filter({ hasText: 'Alex Example 01' })
       .getByRole('button', { name: 'Sign in', exact: true })
       .first()
       .click();
+    signingIn.catch(() => {});
+    let authoredTarget;
+    while (true) {
+      const [pausedRuntime] = await runtimePaused;
+      const current = await runtimeDebugger.send('Debugger.evaluateOnCallFrame', {
+        callFrameId: pausedRuntime.callFrames[0].callFrameId,
+        expression:
+          '({path:location.pathname,readyState:document.readyState,target:document.querySelector(".demo-hero .demo-button")?.getAttribute("href")})',
+        returnByValue: true,
+      });
+      if (current.result.value.path === '/') {
+        authoredTarget = current.result.value;
+        break;
+      }
+      runtimePaused = once(runtimeDebugger, 'Debugger.paused');
+      await runtimeDebugger.send('Debugger.resume');
+    }
+    t.diagnostic(`Deferred home customization: ${JSON.stringify(authoredTarget)}`);
+    assert.equal(
+      authoredTarget.target,
+      '/approach/out-of-the-box/',
+      'Authored markup is visible before the deferred local customization.',
+    );
+    await releaseDemoRuntime();
+    await signingIn;
+    await page.waitForFunction(
+      () => document.querySelector('.demo-hero .demo-button')?.getAttribute('href') === '/approach/web-api/',
+    );
     await page.getByRole('link', { name: 'Open the demo', exact: true }).click();
-    await page.locator('[data-account-rows] tr').first().waitFor();
+    await page
+      .locator('[data-account-rows] tr')
+      .first()
+      .waitFor()
+      .catch(async (cause) => {
+        // The workspace reports its own load failures in [data-status]; keep them with the failure.
+        t.diagnostic(
+          `Account list: ${JSON.stringify({
+            path: new URL(page.url()).pathname,
+            status: await page
+              .locator('[data-status]')
+              .textContent()
+              .catch(() => null),
+            empty: await page
+              .locator('[data-account-empty]')
+              .isVisible()
+              .catch(() => null),
+            signInLinks: await page.getByRole('link', { name: 'Sign in to try CRUD', exact: true }).count(),
+            errors,
+          })}`,
+        );
+        await evidence('demo-account-list-failure').catch(() => {});
+        throw cause;
+      });
     assert.equal(await page.locator('[data-account-rows] tr').count(), 8);
     await page.getByRole('link', { name: 'Arcwell Services', exact: true }).click();
     const ready = () =>
@@ -226,10 +294,34 @@ test(
     await page.keyboard.press('Alt+Shift+P');
     const css = path.join(directory, 'portal/web-files/demo.css');
     await fs.appendFile(css, '\nbody{--demo-source-proof:verified;}\n');
-    await page.waitForFunction(
-      () =>
-        document.body && getComputedStyle(document.body).getPropertyValue('--demo-source-proof').trim() === 'verified',
-    );
+    await page
+      .waitForFunction(
+        () =>
+          document.body &&
+          getComputedStyle(document.body).getPropertyValue('--demo-source-proof').trim() === 'verified',
+      )
+      .catch(async (cause) => {
+        const diagnostic = await page
+          .evaluate(async () => {
+            const read = (route) => fetch(route, { signal: AbortSignal.timeout(3000) });
+            const status = await read('/_sim/api/status').then((response) => response.json());
+            const diagnostics = await read('/_sim/api/diagnostics').then((response) => response.json());
+            const css = await read('/demo.css').then((response) => response.text());
+            return {
+              documentRevision: window.__portalSimulation?.revision,
+              streamState: window.__portalSimulation?.reloadStream?.readyState,
+              runtimeRevision: status.revision,
+              reloading: status.reloading,
+              pendingReload: status.pendingReload,
+              diagnosticCodes: (diagnostics.diagnostics ?? []).map((entry) => entry.code),
+              cssContainsEdit: css.includes('--demo-source-proof:verified'),
+            };
+          })
+          .catch((error) => ({ diagnosticFailure: error.name }));
+        t.diagnostic(`Demo source reload: ${JSON.stringify(diagnostic)}`);
+        await evidence('demo-source-reload-failure').catch(() => {});
+        throw cause;
+      });
     await page.goto(url + '/approach/out-of-the-box/');
     await page.locator('.entity-grid tbody tr[data-id]').first().waitFor();
     assert.equal(await page.locator('.entity-grid tbody tr[data-id]').count(), 10);
@@ -377,22 +469,29 @@ test(
     await admin.goto(url + '/_sim/#plugins');
     await admin.getByRole('heading', { name: 'Simulation presets', exact: true }).waitFor();
     await evidence('demo-admin', admin);
-    await admin.locator('[data-apply="example-empty"]').click();
-    const presetApplied = admin.waitForResponse(
-      (response) =>
-        response.request().method() === 'POST' &&
-        /^\/(?:_sim|__sim)\/api\/presets\/example-empty\/apply$/.test(new URL(response.url()).pathname),
-    );
-    await admin.locator('#confirm-submit').click();
-    const presetResponse = await presetApplied;
-    assert.equal(presetResponse.status(), 200, await presetResponse.text());
+    // Applying a preset saves state, which publishes `reload` on /__sim/events before the
+    // POST answers; the portal page reloads itself. A test reload would race that navigation,
+    // so wait until the page renders the runtime revision published with the response.
+    const applyPreset = async (id) => {
+      await admin.locator(`[data-apply="${id}"]`).click();
+      const presetApplied = admin.waitForResponse(
+        (response) =>
+          response.request().method() === 'POST' &&
+          [`/_sim/api/presets/${id}/apply`, `/__sim/api/presets/${id}/apply`].includes(
+            new URL(response.url()).pathname,
+          ),
+      );
+      await admin.locator('#confirm-submit').click();
+      const presetResponse = await presetApplied;
+      assert.equal(presetResponse.status(), 200, await presetResponse.text());
+      const { revision } = await admin.evaluate(() => fetch('/_sim/api/status').then((response) => response.json()));
+      await page.waitForFunction((expected) => window.__portalSimulation?.revision === expected, revision);
+    };
+    await applyPreset('example-empty');
     await admin.getByText('Preset applied.', { exact: true }).waitFor();
-    await page.reload();
     await page.locator('[data-account-empty]').waitFor({ state: 'visible' });
-    await admin.locator('[data-apply="example-demo"]').click();
-    await admin.locator('#confirm-submit').click();
+    await applyPreset('example-demo');
     await admin.locator('#confirm').waitFor({ state: 'hidden' });
-    await page.reload();
     await page.locator('[data-account-rows] tr').first().waitFor();
     assert.equal(await page.locator('[data-account-rows] tr').count(), 8);
     await admin.close();
@@ -482,10 +581,26 @@ test(
         JSON.stringify({ errors }, null, 2),
       );
 
+    // Ask the project's own runtime records rather than probing released ports afterwards,
+    // which another process on a busy host may already have been given.
+    const liveRuntimes = async () => {
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        [cli, 'mirage', 'status', '--config', path.join(directory, 'paqvilo.config.yml'), '--json'],
+        { cwd: work, env, windowsHide: true },
+      );
+      const status = JSON.parse(stdout);
+      assert.equal(status.action, 'status');
+      return status.sessions
+        .filter((session) => session.processAlive && session.url)
+        .map((session) => new URL(session.url).origin)
+        .filter((origin) => [url, launch.origin].includes(origin))
+        .sort();
+    };
+    assert.ok((await liveRuntimes()).includes(url), 'the running demo runtime is recorded for this project');
     await closeOwnedBrowser();
     const [code] = await exited;
-    assert.equal(code, 0, output);
-    await assert.rejects(fetch(url, { signal: AbortSignal.timeout(1000) }), /fetch failed/);
-    await assert.rejects(fetch(launch.origin, { signal: AbortSignal.timeout(1000) }), /fetch failed/);
+    assert.equal(code, 0, output.text);
+    assert.deepEqual(await liveRuntimes(), [], 'the demo stops every Mirage runtime it started');
   },
 );

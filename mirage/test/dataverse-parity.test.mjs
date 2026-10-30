@@ -18,6 +18,7 @@ import {
   prepareRequest,
   evaluateAssertions,
 } from '../dataverse-parity.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const response = (json, status = 200, headers = {}) => ({
   status,
@@ -338,7 +339,7 @@ test('origin confinement prevents token leakage through redirects or continuatio
 });
 
 test('immutable writer retains durable start/intent/results and rejects reused directories', async (t) => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'dataverse-parity-'));
+  const temp = await makeTemporaryDirectory(path.join(os.tmpdir(), 'dataverse-parity-'));
   t.after(() => fs.rm(temp, { recursive: true, force: true }));
   const dir = path.join(temp, 'run'),
     writer = await createRunWriter(dir);

@@ -8,6 +8,7 @@ import { seedPresetBody } from './solution-schema.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
 import { configurationPresetReport, experimentId } from './experiment-presets.mjs';
 import { validatePackDataFiles } from './pack-data-files.mjs';
+import { recordSources, finishRecordSources } from './record-sources.mjs';
 
 /**
  * Project-agnostic preset registry.
@@ -22,6 +23,9 @@ import { validatePackDataFiles } from './pack-data-files.mjs';
 export const PACKS_ROOT = null;
 /** Marks a lazily generated preset getter; carries the body-free descriptor. */
 export const LAZY_PRESET = Symbol.for('paqvilo-mirage.lazy-preset');
+// An explicit factory transfers a new private graph on each application.
+// Keep this separate from the public body-free descriptor.
+export const OWNED_PRESET = Symbol('paqvilo-mirage.owned-preset');
 const packIdPattern = /^[a-z0-9][a-z0-9._-]*$/;
 const presetIdPattern = /^[\w.-]+$/;
 const reserved = new Set(['__proto__', 'constructor', 'prototype']);
@@ -367,52 +371,65 @@ export function presetDescriptor(library, id) {
 
 /**
  * Define a memoized lazy preset. `entry` is either a complete preset body or
- * `{ name, description, load() }`; `finish(body)` adapts a loaded body once.
+ * `{ name, description, load() }`, or an explicit `createOwned()` factory.
+ * Legacy loads and public previews are memoized; owned applications create a
+ * new transferred graph. `finish(body, { owned: true })` may adopt only that graph.
  */
 export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
   if (!presetIdPattern.test(id) || reserved.has(id))
     throw new Error(`Invalid preset id '${id}'${pack ? ` in data pack ${pack}` : ''}`);
   if (!entry || typeof entry !== 'object')
     throw new Error(`Preset ${id}${pack ? ` in data pack ${pack}` : ''} must be an object`);
-  const load = typeof entry.load === 'function' ? entry.load : () => entry;
+  const legacyLoad = typeof entry.load === 'function';
+  const factory = legacyLoad ? undefined : Object.getOwnPropertyDescriptor(entry, 'createOwned')?.value;
+  const owned = typeof factory === 'function';
+  const load = legacyLoad ? entry.load : owned ? factory : () => entry;
   let body;
   let loaded = false;
+  const build = (context) => {
+    let value = owned ? load({ records: recordSources(), ...context }) : load();
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      (owned && ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+    )
+      throw new Error(`Preset ${id}${pack ? ` in data pack ${pack}` : ''} did not load an object`);
+    // A lazy descriptor's configuration link is also part of its hydrated preset.
+    // Reject contradictory metadata rather than listing one scenario and applying another.
+    if (entry.configurationPreset !== undefined) {
+      experimentId(entry.configurationPreset);
+      if (value.configurationPreset !== undefined && value.configurationPreset !== entry.configurationPreset) {
+        const message = `Preset ${id} configurationPreset does not match its lazy descriptor`;
+        const diagnostic = {
+          code: 'PACK_CONFIGURATION_PRESET_LINK_INVALID',
+          severity: 'error',
+          pack: pack ?? null,
+          preset: id,
+          descriptorConfigurationPreset: entry.configurationPreset,
+          bodyConfigurationPreset: typeof value.configurationPreset === 'string' ? value.configurationPreset : null,
+          message,
+        };
+        throw Object.assign(new Error(message), {
+          status: 400,
+          code: diagnostic.code,
+          details: { configurationPresetDiagnostic: diagnostic },
+        });
+      }
+      if (value.configurationPreset === undefined) value = { ...value, configurationPreset: entry.configurationPreset };
+    }
+    if (value.personaCatalog !== undefined) validatePersonaCatalog(value.personaCatalog, `Preset ${id}`);
+    if (value.configurationPreset !== undefined) experimentId(value.configurationPreset);
+    return finishRecordSources(finish ? (owned ? finish(value, { owned: true }) : finish(value)) : value);
+  };
   const get = () => {
     if (!loaded) {
-      let value = load();
-      if (!value || typeof value !== 'object' || Array.isArray(value))
-        throw new Error(`Preset ${id}${pack ? ` in data pack ${pack}` : ''} did not load an object`);
-      // A lazy descriptor's configuration link is also part of its hydrated preset.
-      // Reject contradictory metadata rather than listing one scenario and applying another.
-      if (entry.configurationPreset !== undefined) {
-        experimentId(entry.configurationPreset);
-        if (value.configurationPreset !== undefined && value.configurationPreset !== entry.configurationPreset) {
-          const message = `Preset ${id} configurationPreset does not match its lazy descriptor`;
-          const diagnostic = {
-            code: 'PACK_CONFIGURATION_PRESET_LINK_INVALID',
-            severity: 'error',
-            pack: pack ?? null,
-            preset: id,
-            descriptorConfigurationPreset: entry.configurationPreset,
-            bodyConfigurationPreset: typeof value.configurationPreset === 'string' ? value.configurationPreset : null,
-            message,
-          };
-          throw Object.assign(new Error(message), {
-            status: 400,
-            code: diagnostic.code,
-            details: { configurationPresetDiagnostic: diagnostic },
-          });
-        }
-        if (value.configurationPreset === undefined)
-          value = { ...value, configurationPreset: entry.configurationPreset };
-      }
-      if (value.personaCatalog !== undefined) validatePersonaCatalog(value.personaCatalog, `Preset ${id}`);
-      if (value.configurationPreset !== undefined) experimentId(value.configurationPreset);
-      body = finish ? finish(value) : value;
+      body = build();
       loaded = true;
     }
     return body;
   };
+  if (owned) get[OWNED_PRESET] = build;
   get[LAZY_PRESET] = Object.freeze({
     id,
     name: entry.name ?? id,
@@ -458,7 +475,10 @@ export function presetLibrary({ portal, metadata, packs = [], options } = {}) {
     for (const [id, entry] of packPresetEntries(pack, { portal, metadata, options })) {
       if (Object.hasOwn(library, id))
         throw new Error(`Preset '${id}' from data pack ${pack.id} duplicates an existing preset`);
-      defineLazyPreset(library, id, entry, { pack: pack.id, finish: (body) => seedPresetBody(body, metadata?.schema) });
+      defineLazyPreset(library, id, entry, {
+        pack: pack.id,
+        finish: (body, options) => seedPresetBody(body, metadata?.schema, options),
+      });
     }
   }
   return library;

@@ -3,7 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 
 export async function profileFixture(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-profile-'));
+  // Persistence refuses declared files below a symbolic link (lib/transactional-files.mjs), and a runner's temporary
+  // directory may be one (a symlinked TMPDIR, macOS /var): start from its real path.
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-profile-')));
   const cleanups = [];
   t.after(async () => {
     for (const cleanup of cleanups.reverse()) await cleanup();

@@ -5,7 +5,16 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { createSourceInspector, inspectionSources, inspectRenderedPage } from '../lense/source-inspection.mjs';
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
+import { settleFileTimes } from '../mirage/test/support/file-times.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
+
+test('the serialized browser collector retains its public function identity', () => {
+  assert.equal(inspectRenderedPage.name, 'inspectRenderedPage');
+  assert.equal(inspectRenderedPage.length, 0);
+  const embedded = vm.runInNewContext('(' + inspectRenderedPage.toString() + ')');
+  assert.equal(embedded.name, 'inspectRenderedPage');
+  assert.equal(embedded.length, 0);
+});
 
 test('list action modal forms and Web API column candidates come from the selected exports', async (t) => {
   const fx = inspectionFixture();
@@ -166,6 +175,8 @@ test('repeated enrichment keeps unresolved diagnostics stable and rejects absent
 });
 
 test('inspection traces exported plugin steps applicable to page tables with type and assembly sources, without claiming live execution', async (t) => {
+  // The reuse assertions below concern files written moments ago.
+  settleFileTimes(t);
   const fx = inspectionFixture();
   t.after(fx.cleanup);
   const assembly = path.join(fx.solution, 'PluginAssemblies/Synthetic/Synthetic.xml');
@@ -690,6 +701,9 @@ test('native subgrids and quick views trace child views, tables, fields, action 
     false,
   );
   const grid = report.nativeComponents.find((control) => control.id === 'ChildGrid');
+  const quick = report.nativeComponents.find((control) => control.id === 'ChildQuick');
+  assert.equal(quick.ownerFormXmlId, 'widget-form');
+  assert.equal(quick.targetFormId, 'quick-form');
   assert.equal(grid.evidence, 'rendered-control-id');
   assert.equal(grid.relationship, 'fx_widget_children');
   assert.equal(

@@ -1,15 +1,16 @@
 import test from 'node:test';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
 import { DataStore } from '../lib/data.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { dispatchSdkCall, prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 const user = '10000000-0000-0000-0000-000000000001',
   id = '20000000-0000-0000-0000-000000000001',
   empty = '00000000-0000-0000-0000-000000000000';
@@ -110,11 +111,11 @@ test('Standard bulk validates all identities/security before writing and preserv
 
 test(
   'Original bulk PreOperation SDK changes cannot retain a stale backend grant on any target',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-bulk-grant-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-bulk-grant-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'BulkGrant.cs'),
       assembly = path.join(root, 'BulkGrant.dll'),
       second = '20000000-0000-0000-0000-000000000002';
@@ -124,12 +125,7 @@ test(
 namespace Invented {public sealed class Driver:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var s=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var a=new Entity("secondary",new Guid("${id}"));a["title"]="First primary changed";var b=new Entity("secondary",new Guid("${second}"));b["title"]="Second primary changed";s.Execute(new UpdateMultipleRequest{Targets=new EntityCollection(new[]{a,b})});}}
 public sealed class GuardChange:IPlugin {public void Execute(IServiceProvider services){var c=(IPluginExecutionContext4)services.GetService(typeof(IPluginExecutionContext));if(c.PreEntityImagesCollection[0]["before"].GetAttributeValue<bool>("allowed")!=true)throw new Exception("Original preimage lost");var s=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var change=new Entity("secondary",new Guid("${second}"));change["allowed"]=false;s.Update(change);((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original bulk changed current grant flag");}}}`,
     );
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000 },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const restricted = {
       ...profile,
       grants: [{ entity: 'secondary', operations: ['update'], predicate: (row) => row.allowed === true }],
@@ -179,9 +175,10 @@ public sealed class GuardChange:IPlugin {public void Execute(IServiceProvider se
         images: [{ alias: 'before', type: 0, attributes: ['allowed'] }],
       },
     ];
+    const driver = await prepareClrRuntime(descriptor('Driver', restricted));
     const runtimes = new Map([
-        [steps[0].id, await prepareClrRuntime(descriptor('Driver', restricted))],
-        [steps[1].id, await prepareClrRuntime(descriptor('GuardChange', profile))],
+        [steps[0].id, driver],
+        [steps[1].id, retypeClrRuntime(driver, { typeName: 'Invented.GuardChange', serviceProfile: profile })],
       ]),
       store = storeOf(),
       notes = [];
@@ -241,11 +238,11 @@ public sealed class GuardChange:IPlugin {public void Execute(IServiceProvider se
 
 test(
   'Original DLL executes Targets, Context4 aligned images, filtering, rank and typed bulk responses',
-  { skip: process.platform !== 'win32' || !process.env.PAQ_TEST_XRM_SDK },
+  { skip: CLR_SKIP },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-sdk-bulk-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-sdk-bulk-'));
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
-    const sdk = path.resolve(process.env.PAQ_TEST_XRM_SDK),
+    const sdk = clrSdk(),
       source = path.join(root, 'BulkOriginal.cs'),
       assembly = path.join(root, 'BulkOriginal.dll');
     await fs.writeFile(
@@ -261,12 +258,7 @@ else{if(((Money)c.SharedVariables["rank"]).Value!=23.5m||c.PostEntityImagesColle
 ((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original {0} stage {1}",c.MessageName,c.Stage);}}
 public sealed class RejectUnexpected:IPlugin {public void Execute(IServiceProvider services){throw new Exception("Unsubmitted filtering attribute triggered");}}}`,
     );
-    const build = spawnSync(
-      path.join(process.env.WINDIR ?? 'C:/Windows', 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),
-      ['/nologo', '/target:library', '/out:' + assembly, '/reference:' + sdk, source],
-      { shell: false, windowsHide: true, encoding: 'utf8', timeout: 20000 },
-    );
-    assert.equal(build.status, 0, build.stdout + build.stderr);
+    compileClr(source, assembly, { references: [sdk] });
     const descriptor = (typeName) => ({
       trust: 'execute-local-assembly',
       root,
@@ -285,7 +277,8 @@ public sealed class RejectUnexpected:IPlugin {public void Execute(IServiceProvid
     });
     const steps = [],
       runtimes = new Map();
-    let counter = 0;
+    let counter = 0,
+      prepared;
     const add = async (type, entity, message, stage, filteringAttributes = [], images = []) => {
       const id_ = '30000000-0000-0000-0000-' + String(++counter).padStart(12, '0');
       steps.push({
@@ -303,7 +296,8 @@ public sealed class RejectUnexpected:IPlugin {public void Execute(IServiceProvid
         images,
         typeName: 'Invented.' + type,
       });
-      runtimes.set(id_, await prepareClrRuntime(descriptor(type)));
+      prepared ??= await prepareClrRuntime(descriptor(type));
+      runtimes.set(id_, retypeClrRuntime(prepared, { typeName: 'Invented.' + type }));
     };
     await add('Driver', 'widget', 'Create', 20);
     for (const message of ['CreateMultiple', 'UpdateMultiple']) {

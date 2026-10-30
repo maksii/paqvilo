@@ -47,6 +47,7 @@ export function createRuntimeAdminRouter({
   change,
   csrf,
   status,
+  statusChunks,
   state,
   configuration,
   configure,
@@ -72,6 +73,20 @@ export function createRuntimeAdminRouter({
         const rows = store
           .rows(entity, identity)
           .filter((row) => !search || JSON.stringify(row).toLowerCase().includes(search));
+        // sort=<column>&order=asc|desc: the admin's sortable record table sorts the whole table before paging.
+        const sortKey = url.searchParams.get('sort');
+        if (sortKey) {
+          const direction = url.searchParams.get('order') === 'desc' ? -1 : 1;
+          const empty = (value) => value === null || value === undefined || value === '';
+          rows.sort((a, b) => {
+            const x = a[sortKey],
+              y = b[sortKey];
+            if (empty(x) || empty(y)) return empty(x) === empty(y) ? 0 : empty(x) ? 1 : -1;
+            return (
+              (typeof x === 'number' && typeof y === 'number' ? x - y : String(x).localeCompare(String(y))) * direction
+            );
+          });
+        }
         const total = rows.length,
           pageCount = Math.max(1, Math.ceil(total / pageSize)),
           page = Math.min(pageCount, Math.max(1, Number.parseInt(url.searchParams.get('page'), 10) || 1));
@@ -105,7 +120,16 @@ export function createRuntimeAdminRouter({
   // One table of [prefix, handler]: the dispatcher iterates it and router.routes is read from it, so status `routes` lists
   // exactly the prefixes this router answers. A handler answers true when it served the request.
   const table = [
-    ['/status', status && ((c) => c.method === 'GET' && c.relative === '/status' && c.answer(status()))],
+    [
+      '/status',
+      status &&
+        (async (c) => {
+          if (c.method !== 'GET' || c.relative !== '/status') return false;
+          // An asynchronous status provider resolves before its chunks are encoded.
+          const value = await status();
+          return c.answer(value, statusChunks ? { chunks: statusChunks(value) } : undefined);
+        }),
+    ],
     ['/state', state && ((c) => c.method === 'GET' && c.relative === '/state' && c.answer(state(c.url)))],
     [
       '/config',
@@ -204,8 +228,8 @@ export function createRuntimeAdminRouter({
       url,
       relative,
       method,
-      answer: async (value) => {
-        json(res, 200, await value);
+      answer: async (value, options) => {
+        await json(res, 200, await value, {}, options);
         return true;
       },
     };

@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { DataError } from './data.mjs';
 import { csvCell } from './csv.mjs';
+import { xmlAttributes, xmlStartTag, xmlTokens } from './xml-text.mjs';
 import { parseDateValue } from './dataverse-values.mjs';
 import { normalizePortalPath, portalField } from './importer.mjs';
 import { siteSetting } from './redirects.mjs';
@@ -37,6 +38,7 @@ import {
   subgridActionUrl,
   deletePortalSubgridRecord,
 } from './subgrid-actions.mjs';
+import { statusFromHttp } from './trace-store.mjs';
 
 /*
  * Local equivalents of the native Power Pages grid, lookup, subgrid, notes and
@@ -88,7 +90,7 @@ export function parseFetchTree(source) {
   if (/<!DOCTYPE|<!ENTITY/i.test(source)) fail('FetchXML declarations are not supported', 400, 'UnsupportedQuery');
   const root = { name: '#document', attrs: {}, children: [], text: '' };
   const stack = [root];
-  for (const token of String(source).match(/<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<[^>]+>|[^<]+/g) ?? []) {
+  for (const token of xmlTokens(source)) {
     if (token.startsWith('<!--') || token.startsWith('<?')) continue;
     if (token.startsWith('</')) {
       const name = token.slice(2, -1).trim();
@@ -97,13 +99,13 @@ export function parseFetchTree(source) {
       continue;
     }
     if (token.startsWith('<')) {
-      const match = /^<([\w:.-]+)([\s\S]*?)(\/?)\s*>$/.exec(token);
-      if (!match) fail('Malformed FetchXML element', 400, 'UnsupportedQuery');
+      const tag = xmlStartTag(token);
+      if (!tag) fail('Malformed FetchXML element', 400, 'UnsupportedQuery');
       const attrs = {};
-      for (const attr of match[2].matchAll(/([\w:.-]+)\s*=\s*(["'])([\s\S]*?)\2/g)) attrs[attr[1]] = xmlDecode(attr[3]);
-      const node = { name: match[1], attrs, children: [], text: '' };
+      for (const [name, value] of xmlAttributes(tag.markup)) attrs[name] = xmlDecode(value);
+      const node = { name: tag.name, attrs, children: [], text: '' };
       stack.at(-1).children.push(node);
-      if (!match[3]) stack.push(node);
+      if (!tag.selfClosing) stack.push(node);
     } else stack.at(-1).text += xmlDecode(token);
   }
   if (stack.length !== 1 || root.children.length !== 1)
@@ -2134,9 +2136,12 @@ function sendAccessDenied(res) {
   });
   res.end(body);
 }
+// The error a handler answered itself, read by the request's http root (server.mjs, D-R3-4).
+const HTTP_ERROR = Symbol.for('paqvilo.mirage.httpError');
 function sendError(res, error) {
   const status = error.status ?? error.statusCode ?? 500;
   const message = error.message || 'Error completing request.';
+  res[HTTP_ERROR] = { code: error.code ?? 'Error', message };
   // Native grid services return the reason phrase; JSON bodies carry
   // {Message, InnerError} so the native client can display the cause.
   sendJson(res, status, { Message: message, InnerError: { Message: message, Code: error.code ?? 'Error' } });
@@ -2496,6 +2501,7 @@ async function handleNotes(action, req, res, context) {
       values.mimetype = String(body.file.type || 'application/octet-stream').slice(0, 255);
       values.documentbody = String(body.file.content ?? '');
       values.filesize = Buffer.from(values.documentbody, 'base64').length;
+      noteFileTrace(context, values, 'upload');
     }
     const created = await context.change(() =>
       portalWrite(context, (writes) => writes.create('annotation', values, context.identity)),
@@ -2523,6 +2529,7 @@ async function handleNotes(action, req, res, context) {
       values.mimetype = String(body.file.type || 'application/octet-stream').slice(0, 255);
       values.documentbody = String(body.file.content ?? '');
       values.filesize = Buffer.from(values.documentbody, 'base64').length;
+      noteFileTrace(context, values, 'upload');
     }
     await context.change(() =>
       portalWrite(context, (writes) => writes.update('annotation', id, values, context.identity)),
@@ -2531,6 +2538,21 @@ async function handleNotes(action, req, res, context) {
   }
   await context.change(() => portalWrite(context, (writes) => writes.remove('annotation', id, context.identity)));
   return sendJson(res, 200, { Id: canonical(id) });
+}
+
+/** A note attachment transfer on the current span (D-R3-10): the file column, name, size and type, never the bytes. */
+function noteFileTrace(context, { filename, mimetype, filesize }, transfer, id = null) {
+  const traces = context.store?.traces;
+  const span = traces?.enabled ? traces.current() : null;
+  if (!span) return;
+  if (id) span.setEntity('annotation', canonical(id));
+  span.set({
+    fileColumn: 'documentbody',
+    transfer,
+    fileName: filename ?? null,
+    fileSize: filesize ?? null,
+    mimetype: mimetype ?? null,
+  });
 }
 
 async function handleAnnotation(req, res, id, context) {
@@ -2550,6 +2572,7 @@ async function handleAnnotation(req, res, id, context) {
     res.writeHead(204, { 'cache-control': 'private' });
     return res.end();
   }
+  noteFileTrace(context, { filename: note.filename, mimetype: note.mimetype, filesize: bytes.length }, 'download', id);
   const type = note.mimetype || 'application/octet-stream';
   const inline = /^image\/(gif|jpeg|png|tiff|bmp|x-icon)$/i.test(type);
   const name = encodeURIComponent(note.filename || 'attachment').replace(/%20/g, '+');
@@ -2710,6 +2733,27 @@ export async function handleNativeService(req, res, url, context) {
     'entity-form-deletenote',
   ]);
   if (!handled.has(action.toLowerCase())) return false;
+  // One native-service span per service call (docs/design/tracing.md); store reads inside it nest under it.
+  const traces = context.store?.traces;
+  const span = traces?.start({
+    kind: 'native-service',
+    name: `${req.method} ${action}`,
+    module: 'native',
+    operation: action.toLowerCase(),
+  });
+  const call = () => nativeServiceAction(req, res, url, context, action, websiteId, span);
+  try {
+    return await (span ? traces.run(span, call) : call());
+  } finally {
+    const status = res.statusCode;
+    span?.end({
+      status: statusFromHttp(status),
+      attributes: { statusCode: status },
+    });
+  }
+}
+
+async function nativeServiceAction(req, res, url, context, action, websiteId, span) {
   try {
     const normalized = action.toLowerCase();
     if (/^download-as-(csv|excel)$/.test(normalized) && req.method === 'GET') {
@@ -2758,6 +2802,21 @@ export async function handleNativeService(req, res, url, context) {
       }[normalized];
       if (!expected.includes(secure.t)) fail('Invalid_Request', 403, 'Invalid_Request');
       const model = modelFor(secure, context);
+      // The grid names its table and the view it reads (the view gridData selects: the configured one, else the first).
+      const view =
+        model.views?.find((candidate) => canonical(candidate.id) === canonical(secure.view ?? body.viewId)) ??
+        model.views?.[0];
+      span?.setEntity(model.entity ?? view?.entity ?? null, null);
+      span?.set({
+        grid: secure.t,
+        listId: secure.list,
+        formId: secure.form,
+        gridId: secure.grid,
+        view: view?.name ?? null,
+        savedquery: view?.id ?? null,
+        page: Math.max(1, Number(body.page) || 1),
+        pageSize: Number(body.pageSize) || null,
+      });
       if (model.kind === 'subgrid' && model.definition && secure.parent) {
         if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
           return (sendSubgridAccessDenied(res), true);
@@ -2768,9 +2827,16 @@ export async function handleNativeService(req, res, url, context) {
         timezoneOffset: Number(body.timezoneOffset) || 0,
         timeZone: requestTimeZone(req, body.timezoneOffset),
       });
-      if (data.AccessDenied)
+      if (data.AccessDenied) {
+        span?.event('permission', {
+          message: `Table permission denies read on ${model.entity}`,
+          attributes: { table: model.entity, operation: 'read', result: 'deny', code: 'AccessDenied' },
+        });
         (model.kind === 'subgrid' || model.kind === 'associate' ? sendSubgridAccessDenied : sendAccessDenied)(res);
-      else sendJson(res, 200, data);
+      } else {
+        span?.set({ rowCount: data.Records?.length ?? 0, itemCount: data.ItemCount, moreRecords: data.MoreRecords });
+        sendJson(res, 200, data);
+      }
       return true;
     }
     if (normalized === 'entity-grid-delete') {
@@ -2937,6 +3003,7 @@ export async function handleNativeService(req, res, url, context) {
       );
     return false;
   } catch (error) {
+    span?.fail(error);
     sendError(res, error);
     return true;
   }

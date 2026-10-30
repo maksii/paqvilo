@@ -155,8 +155,14 @@ test('a nested capture rolls back with its caller, and a failed capture write re
 
 test('waitForOutbox resolves on a matching capture and times out otherwise', async () => {
   const outbox = createOutbox({ store: new DataStore() });
-  setTimeout(() => outbox.capture(mail({ correlationId: 'late' })), 30);
-  const entry = await waitForOutbox(outbox, (item) => item.correlationId === 'late', { timeoutMs: 2000 });
+  // The waiter has already checked the outbox once when the capture commits, and its injected clock does not advance:
+  // the capture, not a timer, ends this wait.
+  const late = waitForOutbox(outbox, (item) => item.correlationId === 'late', {
+    timeoutMs: 60_000,
+    clock: fixedClock(),
+  });
+  await outbox.capture(mail({ correlationId: 'late' }));
+  const entry = await late;
   assert.equal(entry.correlationId, 'late');
   const clock = fixedClock();
   const waiting = waitForOutbox(outbox, () => false, { timeoutMs: 60_000, clock });

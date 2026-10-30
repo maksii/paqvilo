@@ -1,23 +1,35 @@
+import { makeTemporaryDirectory, ownedFixture } from '../mirage/testing/owned-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
-import net from 'node:net';
 import { once } from 'node:events';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import run from '../lense/commands/model-driven.mjs';
-import { ownedFixture } from '../mirage/testing/owned-fixture.mjs';
+
 import { createStandaloneRuntime } from '../mirage/lib/standalone-runtime.mjs';
 import { modelDrivenActionAvailability } from '../lense/model-driven-action-runner.mjs';
+import { servesAgentSession } from './helpers/agent-endpoint.mjs';
+import { PROFILE_RELEASE_RETRIES } from './helpers/profile-cleanup.mjs';
+import { freeDebugPort } from './helpers/debug-port.mjs';
+
+// A startup deadline for scenarios whose target phase stalls until cleanup. The stall never ends by itself, so the
+// asserted expiry does not depend on this length; it only has to outlast the earlier phases (browser launch or CDP
+// connection) however slow the host is.
+const STALLED_STARTUP_DEADLINE_MS = 30_000;
+// Hang guards for whole tests that launch browsers; each covers its product deadlines plus
+// browser launch and profile cleanup.
+const BROWSER_TEST_TIMEOUT_MS = 120_000;
 
 async function fixture(t, { resetDocument = false } = {}) {
   const owner = ownedFixture(t);
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-model-close-'));
-  owner.remove(() => fs.rm(directory, { recursive: true, force: true }));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-model-close-'));
+  // Owned and external browser profiles live in this directory.
+  owner.remove(() => fs.rm(directory, { recursive: true, force: true, ...PROFILE_RELEASE_RETRIES }));
   const solution = path.join(directory, 'solution');
   await fs.mkdir(path.join(solution, 'Other'), { recursive: true });
   await fs.mkdir(path.join(solution, 'WebResources'));
@@ -127,7 +139,7 @@ async function fixture(t, { resetDocument = false } = {}) {
 
 test(
   'model-driven startup deadline disposes a late owned browser context and leaves its sibling usable',
-  { timeout: 15000 },
+  { timeout: BROWSER_TEST_TIMEOUT_MS },
   async (t) => {
     const setup = await fixture(t);
     const browser = await chromium.launch({
@@ -138,12 +150,16 @@ test(
     const sibling = await browser.newContext(),
       siblingPage = await sibling.newPage();
     await siblingPage.setContent('<input value="sibling draft">');
-    let late, closed;
+    let late, closed, finishLaunch;
     const lateClosed = new Promise((resolve) => {
       closed = resolve;
     });
+    // The owned launch finishes only after the startup deadline has already failed the run.
+    const launchGate = new Promise((resolve) => {
+      finishLaunch = resolve;
+    });
     t.mock.method(chromium, 'launchPersistentContext', async () => {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await launchGate;
       late = await browser.newContext();
       late.once('close', closed);
       return late;
@@ -158,10 +174,9 @@ test(
       }),
       (error) => error.code === 'startup_timeout' && error.phase === 'browser setup',
     );
-    await Promise.race([
-      lateClosed,
-      new Promise((_, reject) => setTimeout(() => reject(new Error('Late owned context was not closed')), 5000)),
-    ]);
+    assert.equal(late, undefined, 'the deadline does not wait for the owned launch');
+    finishLaunch();
+    await lateClosed;
     assert.ok(late);
     assert.equal(await siblingPage.locator('input').inputValue(), 'sibling draft');
     assert.equal(browser.isConnected(), true);
@@ -170,7 +185,7 @@ test(
 
 test(
   'paired local-simulation panel opens on Mirage and stops without owning the underlying runtime',
-  { timeout: 20000 },
+  { timeout: BROWSER_TEST_TIMEOUT_MS },
   async (t) => {
     const setup = await fixture(t);
     const appId = '77777777-7777-4777-8777-777777777777';
@@ -215,7 +230,6 @@ test(
       headless: true,
       browser: setup.channel,
       'local-simulation': true,
-      timeout: '2000',
     });
     running.catch(() => {});
     const context = await browserOpened;
@@ -235,6 +249,9 @@ test(
     assert.match(availability[0].reason, /local simulator has none/);
     assert.equal(availability[1].available, false);
     assert.match(availability[1].reason, /security role privileges/);
+    // Closing the dedicated browser is the user's stop; a session lifetime could instead
+    // end before these checks on a slow host.
+    await context.close();
     assert.equal(await running, 0);
     assert.equal((await fetch(runtime.url + '/_sim/api/status')).status, 200);
     assert.ok(requests.length > 0);
@@ -244,15 +261,17 @@ test(
 
 test(
   'startup cancellation closes its owned page before draining stalled inspector initialization',
-  { timeout: 10000 },
+  { timeout: BROWSER_TEST_TIMEOUT_MS },
   async (t) => {
     const setup = await fixture(t),
       launch = chromium.launchPersistentContext.bind(chromium);
     let frameTrees = 0,
       stalled = false,
       closed = false;
+    const runnerListeners = new Set(process.rawListeners('SIGINT'));
     t.mock.method(chromium, 'launchPersistentContext', async (profile, options) => {
-      const context = await launch(profile, { ...options, ...setup.network });
+      // Playwright's own SIGINT handler would end the process; the command's handlers are what is under test.
+      const context = await launch(profile, { ...options, ...setup.network, handleSIGINT: false });
       context.once('close', () => {
         closed = true;
       });
@@ -263,6 +282,12 @@ test(
         cdp.send = (method, params) => {
           if (method === 'Page.getFrameTree' && ++frameTrees === 2) {
             stalled = true;
+            // Cancel startup as Ctrl+C does once inspector setup is observed stalling, not at a deadline. Only the
+            // command's own listeners receive it: the test runner's SIGINT handling stays out of this.
+            setImmediate(() => {
+              for (const listener of process.rawListeners('SIGINT'))
+                if (!runnerListeners.has(listener)) listener('SIGINT');
+            });
             return new Promise((_, reject) =>
               page.once('close', () => reject(new Error('Owned page closed during inspector setup'))),
             );
@@ -279,9 +304,8 @@ test(
         url: setup.origin,
         headless: true,
         browser: setup.channel,
-        'startup-timeout': '1500',
       }),
-      (error) => error.code === 'startup_timeout' && error.phase === 'interception and inspector setup',
+      (error) => error.code === 'startup_cancelled' && error.phase === 'interception and inspector setup',
     );
     assert.equal(stalled, true);
     assert.equal(closed, true);
@@ -290,13 +314,10 @@ test(
 
 test(
   'initial document deadline detaches an external CDP browser and preserves its existing draft',
-  { timeout: 15000 },
+  { timeout: BROWSER_TEST_TIMEOUT_MS },
   async (t) => {
     const setup = await fixture(t, { resetDocument: true });
-    const portServer = net.createServer();
-    await new Promise((resolve) => portServer.listen(0, '127.0.0.1', resolve));
-    const port = portServer.address().port;
-    await new Promise((resolve) => portServer.close(resolve));
+    const port = await freeDebugPort();
     const external = await chromium.launchPersistentContext(path.join(setup.directory, 'external-profile'), {
       channel: setup.channel === 'chromium' ? undefined : setup.channel,
       headless: true,
@@ -312,7 +333,7 @@ test(
         url: setup.origin,
         headless: true,
         'cdp-url': `http://127.0.0.1:${port}`,
-        'startup-timeout': '1500',
+        'startup-timeout': String(STALLED_STARTUP_DEADLINE_MS),
       }),
       (error) => error.code === 'startup_timeout' && error.phase === 'document navigation',
     );
@@ -323,7 +344,7 @@ test(
 
 test(
   'actual model-driven CLI reports unsuccessful cleanup while preserving its final overlay receipt',
-  { timeout: 30000 },
+  { timeout: BROWSER_TEST_TIMEOUT_MS },
   async (t) => {
     const setup = await fixture(t);
     const { owner, directory, project, origin, channel } = setup;
@@ -392,27 +413,15 @@ test(
     assert.equal(endpoint.hostname, '127.0.0.1');
     const port = Number(endpoint.port);
     assert.ok(Number.isInteger(port) && port > 0 && port <= 65535);
-    await assert.rejects(
-      async () => {
-        const socket = net.createConnection({ host: '127.0.0.1', port });
-        socket.setTimeout(1000, () => {
-          socket.destroy(new Error('Owned listener did not close'));
-        });
-        try {
-          await once(socket, 'connect');
-        } finally {
-          socket.destroy();
-        }
-      },
-      { code: 'ECONNREFUSED' },
-    );
+    // The CLI process has exited, so its listener is gone. Probing the released port would
+    // only observe whichever process the busy host gives that port next.
     assert.ok(setup.methods.every((method) => method === 'GET'));
   },
 );
 
 test(
   'model-driven navigation and real filesystem cleanup failures both survive after every owner drains',
-  { timeout: 30000 },
+  { timeout: BROWSER_TEST_TIMEOUT_MS },
   async (t) => {
     const setup = await fixture(t, { resetDocument: true });
     const { owner, directory, project, origin, channel, network } = setup;
@@ -464,13 +473,8 @@ test(
       contexts.every((context) => context.pages().length === 0),
       'owned browser contexts close after inspector failure',
     );
-    // A refused connection, not the abort timeout of a listener that is still open.
-    await assert.rejects(
-      fetch(blocker.discovery.endpoint + '/v1/session', {
-        signal: AbortSignal.timeout(1000),
-      }),
-      { name: 'TypeError', message: 'fetch failed' },
-    );
+    // This process's agent listener no longer serves the session, even if the port was reused.
+    assert.equal(await servesAgentSession(blocker.discovery), false);
     assert.ok(setup.methods.every((method) => method === 'GET'));
   },
 );

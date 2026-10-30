@@ -12,7 +12,7 @@ import { localOrganizationService } from '../lib/local-organization-service.mjs'
 import { DATAVERSE_CONNECTOR, createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { portalRecordWrites } from '../lib/form-service.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const CLIENT = '77777777-7777-4777-8777-777777777777';
 const CONTACT = '77777777-7777-4777-8777-000000000011';
@@ -92,7 +92,7 @@ const state = () => ({
 });
 
 async function organization(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'mutation-pipeline-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mutation-pipeline-'));
   ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
   await fs.writeFile(path.join(directory, 'website.yml'), 'adx_websiteid: site\nadx_name: Invented pipeline\n');
   await fs.writeFile(

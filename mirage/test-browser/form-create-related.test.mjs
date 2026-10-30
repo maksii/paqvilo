@@ -8,12 +8,12 @@ import { parse } from 'parse5';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { createSimulator } from '../server.mjs';
 import { signInContext } from '../testing/session.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 // A record form with a Create related record action whose target form opens
 // in a modal, and the record state hiding the inapplicable state action.
 test('create related record opens the target form dialog; the record state hides its state action', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-create-related-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'native-create-related-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const actions = [
     { Type: 'DeactivateAction', ButtonLabel: [{ LCID: 1033, Value: 'Close entry' }] },
@@ -173,8 +173,9 @@ test('create related record opens the target form dialog; the record state hides
     `/_portal/modal-form-template-path/11111111-2222-4333-8444-555555555555?id=${id}&entityformid=note-form&languagecode=1033`,
   );
   assert.equal(await modal.getAttribute('aria-label'), ' Create related record');
-  const child = page.frames().find((frame) => frame.url() === app.url + src);
-  assert.ok(child, 'the target dialog has its own loaded document');
+  // The click sets the frame source and shows the dialog in one step; the frame commits its document later.
+  const child = await (await modal.locator('iframe').elementHandle()).contentFrame();
+  await child.waitForURL(app.url + src);
   await child.locator('#title').waitFor();
   const target = await child.locator('script[data-paqvilo-mirage-form-config]').evaluate((node) => {
     const config = JSON.parse(node.textContent);

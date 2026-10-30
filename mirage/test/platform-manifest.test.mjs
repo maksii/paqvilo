@@ -17,7 +17,7 @@ import {
 } from '../lib/platform-manifest.mjs';
 import { signInHeaders } from '../testing/session.mjs';
 import { injectRuntime } from '../lib/platform.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const SITE = '5a1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f';
 const CONTACT = 'c0000000-0000-4000-8000-000000000011';
@@ -175,9 +175,18 @@ test('AXD scripts load inside the form on form pages and nowhere else; captured 
   assert.equal(plain.bodyScripts, '<script src="/scripts/extra.js"></script>');
 });
 
-async function shellFixture(t, { shellProfile, settings = [], observed = null } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-shell-'));
-  ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
+// The default shell is read-only for its tests: they send GETs or a request the runtime refuses (the workflow POST),
+// so they share one runtime that closes after the file instead of starting one each.
+let defaultShell;
+test.after(async () => (await defaultShell)?.close());
+async function shellFixture(t, options) {
+  if (!options) return (defaultShell ??= startShell());
+  const shell = await startShell(options);
+  ownedFixture(t).add(shell.close);
+  return shell;
+}
+async function startShell({ shellProfile, settings = [], observed = null } = {}) {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-shell-'));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Shell\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
     'Home.webpage.yml':
@@ -249,16 +258,26 @@ async function shellFixture(t, { shellProfile, settings = [], observed = null } 
       },
     },
   };
-  const app = await createSimulator({
-    sourceDir: dir,
-    stateFile: path.join(dir, 'state.json'),
-    initial,
-    watch: false,
-    ...(observed ? { observed } : {}),
-  });
-  ownedFixture(t).add(() => app.close());
+  let app;
+  // The runtime closes before its source and state directory is removed; a failed start still removes it.
+  const close = async () => {
+    await app?.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  };
+  try {
+    app = await createSimulator({
+      sourceDir: dir,
+      stateFile: path.join(dir, 'state.json'),
+      initial,
+      watch: false,
+      ...(observed ? { observed } : {}),
+    });
+  } catch (error) {
+    await close();
+    throw error;
+  }
   const session = signInHeaders(app, CONTACT, { roles: ['Member'] });
-  return { app, get: (pathname, headers = session) => fetch(app.url + pathname, { headers }) };
+  return { app, close, get: (pathname, headers = session) => fetch(app.url + pathname, { headers }) };
 }
 
 const bodyOf = (html) => html.slice(html.indexOf('<body'), html.lastIndexOf('</body>'));
@@ -402,7 +421,7 @@ test('local platform files are dated by their file and answer conditional reques
 });
 
 test('an exported web file at a native platform path wins over the local equivalent', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-webfile-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-webfile-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.mkdir(path.join(dir, 'web-files'), { recursive: true });
   await fs.writeFile(path.join(dir, 'website.yml'), `adx_websiteid: ${SITE}\nadx_name: Files`);
@@ -436,7 +455,7 @@ test('an exported web file at a native platform path wins over the local equival
 });
 
 test("legacy ASPX page templates render their WebForms layout with the page's attached form and list", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'platform-rewrite-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'platform-rewrite-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
     'website.yml': `adx_websiteid: ${SITE}\nadx_name: Rewrite\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer`,
@@ -888,7 +907,7 @@ test("platform resources on the portal origin carry the platform's headers; /dis
     await response.arrayBuffer();
     return Object.fromEntries(
       [...response.headers].filter(
-        ([name]) => !/^(?:date|connection|keep-alive|transfer-encoding|content-length|x-sim-.*)$/.test(name),
+        ([name]) => !/^(?:date|connection|keep-alive|transfer-encoding|content-length|x-sim-.*|x-trace-id)$/.test(name),
       ),
     );
   };
@@ -1099,7 +1118,7 @@ test("the captcha challenge image and audio answer as the platform's resource ha
 });
 
 test('an HTML web resource is served as a page; other web resources keep their private caching', async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-webresource-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'mirage-webresource-'));
   ownedFixture(t).remove(() => fs.rm(dir, { recursive: true, force: true }));
   const portal = path.join(dir, 'portal'),
     solution = path.join(dir, 'solution');

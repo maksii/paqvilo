@@ -5,10 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { observedConfig } from '../lib/project-config.mjs';
 import { createSimulator } from '../server.mjs';
-import { ownedFixture } from '../testing/owned-fixture.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
 const G = (n) => '66666666-6666-4666-8666-' + String(n).padStart(12, '0');
 async function fixture(t, { append = true, appendTo = true, manual = false, self = false, observed = null } = {}) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-intersect-rights-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-intersect-rights-'));
   ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
   const portal = path.join(root, 'portal'),
     solution = path.join(root, 'solution');

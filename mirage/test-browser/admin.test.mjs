@@ -7,6 +7,8 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { warmState } from './shared-browser.mjs';
+import { makeTemporaryDirectorySync } from '../testing/owned-fixture.mjs';
 
 test(
   'admin: record and configuration CRUD, routing, identity, presets, errors, safe diagnostics, responsive layout',
@@ -214,7 +216,6 @@ test(
       viewport: { width: 1440, height: 960 },
     });
     const page = await context.newPage();
-    page.setDefaultTimeout(12_000);
     const pageErrors = [];
     const unexpected = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
@@ -222,8 +223,8 @@ test(
       if (!req.url().startsWith(origin)) unexpected.push(req.url());
     });
     await page.goto(`${origin}/__sim/`);
-    await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
-    await page.getByText('Portal pages', { exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
+    await page.locator('[data-panel="checklist"]').getByText('Portal sources loaded').waitFor();
     const evidenceDir = process.env.PAQVILO_MIRAGE_ADMIN_EVIDENCE;
     if (evidenceDir) {
       fs.mkdirSync(evidenceDir, { recursive: true });
@@ -270,6 +271,7 @@ test(
     );
     await editor.getByRole('button', { name: 'Save changes' }).click();
     await editor.waitFor({ state: 'hidden' });
+    // D-M-11: the record search sits in the toolbar row.
     await page.locator('#record-search').fill('updated');
     assert.equal(await page.locator('tbody tr').count(), 1);
     await page.getByRole('button', { name: 'Delete c2' }).click();
@@ -550,27 +552,10 @@ test(
       ),
     );
 
-    await page.getByRole('link', { name: 'Render & diagnostics', exact: true }).click();
-    await page.locator('.diagnostic-group summary').click();
-    await page.getByText('<script>window.injected = true</script>', { exact: true }).waitFor();
+    // Findings and rendering evidence are read in Activity (activity-e2e); Home only counts the findings.
+    await page.getByRole('link', { name: 'Home', exact: true }).click();
+    await page.locator('[data-panel="checklist"]').getByText('1 finding to review', { exact: false }).waitFor();
     assert.equal(await page.evaluate(() => window.injected), undefined);
-    assert.ok(
-      await page
-        .getByText('Exact portal parity has not been established', {
-          exact: false,
-        })
-        .count(),
-    );
-    workspace.evidence = {
-      passed: true,
-      verified: true,
-      stale: true,
-      path: '/workspace/',
-      pixels: { different: 0, total: 100, fraction: 0 },
-    };
-    await page.locator('#refresh').click();
-    await page.getByText('Stale evidence', { exact: true }).waitFor();
-    assert.equal(await page.getByText('Evidence reported', { exact: true }).count(), 0);
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     if (evidenceDir)
@@ -578,6 +563,8 @@ test(
         path: path.join(evidenceDir, 'admin-mobile.png'),
         fullPage: true,
       });
+    // At phone width the views are behind Menu.
+    await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('link', { name: 'Live connection', exact: true }).click();
     await page.getByLabel('Data provider', { exact: true }).selectOption('local');
     await page.getByLabel('Page provider', { exact: true }).selectOption('live');
@@ -586,7 +573,7 @@ test(
     assert.equal(workspace.config.mode, 'local');
     assert.equal(workspace.config.pageMode, 'live');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    await page.getByText('Live page passthrough is online output', { exact: false }).waitFor();
+    await page.getByText('Live page passthrough is online output', { exact: false }).waitFor({ state: 'attached' });
     if (evidenceDir)
       await page.screenshot({
         path: path.join(evidenceDir, 'admin-mobile-routing.png'),
@@ -602,7 +589,7 @@ test(
   { timeout: 60_000 },
   async (t) => {
     const { createSimulator } = await import('../server.mjs');
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-mirage-admin-'));
+    const directory = makeTemporaryDirectorySync(path.join(os.tmpdir(), 'paqvilo-mirage-admin-'));
     const source = path.join(directory, 'source');
     fs.mkdirSync(source);
     fs.writeFileSync(
@@ -663,11 +650,11 @@ test(
     );
     const context = await browser.newContext({ serviceWorkers: 'block' });
     const page = await context.newPage();
-    page.setDefaultTimeout(10_000);
+    await warmState(simulator);
     const errors = [];
     page.on('pageerror', (error) => errors.push(error.message));
     await page.goto(simulator.adminUrl + '#overview');
-    await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
     await page.getByRole('link', { name: 'Plugins & presets', exact: true }).click();
     await page.getByRole('button', { name: 'Add plugin', exact: true }).first().click();
     await page.locator('#editor-json').fill(
@@ -694,7 +681,7 @@ test(
     await page.locator('#editor').waitFor({ state: 'hidden' });
     assert.equal(simulator.state().config.plugins.length, 1);
     await page.getByRole('link', { name: 'Data records', exact: true }).click();
-    await page.getByLabel('Entity', { exact: true }).selectOption('contact');
+    await page.getByLabel('Table', { exact: true }).selectOption('contact');
     await page.getByRole('button', { name: 'Create record', exact: true }).first().click();
     await page.locator('#editor-json').fill(JSON.stringify({ contactid: 'acceptance', firstname: 'Ada' }));
     await page.locator('#editor').getByRole('button', { name: 'Save changes' }).click();

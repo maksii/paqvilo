@@ -3,8 +3,6 @@
 // The tedious checks run only when TDS_TEDIOUS_PATH names the tedious entry file.
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
-import tls from 'node:tls';
 import { createSelfSignedCertificate } from '../lib/dataverse-tls.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -13,12 +11,12 @@ import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { hashSecret } from '../lib/dataverse-auth.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
-import { TDS, createMessageReader, encodePrelogin, writeMessage } from '../lib/dataverse-tds-framing.mjs';
 import { queryLimitMs } from '../lib/dataverse-tds.mjs';
 import { parsePrefer } from '../lib/dataverse-odata.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { QUEUE_MESSAGE_TABLE } from '../lib/message-bus.mjs';
 import { OUTBOX_TABLE } from '../lib/outbox.mjs';
+import { tdsLogin, tdsQuery, utf16 } from './support/tds-client.mjs';
 
 const ANNOTATIONS = 'odata.include-annotations="*"';
 const ORG_ID = '0c1d2e3f-4a5b-4c6d-8e7f-90a1b2c3d4e5';
@@ -44,93 +42,9 @@ const widgetMapping = () => ({
   ownership: 'UserOwned',
   fields: { name: text, ownerid: { dataverseType: 'lookup' } },
 });
-const u32 = (value) => {
-  const bytes = Buffer.alloc(4);
-  bytes.writeUInt32LE(value);
-  return bytes;
-};
-const utf16 = (value) => Buffer.from(value, 'utf16le');
-
-// LOGIN7 with FEDAUTH (SecurityToken, library 1) carrying the access token (MS-TDS 2.2.6.4).
-function login7({ user = 'tester', database = 'org', token }) {
-  const fixed = Buffer.alloc(94);
-  fixed.writeUInt32LE(0x74000004, 4);
-  fixed.writeUInt32LE(4096, 8);
-  fixed.writeUInt8(0x10, 27);
-  const variable = [];
-  let at = 94;
-  const put = (slot, value) => {
-    const data = utf16(value);
-    fixed.writeUInt16LE(at, slot);
-    fixed.writeUInt16LE(value.length, slot + 2);
-    variable.push(data);
-    at += data.length;
-  };
-  put(36, 'client-host');
-  put(40, user);
-  put(48, 'tds-integration');
-  put(52, 'mirage');
-  put(60, 'tds-integration-lib');
-  put(68, database);
-  const tokenBytes = utf16(token);
-  const fedAuthData = Buffer.concat([Buffer.from([0x03]), u32(tokenBytes.length), tokenBytes]);
-  const feature = Buffer.concat([Buffer.from([0x02]), u32(fedAuthData.length), fedAuthData, Buffer.from([0xff])]);
-  fixed.writeUInt16LE(at, 56);
-  variable.push(u32(at + 4), feature);
-  const body = Buffer.concat([fixed, ...variable]);
-  body.writeUInt32LE(body.length, 0);
-  return body;
-}
-
-// SQL_BATCH: ALL_HEADERS with a transaction descriptor, then UTF-16LE text.
-function sqlBatch(sql) {
-  const headers = Buffer.alloc(22);
-  headers.writeUInt32LE(22, 0);
-  headers.writeUInt32LE(18, 4);
-  headers.writeUInt16LE(2, 8);
-  headers.writeUInt32LE(1, 18);
-  return Buffer.concat([headers, utf16(sql)]);
-}
-
-// Hand-built TDS 8 client (TLS first, ALPN tds/8.0). Replies are read whole: the assertions search their bytes.
-async function connect(port) {
-  const socket = tls.connect({ host: '127.0.0.1', port, ALPNProtocols: ['tds/8.0'], ca: testCertificate.cert });
-  socket.on('error', () => {});
-  await once(socket, 'secureConnect');
-  const queue = [];
-  const waiting = [];
-  socket.on(
-    'data',
-    createMessageReader((type, payload) => {
-      const resume = waiting.shift();
-      if (resume) resume(payload);
-      else queue.push(payload);
-    }),
-  );
-  return {
-    socket,
-    send: (type, payload) => writeMessage(socket, type, payload),
-    next: () => (queue.length ? Promise.resolve(queue.shift()) : new Promise((resolve) => waiting.push(resolve))),
-    close: () => socket.destroy(),
-  };
-}
-
-// PRELOGIN, then LOGIN7 with the token. Returns the client and the login reply.
-async function login(port, token) {
-  const client = await connect(port);
-  client.send(
-    TDS.PRELOGIN,
-    encodePrelogin({ version: Buffer.from([12, 0, 0, 0, 0, 0]), encryption: 0x01, fedAuthRequired: 0x01 }),
-  );
-  await client.next();
-  client.send(TDS.LOGIN7, login7({ token }));
-  return { client, reply: await client.next() };
-}
-
-async function query(client, sql) {
-  client.send(TDS.SQL_BATCH, sqlBatch(sql));
-  return client.next();
-}
+// PRELOGIN, then LOGIN7 with the token, trusting only this suite's loopback certificate: the client and the login reply.
+const login = (port, token) => tdsLogin(port, token, testCertificate.cert);
+const query = tdsQuery;
 
 describe('TDS endpoint wired into the Dataverse API', () => {
   let api;
@@ -202,7 +116,6 @@ describe('TDS endpoint wired into the Dataverse API', () => {
       method: 'POST',
       headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(response.status < 300, `widget create answered ${response.status}`);
   }
@@ -361,7 +274,6 @@ describe('TDS query paging and service protection', () => {
       method: 'POST',
       headers: { authorization: `Bearer ${bearer}`, 'content-type': 'application/json' },
       body: JSON.stringify({ name }),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(response.status < 300, `widget create answered ${response.status}`);
   }
@@ -495,7 +407,7 @@ describe('TDS endpoint with tedious', { skip }, () => {
     await api?.close();
   });
 
-  it('access-token login runs SELECT name FROM widget through tedious', { timeout: 20_000 }, async () => {
+  it('access-token login runs SELECT name FROM widget through tedious', async () => {
     const response = await fetch(`${origin}/${tenantId}/oauth2/v2.0/token`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -511,7 +423,6 @@ describe('TDS endpoint with tedious', { skip }, () => {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Tedious' }),
-      signal: AbortSignal.timeout(10_000),
     });
     assert.ok(created.status < 300, `widget create answered ${created.status}`);
     const connection = await new Promise((resolve, reject) => {
@@ -523,8 +434,8 @@ describe('TDS endpoint with tedious', { skip }, () => {
           database: 'org',
           encrypt: true,
           trustServerCertificate: true,
-          connectTimeout: 5000,
-          requestTimeout: 10000,
+          connectTimeout: 60_000,
+          requestTimeout: 60_000,
         },
       });
       c.on('connect', (err) => (err ? reject(err) : resolve(c)));

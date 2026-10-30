@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { DataError } from './data.mjs';
 import { parseSolutionXml, descendants, childText } from './solution-xml.mjs';
-import { executeFlowDefinition, runTrackedFlow } from './flow-runtime.mjs';
+import { executeFlowDefinition, runTrackedFlow, traceFlowRun } from './flow-runtime.mjs';
 import { flowRunsOf } from './flow-runs.mjs';
 import { validateServiceProfile } from './local-organization-service.mjs';
 import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
@@ -14,6 +14,7 @@ import { collectPackExport } from './pack-exports.mjs';
 import { solutionLayerFiles } from './solution-content-fingerprint.mjs';
 import { environmentVariablePayload } from './secret-resolver.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
+import { tracedFetch } from './trace-hosts.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { siteSetting } from './redirects.mjs';
 import { portalRecordWrites } from './form-service.mjs';
@@ -136,6 +137,16 @@ export function describe() {
     lifecycle: 'in-process',
   };
 }
+// A body as a trace payload: JSON text parsed, any other text as it is (the store redacts and caps it).
+const parseBody = (text) => {
+  if (text === '' || text == null) return null;
+  if (typeof text !== 'string') return text;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+};
 const parsePayload = (text) => {
   if (text == null || text === '') return {};
   const value = parseExactJson(text);
@@ -205,6 +216,32 @@ export async function runExportedServerLogic({
       severity: 'info',
       message: `ServerLogic/TimeoutInSeconds is ${seconds} s; the local run is bounded at ${bound} ms.`,
     });
+  // Tracing: one server-logic span around the worker run (input: the function, method, body, input and query; output: the
+  // raw result). No span context crosses into the Worker; its RPC requests are answered here on the main thread inside the
+  // span (traces.run), so their Dataverse operations and bridges nest under it, its Logger lines are trace events on it and
+  // each HttpClient request is an http-out span (tracedFetch) that forwards the trace.
+  const traces = store?.traces?.enabled ? store.traces : null,
+    span =
+      traces?.start({
+        kind: 'server-logic',
+        name: 'Server logic ' + record.name,
+        module: 'portal',
+        operation: String(context.FunctionName).toLowerCase(),
+        attributes: {
+          serverLogic: record.name,
+          method,
+          function: context.FunctionName,
+          activityId: context.ActivityId,
+        },
+        input: () => ({
+          function: context.FunctionName,
+          method,
+          body: parseBody(body),
+          input: parseBody(input),
+          query,
+        }),
+      }) ?? null,
+    inSpan = (fn) => (span ? traces.run(span, fn) : fn());
   const unavailable = (bridge, code) => {
     note({ code, severity: 'warning', message: `${bridge} has no local service in this host.` });
     return envelope(501, '', {}, `${bridge} is not available in this local host.`);
@@ -269,16 +306,18 @@ export async function runExportedServerLogic({
           .map(([name, value]) => [name, String(value)]),
       );
       if (message.contentType) headers['content-type'] = message.contentType;
-      const response = await loopbackFetch(target, {
-        method: message.method,
-        headers,
-        body: message.body ?? undefined,
-        signal: AbortSignal.timeout(bound),
+      const response = await tracedFetch(traces, {
+        module: 'portal',
+        operation: String(message.method ?? 'GET').toLowerCase(),
+        url: target,
+        fetch: loopbackFetch,
+        attributes: { serverLogic: record.name, client: 'HttpClient' },
+        init: { method: message.method, headers, body: message.body ?? undefined, signal: AbortSignal.timeout(bound) },
       });
       return envelope(response.status, await response.text(), Object.fromEntries(response.headers));
     },
   };
-  return new Promise((resolve, reject) => {
+  const running = new Promise((resolve, reject) => {
     const user =
       identity?.id || identity?.contactId
         ? { ...identity, contactid: identity.contactId ?? identity.id, fullname: identity.name ?? null }
@@ -331,7 +370,8 @@ export async function runExportedServerLogic({
     worker.on('exit', (code) => {
       if (!complete) finish(failure(`Server-logic worker stopped before returning a result (${code}).`));
     });
-    worker.on('message', async (message) => {
+    worker.on('message', (message) => inSpan(() => answerMessage(message)));
+    const answerMessage = async (message) => {
       if (complete) return;
       if (message.kind === 'ready') {
         clearTimeout(timer);
@@ -343,14 +383,19 @@ export async function runExportedServerLogic({
       }
       if (message.kind === 'result') return finish(null, message.raw);
       if (message.kind === 'failure') return finish(failure(message.message));
-      if (message.kind === 'log')
+      if (message.kind === 'log') {
+        span?.event('trace', { message: message.message, attributes: { level: message.level ?? null } });
         return (services.log ?? (() => {}))({
           serverLogic: record.name,
           operationId: context.ActivityId,
           level: message.level,
           message: message.message,
         });
-      if (message.kind === 'diagnostic') return note({ code: message.code, message: message.message });
+      }
+      if (message.kind === 'diagnostic') {
+        span?.event('diagnostic', { message: message.message, attributes: { code: message.code ?? null } });
+        return note({ code: message.code, message: message.message });
+      }
       if (bridges[message.kind]) {
         let answer;
         try {
@@ -430,8 +475,20 @@ export async function runExportedServerLogic({
         };
       }
       reply(message, answer);
-    });
+    };
   });
+  if (!span) return running;
+  return running.then(
+    (value) => {
+      span.output(() => parseBody(value));
+      span.end();
+      return value;
+    },
+    (error) => {
+      span.fail(error);
+      throw error;
+    },
+  );
 }
 
 /**
@@ -645,12 +702,28 @@ export function runExportedCloudFlow({
     context,
   };
   const runs = flowRunsOf(store);
-  if (!runs) return executeFlowDefinition(args);
+  const skipped = (answer) =>
+    answer?.status === 'Skipped' ? { status: 202, body: { status: 'Skipped', reason: answer.reason } } : answer;
+  // The flow-run span nests under the portal request's current span (trace-store.mjs AsyncLocalStorage).
+  if (!runs) {
+    const answer = traceFlowRun(
+      store,
+      { processId: record.processId, name: record.name ?? workflow.name ?? null, trigger: 'PowerPages', input },
+      () => executeFlowDefinition(args),
+    );
+    return typeof answer?.then === 'function' ? answer.then(skipped) : skipped(answer);
+  }
   // The native answer of a Power Pages flow request whose run waits before its Response is a guess (natively the request
   // waits for the Response until the portal times out), as is the flowrun triggertype text.
-  return runTrackedFlow({ runs, processId: record.processId, trigger: 'PowerPages', ...args }).then((answer) =>
+  return runTrackedFlow({
+    runs,
+    processId: record.processId,
+    name: record.name ?? workflow.name ?? null,
+    trigger: 'PowerPages',
+    ...args,
+  }).then((answer) =>
     answer?.status === 'Waiting'
       ? (answer.response ?? { status: 202, body: { runId: answer.runId, status: 'Waiting' } })
-      : answer,
+      : skipped(answer),
   );
 }

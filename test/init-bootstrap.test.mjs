@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { withProcessSlot } from '../mirage/test/process-slots.mjs';
+import { tempDir } from './fixture.mjs';
 
 const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
 const cleanEnv = () =>
@@ -23,7 +23,7 @@ const exists = async (file) => {
   }
 };
 async function workspace(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-bootstrap-'));
+  const root = await tempDir('paqvilo-bootstrap-');
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
   return root;
 }
@@ -70,7 +70,10 @@ async function countingOrigin(t) {
     response.writeHead(503).end('Invented unavailable endpoint');
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   return { origin: `http://127.0.0.1:${server.address().port}`, count: () => paths.length, paths };
 }
 
@@ -124,6 +127,8 @@ test('generated bootstrap installs local dependencies once, uses unchanged lockf
     npm_config_update_notifier: 'false',
     npm_config_registry: registry.origin,
     npm_config_cache: path.join(root, 'cache'),
+    // A runner's personal .npmrc (package-lock=false, omit, install-links) must not change what bootstrap does.
+    npm_config_userconfig: path.join(root, 'absent.npmrc'),
   };
   const bootstrap = () => run([path.join(directory, 'tools/bootstrap.mjs')], { cwd: directory, env });
   const first = await bootstrap();

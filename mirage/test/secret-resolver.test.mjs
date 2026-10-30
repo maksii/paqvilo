@@ -239,7 +239,7 @@ test('the importer records site settings bound to an environment variable', asyn
     os = await import('node:os'),
     path = await import('node:path');
   const { importPortal } = await import('../lib/importer.mjs');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'site-setting-env-'));
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'site-setting-env-')));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   await fs.writeFile(path.join(dir, 'website.yml'), 'adx_websiteid: site\nadx_name: Bound settings');
   await fs.writeFile(

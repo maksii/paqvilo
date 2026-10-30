@@ -1,5 +1,5 @@
 // Schema-driven scaffold (lib/scaffold-data.mjs).
-import test from 'node:test';
+import test, { describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -12,6 +12,7 @@ import { referencedTables, scaffoldData, scaffoldId } from '../lib/scaffold-data
 import { schemaFieldIndex, schemaViolations, formatViolations } from '../lib/schema-validation.mjs';
 import { DataStore } from '../lib/data.mjs';
 import YAML from 'yaml';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const attribute = (name, type, extra = '') =>
   `<attribute PhysicalName="${name}"><Type>${type}</Type><LogicalName>${name}</LogicalName>${extra}</attribute>`;
@@ -108,7 +109,7 @@ const portal = {
 };
 
 async function metadata(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-scaffold-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-scaffold-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'solution.xml');
   await fs.writeFile(file, solutionXml);
@@ -240,117 +241,132 @@ async function writeSolution(dir) {
 }
 
 async function workspace(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-scaffold-cli-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-scaffold-cli-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }
 
-test('data scaffold with --source and explicit --solution-root bootstraps a state, then merges additively, preserving edited decorated GUID rows and memberships', async (t) => {
-  const dir = await workspace(t);
-  const source = await writePortal(path.join(dir, 'portal'));
-  const solution = await writeSolution(path.join(dir, 'solution'));
-  const state = path.join(dir, 'state.json');
-  const args = ['--source', source, '--solution-root', solution, '--state', state];
-  const first = await scaffoldCli(args);
-  assert.equal(first.bootstrapped, true);
-  assert.deepEqual(first.resolution, { kind: 'source', solutionRoots: 'explicit' });
-  assert.equal(first.source, path.resolve(source));
-  assert.deepEqual(first.solutionRoots, [path.resolve(solution)]);
-  assert.equal(first.rows.x_case.added, 3);
-  assert.equal(first.addedMemberships, 1);
-  const saved = JSON.parse(await fs.readFile(state, 'utf8'));
-  assert.equal(saved.provenance.scaffold.profile, 'smoke');
-  assert.equal(saved.simulator.contactRoles.length, 1);
-  // A rerun must recognise braced, upper-case or parenthesised GUIDs as the rows and memberships it wrote.
-  saved.tables.x_case[0].x_caseid = `{${saved.tables.x_case[0].x_caseid.toUpperCase()}}`;
-  saved.tables.x_case[0].x_name = 'Preserved local edit';
-  const membership = saved.simulator.contactRoles[0];
-  membership.contactId = `(${membership.contactId.toUpperCase()})`;
-  membership.roleId = `{${membership.roleId.toUpperCase()}}`;
-  membership.localEdit = true;
-  await fs.writeFile(state, JSON.stringify(saved));
-  const second = await scaffoldCli(args);
-  assert.equal(second.bootstrapped, false);
-  assert.deepEqual(second.rows.x_case, { added: 0, alreadyPresent: 3 });
-  assert.equal(second.addedMemberships, 0);
-  const after = JSON.parse(await fs.readFile(state, 'utf8'));
-  assert.deepEqual(after.tables.x_case, saved.tables.x_case);
-  assert.deepEqual(after.simulator.contactRoles, saved.simulator.contactRoles);
-});
+// Each case spawns the CLI in its own workspace; the process start dominates, so the cases run side by side.
+describe('data scaffold CLI portal resolution', { concurrency: true }, () => {
+  test('data scaffold preserves an explicit zero row count', async (t) => {
+    const dir = await workspace(t);
+    const source = await writePortal(path.join(dir, 'portal'));
+    const solution = await writeSolution(path.join(dir, 'solution'));
+    const state = path.join(dir, 'state.json');
+    await scaffoldCli(['--source', source, '--solution-root', solution, '--state', state, '--rows', '0']);
+    const saved = JSON.parse(await fs.readFile(state, 'utf8'));
+    assert.deepEqual(saved.tables.x_case, []);
+    assert.equal(saved.provenance.scaffold.rowsPerTable, 0);
+  });
 
-test('data scaffold with --source discovers solution repositories next to the portal repository', async (t) => {
-  const dir = await workspace(t);
-  const repository = path.join(dir, 'portal-repo');
-  await fs.mkdir(path.join(repository, '.git'), { recursive: true });
-  const source = await writePortal(path.join(repository, 'portal'));
-  const solution = await writeSolution(path.join(dir, 'solution-repo'));
-  const result = await scaffoldCli(['--source', source, '--state', path.join(dir, 'state.json')]);
-  assert.deepEqual(result.resolution, { kind: 'source', solutionRoots: 'discovered' });
-  // Compare canonical paths (temporary directories may surface as 8.3 short names).
-  assert.deepEqual(await Promise.all(result.solutionRoots.map((root) => fs.realpath(root))), [
-    await fs.realpath(solution),
-  ]);
-  assert.equal(result.rows.x_case.added, 3);
-});
+  test('data scaffold with --source and explicit --solution-root bootstraps a state, then merges additively, preserving edited decorated GUID rows and memberships', async (t) => {
+    const dir = await workspace(t);
+    const source = await writePortal(path.join(dir, 'portal'));
+    const solution = await writeSolution(path.join(dir, 'solution'));
+    const state = path.join(dir, 'state.json');
+    const args = ['--source', source, '--solution-root', solution, '--state', state];
+    const first = await scaffoldCli(args);
+    assert.equal(first.bootstrapped, true);
+    assert.deepEqual(first.resolution, { kind: 'source', solutionRoots: 'explicit' });
+    assert.equal(first.source, path.resolve(source));
+    assert.deepEqual(first.solutionRoots, [path.resolve(solution)]);
+    assert.equal(first.rows.x_case.added, 3);
+    assert.equal(first.addedMemberships, 1);
+    const saved = JSON.parse(await fs.readFile(state, 'utf8'));
+    assert.equal(saved.provenance.scaffold.profile, 'smoke');
+    assert.equal(saved.simulator.contactRoles.length, 1);
+    // A rerun must recognise braced, upper-case or parenthesised GUIDs as the rows and memberships it wrote.
+    saved.tables.x_case[0].x_caseid = `{${saved.tables.x_case[0].x_caseid.toUpperCase()}}`;
+    saved.tables.x_case[0].x_name = 'Preserved local edit';
+    const membership = saved.simulator.contactRoles[0];
+    membership.contactId = `(${membership.contactId.toUpperCase()})`;
+    membership.roleId = `{${membership.roleId.toUpperCase()}}`;
+    membership.localEdit = true;
+    await fs.writeFile(state, JSON.stringify(saved));
+    const second = await scaffoldCli(args);
+    assert.equal(second.bootstrapped, false);
+    assert.deepEqual(second.rows.x_case, { added: 0, alreadyPresent: 3 });
+    assert.equal(second.addedMemberships, 0);
+    const after = JSON.parse(await fs.readFile(state, 'utf8'));
+    assert.deepEqual(after.tables.x_case, saved.tables.x_case);
+    assert.deepEqual(after.simulator.contactRoles, saved.simulator.contactRoles);
+  });
 
-test("data scaffold with --project and --portal uses the project's portal source and solutions", async (t) => {
-  const dir = await workspace(t);
-  await writePortal(path.join(dir, 'portals', 'main'));
-  await writePortal(path.join(dir, 'portals', 'other'));
-  await writeSolution(path.join(dir, 'solutions', 'core'));
-  const project = path.join(dir, 'mirage.project.yml');
-  await fs.writeFile(
-    project,
-    'version: 2\ndefaultPortal: main\nportals:\n  - id: main\n    path: portals/main\n  - id: other\n    path: portals/other\nsolutions:\n  - id: core\n    path: solutions/core\n',
-  );
-  const result = await scaffoldCli([
-    '--project',
-    project,
-    '--portal',
-    'other',
-    '--state',
-    path.join(dir, 'state.json'),
-  ]);
-  assert.equal(result.resolution.kind, 'project');
-  assert.equal(result.resolution.portal, 'other');
-  assert.equal(result.source, await fs.realpath(path.join(dir, 'portals', 'other')));
-  assert.deepEqual(result.solutionRoots, [await fs.realpath(path.join(dir, 'solutions', 'core'))]);
-  assert.equal(result.rows.x_case.added, 3);
-  await assert.rejects(
-    scaffoldCli(['--project', project, '--source', dir, '--state', path.join(dir, 'x.json')]),
-    /either --project or --source/,
-  );
-});
+  test('data scaffold with --source discovers solution repositories next to the portal repository', async (t) => {
+    const dir = await workspace(t);
+    const repository = path.join(dir, 'portal-repo');
+    await fs.mkdir(path.join(repository, '.git'), { recursive: true });
+    const source = await writePortal(path.join(repository, 'portal'));
+    const solution = await writeSolution(path.join(dir, 'solution-repo'));
+    const result = await scaffoldCli(['--source', source, '--state', path.join(dir, 'state.json')]);
+    assert.deepEqual(result.resolution, { kind: 'source', solutionRoots: 'discovered' });
+    // Compare canonical paths (temporary directories may surface as 8.3 short names).
+    assert.deepEqual(await Promise.all(result.solutionRoots.map((root) => fs.realpath(root))), [
+      await fs.realpath(solution),
+    ]);
+    assert.equal(result.rows.x_case.added, 3);
+  });
 
-test("data scaffold with --site, --env and --repo resolves the toolkit catalogue's portal source", async (t) => {
-  const dir = await workspace(t);
-  // The catalogue (paqvilo.config.yml) names the default site and its source path below the repository root.
-  const catalogue = YAML.parse(
-    await fs.readFile(fileURLToPath(new URL('../../paqvilo.config.yml', import.meta.url)), 'utf8'),
-  );
-  const site = catalogue.defaultSite ?? Object.keys(catalogue.sites)[0];
-  const env = Object.keys(catalogue.sites[site].environments ?? { dev: {} })[0];
-  const source = await writePortal(path.join(dir, catalogue.sites[site].source));
-  const solution = await writeSolution(path.join(dir, 'solution'));
-  const result = await scaffoldCli([
-    '--site',
-    site,
-    '--env',
-    env,
-    '--repo',
-    dir,
-    '--solution-root',
-    solution,
-    '--state',
-    path.join(dir, 'state.json'),
-  ]);
-  assert.deepEqual(result.resolution, { kind: 'catalogue', site, env, solutionRoots: 'explicit' });
-  assert.equal(path.resolve(result.source), path.resolve(source));
-  assert.equal(result.rows.x_case.added, 3);
+  test("data scaffold with --project and --portal uses the project's portal source and solutions", async (t) => {
+    const dir = await workspace(t);
+    await writePortal(path.join(dir, 'portals', 'main'));
+    await writePortal(path.join(dir, 'portals', 'other'));
+    await writeSolution(path.join(dir, 'solutions', 'core'));
+    const project = path.join(dir, 'mirage.project.yml');
+    await fs.writeFile(
+      project,
+      'version: 2\ndefaultPortal: main\nportals:\n  - id: main\n    path: portals/main\n  - id: other\n    path: portals/other\nsolutions:\n  - id: core\n    path: solutions/core\n',
+    );
+    const conflicting = assert.rejects(
+      scaffoldCli(['--project', project, '--source', dir, '--state', path.join(dir, 'x.json')]),
+      /either --project or --source/,
+    );
+    const result = await scaffoldCli([
+      '--project',
+      project,
+      '--portal',
+      'other',
+      '--state',
+      path.join(dir, 'state.json'),
+    ]);
+    assert.equal(result.resolution.kind, 'project');
+    assert.equal(result.resolution.portal, 'other');
+    assert.equal(result.source, await fs.realpath(path.join(dir, 'portals', 'other')));
+    assert.deepEqual(result.solutionRoots, [await fs.realpath(path.join(dir, 'solutions', 'core'))]);
+    assert.equal(result.rows.x_case.added, 3);
+    await conflicting;
+  });
+
+  test("data scaffold with --site, --env and --repo resolves the toolkit catalogue's portal source", async (t) => {
+    const dir = await workspace(t);
+    // The catalogue (paqvilo.config.yml) names the default site and its source path below the repository root.
+    const catalogue = YAML.parse(
+      await fs.readFile(fileURLToPath(new URL('../../paqvilo.config.yml', import.meta.url)), 'utf8'),
+    );
+    const site = catalogue.defaultSite ?? Object.keys(catalogue.sites)[0];
+    const env = Object.keys(catalogue.sites[site].environments ?? { dev: {} })[0];
+    const source = await writePortal(path.join(dir, catalogue.sites[site].source));
+    const solution = await writeSolution(path.join(dir, 'solution'));
+    const result = await scaffoldCli([
+      '--site',
+      site,
+      '--env',
+      env,
+      '--repo',
+      dir,
+      '--solution-root',
+      solution,
+      '--state',
+      path.join(dir, 'state.json'),
+    ]);
+    assert.deepEqual(result.resolution, { kind: 'catalogue', site, env, solutionRoots: 'explicit' });
+    assert.equal(path.resolve(result.source), path.resolve(source));
+    assert.equal(result.rows.x_case.added, 3);
+  });
 });
 
 test("personas get web role memberships as contactRoles and as the data model's intersect rows; exported site tables are not generated", async (t) => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pp-scaffold-roles-'));
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'pp-scaffold-roles-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   // Metadata that also defines the web role table, referenced by a template.
   const file = path.join(dir, 'solution.xml');

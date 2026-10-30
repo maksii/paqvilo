@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { eventLog } from './shared-browser.mjs';
 
 // Bootstrap 5 page: a subgrid and a deferred dialog grid (as in an associate
 // dialog) with search. Live evidence: the page holds one SearchCountTextundefined announcer, which
@@ -48,7 +49,7 @@ const PAGE = `<!doctype html><html lang="en"><head><title>Grids</title><link rel
 
 test('Bootstrap 5 grids share one record-count announcer per id and post a null natural-language filter', async (t) => {
   const script = await fs.readFile(new URL('../lib/entity-grid-compat.js', import.meta.url));
-  const posts = [];
+  const posts = eventLog({ message: 'The grid did not post' });
   const order = [];
   let notesType = null;
   const server = http.createServer((req, res) => {
@@ -150,8 +151,7 @@ test('Bootstrap 5 grids share one record-count announcer per id and post a null 
   assert.deepEqual(await announcers(), [['SearchCountTextundefined', 'associate-lookup', '5 records found']]);
   // Once the dialog's grid has loaded, the subgrid reloads (live: subgrid, associate grid, subgrid).
   await page.waitForFunction(() => document.querySelectorAll('.subgrid > .entity-grid > .view-grid table').length > 0);
-  for (const deadline = Date.now() + 5000; posts.length < 3 && Date.now() < deadline;)
-    await new Promise((resolve) => setTimeout(resolve, 25));
+  await posts.until(() => posts.length >= 3);
   assert.deepEqual(
     posts.map((body) => body.search),
     [null, '', null],
@@ -201,8 +201,7 @@ test('Bootstrap 5 grids share one record-count announcer per id and post a null 
   // Applying the metadata filter posts every successful control, empty text included (live "0=&1=1&8=").
   const before = posts.length;
   await page.locator('.apply-filter').click();
-  for (const deadline = Date.now() + 5000; posts.length === before && Date.now() < deadline;)
-    await new Promise((resolve) => setTimeout(resolve, 25));
+  await posts.until(() => posts.length > before);
   assert.equal(posts.at(-1).metaFilter, '0=&1=1');
   assert.deepEqual(errors, []);
 });

@@ -4632,6 +4632,13 @@ async function main() {
       reclassify: { type: 'string' },
     },
   });
+  if (
+    values['delay-ms'] !== undefined &&
+    (!/^\d+$/.test(values['delay-ms']) ||
+      !Number.isSafeInteger(Number(values['delay-ms'])) ||
+      Number(values['delay-ms']) > 2147483647)
+  )
+    throw new Error('--delay-ms must be an integer from 0 to 2147483647 milliseconds');
   const list = (value) =>
     (Array.isArray(value) ? value : value === undefined ? [] : [value])
       .flatMap((item) => String(item).split(','))

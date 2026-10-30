@@ -301,6 +301,7 @@ function aadError(
 }
 
 // federatedIssuers() returns [{ issuer, jwks: { keys } }] for verifying federated client assertions.
+// signingKey: the token signing pair { privateKey, publicKey } (RSA KeyObjects); by default every authority generates its own.
 export function createAuthority({
   tenantId,
   applications,
@@ -308,13 +309,24 @@ export function createAuthority({
   federatedIssuers = () => [],
   clock = () => Date.now(),
   accessTokenLifetimeSeconds = 3600,
+  signingKey = null,
 }) {
-  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  const { kty, n, e } = publicKey.export({ format: 'jwk' });
-  // kid doubles as x5t: base64url of the SHA-1 of the DER SPKI (no X.509 certificate exists for this key).
-  const kid = createHash('sha1')
-    .update(publicKey.export({ type: 'spki', format: 'der' }))
-    .digest('base64url');
+  // A generated pair is created on first use: a 2048-bit key pair blocks the event loop, and many runtimes never issue
+  // a token. A supplied pair is used as given.
+  let keys;
+  const signingKeys = () => {
+    if (!keys) {
+      const { privateKey, publicKey } = signingKey ?? generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const { kty, n, e } = publicKey.export({ format: 'jwk' });
+      // kid doubles as x5t: base64url of the SHA-1 of the DER SPKI (no X.509 certificate exists for this key).
+      const kid = createHash('sha1')
+        .update(publicKey.export({ type: 'spki', format: 'der' }))
+        .digest('base64url');
+      keys = { privateKey, publicKey, kty, n, e, kid };
+    }
+    return keys;
+  };
+  if (signingKey) signingKeys();
   const refreshTokens = new Map();
   const codes = new Map();
   const devices = new Map();
@@ -348,6 +360,7 @@ export function createAuthority({
   const interactiveUsers = () => (users.list?.() ?? []).filter((row) => interactive(row));
 
   const signJwt = (claims) => {
+    const { privateKey, kid } = signingKeys();
     const head = b64json({ typ: 'JWT', alg: 'RS256', kid, x5t: kid });
     const body = b64json(claims);
     return `${head}.${body}.${sign('sha256', Buffer.from(`${head}.${body}`), privateKey).toString('base64url')}`;
@@ -900,7 +913,7 @@ export function createAuthority({
     } catch {
       return reject('The assertion is not a JSON Web Token.');
     }
-    if (header.alg !== 'RS256' || !verifies(`${head}.${body}`, signature, publicKey))
+    if (header.alg !== 'RS256' || !verifies(`${head}.${body}`, signature, signingKeys().publicKey))
       return reject('Assertion failed signature validation.');
     const problem = lifetimeProblem(claims, now);
     if (problem)
@@ -1029,7 +1042,8 @@ export function createAuthority({
       return { ok: false, reason: 'malformed' };
     }
     if (jwtHeader.alg !== 'RS256') return { ok: false, reason: 'malformed' };
-    if (!verifies(`${parts[0]}.${parts[1]}`, parts[2], publicKey)) return { ok: false, reason: 'signature' };
+    if (!verifies(`${parts[0]}.${parts[1]}`, parts[2], signingKeys().publicKey))
+      return { ok: false, reason: 'signature' };
     const problem = lifetimeProblem(claims, clock());
     if (problem) return { ok: false, reason: problem };
     const audienceOk = [claims.aud]
@@ -1081,8 +1095,13 @@ export function createAuthority({
   };
 
   return {
-    kid,
-    jwks: () => ({ keys: [{ kty, use: 'sig', kid, alg: 'RS256', n, e }] }),
+    get kid() {
+      return signingKeys().kid;
+    },
+    jwks: () => {
+      const { kty, kid, n, e } = signingKeys();
+      return { keys: [{ kty, use: 'sig', kid, alg: 'RS256', n, e }] };
+    },
     openIdConfiguration,
     instanceDiscovery,
     handleToken,

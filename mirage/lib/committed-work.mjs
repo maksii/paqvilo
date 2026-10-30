@@ -1,5 +1,6 @@
 import v8 from 'node:v8';
 import { clockFunction, storeScheduler, systemClock, systemIds } from './runtime-clock.mjs';
+import { runWithRequest } from './request-context.mjs';
 
 /** Drain all post-commit consumers to a common quiescent point. A consumer may
  * create work for another consumer, so a single sequential drain is insufficient.
@@ -85,10 +86,11 @@ export function committedJobs(store) {
     kicked = true;
     if (
       scheduler().schedule(
-        () => {
-          kicked = false;
-          return tick();
-        },
+        () =>
+          detached(store, () => {
+            kicked = false;
+            return tick();
+          }),
         0,
         { name: 'committed-jobs' },
       ) === null
@@ -173,7 +175,7 @@ export function committedJobs(store) {
   const readyRows = (entries) => {
     const ids = store.ids ?? systemIds,
       stamp = now();
-    return entries.map(({ id, kind, columns = {}, event, ...rest }) => ({
+    return entries.map(({ id, kind, columns = {}, event, staging, ...rest }) => ({
       asyncoperationid: id ?? ids.uuid(),
       operationtype: SYSTEM_EVENT,
       statecode: READY,
@@ -233,10 +235,30 @@ export function committedJobs(store) {
      * it, and returns the function that starts the runner once that transaction committed (null without entries). */
     stage(entries) {
       if (!entries.length) return null;
+      // Tracing (docs/design/tracing.md): each job's parent is the span that recorded its committed event (data.mjs
+      // stagingSpan; an entry's own `staging`), else the current span. It is remembered in the trace store, never in the row,
+      // once the commit saved, together with the job-staged event on that same span.
+      const traces = store.traces?.enabled ? store.traces : null,
+        current = traces?.current() ?? null,
+        parents = traces ? entries.map((entry) => entry.staging ?? store.stagingSpan?.(entry.event) ?? current) : null;
       const rows = readyRows(entries),
         table = (store.state.tables.asyncoperation ??= []);
       for (const row of rows) store.insertRow('asyncoperation', table, row);
       return () => {
+        rows.forEach((row, index) => {
+          const parent = parents?.[index];
+          if (!parent?.traceId) return;
+          traces.remember?.('job:' + row.asyncoperationid, { traceId: parent.traceId, spanId: parent.spanId ?? null });
+          if (typeof parent.event === 'function')
+            parent.event('job-staged', {
+              attributes: {
+                kind: entries[index].kind,
+                asyncOperationId: row.asyncoperationid,
+                chainId: entries[index].chain?.id ?? null,
+                chainDepth: entries[index].chain?.depth ?? null,
+              },
+            });
+        });
         for (const row of rows) queued.add(row.asyncoperationid);
         kick();
       };
@@ -341,6 +363,97 @@ export function stageCommittedJobs(
     for (const note of diagnostics) report(note);
     start?.();
   };
+}
+
+/** Runs fn outside every trace and request context (a scheduler tick, a timer), so nothing it starts inherits the span of
+ * the request that scheduled it; job runners build their own context. */
+export const detached = (store, fn) =>
+  runWithRequest(null, () => (typeof store?.traces?.detached === 'function' ? store.traces.detached(fn) : fn()));
+/** The { traceId, spanId } a staged job remembered (committed-work stage), or null: the job span is then a new root. */
+export const jobParent = (store, id) => (id ? (store?.traces?.recall?.('job:' + id) ?? null) : null);
+
+// Every job runs on the job runner (origin host 'job', as flow jobs); a staged job keeps the staging span's portal and preset.
+export const jobOrigin = (traces, parentSpanId) => {
+  const parent = parentSpanId ? traces.span(parentSpanId)?.origin : null;
+  return { host: 'job', portal: parent?.portal ?? null, preset: parent?.preset ?? null };
+};
+/**
+ * Runs one committed job under its `job` span (docs/design/tracing.md), parented explicitly by the staging span the trace
+ * store remembered for its id (jobParent), else a new root, never by the context the scheduler inherited; async: true marks
+ * the new execution segment. run(span) does the work (span is null without a trace store); a throw or rejection fails the
+ * span, and a second or later attempt records a retry event. The plug-in, web hook and classic workflow kinds use it.
+ * The span is named by the process it runs, its display name alone (D-R3-24 as amended: the kind `job` already says it is a
+ * job, so a tree line reads `job <process display name>`), with attributes processType (the job kind
+ * unless the runner names one), processId (the runner's, else the workflow definition or plug-in step of the payload) and
+ * processName (the runner's name, else the asyncoperation row's name); and the record of its triggering event (D-R3-1).
+ */
+export function traceJob(
+  store,
+  { id, payload, event },
+  run,
+  { name = null, processType = null, processId = null, attributes = {} } = {},
+) {
+  const traces = store.traces;
+  if (!traces?.enabled) return run(null);
+  const parent = jobParent(store, id),
+    traceId = parent?.traceId ?? null,
+    parentSpanId = parent?.spanId ?? null,
+    kind = payload?.kind ?? null,
+    attempt = (Number(payload?.attempts) || 0) + 1;
+  const job = id && store.state ? liveJob(store, id) : null;
+  const processName = name ?? job?.rows[job.index]?.name ?? kind ?? 'committed';
+  const entity = event?.entity || null;
+  let recordId = null;
+  try {
+    recordId = entity && event?.row ? (event.row[store.resolveMapping(entity).idColumn] ?? null) : null;
+  } catch {
+    // A table the organization no longer maps: the job names no record.
+  }
+  const span = traces.start({
+    kind: 'job',
+    name: processName,
+    module: 'jobs',
+    operation: 'run',
+    entity,
+    recordId: recordId?.id ?? recordId,
+    async: true,
+    traceId,
+    parentSpanId,
+    origin: jobOrigin(traces, parentSpanId),
+    links: parentSpanId ? [{ traceId, spanId: parentSpanId, relation: 'staged-by' }] : [],
+    attributes: {
+      kind,
+      processType: processType ?? kind,
+      processId: processId ?? payload?.definitionId ?? payload?.itemId ?? null,
+      processName,
+      jobId: id ?? null,
+      attempt,
+      chainId: payload?.chain?.id ?? null,
+      depth: payload?.chain?.depth ?? null,
+      ...attributes,
+    },
+  });
+  // The staging span names the job it triggered (D-R3-6): its triggered link, the reverse of the job's staged-by link.
+  if (parentSpanId && span.spanId)
+    traces.link(parentSpanId, { traceId: span.traceId, spanId: span.spanId, relation: 'triggered' });
+  if (attempt > 1) span.event('retry', { attributes: { attempt } });
+  let result;
+  try {
+    result = traces.run(span, () => run(span));
+  } catch (error) {
+    span.fail(error);
+    throw error;
+  }
+  return Promise.resolve(result).then(
+    (value) => {
+      span.end();
+      return value;
+    },
+    (error) => {
+      span.fail(error);
+      throw error;
+    },
+  );
 }
 
 /** The asyncoperation row of a durable job, found again by id: a commit in between may have replaced the state. */

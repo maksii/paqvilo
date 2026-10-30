@@ -7,10 +7,11 @@ import { randomUUID } from 'node:crypto';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { DataError } from '../lib/data-error.mjs';
 import { install, parseDuplicateRuleXml, readDuplicateRuleSolution, reset } from '../lib/dataverse-duplicates.mjs';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { dataverseError } from '../lib/dataverse-odata.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ORIGIN = 'http://127.0.0.1:5555';
 const VERSION = 'v9.2';
@@ -101,6 +102,9 @@ const errorOf = (fn) => {
   }
   return null;
 };
+// The duplicate refusal itself, not any DataError a write might raise (the create checked first asserts its whole shape).
+const isDuplicate = (error) =>
+  error instanceof DataError && error.status === 412 && error.details?.innerCode === '0x80040333';
 const target = (t, id) => ({ id, row: t.rules().find((r) => r.duplicateruleid === id) });
 
 test('install seeds the duplicate rule tables as dataverseOnly and leaves a mapping it does not own', async () => {
@@ -158,7 +162,7 @@ test('a create or update is checked only when MSCRM.SuppressDuplicateDetection i
     [http.status, http.body.error.code, http.body.error.message],
     [412, '0x80040333', DUPLICATE_MESSAGE],
   );
-  assert.ok(errorOf(() => write(t, 'update', { code: 'A1' }, GATE, t.rows()[1])) instanceof DataError);
+  assert.ok(isDuplicate(errorOf(() => write(t, 'update', { code: 'A1' }, GATE, t.rows()[1]))));
   assert.equal(
     errorOf(() => write(t, 'delete', {}, GATE, t.rows()[0])),
     null,
@@ -166,7 +170,7 @@ test('a create or update is checked only when MSCRM.SuppressDuplicateDetection i
 });
 
 test("a solution's duplicaterules folder imports rules with their state and conditions, and the rule then applies", async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'invented-duplicates-'));
+  const dir = await makeTemporaryDirectory(join(tmpdir(), 'invented-duplicates-'));
   try {
     const folder = join(dir, 'duplicaterules', 'invented_rule');
     await mkdir(folder, { recursive: true });
@@ -197,7 +201,7 @@ test("a solution's duplicaterules folder imports rules with their state and cond
     t.rules().push(...rows.duplicaterule);
     t.store.state.tables.duplicaterulecondition.push(...rows.duplicaterulecondition);
     t.rows().push({ widgetid: ID(10), code: 'A1', statecode: 0 });
-    assert.ok(errorOf(() => write(t, 'create', { code: 'A1' })) instanceof DataError);
+    assert.ok(isDuplicate(errorOf(() => write(t, 'create', { code: 'A1' }))));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -219,14 +223,14 @@ test("the organization's isduplicatedetectionenabled switches the check off; a m
     null,
   );
   t.store.state.tables.organization[0].isduplicatedetectionenabled = true;
-  assert.ok(errorOf(() => write(t, 'create', { code: 'A1' }, GATE)) instanceof DataError);
+  assert.ok(isDuplicate(errorOf(() => write(t, 'create', { code: 'A1' }, GATE))));
 });
 
 test('ExactMatch ignores case unless the rule is case-sensitive', async () => {
   const loose = await setup();
   addRule(loose, { conditions: [{ base: 'code' }] });
   loose.rows().push({ widgetid: ID(10), code: 'Abc', statecode: 0 });
-  assert.ok(errorOf(() => write(loose, 'create', { code: 'ABC' })) instanceof DataError);
+  assert.ok(isDuplicate(errorOf(() => write(loose, 'create', { code: 'ABC' }))));
 
   const strict = await setup();
   addRule(strict, { caseSensitive: true, conditions: [{ base: 'code' }] });
@@ -235,7 +239,7 @@ test('ExactMatch ignores case unless the rule is case-sensitive', async () => {
     errorOf(() => write(strict, 'create', { code: 'ABC' })),
     null,
   );
-  assert.ok(errorOf(() => write(strict, 'create', { code: 'Abc' })) instanceof DataError);
+  assert.ok(isDuplicate(errorOf(() => write(strict, 'create', { code: 'Abc' }))));
 });
 
 test('SameFirst and SameLast compare N characters and never match a shorter value', async () => {
@@ -244,7 +248,7 @@ test('SameFirst and SameLast compare N characters and never match a shorter valu
   first
     .rows()
     .push({ widgetid: ID(10), name: 'Contoso Ltd', statecode: 0 }, { widgetid: ID(11), name: 'Co', statecode: 0 });
-  assert.ok(errorOf(() => write(first, 'create', { name: 'Conan' })) instanceof DataError);
+  assert.ok(isDuplicate(errorOf(() => write(first, 'create', { name: 'Conan' }))));
   assert.equal(
     errorOf(() => write(first, 'create', { name: 'Cosmo' })),
     null,
@@ -257,7 +261,7 @@ test('SameFirst and SameLast compare N characters and never match a shorter valu
   const last = await setup();
   addRule(last, { conditions: [{ base: 'name', op: 'SameLast', param: 3 }] });
   last.rows().push({ widgetid: ID(10), name: 'Acme Ltd', statecode: 0 });
-  assert.ok(errorOf(() => write(last, 'create', { name: 'Corp Ltd' })) instanceof DataError);
+  assert.ok(isDuplicate(errorOf(() => write(last, 'create', { name: 'Corp Ltd' }))));
   assert.equal(
     errorOf(() => write(last, 'create', { name: 'Corp Inc' })),
     null,
@@ -285,7 +289,7 @@ test('blank values never match in a single-condition rule and match only when bl
   const lenient = await setup();
   addRule(lenient, { conditions: [{ base: 'name' }, { base: 'code', ignoreBlank: false }] });
   lenient.rows().push({ widgetid: ID(10), name: 'Acme', code: '', statecode: 0 });
-  assert.ok(errorOf(() => write(lenient, 'create', { name: 'Acme' })) instanceof DataError);
+  assert.ok(isDuplicate(errorOf(() => write(lenient, 'create', { name: 'Acme' }))));
 
   const strict = await setup();
   addRule(strict, { conditions: [{ base: 'name' }, { base: 'code', ignoreBlank: true }] });
@@ -308,7 +312,7 @@ test('excludeInactiveRecords skips inactive matching rows', async () => {
   const including = await setup();
   addRule(including, { conditions: [{ base: 'code' }] });
   including.rows().push({ widgetid: ID(10), code: 'A1', statecode: 1 });
-  assert.ok(errorOf(() => write(including, 'create', { code: 'A1' })) instanceof DataError);
+  assert.ok(isDuplicate(errorOf(() => write(including, 'create', { code: 'A1' }))));
 });
 
 test('an update is not a duplicate of its own row', async () => {
@@ -320,7 +324,7 @@ test('an update is not a duplicate of its own row', async () => {
     errorOf(() => write(t, 'update', { code: 'A1' }, GATE, self)),
     null,
   );
-  assert.ok(errorOf(() => write(t, 'update', { code: 'A1' }, GATE, t.rows()[1])) instanceof DataError);
+  assert.ok(isDuplicate(errorOf(() => write(t, 'update', { code: 'A1' }, GATE, t.rows()[1]))));
 });
 
 test('only published rules apply, and publishing is limited to five per table', async () => {
@@ -344,7 +348,7 @@ test('only published rules apply, and publishing is limited to five per table', 
     (e) => e instanceof DataError && e.status === 400,
   );
   assert.equal(statusOf(ids[5]), 0);
-  assert.ok(errorOf(() => write(t, 'create', { code: 'A1' }, GATE)) instanceof DataError);
+  assert.ok(isDuplicate(errorOf(() => write(t, 'create', { code: 'A1' }, GATE))));
 
   assert.equal((await unpublish({ body: { DuplicateRuleId: ids[0] }, identity: ADMIN })).status, 204);
   assert.equal(statusOf(ids[0]), 0);
@@ -508,7 +512,7 @@ test('same date, same date and time, and the two pick list operators match as do
     t.mapping.fields.stamp = stamp;
     addRule(t, { conditions: [{ base: 'stamp', op }] });
     t.rows().push({ widgetid: ID(10), stamp: stored, statecode: 0 });
-    assert.ok(errorOf(() => write(t, 'create', { stamp: dup })) instanceof DataError, `operator ${op} duplicate`);
+    assert.ok(isDuplicate(errorOf(() => write(t, 'create', { stamp: dup }))), `operator ${op} duplicate`);
     assert.equal(
       errorOf(() => write(t, 'create', { stamp: other })),
       null,
@@ -523,7 +527,7 @@ test('same date, same date and time, and the two pick list operators match as do
     t.mapping.fields.color = color;
     addRule(t, { conditions: [{ base: 'color', op }] });
     t.rows().push({ widgetid: ID(10), color: 1, statecode: 0 });
-    assert.ok(errorOf(() => write(t, 'create', { color: dup })) instanceof DataError, `operator ${op} duplicate`);
+    assert.ok(isDuplicate(errorOf(() => write(t, 'create', { color: dup }))), `operator ${op} duplicate`);
     assert.equal(
       errorOf(() => write(t, 'create', { color: other })),
       null,

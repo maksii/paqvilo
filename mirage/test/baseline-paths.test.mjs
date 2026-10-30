@@ -6,6 +6,10 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { validateMatrix, scenarioDir, captureMatrix } from '../baseline-suite.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+
+// The CLI refuses within about a second; this bound only stops a hung child (a stopped child fails on its signal).
+const CLI_HANG_MS = 60_000;
 const scenario = (id) => ({ id, steps: [{ goto: '/invented/' }] }),
   matrix = (id) => ({ version: 1, scenarios: [scenario(id)] });
 const BAD_ID = /scenario id must contain safe nonempty relative directory segments/;
@@ -55,7 +59,7 @@ test('genuine nested IDs and authored labels retain original paths', () => {
   );
 });
 test('whole matrix and label fail before capture callbacks or output writes', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-case-boundary-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-case-boundary-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   let calls = 0;
   const side = {
@@ -95,7 +99,7 @@ test('whole matrix and label fail before capture callbacks or output writes', as
   assert.deepEqual(await fs.readdir(root), []);
 });
 test('CLI label rejection precedes browser/runtime setup and any evidence write', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-label-boundary-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-label-boundary-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'matrix.json');
   await fs.writeFile(file, JSON.stringify(matrix('valid/nested')));
@@ -113,8 +117,9 @@ test('CLI label rejection precedes browser/runtime setup and any evidence write'
       '--label',
       '../outside',
     ],
-    { encoding: 'utf8', timeout: 5000 },
+    { encoding: 'utf8', timeout: CLI_HANG_MS, windowsHide: true },
   );
+  assert.equal(result.signal, null, 'the CLI exits on its own rather than being stopped by the hang bound');
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /capture label/);
   assert.deepEqual(await fs.readdir(root), ['matrix.json']);

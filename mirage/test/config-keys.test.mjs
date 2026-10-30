@@ -32,6 +32,7 @@ import { contentPolicyDefaults } from '../lib/content-policy-defaults.mjs';
 import { validateLocalOverrides } from '../lib/local-overrides.mjs';
 import { validateCatalogue } from '../../lense/config-schema.mjs';
 import { resolveMirageConfig } from '../../lense/config.mjs';
+import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const cli = fileURLToPath(new URL('../cli.mjs', import.meta.url));
 const NEW_KEYS = [
@@ -43,6 +44,8 @@ const NEW_KEYS = [
   'canvas',
   'codeApps',
   'sourceMaps',
+  'trace',
+  'logs',
 ];
 const PRE_MIGRATION_CATALOGUE = [
   'project',
@@ -322,7 +325,7 @@ test('runtimeIdentity is stable, limited to identity rows and redacts secrets', 
 });
 
 test('project files: v1 reports unknown keys, v2 rejects them, pending parsers report a diagnostic', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'config-keys-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'config-keys-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, 'project.json');
   const standalone = { runtime: { kind: 'dataverse-api' }, solutions: [] };
@@ -373,7 +376,7 @@ test('registerSettingParser replaces the pending default', () => {
 });
 
 test('a project without dataverse leaves the catalogue site dataverse in force', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'config-keys-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'config-keys-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const project = await resolveProjectConfig(
     { version: 2, runtime: { kind: 'model-driven' }, solutions: [] },
@@ -447,7 +450,7 @@ test(
   'multi-portal serve --project applies the project dataverse and platform to every portal',
   { timeout: 120_000 },
   async (t) => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'config-keys-cli-'));
+    const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'config-keys-cli-'));
     await fs.mkdir(path.join(root, 'portal'), { recursive: true });
     await fs.writeFile(
       path.join(root, 'portal', 'Home.webpage.yml'),

@@ -4,15 +4,21 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { uuidV5 } from '../lib/dataverse-security.mjs';
+import { randomUUID } from 'node:crypto';
+import { ownedFixture } from '../testing/owned-fixture.mjs';
 
 export const APP_ID = '77777777-7777-4777-8777-777777777771';
 export const WIDGET = '77777777-7777-4777-8777-777777777772';
-const SECRET_VAR = 'PAQVILO_ATTACHMENT_FIXTURE_SECRET';
 export const b64 = (text) => Buffer.from(text).toString('base64');
 export const widget = { '@odata.type': 'Microsoft.Dynamics.CRM.fx_widget', fx_widgetid: WIDGET };
 
 export async function attachmentApi(t, { before = () => {} } = {}) {
+  // A variable per call, removed after the test, so later tests in this process never inherit the secret.
+  const SECRET_VAR = `PAQVILO_ATTACHMENT_FIXTURE_SECRET_${randomUUID().replaceAll('-', '').toUpperCase()}`;
   process.env[SECRET_VAR] = 'attachment-fixture-secret';
+  ownedFixture(t).add(() => {
+    delete process.env[SECRET_VAR];
+  });
   const state = emptyState();
   state.mappings.fx_widget = {
     logicalName: 'fx_widget',
@@ -38,7 +44,7 @@ export async function attachmentApi(t, { before = () => {} } = {}) {
     ],
   });
   const server = await startDataverseApi({ store, settings, log: () => {} });
-  t.after(() => server.close());
+  ownedFixture(t).add(() => server.close());
   const token = await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -55,7 +61,6 @@ export async function attachmentApi(t, { before = () => {} } = {}) {
       method: 'POST',
       headers: { authorization, 'content-type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(10000),
     });
     const text = await response.text();
     return { status: response.status, json: text ? JSON.parse(text) : null, headers: response.headers };

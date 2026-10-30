@@ -1,15 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sharedBrowser } from './shared-browser.mjs';
+import { sharedBrowser, fileScope } from './shared-browser.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 import { resolveInspectionEvidence } from '../../lense/inspection-evidence.mjs';
 import { modelDrivenObservationRuntime } from '../../lense/model-driven-observation.mjs';
 
 const chrome = sharedBrowser();
+// Every test only reads the shell and tampers with its own page, so the file shares one simulator.
+const files = fileScope();
+let sharedApp;
+const app = () => (sharedApp ??= modelDrivenFixture(files));
 const scope = { documentId: 'invented-document', frameId: 'top', uiEpoch: 1, sourceRevision: '1' };
 
 test('actual installed Mirage registry cannot acquire an unbound owner through WeakMap prototype tampering', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { origin } = await app();
   const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
@@ -54,7 +58,7 @@ test('actual installed Mirage registry cannot acquire an unbound owner through W
 });
 
 test('query packets cannot mutate private actual-node owner and source snapshots', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { origin } = await app();
   const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const cell = page.locator('td[data-id="x_name"]').first();
@@ -73,7 +77,7 @@ test('query packets cannot mutate private actual-node owner and source snapshots
 });
 
 test('model-driven provider query snapshots cannot rewrite cached source regions or limits', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { origin } = await app();
   const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const cell = page.locator('td[data-id="x_name"]').first();
@@ -114,7 +118,7 @@ test('model-driven provider query snapshots cannot rewrite cached source regions
 });
 
 test('registry writer leases and metadata copies retain captured intrinsics after customization overrides', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { origin } = await app();
   const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
@@ -218,7 +222,7 @@ test('registry writer leases and metadata copies retain captured intrinsics afte
 });
 
 test('page-writable parent and connected properties cannot transfer actual-node registry identity', async (t) => {
-  const { origin } = await modelDrivenFixture(t);
+  const { origin } = await app();
   const page = await chrome.page(t);
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   const cell = page.locator('td[data-id="x_name"]').first();

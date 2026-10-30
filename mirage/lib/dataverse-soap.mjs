@@ -14,6 +14,7 @@ import { FORMATTED } from './webapi-format.mjs';
 import { metadataRequests } from './dataverse-soap-metadata.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
 import { resultsOf } from './dataverse-soap-registry.mjs';
+import { recordHttpError } from './trace-store.mjs';
 
 const ANNOTATIONS = 'odata.include-annotations="*"';
 // ExecuteMultiple faults before running anything past this many requests (SDK docs: "typical" 1,000; a deployment can set its own).
@@ -450,10 +451,12 @@ function collectionFrom(s, logical, body) {
 }
 
 // The row id: the SDK Entity.Id, else the primary-key attribute the Target carries (SDK clients often set only that).
+// The record id an entity or reference names: its Id, else its primary-key attribute.
+const idOf = (api, entity) =>
+  entity?.id ??
+  (entity?.logicalName ? entity.attributes?.get?.(mappingOf(api, entity.logicalName).idColumn)?.value : null);
 const requireId = (api, entity, what) => {
-  const id =
-    entity?.id ??
-    (entity?.logicalName ? entity.attributes?.get(mappingOf(api, entity.logicalName).idColumn)?.value : null);
+  const id = idOf(api, entity);
   if (!id) throw invalid(`The ${what} names no record Id.`);
   return id;
 };
@@ -476,12 +479,24 @@ async function retrieveRow(s, target, columnSet) {
   return entityFrom(s, target.logicalName, result.body);
 }
 
+// The table a RetrieveMultiple query reads: the FetchXML entity name, else the QueryExpression / QueryByAttribute entity.
+const queriedTable = (query, model = query?.model) =>
+  (query?.type === 'Fetch'
+    ? /<entity\b[^>]*?\bname\s*=\s*["']([^"']+)["']/i.exec(query.xml ?? '')?.[1]
+    : model?.entityName) ?? null;
+// The query kind a message carries (D-R3-8): FetchXML, or a QueryExpression (a QueryByAttribute is one too).
+const queryKind = (query) =>
+  query?.type === 'Fetch'
+    ? 'fetchxml'
+    : query?.type === 'QueryExpression' || query?.type === 'QueryByAttribute'
+      ? 'queryexpression'
+      : undefined;
+
 async function retrieveMany(s, query) {
   const model = query.type === 'QueryByAttribute' ? fromQueryByAttribute(query.model) : query.model;
   const fetchXml =
     query.type === 'Fetch' ? query.xml : toFetchXml(model, { primaryIdOf: (name) => primaryOf(s.api, name) });
-  const logical =
-    query.type === 'Fetch' ? /<entity\b[^>]*?\bname\s*=\s*["']([^"']+)["']/i.exec(fetchXml)?.[1] : model.entityName;
+  const logical = queriedTable(query, model);
   if (!logical) throw invalid('The query names no entity.');
   const result = await web(s, 'GET', setOf(s.api, logical), {
     query: { fetchXml, ...(s.unmask ? { UnMaskedData: 'true' } : {}) },
@@ -557,7 +572,45 @@ function bypassed(s, params) {
   return { ...s, bypassCustomPlugins: true };
 }
 
-async function runRequest(base, { name, params }) {
+// One dataverse span per SOAP message (D-R3-8), an ExecuteMultiple or ExecuteTransaction item included: named by the
+// message and its table, with the SOAP operation, the query kind and the item index; the parameters and the results are
+// captured at full. A fault fails the span with its error.
+function runRequest(base, request, requestIndex) {
+  const traces = base.api.store?.traces;
+  if (!traces?.enabled) return runMessage(base, request);
+  const { name, params } = request;
+  const target = params.get('Target') ?? params.get('EntityMoniker');
+  const query = params.get('Query');
+  const entity = target?.logicalName ?? queriedTable(query) ?? null;
+  let recordId = null;
+  try {
+    recordId = idOf(base.api, target) ?? null;
+  } catch {
+    // An unknown table: the message itself refuses it.
+  }
+  return traces.wrap(
+    {
+      kind: 'dataverse',
+      name: entity ? `${name} ${entity}` : name,
+      module: 'dataverse',
+      operation: name,
+      entity,
+      recordId,
+      attributes: { message: name, soapOperation: base.soapOperation, query: queryKind(query), requestIndex },
+      input: () => Object.fromEntries(params),
+    },
+    async (span) => {
+      const result = await runMessage(base, request);
+      // A Create names the record it created.
+      const created = name === 'Create' ? result.results?.get('id')?.value : null;
+      if (created) span.setEntity(entity, created);
+      span.output(() => Object.fromEntries(result.results ?? []));
+      return result;
+    },
+  );
+}
+
+async function runMessage(base, { name, params }) {
   // UnMaskedData: request["UnMaskedData"] = true asks the clear value of masked columns.
   const unmask = [true, 'true'].includes(params.get('UnMaskedData')?.value);
   const s = {
@@ -632,23 +685,30 @@ async function runRequest(base, { name, params }) {
     case 'RetrieveVersion':
       return reply(name, new Map([['Version', { type: 'string', value: s.api.settings?.version ?? '' }]]), NS.g);
     case 'RetrieveCurrentOrganization': {
-      // OrganizationDetail (xrm/2014) members in DataContract order (alphabetical). Members the simulator
-      // does not model are nil, not invented.
+      // OrganizationDetail (xrm/2014) members in DataContract order (alphabetical). Unmodelled string members are
+      // nil; value-type members (Guid, enums) and Endpoints carry the Web API's values, since SDK clients cannot
+      // deserialize a nil value type and read the published endpoints after connecting.
       const dv = s.api.store.state.dataverse ?? {};
       const settings = s.api.settings ?? {};
       const member = (name, text) => (text == null ? `<x14:${name} i:nil="true"/>` : plain(`x14:${name}`, text));
+      const endpoint = (type, url) =>
+        `<x14:KeyValuePairOfEndpointTypestringyDL0RVHi>${plain('b:key', type)}${plain('b:value', url)}</x14:KeyValuePairOfEndpointTypestringyDL0RVHi>`;
       const detail =
         `<b:value i:type="x14:OrganizationDetail">` +
-        member('DatacenterId', settings.datacenterId) +
-        `<x14:Endpoints i:nil="true"/>` +
+        member('DatacenterId', settings.datacenterId ?? '00000000-0000-0000-0000-000000000000') +
+        `<x14:Endpoints>` +
+        endpoint('OrganizationService', `${s.origin}/XRMServices/2011/Organization.svc`) +
+        endpoint('OrganizationDataService', `${s.origin}/XRMServices/2011/OrganizationData.svc`) +
+        endpoint('WebApplication', `${s.origin}/`) +
+        `</x14:Endpoints>` +
         member('EnvironmentId', dv.environmentId ?? settings.environmentId) +
         member('FriendlyName', dv.friendlyName ?? settings.friendlyName ?? '') +
         member('Geo', settings.geo) +
         member('OrganizationId', dv.organizationId ?? settings.organizationId ?? refOf(s.user.organizationid) ?? '') +
-        `<x14:OrganizationType i:nil="true"/>` +
+        plain('x14:OrganizationType', 'Default') +
         member('OrganizationVersion', dv.version ?? settings.version ?? '') +
         member('SchemaType', settings.schemaType) +
-        `<x14:State i:nil="true"/>` +
+        plain('x14:State', 'Enabled') +
         member('TenantId', dv.tenantId ?? settings.tenantId) +
         member('UniqueName', dv.uniqueName ?? settings.uniqueName ?? '') +
         member('UrlName', settings.urlName) +
@@ -837,7 +897,7 @@ async function runEach(s, items, { continueOnError, transaction }) {
       // An ExecuteMultipleRequest cannot invoke another; that item faults and the batch goes on as ContinueOnError says.
       if (!transaction && request.name === 'ExecuteMultiple')
         throw invalid('An ExecuteMultiple request cannot contain another ExecuteMultiple request.');
-      outcomes.push({ index, response: await runRequest(s, request) });
+      outcomes.push({ index, response: await runRequest(s, request, index) });
     } catch (error) {
       if (transaction) {
         if (error && typeof error === 'object') error.faultedRequestIndex = index;
@@ -860,7 +920,8 @@ const resultsXml = (results) =>
 
 // Typed fault members for one item or top-level fault (shared by ExecuteMultiple items and the SOAP fault).
 function faultParts(error, c) {
-  if (!(error instanceof DataError)) return { code: signed('0x80040216'), message: 'An unexpected error occurred.' };
+  if (!(error instanceof DataError))
+    return { code: signed('0x80040216'), hex: '0x80040216', message: 'An unexpected error occurred.' };
   let hex = String(error.details?.innerCode ?? '');
   if (!HEX.test(hex))
     hex =
@@ -869,6 +930,7 @@ function faultParts(error, c) {
         : (dataverseError(error, { requestId: c.requestId, origin: c.origin }).body?.error?.code ?? '');
   return {
     code: signed(HEX.test(hex) ? hex : '0x80040216'),
+    hex: HEX.test(hex) ? hex : '0x80040216',
     message: error.message || 'An unexpected error occurred.',
   };
 }
@@ -948,6 +1010,10 @@ export async function handleSoap(c, api) {
       body: `The requested resource does not support http method '${c.method}'.`,
     };
   }
+  // The span this request runs under (the listener root): it names the SOAP operation, the message and its query kind, and a
+  // fault is its error (D-R3-4, D-R3-8).
+  const traces = api.store?.traces;
+  const root = traces?.enabled ? traces.current() : null;
   try {
     // The router passes the raw body bytes; a caller with text already decoded passes bodyText instead.
     const bodyText = c.bodyText ?? (c.bodyBuffer ? Buffer.from(c.bodyBuffer).toString('utf8') : '');
@@ -957,12 +1023,18 @@ export async function handleSoap(c, api) {
       origin: c.origin,
       version: c.version ?? 'v9.2',
       requestId: c.requestId,
+      soapOperation: parsed.operation,
       ...actingAs(c, api, parsed.headers),
+    };
+    root?.set({ soapOperation: parsed.operation });
+    const named = (request) => {
+      root?.set({ message: request.name, query: queryKind(request.params.get('Query')) });
+      return request;
     };
     if (parsed.operation === 'Execute') {
       const request = kid(parsed.request, NS.svc, 'request');
       if (!request) throw invalid('Execute has no request element.');
-      return xml(200, envelope(executeXml(await runRequest(s, requestOf(request)))));
+      return xml(200, envelope(executeXml(await runRequest(s, named(requestOf(request))))));
     }
     if (!BODY_OPERATIONS.has(parsed.operation)) {
       throw new DataError(
@@ -972,8 +1044,16 @@ export async function handleSoap(c, api) {
         { innerCode: '0x80040216' },
       );
     }
-    return xml(200, envelope(bodyXml(await runRequest(s, bodyRequest(parsed.operation, parsed.request)))));
+    return xml(200, envelope(bodyXml(await runRequest(s, named(bodyRequest(parsed.operation, parsed.request))))));
   } catch (error) {
+    if (root) {
+      const { code, hex, message } = faultParts(error, c);
+      recordHttpError(root, 500, {
+        code: hex,
+        message,
+        details: { errorCode: code, faultedRequestIndex: error?.faultedRequestIndex },
+      });
+    }
     return xml(500, faultEnvelope(error, c, api));
   }
 }

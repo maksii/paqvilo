@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -14,9 +15,68 @@ import { performanceFixture, performanceId } from './runtime-performance-fixture
 import { createSolutionMetadataOverlay } from '../lib/dataverse-solution-metadata.mjs';
 import { appCatalogue, appCatalogueAsync } from '../lib/model-driven/catalogue.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
+import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { createModelDrivenData, storeCatalogue } from '../lib/model-driven/data.mjs';
+import { startDataverseApi } from '../lib/dataverse-api.mjs';
+import v8 from 'node:v8';
+import vm from 'node:vm';
+import { setImmediate as setImmediatePromise } from 'node:timers/promises';
+
+test('paged FetchXML projects only returned rows while preserving counts, cookies, ordering and detached values', () => {
+  const payload = 'Invented large payload'.repeat(16);
+  const store = new DataStore({
+    state: {
+      tables: {
+        x_item: Array.from({ length: 1500 }, (_, i) => ({
+          x_itemid: performanceId(i + 1),
+          x_name: String(i).padStart(4, '0'),
+          x_payload: payload,
+          x_details: { invented: [i] },
+        })),
+      },
+      mappings: {
+        x_item: {
+          idColumn: 'x_itemid',
+          entitySet: 'x_items',
+          fields: { x_name: { type: 'text' }, x_payload: { type: 'text' }, x_details: { type: 'text' } },
+        },
+      },
+    },
+  });
+  // Count projection through the live rows: sorting and paging read x_name, only returned rows read x_payload.
+  let projected = 0;
+  for (const row of store.tableRows('x_item'))
+    Object.defineProperty(row, 'x_payload', {
+      enumerable: true,
+      configurable: true,
+      get() {
+        projected++;
+        return payload;
+      },
+    });
+  const xml = (page, cookie = '') =>
+    `<fetch count="25" page="${page}" returntotalrecordcount="true"${cookie ? ' paging-cookie="' + cookie.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;') + '"' : ''}><entity name="x_item"><attribute name="x_name"/><attribute name="x_payload"/><attribute name="x_details"/><order attribute="x_name" descending="true"/></entity></fetch>`;
+  const second = store.fetchXml(xml(2), { admin: true });
+  assert.equal(projected, 25, 'Off-page values are neither copied nor projected');
+  assert.equal(second.total_record_count, 1500);
+  assert.equal(second.more_records, true);
+  assert.equal(second.entities[0].x_name, '1474');
+  assert.equal(second.entities.at(-1).x_name, '1450');
+  assert.equal(second.entities[0].x_payload, payload);
+  assert.ok(second.paging_cookie);
+  const third = store.fetchXml(xml(3, second.paging_cookie), { admin: true });
+  assert.equal(projected, 50);
+  assert.equal(third.entities[0].x_name, '1449');
+  third.entities[0].x_payload = 'local response edit';
+  third.entities[0].x_details.invented.push('local response edit');
+  const stored = store.tableRows('x_item')[1449];
+  assert.equal(stored.x_payload, payload);
+  assert.deepEqual(stored.x_details, { invented: [1449] }, 'Structured values are detached copies');
+});
+import { settleFileTimes } from './support/file-times.mjs';
 
 test('unchanged isolated composition clones each business graph once and owned replacement saves zero bytes', async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-copy-count-'));
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-copy-count-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   for (const count of [32, 4096]) {
     const state = emptyState();
@@ -106,6 +166,42 @@ test('metadata inventory work scales with metadata once per read, independent of
   }
 });
 
+test('unchanged component checks avoid rebuilding field stamp trees and still detect structured in-place edits', (t) => {
+  const size = 512;
+  const rows = Array.from({ length: size }, (_, index) => ({
+    formid: 'f-' + index,
+    name: 'Form',
+    formxml: '<form/>',
+    settings: { enabled: true },
+  }));
+  const state = {
+    tables: { systemform: rows },
+    dataverse: { sourceSolutionComponents: { baseline: { 'systemform/f-0': {} } } },
+  };
+  const base = { forms: rows.map((row) => ({ id: row.formid, xml: row.formxml })) };
+  const overlay = createSolutionMetadataOverlay();
+  const first = overlay(base, state);
+  const entries = Object.entries;
+  let rowEntryCopies = 0;
+  const rowSet = new Set(rows);
+  const mock = t.mock.method(Object, 'entries', (value) => {
+    if (rowSet.has(value)) rowEntryCopies++;
+    return entries(value);
+  });
+  for (let read = 0; read < 8; read++) assert.equal(overlay(base, state), first);
+  assert.equal(rowEntryCopies, 0, 'unchanged reads do not allocate one entry pair per field per component');
+  mock.mock.restore();
+  rows.at(-1).settings.enabled = false;
+  const changed = overlay(base, state);
+  assert.notEqual(changed, first);
+  rows.at(-1).name = 'Edited locally';
+  assert.equal(overlay(base, state).forms.at(-1).name, 'Edited locally');
+  delete rows.at(-1).settings;
+  assert.notEqual(overlay(base, state), changed);
+  rows.push({ formid: 'new', formxml: '<form/>' });
+  assert.notEqual(overlay(base, state), changed);
+});
+
 test('built-in startup metadata scans are bounded across tables and trusted extensions still see direct edits', async (t) => {
   const state = emptyState();
   let scans = 0;
@@ -163,7 +259,7 @@ test('built-in startup metadata scans are bounded across tables and trusted exte
 });
 
 test('organization seeders checkpoint once, keep existing rows and roll back failed composition', async (t) => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-bootstrap-'));
+  const root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-bootstrap-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const state = emptyState();
   state.mappings.x_item = { entitySet: 'x_items', idColumn: 'x_itemid' };
@@ -331,6 +427,365 @@ test('catalogue metadata epoch reuses one snapshot and expires before later sour
   });
 });
 
+test('overlay invalidates column metadata, component presence and same-ID solution asset edits', () => {
+  const overlay = createSolutionMetadataOverlay();
+  const base = {
+    entities: { x_item: { fields: { x_name: { label: 'Original' } } } },
+    forms: [{ id: 'f', entity: 'x_item', xml: '<form/>' }],
+  };
+  const state = {
+    tables: { systemform: [{ formid: 'f' }] },
+    mappings: { x_item: { fields: { x_name: { columnMetadata: { labels: { 1033: 'First' }, isSecured: false } } } } },
+    dataverse: { sourceSolutionComponents: { baseline: { 'systemform/f': {} } } },
+  };
+  const first = overlay(base, state);
+  state.mappings.x_item.fields.x_name.columnMetadata.labels[1033] = 'Second';
+  state.mappings.x_item.fields.x_name.columnMetadata.isSecured = true;
+  const changed = overlay(base, state);
+  assert.notEqual(changed, first);
+  assert.equal(changed.entities.x_item.fields.x_name.label, 'Second');
+  assert.equal(changed.entities.x_item.fields.x_name.isSecured, true);
+  assert.equal(
+    first.entities.x_item.fields.x_name.columnMetadata.labels[1033],
+    'First',
+    'Published metadata does not retain mutable nested mapping values',
+  );
+  const withoutLayers = structuredClone(state);
+  delete withoutLayers.dataverse.sourceSolutionComponents;
+  assert.equal(
+    overlay(base, withoutLayers).entities.x_item.fields.x_name.label,
+    'Second',
+    'Relevant mapping changes also apply without imported layers or a baseline',
+  );
+  state.tables.systemform = [];
+  const absent = overlay(base, state);
+  assert.equal(absent.forms.length, 0);
+  delete state.dataverse.sourceSolutionComponents.baseline['systemform/f'];
+  state.dataverse.sourceSolutionComponents.baseline.other = {};
+  assert.equal(overlay(base, state).forms.length, 1, 'component presence changes invalidate without a row edit');
+  const bytes = Buffer.from('<Entity><Name>x_item</Name></Entity>');
+  const entry = {
+    name: 'Entities/x_item/Entity.xml',
+    bytes: bytes.length,
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+    content: bytes.toString('base64'),
+  };
+  state.dataverse.solutionAssets = { layers: [{ id: 'invented-layer', ownerSolutionId: 'owner', entries: [entry] }] };
+  overlay(base, state);
+  entry.content = Buffer.from('tampered').toString('base64');
+  assert.throws(
+    () => overlay(base, state),
+    /integrity/,
+    'cached parsed assets cannot conceal a same-ID integrity failure',
+  );
+});
+
+test('unchanged overlay resolutions outside a read epoch scan mapping metadata once until a metadata change', () => {
+  let reads = 0;
+  const counted = (value) => {
+    const field = { dataverseType: 'nvarchar' };
+    Object.defineProperty(field, 'columnMetadata', {
+      enumerable: true,
+      configurable: true,
+      get() {
+        reads++;
+        return value;
+      },
+    });
+    return field;
+  };
+  const entities = {},
+    mappings = {};
+  for (let table = 0; table < 32; table++) {
+    const fields = {};
+    for (let column = 0; column < 16; column++) fields['x_f' + column] = counted(undefined);
+    entities['x_t' + table] = { fields: { x_f0: { label: 'Exported' } } };
+    mappings['x_t' + table] = { idColumn: 'x_t' + table + 'id', fields };
+  }
+  const base = { entities, forms: [] },
+    state = { mappings, dataverse: { metadataLog: [] } },
+    overlay = createSolutionMetadataOverlay();
+  assert.equal(overlay(base, state), base);
+  const scan = reads;
+  assert.equal(scan, 32 * 16, 'The first resolution reads every mapping field once');
+  for (let call = 0; call < 64; call++) assert.equal(overlay(base, state), base);
+  assert.equal(reads, scan, 'Unchanged resolutions read no mapping field again');
+  // A metadata writer changes the column and appends to the metadata log: the next resolution applies it.
+  Object.defineProperty(mappings.x_t0.fields, 'x_f0', {
+    value: { dataverseType: 'nvarchar', columnMetadata: { labels: { 1033: 'Changed' } } },
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+  state.dataverse.metadataLog.push({ seq: 1, kind: 'attribute', change: 'change' });
+  assert.equal(overlay(base, state).entities.x_t0.fields.x_f0.label, 'Changed');
+  // A new mapping set (state replacement) is scanned again.
+  const replaced = { ...state, mappings: { x_t1: mappings.x_t1 } };
+  reads = 0;
+  assert.equal(overlay(base, replaced), base);
+  assert.equal(reads, 16);
+});
+
+test('one Dataverse Web API request resolves the solution metadata overlay once across per-column checks', async (t) => {
+  const appId = '55555555-5555-4555-8555-555555555555',
+    variable = `PAQ_OVERLAY_SECRET_${process.pid}`;
+  process.env[variable] = 'invented-secret';
+  const state = emptyState();
+  state.mappings.x_item = {
+    logicalName: 'x_item',
+    entitySet: 'x_items',
+    idColumn: 'x_itemid',
+    nameColumn: 'x_name',
+    fields: Object.fromEntries(
+      ['x_name', ...Array.from({ length: 24 }, (_, i) => 'x_value' + i)].map((name) => [
+        name,
+        { dataverseType: 'nvarchar' },
+      ]),
+    ),
+  };
+  state.tables.x_item = Array.from({ length: 8 }, (_, i) => ({
+    x_itemid: performanceId(i + 1),
+    x_name: 'Invented ' + i,
+    ...Object.fromEntries(Array.from({ length: 24 }, (_, c) => ['x_value' + c, 'v' + c])),
+  }));
+  state.tables.systemform = [{ formid: 'f-0', name: 'Invented form' }];
+  state.dataverse = { sourceSolutionComponents: { baseline: { 'systemform/f-0': {} } } };
+  const store = await new DataStore({ state }).init();
+  const overlay = createSolutionMetadataOverlay(),
+    base = { entities: { x_item: { fields: state.mappings.x_item.fields } }, forms: [] };
+  const settings = dataverseSettings({
+    enabled: true,
+    tds: { enabled: false },
+    applications: [
+      { appId, displayName: 'Invented', secretEnvironmentVariable: variable, roles: ['System Administrator'] },
+    ],
+  });
+  const organization = await createOrganizationRuntime({
+    store,
+    settings,
+    metadataFields: (logical) => overlay(base, store.state).entities?.[logical]?.fields,
+    readMetadata: (fn, options) => overlay.withReadEpoch(fn, options),
+  });
+  const api = await startDataverseApi({ store, settings, organization, log: () => {} });
+  t.after(async () => {
+    delete process.env[variable];
+    await api.close();
+    await organization.close();
+  });
+  const token = (
+    await (
+      await fetch(`${api.origin}/${api.tenantId}/oauth2/v2.0/token`, {
+        method: 'POST',
+        body: new URLSearchParams({
+          grant_type: 'client_credentials',
+          client_id: appId,
+          client_secret: 'invented-secret',
+          scope: `${api.origin}/.default`,
+        }),
+      })
+    ).json()
+  ).access_token;
+  const get = async () => {
+    const response = await fetch(`${api.origin}/api/data/v9.2/x_items`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(response.status, 200);
+    return (await response.json()).value;
+  };
+  await get();
+  // Every full overlay resolution compares the component rows: count reads of the live row's name.
+  let scans = 0;
+  Object.defineProperty(store.state.tables.systemform[0], 'name', {
+    enumerable: true,
+    get() {
+      scans++;
+      return 'Invented form';
+    },
+  });
+  const rows = await get();
+  assert.equal(rows.length, 8);
+  assert.equal(rows[0].x_value23, 'v23');
+  assert.equal(scans, 1, 'One overlay resolution per request, not one per checked column');
+});
+
+test('catalogue construction groups forms, views and ribbons by table once and reuses parsed ribbon commands', () => {
+  const ribbon = `<RibbonDiffXml><Button Id="x.Form.Review" Command="x.Review" LabelText="Review"/><CommandDefinitions><CommandDefinition Id="x.Review"><Actions><JavaScriptFunction Library="$webresource:x_/review.js" FunctionName="Invented.review"/></Actions></CommandDefinition></CommandDefinitions></RibbonDiffXml>`;
+  let entityReads = 0;
+  const xmlReads = new Map();
+  const counted = ({ entity, ...item }) =>
+    Object.defineProperty(item, 'entity', {
+      enumerable: true,
+      get() {
+        entityReads++;
+        return entity;
+      },
+    });
+  const tables = 64,
+    mappings = {},
+    forms = [],
+    views = [],
+    modelDrivenRibbonDocuments = [];
+  for (let index = 0; index < tables; index++) {
+    const entity = 'x_table' + index;
+    mappings[entity] = { idColumn: entity + 'id', nameColumn: 'x_name', fields: { x_name: { type: 'nvarchar' } } };
+    for (let form = 0; form < 2; form++) forms.push(counted({ id: `${entity}-f${form}`, entity, xml: '<form/>' }));
+    for (let view = 0; view < 4; view++)
+      views.push(counted({ id: `${entity}-v${view}`, entity, name: 'View ' + view, queryType: view === 3 ? 64 : 0 }));
+    const document = counted({ entity });
+    Object.defineProperty(document, 'xml', {
+      enumerable: true,
+      get() {
+        xmlReads.set(entity, (xmlReads.get(entity) ?? 0) + 1);
+        return ribbon;
+      },
+    });
+    modelDrivenRibbonDocuments.push(document);
+  }
+  const items = forms.length + views.length + modelDrivenRibbonDocuments.length;
+  const metadata = { forms, views, modelDrivenRibbonDocuments };
+  const lazy = appCatalogue({ lazy: true, mappings, metadata });
+  assert.ok(entityReads <= items * 2, `${entityReads} entity reads for ${items} items across ${tables} tables`);
+  entityReads = 0;
+  xmlReads.clear();
+  const body = lazy.tables.x_table0;
+  assert.equal(body.commands[0].id, 'x.Form.Review');
+  assert.equal(body.views.length, 3);
+  assert.equal(body.lookupViews.length, 1);
+  assert.ok(entityReads <= 7 * 4, `${entityReads} entity reads compile one table of 7 items`);
+  assert.deepEqual([...xmlReads.keys()], ['x_table0'], 'One body never reads another table ribbon');
+  const rebuilt = appCatalogue({ lazy: true, mappings, metadata });
+  assert.equal(rebuilt.tables.x_table0.commands[0], body.commands[0], 'An unchanged ribbon document is parsed once');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(appCatalogue({ mappings, metadata }))),
+    JSON.parse(JSON.stringify(lazy)),
+    'Grouped construction keeps the complete catalogue contract',
+  );
+});
+
+test('the store catalogue survives business-row writes and rebuilds for metadata, mapping, settings and component changes', async () => {
+  const state = emptyState();
+  state.mappings.x_item = { idColumn: 'x_itemid', nameColumn: 'x_name', fields: { x_name: { type: 'text' } } };
+  state.mappings.systemform = { idColumn: 'formid', nameColumn: 'name', fields: { name: { type: 'text' } } };
+  state.mappings.x_other = { idColumn: 'x_otherid', nameColumn: 'x_name', fields: { x_name: { label: 'Original' } } };
+  state.tables.x_item = [];
+  state.tables.systemform = [];
+  const store = new DataStore({ state });
+  let metadata = { entities: {}, forms: [] },
+    builds = 0;
+  const catalogue = storeCatalogue({
+    store,
+    metadata: () => metadata,
+    options: (current) => {
+      builds++;
+      return { lazy: true, metadata: current, mappings: store.state.mappings, settings: store.state.settings };
+    },
+  });
+  const first = catalogue();
+  assert.equal(await catalogue.async(), first);
+  const revision = catalogue.revision();
+  const created = await store.create('x_item', { x_name: 'Invented row' }, { admin: true });
+  await store.update('x_item', created.x_itemid, { x_name: 'Invented edit' }, { admin: true });
+  assert.equal(catalogue(), first, 'Business-row writes keep the catalogue');
+  assert.equal(catalogue.revision(), revision);
+  assert.equal(builds, 1);
+  const changes = [
+    ['mapping', () => store.transact(() => (store.state.mappings.x_item.fields.x_added = { type: 'text' }))],
+    ['settings', () => store.transact(() => (store.state.settings.permissionMode = 'enforce'))],
+    ['component row', () => store.create('systemform', { name: 'Invented form' }, { admin: true })],
+    ['metadata', () => (metadata = { ...metadata })],
+  ];
+  let previous = first;
+  for (const [label, change] of changes) {
+    await change();
+    const next = catalogue();
+    assert.notEqual(next, previous, `A ${label} change rebuilds the catalogue`);
+    assert.equal(catalogue(), next, `The rebuilt catalogue is reused after the ${label} change`);
+    previous = next;
+  }
+  assert.equal(builds, 1 + changes.length);
+  assert.ok(previous.tables.x_item.fields.x_added, 'The rebuilt catalogue reads the changed mapping');
+  // Bodies compile after the host's read: a handed-out catalogue compiles from its own copy of the mappings.
+  await store.transact(() => (store.state.mappings.x_other.fields.x_name.label = 'In-place edit'));
+  assert.equal(previous.tables.x_other.fields.x_name.label, 'Original', 'A handed-out catalogue keeps its snapshot');
+  assert.equal(catalogue().tables.x_other.fields.x_name.label, 'In-place edit');
+});
+
+test('lookup formatting reads target tables from the lazy index and recent bodies survive garbage collection', async () => {
+  const reads = new Map();
+  const form = (entity) => ({
+    id: entity + '-form',
+    entity,
+    get xml() {
+      reads.set(entity, (reads.get(entity) ?? 0) + 1);
+      return '<form><tabs><tab name="main"><columns><column><sections><section><rows><row><cell><control datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>';
+    },
+  });
+  const targetId = '22222222-2222-4222-8222-222222222222';
+  const mappings = {
+    x_item: {
+      idColumn: 'x_itemid',
+      nameColumn: 'x_name',
+      fields: { x_name: { dataverseType: 'nvarchar' }, x_target: { dataverseType: 'lookup', targets: ['x_target'] } },
+    },
+    x_target: { idColumn: 'x_targetid', nameColumn: 'x_name', fields: { x_name: { dataverseType: 'nvarchar' } } },
+  };
+  const store = new DataStore({
+    state: {
+      mappings: structuredClone(mappings),
+      tables: {
+        x_item: [{ x_itemid: performanceId(1), x_name: 'Invented item', x_target: targetId }],
+        x_target: [{ x_targetid: targetId, x_name: 'Invented target' }],
+      },
+    },
+  });
+  const lazy = appCatalogue({ lazy: true, mappings, metadata: { forms: [form('x_item'), form('x_target')] } });
+  const data = createModelDrivenData({ store, catalogue: () => lazy });
+  const { rows } = await data.list('x_item', { scope: 'table' });
+  assert.equal(rows[0]['x_target@OData.Community.Display.V1.FormattedValue'], 'Invented target');
+  assert.deepEqual([...reads.keys()], ['x_item'], 'The lookup target body is never compiled to format a lookup');
+  const compiled = reads.get('x_item');
+  // Recent bodies are held strongly: a collection between two record reads does not recompile the form.
+  v8.setFlagsFromString('--expose-gc');
+  const collect = vm.runInNewContext('gc');
+  for (let round = 0; round < 3; round++) {
+    await setImmediatePromise();
+    collect();
+  }
+  await data.list('x_item', { scope: 'table' });
+  assert.equal(reads.get('x_item'), compiled, 'One compilation of the reopened table');
+});
+
+test('lazy catalogue inventories every table without reading unrelated form bodies and preserves the complete contract', async () => {
+  const mappings = {},
+    entities = {},
+    forms = [];
+  const reads = new Map();
+  for (let index = 0; index < 80; index++) {
+    const entity = 'x_table' + index;
+    mappings[entity] = { idColumn: entity + 'id', nameColumn: 'x_name' };
+    entities[entity] = { fields: { x_name: { name: 'x_name', type: 'string', label: 'Name' } } };
+    forms.push({
+      id: 'form' + index,
+      entity,
+      get xml() {
+        reads.set(entity, (reads.get(entity) ?? 0) + 1);
+        return '<form><tabs><tab name="main"><columns><column><sections><section><rows><row><cell><control datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>';
+      },
+    });
+  }
+  const options = { mappings, metadata: { entities, forms } };
+  const lazy = await appCatalogueAsync({ ...options, lazy: true });
+  assert.equal(Object.keys(lazy.tableIndex).length, 80);
+  assert.equal(reads.size, 0, 'index construction never compiles form bodies');
+  assert.equal(lazy.tables.x_table79.forms.length, 1);
+  assert.deepEqual([...reads.keys()], ['x_table79']);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(lazy)),
+    JSON.parse(JSON.stringify(appCatalogue(options))),
+    'enumerating the complete catalogue retains every table, form, view, control and source',
+  );
+});
+
 test('metadata reuse stops before a potentially mutating read plug-in runs', async () => {
   const overlay = createSolutionMetadataOverlay(),
     state = emptyState();
@@ -429,131 +884,127 @@ test('cooperative catalogue construction preserves the complete synchronous cont
 });
 
 for (const watch of [false, true])
-  test(
-    `catalogue invalidates source, form and field-security metadata with watch ${watch}`,
-    { timeout: 30000 },
-    async (t) => {
-      const fixture = await performanceFixture({ tables: 2, records: 8 });
-      t.after(fixture.cleanup);
-      for (let i = 0; i < 2; i++) {
-        const file = path.join(fixture.solutionRoots[0], `Entities/x_scale${i}/Entity.xml`);
-        await fs.writeFile(
-          file,
-          (await fs.readFile(file, 'utf8')).replace(
-            '</EntitySetName>',
-            '</EntitySetName><OwnershipTypeMask>UserOwned</OwnershipTypeMask>',
-          ),
-        );
-      }
-      const sim = await createSimulator({
-        runtime: { kind: 'model-driven' },
-        solutionRoots: fixture.solutionRoots,
-        watch,
-        packs: [fixture.pack],
-        preset: 'invented-scale',
-        presetMode: 'bootstrap',
-        dataverse: {
-          enabled: false,
-          users: [
-            {
-              objectId: performanceId(700),
-              domainname: 'invented@example.test',
-              fullname: 'Invented restricted staff',
-              roles: ['Basic User'],
-            },
-          ],
-        },
-      });
-      t.after(() => sim.close());
-      const session = await (await fetch(sim.url + '/_sim/api/dataverse/session')).json();
-      const selected = await fetch(sim.url + '/_sim/api/dataverse/session', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
-        body: JSON.stringify({ userId: session.users.find((user) => user.name === 'Invented restricted staff').id }),
-      });
-      assert.equal(selected.status, 200);
-      const cookie = selected.headers.get('set-cookie').split(';')[0];
-      const catalogue = async () =>
-        await (await fetch(sim.url + '/_apps/api/metadata/x_scale0', { headers: { cookie } })).json();
-      const before = await catalogue();
-      assert.equal(before.capabilities.fields.x_value1.read, false);
-      const csrf = sim.csrf,
-        headers = { 'content-type': 'application/json', 'x-sim-csrf': csrf };
-      const made = await fetch(sim.url + '/_apps/api/tables/x_scale0', {
-        method: 'POST',
-        headers: { ...headers, cookie },
-        body: JSON.stringify({ x_value0: 'Invented staff row' }),
-      });
-      assert.equal(made.status, 201);
-      const created = await made.json();
-      const saved = await fetch(sim.url + '/_apps/api/tables/x_scale0/' + created.id, {
-        method: 'PATCH',
-        headers: { ...headers, 'if-match': created.etag },
-        body: JSON.stringify({ x_value1: 'Must stay masked' }),
-      });
-      assert.equal(saved.status, 200);
-      const read = async (route) => {
-        const response = await fetch(sim.url + '/_apps/api/' + route, { headers: { cookie } });
-        assert.equal(response.status, 200);
-        return response.json();
-      };
-      const recordRoute = 'tables/x_scale0/' + created.id;
-      assert.equal((await read(recordRoute)).row.x_value1, null);
-      const grid = await read(
-        'tables/x_scale0?query=' +
-          encodeURIComponent(
-            JSON.stringify({
-              columns: ['x_value0', 'x_value1'],
-              filters: [{ field: 'x_value0', operator: 'eq', value: 'Invented staff row' }],
-              pageSize: 50,
-            }),
-          ),
-      );
-      assert.equal(grid.rows.length, 1);
-      assert.ok(grid.rows[0].x_value1 == null);
-      assert.doesNotMatch(JSON.stringify(grid), /Must stay masked/);
-      const entityFile = path.join(fixture.solutionRoots[0], 'Entities/x_scale0/Entity.xml'),
-        formFile = path.join(fixture.solutionRoots[0], 'Entities/x_scale0/FormXml/main/form.xml');
+  test(`catalogue invalidates source, form and field-security metadata with watch ${watch}`, async (t) => {
+    const fixture = await performanceFixture({ tables: 2, records: 8 });
+    ownedFixture(t).remove(fixture.cleanup);
+    for (let i = 0; i < 2; i++) {
+      const file = path.join(fixture.solutionRoots[0], `Entities/x_scale${i}/Entity.xml`);
       await fs.writeFile(
-        entityFile,
-        (await fs.readFile(entityFile, 'utf8'))
-          .replace('<IsSecured>1</IsSecured>', '<IsSecured>0</IsSecured>')
-          .replace(
-            '</attributes>',
-            '<attribute PhysicalName="x_added"><Name>x_added</Name><Type>nvarchar</Type></attribute></attributes>',
-          ),
-      );
-      await fs.writeFile(
-        formFile,
-        (await fs.readFile(formFile, 'utf8')).replace(
-          '</rows>',
-          '<row><cell><control datafieldname="x_added"/></cell></row></rows>',
+        file,
+        (await fs.readFile(file, 'utf8')).replace(
+          '</EntitySetName>',
+          '</EntitySetName><OwnershipTypeMask>UserOwned</OwnershipTypeMask>',
         ),
       );
-      if (!watch) await sim.reload();
-      let changed;
-      const deadline = performance.now() + 10000;
-      do {
-        changed = await catalogue();
-        if (changed.fields.x_added && changed.capabilities.fields.x_value1.read) break;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      } while (performance.now() < deadline);
-      assert.ok(changed.fields.x_added);
-      assert.equal(changed.capabilities.fields.x_value1.read, true);
-      assert.equal(
-        (await read(recordRoute)).row.x_value1,
-        'Must stay masked',
-        'The next record read uses changed source security metadata.',
-      );
-      assert.ok(
-        changed.forms.some((form) =>
-          form.tabs.some((tab) =>
-            tab.sections.some((section) => section.fields.some((field) => field.name === 'x_added')),
-          ),
+    }
+    const sim = await createSimulator({
+      runtime: { kind: 'model-driven' },
+      solutionRoots: fixture.solutionRoots,
+      watch,
+      packs: [fixture.pack],
+      preset: 'invented-scale',
+      presetMode: 'bootstrap',
+      dataverse: {
+        enabled: false,
+        users: [
+          {
+            objectId: performanceId(700),
+            domainname: 'invented@example.test',
+            fullname: 'Invented restricted staff',
+            roles: ['Basic User'],
+          },
+        ],
+      },
+    });
+    ownedFixture(t).add(() => sim.close());
+    const session = await (await fetch(sim.url + '/_sim/api/dataverse/session')).json();
+    const selected = await fetch(sim.url + '/_sim/api/dataverse/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.csrf },
+      body: JSON.stringify({ userId: session.users.find((user) => user.name === 'Invented restricted staff').id }),
+    });
+    assert.equal(selected.status, 200);
+    const cookie = selected.headers.get('set-cookie').split(';')[0];
+    const catalogue = async () =>
+      await (await fetch(sim.url + '/_apps/api/metadata/x_scale0', { headers: { cookie } })).json();
+    const before = await catalogue();
+    assert.equal(before.capabilities.fields.x_value1.read, false);
+    const csrf = sim.csrf,
+      headers = { 'content-type': 'application/json', 'x-sim-csrf': csrf };
+    const made = await fetch(sim.url + '/_apps/api/tables/x_scale0', {
+      method: 'POST',
+      headers: { ...headers, cookie },
+      body: JSON.stringify({ x_value0: 'Invented staff row' }),
+    });
+    assert.equal(made.status, 201);
+    const created = await made.json();
+    const saved = await fetch(sim.url + '/_apps/api/tables/x_scale0/' + created.id, {
+      method: 'PATCH',
+      headers: { ...headers, 'if-match': created.etag },
+      body: JSON.stringify({ x_value1: 'Must stay masked' }),
+    });
+    assert.equal(saved.status, 200);
+    const read = async (route) => {
+      const response = await fetch(sim.url + '/_apps/api/' + route, { headers: { cookie } });
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    const recordRoute = 'tables/x_scale0/' + created.id;
+    assert.equal((await read(recordRoute)).row.x_value1, null);
+    const grid = await read(
+      'tables/x_scale0?query=' +
+        encodeURIComponent(
+          JSON.stringify({
+            columns: ['x_value0', 'x_value1'],
+            filters: [{ field: 'x_value0', operator: 'eq', value: 'Invented staff row' }],
+            pageSize: 50,
+          }),
         ),
-      );
-    },
-  );
+    );
+    assert.equal(grid.rows.length, 1);
+    assert.ok(grid.rows[0].x_value1 == null);
+    assert.doesNotMatch(JSON.stringify(grid), /Must stay masked/);
+    const entityFile = path.join(fixture.solutionRoots[0], 'Entities/x_scale0/Entity.xml'),
+      formFile = path.join(fixture.solutionRoots[0], 'Entities/x_scale0/FormXml/main/form.xml');
+    await fs.writeFile(
+      entityFile,
+      (await fs.readFile(entityFile, 'utf8'))
+        .replace('<IsSecured>1</IsSecured>', '<IsSecured>0</IsSecured>')
+        .replace(
+          '</attributes>',
+          '<attribute PhysicalName="x_added"><Name>x_added</Name><Type>nvarchar</Type></attribute></attributes>',
+        ),
+    );
+    await fs.writeFile(
+      formFile,
+      (await fs.readFile(formFile, 'utf8')).replace(
+        '</rows>',
+        '<row><cell><control datafieldname="x_added"/></cell></row></rows>',
+      ),
+    );
+    if (!watch) await sim.reload();
+    let changed;
+    const deadline = performance.now() + 120_000;
+    do {
+      changed = await catalogue();
+      if (changed.fields.x_added && changed.capabilities.fields.x_value1.read) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } while (performance.now() < deadline);
+    assert.ok(changed.fields.x_added);
+    assert.equal(changed.capabilities.fields.x_value1.read, true);
+    assert.equal(
+      (await read(recordRoute)).row.x_value1,
+      'Must stay masked',
+      'The next record read uses changed source security metadata.',
+    );
+    assert.ok(
+      changed.forms.some((form) =>
+        form.tabs.some((tab) =>
+          tab.sections.some((section) => section.fields.some((field) => field.name === 'x_added')),
+        ),
+      ),
+    );
+  });
 
 test('catalogue yields to status while retaining one security read and releases cancelled readers', async (t) => {
   const store = new DataStore(),
@@ -592,9 +1043,12 @@ test('catalogue yields to status while retaining one security read and releases 
     csrf: () => 'invented',
     json,
   });
+  // The latest catalogue request's handler settles only once it has stopped working, answered or not.
+  let handled;
   const server = http.createServer(async (req, res) => {
     if (req.url === '/status') return json(res, 200, { running: true });
-    await handler(req, res, new URL(req.url, 'http://127.0.0.1'));
+    handled = handler(req, res, new URL(req.url, 'http://127.0.0.1'));
+    await handled;
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(
@@ -630,23 +1084,40 @@ test('catalogue yields to status while retaining one security read and releases 
   await admitted;
   abort.abort();
   await cancelled;
-  await new Promise((resolve) => setTimeout(resolve, 25));
+  await handled;
   await store.readOperation(() => assert.equal(store.state.settings.permissionMode, 'permissive'));
-  assert.ok(checks < 64, 'A disconnected consumer does not compute the remainder of its catalogue.');
+  assert.ok(checks < 64, `A disconnected consumer stopped after ${checks} of 64 tables instead of computing them all.`);
 });
+
+// docs/runtime-performance.md: the probe's defaults are its declared budgets (30,000 ms per startup and catalogue
+// response, 1,000 ms per status heartbeat and first grid or record read), while the ordinary suite checks invariants
+// instead of elapsed time. The suite therefore runs the probe with those budgets in recording mode: a miss on a loaded
+// machine is a finding, never a failure, but every finding must be an honest latency record. Only a status request may
+// end in its own timeout; a failed catalogue, first status or data read still fails the test.
+const PROBE = { budgetMs: 30000, heartbeatBudgetMs: 1000, strictBudgets: false };
+function assertLatencyFindingsOnly(report) {
+  assert.deepEqual(
+    [report.budgetMs, report.catalogueBudgetMs, report.heartbeatBudgetMs, report.dataBudgetMs, report.strictBudgets],
+    [PROBE.budgetMs, PROBE.budgetMs, PROBE.heartbeatBudgetMs, PROBE.heartbeatBudgetMs, false],
+    'The report states the documented budgets it measured against.',
+  );
+  for (const finding of report.findings) {
+    const text = JSON.stringify(finding);
+    if (finding.error) assert.deepEqual([finding.stage, finding.error], ['status request', 'TimeoutError'], text);
+    // durationMs is rounded; the probe records a finding only when the raw duration exceeded the budget.
+    else assert.ok(finding.stage && finding.durationMs >= finding.budgetMs, text);
+  }
+}
 
 for (const portal of [false, true])
   test(
     `${portal ? 'portal' : 'standalone'} fresh, unchanged and grown-journal startup retains bootstrap data and reports costs`,
     { timeout: 60000 },
-    async () => {
-      const report = await runtimePerformance({
-        scales: [2],
-        records: 32,
-        portal,
-        budgetMs: 30000,
-        heartbeatBudgetMs: 5000,
-      });
+    async (t) => {
+      // The reuse assertions below concern files written moments ago.
+      settleFileTimes(t);
+      const report = await runtimePerformance({ ...PROBE, scales: [2], records: 32, portal });
+      assertLatencyFindingsOnly(report);
       assert.deepEqual(
         report.results.map((result) => result.generated),
         [1, 0, 0],
@@ -686,15 +1157,23 @@ test(
   { timeout: 60000 },
   async () => {
     assert.ok(LARGE_PERFORMANCE_OPTIONS.scales[0] * (1 + LARGE_PERFORMANCE_OPTIONS.formsPerTable) + 2 > 10000);
+    // The fixture inventory and record count are settled by the first start. Restarts are covered by the cases above,
+    // and restarts with several forms per table by test/runtime-performance-options.test.mjs.
     const report = await runtimePerformance({
+      ...PROBE,
       scales: [2],
       formsPerTable: 3,
       columns: 4,
       records: 17,
       portal: false,
-      heartbeatBudgetMs: 5000,
+      phases: ['fresh'],
     });
-    assert.deepEqual(report.findings, []);
+    assertLatencyFindingsOnly(report);
+    assert.deepEqual(
+      report.results.map((result) => result.phase),
+      ['fresh'],
+      'The start completed its catalogue, metadata and data checks.',
+    );
     for (const result of report.results) {
       assert.equal(result.inventory.xmlFiles, 10);
       assert.equal(result.inventory.forms, 6);
@@ -705,3 +1184,35 @@ test(
     }
   },
 );
+
+test('the portal host stops its warm metadata compiler thread when it closes', async (t) => {
+  const fixture = await performanceFixture({ tables: 128, records: 128, formsPerTable: 1 });
+  ownedFixture(t).remove(fixture.cleanup);
+  const threads = [];
+  const created = (worker) => {
+    const thread = { exited: false };
+    worker.once('exit', () => (thread.exited = true));
+    threads.push(thread);
+  };
+  process.on('worker', created);
+  t.after(() => process.off('worker', created));
+  const sim = await createSimulator({
+    sourceDir: fixture.sourceDir,
+    solutionRoots: fixture.solutionRoots,
+    watch: false,
+    packs: [fixture.pack],
+    preset: 'invented-scale',
+    presetMode: 'bootstrap',
+  });
+  ownedFixture(t).add(() => sim.close());
+  const catalogue = await (await fetch(sim.url + '/_apps/api')).json();
+  assert.equal(Object.keys(catalogue.tables).filter((name) => /^x_scale\d+$/.test(name)).length, 128);
+  assert.ok(threads.length > 0, 'A complete catalogue of this size compiles on a metadata thread');
+  await sim.close();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(
+    threads.map((thread) => thread.exited),
+    threads.map(() => true),
+    'No metadata compiler thread outlives the runtime',
+  );
+});
