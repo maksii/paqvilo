@@ -18,6 +18,7 @@ const value = () => ({
   keyAttributes: { code: 'one' },
   formattedValues: { cash: 'Exact display' },
   attributes: {
+    strings: { $type: 'PrimitiveArray', elementType: 'String', values: ['Retained', null, ''] },
     cash: { $type: 'Money', value: '9007199254740993.250001' },
     choices: { $type: 'OptionSetValueCollection', values: [{ $type: 'OptionSetValue', value: 1 }, null] },
     reference: {
@@ -40,7 +41,12 @@ test('SOAP final SDK results retain numeric widths and reject ambiguous or unqua
   assert.deepEqual(soapSdkValue(5000000000), { type: 'long', value: 5000000000 });
   assert.deepEqual(soapSdkValue(1), { type: 'int', value: 1 });
   assert.deepEqual(soapSdkValue(1.5), { type: 'double', value: 1.5 });
-  for (const invalid of [Infinity, Number.MAX_SAFE_INTEGER + 1, { $type: 'UnlistedClass' }])
+  for (const invalid of [
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+    { $type: 'UnlistedClass' },
+    { $type: 'PrimitiveArray', elementType: 'Int32', values: [1] },
+  ])
     assert.throws(() => soapSdkValue(invalid), { code: 'LocalSoapResultUnsupported' });
   assert.throws(() => soapSdkResults({ BusinessEntity: value(), Entity: value() }, [['BusinessEntity', 'Entity']]), {
     code: 'LocalPluginResponseUnsupported',
@@ -64,6 +70,7 @@ class Reader {static void Main(){var doc=new XmlDocument();doc.LoadXml(Console.I
 using(var input=new XmlNodeReader(doc.DocumentElement.FirstChild))row=(Entity)new DataContractSerializer(typeof(Entity)).ReadObject(input,false);
 if(row.Id!=new Guid("${id}")||row.RowVersion!="19"||(string)row.KeyAttributes["code"]!="one"||row.FormattedValues["cash"]!="Exact display")throw new Exception("Entity metadata lost");
 if(((Money)row["cash"]).Value!=9007199254740993.250001m)throw new Exception("Money rounded through Web API scale");
+var strings=(string[])row["strings"];if(strings.Length!=3||strings[0]!="Retained"||strings[1]!=null||strings[2]!="")throw new Exception("String array SDK type lost");
 var choices=(OptionSetValueCollection)row["choices"];if(choices.Count!=2||choices[0].Value!=1||choices[1]!=null)throw new Exception("Null collection member lost");
 var reference=(EntityReference)row["reference"];if(reference.RowVersion!="17"||reference.Name!="Reference label"||(string)reference.KeyAttributes["code"]!="one")throw new Exception("Reference metadata lost");
 var alias=(AliasedValue)row["alias"];if(alias.EntityLogicalName!="widget"||alias.AttributeLogicalName!="cash"||((Money)alias.Value).Value!=0.123456m)throw new Exception("Typed alias lost");Console.Write("observed");}}`,

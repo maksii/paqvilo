@@ -96,7 +96,7 @@ const RING_SIZE = 500;
 const MAX_HEADER_SIZE = 65536;
 const MAX_URL_LENGTH = 32768;
 const PLAIN_INVALID_URL = 'Bad Request - Invalid URL';
-// The other MSCRM headers (SuppressDuplicateDetection, SolutionUniqueName, MergeLabels) and Consistency are accepted and ignored.
+// SuppressDuplicateDetection is handled by record validation; SolutionUniqueName, MergeLabels and Consistency have no local effect.
 // Names a browser or client may use for the listeners: the TLS certificate's subjectAltNames and the listener's own host.
 const TLS_HOST_NAMES = ['localhost', '127.0.0.1', '[::1]'];
 

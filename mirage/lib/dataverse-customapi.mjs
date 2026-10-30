@@ -1,3 +1,5 @@
+import { initializePluginOperation } from './plugin-operation-context.mjs';
+import { canonicalTagVariables } from './plugin-request-tag.mjs';
 import { dataverseScalarCause } from './dataverse-scalar-reader.mjs';
 // Simulated Dataverse custom APIs: the customapi tables, unpacked solution parsing, and registry
 // operations for unbound, entity-bound and collection-bound functions and actions. A pack handler answers an API; without
@@ -30,7 +32,7 @@ import { pluginFailure } from './plugin-fault.mjs';
 import {
   pluginExecutionLifetime,
   pluginInvocationDepth,
-  pluginInvocationParent,
+  pluginInvocationSdkParent,
 } from './plugin-execution-lifetime.mjs';
 import { pluginMessageParameters, pluginMessageValues } from './plugin-message-values.mjs';
 import {
@@ -77,17 +79,7 @@ const EDM = {
   StringArray: 'Collection(Edm.String)',
   Guid: 'Edm.Guid',
 };
-// Unhandled response values at the native defaults: strings are null; DateTime and Guid are the zero values.
-const DEFAULTS = {
-  Boolean: false,
-  Decimal: 0,
-  Float: 0,
-  Integer: 0,
-  Money: 0,
-  Picklist: 0,
-  DateTime: '0001-01-01T00:00:00Z',
-  Guid: '00000000-0000-0000-0000-000000000000',
-};
+// Optional inputs use CLR defaults; missing outputs stay absent until the final response.
 const INPUT_DEFAULTS = {
   Boolean: false,
   DateTime: '0001-01-01T00:00:00.0000000',
@@ -132,7 +124,7 @@ const CHECKS = {
   EntityCollection: Array.isArray,
 };
 
-const defaultOf = (type) => (type === 'StringArray' || type === 'EntityCollection' ? [] : (DEFAULTS[type] ?? null));
+const httpOutputDefault = (type) => (type === 'StringArray' || type === 'EntityCollection' ? [] : null);
 // Assumed: crmbaseentity is the entity type when logicalentityname is empty.
 function edmOf(property) {
   const type = typeOf(property.type);
@@ -482,7 +474,7 @@ function responseBody(c, row, properties, outputs = {}) {
     ...Object.fromEntries(
       properties.map((p) => [
         p.uniquename,
-        outputs[p.uniquename] !== undefined ? outputs[p.uniquename] : defaultOf(typeOf(p.type)),
+        outputs[p.uniquename] !== undefined ? outputs[p.uniquename] : httpOutputDefault(typeOf(p.type)),
       ]),
     ),
   };
@@ -512,12 +504,13 @@ async function runHandler(api, handler, ctx, plugin, timeoutMs, contextOf) {
     const limit = new Promise((_, reject) => {
       timer = setTimeout(() => reject(Object.assign(new Error('timeout'), { timedOut: true })), timeoutMs);
     });
-    const exposed = mainInvocationContext(execution, api, ctx);
     return Promise.race([
-      execution.run(() =>
-        Promise.resolve()
-          .then(() => handler(exposed))
-          .then((value) => execution.snapshot(value)),
+      Promise.resolve().then(() =>
+        execution.run(() =>
+          Promise.resolve(handler(mainInvocationContext(execution, api, ctx))).then((value) =>
+            execution.snapshot(value),
+          ),
+        ),
       ),
       limit,
     ]).finally(() => {
@@ -653,7 +646,7 @@ function mainPluginDepth(store) {
     Math.max(
       pluginExecutionDepth(),
       pluginInvocationDepth(store),
-      Number((store.pluginParentContext ?? pluginInvocationParent(store))?.values?.Depth ?? 0),
+      Number((store.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0),
     ) + 1;
   if (depth > 8) throw new DataError('Plug-in nested execution depth exceeds eight.', 400, 'LocalPluginDepth');
   return depth;
@@ -775,6 +768,7 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
   const acceptLanguage = c.headers?.get?.('accept-language') ?? c.headers?.['accept-language'] ?? '';
   let frame = {
       requestTag,
+      operationDepth: mainPluginDepth(store),
       suppliedRequestId: store.pluginRequestId,
       sharedVariables: {
         $type: 'ParameterCollection',
@@ -786,20 +780,19 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
       },
     },
     mainFrame = false;
-  const parentContext = store.pluginParentContext ?? pluginInvocationParent(store);
+  const parentContext = store.pluginParentContext ?? pluginInvocationSdkParent(store);
   const contextOf = (depth) => {
     frame ??= {};
     const executionUser = c.user?.systemuserid ?? identity.systemUserId ?? identity.id;
     const primary = entity === 'none' ? null : store.resolveMapping(entity).idColumn;
     frame.correlationId ??= parentContext?.values?.CorrelationId?.value ?? store.ids.uuid();
-    frame.operationId ??= store.ids.uuid();
-    frame.requestId ??= frame.suppliedRequestId ?? c.requestId ?? store.ids.uuid();
-    frame.createdOn ??= new Date(store.clock.now()).toISOString();
+    initializePluginOperation(frame, store, parentContext, { requestId: c.requestId });
     return {
       $type: 'ExecutionContext',
       values: {
         MessageName: row.uniquename,
         PrimaryEntityName: entity,
+        ...(entity === 'none' ? { SecondaryEntityName: 'none' } : {}),
         PrimaryEntityId: {
           $type: 'Guid',
           value: primary
@@ -810,12 +803,13 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
         Mode: 0,
         Depth: depth,
         IsInTransaction: store.pluginInTransaction === true,
+        IsolationMode: 2,
         UserId: { $type: 'Guid', value: executionUser },
         InitiatingUserId: parentContext?.values?.InitiatingUserId ?? { $type: 'Guid', value: executionUser },
         CorrelationId: { $type: 'Guid', value: frame.correlationId },
         OperationId: { $type: 'Guid', value: frame.operationId },
         RequestId: { $type: 'Guid', value: frame.requestId },
-        OperationCreatedOn: { $type: 'DateTime', value: frame.createdOn },
+        OperationCreatedOn: structuredClone(frame.createdOnWire),
         InputParameters: messageParameters.inputParameters,
         OutputParameters: messageParameters.outputParameters,
         SharedVariables: frame.sharedVariables,
@@ -965,7 +959,7 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
       }
       frame.inputParameters = messageParameters.inputParameters = answer.inputParameters;
       frame.outputParameters = messageParameters.outputParameters = answer.outputParameters;
-      frame.sharedVariables = answer.sharedVariables;
+      frame.sharedVariables = canonicalTagVariables(answer.sharedVariables, frame.requestTag);
       mainFrame = true;
       return pluginMessageValues(answer.outputParameters, store);
     };
@@ -981,30 +975,26 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
         : original?.descriptor
           ? yield* originalOutputs()
           : {};
-    messageParameters.outputParameters = mainFrame
-      ? {
-          $type: 'ParameterCollection',
-          values: {
-            ...pluginMessageParameters(
-              store,
-              properties,
-              Object.fromEntries(properties.map((spec) => [spec.uniquename, defaultOf(typeOf(spec.type))])),
-            ).values,
-            ...messageParameters.outputParameters.values,
-          },
-        }
-      : pluginMessageParameters(store, properties, {
-          ...pluginMessageValues(messageParameters.outputParameters, store),
-          ...Object.fromEntries(
-            properties.map((spec) => [
-              spec.uniquename,
-              Object.hasOwn(mainOutputs, spec.uniquename) ? mainOutputs[spec.uniquename] : defaultOf(typeOf(spec.type)),
-            ]),
-          ),
-          ...mainOutputs,
-        });
+    // Native MainOperation and synchronous PostOperation contain only authored
+    // outputs. Missing declared properties are materialized by the response
+    // boundary after all synchronous handlers, never inside the pipeline.
+    if (!mainFrame)
+      messageParameters.outputParameters = {
+        $type: 'ParameterCollection',
+        values: {
+          ...messageParameters.outputParameters.values,
+          ...pluginMessageParameters(store, properties, mainOutputs).values,
+        },
+      };
     yield* phase(40);
     const outputs = pluginMessageValues(messageParameters.outputParameters, store);
+    const sdkOutputs = {
+      $type: 'ParameterCollection',
+      values: {
+        ...Object.fromEntries(properties.map((spec) => [spec.uniquename, null])),
+        ...messageParameters.outputParameters.values,
+      },
+    };
     if (frame) {
       store.pluginFrames ??= new WeakMap();
       store.pluginFrames.set(record, frame);
@@ -1032,7 +1022,7 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
     const response = properties.length
       ? { status: 200, body: responseBody(c, row, properties, outputs) }
       : { status: 204 };
-    Object.defineProperty(response, 'sdkOutputs', { value: messageParameters.outputParameters });
+    Object.defineProperty(response, 'sdkOutputs', { value: sdkOutputs });
     return response;
   } catch (error) {
     store.markPluginTransactionFailure?.(error);

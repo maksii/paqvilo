@@ -1782,6 +1782,7 @@ export function createRecordHandlers({
     writeOptions({
       ...extra,
       derivedCreateColumns: derivedCreateColumns.get(data),
+      afterPreValidation: phaseValidation(c, extra),
       sdkResponseToken: extra.sdkResponseToken ?? c.sdkResponseToken,
       sdkCreateId: extra.sdkCreateId ?? c.sdkCreateId,
       dataverseHttpReader: c.dataverseHttpReader,
@@ -1798,10 +1799,12 @@ export function createRecordHandlers({
     return writeOptions({
       partitionId: c.partitionId,
       ...extra,
+      afterPreValidation: phaseValidation(c, extra),
       sdkResponseToken: extra.sdkResponseToken ?? c.sdkResponseToken,
       dataverseHttpReader: c.dataverseHttpReader,
       systemColumns: kept ? (mapping, input) => ({ ...stamps(mapping, input), ...kept }) : stamps,
       pluginConcurrencyBehavior: extra.ifMatch != null && extra.ifMatch !== '*' ? 1 : 0,
+      pluginAcceptLanguage: c.headers?.get?.('accept-language') ?? c.headers?.['accept-language'] ?? '',
       bypassCustomPlugins: c.bypassCustomPlugins === true || extra.bypassCustomPlugins === true,
       bypassCustomAsync: c.bypassCustomAsync === true || extra.bypassCustomAsync === true,
       bypassStepIds: extra.bypassStepIds ?? c.bypassStepIds,
@@ -2668,6 +2671,22 @@ export function createRecordHandlers({
     if (c.portal) return { ...c, user: systemUser() };
     return c;
   };
+  // Platform validation after PreValidation observes the current Target, while
+  // preserving the established earlier beforeWrite extension hook contract.
+  function phaseValidation(c, extra) {
+    if (!hooks.list('afterPreValidation').length && !extra.afterPreValidation) return undefined;
+    return (entity, operation, target, previous) => {
+      extra.afterPreValidation?.(entity, operation, target, previous);
+      return drive(
+        writeHooks('afterPreValidation', c, store.resolveMapping(entity), {
+          operation,
+          data: structuredClone(target),
+          existing: previous ? structuredClone(previous) : null,
+        }),
+        { sync: true },
+      );
+    };
+  }
   // Hooks see the caller's context; the audit columns name its user, or SYSTEM when it has none.
   const actorOf = (c) => (c.user ? c : { ...c, user: systemUser() });
   // append on the table and appendTo on each looked-up row of { id, logical_name } lookups.

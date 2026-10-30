@@ -27,3 +27,20 @@ export function withPluginRequestTag(store, parameters, invoke) {
     { fresh: true },
   );
 }
+
+/** The platform's request tag is re-projected between steps; the in-flight
+ * SharedVariables dictionary remains writable inside a plug-in. */
+export function canonicalTagVariables(parameters, tag) {
+  if (tag === undefined) return parameters;
+  return { ...(parameters ?? {}), $type: 'ParameterCollection', values: { ...(parameters?.values ?? {}), tag } };
+}
+
+/** A child sees the canonical request tag in its immediate parent snapshot,
+ * independently of its caller's still-visible in-flight dictionary edit. */
+export function canonicalTagParent(parent, tag) {
+  if (!parent || tag === undefined) return parent;
+  return {
+    ...parent,
+    values: { ...parent.values, SharedVariables: canonicalTagVariables(parent.values?.SharedVariables, tag) },
+  };
+}

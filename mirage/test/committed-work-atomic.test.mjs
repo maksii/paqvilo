@@ -253,3 +253,79 @@ test('stageCommittedJobs: the bookkeeping applies only after the commit; a rolle
   );
   assert.equal(stageCommittedJobs(store, { entries: [] }), null, 'nothing staged: the commit is not forced to save');
 });
+
+test('a gated concurrent job does not enqueue idle ticks and does not block later Ready work on a manual scheduler', async (t) => {
+  const store = await new DataStore({ state: emptyState() }).init();
+  const scheduler = createScheduler({ clock: fixedClock(), manual: true });
+  storeScheduler(store, scheduler);
+  const jobs = committedJobs(store);
+  let release,
+    entered,
+    ticks = 0;
+  const gate = new Promise((resolve) => {
+    release = resolve;
+  });
+  const reached = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const schedule = scheduler.schedule;
+  scheduler.schedule = (fn, delay, options) => {
+    if (options?.name === 'committed-jobs') ticks++;
+    return schedule(fn, delay, options);
+  };
+  t.after(async () => {
+    release();
+    await jobs.drain();
+    jobs.close();
+    await scheduler.close();
+    store.close();
+  });
+  const finish = (id) =>
+    store.transact(() => {
+      Object.assign(
+        store.tableRows('asyncoperation').find((row) => row.asyncoperationid === id),
+        { statecode: 3, statuscode: 30 },
+      );
+    });
+  jobs.register(
+    'x_concurrent',
+    async ({ id }) => {
+      await store.transact(() =>
+        Object.assign(
+          store.tableRows('asyncoperation').find((row) => row.asyncoperationid === id),
+          { statecode: 2, statuscode: 20 },
+        ),
+      );
+      entered();
+      await gate;
+      await finish(id);
+    },
+    { concurrent: true },
+  );
+  jobs.register('x_follow', ({ id }) => finish(id));
+  const stage = async (id, kind) => {
+    let after;
+    await store.transact(() => {
+      after = jobs.stage([{ id, kind, event: {} }]);
+    });
+    after();
+  };
+  await stage(A, 'x_concurrent');
+  await scheduler.runDue();
+  await reached;
+  assert.equal(store.tableRows('asyncoperation')[0].statuscode, 20);
+  assert.equal(ticks, 1, 'the still-running job does not schedule another idle tick');
+  await stage(B, 'x_follow');
+  await scheduler.runDue();
+  assert.deepEqual(
+    store.tableRows('asyncoperation').map((row) => row.statuscode),
+    [20, 30],
+  );
+  assert.equal(ticks, 2, 'new Ready work still schedules its own tick');
+  release();
+  await jobs.drain();
+  assert.deepEqual(
+    store.tableRows('asyncoperation').map((row) => row.statuscode),
+    [30, 30],
+  );
+});

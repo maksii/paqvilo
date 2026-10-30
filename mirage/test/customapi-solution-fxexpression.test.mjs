@@ -98,7 +98,8 @@ test('a Solution Function linked to its fxexpression (by id or by unique name) e
   assert.equal(half.status, 200, JSON.stringify(half.body));
   assert.equal(half.body.Ratio, 5);
   const plain = await get('x_Plain(Budget=10,Spent=0)');
-  assert.equal(plain.body.Ratio, 0, 'a custom API without fxexpressionid keeps the documented default output');
+  assert.equal(plain.status, 200, JSON.stringify(plain.body));
+  assert.equal(plain.body.Ratio, null, 'an unauthored scalar output defaults to null at the HTTP boundary');
 });
 
 test('the parsers link customapi.fxexpressionid to the fxexpression row of the same Solution', () => {

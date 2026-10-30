@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { DataError } from './data-error.mjs';
 import { copyPluginValueSource } from './plugin-value-provenance.mjs';
+import { cloneStateData } from './state-clone.mjs';
 
 // Async callbacks retain their invocation, including after Promise.race has
 // returned. A finished invocation must never re-enter the organization store.
@@ -175,16 +176,32 @@ export function pluginInvocationParent(store) {
   return null;
 }
 
+/** An SDK child receives the server's per-step entry snapshot. In-flight
+ * edits remain visible to their author and are published only on step return. */
+export function pluginInvocationSdkParent(store) {
+  for (let frame = executions.getStore(); frame; frame = frame.parent)
+    if (frame.store === store && frame.sdkContext) return structuredClone(frame.sdkContext);
+  return null;
+}
+
 export function pluginExecutionLifetime(
   store,
   depth = pluginInvocationDepth(store),
   context,
-  { recordHook = false } = {},
+  { recordHook = false, sdkParentContext } = {},
 ) {
   const frame = { store, parent: executions.getStore(), closed: false, depth, context, recordHook };
   let scope;
   return {
-    run: (fn) => executions.run(frame, fn),
+    run: (fn) =>
+      executions.run(frame, () => {
+        if (!frame.entered) {
+          frame.entered = true;
+          if (frame.context)
+            frame.sdkContext = sdkParentContext ? sdkParentContext() : cloneStateData(pluginInvocationParent(store));
+        }
+        return fn();
+      }),
     assertActive: () => assertFrameActive(frame),
     close: (reason = 'completed') => {
       if (frame.closed) return;

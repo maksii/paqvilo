@@ -3,6 +3,7 @@ import { sdkValueToRecord } from './local-organization-service.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
+import { pluginStepMatchesEntity } from './exported-plugins.mjs';
 const emptyId = '00000000-0000-0000-0000-000000000000';
 const uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginBulkUnsupported', status = 501) => {
@@ -167,7 +168,7 @@ function* bulkSteps(
               step.enabled &&
               step.contract?.supportedDeployment !== 1 &&
               !pluginStepBypassed(step, { bypassCustomPlugins, bypassStepIds }, store.pluginPipeline.diagnostic) &&
-              step.entity === mapping.logicalName &&
+              pluginStepMatchesEntity(step, mapping.logicalName) &&
               (step.contract?.mode ?? 0) === 0 &&
               step.stage === stage &&
               [single, operation].includes(String(step.message).toLowerCase()),

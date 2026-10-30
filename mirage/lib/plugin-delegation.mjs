@@ -28,6 +28,7 @@ export function delegatedPluginParent(source, context, executionUserId) {
     ['OperationCreatedOn', 'createdOn', 'DateTime'],
   ])
     if (source.frame?.[key] != null) values[field] = { $type: type, value: source.frame[key] };
+  if (source.frame?.createdOnWire) values.OperationCreatedOn = structuredClone(source.frame.createdOnWire);
   if (context.UserId?.value !== executionUserId) delete values.BusinessUnitId;
   return { $type: 'ExecutionContext', values };
 }

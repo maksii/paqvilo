@@ -67,9 +67,11 @@ test(
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented {
-public sealed class Observe:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.MessageName=="RetrieveMultiple"){var q=c.InputParameters["Query"];if((q is QueryExpression&&((QueryExpression)q).ColumnSet!=null)||(q is QueryByAttribute&&((QueryByAttribute)q).ColumnSet!=null))throw new Exception("Nil query ColumnSet lost");foreach(var e in ((EntityCollection)c.OutputParameters["BusinessEntityCollection"]).Entities)if(e.Attributes.Count!=1||!e.Contains("widgetid"))throw new Exception("Nil projection must contain only PK");return;}string tag=c.SharedVariables.Contains("tag")?(string)c.SharedVariables["tag"]:"<absent>";if(tag=="reject")throw new InvalidPluginExecutionException("Tag rejection");if(c.MessageName=="Retrieve"){((Entity)c.OutputParameters["BusinessEntity"])["note"]=tag=="request-id"?c.RequestId.ToString():tag;return;}if(c.Stage==10)c.SharedVariables["early"]=tag;if(c.Stage==20){if(tag!="<absent>"&&(string)c.ParentContext.SharedVariables["tag"]!=tag)throw new Exception("PreValidation tag lost");((Entity)c.InputParameters["Target"])["note"]=tag=="request-id"?c.RequestId.ToString():tag;if(tag=="nested"){var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("child"));}}}}
-public sealed class Child:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(((string)c.SharedVariables["tag"]!="nested"&&(string)c.SharedVariables["tag"]!="mutate-main")||c.Depth!=2)throw new Exception("SDK descendant tag/depth lost");((Entity)c.InputParameters["Target"])["note"]=(string)c.SharedVariables["tag"];}}
-public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.SharedVariables.Contains("tag")&&(string)c.SharedVariables["tag"]=="mutate-main"){c.SharedVariables["tag"]="visible-main";var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("child"));}c.OutputParameters["Reply"]=c.SharedVariables.Contains("tag")?((string)c.SharedVariables["tag"]=="request-id"?c.RequestId.ToString():(string)c.SharedVariables["tag"]):"<absent>";}}
+public sealed class Observe:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.MessageName=="RetrieveMultiple"){var q=c.InputParameters["Query"];if((q is QueryExpression&&((QueryExpression)q).ColumnSet!=null)||(q is QueryByAttribute&&((QueryByAttribute)q).ColumnSet!=null))throw new Exception("Nil query ColumnSet lost");foreach(var e in ((EntityCollection)c.OutputParameters["BusinessEntityCollection"]).Entities)if(e.Attributes.Count!=1||!e.Contains("widgetid"))throw new Exception("Nil projection must contain only PK");return;}string tag=c.SharedVariables.Contains("tag")?(string)c.SharedVariables["tag"]:"<absent>";if(tag=="reject")throw new InvalidPluginExecutionException("Tag rejection");if(c.MessageName=="Retrieve"){((Entity)c.OutputParameters["BusinessEntity"])["note"]=tag=="request-id"?c.RequestId.ToString():tag;return;}if(c.Stage==10)c.SharedVariables["early"]=tag;if(c.Stage==20){if(tag!="<absent>"&&(string)c.ParentContext.SharedVariables["tag"]!=tag)throw new Exception("PreValidation tag lost");((Entity)c.InputParameters["Target"])["note"]=tag=="request-id"?c.RequestId.ToString():tag;if(tag=="duplicate-caught"||tag=="duplicate-uncaught"){var service=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var r=new Microsoft.Xrm.Sdk.Messages.CreateRequest{Target=new Entity("child")};r.Parameters["tag"]=tag;if(tag=="duplicate-uncaught")service.Execute(r);else{try{service.Execute(r);throw new Exception("Explicit duplicate accepted");}catch(ArgumentException e){if(e.HResult!=unchecked((int)0x80070057))throw;}((Entity)c.InputParameters["Target"])["note"]="caught ArgumentException";}}if(tag=="nested"){var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("child"));}}}}
+public sealed class Child:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.ParentContext!=null&&(string)c.ParentContext.SharedVariables["tag"]!="nested"&&(string)c.ParentContext.SharedVariables["tag"]!="mutate-main")throw new Exception("Canonical parent tag lost");if(((string)c.SharedVariables["tag"]!="nested"&&(string)c.SharedVariables["tag"]!="mutate-main")||c.Depth!=2)throw new Exception("SDK descendant tag/depth lost");((Entity)c.InputParameters["Target"])["note"]=(string)c.SharedVariables["tag"];}}
+public sealed class PhaseWrite:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(((Entity)c.InputParameters["Target"]).GetAttributeValue<string>("name")!="Native phase tags")return;if((string)c.SharedVariables["tag"]!="phase")throw new Exception("Canonical tag was not restored between steps");c.SharedVariables["tag"]="visible edit";c.InputParameters["tag"]="input-edited";if((string)c.SharedVariables["tag"]!="visible edit")throw new Exception("In-flight edit lost");}}
+public sealed class PhaseRead:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(((Entity)c.InputParameters["Target"]).GetAttributeValue<string>("name")!="Native phase tags")return;if((string)c.SharedVariables["tag"]!="phase")throw new Exception("Canonical tag was not restored between steps");if(c.Stage==10){if((string)c.InputParameters["tag"]!="input-edited")throw new Exception("Same-stage input edit lost");}else{if(c.InputParameters.Contains("tag"))throw new Exception("CRUD tag input not consumed");if((string)c.ParentContext.SharedVariables["tag"]!="phase"||(string)c.ParentContext.InputParameters["tag"]!="input-edited")throw new Exception("PreValidation parent tag contract lost");}}}
+public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.SharedVariables.Contains("tag")&&(string)c.SharedVariables["tag"]=="mutate-main"){c.SharedVariables["tag"]="visible-main";var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("child"));}if(c.SharedVariables.Contains("tag")&&(string)c.SharedVariables["tag"]=="request-id-child"&&c.Depth==1){var service=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);foreach(var supplied in new Guid?[]{new Guid("10000000-0000-4000-8000-000000000096"),Guid.Empty,null}){var r=new OrganizationRequest("invented_TagMain"){RequestId=supplied};var answer=service.Execute(r);if((string)answer.Results["Reply"]!=c.RequestId.ToString()||r.RequestId!=supplied)throw new Exception("Authored member versus inherited RequestId lost");}c.OutputParameters["Reply"]="RequestId inheritance proved";return;}if(c.Depth>1&&c.SharedVariables.Contains("tag")&&(string)c.SharedVariables["tag"]=="request-id-child"&&(c.ParentContext.RequestId!=c.RequestId||c.ParentContext.OperationId!=c.OperationId||c.OperationId!=c.RequestId||c.ParentContext.CorrelationId!=c.CorrelationId||c.CorrelationId==c.RequestId||c.ParentContext.OperationCreatedOn!=c.OperationCreatedOn||c.OperationCreatedOn.Kind!=DateTimeKind.Unspecified))throw new Exception("Parent RequestId mismatch");c.OutputParameters["Reply"]=c.SharedVariables.Contains("tag")?(((string)c.SharedVariables["tag"]=="request-id"||(string)c.SharedVariables["tag"]=="request-id-child")?c.RequestId.ToString():(string)c.SharedVariables["tag"]):"<absent>";}}
 }`,
     );
     compileClr(source, assembly, { references: [sdk] });
@@ -100,6 +102,11 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
       extension: { name: 'dataverse-customapi', install: installCustomApis },
       options: { pluginRuntimes: descriptors },
     });
+    // Original CLR callbacks block this test's shared Node event loop. Use one
+    // socket per request so an idle keep-alive expiry cannot race the next
+    // fixture request after a long synchronous host invocation.
+    const request = f.request;
+    f.request = (method, route, body, headers) => request(method, route, body, { connection: 'close', ...headers });
     const user = administrator(f).systemuserid;
     const descriptor = {
       trust: 'execute-local-assembly',
@@ -116,6 +123,7 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
         grants: [
           { entity: 'child', operations: ['create'] },
           { entity: 'widget', operations: ['read'] },
+          { message: mainName, operations: ['execute'] },
         ],
       },
       context: { executionUserId: user, initiatingUserId: user, organizationId: user, businessUnitId: user },
@@ -143,17 +151,28 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
       { id: id(10), entity: 'widget', message: 'Retrieve', stage: 40, typeName: 'Invented.Observe' },
       { id: id(11), entity: 'child', message: 'Create', stage: 20, typeName: 'Invented.Child' },
     );
+    steps.push(
+      { id: id(13), entity: 'widget', message: 'Create', stage: 10, typeName: 'Invented.PhaseWrite', rank: 5 },
+      ...[10, 20, 40].map((stage, index) => ({
+        id: id(14 + index),
+        entity: 'widget',
+        message: 'Create',
+        stage,
+        typeName: 'Invented.PhaseRead',
+        rank: 20,
+      })),
+    );
     for (const step of steps)
       Object.assign(step, {
-        enabled: true,
-        rank: 1,
+        enabled: !step.typeName.startsWith('Invented.Phase'),
+        rank: step.rank ?? 1,
         mode: 0,
         supportedDeployment: 0,
         filteringAttributes: [],
         images: [],
         assemblyId: 'invented',
       });
-    ({ backend } = await attachClrSteps(t, {
+    const mounted = await attachClrSteps(t, {
       store: f.store,
       steps,
       runtime: (step) => ({
@@ -161,7 +180,9 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
         descriptor: { ...runtime.descriptor, typeName: step.typeName },
         provenance: { ...runtime.provenance, typeName: step.typeName },
       }),
-    }));
+    });
+    backend = mounted.backend;
+    const taggedItems = mounted.items;
     const written = await f.json(await f.request('POST', '/widgets?tag=HTTP-write', { name: 'HTTP' }), 201);
     assert.equal(written.note, 'HTTP-write');
     const read = await f.json(await f.request('GET', `/widgets(${written.widgetid})?$select=note&tag=HTTP-read`), 200);
@@ -188,7 +209,8 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
     );
     assert.equal(authoredCreate.status, 200, authoredCreate.body);
     const authoredRow = f.store.tableRows('widget').find((row) => row.name === 'Authored RequestId');
-    assert.equal(authoredRow.note, supplied);
+    assert.notEqual(authoredRow.note, supplied);
+    assert.match(authoredRow.note, /^[a-f0-9-]{36}$/i);
     const authoredRead = await soap(
       f,
       'Retrieve',
@@ -200,10 +222,12 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
       id(92),
     );
     assert.equal(authoredRead.status, 200, authoredRead.body);
-    assert.match(authoredRead.body, new RegExp(id(92)));
+    assert.doesNotMatch(authoredRead.body, new RegExp(id(92)));
     const authoredMain = await soap(f, mainName, { tag: text('request-id') }, id(93));
     assert.equal(authoredMain.status, 200, authoredMain.body);
-    assert.match(authoredMain.body, new RegExp(id(93)));
+    assert.doesNotMatch(authoredMain.body, new RegExp(id(93)));
+    const childIds = await f.json(await f.request('POST', '/' + mainName + '?tag=request-id-child', {}), 200);
+    assert.equal(childIds.Reply, 'RequestId inheritance proved');
     assert.equal(f.store.pluginRequestId, undefined);
     const main = await soap(f, mainName, { tag: text('SOAP-api') });
     assert.equal(main.status, 200, main.body);
@@ -243,6 +267,24 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
       assert.equal(result.entities.length, f.store.tableRows('widget').length);
       for (const row of result.entities) assert.deepEqual(Object.keys(row.attributes), ['widgetid']);
     }
+    const caught = await f.json(
+      await f.request('POST', '/widgets?tag=duplicate-caught', { name: 'Caught duplicate tag' }),
+      201,
+    );
+    assert.equal(caught.note, 'caught ArgumentException');
+    const beforeDuplicate = f.store.tableRows('child').length;
+    const uncaught = await f.request('POST', '/widgets?tag=duplicate-uncaught', { name: 'Uncaught duplicate tag' });
+    assert.equal(uncaught.status, 400);
+    assert.equal((await uncaught.json()).error.code, '0x80040224');
+    assert.equal(f.store.tableRows('child').length, beforeDuplicate);
+    assert.equal(
+      f.store.tableRows('widget').some((row) => row.name === 'Uncaught duplicate tag'),
+      false,
+    );
+    for (const item of taggedItems) if (item.typeName.startsWith('Invented.Phase')) item.enabled = true;
+    for (const item of taggedItems) if (item.typeName.startsWith('Invented.Phase')) item.enabled = true;
+    const phased = await f.json(await f.request('POST', '/widgets?tag=phase', { name: 'Native phase tags' }), 201);
+    assert.equal(phased.note, 'phase');
     assert.equal(f.store.pluginSdkTag, undefined);
   },
 );

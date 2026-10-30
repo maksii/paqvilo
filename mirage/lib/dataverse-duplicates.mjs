@@ -576,6 +576,6 @@ export function install(api) {
     handle: compoundUpdateRule(api),
     csdl: CSDL_COMPOUND_UPDATE,
   });
-  api.recordHooks.add('beforeWrite', (c, mapping, change) => beforeWrite(store, c, mapping, change));
+  api.recordHooks.add('afterPreValidation', (c, mapping, change) => beforeWrite(store, c, mapping, change));
   return api.change(() => reset(api));
 }

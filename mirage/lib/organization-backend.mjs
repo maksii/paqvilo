@@ -64,10 +64,10 @@ export async function createOrganizationBackend({
           (!['retrieve', 'retrievemultiple'].includes(operation) || !['placeholder', 'disabled'].includes(step.mode)),
       ),
     (context) =>
-      pluginPhaseRequiresCheckpoint(items(), context) ||
+      pluginPhaseRequiresCheckpoint(items(), { ...context, store }) ||
       Boolean(
         multipleMessage(context.operation) &&
-        pluginPhaseRequiresCheckpoint(items(), { ...context, operation: multipleMessage(context.operation) }),
+        pluginPhaseRequiresCheckpoint(items(), { ...context, store, operation: multipleMessage(context.operation) }),
       ),
   );
   for (const item of items().filter((item) => item.mode === 'clr'))

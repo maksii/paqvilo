@@ -1,3 +1,5 @@
+import { initializePluginOperation } from './plugin-operation-context.mjs';
+import { canonicalTagVariables } from './plugin-request-tag.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import { imageAttributes } from './plugin-images.mjs';
 import { currentRequest } from './request-context.mjs';
@@ -26,8 +28,10 @@ import {
 import {
   pluginExecutionLifetime,
   pluginInvocationDepth,
+  pluginInvocationSdkParent,
   pluginInvocationParent,
 } from './plugin-execution-lifetime.mjs';
+import { asyncMultiplePluginParent, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
 import { recordPluginTrace } from './plugin-trace.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
@@ -467,10 +471,18 @@ export function pluginUnsupported(step, { images = false, impersonation = false 
     step.unfiltered === true &&
     (step.entity ||
       step.messageFilterId ||
-      !['retrievemultiple', 'associate', 'disassociate'].includes(String(step.message).toLowerCase()) ||
+      !['retrievemultiple', 'associate', 'disassociate', 'update', 'delete'].includes(
+        String(step.message).toLowerCase(),
+      ) ||
       (String(step.message).toLowerCase() === 'retrievemultiple' && step.mode !== 0))
   )
-    return 'Unfiltered execution requires an explicit null filter on synchronous RetrieveMultiple or an association message.';
+    return 'Unfiltered execution requires an explicit null filter on a supported read, association, Update or Delete message.';
+  if (
+    step.unfiltered === true &&
+    ['update', 'delete'].includes(String(step.message).toLowerCase()) &&
+    step.images?.length
+  )
+    return 'Images on global write registrations require a separately qualified table-specific projection adapter.';
   if (!customApi && step.unfiltered !== true && (!step.entity || !/^[a-z][a-z0-9_]*$/i.test(step.entity)))
     return 'An explicit logical table binding is required.';
   if (!Number.isInteger(step.rank)) return 'An explicit execution rank is required.';
@@ -501,7 +513,9 @@ export function pluginStepMatchesEntity(step, entity) {
     (step.unfiltered === true &&
       step.entity == null &&
       step.messageFilterId == null &&
-      ['retrievemultiple', 'associate', 'disassociate'].includes(String(step.message).toLowerCase()) &&
+      ['retrievemultiple', 'associate', 'disassociate', 'update', 'delete'].includes(
+        String(step.message).toLowerCase(),
+      ) &&
       (String(step.message).toLowerCase() !== 'retrievemultiple' || (step.contract?.mode ?? step.mode) === 0))
   );
 }
@@ -569,12 +583,14 @@ function typedContext({
     frame?.preValidationContext;
   const parent =
     frame?.delegatedParentContext ??
-    (preValidationParent || store?.pluginParentContext || pluginInvocationParent(store));
+    (preValidationParent || store?.pluginParentContext || pluginInvocationSdkParent(store));
+  initializePluginOperation(frame, store, parent);
   const executing = identity?.systemUserId ?? identity?.id ?? parent?.values?.UserId?.value ?? null;
   const initiating = parent?.values?.InitiatingUserId?.value ?? executing;
   const result = {
     MessageName: customApi?.name ?? messageNameOf(operation),
     PrimaryEntityName: ['associate', 'disassociate'].includes(operation) ? 'none' : entity,
+    ...(operation === 'update' || (customApi && entity === 'none') ? { SecondaryEntityName: 'none' } : {}),
     PrimaryEntityId: ['associate', 'disassociate'].includes(operation)
       ? '00000000-0000-0000-0000-000000000000'
       : idColumn
@@ -589,6 +605,9 @@ function typedContext({
     UserId: item.impersonatingUserId ?? executing,
     ParentContext: pluginContextValues(parent, store),
     ...(frame?.requestId === undefined ? {} : { RequestId: frame.requestId }),
+    ...(frame?.operationId === undefined ? {} : { OperationId: frame.operationId }),
+    ...(frame?.correlationId === undefined ? {} : { CorrelationId: frame.correlationId }),
+    ...(frame?.createdOnWire === undefined ? {} : { OperationCreatedOn: frame.createdOnWire.value }),
     InputParameters: customApi
       ? pluginMessageValues(messageParameters.inputParameters, store)
       : associationParameters
@@ -621,17 +640,22 @@ function typedContext({
           : {},
     SharedVariables: pluginMessageValues(frame?.sharedVariables, store),
     IsInTransaction: store?.pluginInTransaction === true,
+    IsolationMode: item.isolationMode ?? 2,
     PreEntityImages: images([0, 2], previous),
     PostEntityImages: stage === 40 && operation !== 'delete' ? images([1, 2], record) : {},
     trace,
   };
   if (['createmultiple', 'updatemultiple'].includes(operation)) {
-    result.PreEntityImagesCollection = (targets ?? []).map((_, index) => images([0, 2], previousRecords?.[index]));
+    result.PreEntityImagesCollection =
+      operation === 'createmultiple' && (item.contract?.mode ?? 0) === 1
+        ? []
+        : (targets ?? []).map((_, index) => images([0, 2], previousRecords?.[index]));
     result.PostEntityImagesCollection = (targets ?? []).map((_, index) =>
       stage === 40 ? images([1, 2], records?.[index]) : {},
     );
   }
-  if (frame?.requestTag !== undefined) result.InputParameters = { tag: frame.requestTag, ...result.InputParameters };
+  if (frame?.requestTag !== undefined && !frame.inputTagConsumed)
+    result.InputParameters = { tag: frame.requestTag, ...result.InputParameters };
   if (frame?.inputParameters) {
     const extras = pluginMessageValues(frame.inputParameters, store);
     result.InputParameters = { ...extras, ...result.InputParameters };
@@ -666,6 +690,8 @@ function typedContext({
       store,
     );
   }
+  const asyncParent = asyncMultiplePluginParent(frame, operation, entity);
+  if (asyncParent) result.ParentContext = pluginContextValues(asyncParent, store);
   return result;
 }
 
@@ -743,6 +769,12 @@ function handlerExecutionContext({
                           },
                   }),
       };
+  if (!customApi)
+    rawInputs.values = {
+      ...reconcilePluginMessageParameters(store, [], frame.inputParameters, before.inputs, context.InputParameters)
+        .values,
+      ...rawInputs.values,
+    };
   const imageCollection = (current, source) => ({
     $type: 'EntityImageCollection',
     values: Object.fromEntries(
@@ -767,6 +799,8 @@ function handlerExecutionContext({
     Mode: context.Mode,
     Depth: context.Depth,
     IsInTransaction: context.IsInTransaction,
+    IsolationMode: context.IsolationMode,
+    ...(context.SecondaryEntityName === undefined ? {} : { SecondaryEntityName: context.SecondaryEntityName }),
     InputParameters: rawInputs,
     OutputParameters: reconcilePluginMessageParameters(
       store,
@@ -800,8 +834,13 @@ function handlerExecutionContext({
       ),
     };
   }
-  for (const name of ['PrimaryEntityId', 'UserId', 'InitiatingUserId', 'RequestId'])
+  for (const name of ['PrimaryEntityId', 'UserId', 'InitiatingUserId', 'RequestId', 'OperationId', 'CorrelationId'])
     if (context[name]) values[name] = { $type: 'Guid', value: context[name] };
+  if (context.OperationCreatedOn != null)
+    values.OperationCreatedOn =
+      frame.createdOnWire && [frame.createdOnWire.value, frame.createdOn].includes(context.OperationCreatedOn)
+        ? cloneStateData(frame.createdOnWire)
+        : { $type: 'DateTime', value: context.OperationCreatedOn };
   if (item.id)
     values.OwningExtension = {
       $type: 'EntityReference',
@@ -820,6 +859,7 @@ function handlerExecutionContext({
         context.InitiatingUserId,
     );
   }
+  values.ParentContext = asyncMultiplePluginParent(frame, operation, entity) ?? values.ParentContext;
   return { $type: 'ExecutionContext', values };
 }
 
@@ -891,9 +931,17 @@ export function pluginCatalogue({
   });
 }
 
+export function pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes = [] }) {
+  if (!['update', 'updatemultiple'].includes(operation) || !item.filteringAttributes?.length) return true;
+  const attributes = new Set(changedAttributes.map(canonical));
+  if (store && entity) attributes.add(canonical(store.resolveMapping(entity).idColumn));
+  return item.filteringAttributes.some((name) => attributes.has(canonical(name)));
+}
+
 function matchingPluginSteps(
   items,
   {
+    store,
     entity,
     operation,
     stage,
@@ -905,7 +953,6 @@ function matchingPluginSteps(
     diagnostic,
   },
 ) {
-  const attributes = new Set(changedAttributes.map(canonical));
   return items.filter(
     (item) =>
       item.enabled &&
@@ -914,10 +961,7 @@ function matchingPluginSteps(
       pluginStepMatchesEntity(item, entity) &&
       String(item.message).toLowerCase() === operation &&
       item.stage === stage &&
-      (ignoreFiltering ||
-        !['update', 'updatemultiple'].includes(operation) ||
-        !item.filteringAttributes.length ||
-        item.filteringAttributes.some((name) => attributes.has(name))) &&
+      (ignoreFiltering || pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes })) &&
       !pluginStepBypassed(item, { bypassStepIds, bypassCustomPlugins }, diagnostic),
   );
 }
@@ -963,6 +1007,10 @@ export function runPluginPhase({
   customApi,
   messageParameters,
   portalRequest = false,
+  preValidationSourceOperation,
+  frameworkInputTarget,
+  concurrencyBehavior = 0,
+  acceptLanguage = '',
   asyncExecution = false,
   initialFrame,
   bypassStepIds,
@@ -979,17 +1027,55 @@ export function runPluginPhase({
     executionFrames.set(record, {});
   if (initialFrame) executionFrames.set(record, cloneStateData(initialFrame));
   const phaseFrame = executionFrames.get(record) ?? {};
+  // Durable jobs must retain the originating operation depth even when no
+  // synchronous registration executes. Internal message delegation shares it.
+  phaseFrame.operationDepth ??=
+    phaseFrame.delegatedDepth ??
+    phaseFrame.delegatedSourceOperation?.depth ??
+    Math.max(
+      pluginExecutionDepth(),
+      pluginInvocationDepth(store),
+      Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0),
+    ) + 1;
   executionFrames.set(record, phaseFrame);
+  if (operation === 'update') {
+    phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
+    phaseFrame.inputParameters.values.ConcurrencyBehavior ??= {
+      $type: 'ConcurrencyBehavior',
+      value: concurrencyBehavior,
+    };
+    if (preValidationSourceOperation === 'upsert' && !phaseFrame.sdkFrameworkSource)
+      phaseFrame.sdkFrameworkSource = {
+        operation: 'upsert',
+        acceptLanguage,
+        target: recordToSdkEntity(store, entity, {
+          ...(frameworkInputTarget ?? target),
+          [store.resolveMapping(entity).idColumn]: record[store.resolveMapping(entity).idColumn],
+        }),
+      };
+  }
   phaseFrame.suppliedRequestId ??= store?.pluginRequestId;
-  phaseFrame.requestId ??= phaseFrame.suppliedRequestId;
+  phaseFrame.requestId ??=
+    (store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.RequestId?.value ??
+    (store?.ids ?? systemIds).uuid();
+  if (
+    !asyncExecution &&
+    stage !== 10 &&
+    ['create', 'update', 'delete'].includes(operation) &&
+    !phaseFrame.inputTagConsumed
+  ) {
+    if (phaseFrame.inputParameters?.values) delete phaseFrame.inputParameters.values.tag;
+    phaseFrame.inputTagConsumed = true;
+  }
   if (!Object.hasOwn(phaseFrame, 'requestTag')) {
     phaseFrame.requestTag = store?.pluginSdkTag;
     if (phaseFrame.requestTag !== undefined) {
       phaseFrame.sharedVariables ??= { $type: 'ParameterCollection', values: { tag: phaseFrame.requestTag } };
-      phaseFrame.inputParameters = {
-        $type: 'ParameterCollection',
-        values: { tag: phaseFrame.requestTag, ...(phaseFrame.inputParameters?.values ?? {}) },
-      };
+      if (!phaseFrame.inputTagConsumed)
+        phaseFrame.inputParameters = {
+          $type: 'ParameterCollection',
+          values: { tag: phaseFrame.requestTag, ...(phaseFrame.inputParameters?.values ?? {}) },
+        };
     }
   }
   if (
@@ -1022,6 +1108,12 @@ export function runPluginPhase({
     };
     phaseFrame.preValidationSharedDetached = true;
   }
+  if (operation === 'update' && stage !== 10 && !asyncExecution && !phaseFrame.frameworkSharedInitialized) {
+    phaseFrame.sharedVariables ??= { $type: 'ParameterCollection', values: {} };
+    phaseFrame.sharedVariables.values.AcceptLang ??= acceptLanguage;
+    phaseFrame.sharedVariables.values.IsAutoTransact ??= true;
+    phaseFrame.frameworkSharedInitialized = true;
+  }
   if (customApi) {
     const frame = executionFrames.get(record) ?? {};
     frame.customApi = customApi;
@@ -1035,6 +1127,7 @@ export function runPluginPhase({
     bulk = ['createmultiple', 'updatemultiple'].includes(operation),
     association = ['associate', 'disassociate'].includes(operation);
   const matched = matchingPluginSteps(items, {
+    store,
     entity,
     operation,
     stage,
@@ -1126,12 +1219,7 @@ export function runPluginPhase({
       if (operation === 'update') changedAttributes = Object.keys(target ?? {});
       else if (operation === 'updatemultiple')
         changedAttributes = [...new Set((targets ?? []).flatMap((entry) => Object.keys(entry.attributes ?? {})))];
-      if (
-        ['update', 'updatemultiple'].includes(operation) &&
-        item.filteringAttributes.length &&
-        !item.filteringAttributes.some((name) => changedAttributes.some((column) => canonical(column) === name))
-      )
-        continue;
+      if (!pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes })) continue;
       const note = (code, message) =>
         diagnostic({
           code,
@@ -1170,6 +1258,12 @@ export function runPluginPhase({
       // Asynchronous web hooks are delivered by plugin-async.mjs after commit.
       if (item.mode === 'webhook') {
         if (!webhooks) throw error('No webhook delivery adapter is configured.', 'LocalPluginUnsupported', 501);
+        const frame = executionFrames.get(record);
+        initializePluginOperation(
+          frame,
+          store,
+          frame.delegatedParentContext ?? store?.pluginParentContext ?? pluginInvocationSdkParent(store),
+        );
         const facts = {
           item,
           entity,
@@ -1191,7 +1285,7 @@ export function runPluginPhase({
           previous,
           identity,
           changedAttributes,
-          depth: pluginExecutionDepth() + 1,
+          depth: phaseFrame.operationDepth,
           correlationId: store?.flowChain?.id ?? currentRequest()?.correlationId ?? (store?.ids ?? systemIds).uuid(),
           diagnostic,
         };
@@ -1308,7 +1402,7 @@ export function runPluginPhase({
               diagnostic({ ...entry, stepId: item.id, entity, operation, stage });
             },
           });
-          frame.sharedVariables = answer.sharedVariables;
+          frame.sharedVariables = canonicalTagVariables(answer.sharedVariables, frame.requestTag);
           frame.outputParameters = answer.outputParameters;
           frame.inputParameters = answer.inputParameters;
           frame.inputParametersStage = stage;
@@ -1385,10 +1479,11 @@ export function runPluginPhase({
           const sourceFrame = executionFrames.get(record);
           const baseDepth = Math.max(enterPluginExecution(), pluginInvocationDepth(store) + 1);
           handlerDepth = sourceFrame?.delegatedParentContext
-            ? Math.max(baseDepth, sourceFrame.delegatedDepth ?? 0)
+            ? Math.max(baseDepth, sourceFrame.delegatedDepth ?? 0, sourceFrame.operationDepth ?? 0)
             : Math.max(
                 baseDepth,
-                Number((store?.pluginParentContext ?? pluginInvocationParent(store))?.values?.Depth ?? 0) + 1,
+                sourceFrame?.operationDepth ?? 0,
+                Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0) + 1,
               );
           nested = true;
           if (handlerDepth > HANDLER_DEPTH_LIMIT)
@@ -1405,37 +1500,43 @@ export function runPluginPhase({
           };
           const handlerFrame = executionFrames.get(record) ?? {};
           executionFrames.set(record, handlerFrame);
-          const handlerContext = typed
-            ? typedContext({
-                item,
-                store,
-                entity,
-                operation,
-                stage,
-                target,
-                targets,
-                previousRecords,
-                records,
-                record,
-                previous,
-                identity,
-                depth: handlerDepth,
-                trace,
-                changedAttributes,
-                customApi,
-                messageParameters,
-                frame: handlerFrame,
-                associationParameters,
-                query,
-                columns,
-                holder,
-              })
-            : undefined;
-          const contextBefore = handlerContext
+          if (store)
+            initializePluginOperation(
+              handlerFrame,
+              store,
+              handlerFrame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),
+            );
+          const contextArguments = {
+            item,
+            store,
+            entity,
+            operation,
+            stage,
+            target,
+            targets,
+            previousRecords,
+            records,
+            record,
+            previous,
+            identity,
+            depth: handlerDepth,
+            trace,
+            changedAttributes,
+            customApi,
+            messageParameters,
+            frame: handlerFrame,
+            associationParameters,
+            query,
+            columns,
+            holder,
+          };
+          const handlerContext = typed ? typedContext(contextArguments) : undefined;
+          const invocationContext = handlerContext ?? (store ? typedContext(contextArguments) : undefined);
+          const contextBefore = invocationContext
             ? cloneStateData({
-                inputs: handlerContext.InputParameters,
-                outputs: handlerContext.OutputParameters,
-                shared: handlerContext.SharedVariables,
+                inputs: invocationContext.InputParameters,
+                outputs: invocationContext.OutputParameters,
+                shared: invocationContext.SharedVariables,
               })
             : undefined;
           const parent =
@@ -1445,14 +1546,14 @@ export function runPluginPhase({
               ['create', 'update', 'delete'].includes(operation) &&
               handlerFrame.preValidationContext) ||
               store?.pluginParentContext ||
-              pluginInvocationParent(store));
+              pluginInvocationSdkParent(store));
           const execution = pluginExecutionLifetime(
             store,
             handlerDepth,
-            handlerContext && store
+            invocationContext && store
               ? () =>
                   handlerExecutionContext({
-                    context: handlerContext,
+                    context: invocationContext,
                     before: contextBefore,
                     frame: handlerFrame,
                     store,
@@ -1474,6 +1575,10 @@ export function runPluginPhase({
                     parent,
                   })
               : undefined,
+            {
+              sdkParentContext: () =>
+                selectSdkEntryParent(pluginInvocationParent(store), handlerFrame.sdkFrameworkSource),
+            },
           );
           if (handlerContext && store)
             completedContext = () =>
@@ -1548,6 +1653,7 @@ export function runPluginPhase({
               contextBefore.shared,
               handlerContext.SharedVariables,
             );
+            handlerFrame.sharedVariables = canonicalTagVariables(handlerFrame.sharedVariables, handlerFrame.requestTag);
             if (customApi) {
               const inputSpecs =
                 customApi.bindingType === 1

@@ -1031,10 +1031,15 @@ async function registryRequest(s, name, params) {
     api: s.api,
     registry,
     op,
-    body: result?.body,
+    body: result?.sdkOutputs === undefined ? result?.body : undefined,
     entityOf: (logical, row) => entityFrom(s, logical, row),
   });
-  return { name, responseType: responseName ?? 'OrganizationResponse', namespace: responseName ? NS.g : NS.a, results };
+  return {
+    name,
+    responseType: responseName ?? 'OrganizationResponse',
+    namespace: responseName ? NS.g : NS.a,
+    results: result?.sdkOutputs === undefined ? results : soapSdkResults(result.sdkOutputs.values),
+  };
 }
 
 // The bound table of a request: an entity reference binds to its row's table (binding "entity"), a reference collection to
@@ -1126,7 +1131,7 @@ const prefixOf = (namespace) => (namespace === NS.g ? 'g' : 'a');
 const kvp = (key, valueXml) =>
   `<a:KeyValuePairOfstringanyType><b:key>${esc(key)}</b:key>${valueXml}</a:KeyValuePairOfstringanyType>`;
 const resultsXml = (results) =>
-  [...results].map(([key, value]) => value.rawValueXml ?? kvp(key, encodeValue('b:value', value))).join('');
+  [...results].map(([key, value]) => value?.rawValueXml ?? kvp(key, encodeValue('b:value', value))).join('');
 
 // Typed fault members for one item or top-level fault (shared by ExecuteMultiple items and the SOAP fault).
 function faultParts(error, c) {

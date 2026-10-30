@@ -29,6 +29,9 @@ function soapSdkValue(value) {
   }[value.$type];
   if (scalar) return { type: scalar, value: value.value, ...(scalar === 'Money' ? { sdkExact: true } : {}) };
   switch (value.$type) {
+    case 'PrimitiveArray':
+      if (value.elementType === 'String') return { type: 'StringArray', values: value.values };
+      break;
     case 'Entity':
       return {
         type: 'Entity',
@@ -75,12 +78,13 @@ function soapSdkValue(value) {
     case 'Relationship':
       return { ...value, type: 'Relationship' };
     default:
-      throw new DataError(
-        'The final SDK result has no qualified SOAP value contract: ' + value.$type,
-        501,
-        'LocalSoapResultUnsupported',
-      );
+      break;
   }
+  throw new DataError(
+    'The final SDK result has no qualified SOAP value contract: ' + value.$type,
+    501,
+    'LocalSoapResultUnsupported',
+  );
 }
 
 export function soapSdkResults(values, aliases = []) {

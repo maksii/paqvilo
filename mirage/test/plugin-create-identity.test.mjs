@@ -195,8 +195,20 @@ test(
       /Rejected effective identity after main/,
     );
     const originalIds = store.ids;
+    const originalPipeline = store.pluginPipeline;
     let allocations = 0;
-    store.ids = { uuid: () => (++allocations === 1 ? ignored : chosen) };
+    let pipelineDepth = 0;
+    // Request/correlation GUIDs belong to the pipeline, independently of the
+    // two main-operation identity allocations this collision case controls.
+    store.pluginPipeline = Object.assign((context) => {
+      pipelineDepth++;
+      try {
+        return originalPipeline(context);
+      } finally {
+        pipelineDepth--;
+      }
+    }, originalPipeline);
+    store.ids = { uuid: () => (pipelineDepth ? originalIds.uuid() : ++allocations === 1 ? ignored : chosen) };
     try {
       await assert.rejects(store.create('widget', { mutate10: true, replacewith: empty }, { admin: true }), {
         code: 'DuplicateRecord',
@@ -204,6 +216,7 @@ test(
       assert.equal(allocations, 2);
     } finally {
       store.ids = originalIds;
+      store.pluginPipeline = originalPipeline;
     }
     assert.deepEqual(
       store.tableRows('widget'),

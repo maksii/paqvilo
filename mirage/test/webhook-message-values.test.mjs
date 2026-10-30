@@ -12,11 +12,12 @@ import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { fixedClock } from '../lib/runtime-clock.mjs';
 
 const id = '20000000-0000-0000-0000-000000000001';
 const target = { $type: 'Entity', logicalName: 'x_item', id, attributes: { x_name: 'Invented' } };
 const reference = { $type: 'EntityReference', logicalName: 'x_item', id, name: null };
-const storeOf = () => {
+const storeOf = (options = {}) => {
   const state = emptyState();
   state.mappings.x_item = {
     logicalName: 'x_item',
@@ -25,7 +26,7 @@ const storeOf = () => {
     fields: { x_name: { dataverseType: 'nvarchar' } },
   };
   state.tables.x_item = [];
-  return new DataStore({ state });
+  return new DataStore({ state, ...options });
 };
 const facts = (operation, extra = {}) => ({
   item: { id, images: [] },
@@ -40,13 +41,14 @@ const facts = (operation, extra = {}) => ({
 const parameters = (context, property = 'InputParameters') =>
   Object.fromEntries(context[property].map(({ key, value }) => [key, value]));
 
-async function webhookReceiver(t, endpointOptions = {}) {
+async function webhookReceiver(t, endpointOptions = {}, onReceive = () => {}) {
   const received = [];
   const receiver = createServer((request, response) => {
     const chunks = [];
     request.on('data', (chunk) => chunks.push(chunk));
     request.on('end', () => {
       received.push(JSON.parse(Buffer.concat(chunks)));
+      onReceive(received.at(-1));
       response.writeHead(200).end();
     });
   });
@@ -68,6 +70,79 @@ async function webhookReceiver(t, endpointOptions = {}) {
     },
   };
 }
+
+test('webhook-only stages share one known operation identity and time independently of delivery and authored transport metadata', async (t) => {
+  for (const nested of [false, true]) {
+    await t.test(nested ? 'known SDK parent' : 'root request', async (t) => {
+      const clock = fixedClock(),
+        initialTime = clock.now(),
+        { received, endpoint } = await webhookReceiver(t, {}, () => clock.advance(5000)),
+        store = storeOf({ clock }),
+        parent = {
+          $type: 'ExecutionContext',
+          values: {
+            MessageName: 'x_Outer',
+            Stage: 30,
+            Depth: 1,
+            RequestId: { $type: 'Guid', value: '30000000-0000-4000-8000-000000000001' },
+            OperationId: { $type: 'Guid', value: '30000000-0000-4000-8000-000000000002' },
+            CorrelationId: { $type: 'Guid', value: '30000000-0000-4000-8000-000000000003' },
+            OperationCreatedOn: { $type: 'DateTime', value: '2001-02-03T04:05:06.0000000' },
+          },
+        };
+      store.state.tables.serviceendpoint = [endpoint];
+      const steps = [10, 20, 40].map((stage) => ({
+        id: `40000000-0000-4000-8000-${String(stage).padStart(12, '0')}`,
+        enabled: true,
+        name: `Invented webhook-only stage${stage}`,
+        entity: 'x_item',
+        message: 'Create',
+        stage,
+        rank: 1,
+        mode: 0,
+        supportedDeployment: 0,
+        images: [],
+        filteringAttributes: [],
+        serviceEndpointId: id,
+      }));
+      const items = pluginCatalogue({ plugins: { steps } }),
+        backend = await createOrganizationBackend({ store, items: () => items });
+      t.after(async () => {
+        await backend.close();
+        store.close();
+      });
+      const authoredRequest = '50000000-0000-4000-8000-000000000001';
+      await store.withOperationContext(
+        () => {
+          store.pluginRequestId = authoredRequest;
+          store.pluginParentContext = nested ? parent : null;
+          return store.create('x_item', { x_name: 'Webhook-only operation' }, { admin: true, id });
+        },
+        { fresh: true },
+      );
+      assert.deepEqual(
+        received.map((context) => context.Stage),
+        [10, 20, 40],
+      );
+      assert.equal(new Set(received.map((context) => context.OperationId)).size, 1);
+      assert.equal(new Set(received.map((context) => context.OperationCreatedOn)).size, 1);
+      assert.equal(new Set(received.map((context) => context.RequestId)).size, 1);
+      assert.notEqual(received[0].RequestId, authoredRequest);
+      assert.equal(clock.now(), initialTime + 15_000, 'real deliveries advance the controlled clock between stages');
+      if (nested) {
+        assert.equal(received[0].RequestId, parent.values.RequestId.value);
+        assert.equal(received[0].OperationId, parent.values.OperationId.value);
+        assert.ok(received.every((context) => context.CorrelationId === parent.values.CorrelationId.value));
+        assert.equal(received[0].OperationCreatedOn, '/Date(981173106000)/');
+        assert.ok(received.every((context) => context.ParentContext.MessageName === 'x_Outer'));
+        assert.ok(received.every((context) => context.ParentContext.OperationId === parent.values.OperationId.value));
+      } else {
+        assert.equal(received[0].OperationId, received[0].RequestId);
+        assert.equal(received[0].OperationCreatedOn, `/Date(${initialTime})/`);
+      }
+    });
+  }
+});
 
 test(
   'webhook typed message payloads match the public SDK DataContract JSON serializer',

@@ -10,6 +10,7 @@ import { pluginInvocationParent } from '../lib/plugin-execution-lifetime.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
+import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 
 const id = '10000000-0000-4000-8000-000000000001';
 const second = '10000000-0000-4000-8000-000000000002';
@@ -156,6 +157,41 @@ for (const message of ['CreateMultiple', 'UpdateMultiple'])
     assert.deepEqual(seen, [20, 40]);
   });
 
+for (const message of ['CreateMultiple', 'UpdateMultiple'])
+  test(`asynchronous ${message} Context4 images honor Create preimage unavailability without losing target slots`, () => {
+    const store = fixture();
+    const rows = [store.tableRows('widget')[0], { ...store.tableRows('widget')[0], widgetid: second }];
+    const step = { ...steps(message, ['Invented.AsyncImages'])[1], mode: 1, images: [] };
+    const handlers = new Map([
+      [
+        'Invented.AsyncImages',
+        ({ context }) => {
+          assert.deepEqual(context.PreEntityImagesCollection, message === 'CreateMultiple' ? [] : [{}, {}]);
+          assert.deepEqual(context.PostEntityImagesCollection, [{}, {}]);
+        },
+      ],
+    ]);
+    runPluginPhase({
+      store,
+      items: pluginCatalogue({ plugins: { steps: [step] }, handlers }),
+      handlers,
+      entity: 'widget',
+      operation: message.toLowerCase(),
+      stage: 40,
+      asyncExecution: true,
+      record: { widgetid: '00000000-0000-0000-0000-000000000000', bulkIds: [id, second] },
+      targets: rows.map((row) => ({
+        $type: 'Entity',
+        logicalName: 'widget',
+        id: row.widgetid,
+        attributes: { title: null },
+      })),
+      previousRecords: message === 'CreateMultiple' ? [] : rows,
+      records: rows,
+      identity: { admin: true },
+    });
+  });
+
 test(
   'original CLR scalar and Context4 bulk image Entities omit null Attributes and retain independent identities',
   { skip: CLR_SKIP },
@@ -235,7 +271,7 @@ public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetServ
 );
 
 test(
-  'a nested original CLR child receives the current JavaScript parent images and aligned Context4 collections',
+  'a nested original CLR child receives JavaScript entry image snapshots while the author retains its live Context4 edits',
   { skip: CLR_SKIP },
   async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-parent-images-')),
@@ -250,7 +286,7 @@ test(
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Child:IPlugin{
-static void Check(EntityImageCollection images){var empty=images["NullPre"];if(empty.Id!=new Guid("${id}")||empty.Attributes.Count!=1||!empty.Contains("title")||empty["title"]!=null)throw new Exception("Current parent image null edit lost");var key=images["PrimaryPre"];if(key.Id!=new Guid("${id}")||key.GetAttributeValue<Guid>("widgetid")!=new Guid("${second}"))throw new Exception("Parent image Id and primary Attribute conflated");if(images["AllPre"].Contains("title"))throw new Exception("Snapshot null returned");}
+static void Check(EntityImageCollection images){var empty=images["NullPre"];if(empty.Id!=new Guid("${id}")||empty.Attributes.Count!=0)throw new Exception("Parent entry image snapshot lost");var key=images["PrimaryPre"];if(key.Id!=new Guid("${id}")||key.GetAttributeValue<Guid>("widgetid")!=new Guid("${id}"))throw new Exception("Parent entry image identity changed");if(images["AllPre"].Contains("title"))throw new Exception("Snapshot null returned");}
 public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(parent==null)throw new Exception("Parent missing");if(parent.MessageName=="UpdateMultiple"){var b=parent as IPluginExecutionContext4;if(b==null||b.PreEntityImagesCollection.Length!=1||b.PostEntityImagesCollection.Length!=1)throw new Exception("Parent Context4 image alignment lost");Check(b.PreEntityImagesCollection[0]);if(parent.Stage==20&&b.PostEntityImagesCollection[0].Count!=0)throw new Exception("Premature post images");if(parent.Stage==40&&(b.PostEntityImagesCollection[0]["NullPost"].Attributes.Count!=0||b.PostEntityImagesCollection[0]["NullPost"].Id!=new Guid("${id}")))throw new Exception("Parent post image lost");}else Check(parent.PreEntityImages);}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
@@ -302,6 +338,8 @@ public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetServ
                 evidence: 'Invented nested image call',
                 grants: [{ entity: 'child', operations: ['create'] }],
               }).create('child', { title: 'Observed parent images' });
+              assert.equal(current.PrimaryPre.widgetid, second);
+              assert.equal(current.NullPre.title, null);
             },
           ],
         ]),

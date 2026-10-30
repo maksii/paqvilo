@@ -1,3 +1,4 @@
+import { asyncMultiplePluginParent } from './plugin-sdk-parent.mjs';
 import { organizationRecord } from './organization-context.mjs';
 // Webhooks. A plug-in step whose eventhandler is a service endpoint with contract 8 (Webhook) POSTs the
 // RemoteExecutionContext JSON to the endpoint URL, with the documented headers and authentication.
@@ -276,7 +277,14 @@ function dataContract(value, polymorphic = true) {
         TopCount: value.topCount ?? null,
       });
     case 'ExecutionContext':
-      return Object.fromEntries(Object.entries(value.values ?? {}).map(([key, item]) => [key, dataContract(item)]));
+      return Object.fromEntries(
+        Object.entries(value.values ?? {}).map(([key, item]) => [
+          key,
+          key === 'OperationCreatedOn' && item?.$type === 'DateTime'
+            ? `/Date(${operationTimeEpoch(item.value)})/`
+            : dataContract(item),
+        ]),
+      );
     case 'ParameterCollection':
       return pairs(value.values);
     case 'EntityImageCollection':
@@ -326,6 +334,17 @@ function dataContract(value, polymorphic = true) {
         'LocalWebhookContextUnsupported',
       );
   }
+}
+
+// Pipeline creation times use UTC components even when the SDK wire carries
+// DateTimeKind.Unspecified. Do not reinterpret those components in host local
+// time; general authored DateTime attribute values keep their separate codec.
+function operationTimeEpoch(value) {
+  const text = typeof value === 'string' ? value : '';
+  const epoch = Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(text) ? text : text + 'Z');
+  if (!Number.isFinite(epoch))
+    throw new DataError('The pipeline operation creation time is unavailable.', 501, 'LocalWebhookContextUnsupported');
+  return epoch;
 }
 
 /** The RemoteExecutionContext of one step run, with the documented sample
@@ -443,7 +462,7 @@ export function remoteExecutionContext(store, facts) {
             : {});
   const context = {
     BusinessUnitId: lookup(user?.businessunitid) ?? store.tableRows('businessunit')[0]?.businessunitid ?? null,
-    CorrelationId: correlationId,
+    CorrelationId: frame.correlationId ?? correlationId,
     Depth: depth,
     InitiatingUserId: initiating,
     InputParameters: inputs,
@@ -456,8 +475,10 @@ export function remoteExecutionContext(store, facts) {
     IsolationMode: 1, // as in the documented sample
     MessageName: facts.customApi?.name ?? messageNameOf(operation),
     Mode: asyncExecution ? 1 : 0,
-    OperationCreatedOn: `/Date(${(store.clock ?? systemClock).now()})/`,
-    OperationId: (store.ids ?? systemIds).uuid(),
+    OperationCreatedOn: `/Date(${asyncExecution && frame.asyncOperation ? operationTimeEpoch(frame.asyncOperation.createdOn) : frame.createdOn == null ? (store.clock ?? systemClock).now() : operationTimeEpoch(frame.createdOn)})/`,
+    OperationId:
+      (asyncExecution && frame.asyncOperation ? frame.asyncOperation.id : frame.operationId) ??
+      (store.ids ?? systemIds).uuid(),
     OrganizationId: org.organizationid ?? null,
     OrganizationName: org.name ?? null,
     OutputParameters: pairs(outputs),
@@ -481,7 +502,7 @@ export function remoteExecutionContext(store, facts) {
     PrimaryEntityName: ['associate', 'disassociate'].includes(operation)
       ? 'none'
       : entity || (facts.customApi ? 'none' : entity),
-    RequestId: frame.suppliedRequestId ?? null,
+    RequestId: frame.requestId ?? null,
     SecondaryEntityName: 'none',
     SharedVariables: pairs(frame.sharedVariables?.values),
     Stage: stage,
@@ -497,6 +518,8 @@ export function remoteExecutionContext(store, facts) {
       ),
     );
   }
+  const asyncParent = asyncMultiplePluginParent(frame, operation, entity);
+  if (asyncParent) context.ParentContext = dataContract(asyncParent);
   return context;
 }
 

@@ -454,6 +454,7 @@ const ENCODERS = new Map([
   ['dateTime', scalarEncoder('c:dateTime', dateText)],
   ['guid', scalarEncoder('e:guid')],
   ['base64', scalarEncoder('c:base64Binary')],
+  ['StringArray', (name, v) => typed(name, 'f:ArrayOfstring', v.values.map((x) => plainOrNil('f:string', x)).join(''))],
   ['duration', scalarEncoder('e:duration')],
   ['EntityReference', encodeReference],
   ['OptionSetValue', (name, v) => typed(name, 'a:OptionSetValue', plainOrNil('a:Value', v.value))],

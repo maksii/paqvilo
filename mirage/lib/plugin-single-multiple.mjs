@@ -1,10 +1,12 @@
 import { DataError } from './data-error.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
-import { pluginInvocationDepth, pluginInvocationParent } from './plugin-execution-lifetime.mjs';
+import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
+import { pluginStepMatchesEntity } from './exported-plugins.mjs';
 
 const empty = '00000000-0000-0000-0000-000000000000';
+const operationFields = ['requestId', 'operationId', 'correlationId', 'createdOn', 'createdOnWire', 'operationDepth'];
 export const multipleMessage = (operation) => ({ create: 'createmultiple', update: 'updatemultiple' })[operation];
 
 /** Single-origin requests merge single and multiple registrations by rank in
@@ -21,7 +23,7 @@ export function singleMultiplePipeline(store, items, execute) {
           step.enabled &&
           step.contract?.supportedDeployment !== 1 &&
           !pluginStepBypassed(step, context) &&
-          step.entity === context.entity &&
+          pluginStepMatchesEntity(step, context.entity) &&
           String(step.message).toLowerCase() === operation &&
           (step.contract?.mode ?? 0) === 0,
       )
@@ -35,6 +37,7 @@ export function singleMultiplePipeline(store, items, execute) {
         record: { [primary]: empty },
         targets: [],
         authoredPrimary: Object.hasOwn(context.target ?? {}, primary),
+        operationMetadata: {},
       };
       frames.set(context.record, frame);
     }
@@ -113,7 +116,7 @@ export function singleMultiplePipeline(store, items, execute) {
           step.enabled &&
           step.contract?.supportedDeployment !== 1 &&
           !pluginStepBypassed(step, context) &&
-          step.entity === context.entity &&
+          pluginStepMatchesEntity(step, context.entity) &&
           (step.contract?.mode ?? 0) === 0 &&
           step.stage === context.stage &&
           [operation, context.operation].includes(String(step.message).toLowerCase()),
@@ -134,7 +137,17 @@ export function singleMultiplePipeline(store, items, execute) {
             { ...prior, id: currentTargetId(), attributes: encoded.attributes },
           ];
         }
-        return { ...(frame.singleFrame ?? {}), multipleFrame: frame.multipleFrame ?? {} };
+        const singleFrame = { ...frame.operationMetadata, ...(frame.singleFrame ?? {}) };
+        if (!frame.singleFrame && frame.multipleFrame) {
+          singleFrame.suppliedRequestId = frame.multipleFrame.suppliedRequestId;
+          singleFrame.requestTag = frame.multipleFrame.requestTag;
+          if (singleFrame.requestTag !== undefined)
+            singleFrame.sharedVariables = {
+              $type: 'ParameterCollection',
+              values: { tag: singleFrame.requestTag },
+            };
+        }
+        return { ...singleFrame, multipleFrame: frame.multipleFrame ?? {} };
       }
       const entry = entries[index],
         multiple = String(entry.message).toLowerCase() === operation;
@@ -142,7 +155,7 @@ export function singleMultiplePipeline(store, items, execute) {
       if (multiple) {
         const target = encodeMultipleTarget();
         frame.targets.splice(0, frame.targets.length, target);
-        const parent = store.pluginParentContext ?? pluginInvocationParent(store);
+        const parent = store.pluginParentContext ?? pluginInvocationSdkParent(store);
         const priorValues = { ...(frame.multipleFrame?.inputParameters?.values ?? {}) };
         const concurrencyBehavior = priorValues.ConcurrencyBehavior ?? {
           $type: 'ConcurrencyBehavior',
@@ -188,6 +201,7 @@ export function singleMultiplePipeline(store, items, execute) {
           continuePhase: multipleStarted,
           initialFrame: {
             ...(frame.multipleFrame ?? {}),
+            ...frame.operationMetadata,
             inputParameters,
             inputParametersStage: context.stage,
             ...(context.stage === 10 && !preValidationUpsert
@@ -224,8 +238,7 @@ export function singleMultiplePipeline(store, items, execute) {
         });
         multipleStarted = true;
       } else {
-        if (context.operation === 'update' && !singleStarted && frame.singleFrame)
-          base.initialFrame = frame.singleFrame;
+        base.initialFrame = { ...(frame.singleFrame ?? {}), ...frame.operationMetadata };
         base.onStepExecuted = () => {
           frame.record[primary] = context.record[primary];
         };
@@ -236,6 +249,12 @@ export function singleMultiplePipeline(store, items, execute) {
       }
       const result = execute(base);
       const finish = (answer) => {
+        // Both message lanes belong to this same operation. Publish only known
+        // identity metadata after execution, so the first actual adapter keeps
+        // its observed timestamp precedence and lane-specific inputs stay apart.
+        for (const key of operationFields)
+          if (frame.operationMetadata[key] == null && answer?.[key] != null)
+            frame.operationMetadata[key] = structuredClone(answer[key]);
         if (multiple) applyMultiple(answer);
         else frame.singleFrame = answer;
         return run(index + 1);

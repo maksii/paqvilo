@@ -103,7 +103,7 @@ namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public voi
     for (const [mode, expectedCode, message] of [
       ['default', '0x80040265', 'Invented default abort'],
       ['custom', '0x8004f001', 'Invented explicit custom abort'],
-      ['unrelated', '0x80040265', 'Invented unrelated exception'],
+      ['unrelated', '0x80040224', 'Invented unrelated exception'],
     ]) {
       const response = await fetch(app.url + '/_api/fx_widgets', {
         method: 'POST',
@@ -129,8 +129,8 @@ namespace Invented.WidgetRules {public sealed class Validate:IPlugin {public voi
     assert.equal(failures[2].details.sourceException.errorCode, null);
     assert.equal(
       failures[2].details.innerCode,
-      undefined,
-      'Unrelated exception mapping is unchanged by the default SDK-code correction',
+      '0x80040224',
+      'An ordinary authored exception retains its distinct native unhandled-failure platform code',
     );
     const nested = await fetch(app.url + '/_api/fx_widgets', {
       method: 'POST',

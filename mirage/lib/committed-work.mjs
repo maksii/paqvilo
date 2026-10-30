@@ -225,7 +225,10 @@ export function committedJobs(store) {
         for (const id of retry) queued.add(id);
         retry.clear();
         ticking = null;
-        if (queued.size) kick();
+        // A concurrent delivery remains queued until it finishes, but cannot
+        // run twice. Only new Ready work needs another tick; repeatedly kicking
+        // for an in-flight delivery starves I/O on a manual scheduler.
+        if ([...queued].some((id) => !started.has(id) && readyJob(rows, id))) kick();
       }
     })());
   const jobs = (store.committedJobs = {

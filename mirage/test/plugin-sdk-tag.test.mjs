@@ -116,18 +116,19 @@ test('typed JavaScript shared tag edits remain visible while an omitted child in
     enabled: true,
     entity,
     message: 'Create',
-    stage: 20,
+    stage: entity === 'leaf' ? 10 : 20,
     rank: 1,
     mode: 0,
     supportedDeployment: 0,
     images: [],
     filteringAttributes: [],
   }));
+  steps.push({ ...steps[0], id: '30000000-0000-4000-8000-000000000002', typeName: 'Invented.After', rank: 2 });
   const handlers = new Map([
     [
       'Invented.item',
       ({ context }) => {
-        assert.equal(context.InputParameters.tag, 'canonical');
+        assert.equal(Object.hasOwn(context.InputParameters, 'tag'), false);
         context.SharedVariables.tag = 'visible';
         dispatchSdkCall({
           store,
@@ -147,9 +148,14 @@ test('typed JavaScript shared tag edits remain visible while an omitted child in
       'Invented.leaf',
       ({ context }) => {
         childSeen = [context.SharedVariables.tag, context.InputParameters.tag];
+        assert.equal(context.ParentContext.SharedVariables.tag, 'canonical');
       },
     ],
   ]);
+  handlers.set('Invented.After', ({ context }) => {
+    assert.equal(context.SharedVariables.tag, 'canonical');
+    assert.equal(Object.hasOwn(context.InputParameters, 'tag'), false);
+  });
   const items = pluginCatalogue({ plugins: { steps }, handlers });
   store.setPluginPipeline((event) => runPluginPhase({ ...event, store, items, handlers }));
   await store.withOperationContext(
@@ -249,7 +255,7 @@ test(
       `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Messages;namespace Invented {
  public sealed class Caller:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.SharedVariables.Contains("tag"))throw new Exception("Tag leaked into caller");var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);var r=new DeleteRequest{Target=new EntityReference("audit",new Guid("${record}"))};r.Parameters["tag"]="caller-tag";s.Execute(r);}}
  public sealed class DeleteObserver:IPlugin {readonly bool mutate;public DeleteObserver(string u,string s){mutate=u=="mutate";}public void Execute(IServiceProvider p){var c=(IPluginExecutionContext2)p.GetService(typeof(IPluginExecutionContext));if((string)c.SharedVariables["tag"]!="caller-tag"||c.IsPortalsClientCall||c.Depth!=2)throw new Exception("Child tag/origin mismatch");if(c.Stage==10)c.SharedVariables["pre"]="seen";if(c.Stage==20){if((string)c.ParentContext.SharedVariables["tag"]!="caller-tag"||(string)c.ParentContext.SharedVariables["pre"]!="seen")throw new Exception("PreValidation parent tag lost");var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("leaf"));}if(c.Stage==40&&mutate){c.SharedVariables["tag"]="modified";var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("leaf"));if((string)c.SharedVariables["tag"]!="modified")throw new Exception("Mutable visible tag lost");}}}
- public sealed class Leaf:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext2)p.GetService(typeof(IPluginExecutionContext));if((string)c.SharedVariables["tag"]!="caller-tag"||(string)c.InputParameters["tag"]!="caller-tag"||c.Depth!=3||c.IsPortalsClientCall)throw new Exception("Nested shortcut tag lost");((Entity)c.InputParameters["Target"])["title"]="inherited";}}
+ public sealed class Leaf:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext2)p.GetService(typeof(IPluginExecutionContext));if((string)c.SharedVariables["tag"]!="caller-tag"||c.InputParameters.Contains("tag")||c.Depth!=3||c.IsPortalsClientCall)throw new Exception("Nested shortcut tag lost");((Entity)c.InputParameters["Target"])["title"]="inherited";}}
  }`,
     );
     compileClr(source, assembly, { references: [sdk, 'System.Runtime.Serialization.dll'] });

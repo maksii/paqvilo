@@ -169,11 +169,11 @@ test('a function returns each response property at its type default in a complex
   assert.equal(res.status, 200);
   assert.deepEqual(res.body, {
     '@odata.context': `${ORIGIN}/api/data/v9.2/$metadata#Microsoft.Dynamics.CRM.sample_BoundResponse`,
-    Score: 0,
+    Score: null,
     Labels: [],
-    Enabled: false,
-    Stamp: '0001-01-01T00:00:00Z',
-    Id: '00000000-0000-0000-0000-000000000000',
+    Enabled: null,
+    Stamp: null,
+    Id: null,
   });
 });
 
@@ -372,8 +372,6 @@ const ECHO = apiFiles('sample_Echo', {
   ],
 });
 const ECHO_ROW = `${ORIGIN}/api/data/v9.2/$metadata#Microsoft.Dynamics.CRM.sample_EchoResponse`;
-const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
-const ZERO_TIME = '0001-01-01T00:00:00Z';
 const payloadError = (detail) => (error) =>
   error.status === 400 &&
   error.details?.innerCode === '0x80048d19' &&
@@ -425,16 +423,16 @@ test('Boolean takes JSON booleans and the strings true and false; the handler re
   assert.equal(seen[1].Flag, false);
 });
 
-test('without a handler the response is the native defaults: a string is null, DateTime and Guid are their zero values', async () => {
+test('without a handler unset scalar responses are null independently of input value defaults', async () => {
   const { call } = harness([...FILES, ...ECHO]);
   assert.deepEqual((await call('sample_Echo', { method: 'POST', body: {} })).body, {
     '@odata.context': ECHO_ROW,
     Reply: null,
-    Count: 0,
-    Flag: false,
+    Count: null,
+    Flag: null,
     Note: null,
-    Stamp: ZERO_TIME,
-    Key: ZERO_GUID,
+    Stamp: null,
+    Key: null,
   });
 });
 
@@ -447,7 +445,9 @@ test('handler outputs fill the response by name; the bound target and caller rea
     },
     sample_Echo: () => ({ outputs: { Reply: 'hello', Note: 'n' } }),
   });
-  const { call, op } = harness([...FILES, ...ECHO], { handlers });
+  const { call, op, store } = harness([...FILES, ...ECHO], { handlers });
+  store.state.mappings.account = { logicalName: 'account', entitySet: 'accounts', idColumn: 'accountid', fields: {} };
+  store.state.tables.account = [{ accountid: ACCOUNT_ID }];
   const bound = await op('sample_Bound').handle({
     method: 'GET',
     url: new URL('/api/data/v9.2/sample_Bound', ORIGIN),
@@ -466,12 +466,40 @@ test('handler outputs fill the response by name; the bound target and caller rea
   assert.deepEqual((await call('sample_Echo', { method: 'POST', body: {} })).body, {
     '@odata.context': ECHO_ROW,
     Reply: 'hello',
-    Count: 0,
-    Flag: false,
+    Count: null,
+    Flag: null,
     Note: 'n',
-    Stamp: ZERO_TIME,
-    Key: ZERO_GUID,
+    Stamp: null,
+    Key: null,
   });
+});
+
+test('bound handler context setup failures clear the request timeout and do not invoke the handler', async (t) => {
+  let invoked = false;
+  const timers = [],
+    cleared = [],
+    schedule = globalThis.setTimeout,
+    cancel = globalThis.clearTimeout;
+  t.mock.method(globalThis, 'setTimeout', (...args) => {
+    const timer = schedule(...args);
+    timers.push(timer);
+    return timer;
+  });
+  t.mock.method(globalThis, 'clearTimeout', (timer) => {
+    cleared.push(timer);
+    return cancel(timer);
+  });
+  const { call } = harness(FILES, {
+    handlers: handlersOf({
+      sample_Bound: () => {
+        invoked = true;
+      },
+    }),
+  });
+  await assert.rejects(call('sample_Bound', { params: { Flag: true } }), /No mapping or local table for account/);
+  assert.equal(invoked, false);
+  assert.equal(timers.length, 1);
+  assert.deepEqual(cleared, timers, 'setup failures must release the existing timeout through the same finally path');
 });
 
 const SUBERROR = 'Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode';

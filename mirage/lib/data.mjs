@@ -116,6 +116,34 @@ const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 const formattedAnnotation = '@OData.Community.Display.V1.FormattedValue';
 const lookupAnnotation = '@Microsoft.Dynamics.CRM.lookuplogicalname';
 
+function committedPluginParent(store, mapping, operation, target, row, options) {
+  const tag = store.pluginSdkTag,
+    values = {
+      ...(tag === undefined ? {} : { tag }),
+      ...(operation === 'update'
+        ? { ConcurrencyBehavior: { $type: 'ConcurrencyBehavior', value: options.pluginConcurrencyBehavior ?? 0 } }
+        : {}),
+      ...(operation === 'create' && options.sdkFromSandbox === true ? { FromSandbox: true } : {}),
+    };
+  return {
+    primaryId: row[mapping.idColumn],
+    // Preserve the pre-PostOperation baseline without imposing the SDK codec
+    // on ordinary writes. Only an admitted asynchronous observer needs it.
+    target: { ...clone(target), [mapping.idColumn]: row[mapping.idColumn] },
+    inputParameters: { $type: 'ParameterCollection', values },
+    sharedVariables: { $type: 'ParameterCollection', values: tag === undefined ? {} : { tag } },
+    childSharedVariables: {
+      $type: 'ParameterCollection',
+      values: {
+        AcceptLang: options.pluginAcceptLanguage ?? '',
+        IsAutoTransact: true,
+        ...(operation === 'create' ? { DefaultsAddedFlag: true } : {}),
+        ...(tag === undefined ? {} : { tag }),
+      },
+    },
+  };
+}
+
 const metadataField = (mapping, key) => {
   const fields = mapping?.fields ?? mapping?.fieldMetadata ?? {};
   return fields[key] ?? fields[Object.keys(fields).find((name) => name.toLowerCase() === key.toLowerCase())];
@@ -2404,6 +2432,8 @@ export class DataStore {
     }
     const id = row[mapping.idColumn],
       targetPrimary = target?.[mapping.idColumn];
+    if (operation === 'update' && options.preValidationSourceOperation === 'upsert' && !options.frameworkInputTarget)
+      options.frameworkInputTarget = clone(target);
     const frame = this.pluginPipeline?.({
       entity: mapping.logicalName,
       operation,
@@ -2415,6 +2445,8 @@ export class DataStore {
       changedAttributes,
       portalRequest: options.portalRequest === true,
       sdkFromSandbox: options.sdkFromSandbox === true,
+      acceptLanguage: options.pluginAcceptLanguage ?? '',
+      ...(options.frameworkInputTarget ? { frameworkInputTarget: options.frameworkInputTarget } : {}),
       ...(options.preValidationSourceOperation
         ? { preValidationSourceOperation: options.preValidationSourceOperation }
         : {}),
@@ -4578,6 +4610,7 @@ export class DataStore {
     delete childOptions.sdkResponseToken;
     delete childOptions.derivedCreateColumns;
     delete childOptions.authorizeEffectiveWrite;
+    delete childOptions.afterPreValidation;
     const nativeContactAssociation = takeNativeFormContactAssociation(m.logicalName, identity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
@@ -4678,6 +4711,7 @@ export class DataStore {
     }
     const originalTarget = clone(pluginTarget);
     yield [m, 'create', 10, pluginTarget, row, null, identity, changedAttributes, options];
+    options.afterPreValidation?.(m.logicalName, 'create', pluginTarget, null);
     // Showing authored inputs before platform stamps must not change their
     // established stored values when no observer edits that input column.
     for (const [name, value] of Object.entries(systemColumns ?? {}))
@@ -4797,6 +4831,11 @@ export class DataStore {
           options,
         );
       }
+    // Native asynchronous Create snapshots include materialized defaults and
+    // main-operation fields. Expose that baseline before PostOperation so its
+    // later context edits/removals remain authoritative without changing data.
+    Object.assign(pluginTarget, clone(row));
+    const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options);
     if (isElastic(m)) {
       this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
         target: pluginTarget,
@@ -4804,6 +4843,7 @@ export class DataStore {
         identity,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
+        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
       });
       this.checkpointElastic(m, row);
     }
@@ -4815,6 +4855,7 @@ export class DataStore {
         identity,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
+        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
       });
     return row;
   }
@@ -4904,6 +4945,7 @@ export class DataStore {
       (key) => !own(target, key) && !isDeepStrictEqual(row[key], previous[key]),
     );
     yield [mapping, 'update', 10, target, row, previous, identity, changedAttributes, options];
+    options.afterPreValidation?.(mapping.logicalName, 'update', target, previous);
     yield [mapping, 'update', 20, target, row, previous, identity, changedAttributes, options];
     // A nested SDK request may patch or delete this row, or shift its position.
     // The outer update owns its current Target and staged system/default values;
@@ -4945,24 +4987,40 @@ export class DataStore {
     options.authorizeEffectiveWrite?.(mapping.logicalName, 'update', row, latest);
     this.writeRow(mapping.logicalName, rows, index, row);
     this.applySecondary(effects);
+    // The asynchronous copy adds platform modification stamps without changing
+    // the synchronous partial Target or its qualified core-parent projection.
+    const asyncTargetBaseline = Object.fromEntries(
+      [mapping.idColumn, 'modifiedon', 'modifiedby', 'modifiedonbehalfby']
+        .filter((name) => own(row, name))
+        .map((name) => [name, clone(row[name])]),
+    );
+    const beforePostTarget = new Set(Object.keys(target));
+    const committedTarget = () => {
+      const values = { ...asyncTargetBaseline, ...clone(target) };
+      for (const name of beforePostTarget) if (!own(target, name)) delete values[name];
+      return values;
+    };
+    const asyncSourceParent = committedPluginParent(this, mapping, 'update', target, row, options);
     if (isElastic(mapping)) {
       this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
-        target,
+        target: committedTarget(),
         previous,
         identity,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
+        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
       });
       this.checkpointElastic(mapping, row);
     }
     yield [mapping, 'update', 40, target, row, previous, identity, changedAttributes, options];
     if (!isElastic(mapping) && !options.deferCommittedEvent)
       this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
-        target,
+        target: committedTarget(),
         previous,
         identity,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
+        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
       });
     return row;
   }
@@ -5408,7 +5466,14 @@ export class DataStore {
         const input = { ...target, [relationship.to]: value };
         const next = this.touchRow(target, input, this.systemColumnsFor(options.systemColumns, targetMapping, input));
         this.assertAllowed(targetMapping.logicalName, 'update', next, identity);
-        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity);
+        // This Update belongs to the association's execution policy. Parent
+        // response tokens and one-use authorization capabilities belong to the
+        // outer operation, so forward only its plug-in bypass controls.
+        yield* this.commitUpdateSteps(targetMapping, rows, rows.indexOf(target), next, identity, undefined, {
+          bypassCustomPlugins: options.bypassCustomPlugins === true,
+          bypassCustomAsync: options.bypassCustomAsync === true,
+          bypassStepIds: options.bypassStepIds,
+        });
       }
     }
     return {

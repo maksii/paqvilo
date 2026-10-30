@@ -1,3 +1,4 @@
+import { initializePluginOperation } from './plugin-operation-context.mjs';
 import { cloneStateData } from './state-clone.mjs';
 import fs from 'node:fs/promises';
 import syncFs from 'node:fs';
@@ -8,7 +9,8 @@ import { spawnSync } from 'node:child_process';
 import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads';
 import { DataError } from './data-error.mjs';
 import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
-import { pluginInvocationDepth, pluginInvocationParent } from './plugin-execution-lifetime.mjs';
+import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execution-lifetime.mjs';
+import { asyncMultiplePluginParent, clrSdkEntryContext, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { localOrganizationService, validateServiceProfile, sdkValueToRecord } from './local-organization-service.mjs';
@@ -25,7 +27,7 @@ import { isElastic, samePartition } from './dataverse-elastic.mjs';
 import { convertSdkQuery } from './plugin-query-conversion.mjs';
 import { CRM_FUNCTIONS } from './dataverse-conditions.mjs';
 import { runtimeConstructorSettings } from './plugin-constructor-configuration.mjs';
-import { validateSdkTag } from './plugin-request-tag.mjs';
+import { validateSdkTag, canonicalTagParent } from './plugin-request-tag.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginClrConfiguration', status = 409) => {
@@ -456,7 +458,27 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
     if (value && typeof value === 'object' && value.id && value.logical_name)
       attributes[key] = reference(value.logical_name, value.id, value.name, value.partitionid ?? row[`${key}pid`]);
     else if (['lookup', 'customer', 'owner'].includes(type) && typeof value === 'string') {
-      const targets = field.targets;
+      let targets = field.targets;
+      if (targets === undefined && type === 'lookup') {
+        const relationships = Object.values(mapping.relationships ?? {}).filter(
+          (relationship) => relationship?.many === false && canon(relationship.from) === canon(key),
+        );
+        const declared = [];
+        for (const relationship of relationships) {
+          let related;
+          try {
+            related = store.resolveMapping(relationship.entity);
+          } catch (error) {
+            if (error.code !== 'UnknownEntity') throw error;
+          }
+          if (!related || canon(relationship.to) !== canon(related.idColumn)) {
+            declared.push(null);
+            break;
+          }
+          declared.push(related.logicalName);
+        }
+        targets = declared.includes(null) ? [] : [...new Set(declared)];
+      }
       if (
         !uuid.test(value) ||
         !Array.isArray(targets) ||
@@ -660,29 +682,31 @@ export function sdkQueryParameters(query) {
 }
 export function dispatchSdkCall(args) {
   const { store, message } = args,
-    previous = store.pluginParentContext;
-  if (message.parentContext) {
-    if (
-      message.parentContext.$type !== 'ExecutionContext' ||
-      Buffer.byteLength(JSON.stringify(message.parentContext)) > 4 * 1024 * 1024
-    )
+    previous = store.pluginParentContext,
+    previousRequestMetadata = store.pluginRequestId;
+  const sdkParent = args.sdkParentContext ?? message.parentContext ?? pluginInvocationSdkParent(store);
+  if (sdkParent) {
+    if (sdkParent.$type !== 'ExecutionContext' || Buffer.byteLength(JSON.stringify(sdkParent)) > 4 * 1024 * 1024)
       fail('SDK ParentContext is invalid or excessive.', 'LocalPluginInputLimit', 413);
-    store.pluginParentContext = cloneStateData(message.parentContext);
+    store.pluginParentContext = canonicalTagParent(cloneStateData(sdkParent), store.pluginSdkTag);
   }
+  store.pluginRequestId = message.method === 'Execute' ? message.arguments?.[0]?.requestId : undefined;
   try {
     return dispatchSdkCallCore(args);
   } catch (error) {
     const method = message.method === 'Execute' ? message.arguments?.[0]?.requestName : message.method;
     if (
-      ['Create', 'Update', 'Delete', 'Associate', 'Disassociate', 'CreateMultiple', 'UpdateMultiple'].includes(
+      error.code !== 'LocalPluginTagDuplicate' &&
+      (['Create', 'Update', 'Delete', 'Associate', 'Disassociate', 'CreateMultiple', 'UpdateMultiple'].includes(
         method,
       ) ||
-      store.tableRows('customapi').some((row) => row.uniquename === method && !row.isfunction)
+        store.tableRows('customapi').some((row) => row.uniquename === method && !row.isfunction))
     )
       store.markPluginTransactionFailure?.(error);
     throw error;
   } finally {
     store.pluginParentContext = previous;
+    store.pluginRequestId = previousRequestMetadata;
   }
 }
 function dispatchSdkCallCore({ store, profile, message, callerProfiles = [], diagnostic, sdkFromSandbox = false }) {
@@ -785,6 +809,7 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
       if (
         request?.$type !== 'OrganizationRequest' ||
         (request.typed !== undefined && typeof request.typed !== 'boolean') ||
+        (request.requestId != null && (typeof request.requestId !== 'string' || !uuid.test(request.requestId))) ||
         request.parameters?.$type !== 'ParameterCollection' ||
         !parameters ||
         typeof parameters !== 'object' ||
@@ -1314,6 +1339,7 @@ function executePooledClr(runtime, input, options, verified) {
   return executeClrSnapshot(runtime, input, options, session.snapshot, session);
 }
 function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConfiguration }, snapshot, session) {
+  const sdkParentContext = selectSdkEntryParent(clrSdkEntryContext(input), input.sdkFrameworkSource);
   const timeout = clrTimeout(runtime.descriptor);
   const parentIdentity = session ? null : clrParentIdentity(snapshot.executable);
   const channels = session ?? new MessageChannel(),
@@ -1324,6 +1350,9 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
   const invocationId = session ? randomUUID() : null;
   const invocation = {
     ...input,
+    inputParameters: input.inputParameters ?? { $type: 'ParameterCollection', values: {} },
+    outputParameters: input.outputParameters ?? { $type: 'ParameterCollection', values: {} },
+    sharedVariables: input.sharedVariables ?? { $type: 'ParameterCollection', values: {} },
     assembly: snapshot.assembly,
     typeName: runtime.descriptor.typeName,
     ...runtimeConstructorSettings(
@@ -1376,6 +1405,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
             if (++calls > 1000) fail('CLR SDK call limit exceeded.', 'LocalPluginCallLimit', 413);
             value = dispatchSdkCall({
               store,
+              sdkParentContext,
               profile: runtime.descriptor.serviceProfile,
               callerProfiles: runtime.descriptor.sdkCallerProfiles,
               sdkFromSandbox: true,
@@ -1385,7 +1415,8 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
           } catch (cause) {
             error = { code: cause.code ?? 'LocalPluginSdkError', message: cause.message };
             const inner = cause.details?.innerCode ?? (cause.code === 'NotFound' ? '0x80040217' : null);
-            if (/^0x[a-f\d]{8}$/i.test(inner ?? ''))
+            if (cause.code === 'LocalPluginTagDuplicate') error.clrExceptionType = 'System.ArgumentException';
+            else if (/^0x[a-f\d]{8}$/i.test(inner ?? ''))
               error.organizationServiceFault = {
                 errorCode: parseInt(inner, 16) | 0,
                 message: cause.message,
@@ -1403,6 +1434,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
           const details = {
             sourceException: {
               type: message.exceptionType ?? null,
+              duringPluginExecute: message.duringPluginExecute === true,
               errorCode: message.errorCode ?? null,
               operationStatus: message.operationStatus ?? null,
               exceptionDetails: message.exceptionDetails ?? null,
@@ -1410,10 +1442,17 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
           };
           if (Number.isInteger(message.errorCode))
             details.innerCode =
-              message.exceptionType === 'Microsoft.Xrm.Sdk.InvalidPluginExecutionException' &&
+              (message.pluginException === true ||
+                message.exceptionType === 'Microsoft.Xrm.Sdk.InvalidPluginExecutionException') &&
               message.errorCode >>> 0 === 0x80131500
                 ? '0x80040265'
                 : '0x' + (message.errorCode >>> 0).toString(16).padStart(8, '0');
+          else if (
+            message.duringPluginExecute === true &&
+            message.code === 'PluginValidation' &&
+            message.pluginException !== true
+          )
+            details.innerCode = '0x80040224';
           throw new DataError(
             message.message,
             message.code === 'LocalPluginTimeout' ? 504 : 400,
@@ -1476,11 +1515,16 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
 export function clrContext({ runtime, store, step, entity, operation, stage, target, record, previous, frame, depth }) {
   const descriptor = runtime.descriptor,
     context = descriptor.context,
-    parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationParent(store),
+    parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),
     primary = entity && !(frame.customApi && entity === 'none') ? store.resolveMapping(entity).idColumn : null;
   const contextDepth = frame.delegatedParentContext
-    ? Math.max(depth, pluginInvocationDepth(store) + 1, frame.delegatedDepth ?? 0)
-    : Math.max(depth, pluginInvocationDepth(store) + 1, parent ? Number(parent.values.Depth) + 1 : 0);
+    ? Math.max(depth, pluginInvocationDepth(store) + 1, frame.delegatedDepth ?? 0, frame.operationDepth ?? 0)
+    : Math.max(
+        depth,
+        pluginInvocationDepth(store) + 1,
+        frame.operationDepth ?? 0,
+        parent ? Number(parent.values.Depth) + 1 : 0,
+      );
   if (contextDepth > 8) fail('Plug-in nested execution depth exceeds eight.', 'LocalPluginDepth', 400);
   const preValidationParent =
     stage !== 10 &&
@@ -1551,7 +1595,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   // The main operation populates system results once. Keep custom values and
   // subsequent PostOperation replacements across ranks for every message shape.
   frame.outputParameters ??= { $type: 'ParameterCollection', values: {} };
-  if (frame.createdOn == null && context.operationCreatedOn !== undefined) frame.createdOn = context.operationCreatedOn;
+  initializePluginOperation(frame, store, parent, { createdOn: context.operationCreatedOn });
   if (stage === 40 && !frame.systemOutputsPopulated) {
     const values =
       operation === 'create'
@@ -1567,6 +1611,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     frame.systemOutputsPopulated = true;
   }
   const answer = {
+    ...(frame.sdkFrameworkSource ? { sdkFrameworkSource: frame.sdkFrameworkSource } : {}),
     expectedAssemblyName: step.assemblyName ?? null,
     context: {
       InterfaceVersion: context.interfaceVersion ?? 4,
@@ -1582,8 +1627,9 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
         : {}),
       IsPortalsClientCall: portalRequest,
       PortalsContactId: typed('Guid', portalContactId),
-      RequestId: typed('Guid', (frame.requestId ??= frame.suppliedRequestId ?? randomUUID())),
-      SecondaryEntityName: context.secondaryEntityName ?? '',
+      RequestId: typed('Guid', (frame.requestId ??= parent?.values?.RequestId?.value ?? randomUUID())),
+      SecondaryEntityName:
+        context.secondaryEntityName ?? (operation === 'update' || (frame.customApi && entity === 'none') ? 'none' : ''),
       Stage: stage,
       Mode: step.contract?.mode ?? 0,
       Depth: contextDepth,
@@ -1603,8 +1649,8 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       OrganizationName: context.organizationName ?? '',
       BusinessUnitId: typed('Guid', context.businessUnitId),
       CorrelationId: typed('Guid', (frame.correlationId ??= parent?.values.CorrelationId?.value ?? randomUUID())),
-      OperationId: typed('Guid', (frame.operationId ??= randomUUID())),
-      OperationCreatedOn: typed('DateTime', (frame.createdOn ??= new Date().toISOString())),
+      OperationId: typed('Guid', frame.operationId),
+      OperationCreatedOn: cloneStateData(frame.createdOnWire),
       IsInTransaction: store.pluginInTransaction === true,
       IsExecutingOffline: false,
       IsOfflinePlayback: false,
@@ -1618,7 +1664,10 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       ParentContext: preValidationParent || parent || null,
       ...(bulk
         ? {
-            PreEntityImagesCollection: bulkImages(frame.previousRecords ?? [], false),
+            PreEntityImagesCollection:
+              operation === 'createmultiple' && (step.contract?.mode ?? 0) === 1
+                ? { $type: 'EntityImageCollectionArray', values: [] }
+                : bulkImages(frame.previousRecords ?? [], false),
             PostEntityImagesCollection: bulkImages(stage === 40 ? (frame.records ?? []) : [], true),
           }
         : {
@@ -1635,7 +1684,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     inputParameters: {
       $type: 'ParameterCollection',
       values: {
-        ...(frame.requestTag === undefined ? {} : { tag: frame.requestTag }),
+        ...(frame.requestTag === undefined || frame.inputTagConsumed ? {} : { tag: frame.requestTag }),
         ...(portalRequest ? (context.portalInputParameters ?? {}) : {}),
         ...(frame.inputParameters?.values ?? {}),
         ...(frame.customApi
@@ -1710,5 +1759,6 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       descriptor.serviceProfile.userId;
     answer.context.ParentContext = delegatedPluginParent(source, answer.context, caller);
   }
+  answer.context.ParentContext = asyncMultiplePluginParent(frame, operation, entity) ?? answer.context.ParentContext;
   return answer;
 }

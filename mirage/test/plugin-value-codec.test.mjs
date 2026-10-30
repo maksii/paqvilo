@@ -15,6 +15,7 @@ import { pluginValueCases } from './fixtures/plugin-value-cases.mjs';
 import { attachClrSteps } from './fixtures/plugin-pipeline.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
 import { CLR_SKIP, clrSdk, compileClr, retypeClrRuntime } from './fixtures/clr-sdk.mjs';
+import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
 const id = '11111111-1111-4111-8111-111111111111',
   other = '22222222-2222-4222-8222-222222222222';
 function storeOf() {
@@ -186,8 +187,8 @@ const specs = (name) => {
       '(string)((ParameterCollection)v)["Label"]=="After"',
     ],
     OrganizationRequest: [
-      'new OrganizationRequest("x_Before"){Parameters=new ParameterCollection{{"cash",new Money(4.25m)}}}',
-      '((OrganizationRequest)v).RequestName=="x_After"&&((Money)((OrganizationRequest)v).Parameters["cash"]).Value==4.25m',
+      'new OrganizationRequest("x_Before"){RequestId=new Guid("10000000-0000-4000-8000-000000000097"),Parameters=new ParameterCollection{{"cash",new Money(4.25m)}}}',
+      '((OrganizationRequest)v).RequestId==new Guid("10000000-0000-4000-8000-000000000097")&&((OrganizationRequest)v).RequestName=="x_After"&&((Money)((OrganizationRequest)v).Parameters["cash"]).Value==4.25m',
     ],
     ColumnSet: [
       'new ColumnSet("title")',
@@ -222,8 +223,8 @@ const specs = (name) => {
       '((OrganizationResponse)v).ResponseName=="x_After"&&((Money)((OrganizationResponse)v).Results["cash"]).Value==4.25m',
     ],
     TypedOrganizationRequest: [
-      'new Microsoft.Xrm.Sdk.Messages.CreateRequest{Target=Row()}',
-      'v is Microsoft.Xrm.Sdk.Messages.CreateRequest&&((Microsoft.Xrm.Sdk.Messages.CreateRequest)v).Target.GetAttributeValue<string>("title")=="After"',
+      'new Microsoft.Xrm.Sdk.Messages.CreateRequest{RequestId=Guid.Empty,Target=Row()}',
+      'v is Microsoft.Xrm.Sdk.Messages.CreateRequest&&((Microsoft.Xrm.Sdk.Messages.CreateRequest)v).RequestId==Guid.Empty&&((Microsoft.Xrm.Sdk.Messages.CreateRequest)v).Target.GetAttributeValue<string>("title")=="After"',
     ],
     TypedOrganizationResponse: [
       'new Microsoft.Xrm.Sdk.Messages.RetrieveResponse{Results=new ParameterCollection{{"Entity",Row()}}}',
@@ -321,6 +322,9 @@ test(
       sdkRoot: path.dirname(sdk),
       sdkAssembly: path.basename(sdk),
       cacheRoot: path.join(root, 'cache'),
+      // Semantic matrix failures must reach their codec assertion after nested
+      // original SDK observer calls; intentional deadline cases live elsewhere.
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
       serviceProfile: {
         userId: id,
         evidence: 'Invented finite SDK type matrix',

@@ -77,6 +77,11 @@ async function fixture(t, kind, { systemJobs = true, adapter = true } = {}) {
   return {
     store,
     scheduler,
+    run: async () => {
+      await scheduler.runDue();
+      // Webhooks are owned concurrent work, not the scheduler tick itself.
+      await runner.drain();
+    },
     row,
     get executions() {
       return executions;
@@ -116,7 +121,7 @@ for (const kind of ['plugin', 'webhook'])
         const f = await fixture(t, kind);
         await f.queue();
         mutate(f);
-        await f.scheduler.runDue();
+        await f.run();
         assert.equal(f.executions, 0);
         const [job] = f.store.tableRows('asyncoperation');
         assert.equal(job.statecode, 3);
@@ -137,7 +142,7 @@ test('an actual execution receipt, not matching submitted columns alone, is requ
     }),
   );
   assert.equal(f.store.tableRows('asyncoperation')[0].statuscode, 0);
-  await f.scheduler.runDue();
+  await f.run();
   assert.equal(f.executions, 0);
   assert.equal(f.store.tableRows('asyncoperation')[0].statuscode, 32);
   assert.match(f.store.tableRows('asyncoperation')[0].message, /without executing/);
@@ -147,7 +152,7 @@ for (const kind of ['plugin', 'webhook'])
   test(`unchanged ${kind} work still succeeds after one actual invocation`, async (t) => {
     const f = await fixture(t, kind);
     await f.queue();
-    await f.scheduler.runDue();
+    await f.run();
     assert.equal(f.executions, 1);
     assert.equal(f.store.tableRows('asyncoperation')[0].statuscode, 30);
   });
@@ -156,7 +161,7 @@ test('an explicit asynchronous mock is an executed simulator choice', async (t) 
   const f = await fixture(t, 'plugin');
   await f.queue();
   f.choose({ mode: 'mock', status: 200, body: {} });
-  await f.scheduler.runDue();
+  await f.run();
   assert.equal(f.executions, 0);
   assert.equal(f.store.tableRows('asyncoperation')[0].statuscode, 30);
 });
@@ -165,7 +170,7 @@ for (const systemJobs of [true, false])
   test(`a missing webhook adapter cancels work with system jobs ${systemJobs ? 'visible' : 'private'}`, async (t) => {
     const f = await fixture(t, 'webhook', { systemJobs, adapter: false });
     await f.queue();
-    await f.scheduler.runDue();
+    await f.run();
     assert.equal(f.executions, 0);
     const jobs = f.store.tableRows('asyncoperation');
     if (systemJobs) {

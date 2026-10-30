@@ -53,6 +53,8 @@ async function setup({ principals = ALLOW_ALL } = {}) {
     recordHooks: { add: (name, fn) => (hooks[name] = fn) },
   };
   await install(api);
+  assert.equal(typeof hooks.afterPreValidation, 'function');
+  assert.equal(hooks.beforeWrite, undefined, 'Duplicate validation must not mask a PreValidation rejection');
   return {
     api,
     store,
@@ -93,7 +95,7 @@ function addRule(t, rule) {
 }
 
 const write = (t, operation, data, headers = GATE, existing) =>
-  t.hooks.beforeWrite({ headers }, t.mapping, { operation, data, existing });
+  t.hooks.afterPreValidation({ headers }, t.mapping, { operation, data, existing });
 const errorOf = (fn) => {
   try {
     fn();

@@ -1,10 +1,17 @@
-import { messageNameOf, runPluginPhase, pluginStepMatchesEntity, pluginPhaseMatches } from './exported-plugins.mjs';
+import {
+  messageNameOf,
+  runPluginPhase,
+  pluginStepMatchesEntity,
+  pluginPhaseMatches,
+  pluginStepMatchesAttributes,
+} from './exported-plugins.mjs';
 import { committedJobs, liveJob, stageCommittedJobs, retryCommittedJob } from './committed-work.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 import { createRequestContext, runWithRequest } from './request-context.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
 import { multipleMessage } from './plugin-single-multiple.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
+import { DataError } from './data-error.mjs';
 
 // Each run gets its own request context: the starting request's correlation (carried by the committed event, else the chain)
 // as the parent, mode async, the writer as principal; a plug-in trace log and nested events then carry that correlation.
@@ -29,6 +36,8 @@ const PLUGIN_ATTEMPTS = 4;
  * Plug-in claims/attempt counts commit before execution; Locked is observable.
  * Explicit Retry returns the same job to Ready for a later local scheduler turn. */
 function jobColumns(store, item, event, chain) {
+  // Authored OrganizationRequest.RequestId is separate transport metadata.
+  const requestId = event.frame?.requestId;
   let idColumn = null;
   try {
     idColumn = store.resolveMapping(event.entity)?.idColumn;
@@ -47,7 +56,39 @@ function jobColumns(store, item, event, chain) {
     primaryentitytype: event.entity,
     messagename: event.customApi?.name ?? messageNameOf(event.operation),
     correlationid: chain.id,
-    depth: chain.depth + 1,
+    depth: event.frame?.operationDepth ?? chain.depth + 1,
+    ...(requestId == null ? {} : { requestid: requestId }),
+  };
+}
+
+// OperationId/OperationCreatedOn describe this System Job, not the originating
+// synchronous operation or the time of an individual retry/delivery attempt.
+function jobExecutionFrame(store, id, event) {
+  const { rows, index } = liveJob(store, id);
+  const createdOn = index < 0 ? null : rows[index].createdon;
+  if (typeof createdOn !== 'string' || !Number.isFinite(Date.parse(createdOn)))
+    throw new DataError(
+      'The queued asynchronous job has no valid creation timestamp.',
+      501,
+      'LocalPluginAsyncContextUnavailable',
+    );
+  const operationDepth = rows[index].depth;
+  if (!Number.isSafeInteger(operationDepth) || operationDepth < 1)
+    throw new DataError(
+      'The queued asynchronous job has no valid execution depth.',
+      501,
+      'LocalPluginAsyncContextUnavailable',
+    );
+  return {
+    ...structuredClone(event.frame ?? {}),
+    operationId: id,
+    createdOn,
+    // Keep the saved UTC stamp internally; native async contexts expose its
+    // clock components as DateTimeKind.Unspecified, including after retries.
+    createdOnWire: { $type: 'DateTime', value: createdOn.replace(/Z$/, '') },
+    operationDepth,
+    delegatedDepth: operationDepth,
+    asyncOperation: { id, createdOn, depth: operationDepth },
   };
 }
 // Claims a Ready job (Locked, In Progress) and returns its finish/cancel; null when the job left Ready (a cancel) or is gone.
@@ -209,6 +250,7 @@ export function createAsyncPluginRunner({
       return 'Simulator: this asynchronous step changed its delivery kind; nothing was executed.';
     if (
       !pluginPhaseMatches([item], {
+        store,
         entity: event.entity,
         operation: event.operation,
         stage: 40,
@@ -260,7 +302,7 @@ export function createAsyncPluginRunner({
           customApi: event.customApi,
           bypassStepIds: event.bypassStepIds,
           associationParameters: event.associationParameters,
-          initialFrame: event.frame,
+          initialFrame: jobExecutionFrame(store, id, event),
           targets: event.targets,
           previousRecords: event.previousRecords,
           records: event.records,
@@ -310,10 +352,12 @@ export function createAsyncPluginRunner({
       await store.transact(() => {
         const previousChain = store.flowChain,
           previousFlag = store.pluginInTransaction,
-          previousParent = store.pluginParentContext;
+          previousParent = store.pluginParentContext,
+          previousTag = store.pluginSdkTag;
         store.flowChain = { id: chain.id, depth: chain.depth + 1 };
         store.pluginInTransaction = false;
         store.pluginParentContext = null;
+        store.pluginSdkTag = event.frame?.requestTag;
         try {
           if (!item)
             throw Object.assign(new Error('The asynchronous step registration is no longer available.'), {
@@ -345,7 +389,7 @@ export function createAsyncPluginRunner({
             targets: event.targets,
             previousRecords: event.previousRecords,
             records: event.records,
-            initialFrame: structuredClone(event.frame),
+            initialFrame: jobExecutionFrame(store, id, event),
             asyncExecution: true,
             diagnostic,
             onStepExecuted: () => {
@@ -385,6 +429,7 @@ export function createAsyncPluginRunner({
           store.flowChain = previousChain;
           store.pluginInTransaction = previousFlag;
           store.pluginParentContext = previousParent;
+          store.pluginSdkTag = previousTag;
         }
       });
       return retrying ? retryCommittedJob : undefined;
@@ -436,7 +481,13 @@ export function createAsyncPluginRunner({
               { bypassCustomPlugins: event.bypassCustomAsync, bypassStepIds: event.bypassStepIds },
               diagnostic,
             ) &&
-            (!['update', 'updatemultiple', 'onexternalupdated'].includes(event.operation) ||
+            pluginStepMatchesAttributes(item, {
+              store,
+              entity: event.entity,
+              operation: event.operation,
+              changedAttributes: event.submittedAttributes,
+            }) &&
+            (event.operation !== 'onexternalupdated' ||
               !item.filteringAttributes.length ||
               item.filteringAttributes.some((name) => event.submittedAttributes.includes(name))),
         )
@@ -448,7 +499,28 @@ export function createAsyncPluginRunner({
             id = event.row[mapping.idColumn];
           const target = recordToSdkEntity(store, event.entity, event.target ?? {});
           target.id = id;
-          if (!event.submittedAttributes.includes(mapping.idColumn)) delete target.attributes[mapping.idColumn];
+          const multipleFrame = event.frame?.multipleFrame,
+            sourceParent = event.frame?.asyncSourceParent,
+            asyncSourceParent = sourceParent?.target
+              ? {
+                  ...sourceParent,
+                  inputParameters: {
+                    $type: 'ParameterCollection',
+                    values: {
+                      ...sourceParent.inputParameters?.values,
+                      Target: recordToSdkEntity(store, event.entity, sourceParent.target),
+                    },
+                  },
+                }
+              : sourceParent,
+            requestTag = Object.hasOwn(multipleFrame ?? {}, 'requestTag')
+              ? multipleFrame.requestTag
+              : event.frame?.requestTag;
+          const sharedVariables = {
+            ...(event.frame?.asyncSourceParent?.childSharedVariables?.values ?? {}),
+            ...(multipleFrame?.sharedVariables?.values ?? {}),
+            ...(requestTag === undefined ? {} : { tag: requestTag }),
+          };
           invocation = {
             ...event,
             operation: multipleMessage(event.operation),
@@ -456,7 +528,33 @@ export function createAsyncPluginRunner({
             targets: [target],
             previousRecords: [event.previous ?? null],
             records: [event.row],
-            frame: event.frame?.multipleFrame ?? {},
+            // An async-only multiple registration has no synchronous wrapper
+            // frame. Retain the known originating operation metadata without
+            // copying the scalar message's Target/outputs or parent snapshot.
+            frame: {
+              ...Object.fromEntries(
+                Object.entries(event.frame ?? {}).filter(([key]) =>
+                  [
+                    'requestTag',
+                    'requestId',
+                    'suppliedRequestId',
+                    'operationId',
+                    'correlationId',
+                    'createdOn',
+                    'createdOnWire',
+                    'operationDepth',
+                    'asyncSourceParent',
+                  ].includes(key),
+                ),
+              ),
+              ...(multipleFrame ?? {}),
+              ...(asyncSourceParent ? { asyncSourceParent } : {}),
+              ...(!Object.keys(sharedVariables).length
+                ? {}
+                : {
+                    sharedVariables: { $type: 'ParameterCollection', values: sharedVariables },
+                  }),
+            },
             messageEvent: true,
           };
         }
