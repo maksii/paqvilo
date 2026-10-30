@@ -38,6 +38,7 @@ import { populatePluginSystemOutputs } from './plugin-response.mjs';
 import { pluginFailure } from './plugin-fault.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { pluginMessageHasPipeline, pluginStepInert } from './plugin-message-admission.mjs';
+import { ownershipOf } from './dataverse-security.mjs';
 import {
   recordStepConstructorSettings,
   copyStepConstructorSettings,
@@ -933,6 +934,26 @@ function matchingPluginSteps(
   );
 }
 
+/** The entries the platform puts in every pipeline's SharedVariables (native recordings of Web API and plug-in
+ * SDK requests): IsAutoTransact (false for reads), the caller's Accept-Language ('' for a plug-in's SDK request)
+ * and, on Create, DefaultsAddedFlag. */
+function platformSharedVariables(operation, acceptLanguage = '') {
+  return {
+    IsAutoTransact: !['retrieve', 'retrievemultiple'].includes(operation),
+    AcceptLang: String(acceptLanguage ?? ''),
+    ...(['create', 'createmultiple'].includes(operation) ? { DefaultsAddedFlag: true } : {}),
+  };
+}
+
+/** The ChangedEntityTypes key a main operation adds (always with the value 'Update', also for Create and Delete).
+ * Natively it lists user-owned tables and association intersects; an organization-owned table is absent. */
+function changedEntityType(store, operation, entity, intersectEntity) {
+  if (['associate', 'disassociate'].includes(operation)) return intersectEntity ?? null;
+  if (!['create', 'update', 'delete'].includes(operation) || !store) return null;
+  const mapping = store.resolveMapping(entity);
+  return ownershipOf(entity, null, mapping) === 'user' ? entity : null;
+}
+
 /** Metadata admission is shared by synchronous phases and queued delivery. */
 export function pluginPhaseMatches(items, context) {
   return matchingPluginSteps(items, context).length > 0;
@@ -963,6 +984,7 @@ export function runPluginPhase({
   previousRecords,
   records,
   associationParameters,
+  intersectEntity,
   record,
   previous,
   identity,
@@ -974,6 +996,7 @@ export function runPluginPhase({
   customApi,
   messageParameters,
   portalRequest = false,
+  sdkFromSandbox = false,
   preValidationSourceOperation,
   frameworkInputTarget,
   concurrencyBehavior = 0,
@@ -994,6 +1017,10 @@ export function runPluginPhase({
     executionFrames.set(record, {});
   if (initialFrame) executionFrames.set(record, cloneStateData(initialFrame));
   const phaseFrame = executionFrames.get(record) ?? {};
+  // The main operation's InputParameters are the PreValidation view; keep it for a main-operation ParentContext
+  // when no PreValidation step produced a snapshot.
+  if (stage === 10 && !asyncExecution && ['create', 'update', 'delete'].includes(operation))
+    phaseFrame.mainOperationTarget ??= cloneStateData(target ?? {});
   // Durable jobs must retain the originating operation depth even when no
   // synchronous registration executes. Internal message delegation shares it.
   phaseFrame.operationDepth ??=
@@ -1005,12 +1032,15 @@ export function runPluginPhase({
       Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0),
     ) + 1;
   executionFrames.set(record, phaseFrame);
-  if (operation === 'update') {
+  // Native Update and Delete requests carry ConcurrencyBehavior (Default unless an If-Match row version applies).
+  if (operation === 'update' || (operation === 'delete' && stage === 10)) {
     phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
     phaseFrame.inputParameters.values.ConcurrencyBehavior ??= {
       $type: 'ConcurrencyBehavior',
       value: concurrencyBehavior,
     };
+  }
+  if (operation === 'update') {
     if (preValidationSourceOperation === 'upsert' && !phaseFrame.sdkFrameworkSource)
       phaseFrame.sdkFrameworkSource = {
         operation: 'upsert',
@@ -1031,7 +1061,12 @@ export function runPluginPhase({
     ['create', 'update', 'delete'].includes(operation) &&
     !phaseFrame.inputTagConsumed
   ) {
-    if (phaseFrame.inputParameters?.values) delete phaseFrame.inputParameters.values.tag;
+    if (phaseFrame.inputParameters?.values) {
+      delete phaseFrame.inputParameters.values.tag;
+      delete phaseFrame.inputParameters.values.FromSandbox;
+      // Native Delete PreOperation/PostOperation inputs hold only the Target (Update keeps ConcurrencyBehavior).
+      if (operation === 'delete') delete phaseFrame.inputParameters.values.ConcurrencyBehavior;
+    }
     phaseFrame.inputTagConsumed = true;
   }
   if (!Object.hasOwn(phaseFrame, 'requestTag')) {
@@ -1044,6 +1079,14 @@ export function runPluginPhase({
           values: { tag: phaseFrame.requestTag, ...(phaseFrame.inputParameters?.values ?? {}) },
         };
     }
+  }
+  if (stage === 10 && !asyncExecution && ['create', 'update', 'delete'].includes(operation)) {
+    // A sandboxed plug-in's SDK request is marked FromSandbox in its PreValidation (and main operation) inputs.
+    if (sdkFromSandbox) {
+      phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
+      phaseFrame.inputParameters.values.FromSandbox ??= true;
+    }
+    phaseFrame.mainOperationInputs ??= cloneStateData(phaseFrame.inputParameters?.values ?? {});
   }
   if (
     store &&
@@ -1061,25 +1104,47 @@ export function runPluginPhase({
     phaseFrame?.inputParameters?.values?.Target?.$type === 'Entity'
   )
     phaseFrame.inputParameters.values.Target.id = record[store.resolveMapping(entity).idColumn];
-  if (
-    stage !== 10 &&
-    !asyncExecution &&
-    ['create', 'update', 'delete'].includes(operation) &&
-    phaseFrame?.preValidationContext &&
-    !phaseFrame.preValidationSharedDetached
-  ) {
-    const prior = phaseFrame.sharedVariables?.values ?? {};
-    phaseFrame.sharedVariables = {
-      $type: 'ParameterCollection',
-      values: Object.hasOwn(prior, 'tag') ? { tag: prior.tag } : {},
-    };
-    phaseFrame.preValidationSharedDetached = true;
-  }
-  if (operation === 'update' && stage !== 10 && !asyncExecution && !phaseFrame.frameworkSharedInitialized) {
-    phaseFrame.sharedVariables ??= { $type: 'ParameterCollection', values: {} };
-    phaseFrame.sharedVariables.values.AcceptLang ??= acceptLanguage;
-    phaseFrame.sharedVariables.values.IsAutoTransact ??= true;
-    phaseFrame.frameworkSharedInitialized = true;
+  if (!asyncExecution && !customApi && !/^onexternal/.test(operation)) {
+    // Native pipelines start every SharedVariables collection with the platform's entries (see
+    // platformSharedVariables). A plug-in-issued SDK request carries no Accept-Language.
+    const nested = Boolean(store?.pluginParentContext || pluginInvocationSdkParent(store)),
+      platform = platformSharedVariables(
+        operation,
+        nested ? '' : acceptLanguage || identity?.dataverse?.acceptLanguage,
+      );
+    if (!phaseFrame.platformSharedSeeded) {
+      phaseFrame.sharedVariables = {
+        $type: 'ParameterCollection',
+        values: { ...platform, ...(phaseFrame.sharedVariables?.values ?? {}) },
+      };
+      phaseFrame.platformSharedSeeded = true;
+    }
+    // PreValidation shares the main operation's collection (the ParentContext of stages 20 and 40); PreOperation
+    // and PostOperation start their own one.
+    if (stage !== 10 && ['create', 'update', 'delete'].includes(operation) && !phaseFrame.mainSharedVariables) {
+      const prior = phaseFrame.sharedVariables.values;
+      phaseFrame.mainSharedVariables = phaseFrame.sharedVariables;
+      phaseFrame.sharedVariables = {
+        $type: 'ParameterCollection',
+        values: { ...platform, ...(Object.hasOwn(prior, 'tag') ? { tag: prior.tag } : {}) },
+      };
+      phaseFrame.preValidationSharedDetached = true;
+    }
+    // After the main operation wrote, the request's root collection lists the security-relevant tables it changed.
+    if (stage === 40 && !nested && !phaseFrame.delegatedParentContext) {
+      const table = changedEntityType(store, operation, entity, intersectEntity);
+      // An HTTP Upsert's framework operation (plugin-sdk-parent selectSdkEntryParent) is the root when present.
+      const root = phaseFrame.sdkFrameworkSource
+        ? (phaseFrame.sdkFrameworkSource.sharedVariables ??= {
+            $type: 'ParameterCollection',
+            values: { AcceptLang: phaseFrame.sdkFrameworkSource.acceptLanguage ?? '', IsAutoTransact: false },
+          })
+        : ['create', 'update', 'delete'].includes(operation)
+          ? phaseFrame.mainSharedVariables
+          : phaseFrame.sharedVariables;
+      if (table && root)
+        root.values.ChangedEntityTypes = { ...(root.values.ChangedEntityTypes ?? {}), [table]: 'Update' };
+    }
   }
   if (customApi) {
     const frame = executionFrames.get(record) ?? {};
@@ -1105,6 +1170,40 @@ export function runPluginPhase({
     bypassCustomPlugins,
     diagnostic,
   }).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+  // Context4 image collections are shared by a stage: they hold the images of every registration of that stage
+  // (at PostOperation including queued asynchronous ones). Asynchronous jobs reuse the committed record.
+  if (!asyncExecution && !bulk && !customApi) {
+    const live = (list) =>
+      list.filter(
+        (item) =>
+          item.mode !== 'disabled' &&
+          pluginStepMatchesAttributes(item, { store, entity, operation, changedAttributes }),
+      );
+    const queued =
+      stage === 40
+        ? live(
+            matchingPluginSteps(items, {
+              store,
+              entity,
+              operation,
+              stage,
+              changedAttributes,
+              asyncExecution: true,
+              ignoreFiltering: true,
+              bypassStepIds: bypassStepIds ?? [],
+              bypassCustomPlugins,
+              diagnostic: () => {},
+            }),
+          )
+        : [];
+    phaseFrame.stageImages = {
+      ...phaseFrame.stageImages,
+      [stage]: {
+        registrations: [...live(matched), ...queued].map((item) => item.images ?? []).filter((images) => images.length),
+        asynchronous: queued.length > 0,
+      },
+    };
+  }
   // Mock/handler read outputs also belong to the SDK response frame. Ordinary reads
   // without an executing observer keep the plain projection path.
   if (

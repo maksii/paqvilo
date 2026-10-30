@@ -207,6 +207,7 @@ function* associationSteps(
         operation,
         stage,
         associationParameters: parameters,
+        ...(rel.intersect ? { intersectEntity: rel.intersect.entity } : {}),
         record: holder,
         identity,
         changedAttributes: [],
