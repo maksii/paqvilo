@@ -593,6 +593,8 @@ export function createAsyncPluginRunner({
                     'createdOnWire',
                     'operationDepth',
                     'asyncSourceParent',
+                    'bulkOrigin',
+                    'formattedTargetKeys',
                   ].includes(key),
                 ),
               ),

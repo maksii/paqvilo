@@ -36,6 +36,7 @@ import { CRM_FUNCTIONS } from './dataverse-conditions.mjs';
 import { runtimeConstructorSettings } from './plugin-constructor-configuration.mjs';
 import { validateSdkTag, canonicalTagParent } from './plugin-request-tag.mjs';
 import { executePlatformSdkMessage, isPlatformSdkMessage } from './plugin-platform-messages.mjs';
+import { formatPipelineTargets, pipelineFormattedValues } from './plugin-formatted-values.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginClrConfiguration', status = 409) => {
@@ -1690,13 +1691,25 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     };
     frame.preValidationSharedDetached = true;
   }
+  // FormattedValues are the calling user's (plugin-formatted-values.mjs).
+  const formatUserId =
+    store.pluginExecutionUserId ??
+    frame.callerIdentity?.systemUserId ??
+    context.executionUserId ??
+    descriptor.serviceProfile.userId;
   const image = (row, registration) => {
     if (!row) return null;
-    return recordToSdkEntity(store, entity, imageAttributes(row), {
+    const { formattedValues: _, ...value } = recordToSdkEntity(store, entity, imageAttributes(row), {
       allColumns: !registration.attributes?.length,
       columns: registration.attributes ?? [],
       retrieved: true,
     });
+    const formattedValues = pipelineFormattedValues(store, entity, value, {
+      userId: formatUserId,
+      retrieved: true,
+      currencyId: row.transactioncurrencyid,
+    });
+    return Object.keys(formattedValues).length ? { ...value, formattedValues } : value;
   };
   const asynchronous = (step.contract?.mode ?? 0) === 1,
     crud = ['create', 'update', 'delete'].includes(operation),
@@ -2080,5 +2093,14 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   if (asynchronous)
     answer.context.ParentContext = asynchronousParentChain(answer.context.ParentContext, answer.context);
   answer.context.ParentContext = asyncMultiplePluginParent(frame, operation, entity) ?? answer.context.ParentContext;
+  formatPipelineTargets(store, {
+    entity,
+    operation,
+    stage,
+    frame,
+    userId: formatUserId,
+    values: answer.inputParameters.values,
+    currencyId: bulk ? undefined : record?.transactioncurrencyid,
+  });
   return answer;
 }

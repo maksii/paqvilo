@@ -1004,6 +1004,7 @@ export function runPluginPhase({
   concurrencyBehavior = 0,
   bulkConcurrencyBehavior,
   inheritsRequestTag = true,
+  bulkOrigin = false,
   acceptLanguage = '',
   asyncExecution = false,
   initialFrame,
@@ -1022,6 +1023,8 @@ export function runPluginPhase({
   const continued = executionFrames.has(record) && !initialFrame && !(stage === 10 && !continuePhase);
   if (initialFrame) executionFrames.set(record, cloneStateData(initialFrame));
   const phaseFrame = executionFrames.get(record) ?? {};
+  // A request that entered as a multiple message (plugin-bulk.mjs) formats its Update Targets (plugin-formatted-values.mjs).
+  if (bulkOrigin) phaseFrame.bulkOrigin = true;
   // The main operation's InputParameters are the PreValidation view; keep it for a main-operation ParentContext
   // when no PreValidation step produced a snapshot.
   if (stage === 10 && !asyncExecution && ['create', 'update', 'delete'].includes(operation))

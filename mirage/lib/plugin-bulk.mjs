@@ -157,6 +157,7 @@ function* bulkSteps(
       identity,
       changedAttributes: [...new Set(targets.flatMap((target) => Object.keys(target.attributes ?? {})))],
       portalRequest,
+      bulkOrigin: true,
       bypassStepIds,
       bypassCustomPlugins,
       ...(concurrencyBehavior === undefined ? {} : { bulkConcurrencyBehavior: concurrencyBehavior }),
