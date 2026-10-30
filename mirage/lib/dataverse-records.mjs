@@ -3400,7 +3400,9 @@ export function createRecordHandlers({
           parameters.Target?.logicalName === originalBinding.entity &&
           String(parameters.Relationship?.schemaName ?? '').toLowerCase() ===
             originalBinding.schemaName.toLowerCase() &&
-          (parameters.Relationship?.primaryEntityRole ?? null) === (originalBinding.role ?? null) &&
+          // A step that drops the role keeps the source-qualified direction; only another role changes it.
+          (parameters.Relationship?.primaryEntityRole ?? originalBinding.role ?? null) ===
+            (originalBinding.role ?? null) &&
           parameters.RelatedEntities?.values?.every(
             (reference) => reference.logicalName === originalBinding.relatedEntity,
           );
