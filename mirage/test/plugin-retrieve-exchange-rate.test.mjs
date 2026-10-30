@@ -1,4 +1,5 @@
 // @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, crud scenario: a Create carrying a money value runs RetrieveExchangeRate/transactioncurrency PreOperation, PostOperation and asynchronous steps (not its registered PreValidation step) under Create/25 (MultiCurrencyPlugin) < Create/30, as SYSTEM for the caller, input TransactionCurrencyId, output ExchangeRate already at PreOperation; Creates without a money value run none
+// @parity-evidence: native recorder captures 2026-10-30 currency (native and native-r2): a money PATCH runs RetrieveExchangeRate under Update/25; the fixture gains an Update step so the Update frame exists
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
@@ -40,6 +41,7 @@ async function fixture(t) {
   const steps = [
     step(1, 'Create', 20),
     step(2, 'Create', 40),
+    step(7, 'Update', 20),
     step(3, 'RetrieveExchangeRate', 10),
     step(4, 'RetrieveExchangeRate', 20),
     step(5, 'RetrieveExchangeRate', 40),
@@ -115,4 +117,26 @@ test('a Create without a money value runs no RetrieveExchangeRate', async (t) =>
     f.seen.filter((entry) => entry.at.startsWith('RetrieveExchangeRate')),
     [],
   );
+});
+
+// @test-kind parity: native recorder captures 2026-10-30 currency (native and native-r2): a PATCH writing a money value runs RetrieveExchangeRate under Update/25 < Update/30; a PATCH without one runs none
+test('an Update that writes a money value runs RetrieveExchangeRate under Update/25', async (t) => {
+  const f = await fixture(t);
+  assert((await f.request('POST', '/x_orders', { x_orderid: priced, x_name: 'Priced' })).status < 300);
+  await f.backend.settle();
+  f.seen.length = 0;
+  const renamed = await f.request('PATCH', `/x_orders(${priced})`, { x_name: 'Renamed' });
+  assert(renamed.status < 300, await renamed.text());
+  assert.deepEqual(
+    f.seen.filter((entry) => entry.at.startsWith('RetrieveExchangeRate')),
+    [],
+  );
+  const repriced = await f.request('PATCH', `/x_orders(${priced})`, { x_total: 4.5 });
+  assert(repriced.status < 300, await repriced.text());
+  await f.backend.settle();
+  const system = f.store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM').systemuserid;
+  const pre = f.seen.find((entry) => entry.at === 'RetrieveExchangeRate/20/0');
+  assert.deepEqual(pre.chain, [`Update/25/${system}`, `Update/30/${system}`]);
+  assert.equal(f.seen.filter((entry) => entry.at.startsWith('RetrieveExchangeRate')).length, 3);
+  assert.equal(f.store.tableRows('x_order')[0].x_total_base, 4.5);
 });

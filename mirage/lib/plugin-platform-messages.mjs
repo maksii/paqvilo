@@ -589,14 +589,19 @@ function mergeUnsupported(logical) {
 }
 
 /**
- * The RetrieveExchangeRate the platform's MultiCurrencyPlugin issues at internal stage 25 of a Create that writes a money
- * value (recorded native crud): PreOperation and PostOperation (no PreValidation, even with a registered step) inside the
- * Create's transaction, at its depth and request, executing as SYSTEM for the caller, with TransactionCurrencyId as the
- * only input and the ExchangeRate output already present at PreOperation; the asynchronous steps queue once the Create
- * commits. ParentContext is the Create's PreOperation context reported as stage 25 (plugin-internal-stage.mjs). Answers
- * the ExchangeRate the message ends with (a PostOperation step may replace it).
+ * The RetrieveExchangeRate the platform's MultiCurrencyPlugin issues at internal stage 25 of a Create or Update that
+ * writes a money value (recorded native crud and currency): PreOperation and PostOperation (no PreValidation, even with a
+ * registered step) inside the issuer's transaction, at its depth and request, executing as SYSTEM for the caller, with
+ * TransactionCurrencyId as the only input and the ExchangeRate output already present at PreOperation; the asynchronous
+ * steps queue once the issuer commits. ParentContext is the issuer's PreOperation context reported as stage 25
+ * (plugin-internal-stage.mjs). Answers the ExchangeRate the message ends with (a PostOperation step may replace it).
+ * ponytail: a CreateMultiple runs it once per target; natively once per request under Create/20 < CreateMultiple/25.
  */
-export function runRetrieveExchangeRate(store, { mapping, row, target, currencyId, rate, identity, options = {} }) {
+export function runRetrieveExchangeRate(
+  store,
+  { mapping, operation: issuer = 'create', row, previous = null, target, currencyId, rate, identity, options = {} },
+) {
+  const issuerMessage = issuer === 'update' ? 'Update' : 'Create';
   const entity = 'transactioncurrency',
     operation = 'retrieveexchangerate',
     bypass = { bypassStepIds: options.bypassStepIds, bypassCustomPlugins: options.bypassCustomPlugins === true };
@@ -611,11 +616,11 @@ export function runRetrieveExchangeRate(store, { mapping, row, target, currencyI
   initializePluginOperation(issuing, store, outer, { requestId: issuing.suppliedRequestId ?? store.pluginRequestId });
   const guid = (value) => ({ $type: 'Guid', value });
   const id = row[mapping.idColumn],
-    owner = internalStepReference('MultiCurrencyPlugin', 'Create'),
+    owner = internalStepReference('MultiCurrencyPlugin', issuerMessage),
     initiating = outer?.values?.InitiatingUserId ?? guid(callerId ?? executing);
   // The issuing Create's PreOperation context for steps that are not CLR (a CLR step builds the full one itself).
   const createValues = {
-    MessageName: 'Create',
+    MessageName: issuerMessage,
     PrimaryEntityName: mapping.logicalName,
     SecondaryEntityName: 'none',
     PrimaryEntityId: guid(id),
@@ -659,8 +664,9 @@ export function runRetrieveExchangeRate(store, { mapping, row, target, currencyI
   const record = { [store.resolveMapping(entity).idColumn]: EMPTY };
   setInternalStageSource(record, {
     entity: mapping.logicalName,
-    operation: 'create',
-    message: 'Create',
+    operation: issuer,
+    message: issuerMessage,
+    previous,
     target,
     record: row,
     frame: issuing,

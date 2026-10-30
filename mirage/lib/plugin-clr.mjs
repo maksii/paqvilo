@@ -1731,7 +1731,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       stage: 20,
       target: internal.target,
       record: internal.record,
-      previous: null,
+      previous: internal.previous ?? null,
       frame: internal.frame,
       depth,
     });

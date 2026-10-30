@@ -5443,7 +5443,7 @@ export class DataStore {
         latest,
       );
     }
-    options.mainOperation?.(mapping, 'update', row, latest, target);
+    options.mainOperation?.(mapping, 'update', row, latest, target, { identity, options });
     const effects = this.applyPlugins(mapping.logicalName, 'update', row, rows[index], identity);
     // Declarative plugins mutate the row directly, independently of Target. Only changed columns reach the
     // attachment policy, so files already stored are not revalidated.

@@ -155,7 +155,7 @@ function stamp(api, state, mapping, { operation: _operation, data, existing }) {
 // The main operation derives the exchange rate and base amounts from the row as PreOperation left it (native Create:
 // they first appear in the PostOperation Target). An update re-derives them only when it writes a money column or the
 // currency; clearing a money value clears its base amount.
-function settle(api, mapping, { operation, row, target, identity, options }) {
+function settle(api, mapping, { operation, row, previous, target, identity, options }) {
   const money = moneyColumnsOf(api, mapping.logicalName);
   if (!money.length) return;
   const touched = operation === 'create' ? null : new Set(Object.keys(target ?? {}));
@@ -166,10 +166,21 @@ function settle(api, mapping, { operation, row, target, identity, options }) {
   const currency = currencyById(api, id);
   if (!currency) throw notFound(id);
   let rate = rateOf(currency, baseCurrencyOf(api));
-  // A Create that writes a money value runs the platform's RetrieveExchangeRate sub-operation (internal stage 25) with
-  // its own plug-in pipeline; its ExchangeRate output prices the base amounts (recorded native crud).
-  if (operation === 'create' && money.some(([name]) => !empty(row[name])))
-    rate = runRetrieveExchangeRate(api.store, { mapping, row, target, currencyId: id, rate, identity, options });
+  // A Create that writes a money value, or an Update that writes one, runs the platform's RetrieveExchangeRate
+  // sub-operation (internal stage 25) with its own plug-in pipeline; its ExchangeRate output prices the base amounts
+  // (recorded native crud and currency).
+  if (money.some(([name]) => (!touched || touched.has(name)) && !empty(row[name])))
+    rate = runRetrieveExchangeRate(api.store, {
+      mapping,
+      operation,
+      row,
+      previous,
+      target,
+      currencyId: id,
+      rate,
+      identity,
+      options,
+    });
   row.exchangerate = rate;
   for (const [name, definition] of money) {
     if (empty(row[name])) continue;
