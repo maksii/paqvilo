@@ -1426,9 +1426,12 @@ export function runPluginPhase({
   // Tracing (docs/design/tracing.md): a plugin-stage span only when steps matched, and one plugin-step span per step that
   // runs (handler, CLR, mock, web hook). The step body runs inside its span, so its SDK calls and writes nest under it.
   const tracing = matched.length && store?.traces?.enabled ? store.traces : null;
-  // The record the stage and its steps act on (D-R3-1): the target row's id; a bulk or multi-row message has none.
+  // The record the stage and its steps act on (D-R3-1): the target row's id; a bulk or multi-row message, or an unbound
+  // custom API (table 'none'), has none.
   const recordId =
-    tracing && !bulk && !multiple && record ? (record[store.resolveMapping(entity)?.idColumn] ?? null) : null;
+    tracing && !bulk && !multiple && record && entity !== 'none'
+      ? (record[store.resolveMapping(entity)?.idColumn] ?? null)
+      : null;
   // A step's input at level full (D-R3-20): the target, the input parameters, the registered images by alias and attribute
   // filter, the shared variables and the execution context. A CLR step's comes from the host bridge context (clrStepInput)
   // and a handler's from the context it receives (contextStepInput); this one is for steps that receive none (mock, web hook).

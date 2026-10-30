@@ -9,6 +9,7 @@ import { pluginCatalogue, pluginHandlers, pluginStepMatchesEntity, runPluginPhas
 import { assertPluginMessageAdmission } from '../lib/plugin-message-admission.mjs';
 import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { install as installCustomApi } from '../lib/dataverse-customapi.mjs';
+import { createTraceStore } from '../lib/trace-store.mjs';
 
 const ASSEMBLY = '40000000-0000-4000-8000-0000000000a1';
 const TYPE = '50000000-0000-4000-8000-0000000000a1';
@@ -318,6 +319,7 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
 test('a custom API created at runtime gets its message and filter, and its registered steps run around it', async (t) => {
   const f = await fixture(t);
   await installCustomApi(f.api).ready; // the custom API extension the host installs
+  f.store.traces = createTraceStore({ settings: { level: 'full' } }); // traced steps of an unbound API name no record
   const api = '41000000-0000-4000-8000-0000000000a1';
   const created = await f.request('POST', '/customapis', {
     customapiid: api,
