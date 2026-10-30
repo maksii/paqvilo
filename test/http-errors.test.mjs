@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { observeHttpErrors } from '../lense/http-errors.mjs';
+import { boundedJsonBody, observeHttpErrors } from '../lense/http-errors.mjs';
 
 test('HTTP capture sets protocol byte bounds and stops reading oversized chunked responses without cancelling them', async () => {
   const client = new EventEmitter(),
@@ -146,4 +146,24 @@ test('only target-origin error responses are observed and pending bodies are bou
   assert.equal(rows.length, 1);
   assert.equal(rows[0].body, null);
   await capture.close();
+});
+
+test('the fallback body reader reads only small, declared-size, unencoded JSON bodies', async () => {
+  const body = JSON.stringify({ error: { message: 'Invented failure' } });
+  const response = (headers, bytes = Buffer.from(body)) => ({
+    allHeaders: async () => headers,
+    body: async () => bytes,
+  });
+  const sized = {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(Buffer.byteLength(body)),
+  };
+  assert.deepEqual(await boundedJsonBody(response(sized)), { error: { message: 'Invented failure' } });
+  assert.equal(await boundedJsonBody(response({ 'content-type': 'application/json' })), null, 'chunked: no size');
+  assert.equal(await boundedJsonBody(response({ ...sized, 'content-length': '40000' })), null, 'over the bound');
+  assert.equal(await boundedJsonBody(response({ ...sized, 'content-type': 'text/html' })), null, 'not JSON');
+  assert.equal(await boundedJsonBody(response({ ...sized, 'content-encoding': 'gzip' })), null, 'encoded');
+  assert.equal(await boundedJsonBody(response(sized, Buffer.from('{'))), null, 'malformed');
+  const stalled = { allHeaders: async () => sized, body: () => new Promise(() => {}) };
+  assert.equal(await boundedJsonBody(stalled, { timeoutMs: 20 }), null, 'a stalled body is not awaited forever');
 });

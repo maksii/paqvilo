@@ -34,11 +34,19 @@ export function setTraceHeaders(res, span) {
 const STALL_MS = 5000;
 const CHECK_MS = 1000;
 
-// The stall check runs on a timer and then on the next check phase (setImmediate), so it always sees the I/O poll that
-// follows a blocked stretch: a synchronous burst never counts as a reader that stopped reading.
+// The stall check runs on a timer and then on the next check phase (setImmediate), so it always follows an I/O poll. It
+// is told it ran late (by more than one interval) when the event loop was blocked meanwhile: then no reader could take
+// anything, so that stretch never counts towards a stall.
 const deferCheck = (interval) => (fn) => {
-  const timer = setTimeout(() => setImmediate(fn), interval);
+  const due = Date.now() + interval;
+  const timer = setTimeout(() => setImmediate(() => fn({ late: Date.now() - due > interval })), interval);
   timer.unref?.();
+};
+// The bytes of a response's socket still waiting in libuv's write queue. A large write (a corked burst is one writev)
+// leaves writableLength unchanged until the kernel took all of it, while this falls as the peer reads.
+const queuedBytes = (res) => {
+  const size = res.socket?._handle?.writeQueueSize;
+  return typeof size === 'number' ? size : null;
 };
 
 /**
@@ -49,9 +57,12 @@ const deferCheck = (interval) => (fn) => {
  *
  * A write that returns false starts a wait for `drain`. Sending never drops a client: a deferred check does (defer(fn),
  * by default a timer of min(stallMs, 1 s) followed by setImmediate, so it runs after the I/O poll of a responsive loop,
- * never inside a synchronous burst). Each check compares the bytes the client has taken since the last one: any
- * progress restarts the stall clock (now(), default Date.now); a client still waiting with no progress for more than
- * stallMs (default 5 s) is dropped and destroyed; that and a closed response are the only ways a client leaves. A reader
+ * never inside a synchronous burst). Each check looks for progress since the last one: the bytes the client has taken
+ * off its buffer grew, or its socket's libuv write queue shrank (the peer is reading a large write that has not
+ * completed yet). Progress, or a check that ran late because the loop was blocked (defer passes { late: true }),
+ * restarts the stall clock (now(), default Date.now); a client still waiting with no progress for more than stallMs
+ * (default 5 s) of a free loop is dropped and destroyed; that and a closed response are the only ways a client leaves,
+ * each reported to onDrop(res, 'stalled' | 'closed'). A reader
  * whose every frame meets back-pressure (frames larger than the socket's high-water mark) still drains, so it is making
  * progress and stays. So a stalled reader never makes the server buffer without bound, and neither back-pressure nor a
  * blocked event loop (which keeps every reader from draining) ever drops a healthy one. A refused write is still queued:
@@ -62,35 +73,40 @@ const deferCheck = (interval) => (fn) => {
  */
 export function sseClients({
   onEmpty,
+  onDrop,
   now = Date.now,
   stallMs = STALL_MS,
   defer = deferCheck(Math.min(stallMs, CHECK_MS)),
 } = {}) {
-  const clients = new Map(); // res -> { waiting, since, written, taken, checking }
-  const drop = (res) => {
-    if (clients.delete(res) && !clients.size) onEmpty?.();
+  const clients = new Map(); // res -> { waiting, since, written, taken, queued, checking }
+  const drop = (res, reason = 'closed') => {
+    if (!clients.delete(res)) return;
+    onDrop?.(res, reason);
+    if (!clients.size) onEmpty?.();
   };
   const kill = (res) => {
-    drop(res);
+    drop(res, 'stalled');
     res.destroy();
   };
   // The bytes the client has taken off its buffer so far (written minus still buffered).
   const taken = (res, state) => state.written - res.writableLength;
-  const check = (res, state) => {
+  const check = (res, state, { late = false } = {}) => {
     state.checking = false;
     if (clients.get(res) !== state || !state.waiting) return;
     if (res.destroyed || res.writableEnded) return drop(res);
-    const progress = taken(res, state);
-    if (progress > state.taken) {
-      state.taken = progress;
-      state.since = now();
-    } else if (now() - state.since > stallMs) return kill(res);
+    const done = taken(res, state),
+      queued = queuedBytes(res);
+    const progress = done > state.taken || (queued !== null && state.queued !== null && queued < state.queued);
+    state.taken = done;
+    state.queued = queued;
+    if (progress || late) state.since = now();
+    else if (now() - state.since > stallMs) return kill(res);
     schedule(res, state);
   };
   const schedule = (res, state) => {
     if (state.checking) return;
     state.checking = true;
-    defer(() => check(res, state));
+    defer((info) => check(res, state, info));
   };
   return {
     get size() {
@@ -99,7 +115,7 @@ export function sseClients({
     [Symbol.iterator]: () => clients.keys(),
     add(res) {
       if (res.destroyed || res.writableEnded) return false;
-      const state = { waiting: false, since: 0, written: 0, taken: 0, checking: false };
+      const state = { waiting: false, since: 0, written: 0, taken: 0, queued: null, checking: false };
       clients.set(res, state);
       res.on('drain', () => {
         state.waiting = false;
@@ -119,6 +135,7 @@ export function sseClients({
           state.waiting = true;
           state.since = now();
           state.taken = taken(res, state);
+          state.queued = queuedBytes(res);
           schedule(res, state);
         }
       }
@@ -142,7 +159,7 @@ export function sseClients({
     },
     end() {
       for (const res of [...clients.keys()]) {
-        drop(res);
+        drop(res, 'ended');
         res.end();
       }
     },

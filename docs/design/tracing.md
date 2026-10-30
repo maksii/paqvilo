@@ -551,17 +551,22 @@ waits for them.
 `mirage/lib/trace-hosts.mjs` holds what every host shares:
 
 - `traceSessionKey(contactId, visitorId)`, `ANONYMOUS_ROOT` and `setTraceHeaders(res, span)` (roots).
-- `sseClients({ onEmpty, now = Date.now, stallMs = 5000, defer })` → `{ add(res), send(message), flush(), end(), size,
-[Symbol.iterator] }`, the client set of an SSE channel (D-R3-18). Every frame is written, so a reader that keeps up
-  loses nothing however large a burst is. A write that returns `false` starts a wait for `drain`. `send` never drops a
-  client on time: a synchronous burst can hold the event loop longer than `stallMs`, and no reader can drain while it
-  does. A deferred check (`defer(fn)`; by default a timer of `min(stallMs, 1 s)` followed by `setImmediate`, so it runs
-  after the I/O poll of a free loop) compares the bytes the client has taken since the previous check: progress restarts
-  the stall clock, and a client still waiting that took nothing for more than `stallMs` is dropped and destroyed. That
-  and a closed response are the only ways a client leaves: a reader whose every frame meets back-pressure (frames larger
-  than the socket's high-water mark, small kernel buffers) drains, so it is making progress and stays. A refused write
-  is queued, never skipped. `flush()` writes an SSE comment to each client and resolves once its callback ran (every
-  earlier frame, the queued ones included, reached the socket) or the client closed.
+- `sseClients({ onEmpty, onDrop, now = Date.now, stallMs = 5000, defer })` → `{ add(res), send(message), flush(),
+end(), size, [Symbol.iterator] }`, the client set of an SSE channel (D-R3-18). Every frame is written, so a reader that
+  keeps up loses nothing however large a burst is. A write that returns `false` starts a wait for `drain`. `send` never
+  drops a client on time: a synchronous burst can hold the event loop longer than `stallMs`, and no reader can drain
+  while it does. A deferred check (`defer(fn)`; by default a timer of `min(stallMs, 1 s)` followed by `setImmediate`, so
+  it runs after the I/O poll of a free loop, and called with `{ late: true }` when it ran more than an interval late)
+  looks for progress since the previous check: the bytes the client has taken off its buffer grew, or its socket's libuv
+  write queue (`_handle.writeQueueSize`) shrank. The second matters because a corked burst is one writev:
+  `writableLength` stays put until the kernel took all of it, while the queue falls as the peer reads. Progress, or a
+  late check (the blocked stretch is never counted), restarts the stall clock; a client still waiting that made no
+  progress for more than `stallMs` of a free loop is dropped and destroyed. That and a closed response are the only ways
+  a client leaves (`onDrop(res, 'stalled' | 'closed' | 'ended')` reports each): a reader whose every frame meets
+  back-pressure (frames larger than the socket's high-water mark, small kernel buffers) drains, so it is making
+  progress and stays. A refused write is queued, never skipped. `flush()` writes an SSE comment to each client and
+  resolves once its callback ran (every earlier frame, the queued ones included, reached the kernel; the response's
+  `writableLength` is 0) or the client closed.
 - `tracedFetch(traces, { module = 'http', operation, url, init = {}, forwardHeaders = true, capture = 'full', attributes,
 fetch })` → the `Response` (D-R3-5). It opens an `http-out` span named `<METHOD> <host><path>` under the current span
   (attributes `method`, `url` without credentials and with secret query values hidden, then `status`), sends

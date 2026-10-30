@@ -25,7 +25,8 @@ async function problems(panel, page, ready) {
   return panel.stateFor(page).problems;
 }
 
-async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) {
+// `beforePanel(context, t)`: runs after the context exists and before the panel attaches (to stub a DevTools session).
+async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}, { beforePanel } = {}) {
   const fx = createFixture();
   let context, panel;
   const server = http.createServer((req, res) => {
@@ -79,6 +80,7 @@ async function fixture(t, html = '<h1>Invented page</h1>', contextOptions = {}) 
     siteName: 'invented',
     envName: 'local',
   });
+  beforePanel?.(context, t);
   panel = enablePanel(context, session);
   await context.route('**/__paqvilo/api/**', (route) =>
     session.api(route, new URL(route.request().url()).pathname.split('/').at(-1)),
@@ -253,6 +255,30 @@ test('chunked and sized JSON failures retain escaped details; oversized bodies k
   await showPanelTab(page, panel, 'issues', '<img src=x onerror=alert(1)> Missing parent');
   assert.equal(await page.locator('#paqvilo-panel img').count(), 0);
   assert.match(await page.locator('#paqvilo-panel .body').innerText(), /<img src=x onerror=alert\(1\)> Missing parent/);
+});
+
+// Hosted CI (a loaded Windows runner): the DevTools response observer could not attach in time, so the panel fell back
+// to Playwright's response event and lost the error message of a failed request. The fallback now reads a small JSON
+// body of declared size; a chunked or oversized body keeps only the HTTP metadata.
+test('without the DevTools observer, a sized JSON failure keeps its escaped details and a chunked one its HTTP row', async (t) => {
+  const { page, panel } = await fixture(t, undefined, undefined, {
+    beforePanel: (context, t) =>
+      t.mock.method(context, 'newCDPSession', async () => {
+        throw new Error('Invented DevTools attach failure');
+      }),
+  });
+  for (const route of ['/error-sized', '/error-small']) {
+    const original = page.waitForResponse((response) => new URL(response.url()).pathname === route);
+    await page.evaluate(async (route) => {
+      await (await fetch(route)).text();
+    }, route);
+    await original;
+  }
+  const rows = await problems(panel, page, (list) => list.length >= 2);
+  assert.match(rows.find((row) => row.text.endsWith('/error-sized')).where, /<img.*Missing parent · Internal cause/);
+  assert.equal(rows.find((row) => row.text.endsWith('/error-small')).where, '');
+  await showPanelTab(page, panel, 'issues', '<img src=x onerror=alert(1)> Missing parent');
+  assert.equal(await page.locator('#paqvilo-panel img').count(), 0);
 });
 
 test('interactive dialogs await an answer and headless dismissals produce one panel activity event', async (t) => {

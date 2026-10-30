@@ -138,9 +138,74 @@ test('a blocked event loop never drops a reader that takes bytes once the loop i
   assert.equal(checks.length, 0, 'no check outlives the client');
 });
 
+test('a reader still taking a large write that has not completed is making progress', () => {
+  let clock = 0;
+  const checks = [];
+  const drops = [];
+  const clients = sseClients({
+    now: () => clock,
+    stallMs: 5000,
+    defer: (fn) => checks.push(fn),
+    onDrop: (_res, reason) => drops.push(reason),
+  });
+  const runChecks = (info) => checks.splice(0).forEach((fn) => fn(info));
+  // A corked burst is one writev: writableLength stays put until the kernel took all of it, while the libuv write
+  // queue of the socket falls as the peer reads.
+  const handle = { writeQueueSize: 0 };
+  const res = new Writable({ highWaterMark: 16, write() {} });
+  res.socket = { _handle: handle };
+  clients.add(res);
+  clients.send(`event: a\ndata: ${'x'.repeat(4096)}\n\n`); // refused at 0 ms
+  handle.writeQueueSize = 3_000_000; // the burst is dispatched once the loop is free
+  for (const [at, queued] of [
+    [1000, 3_000_000],
+    [4000, 2_000_000],
+    [8000, 600_000],
+    [12_000, 100_000],
+  ]) {
+    clock = at;
+    handle.writeQueueSize = queued;
+    runChecks();
+    assert.equal(res.destroyed, false, `the reader keeps reading at ${at} ms`);
+  }
+  assert.equal(res.writableLength > 0, true, 'nothing completed, yet the reader was never taken for stalled');
+  clock = 17_001; // the queue stopped shrinking 5 s ago with a free loop
+  runChecks();
+  assert.equal(res.destroyed, true);
+  assert.deepEqual(drops, ['stalled']);
+});
+
+test('a check that ran late because the loop was blocked never counts that stretch as a stall', () => {
+  let clock = 0;
+  const checks = [];
+  const clients = sseClients({ now: () => clock, stallMs: 5000, defer: (fn) => checks.push(fn) });
+  const runChecks = (info) => checks.splice(0).forEach((fn) => fn(info));
+  const res = new Writable({ highWaterMark: 16, write() {} });
+  clients.add(res);
+  clients.send(`event: a\ndata: ${'x'.repeat(64)}\n\n`); // refused at 0 ms
+  clock = 60_000; // the loop was blocked for a minute: the first check after it runs late and has seen no I/O yet
+  runChecks({ late: true });
+  assert.equal(res.destroyed, false, 'the blocked minute is not a stall');
+  clock = 65_000;
+  runChecks();
+  assert.equal(res.destroyed, false, '5 s of a free loop is the limit, not past it');
+  clock = 65_001;
+  runChecks();
+  assert.equal(res.destroyed, true, 'past it with nothing taken while the loop was free');
+});
+
 test('the trace channel delivers every frame of a burst to connectRuntime().trace.subscribe, and flush waits for them', async (t) => {
   const traces = createTraceStore({ settings: { level: 'summary' } });
-  const channel = createTraceChannel(traces);
+  // Diagnostics for a failure on a hosted runner: every drop with its reason, the response at flush and at close.
+  const diagnostics = { drops: [], atFlush: null, atClose: null, clientError: null };
+  const facts = (res) => ({
+    writableLength: res.writableLength,
+    writableEnded: res.writableEnded,
+    destroyed: res.destroyed,
+  });
+  const channel = createTraceChannel(traces, {
+    onDrop: (res, reason) => diagnostics.drops.push({ reason, ...facts(res) }),
+  });
   const routes = createTraceRoutes({ traces, csrf: () => CSRF });
   const SPANS = 50;
   const wide = Object.fromEntries(Array.from({ length: 10 }, (_, index) => [`note${index}`, 'y'.repeat(2000)]));
@@ -158,11 +223,15 @@ test('the trace channel delivers every frame of a burst to connectRuntime().trac
     }
     if (url.pathname === '/_sim/events') {
       res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.on('close', () => (diagnostics.atClose = facts(res)));
       channel(res);
       // About 3 MB of frames in one synchronous burst: a start, an end and a trace-end frame per span.
       for (let index = 0; index < SPANS; index++)
         traces.start({ kind: 'http', name: `GET /burst/${index}`, attributes: wide }).end();
-      flushed = traces.flush().then(() => res.end());
+      flushed = traces.flush().then(() => {
+        diagnostics.atFlush = facts(res);
+        res.end();
+      });
       return;
     }
     res.writeHead(404);
@@ -173,9 +242,16 @@ test('the trace channel delivers every frame of a burst to connectRuntime().trac
   const unsubscribe = client.trace.subscribe((event) => {
     if (event.type === 'span-end') ends.push(event.span.name);
   });
-  await unsubscribe.closed;
+  await unsubscribe.closed.catch((error) => (diagnostics.clientError = { code: error.code, message: error.message }));
   await flushed;
-  assert.equal(ends.length, SPANS, 'every span-end frame arrived');
+  const report = JSON.stringify({ received: ends.length, ...diagnostics });
+  assert.equal(ends.length, SPANS, `every span-end frame arrived: ${report}`);
+  assert.deepEqual(
+    diagnostics.drops.filter((drop) => drop.reason !== 'closed'),
+    [],
+    `no client was dropped: ${report}`,
+  );
+  assert.equal(diagnostics.atFlush?.writableLength, 0, `flush resolved once every byte left: ${report}`);
   assert.deepEqual(
     ends,
     Array.from({ length: SPANS }, (_, index) => `GET /burst/${index}`),

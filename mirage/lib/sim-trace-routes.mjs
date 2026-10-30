@@ -57,17 +57,17 @@ const segment = (value) => {
 
 const traceFrame = (event) => `event: trace\ndata: ${JSON.stringify(event)}\n\n`;
 /**
- * createTraceChannel(traces, { now, stallMs, defer }) -> attach(res, url?): the `trace` channel of a host's /_sim/events
- * stream, shared by both hosts. attach writes a `connected` frame with the store status, then one payload-free frame per
+ * createTraceChannel(traces, { now, stallMs, defer, onDrop }) -> attach(res, url?): the `trace` channel of a host's
+ * /_sim/events stream, shared by both hosts. attach writes a `connected` frame with the store status, then one payload-free frame per
  * store event until the response finishes or closes. The stream query (url, else the request's own URL) may name
  * `events` (a comma list of span-start, span-end, trace-end; default all) and `traceId`: the client then receives only
  * those frame types (filtered in the store, D-M-4) of that trace; an unknown event name answers one `error` frame and
  * ends the stream. Clients with the same filter share one store subscription, held only while one of them listens; the
  * store's flush() waits until the frames reached every client. Client bookkeeping (closed responses never join; every
  * frame is written; a reader that takes nothing for stallMs while the loop is free is dropped) is trace-hosts.mjs
- * sseClients, which takes now, stallMs and defer. traces: the trace store, or a function returning it.
+ * sseClients, which takes now, stallMs, defer and onDrop. traces: the trace store, or a function returning it.
  */
-export function createTraceChannel(traces, { now, stallMs, defer } = {}) {
+export function createTraceChannel(traces, { now, stallMs, defer, onDrop } = {}) {
   const store = typeof traces === 'function' ? traces : () => traces;
   const groups = new Map(); // filter key -> { clients, unsubscribe, subscribe }
   const group = (t, events, traceId) => {
@@ -78,6 +78,7 @@ export function createTraceChannel(traces, { now, stallMs, defer } = {}) {
       now,
       stallMs,
       defer,
+      onDrop,
       onEmpty() {
         entry.unsubscribe?.();
         entry.unsubscribe = null;
