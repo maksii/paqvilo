@@ -144,6 +144,23 @@ function committedPluginParent(store, mapping, operation, target, row, options) 
   };
 }
 
+// Native corpus (pipelineEffects): an asynchronous step sees the operation as it stood when PostOperation began.
+// Target edits, OutputParameters and SharedVariables written by synchronous PostOperation steps do not reach it, so
+// the queued event keeps the pre-PostOperation parameters and the async run populates the system outputs itself.
+function prePostOperationFrame(frame) {
+  return {
+    inputParameters: clone(frame?.inputParameters),
+    outputParameters: clone(frame?.outputParameters),
+    sharedVariables: clone(frame?.sharedVariables),
+  };
+}
+const queuedFrame = (frame, before, asyncSourceParent) => ({
+  ...(frame ?? {}),
+  ...before,
+  systemOutputsPopulated: false,
+  asyncSourceParent,
+});
+
 const metadataField = (mapping, key) => {
   const fields = mapping?.fields ?? mapping?.fieldMetadata ?? {};
   return fields[key] ?? fields[Object.keys(fields).find((name) => name.toLowerCase() === key.toLowerCase())];
@@ -4861,10 +4878,11 @@ export class DataStore {
         );
       }
     // Native asynchronous Create snapshots include materialized defaults and
-    // main-operation fields. Expose that baseline before PostOperation so its
-    // later context edits/removals remain authoritative without changing data.
+    // main-operation fields, as they stood before PostOperation ran.
     Object.assign(pluginTarget, clone(row));
-    const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options);
+    const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options),
+      asyncTarget = clone(pluginTarget),
+      beforePost = prePostOperationFrame(this.pluginFrames?.get(row));
     if (isElastic(m)) {
       this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
         target: pluginTarget,
@@ -4879,12 +4897,12 @@ export class DataStore {
     yield [m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options];
     if (!isElastic(m) && !options.deferCommittedEvent)
       this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
-        target: pluginTarget,
+        target: asyncTarget,
         previous: null,
         identity,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
-        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
+        frame: queuedFrame(this.pluginFrames?.get(row), beforePost, asyncSourceParent),
       });
     return row;
   }
@@ -5023,13 +5041,11 @@ export class DataStore {
         .filter((name) => own(row, name))
         .map((name) => [name, clone(row[name])]),
     );
-    const beforePostTarget = new Set(Object.keys(target));
-    const committedTarget = () => {
-      const values = { ...asyncTargetBaseline, ...clone(target) };
-      for (const name of beforePostTarget) if (!own(target, name)) delete values[name];
-      return values;
-    };
-    const asyncSourceParent = committedPluginParent(this, mapping, 'update', target, row, options);
+    const committedTarget = () => ({ ...asyncTargetBaseline, ...clone(target) });
+    const asyncSourceParent = committedPluginParent(this, mapping, 'update', target, row, options),
+      asyncTarget = committedTarget(),
+      submitted = Object.keys(target),
+      beforePost = prePostOperationFrame(this.pluginFrames?.get(row));
     if (isElastic(mapping)) {
       this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
         target: committedTarget(),
@@ -5043,13 +5059,13 @@ export class DataStore {
     }
     yield [mapping, 'update', 40, target, row, previous, identity, changedAttributes, options];
     if (!isElastic(mapping) && !options.deferCommittedEvent)
-      this.recordCommittedEvent(mapping.logicalName, 'update', row, Object.keys(target), {
-        target: committedTarget(),
+      this.recordCommittedEvent(mapping.logicalName, 'update', row, submitted, {
+        target: asyncTarget,
         previous,
         identity,
         bypassCustomAsync: options.bypassCustomAsync === true,
         bypassStepIds: options.bypassStepIds,
-        frame: { ...(this.pluginFrames?.get(row) ?? {}), asyncSourceParent },
+        frame: queuedFrame(this.pluginFrames?.get(row), beforePost, asyncSourceParent),
       });
     return row;
   }

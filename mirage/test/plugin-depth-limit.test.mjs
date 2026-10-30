@@ -48,21 +48,26 @@ async function recursion(key) {
   store.setPluginPipeline((context) => runPluginPhase({ ...context, store, items, handlers }));
   await assert.rejects(
     store.update('x_widget', row.x_widgetid, { x_count: 1 }, { admin: true }),
-    (error) => error.code === 'LocalPluginDepth' && error.status === 400 && /depth exceeds eight/.test(error.message),
+    (error) => error.code === 'LocalPluginDepth' && error.status === 400 && /depth exceeds 16/.test(error.message),
   );
   return { store, row, calls, depths, handlers, items };
 }
 
-test('A step-id handler that updates its own row stops at depth eight with the plug-in depth fault and rolls back', async () => {
+// Native corpus (dataverse-recorder depth): a synchronous nested Create chain reached Depth 10 and the request
+// answered 204, so the documented on-premises cap of 8 is not the online limit. The local cap is 16.
+test('A step-id handler that updates its own row stops at depth 16 with the plug-in depth fault and rolls back', async () => {
   const { store, row, calls } = await recursion(id);
-  assert.equal(calls, 8);
+  assert.equal(calls, 16);
   assert.equal(store.snapshot().tables.x_widget.find((r) => r.x_widgetid === row.x_widgetid).x_count, 0);
 });
 
-test('A plug-in type handler sees Depth 1 to 8 before the depth fault, and the counter is balanced afterwards', async () => {
+test('A plug-in type handler sees Depth 1 to 16 before the depth fault, and the counter is balanced afterwards', async () => {
   const { store, row, calls, depths } = await recursion(step.typeName);
-  assert.equal(calls, 8);
-  assert.deepEqual(depths, [1, 2, 3, 4, 5, 6, 7, 8]);
+  assert.equal(calls, 16);
+  assert.deepEqual(
+    depths,
+    Array.from({ length: 16 }, (_, i) => i + 1),
+  );
   // The failed chain leaves no residue: a fresh non-recursive handler starts again at Depth 1.
   const seen = [],
     handlers = new Map([

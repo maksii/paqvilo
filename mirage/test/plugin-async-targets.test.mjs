@@ -141,7 +141,10 @@ async function exercise(t, { observe, runtime } = {}) {
   assert.equal(store.tableRows('widget')[0].untouched, 'Stored only');
 }
 
-test('queued multiple Targets contain materialized Create defaults and partial Update stamps while preserving PostOperation removals', async (t) => {
+// Native corpus (dataverse-recorder pipelineEffects): a value a synchronous PostOperation step sets on the Create Target,
+// its custom output and its shared variable are absent from the asynchronous step's context. The queued Target is the
+// one PostOperation started with, so PostOperation context removals and values do not reach it either.
+test('queued multiple Targets contain materialized Create defaults and partial Update stamps, not PostOperation context edits', async (t) => {
   const observed = [];
   await exercise(t, {
     observe: ({ context }) => {
@@ -181,8 +184,10 @@ test('queued multiple Targets contain materialized Create defaults and partial U
         assert.equal(baseline.flag, true);
         assert.ok(baseline.title);
         if (target.scenario === 'removed') {
-          for (const key of ['title', 'flag', 'widgetid']) assert.equal(Object.hasOwn(target, key), false, key);
-          assert.equal(target.text, 'PostOperation context only');
+          assert.equal(target.title, 'Removed from context');
+          assert.equal(target.flag, true);
+          assert.ok(target.widgetid);
+          assert.equal(target.text, 'Stored text');
           assert.equal(baseline.text, 'Stored text');
         } else {
           assert.equal(target.title, 'Baseline');
@@ -207,7 +212,7 @@ test(
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     await fs.writeFile(
       source,
-      `using System;using System.IO;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class AsyncTarget:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext4)p.GetService(typeof(IPluginExecutionContext));var t=((EntityCollection)c.InputParameters["Targets"]).Entities[0];var scenario=t.GetAttributeValue<string>("scenario");var parent=c.ParentContext;var baseline=(Entity)parent.InputParameters["Target"];if(c.Mode!=1||c.IsInTransaction||c.OperationCreatedOn.Kind!=DateTimeKind.Unspecified||parent==null||parent.Stage!=30||parent.Mode!=1||parent.MessageName!=c.MessageName||parent.Depth!=c.Depth||parent.OperationId!=c.OperationId||parent.RequestId!=c.RequestId||parent.OperationCreatedOn!=c.OperationCreatedOn||baseline.Id!=parent.PrimaryEntityId)throw new Exception("Async main parent metadata differs");if((string)parent.SharedVariables["tag"]!="Invented materialization request")throw new Exception("Canonical parent tag lost");if(c.PostEntityImagesCollection.Length!=1||c.PostEntityImagesCollection[0].Count!=0||c.PreEntityImagesCollection.Length!=(scenario=="updated"?1:0))throw new Exception("Async Context4 alignment differs");if(scenario=="updated"){if(t.GetAttributeValue<Guid>("widgetid")!=new Guid("${id(10)}")||!t.Contains("modifiedon")||!t.Contains("modifiedby")||!t.Contains("modifiedonbehalfby")||t.Contains("untouched")||t.Contains("category")||(ConcurrencyBehavior)parent.InputParameters["ConcurrencyBehavior"]!=ConcurrencyBehavior.Default)throw new Exception("Update Target lost partial/stamp shape");}else{if(t.GetAttributeValue<OptionSetValue>("category").Value!=4||t.GetAttributeValue<OptionSetValue>("statuscode").Value!=1||!t.GetAttributeValue<string>("code").StartsWith("INV-")||!baseline.GetAttributeValue<bool>("flag")||!baseline.Contains("title")||!baseline.Contains("widgetid"))throw new Exception("Create defaults or parent baseline lost");if(scenario=="removed"){if(t.Contains("title")||t.Contains("flag")||t.Contains("widgetid")||t.GetAttributeValue<string>("text")!="PostOperation context only"||baseline.GetAttributeValue<string>("text")!="Stored text")throw new Exception("PostOperation context removals/value lost");}else if(!t.Contains("widgetid")||!t.GetAttributeValue<bool>("flag"))throw new Exception("Baseline primary/default lost");}File.AppendAllText(@"${log.replaceAll('"', '""')}",scenario+Environment.NewLine);}}}`,
+      `using System;using System.IO;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class AsyncTarget:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext4)p.GetService(typeof(IPluginExecutionContext));var t=((EntityCollection)c.InputParameters["Targets"]).Entities[0];var scenario=t.GetAttributeValue<string>("scenario");var parent=c.ParentContext;var baseline=(Entity)parent.InputParameters["Target"];if(c.Mode!=1||c.IsInTransaction||c.OperationCreatedOn.Kind!=DateTimeKind.Unspecified||parent==null||parent.Stage!=30||parent.Mode!=1||parent.MessageName!=c.MessageName||parent.Depth!=c.Depth||parent.OperationId!=c.OperationId||parent.RequestId!=c.RequestId||parent.OperationCreatedOn!=c.OperationCreatedOn||baseline.Id!=parent.PrimaryEntityId)throw new Exception("Async main parent metadata differs");if((string)parent.SharedVariables["tag"]!="Invented materialization request")throw new Exception("Canonical parent tag lost");if(c.PostEntityImagesCollection.Length!=1||c.PostEntityImagesCollection[0].Count!=0||c.PreEntityImagesCollection.Length!=(scenario=="updated"?1:0))throw new Exception("Async Context4 alignment differs");if(scenario=="updated"){if(t.GetAttributeValue<Guid>("widgetid")!=new Guid("${id(10)}")||!t.Contains("modifiedon")||!t.Contains("modifiedby")||!t.Contains("modifiedonbehalfby")||t.Contains("untouched")||t.Contains("category")||(ConcurrencyBehavior)parent.InputParameters["ConcurrencyBehavior"]!=ConcurrencyBehavior.Default)throw new Exception("Update Target lost partial/stamp shape");}else{if(t.GetAttributeValue<OptionSetValue>("category").Value!=4||t.GetAttributeValue<OptionSetValue>("statuscode").Value!=1||!t.GetAttributeValue<string>("code").StartsWith("INV-")||!baseline.GetAttributeValue<bool>("flag")||!baseline.Contains("title")||!baseline.Contains("widgetid"))throw new Exception("Create defaults or parent baseline lost");if(scenario=="removed"){if(!t.Contains("title")||!t.GetAttributeValue<bool>("flag")||!t.Contains("widgetid")||t.GetAttributeValue<string>("text")!="Stored text"||baseline.GetAttributeValue<string>("text")!="Stored text")throw new Exception("PostOperation context edits reached the queued Target");}else if(!t.Contains("widgetid")||!t.GetAttributeValue<bool>("flag"))throw new Exception("Baseline primary/default lost");}File.AppendAllText(@"${log.replaceAll('"', '""')}",scenario+Environment.NewLine);}}}`,
     );
     compileClr(source, path.join(root, 'Targets.dll'), { references: [sdk] });
     const runtime = await prepareClrRuntime({
