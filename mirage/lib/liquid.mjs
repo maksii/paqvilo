@@ -535,14 +535,16 @@ class SnippetsDrop extends LiquidDrop {
     if (this.rendering.has(name)) throw new LiquidError(`Recursive content snippet ${name}`);
     this.rendering.add(name);
     try {
-      return await renderNested(this.engine, source, context, sourceRef);
+      return await renderNested(this.engine, source, context, sourceRef, `snippet ${name}`);
     } finally {
       this.rendering.delete(name);
     }
   }
 }
 /** html.Liquid(source, context): parse errors return the bare message; rendering shares the context. */
-async function renderNested(engine, source, context, sourceRef = null) {
+// label names the render-template span of a source without a reference (D-R3-14).
+async function renderNested(engine, source, context, sourceRef = null, label = 'inline liquid') {
+  if (!sourceRef && context.provenance) context.renderSlot = { name: label };
   let template;
   try {
     const debugged = debugTemplate(source, sourceRef, debugTarget(sourceRef, sourceRef?.fieldPath?.at(-1), source));
@@ -1003,6 +1005,13 @@ export function createPortalRenderer(portal, options = {}) {
   };
   /** EntityFileSystem (active web templates by name) then EmbeddedResourceFileSystem. */
   async function loadTemplateSource(name, context) {
+    // A runtime template has no source reference: its render-template span is named by the include name (D-R3-14).
+    const runtime = (label, source) => {
+      // A missing include is marked so its render-template span says the export lacks it (sourceOrigin missing).
+      if (context?.provenance)
+        context.renderSlot = { name: `${label} ${name}`, ...(label === 'missing' ? { missing: true } : {}) };
+      return source;
+    };
     const record = findTemplate(name);
     if (record) {
       if (typeof record.source === 'string' && record.source.trim()) return record.source;
@@ -1014,11 +1023,12 @@ export function createPortalRenderer(portal, options = {}) {
           `Web template '${name}' has no exported source; the runtime template '${managed}' is used.`,
           { template: String(name) },
         );
-        return managedSource(managed);
+        return runtime('builtin', managedSource(managed));
       }
       return record.source ?? '';
     }
-    if (name != null && builtinSource(String(name)) !== undefined) return builtinSource(String(name));
+    if (name != null && builtinSource(String(name)) !== undefined)
+      return runtime('builtin', builtinSource(String(name)));
     // Sites are provisioned with the managed display-name templates; exports can omit them.
     const managed = MANAGED_DISPLAY_NAMES[nameKey(name)];
     if (managed && builtinSource(managed) !== undefined) {
@@ -1027,12 +1037,12 @@ export function createPortalRenderer(portal, options = {}) {
         `Web template '${name}' is not in the export; the runtime template '${managed}' is used.`,
         { template: String(name) },
       );
-      return managedSource(managed);
+      return runtime('builtin', managedSource(managed));
     }
     context?.diagnostic('liquid-template-not-found', `Template "${name}" not found.`, {
       template: name == null ? null : String(name),
     });
-    return `Template "${name}" not found.`;
+    return runtime('missing', `Template "${name}" not found.`);
   }
   const filterHost = {
     decimalStringMultiply: (options.observed ?? portal.observed)?.liquidDecimalStringMultiply,
@@ -1042,7 +1052,7 @@ export function createPortalRenderer(portal, options = {}) {
     htmlVoidSerialization: (options.observed ?? portal.observed)?.liquidHtmlVoidSerialization,
     htmlSafeInput: (options.observed ?? portal.observed)?.liquidHtmlSafeInput,
     pathAndQueryFragment: (options.observed ?? portal.observed)?.liquidPathAndQueryFragment,
-    renderLiquid: (source, context) => renderNested(engine, source, context),
+    renderLiquid: (source, context) => renderNested(engine, source, context, null, 'liquid filter'),
     renderWebTemplate: async (id, context) => {
       const record = Object.values(portal.templates ?? {}).find(
         (t) => String(t?.id ?? '').toLowerCase() === String(id ?? '').toLowerCase(),
@@ -1267,7 +1277,7 @@ export function createPortalRenderer(portal, options = {}) {
       const defaultValue = editOptions.default == null ? null : formatItem(editOptions.default);
       const render = async (value, sourceRef = null) => {
         context.resolvedFragment = null;
-        if (liquidEnabled) return renderNested(engine, value, context, sourceRef);
+        if (liquidEnabled) return renderNested(engine, value, context, sourceRef, 'editable');
         if (sourceRef)
           context.resolvedFragment = {
             text: value,
@@ -1779,9 +1789,13 @@ export function createPortalRenderer(portal, options = {}) {
     environment.params = environment.params ? asHash(environment.params) : (environment.request?.params ?? null);
     return new LiquidContext(engine, { environment, diagnostics });
   }
-  async function renderSourceFragment(source, context, sourceRef = null) {
+  // slot: the label of a source without a reference ('snippet Head/Bottom'), which names its render-template span.
+  async function renderSourceFragment(source, context, sourceRef = null, slot = null) {
     const liquidContext = liquidContextFor(context);
-    if (context.__provenance) liquidContext.provenance = context.__provenance;
+    if (context.__provenance) {
+      liquidContext.provenance = context.__provenance;
+      liquidContext.renderSlot = { name: sourceRef ? null : slot, empty: !source };
+    }
     let template;
     try {
       const debugged = debugTemplate(
@@ -1800,24 +1814,44 @@ export function createPortalRenderer(portal, options = {}) {
     await template.renderInto(liquidContext, buffer);
     return renderFragment(buffer);
   }
-  async function renderSource(source, context, sourceRef = null) {
-    return (await renderSourceFragment(source, context, sourceRef)).text;
+  async function renderSource(source, context, sourceRef = null, slot = null) {
+    return (await renderSourceFragment(source, context, sourceRef, slot)).text;
   }
   async function renderString(source, context = {}) {
-    return renderSource(source, context);
+    return renderSource(source, context, null, 'inline liquid');
   }
   async function renderPage(url, extra = {}) {
     // A language code that starts the path selects the language and is not part of the page URL.
     const target = requestLanguage(new URL(url, extra.origin ?? 'http://localhost'), extra);
     const found = portal.pages.find((p) => normalizePortalPath(p.url) === normalizePortalPath(target.path));
     if (!found) return { html: '<h1>Page not found</h1>', status: 404, page: null, diagnostics: [] };
+    // The render span of the page (docs/design/tracing.md); template invocations open render-template spans under it.
+    const traces = options.traces;
+    if (!traces?.enabled) return renderFoundPage(found, url, extra, null);
+    const span = traces.start({
+      kind: 'render',
+      name: target.path,
+      module: 'liquid',
+      operation: 'render',
+      attributes: { pageId: found.id, page: found.name },
+    });
+    try {
+      const result = await traces.run(span, () => renderFoundPage(found, url, extra, span));
+      return (span.set({ status: result.status }).end(), result);
+    } catch (error) {
+      span.fail(error);
+      throw error;
+    }
+  }
+  async function renderFoundPage(found, url, extra, span) {
     const context = contextForPage(found, url, extra);
     const index = sourceIndex(context.__language?.id);
-    context.__provenance = createRenderTrace({ sourceRevision: index.sourceRevision });
+    context.__provenance = createRenderTrace({ sourceRevision: index.sourceRevision, traces: options.traces, span });
     const page = localizedPage(found, context.__language?.id);
     const diagnostics = context.__diagnostics;
     try {
       const pageTemplate = portal.pageTemplates.find((t) => t.id === page.pageTemplateId);
+      span?.set({ template: pageTemplate?.name, language: context.__language?.code });
       const rewriteSelected = pageTemplateKind(pageTemplate) === 'rewrite';
       const physicalRewrite = String(pageTemplate?.rewriteUrl ?? '')
         .trim()
@@ -1842,6 +1876,7 @@ export function createPortalRenderer(portal, options = {}) {
         template ? template.source : (rewriteLayout?.source ?? "{% include 'Page Copy' %}"),
         context,
         template ? index.source(template.metadata, 'source') : null,
+        template ? null : rewriteLayout ? 'rewrite layout' : 'page copy layout',
       );
       const body = bodyFragment.text;
       const css = page.css
@@ -1898,7 +1933,9 @@ export function createPortalRenderer(portal, options = {}) {
               'The observed header notifications need the notification query that a data pack names (shell.headerNotificationQuery); the export has none of the named templates.',
           });
         } else {
-          const payload = JSON.parse(await renderSource(notificationTemplate.source, context));
+          const payload = JSON.parse(
+            await renderSource(notificationTemplate.source, context, null, 'webtemplate header notifications'),
+          );
           if (!Array.isArray(payload.notifications))
             throw new Error('The exported header notification query did not return a notifications array.');
           const notifications = payload.notifications.filter(
@@ -1990,8 +2027,14 @@ export function createPortalRenderer(portal, options = {}) {
         portal.snippets['Head/Bottom'] ?? '',
         context,
         index.snippet('Head/Bottom'),
+        'snippet Head/Bottom',
       );
-      const titleSuffix = await renderSource(portal.snippets['Browser Title Suffix'] ?? '', context);
+      const titleSuffix = await renderSource(
+        portal.snippets['Browser Title Suffix'] ?? '',
+        context,
+        null,
+        'snippet Browser Title Suffix',
+      );
       // Preserve authored text entities, while encoding literal markup delimiters.
       const encodedSuffix = htmlEscape(titleSuffix).replace(/&amp;(#x[\da-f]+|#\d+|[a-z][\w]+);/gi, '&$1;');
       // Web templates own their content structure, including main landmarks.
@@ -2060,6 +2103,7 @@ export function createPortalRenderer(portal, options = {}) {
         original = nested;
       }
       const status = Number(original?.status ?? original?.statusCode);
+      span?.fail(original ?? error);
       diagnostics.push({ code: original?.code ?? 'liquid-render-error', message: error.message });
       return {
         html: `<!DOCTYPE html><h1>Portal rendering failed</h1><pre>${htmlEscape(error.message)}</pre>`,
@@ -2086,7 +2130,7 @@ export function createPortalRenderer(portal, options = {}) {
       languageCode,
       html: `<html lang="${htmlEscape(languageCode)}" dir="${direction}"${layoutHtmlAttributes(languageCode, context.__language?.lcid)}>`,
       title: htmlEscape(home?.title ?? page.title ?? ''),
-      head: await renderSource(portal.snippets?.['Head/Bottom'] ?? '', context),
+      head: await renderSource(portal.snippets?.['Head/Bottom'] ?? '', context, null, 'snippet Head/Bottom'),
       body: `<body${layoutBodyAttributes(page, context)}>`,
       chrome: `${portal.observed?.siteVisibility === 'private' ? PRIVATE_MODE_BANNER : ''}${OFFLINE_NOTIFICATION_BAR}`,
     };

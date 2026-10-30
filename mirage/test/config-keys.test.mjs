@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -44,6 +45,8 @@ const NEW_KEYS = [
   'canvas',
   'codeApps',
   'sourceMaps',
+  'trace',
+  'logs',
 ];
 const PRE_MIGRATION_CATALOGUE = [
   'project',

@@ -15,6 +15,8 @@
 // ponytail: simple upload bodies are capped at 4 MiB in the fixture server (413); createUploadSession is not modelled.
 import http from 'node:http';
 import { systemClock, systemIds } from './runtime-clock.mjs';
+import { recordHttpError } from './trace-store.mjs';
+import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
 
 const SHAREPOINT_CONTRACT_OPERATIONS = Object.freeze(['listChildren', 'uploadContent', 'createFolder', 'deleteItem']);
 
@@ -321,18 +323,58 @@ function dispatchSharePointRoute(routes, req) {
   return graphError(501, 'notSupported', 'No route.', 'ProviderOperationUnsupported');
 }
 
-/** Loopback HTTP server over the route set (tests, project httpFixtures). Resolves { url, routes, close() }. */
-export async function createSharePointFixtureServer({ fixtures, diagnostic, host = '127.0.0.1', clock, ids } = {}) {
+/**
+ * Loopback HTTP server over the route set (tests, project httpFixtures). Resolves { url, routes, close() }. With a trace
+ * store (`traces`, a runtime's host.traces) each request is an http root of host sharepoint, joined to the caller through
+ * its forwarded trace headers, with the Graph error of a refused request (D-R3-8).
+ */
+export async function createSharePointFixtureServer({
+  fixtures,
+  diagnostic,
+  host = '127.0.0.1',
+  clock,
+  ids,
+  traces = null,
+} = {}) {
   if (!['127.0.0.1', '::1', 'localhost'].includes(host))
     throw new TypeError('The SharePoint fixture server listens on loopback only.');
   const routes = createSharePointContractRoutes({ fixtures, diagnostic, clock, ids });
-  const server = http.createServer(async (request, response) => {
+  const server = http.createServer((request, response) => {
+    if (!traces?.enabled) return serve(request, response);
+    const span = traces.start({
+      kind: 'http',
+      name: `${request.method} ${String(request.url ?? '/').split('?')[0]}`,
+      module: 'sharepoint',
+      operation: request.method,
+      ...ANONYMOUS_ROOT,
+      origin: { host: 'sharepoint', portal: null, preset: null },
+      ...traces.fromHeaders(request.headers),
+    });
+    setTraceHeaders(response, span);
+    response.on('close', () => {
+      if (!response.writableFinished)
+        span.end({
+          status: 'error',
+          error: { code: 'REQUEST_ABORTED', message: 'The client closed the request before completion.' },
+          attributes: { statusCode: 499 },
+        });
+    });
+    response.on('finish', () => {
+      recordHttpError(span, response.statusCode, answers.get(response));
+      span.end({ attributes: { statusCode: response.statusCode } });
+    });
+    return traces.run(span, () => serve(request, response));
+  });
+  // The Graph error of each answered request, for its http root.
+  const answers = new WeakMap();
+  async function serve(request, response) {
     const chunks = [];
     let size = 0;
     for await (const chunk of request) {
       size += chunk.length;
       if (size > MAX_UPLOAD) {
         const tooLarge = graphError(413, 'invalidRequest', 'The fixture accepts simple uploads up to 4 MiB.');
+        answers.set(response, tooLarge.body?.error);
         response.writeHead(tooLarge.status, tooLarge.headers).end(JSON.stringify(tooLarge.body));
         request.destroy();
         return;
@@ -345,9 +387,10 @@ export async function createSharePointFixtureServer({ fixtures, diagnostic, host
       headers: request.headers,
       body: Buffer.concat(chunks),
     });
+    answers.set(response, answer.body?.error);
     response.writeHead(answer.status, answer.headers);
     response.end(answer.body == null ? undefined : JSON.stringify(answer.body));
-  });
+  }
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, host, resolve);
