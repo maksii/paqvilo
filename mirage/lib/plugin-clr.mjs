@@ -1914,16 +1914,21 @@ export function clrContext({
     IsApplicationUser:
       inherited('IsApplicationUser') ?? context.isApplicationUser ?? Boolean(user(authenticatedUserId)?.applicationid),
   };
+  // A queued bulk job has no pre-image sets unless its registration asks for pre images (native sdkSurface, both
+  // captures: an SDK UpdateMultiple of two targets queues PreEntityImagesCollection length 0, PostEntityImagesCollection 2).
   const bulkImages = (rows, post) => ({
     $type: 'EntityImageCollectionArray',
-    values: frame.targets.map((_, index) => ({
-      $type: 'EntityImageCollection',
-      values: Object.fromEntries(
-        (step.images ?? [])
-          .filter((registration) => (post ? [1, 2] : [0, 2]).includes(registration.type) && rows[index])
-          .map((registration) => [registration.alias || registration.name, image(rows[index], registration)]),
-      ),
-    })),
+    values:
+      !post && asynchronous && !(step.images ?? []).some((registration) => [0, 2].includes(registration.type))
+        ? []
+        : frame.targets.map((_, index) => ({
+            $type: 'EntityImageCollection',
+            values: Object.fromEntries(
+              (step.images ?? [])
+                .filter((registration) => (post ? [1, 2] : [0, 2]).includes(registration.type) && rows[index])
+                .map((registration) => [registration.alias || registration.name, image(rows[index], registration)]),
+            ),
+          })),
   });
   // The main operation populates system results once. Keep custom values and
   // subsequent PostOperation replacements across ranks for every message shape.

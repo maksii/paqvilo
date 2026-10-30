@@ -714,8 +714,9 @@ function typedContext({
     trace,
   };
   if (['createmultiple', 'updatemultiple'].includes(operation)) {
+    // A queued bulk job has no pre-image sets unless its registration asks for pre images (native sdkSurface).
     result.PreEntityImagesCollection =
-      operation === 'createmultiple' && (item.contract?.mode ?? 0) === 1
+      (item.contract?.mode ?? 0) === 1 && !(item.images ?? []).some((spec) => [0, 2].includes(spec.type))
         ? []
         : (targets ?? []).map((_, index) => images([0, 2], previousRecords?.[index]));
     result.PostEntityImagesCollection = (targets ?? []).map((_, index) =>
