@@ -72,21 +72,25 @@ test('missing pipelines apply synchronous and asynchronous bypass separately and
   }
 });
 
-test('static and mutable registry operations check admission before invoking their own handler', () => {
-  let calls = 0;
-  const store = { pluginPipeline: { steps: () => [{ ...registration('InventedAction'), mode: 'handler' }] } };
-  const registry = createOperationRegistry({ store });
-  const op = { name: 'InventedAction', kind: 'action', binding: 'unbound', handle: () => ++calls };
+// @test-kind unproven: local model of a registered operation's message pipeline (no native capture of a Web API action's steps)
+test('static and mutable registry operations run their message pipeline before their own handler', async (t) => {
   for (const dynamic of [false, true]) {
-    if (dynamic) registry.setProvider('invented', () => [{ ...op, name: 'OtherAction' }]);
+    const name = dynamic ? 'OtherAction' : 'InventedAction';
+    // The request's Target names the message's table (PrimaryEntityName), also for an unbound action.
+    const f = await fixture(t, name);
+    let calls = 0;
+    const registry = createOperationRegistry({ store: f.store });
+    const op = { name: 'InventedAction', kind: 'action', binding: 'unbound', handle: () => ++calls };
+    if (dynamic) registry.setProvider('invented', () => [{ ...op, name }]);
     else registry.register(op);
-    const found = registry.find({ name: dynamic ? 'OtherAction' : op.name, kind: 'action', binding: 'unbound' });
-    store.pluginPipeline.steps = () => [{ ...registration(found.name), mode: 'handler' }];
-    assert.throws(
-      () => found.handle({ body: { Target: { '@odata.type': 'Microsoft.Dynamics.CRM.account' } } }),
-      unsupported,
+    const found = registry.find({ name, kind: 'action', binding: 'unbound' });
+    // The PreOperation step (the fixture's guard) runs before the operation and its refusal stops it.
+    await assert.rejects(
+      () => found.handle({ body: { Target: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: a } } }),
+      /Named guard/,
     );
     assert.equal(calls, 0);
+    assert.equal(f.calls(), 1);
   }
 });
 
@@ -104,7 +108,7 @@ test('entity-set aliases use the same canonical table binding as the operation h
   );
 });
 
-async function fixture(t, message) {
+async function fixture(t, message, extra = {}) {
   const f = await contractModuleFixture(t, {
     mappings: {
       account: {
@@ -125,7 +129,7 @@ async function fixture(t, message) {
     extension: { name: 'invented-admission', install: () => {} },
   });
   let calls = 0;
-  const step = registration(message);
+  const step = registration(message, extra);
   const handlers = new Map([
     [
       step.typeName,
@@ -141,16 +145,20 @@ async function fixture(t, message) {
   return { ...f, calls: () => calls };
 }
 
-test('HTTP Merge refuses the omitted named guard before target, subordinate or child writes', async (t) => {
+// @test-kind unproven: local model of the Merge pipeline (no native capture of Merge steps on a mergeable table)
+test('HTTP Merge runs its named step before target, subordinate or child writes', async (t) => {
   const f = await fixture(t, 'Merge');
   const before = structuredClone(f.store.tableRows('account'));
   const response = await f.request('POST', '/Merge', mergeBody());
-  assert.equal(response.status, 501, await response.text());
+  const text = await response.text();
+  assert.ok(response.status >= 400, text);
+  assert.match(text, /Named guard/);
   assert.deepEqual(f.store.tableRows('account'), before);
-  assert.equal(f.calls(), 0);
+  assert.equal(f.calls(), 1);
 });
 
-test('direct record-message installation also refuses before delegated Merge writes', async (t) => {
+// @test-kind unproven: local model of the Merge pipeline (no native capture of Merge steps on a mergeable table)
+test('direct record-message installation also runs the Merge step before delegated writes', async (t) => {
   const f = await fixture(t, 'Merge'),
     operations = new Map();
   installRecordMessages({
@@ -162,10 +170,10 @@ test('direct record-message installation also refuses before delegated Merge wri
   const before = structuredClone(f.store.tableRows('account'));
   await assert.rejects(
     () => operations.get('Merge').handle({ body: mergeBody(), identity: { admin: true } }),
-    unsupported,
+    /Named guard/,
   );
   assert.deepEqual(f.store.tableRows('account'), before);
-  assert.equal(f.calls(), 0);
+  assert.equal(f.calls(), 1);
 });
 
 // @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, upsert and bulk scenarios: registered Upsert and UpsertMultiple steps never execute
@@ -187,14 +195,21 @@ for (const message of ['Upsert', 'UpsertMultiple'])
   });
 
 // SetState is absent: its registered steps never execute natively (it runs as SetStateDynamicEntity).
+// Assign runs its pipeline (its PreOperation guard stops it before the owner write); GrantAccess is no SOAP message
+// here; the batch messages have no pipeline and refuse the chosen step.
+// @test-kind unproven: Assign's SOAP pipeline is a local model (no native capture of a SOAP-issued Assign)
 for (const message of ['Assign', 'ExecuteMultiple', 'ExecuteTransaction', 'GrantAccess'])
-  test(`SOAP ${message} refuses before the direct message switch applies effects`, async (t) => {
+  test(`SOAP ${message} applies no effect when its chosen step refuses or has no pipeline`, async (t) => {
     const f = await fixture(t, message);
     const targetKey = message === 'SetState' ? 'EntityMoniker' : 'Target';
+    const assignee =
+      message === 'Assign'
+        ? `<a:KeyValuePairOfstringanyType><b:key>Assignee</b:key><b:value i:type="a:EntityReference"><a:Id>${b}</a:Id><a:LogicalName>systemuser</a:LogicalName></b:value></a:KeyValuePairOfstringanyType>`
+        : '';
     const declarations = Object.entries(NS)
       .map(([key, uri]) => `xmlns:${key}="${uri}"`)
       .join(' ');
-    const xml = `<s:Envelope ${declarations}><s:Body><Execute xmlns="${NS.svc}"><request i:type="a:${message}Request"><a:Parameters><a:KeyValuePairOfstringanyType><b:key>${targetKey}</b:key><b:value i:type="a:EntityReference"><a:Id>${a}</a:Id><a:LogicalName>account</a:LogicalName></b:value></a:KeyValuePairOfstringanyType></a:Parameters><a:RequestName>${message}</a:RequestName></request></Execute></s:Body></s:Envelope>`;
+    const xml = `<s:Envelope ${declarations}><s:Body><Execute xmlns="${NS.svc}"><request i:type="a:${message}Request"><a:Parameters><a:KeyValuePairOfstringanyType><b:key>${targetKey}</b:key><b:value i:type="a:EntityReference"><a:Id>${a}</a:Id><a:LogicalName>account</a:LogicalName></b:value></a:KeyValuePairOfstringanyType>${assignee}</a:Parameters><a:RequestName>${message}</a:RequestName></request></Execute></s:Body></s:Envelope>`;
     const before = structuredClone(f.store.tableRows('account'));
     const result = await handleSoap(
       {
@@ -209,7 +224,14 @@ for (const message of ['Assign', 'ExecuteMultiple', 'ExecuteTransaction', 'Grant
       },
       f.api,
     );
-    assert.match(result.body, /plug-in pipeline is not implemented/);
+    assert.match(
+      result.body,
+      message === 'Assign'
+        ? /Named guard/
+        : message === 'GrantAccess'
+          ? /not simulated by the SOAP service/
+          : /plug-in pipeline is not implemented/,
+    );
     assert.deepEqual(f.store.tableRows('account'), before);
-    assert.equal(f.calls(), 0);
+    assert.equal(f.calls(), message === 'Assign' ? 1 : 0);
   });

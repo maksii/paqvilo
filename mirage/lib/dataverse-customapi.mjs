@@ -792,6 +792,8 @@ function* invokeSteps(api, name, c, options, synchronous = false, span = null) {
       logicalName: entity,
       id: c.target.id,
       name: null,
+      // A row addressed by its alternate key keeps it (recorded native webApiNamed).
+      ...(c.target.keyAttributes ? { keyAttributes: structuredClone(c.target.keyAttributes) } : {}),
     };
   if (c.sdkFromSandbox) messageParameters.inputParameters.values.FromSandbox = true;
   Object.assign(messageParameters.inputParameters.values, structuredClone(c.systemParameters ?? {}));

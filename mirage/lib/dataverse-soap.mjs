@@ -5,6 +5,16 @@
 import { DataError } from './data-error.mjs';
 import { bypassStepIds as parseBypassStepIds } from './plugin-bypass.mjs';
 import { assertPluginMessageAdmission } from './plugin-message-admission.mjs';
+import { runEntryMessage } from './plugin-platform-messages.mjs';
+
+// The service's own built-in messages without a plug-in pipeline (record messages run theirs in the record handlers).
+const SOAP_UNPIPELINED = new Set([
+  'WhoAmI',
+  'RetrieveVersion',
+  'RetrieveCurrentOrganization',
+  'ExecuteMultiple',
+  'ExecuteTransaction',
+]);
 import { xmlEscapeAttribute } from './fetchxml-engine.mjs';
 import {
   NS,
@@ -364,6 +374,25 @@ async function web(
   const result = sdkOperation ? await captureSoapResponse(s, sdkOperation, sdkEntity, call) : await call(undefined);
   if (result?.headers?.['x-ms-session-token']) s.responseSessionToken = result.headers['x-ms-session-token'];
   return result ?? { status: 204, headers: {} };
+}
+const sdkRef = (logicalName, id) => ({ $type: 'EntityReference', logicalName, id, name: null });
+// A named message's main-operation Update (Assign, SetState): no PreValidation, no ConcurrencyBehavior and no nested
+// SetStateDynamicEntity, under the message's stage-30 context; Assign's runs as SYSTEM (recorded native soapMessages,
+// sdkMessages). The caller's privileges still decide whether it may write.
+async function namedUpdate(s, logical, id, data, system = false) {
+  const store = s.api.store,
+    previous = store.pluginExecutionUserId;
+  if (system)
+    store.pluginExecutionUserId =
+      store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM')?.systemuserid ?? previous;
+  try {
+    await s.api.records.updateInternal(s, logical, id, data, {
+      writeOptions: { skipPreValidation: true, omitConcurrencyBehavior: true, stateMessage: false },
+    });
+    return {};
+  } finally {
+    store.pluginExecutionUserId = previous;
+  }
 }
 async function captureSoapResponse(s, operation, entity, execute) {
   const captured = await captureSdkResponseAsync(s.api.store, operation, entity, execute);
@@ -851,7 +880,10 @@ async function runRequestCore(base, { name, params }) {
     return reply(name, results);
   };
   const p = (key) => params.get(key);
-  assertPluginMessageAdmission(s.api.store, name, { ...s, params: Object.fromEntries(params) });
+  // Requests relayed to a registered operation run its pipeline there (dataverse-operations.mjs), Assign runs its own
+  // below; the service's other built-in messages have no pipeline and refuse a step chosen for them.
+  if (SOAP_UNPIPELINED.has(name) || metadataRequests(s.api).has(name))
+    assertPluginMessageAdmission(s.api.store, name, { ...s, params: Object.fromEntries(params) });
   switch (name) {
     case 'Create': {
       const id = await createRow(s, p('Target'));
@@ -904,21 +936,45 @@ async function runRequestCore(base, { name, params }) {
     case 'Assign': {
       const target = p('Target');
       const assignee = p('Assignee');
-      await web(s, 'PATCH', `${setOf(s.api, target.logicalName)}(${requireId(s.api, target, 'Assign')})`, {
-        headers: { 'if-match': '*' },
-        body: {
-          'ownerid@odata.bind': `/${setOf(s.api, assignee.logicalName)}(${requireId(s.api, assignee, 'Assign assignee')})`,
-        },
+      const id = requireId(s.api, target, 'Assign'),
+        assigneeId = requireId(s.api, assignee, 'Assign assignee'),
+        logical = primaryTable(s.api, target.logicalName) ?? target.logicalName,
+        assigneeTable = primaryTable(s.api, assignee.logicalName) ?? assignee.logicalName;
+      // Assign runs its own pipeline; its main operation updates the owner as SYSTEM (recorded native soapMessages).
+      await runEntryMessage(s.api.store, {
+        message: 'Assign',
+        entity: logical,
+        id,
+        inputs: { Target: sdkRef(logical, id), Assignee: sdkRef(assigneeTable, assigneeId) },
+        context: s,
+        main: () =>
+          namedUpdate(s, logical, id, { 'ownerid@odata.bind': `/${setOf(s.api, assigneeTable)}(${assigneeId})` }, true),
       });
       return reply(name, new Map(), NS.g);
     }
     case 'SetState': {
       const moniker = p('EntityMoniker');
-      const body = { statecode: num(p('State')?.value) };
-      if (p('Status')?.value != null) body.statuscode = num(p('Status').value);
-      await web(s, 'PATCH', `${setOf(s.api, moniker.logicalName)}(${requireId(s.api, moniker, 'SetState')})`, {
-        headers: { 'if-match': '*' },
-        body,
+      const id = requireId(s.api, moniker, 'SetState'),
+        logical = primaryTable(s.api, moniker.logicalName) ?? moniker.logicalName,
+        state = num(p('State')?.value),
+        status = p('Status')?.value == null ? null : num(p('Status').value);
+      // SetState runs as SetStateDynamicEntity; its main operation updates the state as the caller (recorded native
+      // soapMessages). Registered SetState steps never run.
+      await runEntryMessage(s.api.store, {
+        message: 'SetStateDynamicEntity',
+        entity: logical,
+        id,
+        inputs: {
+          EntityMoniker: sdkRef(logical, id),
+          State: { $type: 'OptionSetValue', value: state },
+          Status: { $type: 'OptionSetValue', value: status ?? -1 },
+        },
+        context: s,
+        main: () =>
+          namedUpdate(s, logical, id, {
+            statecode: state,
+            ...(status == null || status === -1 ? {} : { statuscode: status }),
+          }).then(() => ({ IsValid: true })),
       });
       return reply(name, new Map(), NS.g);
     }

@@ -10,6 +10,7 @@ import { pluginInvocationDepth, pluginInvocationSdkParent } from './plugin-execu
 import { PLUGIN_DEPTH_MESSAGE, PLUGIN_MAX_DEPTH, recordToSdkEntity } from './plugin-clr.mjs';
 import { mainOperationParent } from './plugin-sdk-parent.mjs';
 import { internalStepReference, setInternalStageSource } from './plugin-internal-stage.mjs';
+import { pluginEntryStep } from './plugin-message-admission.mjs';
 import { authorizeGrant } from './local-organization-service.mjs';
 import { ACCESS_RIGHTS, createPrincipals, grantAccessNow, revokeAccessNow } from './dataverse-security.mjs';
 
@@ -60,7 +61,7 @@ const accessMaskOf = (value) => {
     fail('Invalid access mask.', 'InvalidArgument', 400, { innerCode: '0x80040203' });
   return mask;
 };
-const maskOfNames = (names) =>
+export const maskOfNames = (names) =>
   String(names ?? '')
     .split(',')
     .map((part) => ACCESS_RIGHTS[part.trim().replace(/Access$/, '')] ?? 0)
@@ -70,6 +71,17 @@ const sharesOf = (store, target) =>
     .tableRows('principalobjectaccess')
     .filter((row) => same(row.objectid, target.id) && same(row.objecttypecode, target.logicalName));
 const principalIdOf = (row) => row.principalid?.id ?? row.principalid;
+/** The rights a principal's direct shares of a row give it (a team with only a share answers the shared mask). */
+export const sharedMaskOf = (store, logicalName, id, principalId) =>
+  sharesOf(store, { logicalName, id })
+    .filter((share) => same(principalIdOf(share), principalId))
+    .reduce((mask, share) => mask | Number(share.accessrightsmask), 0);
+/** AccessRights names (ReadAccess, WriteAccess, ...) of a mask; None when empty. */
+export const accessNamesOf = (mask) =>
+  Object.keys(ACCESS_RIGHTS)
+    .filter((right) => mask & ACCESS_RIGHTS[right])
+    .map((right) => `${right}Access`)
+    .join(', ') || 'None';
 
 // The depth of a message issued now: one below the calling plug-in or operation.
 function messageDepth(store) {
@@ -114,8 +126,10 @@ function runMessagePipeline(
     record: suppliedRecord,
   },
 ) {
+  // An unbound message (PrimaryEntityName none) has no table and an empty PrimaryEntityId.
   const operation = message.toLowerCase(),
-    mapping = store.resolveMapping(entity),
+    mapping =
+      entity == null || entity === 'none' ? { logicalName: 'none', idColumn: 'id' } : store.resolveMapping(entity),
     record = suppliedRecord ?? { [mapping.idColumn]: id ?? EMPTY },
     customApi = { name: message, platformMessage: true, bindingType: 0, parameters: [], properties: [] },
     requestTag = store.pluginSdkTag;
@@ -149,7 +163,15 @@ function runMessagePipeline(
     },
   };
   const inherited = store.pluginInTransaction;
-  let first = true;
+  const restore = () => {
+      store.pluginInTransaction = inherited;
+    },
+    failed = (error) => {
+      store.markPluginTransactionFailure?.(error);
+      throw error;
+    };
+  let settled = true,
+    first = true;
   const phase = (stage) => {
     if (stage !== 10) store.pluginInTransaction = true;
     if (!active) return;
@@ -207,31 +229,56 @@ function runMessagePipeline(
     // Record pipelines the main operation starts belong to this message (exported-plugins.mjs runPluginPhase).
     const previousMain = store.pluginMainOperation;
     store.pluginMainOperation = { context: mainContext, depth };
-    let outputs;
-    try {
-      outputs = main() ?? {};
-    } finally {
+    const finish = (outputs = {}) => {
       store.pluginMainOperation = previousMain;
+      if (preValidationOnly) return outputs;
+      messageParameters.outputParameters.values = { ...outputs };
+      phase(40);
+      store.pluginFrames ??= new WeakMap();
+      store.pluginFrames.set(record, frame);
+      const event = { customApi, target: {}, identity, messageEvent: true, bypassCustomAsync, bypassStepIds };
+      if (store.committedEventCandidates || !store.commitStagers?.size)
+        store.recordCommittedEvent(mapping.logicalName, operation, record, [], event);
+      // An entry message whose writes committed on their own (or that wrote nothing) stages its event in its own
+      // transaction, as a read does (data.mjs).
+      else
+        store
+          .transact(
+            () => store.recordCommittedEvent(mapping.logicalName, operation, cloneStateData(record), [], event),
+            { skipSaveIfUnchanged: true },
+          )
+          .catch((error) => {
+            (store.committedEventErrors ??= []).push({
+              code: error.code ?? 'CommitStagerError',
+              message: error.message,
+            });
+          });
+      return messageParameters.outputParameters.values;
+    };
+    let pending;
+    try {
+      pending = main();
+    } catch (error) {
+      store.pluginMainOperation = previousMain;
+      throw error;
     }
-    if (preValidationOnly) return outputs;
-    messageParameters.outputParameters.values = { ...outputs };
-    phase(40);
-    store.pluginFrames ??= new WeakMap();
-    store.pluginFrames.set(record, frame);
-    store.recordCommittedEvent(mapping.logicalName, operation, record, [], {
-      customApi,
-      target: {},
-      identity,
-      messageEvent: true,
-      bypassCustomAsync,
-      bypassStepIds,
-    });
-    return messageParameters.outputParameters.values;
+    // A main operation that answers a promise (a Web API or SOAP message's own adapter) finishes once it settles.
+    if (typeof pending?.then !== 'function') return finish(pending ?? undefined);
+    settled = false;
+    return pending
+      .then(
+        (outputs) => finish(outputs ?? undefined),
+        (error) => {
+          store.pluginMainOperation = previousMain;
+          throw error;
+        },
+      )
+      .catch(failed)
+      .finally(restore);
   } catch (error) {
-    store.markPluginTransactionFailure?.(error);
-    throw error;
+    failed(error);
   } finally {
-    store.pluginInTransaction = inherited;
+    if (settled) restore();
   }
 }
 
@@ -456,6 +503,79 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
       return fail('SDK Merge requires the Web API Merge message adapter.');
     }
   }
+}
+
+const SYSTEM_PARAMETERS = new Set([
+  'tag',
+  'BypassCustomPluginExecution',
+  'BypassBusinessLogicExecution',
+  'BypassBusinessLogicExecutionStepIds',
+]);
+const ODATA_TYPE = /^#?(?:Microsoft\.Dynamics\.CRM\.|mscrm\.)/;
+
+/**
+ * An SDK value for a Web API (or SOAP-relayed) message parameter that has no typed parameter metadata here: GUID text as a
+ * Guid, an @odata.type object as an EntityReference when it names only its key (else an Entity), other JSON as it is.
+ * ponytail: no CSDL-typed conversion (Int64, Decimal, DateTime, Money arrive as their JSON form). Upgrade: map the
+ * operation's declared Edm parameter types.
+ */
+function entryValue(store, value) {
+  if (typeof value === 'string' && GUID.test(value)) return { $type: 'Guid', value };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  // An @odata.id reference (a function's parameter alias) names its row by entity set and key.
+  const linked = /([A-Za-z_]\w*)\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)$/i.exec(
+    typeof value['@odata.id'] === 'string' ? value['@odata.id'] : '',
+  );
+  if (linked)
+    return {
+      $type: 'EntityReference',
+      logicalName: store.resolveMapping(linked[1]).logicalName,
+      id: linked[2].toLowerCase(),
+      name: null,
+    };
+  const type = value['@odata.type'];
+  if (typeof type !== 'string') return cloneStateData(value);
+  const mapping = store.resolveMapping(type.replace(ODATA_TYPE, ''));
+  const columns = Object.fromEntries(Object.entries(value).filter(([name]) => !name.includes('@')));
+  const id = columns[mapping.idColumn];
+  if (Object.keys(columns).length === 1 && id != null)
+    return { $type: 'EntityReference', logicalName: mapping.logicalName, id, name: null };
+  return recordToSdkEntity(store, mapping.logicalName, columns);
+}
+
+/** The typed InputParameters of an entry point's request values (system parameters and annotations left out). */
+export function entryParameters(store, values = {}) {
+  return Object.fromEntries(
+    Object.entries(values ?? {})
+      .filter(([name]) => !name.startsWith('@') && !name.includes('@odata.') && !SYSTEM_PARAMETERS.has(name))
+      .map(([name, value]) => [name, entryValue(store, value)]),
+  );
+}
+
+/** Whether an entry point of the message has a registered step to run for the request table (entity; else the request's Target). */
+export const entryMessageActive = (store, message, entity, context = {}) =>
+  Boolean(pluginEntryStep(store, message, context, entity));
+
+/**
+ * Runs a named message that a Web API action or function, or a SOAP request, invokes through its plug-in pipeline at the
+ * request's depth (PreValidation, PreOperation, main(), PostOperation, the committed asynchronous event), as the SDK
+ * path does (executePlatformSdkMessage). main may answer a promise; it answers the message's typed outputs. The entry
+ * point's request identity, Accept-Language and bypass choices apply. Answers a promise of the outputs.
+ */
+export async function runEntryMessage(store, { message, entity, id, inputs, context = {}, main }) {
+  const header = (name) => context.headers?.get?.(name) ?? context.headers?.[name];
+  return runMessagePipeline(store, {
+    message,
+    entity: entity ?? 'none',
+    id,
+    inputs,
+    identity: context.identity ?? {},
+    acceptLanguage: header('accept-language') ?? '',
+    bypassStepIds: context.bypassStepIds,
+    bypassCustomPlugins: context.bypassCustomPlugins === true,
+    bypassCustomAsync: context.bypassCustomAsync === true,
+    main,
+  });
 }
 
 /** The platform's refusal of Merge on a table without a Merge message filter (recorded native fault 0x80040800). */

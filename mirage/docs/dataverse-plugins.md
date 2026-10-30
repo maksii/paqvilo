@@ -38,18 +38,32 @@ table runs its PreValidation stage and each target's Delete PreValidation, then
 answers `405 0x8004023b`. SDK Merge on a table without a Merge filter fails with
 the native `0x80040800` fault.
 
-Other named operations, and the SOAP and Web API entry points of the messages
-above, do not acquire their own plug-in pipeline merely because their
-local operation handler performs CRUD. An enabled, explicitly selected handler,
-CLR, mock or webhook step for a missing pipeline stops the request with
-`501 LocalPluginUnsupported` before those delegated effects. This check covers
-organization HTTP, SOAP (including batch envelope messages) and registered
-operation delegation. Known unrelated table bindings, offline-only steps and
-explicit bypass choices retain their scope. If a named operation's table cannot
-be resolved, the diagnostic says so and admission fails conservatively. Inventory
-placeholders and deliberately disabled steps retain their documented behavior.
-This guard exposes the missing named pipeline; it does not qualify its execution,
-context, images or native system effects.
+The SOAP and Web API entry points run the same pipelines at the request's depth
+(recorded native soapMessages and webApiNamed): SOAP Assign runs Assign around
+its SYSTEM owner Update and SOAP SetState runs SetStateDynamicEntity around the
+caller's state Update, neither with an Update PreValidation stage; Web API
+GrantAccess, ModifyAccess, RevokeAccess, RetrievePrincipalAccess (bound to a team
+or user, with the Target table as `PrimaryEntityName`) and
+RetrieveSharedPrincipalsAndAccess run theirs with the SDK inputs and no Retrieve
+pipeline before them; a team holding only a share reports the shared rights.
+Web API Merge on a mergeable table runs its pipeline (inputs Target, SubordinateId,
+UpdateContent, PerformParentingChecks) around the target and subordinate Updates,
+which run without PreValidation or a nested SetStateDynamicEntity, in one
+transaction; global Merge steps run there (recorded mergeAccount). Merge step
+images and the platform's internal stage-50 reads are not modelled. Every other
+registered Web API action or function (and the SOAP requests relayed to it) runs
+a generic pipeline around its operation: PrimaryEntityName and PrimaryEntityId
+are the request's Target row (else the bound table, else `none`), the inputs are
+the request values converted without parameter metadata (GUID text as Guid,
+typed objects as EntityReference or Entity), the outputs the response properties
+(a local model: no native capture of other actions). A bound operation addressed
+by an alternate key binds its row and keeps the key in the Target (recorded
+webApiNamed). Custom APIs keep their own pipeline. The SOAP service's own
+WhoAmI, RetrieveVersion, RetrieveCurrentOrganization, ExecuteMultiple,
+ExecuteTransaction and metadata requests have no pipeline: an enabled, explicitly
+selected step on them stops the request with `501 LocalPluginUnsupported` before
+any effect; known unrelated table bindings, offline-only steps and explicit bypass
+choices retain their scope.
 
 ## What is simulated
 
@@ -296,9 +310,11 @@ custom processing for every table.
 Explicit null-filter registrations (including Create, the bulk messages and an
 asynchronous RetrieveMultiple, which runs after the read with its query and
 result) use the actual affected table and record in their execution context;
-images on a global write project from that table. Global steps on Upsert,
-UpsertMultiple and Merge, and asynchronous Retrieve steps, are accepted and never
-run, as natively. An impersonating step runs with the impersonated user as
+images on a global write project from that table. Global steps on Upsert and
+UpsertMultiple are accepted and never run, as natively. Asynchronous Retrieve
+steps run once after the read commits, with its Target, ColumnSet and result
+(recorded readAsync), and global Merge steps run on a mergeable table (recorded
+mergeAccount). An impersonating step runs with the impersonated user as
 `UserId`. Update filtering
 includes the table's implicit primary key, even when the caller did not author
 that column; other filters continue to use attribute presence rather than value

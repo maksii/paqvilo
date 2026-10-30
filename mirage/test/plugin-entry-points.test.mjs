@@ -7,6 +7,8 @@ import { contractModuleFixture } from './contract-module-fixture.mjs';
 import { createOrganizationBackend } from '../lib/organization-backend.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { clrContext } from '../lib/plugin-clr.mjs';
+import { handleSoap } from '../lib/dataverse-soap.mjs';
+import { NS } from '../lib/dataverse-soap-xml.mjs';
 import { install as installCustomApis } from '../lib/dataverse-customapi.mjs';
 
 const row = '20000000-0000-0000-0000-0000000000c1';
@@ -207,4 +209,232 @@ test('a Delete by alternate key names the key in its PreValidation and main-oper
   const preOperation = contextAt(20, phase(20));
   assert.equal(preOperation.inputParameters.values.Target.keyAttributes, undefined);
   assert.deepEqual(preOperation.context.ParentContext.values.InputParameters.values.Target.keyAttributes, keyed);
+});
+
+// Named messages over the Web API (no native capture of these entry points: local model of the SDK-issued shape).
+async function messageFixture(t, steps, { register } = {}) {
+  const f = await contractModuleFixture(t, {
+    mappings: {
+      account: {
+        logicalName: 'account',
+        entitySet: 'accounts',
+        idColumn: 'accountid',
+        ownership: 'UserOwned',
+        fields: { name: { dataverseType: 'nvarchar' }, statecode: { dataverseType: 'state' } },
+      },
+    },
+    tables: {
+      account: [
+        { accountid: row, name: 'Kept' },
+        { accountid: peer, name: 'Merged away' },
+      ],
+    },
+    extension: { name: 'entry-message-probe', install: (api) => register?.(api) },
+  });
+  const seen = [];
+  const handlers = new Map([
+    [
+      'Invented.Recorder',
+      ({ context }) => {
+        seen.push({
+          at: `${context.MessageName}/${context.Stage}`,
+          entity: context.PrimaryEntityName,
+          parent: context.ParentContext ? `${context.ParentContext.MessageName}/${context.ParentContext.Stage}` : null,
+          user: context.UserId,
+          // The principal the platform runs the operation as (a CLR step reports it as UserId).
+          executing: f.store.pluginExecutionUserId ?? null,
+          inputs: structuredClone(context.InputParameters),
+          outputs: structuredClone(context.OutputParameters),
+        });
+      },
+    ],
+  ]);
+  const items = pluginCatalogue({ plugins: { steps }, handlers });
+  const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
+  t.after(() => backend.close());
+  return { ...f, seen };
+}
+const stages = (n, message, extra) => [10, 20, 40].map((stage, i) => step(n + i, message, stage, extra));
+
+// @test-kind unproven: local model of a Web API action's own message pipeline (no native capture of an action's steps)
+test('a Web API action runs its message pipeline around the operation with typed inputs and outputs', async (t) => {
+  let ran = 0;
+  const f = await messageFixture(t, stages(10, 'x_Ping', { entity: 'none' }), {
+    register: (api) =>
+      api.registry.register({
+        name: 'x_Ping',
+        kind: 'action',
+        binding: 'unbound',
+        handle: () => {
+          ran = f?.seen?.length ?? 0;
+          return { status: 200, body: { '@odata.context': 'x', Answer: 'pong' } };
+        },
+        signature: {
+          params: [
+            ['Text', 'Edm.String'],
+            ['Row', 'Edm.Guid'],
+          ],
+          response: [['Answer', 'Edm.String']],
+        },
+      }),
+  });
+  const answer = await f.request('POST', '/x_Ping', { Text: 'hi', Row: row });
+  assert.equal(answer.status, 200, await answer.clone().text());
+  assert.equal((await answer.json()).Answer, 'pong');
+  assert.deepEqual(
+    f.seen.map((entry) => entry.at),
+    ['x_Ping/10', 'x_Ping/20', 'x_Ping/40'],
+  );
+  assert.equal(ran, 2, 'the operation runs between PreOperation and PostOperation');
+  for (const entry of f.seen) {
+    assert.equal(entry.entity, 'none');
+    assert.equal(entry.inputs.Text, 'hi');
+    assert.equal(String(entry.inputs.Row).toLowerCase(), row);
+  }
+  assert.equal(f.seen.at(-1).outputs.Answer, 'pong');
+});
+
+// @test-kind unproven: local model of Web API GrantAccess running the SDK GrantAccess pipeline (no native capture of this entry point)
+test('Web API GrantAccess runs the GrantAccess pipeline with the SDK inputs around the share', async (t) => {
+  const f = await messageFixture(t, stages(20, 'GrantAccess', { entity: 'account' }));
+  const user = f.store.tableRows('systemuser').find((item) => item.fullname !== 'SYSTEM').systemuserid;
+  const shared = await f.request('POST', '/GrantAccess', {
+    Target: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: row },
+    PrincipalAccess: {
+      Principal: { '@odata.type': 'Microsoft.Dynamics.CRM.systemuser', systemuserid: user },
+      AccessMask: 'ReadAccess',
+    },
+  });
+  assert(shared.status < 300, await shared.text());
+  assert.deepEqual(
+    f.seen.map((entry) => entry.at),
+    ['GrantAccess/10', 'GrantAccess/20', 'GrantAccess/40'],
+  );
+  assert.equal(f.seen[0].entity, 'account');
+  assert.deepEqual(Object.keys(f.seen[0].inputs).sort(), ['PrincipalAccess', 'Target']);
+  assert.equal(
+    f.store.tableRows('principalobjectaccess').filter((share) => String(share.objectid).toLowerCase() === row).length,
+    1,
+  );
+});
+
+// @test-kind unproven: local model of the Merge pipeline (no native capture of Merge steps on a mergeable table)
+test('Web API Merge runs its pipeline and its writes as Update pipelines under Merge/30', async (t) => {
+  const f = await messageFixture(t, [
+    ...stages(30, 'Merge', { entity: 'account' }),
+    step(33, 'Update', 20, { entity: 'account' }),
+  ]);
+  const merged = await f.request('POST', '/Merge', {
+    Target: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: row },
+    Subordinate: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: peer },
+    UpdateContent: { '@odata.type': 'Microsoft.Dynamics.CRM.account', name: 'Merged' },
+    PerformParentingChecks: false,
+  });
+  assert(merged.status < 300, await merged.text());
+  assert.deepEqual(
+    f.seen.map((entry) => `${entry.at}<${entry.parent}`),
+    ['Merge/10<null', 'Merge/20<null', 'Update/20<Merge/30', 'Update/20<Merge/30', 'Merge/40<null'],
+  );
+  assert.deepEqual(Object.keys(f.seen[0].inputs).sort(), [
+    'PerformParentingChecks',
+    'SubordinateId',
+    'Target',
+    'UpdateContent',
+  ]);
+  assert.equal(f.store.tableRows('account').find((item) => item.accountid === row).name, 'Merged');
+});
+
+// @test-kind parity: native recorder captures 2026-10-30 webApiNamed (native and native-r2): a bound custom API addressed by alternate key answers 200 and its Target carries the resolved id and KeyAttributes
+test('a bound custom API addressed by an alternate key binds the row and keeps the key in its Target', async (t) => {
+  const customApi = { name: 'x_Bound', bindingType: 1, allowedCustomProcessingStepType: 2 };
+  const f = await fixture(t, [step(7, 'x_Bound', 20, { customApi })]);
+  const answer = await f.request('POST', `/x_items(x_code='first')/Microsoft.Dynamics.CRM.x_Bound`, { Text: 'by key' });
+  assert(answer.status < 300, await answer.text());
+  const target = f.seen.find((entry) => entry.at === 'x_Bound/20').inputs.Target;
+  assert.equal(String(target.id ?? target.x_itemid).toLowerCase(), row);
+});
+
+// @test-kind parity: native recorder captures 2026-10-30 webApiNamed (native and native-r2): sharing messages and RetrievePrincipalAccess run no Retrieve before them, and a team holding only a share answers the shared rights
+test('Web API sharing runs no Retrieve pipeline and a shared team reports the shared rights', async (t) => {
+  const f = await messageFixture(t, [step(40, 'Retrieve', 10, { entity: null, unfiltered: true })]);
+  const team = '10000000-0000-0000-0000-0000000000e1';
+  f.store.state.tables.team = [...(f.store.state.tables.team ?? []), { teamid: team, name: 'Invented team' }];
+  const shared = await f.request('POST', '/ModifyAccess', {
+    Target: { '@odata.type': 'Microsoft.Dynamics.CRM.account', accountid: row },
+    PrincipalAccess: {
+      Principal: { '@odata.type': 'Microsoft.Dynamics.CRM.team', teamid: team },
+      AccessMask: 'ReadAccess, WriteAccess',
+    },
+  });
+  assert(shared.status < 300, await shared.text());
+  const access = await f.request(
+    'GET',
+    `/teams(${team})/Microsoft.Dynamics.CRM.RetrievePrincipalAccess(Target=@t)?@t={'@odata.id':'accounts(${row})'}`,
+  );
+  assert.equal(access.status, 200, await access.clone().text());
+  assert.equal((await access.json()).AccessRights, 'ReadAccess, WriteAccess');
+  assert.deepEqual(f.seen, []);
+});
+
+// @test-kind parity: native recorder captures 2026-10-30 soapMessages (native and native-r2): SOAP Assign runs Assign 10/20/40 and its owner Update 20/40 (no PreValidation) under Assign/30 as SYSTEM; SOAP SetState runs SetStateDynamicEntity 10/20/40 and its Update 20/40 under SetStateDynamicEntity/30 as the caller
+test('SOAP Assign and SetState run their message pipelines around a main-operation Update', async (t) => {
+  const f = await messageFixture(t, [
+    ...stages(50, 'Assign', { entity: 'account' }),
+    ...stages(53, 'SetStateDynamicEntity', { entity: 'account' }),
+    ...stages(56, 'Update', { entity: 'account' }),
+  ]);
+  const system = f.store.tableRows('systemuser').find((user) => user.fullname === 'SYSTEM').systemuserid;
+  const assignee = f.store.tableRows('systemuser').find((user) => user.fullname !== 'SYSTEM').systemuserid;
+  // The caller: the fixture's application user (System Administrator).
+  const caller = f.store.tableRows('systemuser').find((user) => user.applicationid);
+  const soap = (message, parameters) =>
+    handleSoap(
+      {
+        method: 'POST',
+        headers: {},
+        bodyText: `<s:Envelope ${Object.entries(NS)
+          .map(([key, uri]) => `xmlns:${key}="${uri}"`)
+          .join(
+            ' ',
+          )}><s:Body><Execute xmlns="${NS.svc}"><request i:type="a:OrganizationRequest"><a:Parameters>${parameters}</a:Parameters><a:RequestName>${message}</a:RequestName></request></Execute></s:Body></s:Envelope>`,
+        user: caller,
+        caller,
+        identity: { admin: true, id: caller.systemuserid, systemUserId: caller.systemuserid },
+        origin: f.server.origin,
+        version: 'v9.2',
+      },
+      f.api,
+    );
+  const pair = (key, value) =>
+    `<a:KeyValuePairOfstringanyType><b:key>${key}</b:key>${value}</a:KeyValuePairOfstringanyType>`;
+  const reference = (logical, id) =>
+    `<b:value i:type="a:EntityReference"><a:Id>${id}</a:Id><a:LogicalName>${logical}</a:LogicalName></b:value>`;
+  const option = (value) => `<b:value i:type="a:OptionSetValue"><a:Value>${value}</a:Value></b:value>`;
+  const assigned = await soap(
+    'Assign',
+    pair('Target', reference('account', row)) + pair('Assignee', reference('systemuser', assignee)),
+  );
+  assert.doesNotMatch(assigned.body, /Fault/, assigned.body);
+  assert.deepEqual(
+    f.seen.map((entry) => `${entry.at}<${entry.parent}`),
+    ['Assign/10<null', 'Assign/20<null', 'Update/20<Assign/30', 'Update/40<Assign/30', 'Assign/40<null'],
+  );
+  assert.equal(f.seen.find((entry) => entry.at === 'Update/20').executing, system);
+  f.seen.length = 0;
+  const changed = await soap(
+    'SetState',
+    pair('EntityMoniker', reference('account', row)) + pair('State', option(1)) + pair('Status', option(2)),
+  );
+  assert.doesNotMatch(changed.body, /Fault/, changed.body);
+  assert.deepEqual(
+    f.seen.map((entry) => `${entry.at}<${entry.parent}`),
+    [
+      'SetStateDynamicEntity/10<null',
+      'SetStateDynamicEntity/20<null',
+      'Update/20<SetStateDynamicEntity/30',
+      'Update/40<SetStateDynamicEntity/30',
+      'SetStateDynamicEntity/40<null',
+    ],
+  );
+  assert.notEqual(f.seen.find((entry) => entry.at === 'Update/20').executing, system);
 });

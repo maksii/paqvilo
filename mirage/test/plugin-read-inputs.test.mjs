@@ -1,4 +1,5 @@
 // @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, replayed by the local recorder harness: reads (a Web API collection GET hands RetrieveMultiple a paged FetchExpression of the client's selection and a first/last paging cookie), crud and upsert (the platform's existence read: no IncludeAnnotations, empty paging cookie)
+// @parity-evidence: native recorder captures 2026-10-30 readAsync (native and native-r2); the fixture lines changed only to register the asynchronous Retrieve step of the new test
 // Read message inputs and outputs as RetrieveMultiple steps see them. Invented table and identities only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,14 +10,14 @@ import { clrContext } from '../lib/plugin-clr.mjs';
 
 const id = '20000000-0000-0000-0000-0000000000d1';
 const other = '20000000-0000-0000-0000-0000000000d2';
-const step = (n, stage) => ({
+const step = (n, stage, message = 'RetrieveMultiple', mode = 0) => ({
   id: `30000000-0000-0000-0000-0000000000${String(n).padStart(2, '0')}`,
   enabled: true,
   entity: 'x_item',
-  message: 'RetrieveMultiple',
+  message,
   stage,
   rank: 1,
-  mode: 0,
+  mode,
   supportedDeployment: 0,
   filteringAttributes: [],
   images: [],
@@ -24,7 +25,7 @@ const step = (n, stage) => ({
   assemblyId: 'invented',
 });
 
-async function fixture(t, edit = () => {}) {
+async function fixture(t, edit = () => {}, steps = [step(1, 20), step(2, 40)]) {
   const f = await contractModuleFixture(t, {
     mappings: {
       x_item: {
@@ -49,13 +50,15 @@ async function fixture(t, edit = () => {}) {
       ({ context }) => {
         seen.push({
           stage: context.Stage,
+          at: `${context.MessageName}/${context.Stage}/${context.Mode}`,
+          target: context.InputParameters.Target ?? null,
           query: structuredClone(context.InputParameters.Query),
         });
         edit(context);
       },
     ],
   ]);
-  const items = pluginCatalogue({ plugins: { steps: [step(1, 20), step(2, 40)] }, handlers });
+  const items = pluginCatalogue({ plugins: { steps }, handlers });
   const backend = await createOrganizationBackend({ store: f.store, items: () => items, handlers });
   t.after(() => backend.close());
   // The PostOperation collection as the pipeline hands it to steps (a handler sees only its entities).
@@ -65,7 +68,7 @@ async function fixture(t, edit = () => {}) {
     if (context.stage === 40 && context.collection) cookies.push(context.collection.pagingCookie);
     return pipeline(context);
   };
-  return { ...f, seen, cookies };
+  return { ...f, seen, cookies, backend };
 }
 
 test('a Web API collection GET hands its steps the selection as a paged FetchExpression with a paging cookie', async (t) => {
@@ -156,4 +159,17 @@ test("the platform's own read carries the app-module inputs and no IncludeAnnota
   };
   assert.deepEqual(inputsOf({ internalRead: true }), ['AppModuleId', 'IsAppModuleContext', 'Query']);
   assert.deepEqual(inputsOf(), ['AppModuleId', 'IncludeAnnotations', 'IsAppModuleContext', 'Query']);
+});
+
+// @test-kind parity: native recorder captures 2026-10-30 readAsync (native and native-r2): an asynchronous Retrieve step runs once per GET of a kept row, after the read
+test('an asynchronous Retrieve step runs once after a single-row GET', async (t) => {
+  const f = await fixture(t, () => {}, [step(3, 40, 'Retrieve', 1)]);
+  const read = await f.request('GET', `/x_items(${id})?$select=x_name`);
+  assert.equal(read.status, 200, await read.text());
+  await f.backend.settle();
+  assert.deepEqual(
+    f.seen.map((entry) => entry.at),
+    ['Retrieve/40/1'],
+  );
+  assert.equal(String(f.seen[0].target?.id ?? f.seen[0].target).toLowerCase(), id);
 });

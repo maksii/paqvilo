@@ -3277,6 +3277,28 @@ export class DataStore {
           !equal(holder.entity.id, row[m.idColumn])
         )
           throw new DataError('Retrieve output must preserve record identity.', 501, 'LocalPluginQueryUnsupported');
+        // Native runs asynchronous Retrieve steps after the read, with its Target, ColumnSet and result (recorded
+        // readAsync), as RetrieveMultiple's (a message event; a read outside a transaction stages it on its own).
+        const readEvent = clone({
+          target: {},
+          columns,
+          holder,
+          identity,
+          frame: responseFrame ?? {},
+          messageEvent: true,
+          bypassCustomAsync: options.bypassCustomAsync === true,
+          bypassStepIds: options.bypassStepIds,
+        });
+        if (this.committedEventCandidates) this.recordCommittedEvent(m.logicalName, 'retrieve', record, [], readEvent);
+        else if (this.commitStagers?.size)
+          this.transact(() => this.recordCommittedEvent(m.logicalName, 'retrieve', clone(record), [], readEvent), {
+            skipSaveIfUnchanged: true,
+          }).catch((error) => {
+            (this.committedEventErrors ??= []).push({
+              code: error.code ?? 'CommitStagerError',
+              message: error.message,
+            });
+          });
         return {
           ...Object.fromEntries(Object.entries(row).filter(([, value]) => value === null)),
           ...Object.fromEntries(
