@@ -10,6 +10,7 @@ export const storeOperationFields = [
   'pluginParentContext',
   'pluginExecutionUserId',
   'pluginSdkTag',
+  'pluginRequestId',
   'rowTransaction',
   'committedEventCandidates',
   'flowChain',

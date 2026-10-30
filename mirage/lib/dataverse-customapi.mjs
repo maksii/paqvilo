@@ -775,6 +775,7 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
   const acceptLanguage = c.headers?.get?.('accept-language') ?? c.headers?.['accept-language'] ?? '';
   let frame = {
       requestTag,
+      suppliedRequestId: store.pluginRequestId,
       sharedVariables: {
         $type: 'ParameterCollection',
         values: {
@@ -792,7 +793,7 @@ function* invokeSteps(api, name, c, options, synchronous = false) {
     const primary = entity === 'none' ? null : store.resolveMapping(entity).idColumn;
     frame.correlationId ??= parentContext?.values?.CorrelationId?.value ?? store.ids.uuid();
     frame.operationId ??= store.ids.uuid();
-    frame.requestId ??= c.requestId ?? store.ids.uuid();
+    frame.requestId ??= frame.suppliedRequestId ?? c.requestId ?? store.ids.uuid();
     frame.createdOn ??= new Date(store.clock.now()).toISOString();
     return {
       $type: 'ExecutionContext',

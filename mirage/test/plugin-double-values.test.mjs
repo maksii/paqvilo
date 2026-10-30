@@ -75,8 +75,8 @@ test(
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;using Microsoft.Xrm.Sdk.Messages;
-namespace Invented {public sealed class DoubleValues:IPlugin {static void Check(Entity e,double integral){if(!(e["fraction"] is Double)||e.GetAttributeValue<double>("fraction")!=0.1d||!(e["integral"] is Double)||e.GetAttributeValue<double>("integral")!=integral||!(e["negative"] is Double)||e.GetAttributeValue<double>("negative")!=-0.5d||e["empty"]!=null)throw new Exception("Declared Double SDK type lost");}
-public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];Check(target,c.Stage==40?3d:2d);var s=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);
+namespace Invented {public sealed class DoubleValues:IPlugin {static void Check(Entity e,double integral,bool authoredNull=false){if(!(e["fraction"] is Double)||e.GetAttributeValue<double>("fraction")!=0.1d||!(e["integral"] is Double)||e.GetAttributeValue<double>("integral")!=integral||!(e["negative"] is Double)||e.GetAttributeValue<double>("negative")!=-0.5d)throw new Exception("Declared Double SDK type lost");if(authoredNull?(!e.Contains("empty")||e["empty"]!=null):e.Contains("empty"))throw new Exception("Authored null versus read/image omission lost");}
+public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];Check(target,c.Stage==40?3d:2d,true);var s=((IOrganizationServiceFactory)services.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);
 if(c.Stage==20){c.SharedVariables["integralDouble"]=2d;c.OutputParameters["customDouble"]=2d;Check(s.Retrieve("reading",new Guid("${rowid}"),new ColumnSet("fraction","integral","negative","empty")),2d);target["integral"]=3d;var update=new Entity("reading",new Guid("${rowid}"));update["integral"]=3d;s.Update(update);Check(s.Retrieve("reading",update.Id,new ColumnSet("fraction","integral","negative","empty")),3d);var a=s.RetrieveMultiple(new FetchExpression("<fetch aggregate='true'><entity name='reading'><attribute name='fraction' aggregate='sum' alias='total'/></entity></fetch>"));if(!(((AliasedValue)a.Entities[0]["total"]).Value is Double)||(double)((AliasedValue)a.Entities[0]["total"]).Value!=0.1d)throw new Exception("Aggregate Double lost");}
 if(c.Stage==40){if(!(c.SharedVariables["integralDouble"] is Double)||(double)c.SharedVariables["integralDouble"]!=2d||!(c.OutputParameters["customDouble"] is Double))throw new Exception("Integral Double ranked context lost");Check(c.PostEntityImages["after"],3d);Check(s.Retrieve("widget",c.PrimaryEntityId,new ColumnSet("fraction","integral","negative","empty")),3d);c.OutputParameters["customDouble"]=3d;}((ITracingService)services.GetService(typeof(ITracingService))).Trace("Original declared Double stage {0}",c.Stage);}}}`,
     );
@@ -149,7 +149,8 @@ if(c.Stage==40){if(!(c.SharedVariables["integralDouble"] is Double)||(double)c.S
             sdkAssemblySha256: await hash(sdk),
             ownedHosts: { stopped: stops.length, allAbsenceVerified: true },
             assertions: [
-              'Source-declared fractional/integral/negative/null Double Target, SDK Retrieve, aggregate AliasedValue and post image',
+              'Source-declared fractional/integral/negative Double Target, SDK Retrieve, aggregate AliasedValue and post image',
+              'Authored Target null retained; native SDK read and image Attributes omit null',
               'Integral Double SharedVariables and custom Outputs survive ranked original CLR context',
               'Original SDK Update and Target mutation retain Double type on readback',
             ],

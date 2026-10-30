@@ -46,12 +46,14 @@ if(mode=="body"||mode=="empty-body")new DataContractSerializer(typeof(ColumnSet)
       state: { mappings: { widget: { entitySet: 'widgets', idColumn: 'widgetid' } }, tables: { widget: [] } },
     });
     let calls = 0;
-    const observed = [];
+    const observed = [],
+      requestIds = [];
     const api = {
       store,
       records: {
         handle: (context) => {
           calls++;
+          requestIds.push(store.pluginRequestId);
           observed.push(context.sdkQuery ?? { $type: 'Retrieve', columnSet: context.sdkColumns });
           return {
             status: 200,
@@ -82,6 +84,7 @@ if(mode=="body"||mode=="empty-body")new DataContractSerializer(typeof(ColumnSet)
       'nil-columns',
       'byattribute-nil',
     ]) {
+      const beforeCalls = calls;
       const written = spawnSync(executable, [mode], { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
       assert.equal(written.status, 0, written.stderr);
       const request = written.stdout
@@ -118,10 +121,13 @@ if(mode=="body"||mode=="empty-body")new DataContractSerializer(typeof(ColumnSet)
           'empty-body',
           'nil-columns',
           'byattribute-nil',
+          'request-id',
         ].includes(mode)
       ) {
         assert.equal(response.status, 200, response.body);
         assert.equal(calls, observed.length);
+        assert.equal(requestIds.at(-1), mode === 'request-id' ? '11111111-1111-4111-8111-111111111111' : undefined);
+        assert.equal(store.pluginRequestId, undefined);
         if (mode === 'nil-columns' || mode === 'byattribute-nil') assert.equal(observed.at(-1).columnSet, null);
         else
           assert.deepEqual(observed.at(-1).columnSet, {
@@ -144,10 +150,10 @@ if(mode=="body"||mode=="empty-body")new DataContractSerializer(typeof(ColumnSet)
           mode === 'retrieve-nil' ? /nil SOAP Retrieve ColumnSet/ : /Unsupported configured SDK property/,
           mode,
         );
-        assert.equal(calls, 0, `${mode} must not reach a record handler`);
+        assert.equal(calls, beforeCalls, `${mode} must not reach a record handler`);
       }
     }
-    assert.equal(calls, 9);
+    assert.equal(calls, 10);
   },
 );
 

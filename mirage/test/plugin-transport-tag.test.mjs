@@ -14,11 +14,13 @@ import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 const id = (n) => `10000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const pair = (key, value) =>
   `<a:KeyValuePairOfstringanyType><b:key>${key}</b:key>${encodeValue('b:value', value)}</a:KeyValuePairOfstringanyType>`;
-const request = (name, values = {}) =>
+const request = (name, values = {}, requestId) =>
   envelope(
     `<svc:Execute><svc:request i:type="a:OrganizationRequest"><a:Parameters>${Object.entries(values)
       .map(([key, value]) => pair(key, value))
-      .join('')}</a:Parameters><a:RequestName>${name}</a:RequestName></svc:request></svc:Execute>`,
+      .join(
+        '',
+      )}</a:Parameters>${requestId === undefined ? '' : `<a:RequestId>${requestId}</a:RequestId>`}<a:RequestName>${name}</a:RequestName></svc:request></svc:Execute>`,
   );
 const text = (value) => ({ type: 'string', value });
 const entity = (name) => ({
@@ -31,14 +33,14 @@ const administrator = (f) =>
   f.store
     .tableRows('systemuser')
     .find((row) => f.api.principals.roles(row).some((role) => role.name === 'System Administrator'));
-const soap = (f, name, values) => {
+const soap = (f, name, values, requestId) => {
   const user = administrator(f);
   assert.ok(user);
   return handleSoap(
     {
       method: 'POST',
       headers: {},
-      bodyText: request(name, values),
+      bodyText: request(name, values, requestId),
       origin: f.server.origin,
       user,
       caller: user,
@@ -65,9 +67,9 @@ test(
     await fs.writeFile(
       source,
       `using System;using Microsoft.Xrm.Sdk;using Microsoft.Xrm.Sdk.Query;namespace Invented {
-public sealed class Observe:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.MessageName=="RetrieveMultiple"){var q=c.InputParameters["Query"];if((q is QueryExpression&&((QueryExpression)q).ColumnSet!=null)||(q is QueryByAttribute&&((QueryByAttribute)q).ColumnSet!=null))throw new Exception("Nil query ColumnSet lost");foreach(var e in ((EntityCollection)c.OutputParameters["BusinessEntityCollection"]).Entities)if(e.Attributes.Count!=1||!e.Contains("widgetid"))throw new Exception("Nil projection must contain only PK");return;}string tag=c.SharedVariables.Contains("tag")?(string)c.SharedVariables["tag"]:"<absent>";if(tag=="reject")throw new InvalidPluginExecutionException("Tag rejection");if(c.MessageName=="Retrieve"){((Entity)c.OutputParameters["BusinessEntity"])["note"]=tag;return;}if(c.Stage==10)c.SharedVariables["early"]=tag;if(c.Stage==20){if(tag!="<absent>"&&(string)c.ParentContext.SharedVariables["tag"]!=tag)throw new Exception("PreValidation tag lost");((Entity)c.InputParameters["Target"])["note"]=tag;if(tag=="nested"){var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("child"));}}}}
+public sealed class Observe:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.MessageName=="RetrieveMultiple"){var q=c.InputParameters["Query"];if((q is QueryExpression&&((QueryExpression)q).ColumnSet!=null)||(q is QueryByAttribute&&((QueryByAttribute)q).ColumnSet!=null))throw new Exception("Nil query ColumnSet lost");foreach(var e in ((EntityCollection)c.OutputParameters["BusinessEntityCollection"]).Entities)if(e.Attributes.Count!=1||!e.Contains("widgetid"))throw new Exception("Nil projection must contain only PK");return;}string tag=c.SharedVariables.Contains("tag")?(string)c.SharedVariables["tag"]:"<absent>";if(tag=="reject")throw new InvalidPluginExecutionException("Tag rejection");if(c.MessageName=="Retrieve"){((Entity)c.OutputParameters["BusinessEntity"])["note"]=tag=="request-id"?c.RequestId.ToString():tag;return;}if(c.Stage==10)c.SharedVariables["early"]=tag;if(c.Stage==20){if(tag!="<absent>"&&(string)c.ParentContext.SharedVariables["tag"]!=tag)throw new Exception("PreValidation tag lost");((Entity)c.InputParameters["Target"])["note"]=tag=="request-id"?c.RequestId.ToString():tag;if(tag=="nested"){var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("child"));}}}}
 public sealed class Child:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(((string)c.SharedVariables["tag"]!="nested"&&(string)c.SharedVariables["tag"]!="mutate-main")||c.Depth!=2)throw new Exception("SDK descendant tag/depth lost");((Entity)c.InputParameters["Target"])["note"]=(string)c.SharedVariables["tag"];}}
-public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.SharedVariables.Contains("tag")&&(string)c.SharedVariables["tag"]=="mutate-main"){c.SharedVariables["tag"]="visible-main";var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("child"));}c.OutputParameters["Reply"]=c.SharedVariables.Contains("tag")?(string)c.SharedVariables["tag"]:"<absent>";}}
+public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));if(c.SharedVariables.Contains("tag")&&(string)c.SharedVariables["tag"]=="mutate-main"){c.SharedVariables["tag"]="visible-main";var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);s.Create(new Entity("child"));}c.OutputParameters["Reply"]=c.SharedVariables.Contains("tag")?((string)c.SharedVariables["tag"]=="request-id"?c.RequestId.ToString():(string)c.SharedVariables["tag"]):"<absent>";}}
 }`,
     );
     compileClr(source, assembly, { references: [sdk] });
@@ -177,6 +179,32 @@ public sealed class Main:IPlugin {public void Execute(IServiceProvider p){var c=
     assert.equal(retrieved.status, 200, retrieved.body);
     assert.match(retrieved.body, /SOAP-read/);
     assert.equal((await f.json(await f.request('POST', '/' + mainName + '?tag=HTTP-api', {}), 200)).Reply, 'HTTP-api');
+    const supplied = id(91);
+    const authoredCreate = await soap(
+      f,
+      'Create',
+      { Target: entity('Authored RequestId'), tag: text('request-id') },
+      supplied,
+    );
+    assert.equal(authoredCreate.status, 200, authoredCreate.body);
+    const authoredRow = f.store.tableRows('widget').find((row) => row.name === 'Authored RequestId');
+    assert.equal(authoredRow.note, supplied);
+    const authoredRead = await soap(
+      f,
+      'Retrieve',
+      {
+        Target: { type: 'EntityReference', logicalName: 'widget', id: authoredRow.widgetid },
+        ColumnSet: { type: 'ColumnSet', allColumns: false, columns: ['note'] },
+        tag: text('request-id'),
+      },
+      id(92),
+    );
+    assert.equal(authoredRead.status, 200, authoredRead.body);
+    assert.match(authoredRead.body, new RegExp(id(92)));
+    const authoredMain = await soap(f, mainName, { tag: text('request-id') }, id(93));
+    assert.equal(authoredMain.status, 200, authoredMain.body);
+    assert.match(authoredMain.body, new RegExp(id(93)));
+    assert.equal(f.store.pluginRequestId, undefined);
     const main = await soap(f, mainName, { tag: text('SOAP-api') });
     assert.equal(main.status, 200, main.body);
     assert.match(main.body, /SOAP-api/);
@@ -225,7 +253,8 @@ test('concurrent HTTP and SOAP tags survive controlled awaits without leaking ac
   const f = await contractModuleFixture(t, { extension: { name: 'invented-tag-gates', install: () => {} } });
   const waiting = new Map(),
     entered = new Map(),
-    observed = [];
+    observed = [],
+    observedRequestIds = [];
   const gate = new Promise((resolve) => {
     releaseAll = resolve;
   });
@@ -236,13 +265,15 @@ test('concurrent HTTP and SOAP tags survive controlled awaits without leaking ac
     kind: 'action',
     binding: 'unbound',
     handle: async (context) => {
-      const tag = f.store.pluginSdkTag;
+      const tag = f.store.pluginSdkTag,
+        requestId = f.store.pluginRequestId;
       assert.equal(Object.hasOwn(context.body ?? {}, 'tag'), false);
       if (entered.has(tag)) {
         entered.get(tag)();
         await gate;
       }
       observed.push([tag, f.store.pluginSdkTag]);
+      observedRequestIds.push([tag, requestId, f.store.pluginRequestId]);
       if (tag === 'HTTP-B' || tag === 'SOAP-B') throw new Error('Invented request rejection');
       return { status: 204 };
     },
@@ -250,8 +281,8 @@ test('concurrent HTTP and SOAP tags survive controlled awaits without leaking ac
   const requests = [
     f.request('POST', '/invented_TagGate?tag=HTTP-A', {}),
     f.request('POST', '/invented_TagGate?tag=HTTP-B', {}),
-    soap(f, 'invented_TagGate', { tag: text('SOAP-A') }),
-    soap(f, 'invented_TagGate', { tag: text('SOAP-B') }),
+    soap(f, 'invented_TagGate', { tag: text('SOAP-A') }, id(94)),
+    soap(f, 'invented_TagGate', { tag: text('SOAP-B') }, id(95)),
   ];
   await Promise.race([
     Promise.all(waiting.values()),
@@ -268,6 +299,11 @@ test('concurrent HTTP and SOAP tags survive controlled awaits without leaking ac
     [204, 500, 200, 500],
   );
   assert.equal(observed.length, 4);
+  for (const [tag, before, after] of observedRequestIds) {
+    assert.equal(before, tag === 'SOAP-A' ? id(94) : tag === 'SOAP-B' ? id(95) : undefined);
+    assert.equal(after, before);
+  }
+  assert.equal(f.store.pluginRequestId, undefined);
   assert.ok(observed.every(([before, after]) => before === after));
   assert.equal((await f.request('POST', '/invented_TagGate', {})).status, 204);
   assert.deepEqual(observed.at(-1), [undefined, undefined]);

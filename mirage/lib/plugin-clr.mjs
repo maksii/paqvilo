@@ -1582,7 +1582,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
         : {}),
       IsPortalsClientCall: portalRequest,
       PortalsContactId: typed('Guid', portalContactId),
-      RequestId: typed('Guid', (frame.requestId ??= randomUUID())),
+      RequestId: typed('Guid', (frame.requestId ??= frame.suppliedRequestId ?? randomUUID())),
       SecondaryEntityName: context.secondaryEntityName ?? '',
       Stage: stage,
       Mode: step.contract?.mode ?? 0,

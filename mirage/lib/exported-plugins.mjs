@@ -588,6 +588,7 @@ function typedContext({
     InitiatingUserId: initiating,
     UserId: item.impersonatingUserId ?? executing,
     ParentContext: pluginContextValues(parent, store),
+    ...(frame?.requestId === undefined ? {} : { RequestId: frame.requestId }),
     InputParameters: customApi
       ? pluginMessageValues(messageParameters.inputParameters, store)
       : associationParameters
@@ -799,7 +800,7 @@ function handlerExecutionContext({
       ),
     };
   }
-  for (const name of ['PrimaryEntityId', 'UserId', 'InitiatingUserId'])
+  for (const name of ['PrimaryEntityId', 'UserId', 'InitiatingUserId', 'RequestId'])
     if (context[name]) values[name] = { $type: 'Guid', value: context[name] };
   if (item.id)
     values.OwningExtension = {
@@ -979,6 +980,8 @@ export function runPluginPhase({
   if (initialFrame) executionFrames.set(record, cloneStateData(initialFrame));
   const phaseFrame = executionFrames.get(record) ?? {};
   executionFrames.set(record, phaseFrame);
+  phaseFrame.suppliedRequestId ??= store?.pluginRequestId;
+  phaseFrame.requestId ??= phaseFrame.suppliedRequestId;
   if (!Object.hasOwn(phaseFrame, 'requestTag')) {
     phaseFrame.requestTag = store?.pluginSdkTag;
     if (phaseFrame.requestTag !== undefined) {

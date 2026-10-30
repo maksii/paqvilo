@@ -481,7 +481,7 @@ export function remoteExecutionContext(store, facts) {
     PrimaryEntityName: ['associate', 'disassociate'].includes(operation)
       ? 'none'
       : entity || (facts.customApi ? 'none' : entity),
-    RequestId: null,
+    RequestId: frame.suppliedRequestId ?? null,
     SecondaryEntityName: 'none',
     SharedVariables: pairs(frame.sharedVariables?.values),
     Stage: stage,

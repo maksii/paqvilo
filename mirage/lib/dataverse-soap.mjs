@@ -119,7 +119,10 @@ function valueOf(node) {
 // An OrganizationRequest (Execute's request, or one item of a collection): the message name and its Parameters.
 // The generic OrganizationRequest names its message in RequestName; typed requests carry it in their type name.
 function requestOf(node) {
-  assertSoapQueryProperties(node, 'OrganizationRequest', { RequestId: 'object' });
+  const suppliedId = kid(node, NS.a, 'RequestId');
+  const requestId = !suppliedId || isNilNode(suppliedId) ? undefined : suppliedId.text.trim();
+  if (requestId !== undefined && !GUID.test(requestId))
+    throw invalid('OrganizationRequest.RequestId requires a GUID value.');
   const type = typeKey(node);
   const params = new Map();
   for (const pair of kids(node, NS.a, 'Parameters'))
@@ -128,7 +131,7 @@ function requestOf(node) {
     type?.name === 'OrganizationRequest'
       ? kidText(node, NS.a, 'RequestName')
       : (type?.name ?? node.name).replace(/Request$/, '');
-  return { name, params };
+  return { name, params, requestId };
 }
 
 // Body operations: the SDK element children are named after the parameters, so they are mapped to the Execute names.
@@ -726,7 +729,16 @@ function runRequest(base, request) {
   const tagged = request.params.has('tag') ? { tag: request.params.get('tag')?.value ?? null } : {};
   if (request.params.has('tag') && request.params.get('tag')?.type !== 'string')
     throw invalid('tag requires a String value.');
-  return withPluginRequestTag(base.api.store, tagged, () => runRequestCore(base, request));
+  const store = base.api.store;
+  return store.withOperationContext(
+    () => {
+      // The batch wrapper and each member own separate request metadata. A nil
+      // member RequestId must not inherit its wrapper's authored identifier.
+      store.pluginRequestId = request.requestId;
+      return withPluginRequestTag(store, tagged, () => runRequestCore(base, request));
+    },
+    { fresh: true },
+  );
 }
 async function runRequestCore(base, { name, params }) {
   const inputs = {

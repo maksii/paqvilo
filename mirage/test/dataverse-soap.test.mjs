@@ -1578,13 +1578,13 @@ const CAPTURED_SDK_EXECUTE_MULTIPLE = `<s:Envelope xmlns:s="http://schemas.xmlso
 // The real SDK sends Requests as OrganizationRequestCollection in xrm/2012 (ExecuteMultiple).
 test('the captured SDK ExecuteMultiple runs every request of its xrm/2012 OrganizationRequestCollection', async () => {
   const t = await setup();
-  const configured = await t.send(CAPTURED_SDK_EXECUTE_MULTIPLE);
-  assert.equal(configured.status, 500);
-  assert.match(configured.body, /Unsupported configured SDK property: OrganizationRequest.RequestId/);
-  assert.deepEqual(t.store.state.tables.widget, []);
-  const res = await t.send(
-    CAPTURED_SDK_EXECUTE_MULTIPLE.replace(/<a:RequestId>[^<]+<\/a:RequestId>/g, '<a:RequestId i:nil="true"/>'),
+  const invalid = await t.send(
+    CAPTURED_SDK_EXECUTE_MULTIPLE.replace('e3934a15-df20-4d88-9f65-2a90c65f99fc', 'not-a-guid'),
   );
+  assert.equal(invalid.status, 500);
+  assert.match(invalid.body, /OrganizationRequest.RequestId requires a GUID/);
+  assert.deepEqual(t.store.tableRows('widget'), []);
+  const res = await t.send(CAPTURED_SDK_EXECUTE_MULTIPLE);
   assert.equal(res.status, 200, res.body);
   // Creates at indexes 0 and 2 run. The Delete at index 1 names a missing row, so it faults and ContinueOnError carries on.
   assert.deepEqual(
@@ -1602,12 +1602,7 @@ test('the captured SDK ExecuteMultiple runs every request of its xrm/2012 Organi
 // The Retrieve capture (ColumnSet with an xrm/7.1 KeyAttributes and a Serialization/Arrays Columns list) reaches the record lookup.
 test('the captured SDK Retrieve decodes its ColumnSet and reaches the record lookup', async () => {
   const t = await setup();
-  const configured = await t.send(CAPTURED_SDK_RETRIEVE);
-  assert.equal(configured.status, 500);
-  assert.match(configured.body, /Unsupported configured SDK property: OrganizationRequest.RequestId/);
-  const res = await t.send(
-    CAPTURED_SDK_RETRIEVE.replace(/<a:RequestId>[^<]+<\/a:RequestId>/g, '<a:RequestId i:nil="true"/>'),
-  );
+  const res = await t.send(CAPTURED_SDK_RETRIEVE);
   assert.equal(res.status, 500, res.body);
   assert.equal(errorCode(res.body), -2147220969);
 });

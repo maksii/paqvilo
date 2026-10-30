@@ -353,11 +353,23 @@ test('context settling refreshes an earlier quiet page after another page finish
   await observer.ready();
   await Promise.all([page.goto(origin), other.goto(origin)]);
   t.after(releaseHeldReads);
+  const admitted = new Promise((resolve) => {
+    const onRequest = (request) => {
+      if (request.url !== '/held-read') return;
+      server.off('request', onRequest);
+      resolve();
+    };
+    server.on('request', onRequest);
+    t.after(() => server.off('request', onRequest));
+  });
   const held = other.waitForRequest((request) => request.url().endsWith('/held-read'));
   await other.evaluate(() => {
     fetch('/held-read').catch(() => {});
   });
   await held;
+  // The browser's request event can precede server admission. Releasing before
+  // the fixture owns the response leaves it open and never emits requestfinished.
+  await admitted;
   // The other page keeps the context busy until its held read is released.
   // Advance an exact clock after the context has begun waiting on both pages.
   // The first page completes its quiet window while the other read is still held.
