@@ -3,16 +3,13 @@
 // message and a custom-api span per invocation. Invented schemas and handlers only.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DataStore, emptyState } from '../lib/data.mjs';
-import { dataverseSettings } from '../lib/dataverse-settings.mjs';
-import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
-import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { dispatchSdkCall } from '../lib/plugin-clr.mjs';
 import { executeBulkRecords } from '../lib/plugin-bulk.mjs';
-import { customApiHandlers, install as installCustomApis, parseCustomApiFiles } from '../lib/dataverse-customapi.mjs';
+import { customApiHandlers, install as installCustomApis } from '../lib/dataverse-customapi.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
+import { itemNoteOrganization, pingApiStore } from './support/trace-plugins.mjs';
 
 const USER = '77777777-7777-4777-8777-0000000000f2';
 const STEP = '30000000-0000-4000-8000-0000000000a1';
@@ -49,18 +46,7 @@ const step = {
 
 // An organization store whose x_item Create PostOperation step writes an x_note through the SDK service.
 async function organization(t, { level = 'full', handler } = {}) {
-  const state = emptyState();
-  state.mappings.x_item = mapping('x_item');
-  state.mappings.x_note = mapping('x_note');
-  state.tables.x_item = [];
-  state.tables.x_note = [];
-  const store = await new DataStore({ state }).init();
-  const runtime = await createOrganizationRuntime({
-    store,
-    settings: dataverseSettings({ enabled: true }),
-    extensions: [...EXTENSIONS],
-  });
-  t.after(() => runtime.close());
+  const store = await itemNoteOrganization(t, mapping);
   store.traces = createTraceStore({ settings: { level } });
   const sdk = localOrganizationService(store, profile);
   const handlers = new Map([
@@ -133,7 +119,17 @@ test('a rejecting step fails its step and stage spans with the fault, and summar
   assert.throws(() => sdk.create('x_item', { x_name: 'Refused' }), /Invented rule refused the item/);
   const [run] = traces.spans({ kind: 'plugin-step' }).items;
   assert.equal(run.status, 'error');
-  assert.deepEqual(run.error, { code: 'PluginValidation', message: 'Invented rule refused the item.' });
+  // The plug-in fault identity (D-R3-19), never the local PluginValidation code.
+  assert.deepEqual(run.error, {
+    type: 'InvalidPluginExecutionException',
+    code: '0x80040265',
+    status: 'Failed',
+    message: 'Invented rule refused the item.',
+    pluginType: 'Invented.NoteWriter',
+    step: STEP,
+    stage: 40,
+    depth: 1,
+  });
   assert.equal(run.input, undefined);
   assert.equal(run.output, undefined);
   const [stage] = traces.spans({ kind: 'plugin-stage' }).items;
@@ -205,29 +201,7 @@ test('a bulk message is one bulk span, never one span per row', async (t) => {
 });
 
 test('a custom API invocation is a custom-api span whose handler trace lines are events', async () => {
-  const el = (name, value = '') => `<${name}>${value}</${name}>`;
-  const label = (name, text) =>
-    `<${name} default="${text}"><label description="${text}" languagecode="1033" /></${name}>`;
-  const files = [
-    {
-      path: 'fx_Ping/customapi.xml',
-      text: `<customapi uniquename="fx_Ping">${el('bindingtype', 0)}${el('boundentitylogicalname')}${label('displayname', 'fx_Ping')}${el('executeprivilegename')}${el('isfunction', 0)}${el('isprivate', 0)}${el('name', 'fx_Ping')}</customapi>`,
-    },
-    {
-      path: 'fx_Ping/customapirequestparameters/Message/customapirequestparameter.xml',
-      text: `<customapirequestparameter uniquename="Message">${label('displayname', 'Message')}${el('isoptional', 0)}${el('logicalentityname')}${el('name', 'fx_Ping.Message')}${el('type', 10)}</customapirequestparameter>`,
-    },
-    {
-      path: 'fx_Ping/customapiresponseproperties/Reply/customapiresponseproperty.xml',
-      text: `<customapiresponseproperty uniquename="Reply">${label('displayname', 'Reply')}${el('logicalentityname')}${el('name', 'fx_Ping.Reply')}${el('type', 10)}</customapiresponseproperty>`,
-    },
-  ];
-  const state = emptyState();
-  const rows = parseCustomApiFiles(files);
-  for (const logical of ['customapi', 'customapirequestparameter', 'customapiresponseproperty'])
-    state.tables[logical] = rows[logical];
-  const store = new DataStore({ state });
-  store.traces = createTraceStore({ settings: { level: 'full' } });
+  const store = pingApiStore();
   const ops = [];
   installCustomApis(
     {

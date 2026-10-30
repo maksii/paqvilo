@@ -33,7 +33,7 @@ import {
   observedODataInnerMessage,
 } from './webapi-error-details.mjs';
 import { appendObservedWebApiErrorTemplate } from './webapi-error-templates.mjs';
-import { statusFromHttp } from './trace-store.mjs';
+import { recordHttpError } from './trace-store.mjs';
 
 const WEBAPI_COUNT_LIMIT = 5000;
 const KEY = String.raw`((?:'(?:[^']|'')*'|[^()'/])*)`;
@@ -552,10 +552,26 @@ async function route(req, res, url, deps) {
   const entityId = answered?.headers?.['OData-EntityId'] ?? answered?.headers?.['odata-entityid'];
   const id = typeof entityId === 'string' ? (/\(([^()]+)\)$/.exec(entityId)?.[1] ?? undefined) : undefined;
   span.output(() => ({ status, ...(rowCount === undefined ? {} : { rowCount }), ...(id ? { id } : {}) }));
-  span.end({
-    status: statusFromHttp(status),
-    attributes: { statusCode: status, rowCount, id },
+  // A created row names the span's record; an error envelope the handler answered itself is the span's error (D-R3-4).
+  if (id && !span.recordId) span.setEntity(t.mapping.logicalName, id);
+  recordHttpError(span, status, answered?.body?.error);
+  span.end({ attributes: { statusCode: status, rowCount, id } });
+}
+
+/**
+ * The 403 of a refused table read; the refusal is the deny `permission` event of the current span, as a refused create or
+ * delete is (D-R3-11).
+ */
+function readDenied(store, table) {
+  const message = `Table permission denies read on ${table}`;
+  store.traceDenial?.({
+    table,
+    operation: 'read',
+    model: store.portalAuthorization?.describe().model ?? 'standard',
+    permissions: [],
+    message,
   });
+  return new DataError(message, 403, 'PermissionDenied', { operation: 'read', table });
 }
 
 // The span operation of a portal Web API request (docs/design/tracing.md span model).
@@ -934,11 +950,7 @@ function assertExpandReadable(t, mapping, expand, specs = parseExpand(expand)) {
       const rel = owner.relationships?.[spec.navigation];
       if (!rel) continue;
       const target = store.resolveMapping(rel.entity);
-      if (!store.rules(target.logicalName, 'read', deps.identity).length)
-        throw new DataError(`Table permission denies read on ${target.logicalName}`, 403, 'PermissionDenied', {
-          operation: 'read',
-          table: target.logicalName,
-        });
+      if (!store.rules(target.logicalName, 'read', deps.identity).length) throw readDenied(t.store, target.logicalName);
       visit(target, spec.expand ?? []);
     }
   };
@@ -955,10 +967,7 @@ function getCollection(t, { mapping = t.mapping, policy = t.policy, ids } = {}) 
     store.state.settings?.permissionMode !== 'permissive' &&
     !store.rules(mapping.logicalName, 'read', deps.identity).length
   )
-    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, 'PermissionDenied', {
-      operation: 'read',
-      table: mapping.logicalName,
-    });
+    throw readDenied(t.store, mapping.logicalName);
   if (!apply) assertExpandReadable(t, mapping, url.searchParams.get('$expand'));
   if (!apply && !url.searchParams.has('$select')) assertSelectLessRead(t, policy, mapping);
   const paging = prepareODataPage({
@@ -1037,11 +1046,7 @@ function getFetch(t) {
   const admitTables = () => {
     if (!deps.identity?.admin && store.state.settings?.permissionMode !== 'permissive')
       for (const logical of fetchTables(store, xml))
-        if (!store.rules(logical, 'read', deps.identity).length)
-          throw new DataError(`Table permission denies read on ${logical}`, 403, 'PermissionDenied', {
-            operation: 'read',
-            table: logical,
-          });
+        if (!store.rules(logical, 'read', deps.identity).length) throw readDenied(t.store, logical);
   };
   let project;
   try {
@@ -1376,10 +1381,7 @@ function representationParams(t, mapping) {
     store.state.settings?.permissionMode !== 'permissive' &&
     !store.rules(mapping.logicalName, 'read', deps.identity).length
   )
-    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, 'PermissionDenied', {
-      operation: 'read',
-      table: mapping.logicalName,
-    });
+    throw readDenied(t.store, mapping.logicalName);
   assertExpandReadable(t, mapping, params.get('$expand'));
   return params;
 }
@@ -1388,10 +1390,7 @@ function representationBody(t, mapping, id, params) {
     return entityResponse(t, mapping, t.policy, id, params);
   } catch (error) {
     if (error?.code !== 'NotFound') throw error;
-    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, 'PermissionDenied', {
-      operation: 'read',
-      table: mapping.logicalName,
-    });
+    throw readDenied(t.store, mapping.logicalName);
   }
 }
 /** Run a write and, when requested, read its representation in one store transaction. */
@@ -1554,6 +1553,14 @@ async function fileColumnRequest(t) {
     fileName,
     contentType: header('content-type'),
     defaultName: true,
+  });
+  // The file transfer on the Web API span: the column, the operation and (once known) the file's name, size and type.
+  t.span?.set({
+    fileColumn: target.segment,
+    transfer: download ? 'download' : method === 'DELETE' ? 'delete' : 'upload',
+    ...(answer.file
+      ? { fileName: answer.file.name, fileSize: answer.file.size, mimetype: answer.file.mimeType }
+      : { fileName: fileName ?? undefined }),
   });
   if (answer.statusCode !== 200) return sendNoContent(t);
   const { name, size, mimeType } = answer.file;

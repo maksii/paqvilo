@@ -535,14 +535,16 @@ class SnippetsDrop extends LiquidDrop {
     if (this.rendering.has(name)) throw new LiquidError(`Recursive content snippet ${name}`);
     this.rendering.add(name);
     try {
-      return await renderNested(this.engine, source, context, sourceRef);
+      return await renderNested(this.engine, source, context, sourceRef, `snippet ${name}`);
     } finally {
       this.rendering.delete(name);
     }
   }
 }
 /** html.Liquid(source, context): parse errors return the bare message; rendering shares the context. */
-async function renderNested(engine, source, context, sourceRef = null) {
+// label names the render-template span of a source without a reference (D-R3-14).
+async function renderNested(engine, source, context, sourceRef = null, label = 'inline liquid') {
+  if (!sourceRef && context.provenance) context.renderSlot = { name: label };
   let template;
   try {
     const debugged = debugTemplate(source, sourceRef, debugTarget(sourceRef, sourceRef?.fieldPath?.at(-1), source));
@@ -1003,6 +1005,11 @@ export function createPortalRenderer(portal, options = {}) {
   };
   /** EntityFileSystem (active web templates by name) then EmbeddedResourceFileSystem. */
   async function loadTemplateSource(name, context) {
+    // A runtime template has no source reference: its render-template span is named by the include name (D-R3-14).
+    const runtime = (label, source) => {
+      if (context?.provenance) context.renderSlot = { name: `${label} ${name}` };
+      return source;
+    };
     const record = findTemplate(name);
     if (record) {
       if (typeof record.source === 'string' && record.source.trim()) return record.source;
@@ -1014,11 +1021,12 @@ export function createPortalRenderer(portal, options = {}) {
           `Web template '${name}' has no exported source; the runtime template '${managed}' is used.`,
           { template: String(name) },
         );
-        return managedSource(managed);
+        return runtime('builtin', managedSource(managed));
       }
       return record.source ?? '';
     }
-    if (name != null && builtinSource(String(name)) !== undefined) return builtinSource(String(name));
+    if (name != null && builtinSource(String(name)) !== undefined)
+      return runtime('builtin', builtinSource(String(name)));
     // Sites are provisioned with the managed display-name templates; exports can omit them.
     const managed = MANAGED_DISPLAY_NAMES[nameKey(name)];
     if (managed && builtinSource(managed) !== undefined) {
@@ -1027,12 +1035,12 @@ export function createPortalRenderer(portal, options = {}) {
         `Web template '${name}' is not in the export; the runtime template '${managed}' is used.`,
         { template: String(name) },
       );
-      return managedSource(managed);
+      return runtime('builtin', managedSource(managed));
     }
     context?.diagnostic('liquid-template-not-found', `Template "${name}" not found.`, {
       template: name == null ? null : String(name),
     });
-    return `Template "${name}" not found.`;
+    return runtime('missing', `Template "${name}" not found.`);
   }
   const filterHost = {
     decimalStringMultiply: (options.observed ?? portal.observed)?.liquidDecimalStringMultiply,
@@ -1042,7 +1050,7 @@ export function createPortalRenderer(portal, options = {}) {
     htmlVoidSerialization: (options.observed ?? portal.observed)?.liquidHtmlVoidSerialization,
     htmlSafeInput: (options.observed ?? portal.observed)?.liquidHtmlSafeInput,
     pathAndQueryFragment: (options.observed ?? portal.observed)?.liquidPathAndQueryFragment,
-    renderLiquid: (source, context) => renderNested(engine, source, context),
+    renderLiquid: (source, context) => renderNested(engine, source, context, null, 'liquid filter'),
     renderWebTemplate: async (id, context) => {
       const record = Object.values(portal.templates ?? {}).find(
         (t) => String(t?.id ?? '').toLowerCase() === String(id ?? '').toLowerCase(),
@@ -1267,7 +1275,7 @@ export function createPortalRenderer(portal, options = {}) {
       const defaultValue = editOptions.default == null ? null : formatItem(editOptions.default);
       const render = async (value, sourceRef = null) => {
         context.resolvedFragment = null;
-        if (liquidEnabled) return renderNested(engine, value, context, sourceRef);
+        if (liquidEnabled) return renderNested(engine, value, context, sourceRef, 'editable');
         if (sourceRef)
           context.resolvedFragment = {
             text: value,
@@ -1808,7 +1816,7 @@ export function createPortalRenderer(portal, options = {}) {
     return (await renderSourceFragment(source, context, sourceRef, slot)).text;
   }
   async function renderString(source, context = {}) {
-    return renderSource(source, context);
+    return renderSource(source, context, null, 'inline liquid');
   }
   async function renderPage(url, extra = {}) {
     // A language code that starts the path selects the language and is not part of the page URL.
@@ -1866,6 +1874,7 @@ export function createPortalRenderer(portal, options = {}) {
         template ? template.source : (rewriteLayout?.source ?? "{% include 'Page Copy' %}"),
         context,
         template ? index.source(template.metadata, 'source') : null,
+        template ? null : rewriteLayout ? 'rewrite layout' : 'page copy layout',
       );
       const body = bodyFragment.text;
       const css = page.css

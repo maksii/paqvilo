@@ -403,6 +403,8 @@ async function runClassic(api, config, run) {
     return choice.message;
   }
   const trace = [];
+  // Each trace() line is also a trace event on the run's workflow span (current here; tracedRun), so it reads in the trace.
+  const span = store.traces?.enabled ? store.traces.current() : null;
   const previous = store.flowChain;
   store.flowChain = { id: outer?.id ?? (api.ids ?? systemIds).uuid(), depth: (outer?.depth ?? 0) + 1 };
   let message;
@@ -413,7 +415,10 @@ async function runClassic(api, config, run) {
       caller: run.caller,
       inputs: run.inputs,
       api,
-      trace: (text) => trace.push(String(text)),
+      trace: (text) => {
+        trace.push(String(text));
+        span?.event('trace', { message: String(text) });
+      },
     });
     message = result?.message ?? (trace.join('\n') || null);
   } finally {
@@ -456,9 +461,10 @@ function writeProcessSession(store, api, run, error) {
   });
 }
 
-// One workflow span per run (docs/design/tracing.md). A run a system job starts on a later tick passes the span that queued it
-// as parent (null: a new trace), so it never takes the scheduler's inherited context; without parent the run nests where it runs.
-function tracedRun(api, run, work, { parent, cloud = false } = {}) {
+// One workflow span per run (docs/design/tracing.md), nested where it runs: a background run runs inside its job span (the
+// system job's, dataverse-async.mjs runJob, or the committed job's, committed-work.mjs traceJob), which is parented by the
+// span that queued it. The run's result (the workflow message, or the cloud flow run) is the span output.
+function tracedRun(api, run, work, { cloud = false } = {}) {
   const traces = api.store.traces;
   if (!traces?.enabled) return work();
   return traces.wrap(
@@ -471,24 +477,26 @@ function tracedRun(api, run, work, { parent, cloud = false } = {}) {
       recordId: run.regarding?.id ?? run.target?.id ?? null,
       attributes: {
         workflowId: bare(run.row?.workflowid),
+        processId: bare(run.row?.workflowid),
+        processName: run.row?.name ?? null,
         cloud,
         realtime: run.realtime === true,
         jobId: run.jobId ?? null,
       },
-      ...(parent === undefined
-        ? {}
-        : { traceId: parent?.traceId ?? null, parentSpanId: parent?.spanId ?? null, async: true }),
+      input: () => ({ target: run.target?.row ?? null, inputs: run.inputs ?? {} }),
     },
-    () => work(),
+    async (span) => {
+      const result = await work();
+      span.output(() => (cloud ? result : { message: result ?? null }));
+      return result;
+    },
   );
 }
 
 // One run, atomic: the handler's writes commit or roll back with it. A failed run records its log outside the rolled-back work.
 async function attempt(api, config, run) {
   try {
-    return await tracedRun(api, run, () => api.change(() => api.runAtomic(() => runClassic(api, config, run))), {
-      parent: run.traceParent,
-    });
+    return await tracedRun(api, run, () => api.change(() => api.runAtomic(() => runClassic(api, config, run))));
   } catch (error) {
     const choice = classicChoice(config, run.row);
     const logged = choice.mode === 'handler' || choice.mode === 'mock';
@@ -572,8 +580,6 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
   const category = Number(row.category);
   const realtime = category === CATEGORY_WORKFLOW && Number(row.mode) === 1;
   const name = row.name;
-  // The span that queues a system job: the job's run parents by it explicitly (tracedRun).
-  const staging = store.traces?.current() ?? null;
   if (category === CATEGORY_WORKFLOW) {
     if (Number(row.statecode) !== STATE_ACTIVATED) throw native('0x80045047', 'Workflow must be in Published state.');
     if (!row.ondemand && !row.subprocess)
@@ -627,10 +633,7 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
           api,
           { row, regarding },
           () => runCloudFlow(api, config, { row, target: { row: target }, caller, inputs }),
-          {
-            parent: staging,
-            cloud: true,
-          },
+          { cloud: true },
         ),
     );
     return {
@@ -670,9 +673,7 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
         workflowactivationid: activation ? lookup('workflow', activation.workflowid) : null,
       },
     },
-    inRunContext(store, currentRequest()?.correlationId, caller, () =>
-      attempt(api, config, { ...run, jobId, traceParent: staging }),
-    ),
+    inRunContext(store, currentRequest()?.correlationId, caller, () => attempt(api, config, { ...run, jobId })),
   );
   return {
     status: 200,

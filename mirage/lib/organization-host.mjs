@@ -251,7 +251,8 @@ function buildProviders(
     }
     // Core Blob REST transport (storage-azurite.mjs); its connection string is read from env here, never stored.
     if (entry.kind === 'azurite') {
-      instances[id] = createAzuriteStorage({ id, settings: entry, env, clock: now });
+      // Blob requests are http-out spans of the host trace store (set once the host composes, so read per request).
+      instances[id] = createAzuriteStorage({ id, settings: entry, env, clock: now, traces: () => store?.traces });
       created.push({ name: `storage/${id}`, item: instances[id] });
       continue;
     }
@@ -690,9 +691,33 @@ const TRACE_METHODS = [
   'configure',
   'status',
   'subscribe',
+  'flush',
 ];
 export const traceMethods = (traces) =>
   Object.freeze(Object.fromEntries(TRACE_METHODS.map((name) => [name, traces[name]])));
+
+/**
+ * The trace host and module of an app surface path (D-R3-3): `/_apps/canvas*` and `/_apps/api/canvas/*` are canvas apps,
+ * `/_apps/code*` code apps, `/main.aspx` and every other `/_apps*` path the model-driven shell and its API; null otherwise.
+ */
+export function appTraceSurface(pathname) {
+  if (/^\/_apps\/(?:canvas(?:\/|$)|api\/canvas\/)/.test(pathname)) return { host: 'canvas', module: 'canvas' };
+  if (/^\/_apps\/code(?:\/|$)/.test(pathname)) return { host: 'code-app', module: 'code-apps' };
+  if (pathname === '/main.aspx' || /^\/_apps(?:\/|$)/.test(pathname))
+    return { host: 'model-driven', module: 'model-driven' };
+  return null;
+}
+
+/**
+ * The trace actor of a staff principal ({ kind: 'staff' | 'local-admin', principalId }, staff-session.mjs) with the
+ * user's display name; null for any other principal (a portal visitor keeps its root's contact actor).
+ */
+export function staffActor(organization, principal) {
+  if (!principal?.principalId || !['staff', 'local-admin'].includes(principal.kind)) return null;
+  const user = organization?.principals?.byId(principal.principalId);
+  const name = principal.kind === 'local-admin' ? 'Local administrator' : (user?.fullname ?? user?.domainname ?? null);
+  return { kind: 'staff', id: principal.principalId, name };
+}
 /** Status `modelDrivenApps`: the imported model-driven apps of the Solution metadata as { id, uniqueName, name }. */
 export const modelDrivenAppsOf = (metadata) =>
   (metadata?.modelDrivenApps ?? []).map(({ id, uniqueName, name }) => ({ id, uniqueName, name }));
@@ -765,7 +790,7 @@ export function codeAppDataverse({ organization, change, origin }) {
       ) {
         if (candidate === 'WhoAmI' && noParameters)
           return unboundFunction(
-            { organizationId: organization.organizationId },
+            { organizationId: organization.organizationId, store: organization.store },
             { method: 'GET', origin: url.origin, url },
             { kind: 'function', name: candidate, version: route.version ?? 'v9.2' },
             context,
@@ -799,9 +824,10 @@ export function codeAppDataverse({ organization, change, origin }) {
 /**
  * The code-app connector call (code-apps-http.mjs `connectors`): the power.config.json reference key binds a project
  * connection of the same id, else the connector's built-in provider. undefined (answered 501) when nothing implements it.
+ * `caller` names the calling surface in the connector context (canvas-runtime.mjs passes 'canvas').
  */
 export function codeAppConnectors(connectors, connections = {}) {
-  return async ({ reference, operationId, body, principal }) => {
+  return async ({ reference, operationId, body, principal, caller = 'code-app' }) => {
     const connectorId = connectorOf(reference.apiId ?? reference.key);
     const connectionId = Object.hasOwn(connections, reference.key) ? reference.key : null;
     connectors.validateOperation?.(connectorId, { operationId, parameters: body ?? {} });
@@ -820,7 +846,7 @@ export function codeAppConnectors(connectors, connections = {}) {
       parameters: body ?? {},
       connection,
       context: {
-        caller: 'code-app',
+        caller,
         initiatingUserId: principal?.principalId ?? null,
         correlationId: currentRequest()?.correlationId ?? null,
       },

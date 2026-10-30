@@ -22,7 +22,7 @@ export const MIRAGE_TOOLS = Object.freeze({
   'verify-storage': '[--json] (disposable 600,000-row storage/performance check; about 2 GiB free memory)',
   'capture-shell':
     '--config FILE [--site ID] [--env ID | --all] [--path /] [--cdp LOOPBACK_URL] [--timeout MILLISECONDS] [--no-rich-text] [--strict] [--json]',
-  trace: `list|show TRACE_ID|spans|stats|settings|clear|export|watch ${toolOptionsHelp('trace')}`,
+  trace: `list|show TRACE_ID|spans|stats|settings|clear|flush|export|watch ${toolOptionsHelp('trace')}`,
 });
 export const mirageToolHelp = (name) => `Usage: paqvilo mirage ${name} ${MIRAGE_TOOLS[name]}\n`;
 export const MIRAGE_LIFECYCLE = Object.freeze(['init', 'dev', 'start', 'status', 'stop']);

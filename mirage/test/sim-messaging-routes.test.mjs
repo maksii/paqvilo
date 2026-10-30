@@ -1,11 +1,11 @@
 // /_sim/api/messages and /_sim/api/outbox over a plain loopback http server with a stub api object.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createLocalMessageBus, messagingSettings } from '../lib/message-bus.mjs';
 import { createOutbox } from '../lib/outbox.mjs';
 import { createMessagingRoutes, redactSecrets } from '../lib/sim-messaging-routes.mjs';
+import { serveRoutes } from './support/route-server.mjs';
 
 const CSRF = 'invented-csrf-token';
 
@@ -13,15 +13,7 @@ async function serve(t, providers, csrf = () => CSRF) {
   const store = await new DataStore({ state: emptyState() }).init();
   const api = { store, providers: providers(store) };
   const routes = createMessagingRoutes({ api, csrf });
-  const server = http.createServer(async (req, res) => {
-    if (!(await routes(req, res, new URL(req.url, 'http://127.0.0.1')))) {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = await serveRoutes(t, routes);
   const call = async (method, path, headers = {}) => {
     const response = await fetch(origin + path, { method, headers });
     return { status: response.status, body: await response.json().catch(() => null) };

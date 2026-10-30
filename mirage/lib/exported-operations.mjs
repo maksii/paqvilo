@@ -14,6 +14,7 @@ import { collectPackExport } from './pack-exports.mjs';
 import { solutionLayerFiles } from './solution-content-fingerprint.mjs';
 import { environmentVariablePayload } from './secret-resolver.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
+import { tracedFetch } from './trace-hosts.mjs';
 import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { siteSetting } from './redirects.mjs';
 import { portalRecordWrites } from './form-service.mjs';
@@ -136,6 +137,16 @@ export function describe() {
     lifecycle: 'in-process',
   };
 }
+// A body as a trace payload: JSON text parsed, any other text as it is (the store redacts and caps it).
+const parseBody = (text) => {
+  if (text === '' || text == null) return null;
+  if (typeof text !== 'string') return text;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+};
 const parsePayload = (text) => {
   if (text == null || text === '') return {};
   const value = parseExactJson(text);
@@ -205,17 +216,30 @@ export async function runExportedServerLogic({
       severity: 'info',
       message: `ServerLogic/TimeoutInSeconds is ${seconds} s; the local run is bounded at ${bound} ms.`,
     });
-  // Tracing: one workflow span around the worker run. No span context crosses into the Worker; its RPC requests are answered
-  // here on the main thread inside the span (traces.run), so their Dataverse operations and bridges nest under it, and its
-  // HttpClient requests carry the span's trace headers.
+  // Tracing: one server-logic span around the worker run (input: the function, method, body, input and query; output: the
+  // raw result). No span context crosses into the Worker; its RPC requests are answered here on the main thread inside the
+  // span (traces.run), so their Dataverse operations and bridges nest under it, its Logger lines are trace events on it and
+  // each HttpClient request is an http-out span (tracedFetch) that forwards the trace.
   const traces = store?.traces?.enabled ? store.traces : null,
     span =
       traces?.start({
-        kind: 'workflow',
+        kind: 'server-logic',
         name: 'Server logic ' + record.name,
         module: 'portal',
         operation: String(context.FunctionName).toLowerCase(),
-        attributes: { serverLogic: record.name, method, activityId: context.ActivityId },
+        attributes: {
+          serverLogic: record.name,
+          method,
+          function: context.FunctionName,
+          activityId: context.ActivityId,
+        },
+        input: () => ({
+          function: context.FunctionName,
+          method,
+          body: parseBody(body),
+          input: parseBody(input),
+          query,
+        }),
       }) ?? null,
     inSpan = (fn) => (span ? traces.run(span, fn) : fn());
   const unavailable = (bridge, code) => {
@@ -282,11 +306,13 @@ export async function runExportedServerLogic({
           .map(([name, value]) => [name, String(value)]),
       );
       if (message.contentType) headers['content-type'] = message.contentType;
-      const response = await loopbackFetch(target, {
-        method: message.method,
-        headers: { ...headers, ...traces?.headers(span) },
-        body: message.body ?? undefined,
-        signal: AbortSignal.timeout(bound),
+      const response = await tracedFetch(traces, {
+        module: 'portal',
+        operation: String(message.method ?? 'GET').toLowerCase(),
+        url: target,
+        fetch: loopbackFetch,
+        attributes: { serverLogic: record.name, client: 'HttpClient' },
+        init: { method: message.method, headers, body: message.body ?? undefined, signal: AbortSignal.timeout(bound) },
       });
       return envelope(response.status, await response.text(), Object.fromEntries(response.headers));
     },
@@ -357,14 +383,19 @@ export async function runExportedServerLogic({
       }
       if (message.kind === 'result') return finish(null, message.raw);
       if (message.kind === 'failure') return finish(failure(message.message));
-      if (message.kind === 'log')
+      if (message.kind === 'log') {
+        span?.event('trace', { message: message.message, attributes: { level: message.level ?? null } });
         return (services.log ?? (() => {}))({
           serverLogic: record.name,
           operationId: context.ActivityId,
           level: message.level,
           message: message.message,
         });
-      if (message.kind === 'diagnostic') return note({ code: message.code, message: message.message });
+      }
+      if (message.kind === 'diagnostic') {
+        span?.event('diagnostic', { message: message.message, attributes: { code: message.code ?? null } });
+        return note({ code: message.code, message: message.message });
+      }
       if (bridges[message.kind]) {
         let answer;
         try {
@@ -449,6 +480,7 @@ export async function runExportedServerLogic({
   if (!span) return running;
   return running.then(
     (value) => {
+      span.output(() => parseBody(value));
       span.end();
       return value;
     },

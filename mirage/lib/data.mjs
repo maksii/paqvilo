@@ -34,6 +34,7 @@ import {
 } from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
+import { traceDecision } from './dataverse-security.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
 import { jsonChunks, stateDigest } from './state-stream.mjs';
@@ -1399,6 +1400,14 @@ export class DataStore {
     this.ensureStorage();
     return this.storage.persistedDigest();
   }
+  /** Record identity (docs/design/tracing.md, D-R3-1): the first row a Dataverse operation addresses names its current
+   * `dataverse` span (a create as soon as its id is assigned, before its plug-in stages run, so the stage and step spans
+   * and every later span read it). A span that already names a record, or names another table, is left as it is. */
+  traceRecord(logical, id) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    if (span?.kind === 'dataverse' && span.recordId == null && id != null && span.entity === logical)
+      span.setEntity(logical, scalar(id));
+  }
   /** The tracing of one commit (docs/design/tracing.md): a commit event on the current span; end(...) records the staged
    * events and the save. null without a current span: a commit outside any span (job bookkeeping, startup) opens none. */
   traceCommit() {
@@ -1406,8 +1415,8 @@ export class DataStore {
     if (!current) return null;
     return {
       fail: (error) =>
-        current.event('commit', { message: 'Save failed', attributes: { error: error?.code ?? 'Error' } }),
-      end: ({ attributes }) => current.event('commit', { attributes }),
+        traceDecision(current, 'commit', { message: 'Save failed', attributes: { error: error?.code ?? 'Error' } }),
+      end: ({ attributes }) => traceDecision(current, 'commit', { attributes }),
     };
   }
   /** Serialize reads that may invoke backend plugin writes. Pure reads do not
@@ -2652,7 +2661,7 @@ export class DataStore {
       code: 'TABLE_PERMISSION_DENIED',
     };
     const current = traces.current();
-    if (current) current.event('permission', { message, attributes });
+    if (current) traceDecision(current, 'permission', { message, attributes });
     else
       traces
         .start({ kind: 'permission', name: `Deny ${operation} ${table}`, module: 'security', operation, entity: table })
@@ -2668,7 +2677,7 @@ export class DataStore {
     const span = this.traces?.enabled ? this.traces.current() : null;
     if (!span) return;
     const table = this.resolveMapping(entity).logicalName;
-    span.event('permission', {
+    traceDecision(span, 'permission', {
       attributes: {
         table,
         operation,
@@ -2818,6 +2827,7 @@ export class DataStore {
       () => ({ id }),
       options,
       () => this.readRecord(entity, id, identity, options),
+      id,
     );
   }
   /**
@@ -2825,7 +2835,7 @@ export class DataStore {
    * entity, operation, rowCount and portalRequest; the query is captured only at level full. A FetchXML read is operation
    * retrievemultiple with attribute query: 'fetchxml' (the label stays FetchXml).
    */
-  tracedRead(operation, entity, input, options, read) {
+  tracedRead(operation, entity, input, options, read, recordId = null) {
     const traces = this.traces;
     if (!traces?.enabled || COVERED_READS.has(traces.current()?.kind)) return read();
     return traces.wrap(
@@ -2835,6 +2845,7 @@ export class DataStore {
         module: 'dataverse',
         operation: operation === 'fetchxml' ? 'retrievemultiple' : operation,
         entity,
+        recordId: recordId == null ? null : String(scalar(recordId)),
         attributes: {
           portalRequest: options.portalRequest === true,
           ...(operation === 'fetchxml' ? { query: 'fetchxml' } : {}),
@@ -2856,6 +2867,7 @@ export class DataStore {
     const rows = this.tableRows(m.logicalName);
     let row = rows[this.rowIndex(m, rows, id, options)];
     if (!row) return null;
+    this.traceRecord(m.logicalName, row[m.idColumn]);
     this.assertAllowed(m.logicalName, 'read', row, identity);
     // A portal read (forms, Liquid entity reads) sees what a Dataverse read answers: computed columns hold their value and
     // lookups are entity references carrying the target's primary name.
@@ -4493,6 +4505,7 @@ export class DataStore {
     if (appUser && !own(row, 'createdby'))
       row.createdby = { id: this.observed?.portalApplicationUserId ?? null, logical_name: 'systemuser', name: appUser };
     row[m.idColumn] ??= this.ids.uuid();
+    this.traceRecord(m.logicalName, row[m.idColumn]);
     if (isElastic(m)) assertElasticRecord(row);
     if (
       isElastic(m)
@@ -4661,6 +4674,7 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const index = this.rowIndex(m, rows, id, { ...options, partitionId: options.partitionId ?? data.partitionid });
     if (index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    this.traceRecord(m.logicalName, rows[index][m.idColumn]);
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, 'update', rows[index], identity);
     const changes = this.normalizeRecord(m, data, identity);
@@ -4870,6 +4884,7 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const index = this.rowIndex(m, rows, id, options);
     if (index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    this.traceRecord(m.logicalName, rows[index][m.idColumn]);
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, 'delete', rows[index], identity);
     // Dataverse deletes hand the deleted rows (children first, root last) to the recycle bin; portal deletes never collect them.

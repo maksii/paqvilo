@@ -14,7 +14,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
 import { DataError } from './data-error.mjs';
-import { compileDefinition, validateDefinition } from './connector-definition.mjs';
+import { compileDefinition, markConnectorDataverseSpan, validateDefinition } from './connector-definition.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { DEAD_LETTER_SUFFIX } from './message-bus.mjs';
 import { localOrganizationService, validateServiceProfile } from './local-organization-service.mjs';
@@ -35,7 +35,7 @@ import { createScriptHost, SDK_MISSING, UNTRUSTED } from './custom-connector-scr
 import { flowVault } from './flow-vault.mjs';
 import { packFlowActions } from './flow-actions.mjs';
 import { effectiveEnvironmentVariables } from './secret-resolver.mjs';
-import { statusFromHttp } from './trace-store.mjs';
+import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 
 export const DATAVERSE_CONNECTOR = 'shared_commondataserviceforapps';
 const CODES = {
@@ -53,6 +53,29 @@ const connectorError = (code, message) => new DataError(message, CODES[code], co
 const fail = (code, message) => {
   throw connectorError(code, message);
 };
+// The span error of a provider's own exception (connector-runtime invoke): its code (else the mapped one), message and cause.
+const providerFailure = (error, mapped, secure) => ({
+  code: typeof error?.code === 'string' && error.code ? error.code : mapped.code,
+  message: (!secure && (typeof error === 'string' ? error : error?.message)) || mapped.message,
+  status: mapped.status,
+  ...(!secure && error?.cause && typeof error.cause === 'object'
+    ? { cause: { code: error.cause.code ?? error.cause.name ?? 'Error', message: String(error.cause.message ?? '') } }
+    : {}),
+});
+// The span error of a provider answer of 400 or more: its body's error code and message (an OData/ARM { error: { code,
+// message } } or a flat { code, message }); a sealed call (secure) keeps only the status.
+function answerError(answer, secure) {
+  const status = answer.statusCode,
+    body = answer.body,
+    inner =
+      body && typeof body === 'object' ? (body.error && typeof body.error === 'object' ? body.error : body) : null;
+  const generic = { code: 'Http' + status, message: `The connector answered status ${status}.` };
+  if (secure || !inner) return generic;
+  return {
+    code: typeof inner.code === 'string' && inner.code ? inner.code : generic.code,
+    message: typeof inner.message === 'string' && inner.message ? inner.message : generic.message,
+  };
+}
 const same = (a, b) => a != null && b != null && String(a).toLowerCase() === String(b).toLowerCase();
 const isMap = (value) => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 const clone = (value) => (value === undefined ? null : structuredClone(value));
@@ -221,10 +244,11 @@ const selected = (store, logical, row, select, navigations) => {
 // and plug-in stages as its write (plugin-association.mjs executeAssociationAsync); without one, executeAssociationAsync alone,
 // so a synchronous service endpoint step's post is awaited in process. Files and bound/unbound actions need organization entries
 // (store.recordPipeline.fileContentInternal, executeMessageInternal); without them they answer OperationUnsupported (501).
-// The span operation of a Dataverse connector call (docs/design/tracing.md span model).
+// The span operation of a Dataverse connector call (docs/design/tracing.md span model, D-R3-9): the canonical Dataverse
+// verb. UpdateRecord ("Update a row") is an update; when it created the missing row its span says so with created: true.
 const DATAVERSE_SPAN_OPERATION = Object.freeze({
   CreateRecord: 'create',
-  UpdateRecord: 'upsert',
+  UpdateRecord: 'update',
   UpdateOnlyRecord: 'update',
   DeleteRecord: 'delete',
   GetItem: 'retrieve',
@@ -243,6 +267,36 @@ function dataverseLogicalName(store, entityName) {
   } catch {
     return null;
   }
+}
+// The full-level input of a Dataverse connector span: the written values (item and item/<column> parameters) as item, the
+// other parameters (table, record id, query options, FetchXML, action name) as they are.
+function dataverseInput(p) {
+  const item = {},
+    rest = {};
+  for (const [key, value] of Object.entries(p))
+    if (key === 'item' && isMap(value)) Object.assign(item, value);
+    else if (key.startsWith('item/')) item[key.slice(5)] = value;
+    else rest[key] = value;
+  return Object.keys(item).length ? { ...rest, item } : rest;
+}
+// What a Dataverse connector answer says: its status, the written or read row's id, and the row count of a list.
+function dataverseFacts(store, entity, answer) {
+  const body = answer?.body,
+    rows = Array.isArray(body?.value) ? body.value : null;
+  let id = null;
+  if (!rows && isMap(body) && entity)
+    try {
+      const value = body[store.resolveMapping(entity).idColumn];
+      id = value == null ? null : String(value);
+    } catch {
+      id = null;
+    }
+  return {
+    statusCode: answer?.statusCode ?? null,
+    id,
+    rowCount: rows ? rows.length : Array.isArray(body?.responses) ? body.responses.length : null,
+    ...(rows ? { moreRecords: Boolean(answer?.nextLink ?? body?.['@odata.nextLink']) } : {}),
+  };
 }
 function dataverseProvider(store, diagnostic) {
   const notWired = (what) => {
@@ -469,18 +523,42 @@ function dataverseProvider(store, diagnostic) {
       // Tracing (docs/design/tracing.md): one dataverse span per call, under the connector span. Its store reads (pre-images,
       // projections) and the organization's internal entries it drives open none of their own (data.mjs COVERED_READS,
       // dataverse-records.mjs traced), so a changeset or an upsert is one span too.
+      // Module dataverse with the canonical operation (D-R3-9), so module/operation/entity filters find flow writes; the
+      // connector span above it stays module connectors. At level full the written values and the query are its input and
+      // { statusCode, id, rowCount, moreRecords } its output (none for a sealed run: context.secure).
       const entity = dataverseLogicalName(store, p.entityName);
       return traces.wrap(
         {
           kind: 'dataverse',
           name: `${operationId}${entity ? ' ' + entity : ''}`,
-          module: 'connectors',
+          module: 'dataverse',
           operation: DATAVERSE_SPAN_OPERATION[operationId] ?? 'action',
           entity,
           recordId: p.recordId == null ? null : String(p.recordId),
-          attributes: { operationId },
+          attributes: {
+            operationId,
+            connector: 'commondataserviceforapps',
+            ...(p.fetchXml != null ? { query: 'fetchxml' } : {}),
+            ...(p.actionName ? { message: String(p.actionName) } : {}),
+          },
+          ...(context.secure ? {} : { input: () => dataverseInput(p) }),
         },
-        call,
+        (span) => {
+          markConnectorDataverseSpan(span);
+          const answered = (answer) => {
+            const facts = dataverseFacts(store, entity, answer);
+            if (facts.id && !span.recordId) span.setEntity(span.entity, facts.id);
+            span.set({
+              statusCode: facts.statusCode,
+              ...(facts.rowCount == null ? {} : { rowCount: facts.rowCount }),
+              ...(operationId === 'UpdateRecord' && facts.statusCode === 201 ? { created: true } : {}),
+            });
+            if (!context.secure) span.output(() => facts);
+            return answer;
+          };
+          const answer = call();
+          return typeof answer?.then === 'function' ? answer.then(answered) : answered(answer);
+        },
       );
     },
   };
@@ -1641,6 +1719,7 @@ export function createConnectorRuntime({
             caller: context.caller ?? null,
             runId: context.runId ?? null,
             actionPath: context.actionPath ?? null,
+            ...(context.secure ? { secure: true } : {}),
           },
           ...(context.secure ? {} : { input: () => parameters }),
         }) ?? null;
@@ -1665,6 +1744,9 @@ export function createConnectorRuntime({
         durationMs: now() - started,
         correlationId: context.correlationId ?? null,
       });
+    // A provider's own exception is answered as ProviderFailed (or ProviderTimeout) with the exception as its (non-enumerable)
+    // cause; the span keeps the provider's own code (else the mapped one), message and cause (D-R3-4) and names the mapped
+    // code. A sealed call (context.secure) keeps the mapped message, since the provider's may echo a sealed value.
     const failed = (error) => {
       const mapped =
         error instanceof DataError
@@ -1672,14 +1754,21 @@ export function createConnectorRuntime({
           : ['TimeoutError', 'AbortError'].includes(error?.name)
             ? connectorError('ProviderTimeout', 'The connector provider timed out.')
             : connectorError('ProviderFailed', 'The connector provider failed.');
+      if (mapped !== error)
+        Object.defineProperty(mapped, 'cause', { value: error, configurable: true, writable: true });
       note(mapped.status, mapped.code);
-      span?.set(facts(mapped.status)).fail(mapped);
+      span
+        ?.set({ ...facts(mapped.status), ...(mapped === error ? {} : { mappedCode: mapped.code }) })
+        .fail(mapped === error ? error : providerFailure(error, mapped, context.secure));
       throw mapped;
     };
+    // An answer of 400 or more records the provider's own error (its body's error code and message) on the span.
     const finish = (answer) => {
       note(answer?.statusCode ?? null);
       if (span) {
         if (!context.secure) span.output(() => answer);
+        if (Number(answer?.statusCode) >= 400)
+          recordHttpError(span, answer.statusCode, answerError(answer, context.secure));
         span.end({ status: statusFromHttp(answer?.statusCode), attributes: facts(answer?.statusCode ?? null) });
       }
       return answer;

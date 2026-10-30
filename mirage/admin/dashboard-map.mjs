@@ -91,6 +91,7 @@ const GROUPS = Object.freeze({
   background: { band: 'organization', title: 'Background work', icon: 'clock', family: 'dataverse' },
   messaging: { band: 'organization', title: 'Messaging & webhooks', icon: 'webhook', family: 'dataverse' },
   solutions: { band: 'organization', title: 'Solutions & sources', icon: 'layers', family: 'dataverse' },
+  monitor: { band: 'organization', title: 'Monitor', icon: 'chart', family: 'neutral' },
   'org-other': { band: 'organization', title: 'Other organization modules', icon: 'unknown', family: 'neutral' },
   storage: { band: 'providers', title: 'Storage', icon: 'storage', family: 'azure' },
   queues: { band: 'providers', title: 'Queues & topics', icon: 'queue', family: 'azure' },
@@ -183,6 +184,8 @@ const ORG = Object.freeze({
   'dataverse-addon-workqueues': ['tables', 'Work queues'],
   'dataverse-calendar-messages': ['tables', 'Calendars and scheduling'],
   usersettings: ['org-other', 'Staff user settings'],
+  // The trace store of the host: the Monitor group, next to the Traces view of the Monitor navigation group.
+  trace: ['monitor', 'Tracing'],
   'dataverse-webhooks': ['messaging', 'Webhooks'],
   'dataverse-service-endpoints': ['messaging', 'Service endpoints'],
   'dataverse-solutions': ['solutions', 'Solutions and layers'],

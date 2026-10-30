@@ -5,16 +5,10 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { install as installRegistration, overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
+import { install as installRegistration } from '../lib/dataverse-plugin-registration.mjs';
 import { serviceEndpointDelivery, webhookDelivery } from '../lib/dataverse-webhooks.mjs';
 import { createLocalMessageBus, messagingSettings } from '../lib/message-bus.mjs';
-import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
-import {
-  pluginCatalogue,
-  pluginPhaseRequiresCheckpoint,
-  pluginStepMatchesEntity,
-  runPluginPhase,
-} from '../lib/exported-plugins.mjs';
+import { wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 
 const WIDGET = '77777777-7777-4777-8777-777777777701';
 const ENDPOINT = '77777777-7777-4777-8777-777777777702';
@@ -117,29 +111,7 @@ async function world(
     organizationUri: 'https://invented.example.test',
   };
   const webhooks = withBus ? serviceEndpointDelivery(store, { messaging }) : webhookDelivery(store);
-  const steps = () =>
-    pluginCatalogue({
-      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
-      handlers: new Map(),
-    });
-  store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store, items: steps(), handlers: new Map(), webhooks, diagnostic }),
-    ({ entity, operation }) =>
-      steps().some(
-        (item) =>
-          item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation,
-      ),
-    (context) => pluginPhaseRequiresCheckpoint(steps(), context),
-  );
-  const runner = createAsyncPluginRunner({
-    store,
-    items: steps,
-    handlers: new Map(),
-    runtimes: new Map(),
-    webhooks,
-    diagnostic,
-    systemJobs: () => true,
-  });
+  const runner = wireRegisteredSteps(store, webhooks, diagnostic);
   t.after(async () => {
     await runner.close();
     await api.close();

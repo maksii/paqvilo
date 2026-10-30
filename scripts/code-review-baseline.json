@@ -2439,6 +2439,20 @@
       "reason": "Full unit/browser/SDK graph consumes this exported test seam; runtime-only traversal intentionally excludes those consumers."
     },
     {
+      "key": "runtime:exports:mirage/lib/trace-store.mjs:SPAN_KINDS",
+      "file": "mirage/lib/trace-store.mjs",
+      "type": "exports",
+      "name": "SPAN_KINDS",
+      "reason": "Documented store contract (docs/design/tracing.md, Store contract): the frozen list of span kinds. trace-store.mjs validates every kind/status filter of the routes, the CLI pre-check (checkTraceFilters) and the in-process API against it; the browser view cannot import this Node module, so view-modules pins the rendered kind filter options to it and trace-store pins the refusals."
+    },
+    {
+      "key": "runtime:exports:mirage/lib/trace-store.mjs:SPAN_STATUSES",
+      "file": "mirage/lib/trace-store.mjs",
+      "type": "exports",
+      "name": "SPAN_STATUSES",
+      "reason": "Documented store contract (docs/design/tracing.md, Store contract): the frozen list of span statuses. trace-store.mjs validates every kind/status filter of the routes, the CLI pre-check (checkTraceFilters) and the in-process API against it; the browser view cannot import this Node module, so view-modules pins the rendered status filter and legend options to it and trace-store pins the refusals."
+    },
+    {
       "key": "runtime:exports:mirage/lib/webapi-error-templates.mjs:webApiReaderTemplateKey",
       "file": "mirage/lib/webapi-error-templates.mjs",
       "type": "exports",

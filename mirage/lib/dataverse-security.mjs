@@ -55,6 +55,65 @@ const ROLE_NAMES = ['System Administrator', 'System Customizer', 'Basic User'];
 // except the three System Administrator only privileges: the two bypass privileges and prvBulkDelete (a system
 // administrator has BulkDelete by default; other users, System Customizer included, must be granted it).
 const SYSTEM_ADMINISTRATOR_ONLY = new Set(['prvBypassCustomPlugins', 'prvBypassCustomBusinessLogic', 'prvBulkDelete']);
+
+// Under a bulk span (one span per bulk message or BulkDelete job; docs/design/tracing.md, D-R3-11) the per-row permission
+// decisions and commits are never one event each: the first of each type is one event (`permission` result 'evaluated',
+// `commit`; a first denial keeps its own deny event with the reason), and the running counts are the span's structured
+// attributes `permissions` { evaluated, allowed, denied, filtered, tables } and `commits` { count, failed, eventsStaged }.
+const bulkTallies = new WeakMap();
+/**
+ * Records one permission decision or commit (`type` 'permission' | 'commit', its event attributes and message) on span: an
+ * aggregate on a bulk span, else one event. Returns span.
+ */
+export function traceDecision(span, type, { attributes = {}, message } = {}) {
+  if (!span) return span;
+  if (span.kind !== 'bulk') return span.event(type, { message, attributes });
+  let tally = bulkTallies.get(span);
+  if (!tally) {
+    tally = {
+      permissions: { evaluated: 0, allowed: 0, denied: 0, filtered: 0, tables: [] },
+      commits: { count: 0, failed: 0, eventsStaged: 0 },
+      first: new Set(),
+    };
+    bulkTallies.set(span, tally);
+  }
+  if (type === 'permission') {
+    const counts = tally.permissions,
+      result = attributes.result;
+    counts.evaluated++;
+    if (result === 'allow') counts.allowed++;
+    else if (result === 'deny') counts.denied++;
+    else if (result === 'filtered') counts.filtered++;
+    if (attributes.table && !counts.tables.includes(attributes.table) && counts.tables.length < 100)
+      counts.tables.push(attributes.table);
+    if (!tally.first.has('permission')) {
+      tally.first.add('permission');
+      span.event('permission', {
+        attributes: {
+          result: 'evaluated',
+          table: attributes.table,
+          operation: attributes.operation,
+          model: attributes.model,
+          aggregated: true,
+        },
+      });
+    }
+    if (result === 'deny' && !tally.first.has('deny')) {
+      tally.first.add('deny');
+      span.event('permission', { message, attributes });
+    }
+    return span.set({ permissions: counts });
+  }
+  const counts = tally.commits;
+  counts.count++;
+  if (attributes.error) counts.failed++;
+  counts.eventsStaged += Number(attributes.eventsStaged) || 0;
+  if (!tally.first.has(type)) {
+    tally.first.add(type);
+    span.event(type, { message, attributes: { ...attributes, aggregated: true } });
+  }
+  return span.set({ commits: counts });
+}
 const GLOBAL_PRIVILEGES = [
   'prvActOnBehalfOfAnotherUser',
   'prvBypassCustomPlugins',
@@ -1805,9 +1864,10 @@ export function createPrincipals(store, settings = {}) {
      */
     authorize(options) {
       // Tracing: the decision is an event on the current span (docs/design/tracing.md), never a span of its own.
-      const span = store.traces?.current();
+      // At level off the store is never asked for its current span (one property read).
+      const span = store.traces?.enabled ? store.traces.current() : null;
       const decided = (result, facts) =>
-        span?.event('permission', {
+        traceDecision(span, 'permission', {
           attributes: { table: options.entity, operation: options.operation, result, model: 'dataverse', ...facts },
         });
       let depth, privilege;

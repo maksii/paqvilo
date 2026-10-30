@@ -1,16 +1,19 @@
 // paqvilo mirage trace: reads the trace store of a running local runtime through /_sim/api/trace (sim-trace-routes.mjs).
 // The runtime is --origin (loopback only) or the one connectRuntime discovers for --config/--site. watch follows the
 // `trace` channel of /_sim/events (connectRuntime().trace.subscribe) and prints one line per ended span, or per ended
-// trace with --trace-end, until Ctrl+C, --count lines or the runtime stopping. --json prints one envelope
-// { schemaVersion: 1, ok, command, result } (watch: one per line); a failure is { ok: false, error: { code, message } }.
+// trace with --trace-end, until Ctrl+C, --count lines or the runtime stopping. flush waits until the runtime wrote its
+// queued persisted lines and SSE frames. --json prints one envelope { schemaVersion: 1, ok, command, result } (watch: one
+// per line); a failure is { ok: false, error: { code, message, parameter? } }. A filter or setting the runtime (or the
+// same check before connecting) refuses prints `<code>: <message>` and exits 2; any other failure exits 1.
 import { once } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseToolCommand } from './tool-options.mjs';
 import { mirageToolHelp } from './tool-registry.mjs';
 import { connectRuntime, runtimeOrigin } from './testing/runtime.mjs';
+import { checkTraceFilters, searchText } from './lib/trace-store.mjs';
 
-const ACTIONS = ['list', 'show', 'spans', 'stats', 'settings', 'clear', 'export', 'watch'];
+const ACTIONS = ['list', 'show', 'spans', 'stats', 'settings', 'clear', 'flush', 'export', 'watch'];
 // The span filters, which watch also applies to the frames it receives.
 const SPAN_FILTERS = [
   'from',
@@ -19,6 +22,7 @@ const SPAN_FILTERS = [
   'module',
   'operation',
   'entity',
+  'record-id',
   'status',
   'host',
   'actor-kind',
@@ -72,24 +76,38 @@ const spanLine = (span) =>
   `${span.startedAt}  ${span.kind}  ${span.status}  ${ms(span.durationMs)}  ${span.name}${span.entity ? ` (${span.entity})` : ''}  trace ${span.traceId}`;
 const traceLine = (trace) =>
   `${trace.startedAt}  ${trace.status}  ${ms(trace.durationMs)}  ${plural(trace.spanCount, 'span')}  ${trace.errorCount} errors  ${trace.root?.name ?? ''}  trace ${trace.traceId}`;
+const statusLines = (status) => [
+  `Retained ${status.retained} traces, ${status.spans} spans (${status.running} running), about ${status.memoryBytes} bytes; ${status.dropped} traces and ${status.droppedSpans} spans dropped.`,
+  `Persistence: ${status.persist.enabled ? `on, ${status.persist.directory ?? 'no state folder'}` : 'off'}${status.persist.lastError ? ` (${status.persist.lastError})` : ''}; ${status.persist.written} lines written, ${status.persist.failures} failed.`,
+];
+// An actor as `kind`, `kind:name` or `kind:id`.
+const actorText = (actor) =>
+  actor ? `${actor.kind}${actor.name || actor.id ? `:${actor.name || actor.id}` : ''}` : '';
 const figuresLine = (label, value, unit) =>
   `${label}: ${plural(value.count, unit)}, ${value.errors} errors, p50 ${figure(value.p50)}, p95 ${figure(value.p95)}, max ${figure(value.max)}.`;
 
 function human(action, result) {
+  // DURATION is the root's; TOTAL (what --sort duration sorts by) runs from the first span start to the last span end.
   if (action === 'list')
     return [
       ...table(result.items, [
         ['STARTED', (t) => t.startedAt],
         ['STATUS', (t) => t.status],
         ['DURATION', (t) => ms(t.durationMs)],
+        ['TOTAL', (t) => ms(t.totalDurationMs)],
         ['SPANS', (t) => t.spanCount],
         ['ERRORS', (t) => t.errorCount],
+        ['DENIED', (t) => t.deniedCount],
         ['HOST', (t) => t.root?.origin?.host ?? ''],
+        ['ACTOR', (t) => actorText(t.root?.actor)],
+        ['SESSION', (t) => t.root?.session?.sessionKey ?? ''],
         ['NAME', (t) => t.root?.name ?? ''],
         ['TRACE', (t) => t.traceId],
       ]),
       pageLine(result),
     ];
+  if (action === 'flush')
+    return ['Flushed every queued persisted line and trace stream frame.', ...statusLines(result)];
   if (action === 'spans')
     return [
       ...table(result.items, [
@@ -98,6 +116,8 @@ function human(action, result) {
         ['STATUS', (s) => s.status],
         ['DURATION', (s) => ms(s.durationMs)],
         ['ENTITY', (s) => s.entity ?? ''],
+        ['RECORD', (s) => s.recordId ?? ''],
+        ['ACTOR', (s) => actorText(s.actor)],
         ['NAME', (s) => s.name],
         ['SPAN', (s) => s.spanId],
       ]),
@@ -135,11 +155,7 @@ function human(action, result) {
     ];
   if (action === 'settings') {
     const { settings, status } = result;
-    return [
-      ...Object.entries(settings).map(([key, value]) => `${key}: ${value}`),
-      `Retained ${status.retained} traces, ${status.spans} spans (${status.running} running), about ${status.memoryBytes} bytes; ${status.dropped} traces and ${status.droppedSpans} spans dropped.`,
-      `Persistence: ${status.persist.enabled ? `on, ${status.persist.directory ?? 'no state folder'}` : 'off'}${status.persist.lastError ? ` (${status.persist.lastError})` : ''}.`,
-    ];
+    return [...Object.entries(settings).map(([key, value]) => `${key}: ${value}`), ...statusLines(status)];
   }
   return [`Cleared every trace; ${result.retained} retained.`];
 }
@@ -171,6 +187,8 @@ function frameFilter(filters) {
       inTrace('module', trace?.modules ?? []) &&
       inTrace('entity', trace?.entities ?? []) &&
       equal('operation', span.operation) &&
+      (f.recordId === undefined ||
+        (span.recordId != null && actorKey(span.recordId) === actorKey(f.recordId).trim())) &&
       equal('host', span.origin?.host) &&
       equal('actorKind', span.actor?.kind) &&
       (f.actorId === undefined || (span.actor?.id != null && actorKey(span.actor.id) === actorKey(f.actorId))) &&
@@ -184,11 +202,7 @@ function frameFilter(filters) {
       (f.to === undefined || start <= time(f.to)) &&
       (f.minDurationMs === undefined || (duration !== null && duration >= Number(f.minDurationMs))) &&
       (f.hasErrors === undefined || errors === ['true', '1'].includes(f.hasErrors)) &&
-      (!search ||
-        [span.name, span.entity, span.error?.code, span.error?.message, JSON.stringify(span.attributes ?? {})]
-          .join('\n')
-          .toLowerCase()
-          .includes(search))
+      (!search || searchText(span).includes(search))
     );
   };
 }
@@ -228,12 +242,11 @@ async function streamExport(client, filters) {
   });
   if (!response.ok) {
     const value = await response.json().catch(() => null);
-    throw Object.assign(
-      new Error(
-        `Local runtime request failed (${response.status})${value?.error?.message ? `: ${value.error.message}` : ''}`,
-      ),
-      { status: response.status, code: value?.error?.code },
-    );
+    throw Object.assign(new Error(`Local runtime request failed (${response.status})`), {
+      status: response.status,
+      code: value?.error?.code,
+      response: value,
+    });
   }
   for await (const chunk of response.body) if (!process.stdout.write(chunk)) await once(process.stdout, 'drain');
 }
@@ -270,9 +283,11 @@ async function main(argv) {
     } catch (error) {
       throw invalid(error.message);
     }
+  const filters = Object.fromEntries(filtered.map((name) => [camel(name), values[name]]));
+  // The store's own check (InvalidTraceFilter naming the parameter), before connecting; the runtime checks again.
+  checkTraceFilters(filters);
   accepted = true;
   const client = await connectRuntime({ origin: values.origin, config: values.config, site: values.site });
-  const filters = Object.fromEntries(filtered.map((name) => [camel(name), values[name]]));
   if (action === 'watch')
     return watch(client, {
       count: Number(values.count ?? 0),
@@ -288,6 +303,7 @@ async function main(argv) {
     if (action === 'stats') return client.trace.stats(filters);
     if (action === 'export') return client.trace.export(filters);
     if (action === 'clear') return client.trace.clear();
+    if (action === 'flush') return client.trace.flush();
     if (action === 'settings') {
       const settings = change ? await client.trace.configure(change) : await client.trace.settings();
       return { settings, status: await client.trace.status() };
@@ -306,7 +322,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     await main(args);
   } catch (error) {
-    const message = error.message ?? String(error);
+    // The runtime's own { code, message, parameter } when it answered with an error envelope; else the error itself.
+    const envelope = error.response?.error && typeof error.response.error === 'object' ? error.response.error : null;
     // Codes the runtime or this command set (TraceNotFound, InvalidTraceFilter, RuntimeUnreachable, ...); node:util
     // parseArgs codes and other refusals before connecting are InvalidArguments.
     const code =
@@ -315,16 +332,20 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
         : accepted
           ? 'MIRAGE_FAILED'
           : 'InvalidArguments';
+    const message = envelope?.message ?? error.message ?? String(error);
+    const parameter = envelope?.parameter ?? error.parameter;
+    // A refused filter or setting (the runtime's 400, or the same check before connecting) is a usage error.
+    const refused = error.status === 400 || error.code === 'InvalidTraceFilter';
     if (args.slice(0, args.includes('--') ? args.indexOf('--') : undefined).includes('--json'))
       console.log(
         JSON.stringify({
           schemaVersion: 1,
           ok: false,
           command,
-          error: { code, message },
+          error: { code, message, ...(parameter ? { parameter } : {}) },
         }),
       );
-    else console.error(message);
-    process.exitCode = 1;
+    else console.error(envelope || refused ? `${code}: ${message}` : message);
+    process.exitCode = refused ? 2 : 1;
   }
 }

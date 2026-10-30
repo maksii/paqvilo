@@ -382,8 +382,17 @@ export const jobOrigin = (traces, parentSpanId) => {
  * store remembered for its id (jobParent), else a new root, never by the context the scheduler inherited; async: true marks
  * the new execution segment. run(span) does the work (span is null without a trace store); a throw or rejection fails the
  * span, and a second or later attempt records a retry event. The plug-in, web hook and classic workflow kinds use it.
+ * The span is named by the process it runs, its display name alone (D-R3-24 as amended: the kind `job` already says it is a
+ * job, so a tree line reads `job <process display name>`), with attributes processType (the job kind
+ * unless the runner names one), processId (the runner's, else the workflow definition or plug-in step of the payload) and
+ * processName (the runner's name, else the asyncoperation row's name); and the record of its triggering event (D-R3-1).
  */
-export function traceJob(store, { id, payload, event }, run, { name = null, attributes = {} } = {}) {
+export function traceJob(
+  store,
+  { id, payload, event },
+  run,
+  { name = null, processType = null, processId = null, attributes = {} } = {},
+) {
   const traces = store.traces;
   if (!traces?.enabled) return run(null);
   const parent = jobParent(store, id),
@@ -391,12 +400,22 @@ export function traceJob(store, { id, payload, event }, run, { name = null, attr
     parentSpanId = parent?.spanId ?? null,
     kind = payload?.kind ?? null,
     attempt = (Number(payload?.attempts) || 0) + 1;
+  const job = id && store.state ? liveJob(store, id) : null;
+  const processName = name ?? job?.rows[job.index]?.name ?? kind ?? 'committed';
+  const entity = event?.entity || null;
+  let recordId = null;
+  try {
+    recordId = entity && event?.row ? (event.row[store.resolveMapping(entity).idColumn] ?? null) : null;
+  } catch {
+    // A table the organization no longer maps: the job names no record.
+  }
   const span = traces.start({
     kind: 'job',
-    name: name ?? `${kind ?? 'committed'} job`,
+    name: processName,
     module: 'jobs',
     operation: 'run',
-    entity: event?.entity || null,
+    entity,
+    recordId: recordId?.id ?? recordId,
     async: true,
     traceId,
     parentSpanId,
@@ -404,6 +423,9 @@ export function traceJob(store, { id, payload, event }, run, { name = null, attr
     links: parentSpanId ? [{ traceId, spanId: parentSpanId, relation: 'staged-by' }] : [],
     attributes: {
       kind,
+      processType: processType ?? kind,
+      processId: processId ?? payload?.definitionId ?? payload?.itemId ?? null,
+      processName,
       jobId: id ?? null,
       attempt,
       chainId: payload?.chain?.id ?? null,
@@ -411,6 +433,9 @@ export function traceJob(store, { id, payload, event }, run, { name = null, attr
       ...attributes,
     },
   });
+  // The staging span names the job it triggered (D-R3-6): its triggered link, the reverse of the job's staged-by link.
+  if (parentSpanId && span.spanId)
+    traces.link(parentSpanId, { traceId: span.traceId, spanId: span.spanId, relation: 'triggered' });
   if (attempt > 1) span.event('retry', { attributes: { attempt } });
   let result;
   try {

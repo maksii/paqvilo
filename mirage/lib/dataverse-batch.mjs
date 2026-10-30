@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import { STATUS_CODES } from 'node:http';
 import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
+import { recordHttpError } from './trace-store.mjs';
 
 const MAX_REQUESTS = 1000;
 const JSON_TYPE = 'application/json; odata.metadata=minimal; odata.streaming=true';
@@ -231,9 +232,41 @@ const badReference = (contentId) => ({
   },
 });
 
+// Tracing (D-R3-8): with context.traces a batch is one `batch` span, each changeset a `changeset` span and each request a
+// `part` span under it; a part's error answer is its span's error, and a rolled-back changeset ends `error` with
+// `rolledBack: true` on it and on the parts that ran before the failure. Without traces nothing is opened.
+// The error a part answer names: the dispatch's own failure member, else the error member of an object body.
+const partError = (response) =>
+  response.failure ?? (response.body && typeof response.body === 'object' ? response.body.error : null) ?? {};
+
+async function execute(request, context, refs) {
+  const { traces } = context;
+  if (!traces) return executeRequest(request, context, refs);
+  const span = traces.start({
+    kind: 'part',
+    name: `${request.method} ${pathOf(request.url).split('?')[0]}`,
+    module: 'dataverse',
+    operation: request.method,
+    attributes: { method: request.method, contentId: request.contentId ?? request.refId },
+    input: () => ({ url: request.url, headers: request.headers, body: request.body }),
+  });
+  context.parts?.push(span);
+  try {
+    const response = await traces.run(span, () => executeRequest(request, context, refs));
+    span.set({ statusCode: response.status });
+    recordHttpError(span, response.status, partError(response));
+    span.output(() => ({ status: response.status, body: response.body }));
+    span.end();
+    return response;
+  } catch (error) {
+    span.fail(error);
+    throw error;
+  }
+}
+
 // Runs one request. $n references resolve against entities created earlier in the same changeset.
 // Relative URLs (JSON batches: "WhoAmI") resolve against the service root, which is base; absolute paths against origin.
-async function execute(request, { dispatch, origin, base }, refs) {
+async function executeRequest(request, { dispatch, origin, base }, refs) {
   let url = request.url;
   const head = /^\$([^/?]+)/.exec(url);
   if (head) {
@@ -280,7 +313,38 @@ const remember = (refs, request, response) => {
 };
 
 // batchRefs: references the batch has committed so far. A rolled-back changeset publishes none of its own.
-async function runChangeset(changeset, context, batchRefs = new Map()) {
+async function runChangeset(changeset, context, batchRefs = new Map(), number = 1) {
+  const { traces } = context;
+  if (!traces) return changesetRun(changeset, context, batchRefs);
+  const span = traces.start({
+    kind: 'changeset',
+    name: `changeset ${number}`,
+    module: 'dataverse',
+    operation: 'changeset',
+    attributes: { requests: changeset.requests.length, boundary: changeset.boundary ?? undefined },
+  });
+  const parts = [];
+  try {
+    const outcome = await traces.run(span, () => changesetRun(changeset, { ...context, parts }, batchRefs));
+    if (outcome.failure) {
+      // The parts that ran before the failure (the failing one is the last) were rolled back with it.
+      for (const part of parts.slice(0, -1)) part.set({ rolledBack: true });
+      span.set({
+        rolledBack: true,
+        failedContentId: outcome.failure.request.contentId ?? outcome.failure.request.refId,
+      });
+      recordHttpError(span, outcome.failure.response.status, partError(outcome.failure.response));
+      span.setStatus('error');
+    }
+    span.end();
+    return outcome;
+  } catch (error) {
+    span.fail(error);
+    throw error;
+  }
+}
+
+async function changesetRun(changeset, context, batchRefs) {
   const responses = [];
   const refs = new Map(batchRefs);
   const run = async () => {
@@ -368,10 +432,42 @@ function result(boundary, status, blocks) {
   };
 }
 
-export async function executeBatch(parsed, { dispatch, origin, base, continueOnError = false } = {}) {
+// traces: the trace store when the batch is traced (its level on), else null. A failed batch result carries a non-enumerable
+// `failure` ({ code, message } of the failing part) for the caller's root span.
+export async function executeBatch(parsed, { dispatch, origin, base, continueOnError = false, traces = null } = {}) {
+  if (!traces?.enabled) return runBatch(parsed, { dispatch, origin, base, traces: null }, continueOnError);
+  const changesets = parsed.parts.filter((part) => part.kind === 'changeset');
+  const span = traces.start({
+    kind: 'batch',
+    name: '$batch',
+    module: 'dataverse',
+    operation: 'batch',
+    attributes: {
+      parts: parsed.parts.length,
+      changesets: changesets.length,
+      requests: parsed.parts.length - changesets.length + changesets.reduce((n, part) => n + part.requests.length, 0),
+      json: parsed.json === true,
+      continueOnError: continueOnError === true,
+    },
+  });
+  try {
+    const answer = await traces.run(span, () => runBatch(parsed, { dispatch, origin, base, traces }, continueOnError));
+    span.set({ statusCode: answer.status });
+    recordHttpError(span, answer.status, answer.failure ?? {});
+    span.end();
+    return answer;
+  } catch (error) {
+    span.fail(error);
+    throw error;
+  }
+}
+
+async function runBatch(parsed, context, continueOnError) {
   const boundary = `batchresponse_${randomUUID()}`;
-  const context = { dispatch, origin, base };
   const json = parsed.json === true;
+  let changesetNumber = 0;
+  const failed = (answer, response) =>
+    Object.defineProperty(answer, 'failure', { value: { status: response.status, ...partError(response) } });
   // A JSON batch shares its references across items; a multipart part scopes them to its own changeset.
   const shared = new Map();
   const blocks = [];
@@ -384,12 +480,16 @@ export async function executeBatch(parsed, { dispatch, origin, base, continueOnE
       // Native echoes Content-ID only inside a changeset: a top-level part answers without one.
       const block = partOf(boundary, mimeLines(), httpBlock(response, { json }));
       blocks.push(block);
-      if (response.status >= 400 && !continueOnError) return result(boundary, response.status, blocks);
+      if (response.status >= 400 && !continueOnError)
+        return failed(result(boundary, response.status, blocks), response);
     } else {
-      const { responses, failure } = await runChangeset(part, context, refs);
+      const { responses, failure } = await runChangeset(part, context, refs, ++changesetNumber);
       // A failed changeset answers as a changeset part holding the failing response (rollback), Content-ID kept.
       if (failure && !continueOnError)
-        return result(boundary, failure.response.status, [...blocks, changesetPart(boundary, [failure], json)]);
+        return failed(
+          result(boundary, failure.response.status, [...blocks, changesetPart(boundary, [failure], json)]),
+          failure.response,
+        );
       blocks.push(changesetPart(boundary, responses, json));
     }
   }

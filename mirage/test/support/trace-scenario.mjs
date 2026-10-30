@@ -5,6 +5,8 @@
 // writes the receipt back through the portal Web API with the forwarded trace headers, an asynchronous plug-in step job and
 // a row-triggered cloud flow (Key Vault secret through RetrieveEnvironmentVariableSecretValue, a fixture connector and a
 // Dataverse update). The member's page GET joins the trace and renders the created order; a stranger's read is refused.
+// The PostOperation step registers a two-column post-image, PreOperation sets a shared variable, and an order named with
+// REJECTED is refused by the PreValidation step.
 // Invented schema and loopback fixtures only; async work is driven by sim.settle() and trace-end events, never by time.
 import fs from 'node:fs/promises';
 import http from 'node:http';
@@ -33,13 +35,20 @@ export const ROLE = id(51);
 export const SECRET_VALUE = 'e2e-secret-value-7f3c9a';
 export const ACCESS_TOKEN = 'e2e-access-token-91b2';
 export const HOOK_CODE = 'e2e-hook-code-5d1e';
+export const REJECTED = 'REJECTED';
 const SECRET_VARIABLE = 'PAQVILO_E2E_TRACE_SECRET';
 const DV = '/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps';
 const assemblyId = id(1),
   typeId = id(2);
 
-const stepXml = (stepId, name, { entity = 'x_order', stage, mode = 0 }) =>
-  `<SdkMessageProcessingStep SdkMessageProcessingStepId="{${stepId}}"><Name>${name}</Name><PluginTypeId>${typeId}</PluginTypeId><SdkMessageName>Create</SdkMessageName><PrimaryEntity>${entity}</PrimaryEntity><Stage>${stage}</Stage><Rank>1</Rank><Mode>${mode}</Mode><SupportedDeployment>0</SupportedDeployment><StateCode>0</StateCode><FilteringAttributes></FilteringAttributes></SdkMessageProcessingStep>`;
+// `images`: registered step images ({ alias, type: 0 pre | 1 post, attributes: 'a,b' }), as a Solution export writes them.
+const stepXml = (stepId, name, { entity = 'x_order', stage, mode = 0, images = [] }) =>
+  `<SdkMessageProcessingStep SdkMessageProcessingStepId="{${stepId}}"><Name>${name}</Name><PluginTypeId>${typeId}</PluginTypeId><SdkMessageName>Create</SdkMessageName><PrimaryEntity>${entity}</PrimaryEntity><Stage>${stage}</Stage><Rank>1</Rank><Mode>${mode}</Mode><SupportedDeployment>0</SupportedDeployment><StateCode>0</StateCode><FilteringAttributes></FilteringAttributes><SdkMessageProcessingStepImages>${images
+    .map(
+      ({ alias, type, attributes }) =>
+        `<SdkMessageProcessingStepImage><Name>${alias}</Name><EntityAlias>${alias}</EntityAlias><ImageType>${type}</ImageType><Attributes>${attributes}</Attributes></SdkMessageProcessingStepImage>`,
+    )
+    .join('')}</SdkMessageProcessingStepImages></SdkMessageProcessingStep>`;
 
 const flowDefinition = {
   properties: {
@@ -125,8 +134,10 @@ const solutionFiles = {
   [`SdkMessageProcessingSteps/${STEP.preOperation}.xml`]: stepXml(STEP.preOperation, 'Order pre-operation', {
     stage: 20,
   }),
+  // A post-image of two columns only: the step span shows the image by its alias, limited to them.
   [`SdkMessageProcessingSteps/${STEP.postOperation}.xml`]: stepXml(STEP.postOperation, 'Order post-operation', {
     stage: 40,
+    images: [{ alias: 'after', type: 1, attributes: 'x_name,x_status' }],
   }),
   [`SdkMessageProcessingSteps/${STEP.audit}.xml`]: stepXml(STEP.audit, 'Audit pre-operation', {
     entity: 'x_audit',
@@ -292,11 +303,15 @@ export async function runTraceScenario({ level = 'full' } = {}) {
       matches: () => true,
       presets: () => ({}),
       pluginSteps: {
-        [STEP.preValidation]: ({ target, trace }) => {
+        // An order named with REJECTED is refused (an InvalidPluginExecutionException in the platform).
+        [STEP.preValidation]: ({ target, trace, reject }) => {
+          if (String(target.x_name).includes(REJECTED)) return reject(`Order name ${REJECTED} is refused`);
           trace('Pre-validation checked ' + target.x_name);
           handled.push('pre-validation');
         },
-        [STEP.preOperation]: ({ trace }) => {
+        // A shared variable set here reaches the PostOperation step of the same pipeline.
+        [STEP.preOperation]: ({ trace, sharedVariables }) => {
+          sharedVariables.x_stamp = 'pre-operation';
           trace('Pre-operation stamps the status');
           handled.push('pre-operation');
           return { target: { x_status: 'new' } };

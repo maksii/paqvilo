@@ -49,7 +49,7 @@ import {
   preferenceApplied,
 } from './dataverse-odata.mjs';
 import { parseExactJson, stringifyExactJson } from './exact-numeric.mjs';
-import { statusFromHttp } from './trace-store.mjs';
+import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
 
 const ZERO_GUID = '00000000-0000-0000-0000-000000000000';
@@ -115,8 +115,98 @@ const methodNotAllowed = (c) =>
 const notFound = (c) =>
   envelope(404, '', `No HTTP resource was found that matches the request URI '${c.url.href}'.`, c.requestId);
 
+// The message never reaches the response (a native 401 has no body); it names the refusal on the trace (D-R3-4).
 const unauthorized = (verdict) =>
-  new DataError('', 401, 'Unauthorized', { reason: verdict.reason === 'missing' ? 'missing' : 'invalid_token' });
+  new DataError(
+    verdict.reason === 'missing'
+      ? 'The request carries no access token.'
+      : `The access token was refused (${verdict.reason}).`,
+    401,
+    'Unauthorized',
+    { reason: verdict.reason === 'missing' ? 'missing' : 'invalid_token', verdict: verdict.reason },
+  );
+
+const tracesOf = (d) => d.traces ?? d.store?.traces;
+const CLIENT_CLOSED = Object.freeze({
+  code: 'ClientClosedRequest',
+  message: 'the client closed the connection before the response completed',
+  status: 499,
+});
+// A request body as the trace keeps it at full: parsed JSON, else the text (an octet-stream body by its size only).
+function requestBody(contentType, buffer) {
+  if (!buffer?.length) return undefined;
+  const type = String(contentType ?? '').toLowerCase();
+  if (type.includes('octet-stream')) return { bytes: buffer.length, contentType: type };
+  const text = buffer.toString('utf8');
+  if (!type.includes('json')) return text;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+const headerOf = (headers, name) => Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1];
+// The error a handled answer names (D-R3-4): the JSON envelope's code and message, the legacy _error body, or a plain-text
+// body; null for any other body (a SOAP fault and a failed $batch record their own).
+function answeredError(result) {
+  const body = result?.body;
+  if (body?.error && typeof body.error === 'object')
+    return { code: body.error.code || undefined, message: body.error.message ?? undefined };
+  if (body?._error && typeof body._error === 'object')
+    return { code: body._error.Code || undefined, message: body._error.Description ?? undefined };
+  if (
+    typeof body === 'string' &&
+    String(headerOf(result.headers, 'content-type') ?? '')
+      .toLowerCase()
+      .startsWith('text/plain')
+  )
+    return { message: body.slice(0, 2000) };
+  return null;
+}
+// One span per Web API function, action or bulk message (D-R3-8, D-R3-21, D-R3-25), named by the message and its bound table:
+// the parameters and the answer are captured at full, and an error answer is the span's error. run() may return a promise.
+function messageSpan(d, { kind, message, name, entity = null, recordId = null, attributes, input, output }, run) {
+  const traces = tracesOf(d);
+  if (!traces?.enabled) return run();
+  return traces.wrap(
+    {
+      kind,
+      name: name ?? (entity ? `${message} ${entity}` : message),
+      module: 'dataverse',
+      operation: message,
+      entity,
+      recordId: recordId == null ? null : String(recordId),
+      attributes: { message, ...attributes },
+      input,
+    },
+    (span) => {
+      const finish = (result) => {
+        const status = result?.status ?? 204;
+        span.set({ statusCode: status });
+        if (status >= 400) recordHttpError(span, status, answeredError(result) ?? {});
+        else
+          span.output(() =>
+            output
+              ? output(result)
+              : Buffer.isBuffer(result?.body)
+                ? `[binary ${result.body.length} bytes]`
+                : (result?.body ?? null),
+          );
+        return result;
+      };
+      const result = run();
+      return typeof result?.then === 'function' ? result.then(finish) : finish(result);
+    },
+  );
+}
+const BUILT_IN_FUNCTIONS = new Set([
+  'WhoAmI',
+  'RetrieveVersion',
+  'RetrieveCurrentOrganization',
+  'RetrieveTotalRecordCount',
+  'RetrieveMetadataChanges',
+]);
+const BULK_MESSAGES = new Set(['CreateMultiple', 'UpdateMultiple', 'UpsertMultiple', 'DeleteMultiple']);
 
 function originOf(req, fallbackHost) {
   const encrypted = Boolean(req.socket?.encrypted);
@@ -440,6 +530,20 @@ function listParamTotals(d, c, route, common) {
 
 export function unboundFunction(d, c, route, common) {
   if (c.method !== 'GET') return notFound(c);
+  // A name that is not a function reads as an entity set (the default branch), which the record handlers trace.
+  if (!BUILT_IN_FUNCTIONS.has(route.name)) return builtInFunction(d, c, route, common);
+  return messageSpan(
+    d,
+    {
+      kind: 'function',
+      message: route.name,
+      input: () => ({ parameters: parseFunctionParameters(route.params, c.url.searchParams) }),
+    },
+    () => builtInFunction(d, c, route, common),
+  );
+}
+
+function builtInFunction(d, c, route, common) {
   switch (route.name) {
     case 'WhoAmI':
       return {
@@ -532,6 +636,20 @@ function boundFunction(d, c, route, common) {
   // A function is not bound to any other type, so the segment resolves to no resource (no 501 on a native path).
   if (!subjectSets.includes(route.set) || !route.key) return notFound(c);
   const subjectId = parseKey(route.key)?.id ?? route.key;
+  return messageSpan(
+    d,
+    {
+      kind: 'function',
+      message: route.name,
+      entity: route.set === 'teams' ? 'team' : route.set === 'organizations' ? 'organization' : 'systemuser',
+      recordId: subjectId,
+      input: () => ({ parameters: parseFunctionParameters(route.params, c.url.searchParams) }),
+    },
+    () => principalFunction(d, c, route, subjectId, common),
+  );
+}
+
+function principalFunction(d, c, route, subjectId, common) {
   if (route.name === 'RetrieveUserPrivileges') {
     return {
       status: 200,
@@ -755,6 +873,31 @@ async function recordCall(d, route, common) {
   return result ?? { status: 204 };
 }
 
+// A bulk message through the Web API opens the bulk span the SDK path opens (plugin-bulk.mjs, D-R3-21): one span per message
+// with the table and the number of targets; the record handlers open no dispatch span under it.
+function bulkCall(d, route, common) {
+  let entity = null;
+  try {
+    entity = d.store.resolveMapping(route.set).logicalName;
+  } catch {
+    // An unknown set is the record handlers' own 404; the span names the set.
+  }
+  const targets = Array.isArray(common.body?.Targets) ? common.body.Targets.length : null;
+  return messageSpan(
+    d,
+    {
+      kind: 'bulk',
+      message: route.name,
+      name: `${route.name} ${entity ?? route.set}`,
+      entity,
+      attributes: { table: entity, entity, targets, action: route.name },
+      input: () => common.body,
+      output: (result) => ({ ids: result?.body?.Ids ?? null }),
+    },
+    () => recordCall(d, route, common),
+  );
+}
+
 // Full privilege-denied text, as the security module words it for entity access (without the entity clause).
 function privilegeDenied(d, user, name) {
   const id = user.systemuserid;
@@ -928,6 +1071,21 @@ async function authenticated(d, c, handle) {
       ...(user !== caller ? { impersonatedUserId: user.systemuserid } : {}),
     });
     const bodyBuffer = BODY_METHODS.has(c.method) ? await readBody(req) : Buffer.alloc(0);
+    // The request at full (D-R3-10): its OData query (credential-named values redacted), the headers that change the
+    // answer and the body (JSON parsed when it is JSON), size-capped by the store. Nothing is read at summary.
+    c.span?.setInput(() => ({
+      query: c.url.searchParams,
+      headers: {
+        prefer: req.headers.prefer,
+        'if-match': req.headers['if-match'],
+        'if-none-match': req.headers['if-none-match'],
+        'mscrm.bypasscustompluginexecution': req.headers['mscrm.bypasscustompluginexecution'],
+        'mscrm.bypassbusinesslogicexecution': req.headers['mscrm.bypassbusinesslogicexecution'],
+        callerobjectid: req.headers.callerobjectid,
+        mscrmcallerid: req.headers.mscrmcallerid,
+      },
+      body: requestBody(req.headers['content-type'], bodyBuffer),
+    }));
     // The request context names who asked (the caller) and who executes (the impersonated user) from here on.
     const context = currentRequest();
     const run = () => handle({ user, caller, identity, bodyBuffer });
@@ -1063,7 +1221,10 @@ async function handleDataRequest(
     case 'batch':
       return batchCall(d, c, common);
     case 'function':
-      if (method === 'POST' && Object.hasOwn(SHARE_ACTIONS, route.name)) return shareAction(d, c, route, common);
+      if (method === 'POST' && Object.hasOwn(SHARE_ACTIONS, route.name))
+        return messageSpan(d, { kind: 'action', message: route.name, input: () => ({ body }) }, () =>
+          shareAction(d, c, route, common),
+        );
       return unboundFunction(d, { ...c, origin, version: route.version }, route, common);
     case 'boundFunction':
       return boundFunction(d, { ...c, origin, version: route.version }, route, common);
@@ -1071,6 +1232,7 @@ async function handleDataRequest(
     case 'boundAction':
       if (ROUTER_BOUND.has(route.name))
         return boundFunction(d, { ...c, origin, version: route.version }, route, common);
+      if (BULK_MESSAGES.has(route.name) && route.key == null) return bulkCall(d, route, common);
       return recordCall(d, route, common);
     case 'metadataEntity':
       return metadataCall(d, c, route);
@@ -1163,7 +1325,18 @@ async function runOperation(d, op, route, paramsText, common, target) {
     api: d.api,
   };
   // A Prefer: respond-async call to a custom API is answered 202 here and runs later; otherwise the operation runs now.
-  const result = (await runInBackground(d.api, call, op)) ?? (await op.handle(call));
+  const result = await messageSpan(
+    d,
+    {
+      kind: op.kind === 'action' ? 'action' : 'function',
+      message: op.name,
+      entity: target?.mapping?.logicalName ?? null,
+      recordId: target?.id ?? null,
+      attributes: { binding: op.binding },
+      input: () => ({ parameters: call.params, body: call.body }),
+    },
+    async () => (await runInBackground(d.api, call, op)) ?? (await op.handle(call)),
+  );
   if (!result) return { status: 204 };
   const jsonBody = result.body !== null && typeof result.body === 'object' && !Buffer.isBuffer(result.body);
   // Native operation responses are application/json; odata.metadata=minimal with no charset.
@@ -1235,9 +1408,11 @@ async function batchCall(d, c, common) {
   // would otherwise JSON.stringify it without the annotation ordering or exact numerics.
   const dispatch = async (part) => {
     let result;
+    let failure = null;
     try {
       result = await runPart(part);
     } catch (error) {
+      failure = { code: error?.code ?? error?.name, message: error?.message };
       result = dataverseError(error, {
         prefer: parsePrefer(part.headers?.prefer),
         requestId: c.requestId,
@@ -1253,20 +1428,33 @@ async function batchCall(d, c, common) {
     }
     result = encodeDataverseText(parseDataverseRoute(new URL(part.url).pathname), result);
     const body = result.body ?? undefined;
+    // The part's error for its span (D-R3-8), read before the body becomes text; the part writer ignores the member.
+    if (result.status >= 400) failure ??= answeredError(result);
     return {
       ...result,
       body: body === undefined || typeof body === 'string' ? body : stringifyExactJson(orderAnnotations(body)),
+      ...(failure ? { failure } : {}),
     };
   };
   dispatch.transaction = (fn) => runAtomic(d.api, fn);
   const continueOnError = common.prefer.continueOnError;
+  const traces = tracesOf(d);
+  const root = traces?.enabled ? traces.current() : null;
   // ponytail: the whole batch takes one slot in the server's change queue, so no other write lands while a changeset runs.
   // Ceiling: a long batch holds writers back; split the batch if that matters.
   const result = await d.change(() =>
     runOwned(() =>
-      executeBatch(parsed, { dispatch, origin: c.origin, base: new URL('./', c.url).href, continueOnError }),
+      executeBatch(parsed, {
+        dispatch,
+        origin: c.origin,
+        base: new URL('./', c.url).href,
+        continueOnError,
+        traces: root ? traces : null,
+      }),
     ),
   );
+  // A failed batch names its failing part's error on the listener root (D-R3-4).
+  if (root && result.status >= 400) recordHttpError(root, result.status, result.failure ?? {});
   const applied = preferenceApplied(common.prefer);
   return applied ? { ...result, headers: { ...result.headers, 'Preference-Applied': applied } } : result;
 }
@@ -1365,18 +1553,30 @@ export function createDataverseHandler(deps) {
     // loopback trace headers only; called in process (the model-driven Xrm.WebApi transport) it nests under the caller's span.
     // A root (not nested in process) is explicitly anonymous with no session until authentication names its caller
     // (setActor), so a header-named parent never lends it another caller's actor or session.
-    const traces = d.traces ?? d.store?.traces;
-    const inbound = traces?.fromHeaders(req.headers);
+    // At level off nothing below reads a header for tracing (D-R3-13): the span is null and every use is `span?.`.
+    const traces = tracesOf(d);
+    const tracing = traces?.enabled === true;
+    const inbound = tracing ? traces.fromHeaders(req.headers) : null;
     const nested = inbound && !inbound.traceId && !inbound.parentSpanId && traces.current();
-    const span = traces?.start({
-      kind: 'http',
-      name: `${req.method} ${String(req.url ?? '/').split('?')[0]}`,
-      module: 'dataverse',
-      operation: req.method,
-      origin: { host: 'dataverse-api', portal: null, preset: null },
-      attributes: { requestId, ...(typeof clientRequestId === 'string' ? { clientRequestId } : {}) },
-      ...(nested ? {} : { ...ANONYMOUS_ROOT, ...inbound }),
-    });
+    const pathname = tracing ? String(req.url ?? '/').split('?')[0] : null;
+    const contentLength = tracing ? Number(req.headers['content-length']) : NaN;
+    const span = tracing
+      ? traces.start({
+          kind: 'http',
+          name: `${req.method} ${pathname}`,
+          module: 'dataverse',
+          operation: req.method,
+          // The organization service (SOAP) is its own origin host (D-R3-3); everything else here is the Web API listener.
+          origin: { host: SOAP_ROUTE.test(pathname) ? 'soap' : 'dataverse-api', portal: null, preset: null },
+          attributes: {
+            requestId,
+            ...(typeof clientRequestId === 'string' ? { clientRequestId } : {}),
+            contentType: req.headers['content-type'],
+            contentLength: Number.isFinite(contentLength) ? contentLength : undefined,
+          },
+          ...(nested ? {} : { ...ANONYMOUS_ROOT, ...inbound }),
+        })
+      : null;
     // Every traced response names its trace (an overflow handle of a full trace names the trace only).
     setTraceHeaders(res, span);
     const c = {
@@ -1391,10 +1591,11 @@ export function createDataverseHandler(deps) {
     };
     let failure = null;
     // Ends on finish, or on a close before it (an aborted request or a destroyed in-process response, 499); idempotent.
+    // A response the client closed before it completed (499) names that as its error (DV-Y8-4).
     const endSpan = (status) =>
       span?.end({
         status: statusFromHttp(status),
-        error: status >= 400 ? (failure ?? undefined) : undefined,
+        error: status === 499 ? (failure ?? CLIENT_CLOSED) : status >= 400 ? (failure ?? undefined) : undefined,
         attributes: { statusCode: status, kind: meta.kind, appId: meta.appId, grant: meta.grant },
       });
     res.on('finish', () => endSpan(res.statusCode));
@@ -1462,7 +1663,7 @@ export function createDataverseHandler(deps) {
             spanId: span?.spanId ?? null,
           });
           const routed = () => runWithRequest(context, () => requestMetadata(d, () => route(d, c)));
-          result = await (traces ? traces.run(span, routed) : routed());
+          result = await (span ? traces.run(span, routed) : routed());
         }
       }
     } catch (error) {
@@ -1481,6 +1682,11 @@ export function createDataverseHandler(deps) {
         status: result.status,
         message: error?.message,
       });
+    }
+    // A handler that answered its own error names it on the root (D-R3-4); a thrown one is the root's error at end.
+    if (span && !failure && result.status >= 400) {
+      const named = answeredError(result);
+      if (named) recordHttpError(span, result.status, named);
     }
     // Every response for an authenticated caller carries the remaining service-protection headers; none reach unauthenticated ones.
     const withLimits = meta.userId
@@ -1646,6 +1852,7 @@ export async function startDataverseApi({
       host,
       port: tdsSettings.port,
       enabled: tdsSettings.enabled,
+      traces: traces ?? store.traces,
     });
     api.tdsPort = tds?.port ?? null;
 

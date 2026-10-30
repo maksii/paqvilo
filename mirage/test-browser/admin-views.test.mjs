@@ -570,7 +570,8 @@ test(
     );
     await page.getByRole('heading', { name: 'POST /_api/x_items', level: 3 }).waitFor();
 
-    // Filters: one kind narrows the list and lands in the address.
+    // Filters (collapsed while none is active): one kind narrows the list and lands in the address.
+    await page.locator('[data-ui-section="trace:filters"] > summary').click();
     await page.getByLabel('Span kind').selectOption('render');
     await page.getByRole('button', { name: 'Apply filters' }).click();
     await page.waitForFunction(() => document.querySelectorAll('table[data-table="trace-list"] tbody tr').length === 1);
@@ -679,6 +680,8 @@ test(
     await page.locator('#navigation').getByRole('link', { name: 'Live logs', exact: true }).waitFor();
 
     // R2C-1: a typed but unapplied filter and an applied one are both gone after Reset; the next Apply sends none.
+    // The filters start collapsed while none is active; once opened they stay open.
+    await page.locator('[data-ui-section="trace:filters"] > summary').click();
     await page.getByLabel('Span kind').selectOption('webapi');
     await page.getByRole('button', { name: 'Apply filters' }).click();
     await page.waitForFunction(() => location.hash === '#trace?kind=webapi');

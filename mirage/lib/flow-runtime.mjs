@@ -1457,6 +1457,23 @@ function flowParameters(definition, store) {
   }
   return { values, secrets };
 }
+// The run failure naming the action that failed it (D-R3-4): error.action and error.failedAction { action, iteration?, type,
+// status, code, message }, read by the flow-run span (error.action, output.failedAction).
+function named(error, failed) {
+  if (failed && error && typeof error === 'object')
+    Object.assign(error, { action: failed.action, failedAction: failed });
+  return error;
+}
+function flowFailure(failed, text = 'Local triggered flow actions failed') {
+  return named(
+    new DataError(
+      failed ? `${text} at ${failed.action}: ${failed.message ?? failed.status}` : text + '.',
+      400,
+      'LocalFlowFailed',
+    ),
+    failed,
+  );
+}
 /** A sealed run (tracing): a Secret flow parameter or any secureData action, so no span of the run captures a payload. */
 const flowSealed = (definition, parameters) =>
   parameters.secrets.length > 0 || JSON.stringify(definition?.actions ?? {}).includes('"secureData"');
@@ -1524,7 +1541,10 @@ export function executeFlowDefinition({
     terminated = false,
     terminatedFailure = null,
     terminatedCancelled = false,
-    cancelled = false;
+    cancelled = false,
+    // The action that failed the run (D-R3-4): the latest Failed or TimedOut action, an enclosing action (Scope, If, loop)
+    // keeping the inner action that failed it.
+    failedAction = null;
   // Journalled action paths a resume replays as mocks; a live provider call while one is unconsumed means the replay diverged.
   // context.journal: the journalled outcomes a resume replays, keyed by action path plus the loop iteration ('path', 'path#2' for a
   // loop body's second iteration, 'path#1.3' inside nested loops), so an action inside a loop replays each iteration's answer.
@@ -1754,9 +1774,12 @@ export function executeFlowDefinition({
         attributes: {
           type: action.type ?? null,
           path: key,
-          iteration: at,
+          // Each loop iteration's actions are executions of their own (D-R3-30, as in the run history): the 0-based index of
+          // the innermost Apply to each / Do until iteration (the span name, at, keeps every enclosing index).
+          ...(frame.loops.length ? { iteration: frame.loops.at(-1) } : {}),
           ...(override?.mode ? { mode: override.mode } : {}),
           ...(own(replayed, at) ? { replayed: true } : {}),
+          ...(sealedRun() ? { secure: true } : {}),
         },
         ...childOf(ctl.parent ?? flowSpan),
         ...(capture() ? { input: inputsOf } : {}),
@@ -1865,12 +1888,20 @@ export function executeFlowDefinition({
               frame.loops.length || String(action.operationOptions ?? '').includes('Sequential')
                 ? 1
                 : (action.runtimeConfiguration?.concurrency?.repetitions ?? 1);
-            if (
-              !(yield* each(values.length, degree, (i) =>
-                run(action.actions, key + '/', iteration(i, values[i]), span),
-              ))
-            )
-              status = 'Failed';
+            // The loop span: its iteration count, and at level full the size of its input collection, never the items.
+            if (span && capture()) span.setInput(() => ({ items: values.length }));
+            let started = 0;
+            try {
+              if (
+                !(yield* each(values.length, degree, (i) => {
+                  started++;
+                  return run(action.actions, key + '/', iteration(i, values[i]), span);
+                }))
+              )
+                status = 'Failed';
+            } finally {
+              span?.set({ iterations: started });
+            }
             break;
           }
           case 'Switch': {
@@ -1966,6 +1997,7 @@ export function executeFlowDefinition({
             let met = false;
             // Assumed native default: reaching limit.count without the expression ends the loop Succeeded; the timeout ends it TimedOut.
             for (let i = 0; i < count && !stopped(); i++) {
+              span?.set({ iterations: i + 1 });
               const f = iteration(i);
               if (!(yield* run(action.actions, key + '/', f, span))) status = 'Failed';
               if (stopped()) break;
@@ -2050,6 +2082,15 @@ export function executeFlowDefinition({
       ctl.local,
     );
     trace(key, action, status, error, span);
+    if (['Failed', 'TimedOut'].includes(status) && !failedAction?.action.startsWith(key + '/'))
+      failedAction = {
+        action: key,
+        ...(at === key ? {} : { iteration: at }),
+        type: action.type ?? null,
+        status,
+        code: error?.code ?? null,
+        message: error?.message ?? null,
+      };
     // A changeset's actions share its outcome: each answers its own response, or all fail when it rolled back.
     // The native status and error of the actions of a rolled-back changeset are a guess.
     if (action.type === 'ChangeSet')
@@ -2078,7 +2119,7 @@ export function executeFlowDefinition({
     if (span) {
       if (capture()) span.output(() => outputs);
       span.end({
-        status: ['Failed', 'TimedOut'].includes(status) ? 'error' : 'ok',
+        status: ['Failed', 'TimedOut'].includes(status) ? 'error' : status === 'Cancelled' ? 'cancelled' : 'ok',
         ...(error ? { error } : {}),
         attributes: { status, ...(attempts.has(at) ? { attempts: attempts.get(at).length } : {}) },
       });
@@ -2277,8 +2318,11 @@ export function executeFlowDefinition({
             ? {
                 error: {
                   code: cause?.code ?? 'LocalFlowFailed',
-                  message: cause?.message ?? 'Local flow actions failed after the Response.',
+                  message:
+                    cause?.message ?? flowFailure(failedAction, 'Local flow actions failed after the Response').message,
+                  ...(failedAction ? { action: failedAction.action } : {}),
                 },
+                ...(failedAction ? { failedAction: clone(failedAction) } : {}),
               }
             : {}),
         });
@@ -2293,10 +2337,10 @@ export function executeFlowDefinition({
           );
         return { status: 'Cancelled', actions: clone(state.results) };
       }
-      if (terminatedFailure) throw terminatedFailure;
+      if (terminatedFailure) throw named(terminatedFailure, failedAction);
       if (unconsumed.size) diverged('(end of run)');
       if (answersWithout) {
-        if (!succeeded) fail('Local triggered flow actions failed.', 400, 'LocalFlowFailed');
+        if (!succeeded) throw flowFailure(failedAction);
         return { status: 'Succeeded', actions: clone(state.results) };
       }
       fail('Local flow completed without a Response.', 400, 'LocalFlowFailed');
@@ -2336,26 +2380,27 @@ export function triggerPrincipal(connectors, definition, connectionReferences) {
  * flowOf(processId) answers a child flow's { definition, mode, steps, serviceProfile, connectors, connectionReferences, secrets }
  * (organization-host.mjs cloudFlow). Without runs this is executeFlowDefinition inside wrap.
  * A Waiting answer carries runId; onRun(runId) is called once the run is started or resumed.
- * name: the flow's display name (the flow-run span name); sealed: a sealed parent run's child (tracing captures no payload).
+ * name: the flow's display name (the flow-run span name); sealed: a sealed parent run's child (tracing captures no payload);
+ * target: the trigger row { entity, recordId } of a row-triggered run (the flow-run span's entity and record id).
  * Tracing: one flow-run span per run (or resume), ended with the run's status; a resume is an async segment parented by the
  * run's first span, which the trace store remembers as 'flow-run:<runId>' (never the run entry; after a restart a resume is a
  * new root). A run's seal (its own, or its parent's) is kept in the run entry, so its resume and children stay sealed.
  */
 export async function runTrackedFlow(options) {
-  const trace = { span: null, status: null };
+  const trace = { span: null, status: null, failure: null, sealed: false };
   try {
     return endFlowRun(trace, await trackedFlow(options, trace));
   } catch (error) {
-    trace.span?.fail(error);
+    failFlowRun(trace, error);
     throw error;
   }
 }
 /** The flow-run span of an untracked run (exported-operations.mjs): fn's answer, synchronous when fn answers synchronously. */
 export function traceFlowRun(store, meta, fn) {
-  const trace = { span: flowRunSpan(store, meta), status: null };
+  const trace = { span: flowRunSpan(store, meta), status: null, failure: null, sealed: Boolean(meta?.sealed) };
   if (!trace.span) return fn();
   const failed = (error) => {
-    trace.span.fail(error);
+    failFlowRun(trace, error);
     throw error;
   };
   let answer;
@@ -2373,7 +2418,17 @@ export function traceFlowRun(store, meta, fn) {
 // context resumed it.
 function flowRunSpan(
   store,
-  { processId = null, name = null, trigger = null, depth = 0, input, resume = false, parent = null, sealed = false },
+  {
+    processId = null,
+    name = null,
+    trigger = null,
+    depth = 0,
+    input,
+    resume = false,
+    parent = null,
+    sealed = false,
+    target = null,
+  },
 ) {
   const traces = store?.traces;
   if (!traces?.enabled) return null;
@@ -2384,22 +2439,64 @@ function flowRunSpan(
     module: 'flows',
     operation: 'run',
     actor: { kind: 'flow', id, name: name || null },
-    attributes: { processId: id, trigger, depth, ...(resume ? { resume: true } : {}) },
+    // target: the trigger row { entity, recordId } of a row-triggered run (D-R3-1), so record filters find the run.
+    entity: target?.entity ?? null,
+    recordId: target?.recordId ?? null,
+    // secure: a sealed run (no payload captured), so a reader sees why its input and output are absent.
+    attributes: {
+      processId: id,
+      trigger,
+      depth,
+      ...(resume ? { resume: true } : {}),
+      ...(sealed ? { secure: true } : {}),
+    },
     ...(sealed ? {} : { input: () => input }),
     ...(resume ? { traceId: parent?.traceId ?? null, parentSpanId: parent?.spanId ?? null, async: true } : {}),
   });
 }
-// Ends the flow-run span with the run's status (trace.status, else the answer's): Failed and TimedOut are errors, a waiting
-// run ends ok with waiting: true and a suspended event (its resume opens a new span).
-function endFlowRun({ span, status }, answer) {
+// The failing action of a failed run on its flow-run span (D-R3-4): attribute failedAction (its path) and, unless the run is
+// sealed, output.failedAction { action, iteration?, type, status, code, message }; error.action comes with the error.
+function nameFailedAction({ span, sealed }, failed) {
+  if (!failed) return;
+  span.set({ failedAction: failed.action });
+  if (!sealed) span.output(() => ({ status: 'Failed', failedAction: failed }));
+}
+// A run that threw (LocalFlowFailed, a Terminate failure, a provider error): the span fails with that error; a run cancelled
+// before it answered its Response (FlowRunCancelled) ends cancelled.
+function failFlowRun(trace, error) {
+  if (!trace.span) return;
+  if (error?.code === 'FlowRunCancelled') {
+    trace.span.end({ status: 'cancelled', error, attributes: { status: 'Cancelled' } });
+    return;
+  }
+  nameFailedAction(trace, error?.failedAction ?? null);
+  trace.span.fail(error);
+}
+// Ends the flow-run span with the run's status (trace.status, else the answer's): Failed and TimedOut are errors (with the
+// run's own error and failing action when a Response answered first: trace.failure), Cancelled is cancelled, a waiting run
+// ends ok with waiting: true and a suspended event (its resume opens a new span).
+function endFlowRun(trace, answer) {
+  const { span, status } = trace;
   if (!span) return answer;
   const outcome = status ?? (typeof answer?.status === 'string' ? answer.status : 'Succeeded');
   if (outcome === 'Waiting')
     span.event('suspended', {
       attributes: { actionPath: answer.suspended?.actionPath ?? null, wait: answer.suspended?.wait?.kind ?? null },
     });
+  const failed = ['Failed', 'TimedOut'].includes(outcome),
+    failure = failed ? trace.failure : null,
+    failedAction = failure?.failedAction ?? null;
+  // At level full (never for a sealed run) the run's output: its outcome, the Response it answered and the failing action.
+  if (failedAction) span.set({ failedAction: failedAction.action });
+  if (!trace.sealed)
+    span.output(() => ({
+      status: outcome,
+      ...(Number.isInteger(answer?.status) ? { response: { status: answer.status, body: answer.body ?? null } } : {}),
+      ...(failedAction ? { failedAction } : {}),
+    }));
   span.end({
-    status: ['Failed', 'TimedOut'].includes(outcome) ? 'error' : 'ok',
+    status: failed ? 'error' : outcome === 'Cancelled' ? 'cancelled' : 'ok',
+    ...(failure?.error ? { error: failure.error } : {}),
     attributes: {
       status: outcome,
       ...(outcome === 'Waiting' ? { waiting: true } : {}),
@@ -2421,6 +2518,7 @@ async function trackedFlow(
     depth = 0,
     resume = null,
     onRun = null,
+    target = null,
     ...args
   },
   trace,
@@ -2428,7 +2526,8 @@ async function trackedFlow(
   if (!runs) {
     if (args.store?.traces?.enabled)
       sealed ||= flowSealed(args.definition, flowParameters(args.definition, args.store));
-    trace.span = flowRunSpan(args.store, { processId, name, trigger, depth, input: args.input, sealed });
+    trace.span = flowRunSpan(args.store, { processId, name, trigger, depth, input: args.input, sealed, target });
+    trace.sealed = sealed;
     return wrap(() => within(args.store, trace.span, () => executeFlowDefinition({ ...args, sealed })));
   }
   const definitionHash = flowDefinitionHash(args.definition);
@@ -2462,9 +2561,12 @@ async function trackedFlow(
     sealed ||= origin;
     const traces = args.store?.traces,
       first = traces?.enabled ? (traces.recall?.('flow-run:' + runId) ?? null) : null;
+    // A resume keeps the name and trigger row of the run's first span (its target is not passed again).
+    const firstSpan = first?.spanId ? traces.span(first.spanId) : null;
     trace.span = flowRunSpan(args.store, {
       processId,
-      name: name ?? (first?.spanId ? traces.span(first.spanId)?.name : null),
+      name: name ?? firstSpan?.name ?? null,
+      target: target ?? (firstSpan?.entity ? { entity: firstSpan.entity, recordId: firstSpan.recordId } : null),
       sealed,
       trigger,
       depth,
@@ -2472,6 +2574,7 @@ async function trackedFlow(
       resume: true,
       parent: first,
     });
+    trace.sealed = sealed;
   } else {
     const declared = flowParameters(args.definition, args.store);
     parameters = declared.values;
@@ -2485,7 +2588,8 @@ async function trackedFlow(
       });
       return { status: 'Skipped', reason: 'TriggerConditionFalse' };
     }
-    trace.span = flowRunSpan(args.store, { processId, name, trigger, depth, input, sealed });
+    trace.span = flowRunSpan(args.store, { processId, name, trigger, depth, input, sealed, target });
+    trace.sealed = sealed;
     runId = (
       await runs.start({
         processId: canonicalId(processId),
@@ -2640,6 +2744,7 @@ async function trackedFlow(
   }
   // The run's outcome is its own: the Response answered the caller, a later failure still fails the run.
   trace.status = outcome?.status ?? 'Succeeded';
+  trace.failure = outcome;
   await runs.complete(runId, {
     status: outcome?.status ?? 'Succeeded',
     ...(outcome?.error ? { error: outcome.error } : {}),

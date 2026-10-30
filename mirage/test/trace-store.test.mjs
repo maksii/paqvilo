@@ -3,10 +3,19 @@
 // duration below is exact; no assertion depends on how fast the host runs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createTraceStore, redactPayload, statusFromHttp } from '../lib/trace-store.mjs';
+import {
+  SPAN_KINDS,
+  SPAN_STATUSES,
+  checkTraceFilters,
+  createTraceStore,
+  recordHttpError,
+  redactPayload,
+  statusFromHttp,
+} from '../lib/trace-store.mjs';
 import { createRequestContext, runWithRequest } from '../lib/request-context.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -33,6 +42,7 @@ const invalidFilter = (fn, key) =>
     assert.equal(error.status, 400, key);
     assert.equal(error.code, 'InvalidTraceFilter', key);
     assert.match(error.message, new RegExp(`^${key} `));
+    assert.equal(error.parameter, key, key);
     return true;
   });
 
@@ -334,7 +344,11 @@ test('events and attributes are redacted, end is idempotent and fail classifies 
   const denied = traces.start({ kind: 'permission' });
   denied.fail(Object.assign(new Error('Table permission denied'), { status: 403, code: 'PermissionDenied' }));
   assert.equal(traces.span(denied.spanId).status, 'denied');
-  assert.deepEqual(traces.span(denied.spanId).error, { code: 'PermissionDenied', message: 'Table permission denied' });
+  assert.deepEqual(traces.span(denied.spanId).error, {
+    code: 'PermissionDenied',
+    message: 'Table permission denied',
+    status: 403,
+  });
   await assert.rejects(
     traces.wrap({ kind: 'connector', name: 'Invented connector' }, async () => {
       throw Object.assign(new Error('upstream failed'), { code: 'ConnectorFailed' });
@@ -582,7 +596,7 @@ test('stats computes percentiles, groups, a bounded timeline and the slowest and
   assert.ok(wide.timeline.length <= 60);
   assert.equal(wide.bucketMs, 600_000, 'ten-minute buckets for six hours');
   assert.equal(wide.timeline.length, 37);
-  const empty = traces.stats({ kind: 'none' });
+  const empty = traces.stats({ kind: 'canvas' });
   assert.deepEqual([empty.count, empty.timeline, empty.from, empty.bucketMs], [0, [], null, null]);
   running.end();
 });
@@ -953,7 +967,7 @@ test('stats reports overall figures over the matching spans and root figures ove
     max: null,
   });
   running.end();
-  assert.deepEqual(traces.stats({ kind: 'none' }).overall, { count: 0, errors: 0, p50: null, p95: null, max: null });
+  assert.deepEqual(traces.stats({ kind: 'canvas' }).overall, { count: 0, errors: 0, p50: null, p95: null, max: null });
 });
 
 test('the memory estimate counts event messages and attribute JSON, and events stop at 1000', () => {
@@ -1151,4 +1165,322 @@ test('subscribe with payloads false receives copies without input and output', (
   assert.equal('output' in slim.at(-1).trace.root, false);
   assert.equal(slim.at(-1).trace.spanCount, 1);
   assert.equal(traces.span(span.spanId).input.x_name, 'n', 'the record keeps its payloads');
+});
+
+test('unknown status, kind, sort and order values are refused with the parameter and the value', () => {
+  const { traces } = store();
+  for (const [key, value] of [
+    ['status', 'bogus'],
+    ['kind', 'invented-kind'],
+    ['sort', 'sideways'],
+    ['order', 'up'],
+  ]) {
+    invalidFilter(() => traces.query({ [key]: value }), key);
+    invalidFilter(() => traces.spans({ [key]: value }), key);
+    invalidFilter(() => traces.stats({ [key]: value }), key);
+    invalidFilter(() => checkTraceFilters({ [key]: value }), key);
+  }
+  assert.throws(() => traces.query({ status: 'bogus' }), {
+    message: 'status must be one of ok, error, denied, cancelled, running (got "bogus").',
+  });
+  assert.deepEqual(SPAN_STATUSES, ['ok', 'error', 'denied', 'cancelled', 'running']);
+  for (const kind of SPAN_KINDS) assert.equal(traces.query({ kind }).total, 0, kind);
+  for (const status of SPAN_STATUSES) assert.equal(traces.query({ status: status.toUpperCase() }).total, 0, status);
+  assert.doesNotThrow(() => checkTraceFilters({ status: 'cancelled', kind: 'canvas', sort: 'errors', order: 'asc' }));
+});
+
+test('recordHttpError gives a handler-written answer its status and error; cancelled is a status of its own', () => {
+  const { traces, time } = store();
+  const failed = traces.start({ kind: 'http', name: 'POST /_api/x_items' });
+  const details = { field: 'x' };
+  assert.equal(recordHttpError(failed, 400, { code: '0x80040203', message: 'Invalid value.', details }), failed);
+  assert.equal(traces.span(failed.spanId).status, 'running');
+  assert.deepEqual(traces.span(failed.spanId).error, {
+    code: '0x80040203',
+    message: 'Invalid value.',
+    status: 400,
+    details: { field: 'x' },
+  });
+  failed.end();
+  assert.equal(traces.span(failed.spanId).status, 'error');
+  const denied = traces.start({ kind: 'http', name: 'GET /secure' });
+  recordHttpError(denied, 401).end();
+  assert.deepEqual(traces.span(denied.spanId).error, { code: 'Http401', message: 'HTTP 401', status: 401 });
+  assert.equal(traces.span(denied.spanId).status, 'denied');
+  const fine = traces.start({ kind: 'http', name: 'GET /fine' });
+  recordHttpError(fine, 302, { code: 'Redirect' }).end();
+  assert.deepEqual([traces.span(fine.spanId).status, traces.span(fine.spanId).error], ['ok', undefined]);
+  // An explicit end status still wins; an ended span, the no-op span and no span ignore it.
+  const explicit = traces.start({ kind: 'http' });
+  recordHttpError(explicit, 500).end({ status: 'ok' });
+  assert.equal(traces.span(explicit.spanId).status, 'ok');
+  recordHttpError(explicit, 500);
+  assert.equal(traces.span(explicit.spanId).status, 'ok');
+  traces.configure({ level: 'off' });
+  const noop = traces.start({ kind: 'http' });
+  assert.equal(recordHttpError(noop, 500), noop);
+  traces.configure({ level: 'summary' });
+  assert.equal(recordHttpError(null, 500), null);
+
+  const cancelled = traces.start({ kind: 'flow-action', name: 'Wait' });
+  time.advance(2);
+  cancelled.end({ status: 'cancelled' });
+  const record = traces.span(cancelled.spanId);
+  assert.deepEqual([record.status, record.durationMs], ['cancelled', 2]);
+  assert.equal(traces.query({ status: 'cancelled' }).total, 1);
+  const summary = traces.query({ traceId: cancelled.traceId }).items[0];
+  assert.deepEqual([summary.errorCount, summary.deniedCount], [0, 0], 'cancelled is neither an error nor a denial');
+  const pending = traces.start({ kind: 'job' }).setStatus('cancelled').setStatus('running');
+  pending.end();
+  assert.equal(traces.span(pending.spanId).status, 'cancelled');
+});
+
+test('errors keep their scalar facts, details and one level of cause', () => {
+  const { traces } = store();
+  const step = traces.start({ kind: 'plugin-step', name: 'Invented.Step' });
+  step.fail(
+    Object.assign(new Error('Invented rule refused the item.'), {
+      type: 'InvalidPluginExecutionException',
+      code: '0x80040265',
+      status: 'Failed',
+      pluginType: 'Invented.Plugin',
+      step: 'Invented.Step',
+      stage: 20,
+      depth: 1,
+      ignored: { deep: true },
+      cause: Object.assign(new Error('inner'), { code: 'Inner', cause: new Error('too deep') }),
+    }),
+  );
+  assert.deepEqual(traces.span(step.spanId).error, {
+    code: '0x80040265',
+    message: 'Invented rule refused the item.',
+    status: 'Failed',
+    type: 'InvalidPluginExecutionException',
+    pluginType: 'Invented.Plugin',
+    step: 'Invented.Step',
+    stage: 20,
+    depth: 1,
+    cause: { code: 'Inner', message: 'inner' },
+  });
+  const run = traces.start({ kind: 'flow-run' });
+  run.end({ error: { code: 'ActionFailed', message: 'Send failed.', action: 'Send_email', password: 'p4ss' } });
+  assert.deepEqual(traces.span(run.spanId).error, {
+    code: 'ActionFailed',
+    message: 'Send failed.',
+    action: 'Send_email',
+  });
+});
+
+test('every span records the level it was captured at', () => {
+  const { traces } = store({ level: 'summary' });
+  const quiet = traces.start({ kind: 'http' });
+  traces.configure({ level: 'full' });
+  const loud = traces.start({ kind: 'http' });
+  quiet.end();
+  loud.end();
+  assert.equal(traces.span(quiet.spanId).level, 'summary');
+  assert.equal(traces.span(loud.spanId).level, 'full');
+});
+
+test('recordId filters spans and traces by the record identity, ignoring braces and case', () => {
+  const { traces } = store();
+  const id = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
+  const page = traces.start({ kind: 'http', name: 'POST /_api/x_items' });
+  const create = traces.run(page, () => traces.start({ kind: 'dataverse', name: 'Create x_item', entity: 'x_item' }));
+  create.setEntity('x_item', id).end();
+  page.end();
+  traces.start({ kind: 'http', attributes: { recordId: id } }).end();
+  assert.deepEqual(
+    traces.query({ recordId: `{${id.toUpperCase()}}` }).items.map((item) => item.traceId),
+    [page.traceId],
+  );
+  assert.deepEqual(
+    traces.spans({ recordId: id }).items.map((span) => span.spanId),
+    [create.spanId],
+  );
+  assert.equal(traces.stats({ recordId: id }).count, 1);
+  assert.equal(traces.export({ recordId: id }).traces.length, 1);
+  assert.equal(traces.query({ recordId: 'invented-other' }).total, 0);
+});
+
+test('search matches names, attributes, event messages and, at full, payload text, and stays current after a late event', () => {
+  const { traces } = store({ level: 'full' });
+  const order = traces.start({
+    kind: 'dataverse',
+    name: 'Update x_order',
+    attributes: { stage: 'PreValidation' },
+    input: { x_name: 'Order SLOW' },
+  });
+  order.event('flow-skipped', {
+    message: 'Skipped because the condition was false',
+    attributes: { reason: 'NoMatch' },
+  });
+  order.output({ quote: 'QuoteBackendDown' }).end();
+  for (const text of ['skipped because', 'prevalidation', 'nomatch', 'flow-skipped', 'order slow', 'quotebackenddown'])
+    assert.equal(traces.query({ search: text }).total, 1, text);
+  assert.equal(traces.spans({ search: 'ORDER slow' }).total, 1);
+  const before = traces.status().memoryBytes;
+  order.event('late', { message: 'Arrived after the end' });
+  assert.equal(traces.query({ search: 'arrived after' }).total, 1, 'a late event invalidates the cached text');
+  assert.ok(traces.status().memoryBytes > before, 'the cached search text counts in the memory estimate');
+  order.set({ note: 'Late attribute' });
+  assert.equal(traces.query({ search: 'late attribute' }).total, 1);
+  const running = traces.start({ kind: 'http', name: 'GET /running' });
+  running.event('progress', { message: 'Halfway there' });
+  assert.equal(traces.query({ search: 'halfway' }).total, 1, 'a running span is searched as it is');
+  running.end();
+
+  const summary = store({ level: 'summary' }).traces;
+  summary.start({ kind: 'dataverse', input: () => ({ word: 'Payload only' }) }).end();
+  assert.equal(summary.query({ search: 'payload only' }).total, 0, 'summary captures no payload to search');
+});
+
+test('redactPayload summarises file and binary columns by size, type, name and hash', () => {
+  const file = Buffer.from('%PDF-1.7 invented attachment bytes '.repeat(40));
+  const base64 = file.toString('base64');
+  const png = Buffer.from([137, 80, 78, 71]);
+  const { value } = redactPayload({
+    annotation: { subject: 'Invoice', filename: 'invoice.pdf', mimetype: 'application/pdf', documentbody: base64 },
+    entityimage: new Uint8Array([1, 2, 3, 4]),
+    entityimage_url: '/Image/download.aspx?Entity=contact',
+    note: { body: 'Approved by the manager, see the attachment.' },
+    raw: base64,
+    picture: `data:image/png;base64,${png.toString('base64')}`,
+    attributes: [{ key: 'documentbody', value: base64 }],
+    long: 'x'.repeat(5000),
+    hex: 'deadbeef'.repeat(200),
+  });
+  const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+  assert.deepEqual(value.annotation, {
+    subject: 'Invoice',
+    filename: 'invoice.pdf',
+    mimetype: 'application/pdf',
+    documentbody: { bytes: file.length, mimetype: 'application/pdf', filename: 'invoice.pdf', sha256: sha256(file) },
+  });
+  assert.deepEqual(value.entityimage, { bytes: 4, sha256: sha256(Buffer.from([1, 2, 3, 4])) });
+  assert.equal(value.entityimage_url, '/Image/download.aspx?Entity=contact', 'a URL under an image key stays');
+  assert.equal(value.note.body, 'Approved by the manager, see the attachment.', 'a text body stays');
+  assert.deepEqual(value.raw, { bytes: file.length, sha256: sha256(file) }, 'base64 over 1 KB under any key');
+  assert.deepEqual(value.picture, { bytes: 4, mimetype: 'image/png', sha256: sha256(png) });
+  assert.deepEqual(value.attributes[0].value, { bytes: file.length, sha256: sha256(file) }, 'a { key, value } pair');
+  assert.equal(value.long, 'x'.repeat(5000), 'a long repeated letter is not a file');
+  assert.equal(value.hex.length, 1600, 'a hex string is not base64 of a file');
+  assert.deepEqual(redactPayload(base64).value, { bytes: file.length, sha256: sha256(file) });
+  assert.equal(JSON.stringify(value).includes(base64.slice(0, 40)), false);
+});
+
+test('an error carrying a traceError records that identity on every span it fails', () => {
+  const { traces } = store();
+  const root = traces.start({ kind: 'http', name: 'POST /_api/x_items' });
+  const dispatch = traces.run(root, () => traces.start({ kind: 'dataverse', name: 'Create x_item' }));
+  const fault = Object.assign(new Error('Invented rule refused the item.'), { code: 'PluginValidation', status: 400 });
+  Object.defineProperty(fault, 'traceError', {
+    enumerable: false,
+    value: {
+      type: 'InvalidPluginExecutionException',
+      code: '0x80040265',
+      status: 'Failed',
+      message: 'Invented rule refused the item.',
+      pluginType: 'Invented.Plugin',
+      step: 'Invented.Step',
+      stage: 20,
+      depth: 1,
+    },
+  });
+  dispatch.fail(fault);
+  root.end({ status: 'error', error: fault });
+  for (const span of [dispatch, root])
+    assert.deepEqual(traces.span(span.spanId).error, {
+      code: '0x80040265',
+      message: 'Invented rule refused the item.',
+      status: 'Failed',
+      type: 'InvalidPluginExecutionException',
+      pluginType: 'Invented.Plugin',
+      step: 'Invented.Step',
+      stage: 20,
+      depth: 1,
+    });
+  const self = Object.assign(new Error('loop'), { code: 'Loop' });
+  self.traceError = self;
+  const looped = traces.start({ kind: 'http' });
+  looped.fail(self);
+  assert.equal(traces.span(looped.spanId).error.code, 'Loop', 'a self-referencing traceError is the error itself');
+});
+
+test('a trace summary names its first failed span', () => {
+  const { traces } = store();
+  const root = traces.start({ kind: 'http', name: 'POST /_api/x_items' });
+  const step = traces.run(root, () => traces.start({ kind: 'plugin-step', name: 'Invented.Step' }));
+  step.fail(Object.assign(new Error('Invented rule refused the item.'), { code: '0x80040265' }));
+  recordHttpError(root, 400, { code: '0x80040265', message: 'Invented rule refused the item.' }).end();
+  const [summary] = traces.query().items;
+  assert.deepEqual(summary.firstError, {
+    spanId: step.spanId,
+    kind: 'plugin-step',
+    name: 'Invented.Step',
+    status: 'error',
+    code: '0x80040265',
+    message: 'Invented rule refused the item.',
+  });
+  assert.equal(summary.errorCount, 2);
+  traces.start({ kind: 'http', name: 'GET /fine' }).end();
+  assert.equal('firstError' in traces.query().items[0], false, 'a trace without a failure has none');
+  const denied = traces.start({ kind: 'http', name: 'GET /secure' });
+  recordHttpError(denied, 403).end();
+  assert.equal(traces.query({ traceId: denied.traceId }).items[0].firstError.status, 'denied');
+});
+
+test('link adds a deduplicated link to a retained span, running or ended, and persists it again', async (t) => {
+  const directory = await makeTemporaryDirectory(path.join(os.tmpdir(), 'trace-store-'));
+  ownedFixture(t).remove(() => fs.rm(directory, { recursive: true, force: true }));
+  const { traces } = store({ persist: true }, { stateDirectory: directory });
+  const staging = traces.start({ kind: 'dataverse', name: 'Update x_item' });
+  staging.end();
+  await traces.flush();
+  const job = traces.start({
+    kind: 'job',
+    name: 'Invented process',
+    traceId: staging.traceId,
+    parentSpanId: staging.spanId,
+  });
+  const link = { traceId: job.traceId, spanId: job.spanId, relation: 'triggered' };
+  assert.equal(traces.link(staging.spanId, link), true);
+  assert.equal(traces.link(staging.spanId, link), false, 'an identical link is added once');
+  assert.equal(traces.link('invented-unknown', link), false);
+  assert.equal(traces.link(staging.spanId, {}), false, 'a link without ids is ignored');
+  assert.deepEqual(traces.span(staging.spanId).links, [link]);
+  job.end();
+  assert.equal(traces.link(job.spanId, { spanId: staging.spanId, relation: 'staged-by' }), true, 'an ended span');
+  await traces.flush();
+  const folder = path.join(directory, 'traces');
+  const [file] = await fs.readdir(folder);
+  const lines = (await fs.readFile(path.join(folder, file), 'utf8'))
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+  const latest = new Map();
+  for (const line of lines) for (const span of line.spans) latest.set(span.spanId, span);
+  assert.deepEqual(latest.get(staging.spanId).links, [link], 'the staging span is written again with its link');
+  assert.deepEqual(latest.get(job.spanId).links.at(-1), {
+    traceId: null,
+    spanId: staging.spanId,
+    relation: 'staged-by',
+  });
+  traces.configure({ level: 'off' });
+  assert.equal(traces.link(staging.spanId, { spanId: job.spanId, relation: 'other' }), false, 'level off');
+});
+
+test('the secretName attribute names a secret and stays readable; secret values stay hidden', () => {
+  const { traces } = store();
+  const span = traces.start({
+    kind: 'secret',
+    attributes: { vault: 'invented-vault', secretName: 'InventedKey', secret: 'v4lue', clientSecret: 'v4lue' },
+  });
+  span.end();
+  assert.deepEqual(traces.span(span.spanId).attributes, {
+    vault: 'invented-vault',
+    secretName: 'InventedKey',
+    secret: '[redacted]',
+    clientSecret: '[redacted]',
+  });
 });

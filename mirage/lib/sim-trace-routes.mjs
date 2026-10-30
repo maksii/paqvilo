@@ -1,25 +1,27 @@
-// /_sim/api/trace: the read side of the local trace store (trace-store.mjs) plus its run-time settings and a clear.
-// GET /trace (trace summaries), /trace/spans, /trace/stats, /trace/export (streamed attachment), /trace/settings,
+// /_sim/api/trace: the read side of the local trace store (trace-store.mjs) plus its run-time settings, a clear and a
+// flush. GET /trace (trace summaries), /trace/spans, /trace/stats, /trace/export (streamed attachment), /trace/settings,
 // /trace/span/<id> and /trace/id/<traceId> (the tree; /trace/<traceId> also answers a UUID-shaped id) are reads;
-// PUT /trace/settings and POST /trace/clear need the simulator CSRF token.
+// PUT /trace/settings, POST /trace/clear and POST /trace/flush need the simulator CSRF token.
 // Filters are the query string, passed to the store as URLSearchParams (sort and order included); an invalid filter is
-// the store's RangeError { status: 400, code: 'InvalidTraceFilter' }. Payloads were redacted when they were captured;
-// nothing is re-read here. Mounted by the host: `const traceRoutes = createTraceRoutes({ traces, csrf, json })`, then
-// `if (await traceRoutes(req, res, url)) return;` before the generic runtime admin router. createTraceChannel serves the
-// `trace` channel of each host's /_sim/events stream.
+// the store's RangeError { status: 400, code: 'InvalidTraceFilter', parameter }, answered as { error: { code, message,
+// parameter } }. Payloads were redacted when they were captured; nothing is re-read here. Mounted by the host:
+// `const traceRoutes = createTraceRoutes({ traces, csrf, json })`, then `if (await traceRoutes(req, res, url)) return;`
+// before the generic runtime admin router. createTraceChannel serves the `trace` channel of each host's /_sim/events
+// stream.
 import { createHash } from 'node:crypto';
 import { sseClients } from './trace-hosts.mjs';
 
 const MAX_BODY = 64 * 1024;
 const PREFIX = /^\/(?:_sim|__sim)\/api(?=\/|$)/;
-const ROUTE = /^\/trace(?:\/(spans|stats|export|settings|clear)|\/span\/([^/]+)|\/id\/([^/]+)|\/([^/]+))?$/;
+const ROUTE = /^\/trace(?:\/(spans|stats|export|settings|clear|flush)|\/span\/([^/]+)|\/id\/([^/]+)|\/([^/]+))?$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EXPORT_LIMIT = 200;
 const EXPORT_MAX = 2000;
 const QUERY_PAGE = 200;
 /** The /_sim/api prefixes this router answers (status `routes`). */
 export const routes = Object.freeze(['/trace']);
-const failure = (status, code, message) => Object.assign(new Error(message), { status, code });
+const failure = (status, code, message, parameter) =>
+  Object.assign(new Error(message), { status, code, ...(parameter ? { parameter } : {}) });
 
 function send(res, status, value, headers = {}) {
   res.writeHead(status, { ...headers, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -54,16 +56,19 @@ const segment = (value) => {
 
 const traceFrame = (event) => `event: trace\ndata: ${JSON.stringify(event)}\n\n`;
 /**
- * createTraceChannel(traces) -> attach(res): the `trace` channel of a host's /_sim/events stream, shared by both hosts.
- * attach writes a `connected` frame with the store status, then one payload-free frame per store event until the
- * response finishes or closes; the store is observed only while a client listens. Client bookkeeping (closed responses
- * never join, three stalled writes in a row drop a client) is trace-hosts.mjs sseClients. traces: the trace store, or a
- * function returning it.
+ * createTraceChannel(traces, { now, stallMs }) -> attach(res): the `trace` channel of a host's /_sim/events stream,
+ * shared by both hosts. attach writes a `connected` frame with the store status, then one payload-free frame per store
+ * event until the response finishes or closes; the store is observed only while a client listens, and its flush() waits
+ * until the frames reached every client. Client bookkeeping (closed responses never join; every frame is written; a
+ * reader still waiting for drain stallMs after a refused write is dropped) is trace-hosts.mjs sseClients, which takes
+ * now and stallMs. traces: the trace store, or a function returning it.
  */
-export function createTraceChannel(traces) {
+export function createTraceChannel(traces, { now, stallMs } = {}) {
   const store = typeof traces === 'function' ? traces : () => traces;
   let unsubscribe = null;
   const clients = sseClients({
+    now,
+    stallMs,
     onEmpty() {
       unsubscribe?.();
       unsubscribe = null;
@@ -73,7 +78,7 @@ export function createTraceChannel(traces) {
   return (res) => {
     const t = store();
     if (!t || !clients.add(res)) return;
-    unsubscribe ??= t.subscribe(publish, { payloads: false });
+    unsubscribe ??= t.subscribe(publish, { payloads: false, flush: () => clients.flush() });
     res.write(traceFrame({ type: 'connected', status: t.status() }));
   };
 }
@@ -84,7 +89,8 @@ const hex = (value, length) =>
   length === 32 && UUID.test(value)
     ? value.replaceAll('-', '').toLowerCase()
     : createHash('sha256').update(String(value)).digest('hex').slice(0, length);
-const SPAN_KIND = { http: 2, 'http-out': 3, connector: 3, job: 5 }; // SERVER, CLIENT, CONSUMER; others INTERNAL (1)
+// SERVER, CLIENT, PRODUCER (a web hook or Service Bus delivery), CONSUMER; others INTERNAL (1)
+const SPAN_KIND = { http: 2, 'http-out': 3, connector: 3, webhook: 4, job: 5 };
 function anyValue(value) {
   if (typeof value === 'boolean') return { boolValue: value };
   if (typeof value === 'number') return Number.isInteger(value) ? { intValue: String(value) } : { doubleValue: value };
@@ -114,6 +120,7 @@ function otlpSpan(record) {
       ['mirage.entity', record.entity],
       ['mirage.record_id', record.recordId],
       ['mirage.status', record.status],
+      ['mirage.level', record.level],
       ['mirage.async', record.async],
       ['mirage.depth', record.depth],
       ['mirage.host', record.origin?.host],
@@ -139,7 +146,7 @@ function otlpSpan(record) {
         attributes: keyValues([['mirage.relation', link.relation]]),
       })),
     status:
-      record.status === 'running'
+      record.status === 'running' || record.status === 'cancelled'
         ? { code: 0 }
         : record.status === 'ok'
           ? { code: 1 }
@@ -156,10 +163,16 @@ const FORMATS = {
 // at most `limit` (default 200, at most 2000), written one trace at a time with write backpressure.
 async function exportTraces(t, filters, res) {
   const format = filters.get('format') || 'json';
-  if (!Object.hasOwn(FORMATS, format)) throw failure(400, 'InvalidTraceFilter', 'format must be json, ndjson or otlp.');
+  if (!Object.hasOwn(FORMATS, format))
+    throw failure(
+      400,
+      'InvalidTraceFilter',
+      `format must be one of json, ndjson, otlp (got ${JSON.stringify(format)}).`,
+      'format',
+    );
   const limitText = filters.get('limit');
   if (limitText && !(/^\d+$/.test(limitText) && Number(limitText) >= 1 && Number(limitText) <= EXPORT_MAX))
-    throw failure(400, 'InvalidTraceFilter', `limit must be an integer from 1 to ${EXPORT_MAX}.`);
+    throw failure(400, 'InvalidTraceFilter', `limit must be an integer from 1 to ${EXPORT_MAX}.`, 'limit');
   const limit = limitText ? Number(limitText) : EXPORT_LIMIT;
   const query = new URLSearchParams(filters);
   for (const key of ['format', 'limit', 'page', 'pageSize']) query.delete(key);
@@ -260,6 +273,12 @@ export function createTraceRoutes({ traces, csrf, json = send }) {
         json(res, 200, t.clear());
         return true;
       }
+      if (named === 'flush') {
+        if (method !== 'POST') throw failure(405, 'MethodNotAllowed', 'Flush traces with POST.');
+        await t.flush();
+        json(res, 200, t.status());
+        return true;
+      }
       if (method !== 'GET') throw failure(405, 'MethodNotAllowed', 'Unsupported trace operation.');
       if (!named && !spanId && !canonicalId && !shortId) json(res, 200, t.query(filters));
       else if (named === 'spans') json(res, 200, t.spans(filters));
@@ -285,6 +304,7 @@ export function createTraceRoutes({ traces, csrf, json = send }) {
           error: {
             code: error.code ?? 'InternalError',
             message: error.status ? error.message : 'The trace request failed.',
+            ...(error.status && error.parameter ? { parameter: error.parameter } : {}),
           },
         });
       return true;

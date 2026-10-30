@@ -9,6 +9,7 @@ function requestError(status, value, label = 'Local runtime request') {
   return Object.assign(new Error(`${label} failed (${status})${detail ? `: ${detail}` : ''}`), {
     status,
     code: value?.error?.code,
+    ...(value?.error?.parameter ? { parameter: value.error.parameter } : {}),
     response: value,
   });
 }
@@ -191,6 +192,8 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
     status: async () => (await request('/trace/settings')).status,
     configure: async (partial) => (await request('/trace/settings', { method: 'PUT', body: partial })).settings,
     clear: () => request('/trace/clear', { method: 'POST', body: {} }),
+    // Resolves with status() once the runtime wrote every queued persisted line and handed its SSE frames to the sockets.
+    flush: () => request('/trace/flush', { method: 'POST', body: {} }),
     // listener(event) receives each trace frame: { type: 'connected', status } first, then payload-free 'span-start',
     // 'span-end' and 'trace-end' frames. Returns unsubscribe(); unsubscribe.closed resolves when the stream ends
     // (unsubscribe, signal or runtime shutdown) and rejects only when the stream cannot be opened.

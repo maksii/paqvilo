@@ -169,6 +169,14 @@
           },
           "events": [],
           "links": []
+        },
+        "firstError": {
+          "spanId": "05fe8769-94ab-4f28-9f38-a586e85af8de",
+          "kind": "job",
+          "name": "Invented.Plugin.PostCreate (async)",
+          "status": "error",
+          "code": "FX_FAILED",
+          "message": "Invented failure"
         }
       }
     ],
@@ -772,7 +780,8 @@
         "statusCode": 201
       },
       "events": [],
-      "links": []
+      "links": [],
+      "level": "full"
     },
     "spans": [
       {
@@ -811,7 +820,8 @@
           "statusCode": 201
         },
         "events": [],
-        "links": []
+        "links": [],
+        "level": "full"
       },
       {
         "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
@@ -874,7 +884,8 @@
         "output": {
           "status": 201,
           "id": "item-1"
-        }
+        },
+        "level": "full"
       },
       {
         "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
@@ -886,7 +897,7 @@
         "module": "dataverse",
         "operation": "create",
         "entity": "x_item",
-        "recordId": null,
+        "recordId": "item-1",
         "startedAt": "2026-10-22T09:00:00.004Z",
         "durationMs": 14,
         "status": "ok",
@@ -910,7 +921,8 @@
           "recordId": "item-1"
         },
         "events": [],
-        "links": []
+        "links": [],
+        "level": "full"
       },
       {
         "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
@@ -922,7 +934,7 @@
         "module": "plugins",
         "operation": "create",
         "entity": "x_item",
-        "recordId": null,
+        "recordId": "item-1",
         "startedAt": "2026-10-22T09:00:00.005Z",
         "durationMs": 10,
         "status": "ok",
@@ -948,7 +960,8 @@
           "matched": 1
         },
         "events": [],
-        "links": []
+        "links": [],
+        "level": "full"
       },
       {
         "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
@@ -960,7 +973,7 @@
         "module": "clr",
         "operation": "create",
         "entity": "x_item",
-        "recordId": null,
+        "recordId": "item-1",
         "startedAt": "2026-10-22T09:00:00.006Z",
         "durationMs": 8,
         "status": "ok",
@@ -1004,7 +1017,8 @@
             "x_name": "Invented item",
             "x_code": "FX-1"
           }
-        }
+        },
+        "level": "full"
       },
       {
         "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
@@ -1041,7 +1055,8 @@
         "links": [],
         "output": {
           "x_categoryid": "cat-1"
-        }
+        },
+        "level": "full"
       },
       {
         "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
@@ -1084,12 +1099,18 @@
             "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
             "spanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
             "relation": "staged-by"
+          },
+          {
+            "traceId": "fx-other-trace",
+            "spanId": "fx-linked-span",
+            "relation": "triggered"
           }
         ],
         "error": {
           "code": "FX_FAILED",
           "message": "Invented failure"
-        }
+        },
+        "level": "summary"
       }
     ],
     "children": [
@@ -1204,7 +1225,7 @@
                 "module": "dataverse",
                 "operation": "create",
                 "entity": "x_item",
-                "recordId": null,
+                "recordId": "item-1",
                 "startedAt": "2026-10-22T09:00:00.004Z",
                 "durationMs": 14,
                 "status": "ok",
@@ -1240,7 +1261,7 @@
                     "module": "plugins",
                     "operation": "create",
                     "entity": "x_item",
-                    "recordId": null,
+                    "recordId": "item-1",
                     "startedAt": "2026-10-22T09:00:00.005Z",
                     "durationMs": 10,
                     "status": "ok",
@@ -1278,7 +1299,7 @@
                         "module": "clr",
                         "operation": "create",
                         "entity": "x_item",
-                        "recordId": null,
+                        "recordId": "item-1",
                         "startedAt": "2026-10-22T09:00:00.006Z",
                         "durationMs": 8,
                         "status": "ok",
@@ -1360,13 +1381,17 @@
                             "output": {
                               "x_categoryid": "cat-1"
                             },
-                            "children": []
+                            "children": [],
+                            "level": "full"
                           }
-                        ]
+                        ],
+                        "level": "full"
                       }
-                    ]
+                    ],
+                    "level": "full"
                   }
-                ]
+                ],
+                "level": "full"
               },
               {
                 "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
@@ -1409,17 +1434,25 @@
                     "traceId": "a6b72bdc-4bb8-4d3c-affa-0b162404bff3",
                     "spanId": "b9e80717-a299-4f2e-abd9-b5917c54272c",
                     "relation": "staged-by"
+                  },
+                  {
+                    "traceId": "fx-other-trace",
+                    "spanId": "fx-linked-span",
+                    "relation": "triggered"
                   }
                 ],
                 "error": {
                   "code": "FX_FAILED",
                   "message": "Invented failure"
                 },
-                "children": []
+                "children": [],
+                "level": "summary"
               }
-            ]
+            ],
+            "level": "full"
           }
-        ]
+        ],
+        "level": "full"
       }
     ]
   }

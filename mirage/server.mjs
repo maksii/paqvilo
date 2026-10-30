@@ -62,7 +62,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { AuditLog } from './lib/audit-log.mjs';
+import { AuditLog, auditQuery } from './lib/audit-log.mjs';
 import { watchSources } from './lib/source-watcher.mjs';
 import {
   resolveDeploymentProfiles,
@@ -195,6 +195,8 @@ import {
   simApiRoutes,
   traceMethods,
   modelDrivenAppsOf,
+  appTraceSurface,
+  staffActor,
 } from './lib/organization-host.mjs';
 import { createCanvasHandler } from './lib/canvas-http.mjs';
 import { createCanvasRuntime } from './lib/canvas-runtime.mjs';
@@ -205,7 +207,7 @@ import { createRequestContext, currentRequest, runWithRequest, correlationOf } f
 import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './lib/sim-messaging-routes.mjs';
 import { createFlowRoutes, routes as FLOW_ROUTES } from './lib/sim-flow-routes.mjs';
 import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './lib/sim-trace-routes.mjs';
-import { statusFromHttp } from './lib/trace-store.mjs';
+import { recordHttpError, statusFromHttp } from './lib/trace-store.mjs';
 import { setTraceHeaders, sseClients, traceSessionKey } from './lib/trace-hosts.mjs';
 import { buildSourceGraph } from './lib/source-graph.mjs';
 import { scenarioSettings } from './lib/capability-report.mjs';
@@ -362,6 +364,63 @@ const loadedImplementationFingerprint = cachedImplementationSourceFingerprint(RO
 // A failure surfaces in the runtime that awaits it, not as an unhandled rejection of an import that starts none.
 loadedImplementationFingerprint.catch(() => {});
 const auditResponse = Symbol('auditResponse');
+// The request body as rawBody read it, for the http root's input at level full (docs/design/tracing.md, D-R3-10).
+const requestBody = Symbol('requestBody');
+// The error a handler answered itself (native services set it on the response), for the http root (D-R3-4).
+const handledError = Symbol.for('paqvilo.mirage.httpError');
+/** The display name of a portal contact: fullname, else first and last name, else the e-mail address (D-R3-3). */
+function contactDisplayName(row) {
+  if (!row || typeof row !== 'object') return null;
+  const text = (value) => (typeof value === 'string' ? value.trim() : '');
+  return (
+    text(row.fullname) ||
+    [text(row.firstname), text(row.lastname)].filter(Boolean).join(' ') ||
+    text(row.emailaddress1) ||
+    null
+  );
+}
+/** The http root's request facts at level summary: the query (secret values hidden), content type and length. */
+function requestAttributes(req, url) {
+  const query = url.search ? auditQuery(url.searchParams) : null;
+  const length = Number(req.headers['content-length']);
+  return {
+    ...(query
+      ? {
+          query: Object.entries(query)
+            .map(([key, value]) => `${key}=${value}`)
+            .join('&'),
+        }
+      : {}),
+    ...(req.headers['content-type'] ? { contentType: String(req.headers['content-type']) } : {}),
+    ...(Number.isFinite(length) && length > 0 ? { contentLength: length } : {}),
+  };
+}
+/** The http root's input at level full: the query and the body rawBody read (JSON, form fields, text or bytes). */
+function requestInput(req, url) {
+  const type = String(req.headers['content-type'] ?? '')
+    .split(';')[0]
+    .trim()
+    .toLowerCase();
+  const bytes = req[requestBody];
+  let body;
+  if (bytes?.length) {
+    const text = () => bytes.toString('utf8');
+    if (type === 'application/json' || type.endsWith('+json'))
+      try {
+        body = JSON.parse(text());
+      } catch {
+        body = text();
+      }
+    else if (type === 'application/x-www-form-urlencoded') body = Object.fromEntries(new URLSearchParams(text()));
+    else if (type.startsWith('text/') || type.endsWith('xml')) body = text();
+    else body = bytes;
+  }
+  return {
+    ...(url.search ? { query: url.searchParams } : {}),
+    ...(type ? { contentType: type } : {}),
+    ...(body === undefined ? {} : { body }),
+  };
+}
 const mime = (file) =>
   ({
     '.js': 'application/javascript',
@@ -433,7 +492,7 @@ async function rawBody(req) {
     if (size > 8 * 1024 * 1024) throw error('Request body exceeds 8 MiB.', 413);
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks);
+  return (req[requestBody] = Buffer.concat(chunks));
 }
 async function jsonBody(req, { allowEmpty = true, odataErrorDetails = false } = {}) {
   const bytes = await rawBody(req);
@@ -1349,6 +1408,8 @@ async function createPowerPagesSimulator({
     trace = new AsyncLocalStorage();
   // The organization host's trace store (docs/design/tracing.md): every portal request opens an http root span in it.
   const traces = organizationHost.traces;
+  // The portal name every root of this host records as origin.portal.
+  const portalTraceName = () => portal.website?.name ?? portal.website?.adx_name ?? null;
   store.onSave = ({ durationMs, mode }) => {
     const context = trace.getStore();
     if (context) {
@@ -1587,14 +1648,17 @@ async function createPowerPagesSimulator({
       traceId: context?.traceSpan?.traceId,
       spanId: context?.traceSpan?.spanId,
     });
-    // The query is captured (redacted) only at level full.
+    // A Liquid read is a retrieve (entities.<table>[id]) or a retrievemultiple (fetchxml, an entity query) with its source
+    // as an attribute (D-R3-9); the query and the rows read are captured (redacted) only at level full.
+    const single = kind === 'entity-read';
     const read = traces.start({
       kind: 'read',
       name: entity ? `${kind} ${entity}` : kind,
       module: 'liquid',
-      operation: kind,
+      operation: single ? 'retrieve' : 'retrievemultiple',
       entity,
-      attributes: { provider },
+      recordId: single && query?.id != null ? String(query.id) : null,
+      attributes: { provider, source: kind, ...(kind === 'liquid-fetchxml' ? { query: 'fetchxml' } : {}) },
       input: () => query,
     });
     try {
@@ -1607,7 +1671,10 @@ async function createPowerPagesSimulator({
             ? 1
             : 0;
       span.finish({ rowCount });
-      read.end({ attributes: { rowCount } });
+      read.output(() => result ?? null);
+      read.end({
+        attributes: { rowCount, ...(result?.moreRecords || result?.more_records ? { moreRecords: true } : {}) },
+      });
       return result;
     } catch (cause) {
       span.finish({
@@ -3400,7 +3467,17 @@ async function createPowerPagesSimulator({
           req,
           res,
           url,
-        )) || (await (flowRoutes ??= createFlowRoutes({ api: organization.api, csrf: () => csrf }))(req, res, url))
+        )) ||
+        (await (flowRoutes ??= createFlowRoutes({
+          api: organization.api,
+          csrf: () => csrf,
+          // Flow HTTP roots name the serving host (D-R3-28).
+          origin: () => ({
+            host: 'power-pages',
+            portal: portalTraceName(),
+            preset: config().activeExperiment?.id ?? null,
+          }),
+        }))(req, res, url))
       : false);
   // /_sim/api/environment (sim-environment-routes.mjs): variables, local overrides and the deployment profile pin.
   const environmentRoutes = createEnvironmentRoutes({
@@ -4586,6 +4663,16 @@ async function createPowerPagesSimulator({
   // sim-administration.md "Sign-in, sign-out and sessions").
   const signInPersonas = () => personaReport().contacts.filter((contact) => contact.active);
   const identityFor = (session) => trace.run({ auth: { identity: sessionIdentity(session) } }, currentIdentity);
+  // A sign-in names its contact on the request's http root: the root's actor becomes the contact and a signIn event
+  // records the provider (D-R3-12). Later requests of the browser carry the contact through the session cookie.
+  const traceSignIn = (contactId, provider) => {
+    const root = trace.getStore()?.traceSpan;
+    if (!root?.enabled || !contactId) return;
+    const who = identityFor({ contactId });
+    const id = who?.contactId ?? who?.id ?? contactId;
+    root.setActor({ kind: 'contact', id, name: contactDisplayName(who) ?? who?.name ?? null, roles: who?.roles });
+    root.event('signIn', { message: `Signed in as ${id} (${provider})`, attributes: { provider, contactId: id } });
+  };
   const describeSession = (session, extra = {}) => {
     const identity = identityFor(session);
     const configured = config().identity ?? {};
@@ -4771,8 +4858,11 @@ async function createPowerPagesSimulator({
     req,
     res,
     url,
-    { status = 200, returnUrl = '/', error: problem = null, invitationCode = null } = {},
+    { status = 200, returnUrl = '/', error: problem = null, invitationCode = null, code = null } = {},
   ) {
+    // A refused sign-in answers its own page: the root names the refusal (D-R3-4).
+    const routed = status >= 400 && problem ? trace.getStore() : null;
+    if (routed) routed.httpError = { code: code ?? 'SignInRefused', message: String(problem) };
     const flags = authenticationSettings(portal);
     const providers = externalSignIn?.signInProviders() ?? [];
     const showPersonas = flags.localLogin || !providers.length;
@@ -4833,6 +4923,7 @@ async function createPowerPagesSimulator({
           personaKey: form.personaKey,
           returnUrl: form.ReturnUrl ? personaStartPath(form.ReturnUrl, 'returnUrl') : undefined,
         });
+        traceSignIn(result.contactId, 'persona');
         res.writeHead(302, {
           location: result.url,
           'set-cookie': result.cookieHeader + '; Path=/; HttpOnly; SameSite=Lax',
@@ -4852,6 +4943,7 @@ async function createPowerPagesSimulator({
           returnUrl,
           error: 'Choose an active local persona to sign in.',
         });
+      traceSignIn(persona.contactId, 'local');
       res.writeHead(302, {
         location: returnUrl,
         'set-cookie': authSessions.cookie({ contactId: persona.contactId }),
@@ -4880,6 +4972,7 @@ async function createPowerPagesSimulator({
     identity: currentIdentity,
     audit,
     trace,
+    signedIn: (contactId, provider) => traceSignIn(contactId, provider),
     diagnostic: recordDiagnostic,
     renderSignIn,
     renderPage: renderAccountPage,
@@ -4943,6 +5036,9 @@ async function createPowerPagesSimulator({
     principal: (req) => staffSessions.resolve(req),
     webApi: createModelDrivenWebApi({ organization: () => organization }),
     offlineState: offlineSessionState(store, change),
+    // The app's roots name the staff user once the handler resolves the session (D-R3-3).
+    traces: organizationHost.traces,
+    traceActor: (principal) => staffActor(organization, principal),
   });
   closeModelDriven = () => modelDrivenHandler.close();
 
@@ -4988,10 +5084,14 @@ async function createPowerPagesSimulator({
     runtime: canvasRuntime,
     principal: canvasPrincipal,
     csrf: () => csrf,
+    traces: organizationHost.traces,
+    // A portal principal answers null: the root keeps its contact actor.
+    traceActor: (principal) => staffActor(organization, principal),
   });
   let codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: settingOptionsRest.connections ?? {} });
   for (const app of codeAppRecords) for (const entry of app.diagnostics) recordDiagnostic({ ...entry, app: app.name });
   const codeAppsHandler = createCodeAppsHandler({
+    traces: organizationHost.traces,
     apps: () =>
       (codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: settingOptionsRest.connections ?? {} })),
     sessions: staffSessions,
@@ -5625,6 +5725,14 @@ async function createPowerPagesSimulator({
           received: 0,
           created: now,
         });
+        // The staged note upload on the request's root (D-R3-10): the file, never its bytes.
+        trace.getStore()?.traceSpan?.set({
+          transfer: 'upload',
+          fileColumn: 'documentbody',
+          fileName: name,
+          fileSize: size,
+          uploadId: id,
+        });
         return answer(200, { AnnotationId: id, FileContinuationToken: token });
       }
       if (req.method !== 'PUT') throw error('File block upload requires PUT.', 405);
@@ -5664,6 +5772,16 @@ async function createPowerPagesSimulator({
         if (stagedUploads.get(noteId) === entry) stagedUploads.delete(noteId);
         throw cause;
       }
+      trace.getStore()?.traceSpan?.set({
+        transfer: 'upload-block',
+        fileColumn: 'documentbody',
+        fileName: entry.name,
+        fileSize: entry.size,
+        uploadId: noteId,
+        blockBytes: block.length,
+        received: entry.received,
+        complete: last,
+      });
       return answer(204);
     }
     if (url.pathname.startsWith('/_api/')) return api(req, res, url);
@@ -6276,12 +6394,13 @@ async function createPowerPagesSimulator({
       return res.end();
     }
     if (route?.kind === 'error') throw error(route.message, route.status, route.code);
-    if (route)
-      recordDiagnostic({
-        code: route.code ?? 'PAGE_NOT_FOUND',
-        path: url.pathname,
-        message: `${route.message ? route.message + ' ' : ''}Rendered the ${route.page.name} page with HTTP ${route.status}.`,
-      });
+    if (route) {
+      const message = `${route.message ? route.message + ' ' : ''}Rendered the ${route.page.name} page with HTTP ${route.status}.`;
+      recordDiagnostic({ code: route.code ?? 'PAGE_NOT_FOUND', path: url.pathname, message });
+      // The error page answers its own status: its root names why (D-R3-4).
+      const routed = trace.getStore();
+      if (routed) routed.httpError = { code: route.code ?? 'PAGE_NOT_FOUND', message };
+    }
     // Native evidence covers GET page-query validation. Other request methods
     // retain their existing handlers until their validation order is observed.
     const queryValidation =
@@ -6294,7 +6413,11 @@ async function createPowerPagesSimulator({
     const renderCurrentPage = () => {
       if (nativeContext) nativeContext.nativePostbacks = [];
       renderedSource = { renderer, revision };
-      return renderedSource.renderer.renderPage(
+      const late = nativeContext?.lateRoot?.();
+      return late ? traces.run(late, renderPageNow) : renderPageNow();
+    };
+    const renderPageNow = () =>
+      renderedSource.renderer.renderPage(
         (route ? route.page.url : markerRoute ? markerRoute.page.url : url.pathname) + url.search,
         {
           user: pageIdentity,
@@ -6308,7 +6431,6 @@ async function createPowerPagesSimulator({
           },
         },
       );
-    };
     let rendered = await renderCurrentPage();
     if (nativeEntries) {
       const collected = nativeContext?.nativePostbacks ?? [];
@@ -6472,8 +6594,11 @@ async function createPowerPagesSimulator({
         ? 'api'
         : 'page';
     const tracked = !url.pathname.startsWith('/__sim/') || kind === 'form' || kind === 'api';
+    // A file suffix marks a static asset, except on the portal's own service routes (a document download named
+    // report.pdf, a note attachment): those are requests like any other.
     const staticPath =
-      /\.(?:js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|pdf|json)$/i.test(url.pathname) ||
+      (/\.(?:js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|pdf|json)$/i.test(url.pathname) &&
+        !/^\/(?:_apps\/portal-documents|_entity|_services)\//i.test(url.pathname)) ||
       /^\/(?:resource|_pcfwebresource|webresources|_webresource)\//.test(url.pathname);
     // The parent header names an audit entry (the page's audit id the browser runtime forwards) or a trace span
     // (loopback callers forward traces.headers()); an audit parent joins the trace of its root span.
@@ -6481,38 +6606,78 @@ async function createPowerPagesSimulator({
     const audited = tracked && (!staticPath || kind !== 'page');
     const identity = audited ? trace.run({ auth }, currentIdentity) : null;
     const provider = endpoint?.mode ?? (kind === 'page' ? cfg.pageMode : cfg.mode);
-    const visitor = readVisitor(req.headers.cookie, visitorName());
+    let visitor = readVisitor(req.headers.cookie, visitorName());
+    // An anonymous browser's first page GET starts its visitor session (lib/visitor-session.mjs), as the platform keeps
+    // per-visitor state for anonymous users: every later request of that browser names visitor:<id> (D-R3-12). The account
+    // routes (sign-in, sign-out, external sign-in) keep their own cookie contract and start none.
+    if (
+      !visitor &&
+      audited &&
+      kind === 'page' &&
+      req.method === 'GET' &&
+      !(identity?.contactId ?? identity?.id) &&
+      !/^\/account\//i.test(url.pathname) &&
+      !authRoute(url.pathname, req.method, { loginPath: loginPath(portal) })
+    ) {
+      const started = newVisitor(visitorName());
+      visitor = started.id;
+      res.setHeader('set-cookie', started.cookie);
+    }
     let rootSpan = null;
-    if (audited) {
+    // The http root of the request. At level off nothing here runs: no trace header parsing, no audit lookup (D-R3-13).
+    const openRoot = (who) => {
       // X-Trace-Id (else X-Sim-Trace-Id) names the trace and X-Sim-Parent-Trace the parent span. An audit id in either
       // (the response's X-Sim-Trace-Id echoed back, or the browser runtime's parent) stands for its entry's root span;
       // an entry recorded while tracing was off names no span and starts a new trace.
       const inbound = traces.fromHeaders(req.headers);
       const linked = parent ?? (inbound.parentSpanId ? null : audit.byId(req.headers['x-sim-trace-id']));
       if (linked) Object.assign(inbound, { traceId: linked.traceId ?? null, parentSpanId: linked.spanId ?? null });
-      const contactId = identity?.contactId ?? identity?.id ?? null;
-      rootSpan = traces.start({
+      const contactId = who?.contactId ?? who?.id ?? null;
+      // The model-driven shell, canvas and code app surfaces name their own host and module (D-R3-3).
+      const surface = appTraceSurface(url.pathname);
+      return traces.start({
         kind: 'http',
         name: `${req.method} ${url.pathname}`,
-        module: 'portal',
+        module: surface?.module ?? 'portal',
         operation: req.method,
         actor: {
           kind: contactId ? 'contact' : 'anonymous',
           id: contactId,
-          name: identity?.fullname ?? identity?.name ?? null,
-          roles: identity?.roles,
+          name: (contactId ? contactDisplayName(who) : null) ?? who?.name ?? null,
+          roles: who?.roles,
         },
         // The auth cookie is stateless: the signed-in contact names the session, else the visitor cookie (D-R2-13).
         session: { visitorId: visitor, sessionKey: traceSessionKey(contactId, visitor) },
         origin: {
-          host: 'power-pages',
-          portal: portal.website?.name ?? portal.website?.adx_name ?? null,
+          host: surface?.host ?? 'power-pages',
+          portal: portalTraceName(),
           preset: cfg.activeExperiment?.id ?? null,
         },
-        attributes: { kindHint: kind, provider },
+        attributes: { kindHint: kind, provider, ...requestAttributes(req, url) },
         ...inbound,
       });
-    }
+    };
+    if (audited && traces.enabled) rootSpan = openRoot(identity);
+    // A /_sim administration write (a data edit, a reset, a session change) is a root of host sim acting as the
+    // simulator; the trace routes and the run-starting flow routes (sim-flow-routes.mjs opens those) have their own (D-R3-7).
+    else if (
+      traces.enabled &&
+      !['GET', 'HEAD', 'OPTIONS'].includes(req.method) &&
+      /^\/__sim\/api\/(?!trace(?:\/|$)|flow-runs$|flow-triggers\/[^/]+$|flow-triggers\/[^/]+\/triggers\/[^/]+\/paths\/invoke$)/.test(
+        url.pathname,
+      )
+    )
+      rootSpan = traces.start({
+        kind: 'http',
+        name: `${req.method} ${url.pathname}`,
+        module: 'sim',
+        operation: req.method,
+        actor: { kind: 'system', id: null, name: 'simulator' },
+        session: { visitorId: null, sessionKey: null },
+        origin: { host: 'sim', portal: portalTraceName(), preset: cfg.activeExperiment?.id ?? null },
+        attributes: { routeFamily: '__sim', ...requestAttributes(req, url) },
+        ...traces.fromHeaders(req.headers),
+      });
     const span = audited
       ? audit.begin({
           kind,
@@ -6540,6 +6705,19 @@ async function createPowerPagesSimulator({
       auth,
       localOnly: req.headers['x-paqvilo-local-only'] === 'true',
       visitor,
+      // A page path with a file suffix (/report.pdf, /data.json) is not audited; when it reaches the Liquid renderer it
+      // still gets its http root, opened there (D-R3-13).
+      lateRoot:
+        tracked && !audited && traces.enabled
+          ? () => {
+              if (!context.traceSpan) {
+                rootSpan = openRoot(trace.run({ auth }, currentIdentity));
+                context.traceSpan = rootSpan.traceId ? rootSpan : null;
+                if (!res.headersSent) setTraceHeaders(res, rootSpan);
+              }
+              return rootSpan;
+            }
+          : null,
     };
     // X-Sim-Trace-Id keeps naming the audit entry; X-Sim-Span-Id and X-Trace-Id name the trace store's root span (an
     // overflow handle names its trace only).
@@ -6557,17 +6735,29 @@ async function createPowerPagesSimulator({
     });
     res.on('finish', () => {
       const status = res.statusCode;
-      rootSpan?.end({
-        status: statusFromHttp(status),
-        error: status >= 400 ? (context.error ?? res[auditResponse]?.error ?? undefined) : undefined,
-        attributes: {
-          statusCode: status,
-          provider: context.provider,
-          entity: context.entity,
-          saveMs: context.saveMs,
-          saveMode: context.saveMode,
-        },
-      });
+      if (rootSpan) {
+        rootSpan.setInput(() => requestInput(req, url));
+        // A handled failure (an error envelope, an error page, a refused sign-in) names its code and message on the root,
+        // so the root's status and error always agree (D-R3-4).
+        const failure = context.error ?? context.httpError ?? res[handledError] ?? res[auditResponse]?.error;
+        recordHttpError(rootSpan, status, {
+          code: failure?.code ?? failure?.name ?? res.getHeader('x-sim-error-code') ?? undefined,
+          message: failure?.message ?? undefined,
+        });
+        // A request that failed with a thrown error names that error's own identity, as every span it failed does: a
+        // plug-in fault keeps its type, 0x80040265 code, plug-in type and step (its traceError, D-R3-19), whatever error
+        // code the portal's answer translated it to. The HTTP response is unchanged.
+        if (status >= 400 && context.error && typeof context.error === 'object') rootSpan.setError(context.error);
+        rootSpan.end({
+          attributes: {
+            statusCode: status,
+            provider: context.provider,
+            entity: context.entity,
+            saveMs: context.saveMs,
+            saveMode: context.saveMode,
+          },
+        });
+      }
       span?.finish({
         status: res.statusCode,
         ...res[auditResponse],

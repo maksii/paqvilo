@@ -1,7 +1,8 @@
 // `#trace` view module: the runtime's causal traces. DOM-free at module scope; reads GET /__sim/api/trace (summaries,
 // sortable), /trace/stats (KPIs from `overall` and `roots`, timeline, breakdowns; a second read over the previous
 // equal-length window for the p95 trend), /trace/settings, /trace/<traceId> (the open trace, or the two compared ones)
-// and /trace/spans?parentSpanId= (child traces), and changes PUT /trace/settings and POST /trace/clear through
+// /trace/spans?parentSpanId= (child traces) and /trace/span/<id> (the name and kind of a link or parent target outside the
+// open trace), and changes PUT /trace/settings (level, persistence, retention limits) and POST /trace/clear through
 // ctx.request. Export is a plain link to the streamed GET /trace/export. Live follows the `trace` channel of
 // /__sim/events on hosts whose status lists it in `eventChannels`. Every filter is a `#trace?name=value` deep link.
 // Each load fetches only the parts a state change needs, and a part's answer is kept only when no newer load of that
@@ -30,6 +31,7 @@ export const FILTERS = Object.freeze([
   'module',
   'operation',
   'entity',
+  'recordId',
   'status',
   'host',
   'actorKind',
@@ -48,6 +50,7 @@ const LABELS = {
   module: 'Module',
   operation: 'Operation',
   entity: 'Table',
+  recordId: 'Record id',
   status: 'Span status',
   host: 'Host',
   actorKind: 'Actor kind',
@@ -61,18 +64,29 @@ const LABELS = {
 };
 const RANGES = Object.freeze({ '5m': 300_000, '15m': 900_000, '1h': 3_600_000, '24h': 86_400_000, all: null });
 const RANGE_LABELS = { '5m': 'Last 5 minutes', '15m': 'Last 15 minutes', '1h': 'Last hour', '24h': 'Last 24 hours' };
-const KINDS = [
+/** The span kinds of the trace store (trace-store.mjs SPAN_KINDS); the runtime refuses any other kind filter. */
+const KINDS = Object.freeze([
   'http',
   'webapi',
   'dataverse',
+  'function',
+  'action',
+  'batch',
+  'part',
+  'changeset',
+  'bulk',
   'store',
   'permission',
   'plugin-stage',
   'plugin-step',
   'sdk-call',
+  'custom-api',
   'secret',
   'http-out',
+  'webhook',
   'job',
+  'workflow',
+  'server-logic',
   'flow-run',
   'flow-action',
   'connector',
@@ -80,10 +94,10 @@ const KINDS = [
   'render-template',
   'read',
   'native-service',
-  'custom-api',
-  'workflow',
-  'bulk',
-];
+  'form',
+  'canvas',
+  'internal',
+]);
 /** Every module, in the order of the `ui-series-<index>` colours (ui-kit.css): one distinct colour each. */
 export const MODULES = Object.freeze([
   'portal',
@@ -101,8 +115,28 @@ export const MODULES = Object.freeze([
   'native',
   'customapi',
 ]);
-const STATUSES = ['running', 'ok', 'error', 'denied'];
-const HOSTS = ['power-pages', 'standalone', 'dataverse-api', 'job'];
+/** Every span status (trace-store.mjs SPAN_STATUSES) and what it means: the status filter and the legend. */
+const STATUS_MEANINGS = Object.freeze({
+  running: 'not ended yet; a trace is running while any of its spans runs',
+  ok: 'ended without an error',
+  error: 'ended with an exception, a fault or an HTTP error answer',
+  denied: 'refused by a permission decision or answered 401 / 403',
+  cancelled: 'stopped before it finished, such as a cancelled flow run or action',
+});
+const STATUSES = Object.keys(STATUS_MEANINGS);
+/** The origin hosts a root span names (docs/design/tracing.md, origin.host). */
+const HOSTS = [
+  'power-pages',
+  'standalone',
+  'model-driven',
+  'canvas',
+  'code-app',
+  'dataverse-api',
+  'tds',
+  'soap',
+  'job',
+  'sim',
+];
 const ACTOR_KINDS = ['anonymous', 'contact', 'staff', 'app', 'system', 'flow', 'plugin'];
 const LEVELS = ['off', 'summary', 'full'];
 const BREAKDOWNS = [
@@ -123,7 +157,65 @@ const EXPORT_FORMATS = [
   ['json', 'JSON'],
   ['otlp', 'OTLP JSON'],
 ];
-const STATUS_TONES = { ok: 'ok', error: 'bad', denied: 'warn', running: 'info' };
+const STATUS_TONES = { ok: 'ok', error: 'bad', denied: 'warn', running: 'info', cancelled: 'neutral' };
+/** Span attributes holding the id of something another `_sim` view shows: a link there instead of plain text. */
+const VIEW_LINKS = Object.freeze({
+  runId: ['flow run', 'Flows & jobs', (id) => `#flows?${new URLSearchParams({ run: id })}`],
+  jobId: ['system job', 'Data records', (id) => `#records?${new URLSearchParams({ entity: 'asyncoperation', id })}`],
+  stepId: [
+    'plug-in step',
+    'Backend operations',
+    (id) => `#operations?${new URLSearchParams({ key: `plugin-step:${id}` })}`,
+  ],
+});
+/** Retention limits the settings change (mirage.trace; trace-settings.mjs validates the same ranges). */
+const LIMITS = Object.freeze([
+  ['traces', 'Retained traces', 10, 10_000],
+  ['spansPerTrace', 'Spans per trace', 50, 20_000],
+  ['payloadBytes', 'Payload bytes', 256, 1_048_576],
+]);
+// The search text of a span as the trace store builds it (trace-store.mjs searchText, D-R3-15), so Find spans keeps the
+// spans the list's Search filter matched: metadata, attributes and events (at most 4 KB), then the captured input and
+// output JSON (at most 8 KB; level full only). Built once per span object.
+const SEARCH_META = 4096;
+const SEARCH_PAYLOAD = 8192;
+const searchTexts = new WeakMap();
+function spanSearchText(span) {
+  let text = searchTexts.get(span);
+  if (text !== undefined) return text;
+  const parts = [
+    span.name,
+    span.kind,
+    span.module,
+    span.operation,
+    span.entity,
+    span.recordId,
+    span.actor?.name,
+    span.actor?.id,
+    span.error?.code,
+    span.error?.message,
+    JSON.stringify(span.attributes),
+  ];
+  let size = parts.reduce((sum, part) => sum + (part?.length ?? 0), 0);
+  for (const event of span.events ?? []) {
+    if (size > SEARCH_META) break;
+    const attributes = event.attributes ? JSON.stringify(event.attributes) : '';
+    parts.push(event.type, event.message, attributes);
+    size += (event.type?.length ?? 0) + (event.message?.length ?? 0) + attributes.length;
+  }
+  text = parts
+    .filter((part) => part)
+    .join('\n')
+    .slice(0, SEARCH_META);
+  const payload = [span.input, span.output]
+    .filter((value) => value !== undefined)
+    .map((value) => JSON.stringify(value))
+    .join('\n');
+  if (payload) text += `\n${payload.slice(0, SEARCH_PAYLOAD)}`;
+  text = text.toLowerCase();
+  searchTexts.set(span, text);
+  return text;
+}
 /** Waterfall and tree indent stop here; deeper spans show their depth as a badge. */
 const MAX_INDENT = 12;
 /** Live reloads at most once per this many milliseconds (trailing). */
@@ -149,9 +241,22 @@ const stateOf = (ctx) => {
   d.generations ??= {};
   d.queued ??= new Set();
   d.liveParts ??= new Set();
+  d.linked ??= {};
   return d;
 };
 const short = (id) => String(id ?? '').slice(0, 8);
+/** A request failure kept as data, with the error code and the filter a 400 InvalidTraceFilter names. */
+const failureOf = (error) => {
+  const answer = error?.details?.error;
+  return {
+    ...failure(error),
+    ...(typeof answer?.code === 'string' ? { code: answer.code } : {}),
+    ...(typeof answer?.parameter === 'string' ? { parameter: answer.parameter } : {}),
+  };
+};
+/** The list or stats answer that refused a filter (400 InvalidTraceFilter), or null. */
+const refusedFilter = (d) =>
+  [d.list, d.stats].find((part) => part?.error && part.status === 400 && part.code === 'InvalidTraceFilter') ?? null;
 /** A duration in ms, s, m s or h m. */
 export const duration = (ms) => {
   if (ms === null || ms === undefined) return 'running';
@@ -368,6 +473,8 @@ async function refused(ctx, d, stream) {
 
 // ---- Filters
 function select(id, name, label, options, value, ctx, attrs = '', helpKey = 'trace.filters') {
+  if (value && !options.some(([option]) => String(value) === option))
+    options = [...options, [String(value), `${value} (not a valid value)`]];
   return (
     `<div><label for="${id}">${e(label)}</label><select id="${id}" name="${name}" aria-describedby="${id}-help"${attrs}>` +
     options
@@ -414,6 +521,7 @@ function filtersPanel(ctx, d) {
     select('trace-module', 'module', LABELS.module, anyOf('Any module', MODULES), f.module, ctx) +
     input('trace-operation', 'operation', f.operation, ctx) +
     input('trace-entity', 'entity', f.entity, ctx) +
+    input('trace-record', 'recordId', f.recordId, ctx) +
     select('trace-status', 'status', LABELS.status, anyOf('Any status', STATUSES), f.status, ctx) +
     select('trace-host', 'host', LABELS.host, anyOf('Any host', HOSTS), f.host, ctx) +
     select('trace-actor-kind', 'actorKind', LABELS.actorKind, anyOf('Any actor', ACTOR_KINDS), f.actorKind, ctx) +
@@ -437,6 +545,23 @@ function filtersPanel(ctx, d) {
     ) +
     '<p class="ui-filter-actions"><button type="submit" id="trace-apply" class="ui-button ui-primary ui-small">Apply filters</button> ' +
     '<button type="button" id="trace-reset" class="ui-button ui-small" data-trace-action="reset">Reset filters</button></p></form>'
+  );
+}
+/** The banner of a filter the runtime refused (400 InvalidTraceFilter): which filter, why, and a way to remove it. */
+function invalidFilter(d) {
+  const refused = refusedFilter(d);
+  if (!refused) return '';
+  const name = refused.parameter ?? '';
+  const known = FILTERS.includes(name);
+  const label = known ? `${LABELS[name]} (${name})` : name || 'a';
+  return (
+    kit.notice(
+      `The ${label} filter${known && d.filters[name] ? ` value "${d.filters[name]}"` : ''} is not valid: ${refused.error} No trace is listed until you change or remove it.`,
+      'bad',
+    ) +
+    (known
+      ? `<p><button type="button" class="ui-button ui-small" id="trace-unfilter-invalid" data-trace-unfilter="${e(name)}">Remove the ${e(LABELS[name])} filter</button></p>`
+      : '')
   );
 }
 const activeCount = (d) => FILTERS.filter((name) => d.filters[name]).length + (RANGES[d.range] ? 1 : 0);
@@ -542,7 +667,24 @@ function trendTile(d) {
     detail: `${duration(now)} now · ${duration(before)} in the previous${span}`,
   };
 }
+/** One line per span reference of /trace/stats (slowest, errors): a link to the span, its duration and error. */
+function spanReferences(items, emptyText) {
+  if (!items.length) return `<p class="ui-help">${e(emptyText)}</p>`;
+  return `<ol class="ui-span-refs">${items
+    .map(
+      (item) =>
+        `<li><a href="${e(hrefOf({ traceId: item.traceId, spanId: item.spanId }))}">${kit.badge(item.kind ?? '—', 'neutral')} <span class="ui-span-ref-name">${e(item.name)}</span></a>` +
+        ` <span class="ui-help">${e(duration(item.durationMs))}${item.entity ? ` · ${e(item.entity)}` : ''} · ${when(item.startedAt)}</span>` +
+        (item.error ? `<span class="ui-span-ref-error">${e(errorText(item.error))}</span>` : '') +
+        '</li>',
+    )
+    .join('')}</ol>`;
+}
+const errorText = (error) =>
+  [error?.code, error?.message].filter((part) => part !== null && part !== undefined && part !== '').join(': ') ||
+  'no error message';
 function overviewPanel(ctx, d) {
+  if (refusedFilter(d)) return '<p class="ui-help">No statistics while a filter is not valid.</p>';
   if (d.stats?.error) return kit.notice(`Trace statistics could not be read: ${failed(d.stats)}`, 'warn');
   const stats = d.stats ?? {},
     kinds = stats.byKind ?? {},
@@ -572,7 +714,10 @@ function overviewPanel(ctx, d) {
       { label: 'Plug-in steps run', value: kinds['plugin-step']?.count ?? 0 },
       { label: 'Flows run', value: kinds['flow-run']?.count ?? 0 },
       { label: 'Connector calls', value: kinds.connector?.count ?? 0 },
-    ]) + `<h3>Timeline</h3>${timeline(d)}<h3>Breakdown</h3>${breakdown(ctx, d)}`
+    ]) +
+    `<div class="ui-span-spotlight"><section aria-labelledby="trace-slowest-title"><h3 id="trace-slowest-title">Slowest spans</h3>${spanReferences((stats.slowest ?? []).slice(0, 5), 'No span has ended.')}</section>` +
+    `<section aria-labelledby="trace-errors-title"><h3 id="trace-errors-title">Latest errors</h3>${spanReferences((stats.errors ?? []).slice(0, 5), 'No span ended in error.')}</section></div>` +
+    `<h3>Timeline</h3>${timeline(d)}<h3>Breakdown</h3>${breakdown(ctx, d)}`
   );
 }
 
@@ -586,7 +731,12 @@ function sortColumn(d, by, column) {
     head: `<button type="button" class="ui-sort" id="trace-sort-${by}" data-trace-sort="${by}">${e(SORTS[by])}${active ? `<span aria-hidden="true">${d.sort.order === 'asc' ? ' ▲' : ' ▼'}</span>` : ''}</button>`,
   };
 }
+/** Every span status with its meaning. */
+const statusLegend = () =>
+  `<ul class="ui-status-legend" aria-label="Span statuses">${STATUSES.map((status) => `<li>${statusBadge(status)} ${e(STATUS_MEANINGS[status])}</li>`).join('')}</ul>`;
 function listPanel(ctx, d) {
+  if (refusedFilter(d))
+    return '<p class="ui-help">No trace is listed while a filter is not valid.</p>' + statusLegend();
   if (!d.list || d.list.error)
     return kit.notice(
       d.list?.error ? `Traces could not be read: ${failed(d.list)}` : 'This host did not report traces.',
@@ -646,6 +796,7 @@ function listPanel(ctx, d) {
           },
         },
         sortColumn(d, 'spans', {
+          className: 'ui-trace-extra',
           render: (item) => {
             const kinds = kindText(item.kinds);
             return (
@@ -655,9 +806,16 @@ function listPanel(ctx, d) {
             );
           },
         }),
-        sortColumn(d, 'errors', { render: (item) => errorBadges(item) }),
+        sortColumn(d, 'errors', {
+          render: (item) =>
+            errorBadges(item) +
+            (item.firstError
+              ? `<span class="ui-help ui-trace-error" title="${e(errorText(item.firstError))}">${e(`${item.firstError.name ? `${item.firstError.name}: ` : ''}${errorText(item.firstError)}`)}</span>`
+              : ''),
+        }),
         {
           label: 'Tables',
+          className: 'ui-trace-extra',
           render: (item) =>
             e(
               (item.entities ?? []).slice(0, 3).join(', ') +
@@ -670,7 +828,8 @@ function listPanel(ctx, d) {
             `<input type="checkbox" id="trace-pick-${e(item.traceId)}" data-trace-pick="${e(item.traceId)}"${d.picked.includes(item.traceId) ? ' checked' : ''} aria-label="Compare trace ${e(item.root?.name ?? item.traceId)}" aria-describedby="trace-pick-help">`,
         },
       ],
-    })
+    }) +
+    statusLegend()
   );
 }
 
@@ -693,21 +852,7 @@ export function spanFilter(tree, { spanSearch = '', errorsOnly = false } = {}) {
     shown = new Set();
   for (const span of spans) {
     if (errorsOnly && span.status !== 'error' && span.status !== 'denied') continue;
-    if (query) {
-      const text = [
-        span.name,
-        span.kind,
-        span.module,
-        span.operation,
-        span.entity,
-        span.error?.code,
-        span.error?.message,
-        JSON.stringify(span.attributes ?? {}),
-      ]
-        .join(' ')
-        .toLowerCase();
-      if (!text.includes(query)) continue;
-    }
+    if (query && !spanSearchText(span).includes(query)) continue;
     matched.add(span.spanId);
     for (let item = span; item && !shown.has(item.spanId); item = byId.get(item.parentSpanId)) shown.add(item.spanId);
   }
@@ -734,6 +879,7 @@ function waterfall(d, tree, filter) {
         series(span.module),
         span.status === 'error' ? 'is-error' : '',
         span.status === 'denied' ? 'is-denied' : '',
+        span.status === 'cancelled' ? 'is-cancelled' : '',
         span.async ? 'is-async' : '',
         span.durationMs === null ? 'is-running' : '',
       ]
@@ -785,28 +931,93 @@ function treeNode(node, d, filter) {
     ? `<li${classes ? ` class="${classes}"` : ''}><details open data-ui-section="trace:node:${e(node.spanId)}"><summary>${head}</summary><ul role="group"${depth >= MAX_INDENT ? ' class="is-flat"' : ''}>${children.map((child) => treeNode(child, d, filter)).join('')}</ul></details></li>`
     : `<li class="ui-tree-leaf${classes ? ` ${classes}` : ''}">${head}</li>`;
 }
-function payload(title, value, level) {
-  if (value === undefined)
-    return `<p class="ui-help">${e(title)}: ${e(level === 'full' ? 'not captured for this span: it has none, it was opened before level full, or it ran in a sealed flow run.' : `captured at level full only; this span was recorded at level ${level ?? 'summary'} or has none.`)}</p>`;
-  return `<details class="ui-payload"><summary>${e(title)}</summary><pre class="ui-example">${e(JSON.stringify(value, null, 2))}</pre></details>`;
+/** A captured payload, or why the span has none: its own capture level (recorded when it started), a sealed flow run,
+ * or an operation that passed nothing. */
+function payload(title, value, span) {
+  if (value !== undefined)
+    return `<details class="ui-payload"><summary>${e(title)}</summary><pre class="ui-example">${e(JSON.stringify(value, null, 2))}</pre></details>`;
+  const what = title.toLowerCase();
+  const reason =
+    span.level === 'summary'
+      ? `not captured: this span was recorded at level summary, which keeps attributes and events only. Choose full under Settings and run the request again to capture the ${what}.`
+      : span.level === 'full'
+        ? span.attributes?.secure
+          ? 'not captured: this span belongs to a sealed flow run (a Secret parameter or secure inputs or outputs), so no payload of the run is recorded.'
+          : `none: this span was recorded at level full and its operation passed no ${what} to the trace.`
+        : 'not captured: this span does not say at which level it was recorded.';
+  return `<p class="ui-help">${e(title)}: ${e(reason)}</p>`;
+}
+// Span lookup by id per tree, built once per tree answer.
+const indexes = new WeakMap();
+const byIdOf = (tree) => {
+  let index = indexes.get(tree);
+  if (!index) indexes.set(tree, (index = new Map((tree.spans ?? []).map((item) => [item.spanId, item]))));
+  return index;
+};
+/**
+ * The span an id names: from the open trace, else a span read for the drawer (d.linked), else null. A span that failed
+ * carries its own `error` object; only a failed read (`failureOf`: no spanId, `error` a message) is not a span (DV-Y8-1).
+ */
+const targetOf = (d, tree, spanId) => {
+  const found = byIdOf(tree).get(spanId) ?? d.linked?.[spanId];
+  return found?.spanId === spanId ? found : null;
+};
+/** Kind and name of a span, or its short id when it is not retained. */
+const spanLabel = (span, spanId) =>
+  span ? `${kit.badge(span.kind ?? '—', 'neutral')} ${e(span.name)}` : `span <code>${e(short(spanId))}</code>`;
+const spanHref = (span) => hrefOf({ traceId: span.traceId, spanId: span.spanId });
+/** The spans from the trace root down to `span` (the store's ancestry within the open trace). */
+function ancestry(tree, span) {
+  const byId = byIdOf(tree),
+    chain = [];
+  for (let item = span; item && !chain.includes(item); item = byId.get(item.parentSpanId)) chain.unshift(item);
+  return chain;
 }
 /** The nearest http ancestor of a span other than itself. */
 function parentRequest(tree, span) {
-  const byId = new Map((tree.spans ?? []).map((item) => [item.spanId, item]));
+  const byId = byIdOf(tree);
   for (let parent = byId.get(span.parentSpanId); parent; parent = byId.get(parent.parentSpanId))
     if (parent.kind === 'http') return parent;
   return null;
 }
+/** An attribute value; an id another view shows (flow run, system job, plug-in step) links there. */
+function attributeValue(name, value) {
+  const view = Object.hasOwn(VIEW_LINKS, name) && typeof value === 'string' && value ? VIEW_LINKS[name] : null;
+  return view
+    ? `<a href="${e(view[2](value))}" aria-label="Open ${e(view[0])} ${e(value)} in ${e(view[1])}"><code>${e(value)}</code></a>`
+    : `<code>${json(value, 400)}</code>`;
+}
+/**
+ * Reads the spans the open span's parent and links name outside the open trace, so the drawer shows their kind and name.
+ * Resolves true when it read any.
+ */
+async function loadTargets(ctx, d) {
+  const span = d.tree?.spans ? byIdOf(d.tree).get(d.spanId) : null;
+  if (!span) return false;
+  const byId = byIdOf(d.tree);
+  const ids = [...new Set([span.parentSpanId, ...(span.links ?? []).map((link) => link.spanId)])].filter(
+    (id) => id && !byId.has(id) && !Object.hasOwn(d.linked, id),
+  );
+  if (!ids.length) return false;
+  for (const id of ids) d.linked[id] = null;
+  const found = await Promise.all(
+    ids.map((id) => ctx.request(`/trace/span/${encodeURIComponent(id)}`).catch(failureOf)),
+  );
+  ids.forEach((id, index) => (d.linked[id] = found[index]));
+  return true;
+}
 function drawer(ctx, d, tree) {
-  const span = (tree.spans ?? []).find((item) => item.spanId === d.spanId);
+  const span = byIdOf(tree).get(d.spanId);
   if (!span) return d.spanId ? kit.notice(`Span ${d.spanId} is not part of this trace.`, 'warn') : '';
-  const level = d.settings?.settings?.level;
   const attributes = Object.entries(span.attributes ?? {});
   const request = parentRequest(tree, span);
+  const chain = ancestry(tree, span);
+  const parent = span.parentSpanId ? targetOf(d, tree, span.parentSpanId) : null;
   const pivots = [
     span.session?.sessionKey && ['Same session', hrefOf({ sessionKey: span.session.sessionKey })],
     span.actor?.kind && ['Same actor', hrefOf({ actorKind: span.actor.kind, actorId: span.actor.id })],
     span.entity && ['Same table', hrefOf({ entity: span.entity })],
+    span.recordId && ['Same record', hrefOf({ entity: span.entity, recordId: span.recordId })],
     request && ['Parent request', hrefOf({ traceId: tree.trace.traceId, spanId: request.spanId })],
   ].filter(Boolean);
   const children =
@@ -829,18 +1040,43 @@ function drawer(ctx, d, tree) {
         render: (item) => kit.badge(item.type, item.attributes?.result === 'deny' ? 'warn' : 'neutral'),
       },
       { label: 'Message', render: (item) => e(item.message ?? '') },
-      { label: 'Attributes', render: (item) => (item.attributes ? `<code>${json(item.attributes, 240)}</code>` : '') },
+      {
+        label: 'Attributes',
+        render: (item) => (item.attributes ? `<code>${json(item.attributes, 240)}` + '</code>' : ''),
+      },
     ],
+  });
+  // One click up: the parent and the root, named; the path from the root lists every ancestor.
+  const climb = [
+    span.parentSpanId &&
+      `<a class="ui-button ui-small" id="trace-span-parent" href="${e(hrefOf({ traceId: parent?.traceId ?? span.traceId, spanId: span.parentSpanId }))}" aria-label="Parent span: ${e(parent ? `${parent.kind} ${parent.name}` : short(span.parentSpanId))}">Parent</a>`,
+    chain.length > 2 &&
+      `<a class="ui-button ui-small" id="trace-span-root" href="${e(spanHref(chain[0]))}" aria-label="Root span: ${e(`${chain[0].kind} ${chain[0].name}`)}">Root</a>`,
+  ]
+    .filter(Boolean)
+    .join('');
+  const path = `<nav class="ui-crumbs" aria-label="Span path"><ol>${chain
+    .map((item) =>
+      item === span
+        ? `<li aria-current="location">${spanLabel(item)}</li>`
+        : `<li><a href="${e(spanHref(item))}">${spanLabel(item)}</a></li>`,
+    )
+    .join('')}</ol></nav>`;
+  const links = (span.links ?? []).map((link) => {
+    const target = link.spanId ? targetOf(d, tree, link.spanId) : null;
+    const gone = link.spanId && d.linked[link.spanId]?.status === 404 ? ' (no longer retained)' : '';
+    return `<li>${e(link.relation)}: <a href="${e(hrefOf({ traceId: link.traceId, spanId: link.spanId }))}">${link.spanId ? spanLabel(target, link.spanId) : 'the trace'}</a> in trace <code>${e(short(link.traceId))}</code>${e(gone)}</li>`;
   });
   return (
     `<section class="ui-drawer" id="trace-span-drawer" tabindex="-1" aria-labelledby="trace-span-title"><div class="ui-drawer-head"><h3 id="trace-span-title">${e(span.name)}</h3>` +
-    `${statusBadge(span.status)}<button type="button" class="ui-button ui-small" data-trace-copy="span">Copy span id</button><button type="button" class="ui-button ui-small" id="trace-close-span" data-trace-action="close-span">Close span</button></div>` +
+    `${statusBadge(span.status)}${climb}<button type="button" class="ui-button ui-small" data-trace-copy="span">Copy span id</button><button type="button" class="ui-button ui-small" id="trace-close-span" data-trace-action="close-span" aria-keyshortcuts="Escape">Close span</button></div>` +
+    path +
     kit.kv([
       ['Span', `<code>${e(span.spanId)}</code>`],
       [
         'Parent',
         span.parentSpanId
-          ? `<a href="${e(hrefOf({ traceId: span.traceId, spanId: span.parentSpanId }))}"><code>${e(short(span.parentSpanId))}</code></a>`
+          ? `<a href="${e(hrefOf({ traceId: parent?.traceId ?? span.traceId, spanId: span.parentSpanId }))}">${spanLabel(parent, span.parentSpanId)}</a>`
           : 'none (root)',
       ],
       ['Kind / module', `${e(span.kind)} · ${e(span.module ?? '—')}`],
@@ -852,16 +1088,13 @@ function drawer(ctx, d, tree) {
       ['Actor', e(`${actorText(span.actor)}${span.actor?.roles?.length ? ` (${span.actor.roles.join(', ')})` : ''}`)],
       ['Session', `<code>${e(span.session?.sessionKey ?? '—')}</code>`],
       ['Origin', e([span.origin?.host, span.origin?.portal, span.origin?.preset].filter(Boolean).join(' · ') || '—')],
+      ['Captured at', e(span.level ? `level ${span.level}` : '—')],
     ]) +
-    (span.error
-      ? kit.notice(`${span.error.code}: ${span.error.message}`, span.status === 'denied' ? 'warn' : 'bad')
-      : '') +
-    `<h4>Attributes</h4>${attributes.length ? kit.kv(attributes.map(([name, value]) => [name, `<code>${json(value, 400)}</code>`, { mono: true }])) : '<p class="ui-help">No attribute.</p>'}` +
+    (span.error ? kit.notice(errorText(span.error), span.status === 'denied' ? 'warn' : 'bad') : '') +
+    `<h4>Attributes</h4>${attributes.length ? kit.kv(attributes.map(([name, value]) => [name, attributeValue(name, value), { mono: true }])) : '<p class="ui-help">No attribute.</p>'}` +
     `<h4>Events</h4>${events}` +
-    `<h4>Payloads</h4>${payload('Input', span.input, level)}${payload('Output', span.output, level)}` +
-    (span.links?.length
-      ? `<h4>Links</h4><ul>${span.links.map((link) => `<li>${e(link.relation)}: <a href="${e(hrefOf({ traceId: link.traceId, spanId: link.spanId }))}">trace <code>${e(short(link.traceId))}</code> span <code>${e(short(link.spanId))}</code></a></li>`).join('')}</ul>`
-      : '') +
+    `<h4>Payloads</h4>${payload('Input', span.input, span)}${payload('Output', span.output, span)}` +
+    (links.length ? `<h4>Links</h4><ul>${links.join('')}</ul>` : '') +
     `<h4>Related</h4><p class="ui-drawer-actions">${pivots.map(([text, href]) => `<a class="ui-button ui-small" href="${e(href)}">${e(text)}</a>`).join(' ')} ` +
     `<button type="button" class="ui-button ui-small" data-trace-children="${e(span.spanId)}">Child traces</button></p>${children}</section>`
   );
@@ -887,15 +1120,18 @@ function spanTools(ctx, d, tree, filter) {
 }
 function detailPanel(ctx, d) {
   const tree = d.tree;
-  if (!tree) return `<p role="status" class="ui-help">Loading trace ${e(d.traceId)}…</p>`;
+  const title = (id) => `<h3 id="trace-detail-title" tabindex="-1">Trace <code>${e(short(id))}</code></h3>`;
+  if (!tree) return `${title(d.traceId)}<p role="status" class="ui-help">Loading trace ${e(d.traceId)}…</p>`;
   if (tree.error)
     return (
+      title(d.traceId) +
       kit.notice(
         tree.status === 404
           ? `No retained trace has the id ${d.traceId} (it never existed or was dropped as the oldest beyond the limit).`
           : `Trace ${d.traceId} could not be read: ${failed(tree)}`,
         'warn',
-      ) + '<p><button type="button" class="ui-button ui-small" data-trace-action="close-trace">Close trace</button></p>'
+      ) +
+      '<p><button type="button" class="ui-button ui-small" data-trace-action="close-trace">Close trace</button></p>'
     );
   const summary = tree.trace ?? {},
     root = tree.root ?? {};
@@ -933,7 +1169,7 @@ function detailPanel(ctx, d) {
           : waterfall(d, tree, filter));
   const help = HELP[`trace.${tab}`] ?? {};
   return (
-    `<div class="ui-drawer-head"><h3>Trace <code>${e(short(summary.traceId))}</code></h3>` +
+    `<div class="ui-drawer-head">${title(d.traceId)}` +
     '<button type="button" class="ui-button ui-small" data-trace-copy="id">Copy id</button>' +
     '<button type="button" class="ui-button ui-small" data-trace-copy="link">Copy link</button>' +
     '<button type="button" class="ui-button ui-small" data-trace-action="close-trace">Close trace</button></div>' +
@@ -1132,13 +1368,12 @@ function settingsPanel(ctx, d) {
     `<form id="${SETTINGS_FORM}" class="ui-form" data-trace-settings><fieldset><legend>Level</legend>${levels}</fieldset>` +
     `<div class="ui-check"><input type="checkbox" id="trace-persist" name="persist"${settings.persist ? ' checked' : ''} aria-describedby="trace-persist-help"><label for="trace-persist">Persist ended traces</label></div>` +
     `${fieldHelp(ctx, 'trace-persist', 'trace.settings', 'persist')}` +
+    `<fieldset class="ui-limits"><legend>Retention limits</legend>${LIMITS.map(
+      ([name, label, min, max]) =>
+        `<div><label for="trace-limit-${name}">${e(label)}</label><input id="trace-limit-${name}" name="${name}" type="number" min="${min}" max="${max}" step="1" required value="${e(settings[name] ?? '')}" aria-describedby="trace-limit-${name}-help">` +
+        `${fieldHelp(ctx, `trace-limit-${name}`, 'trace.settings', name)}</div>`,
+    ).join('')}</fieldset>` +
     '<p><button type="submit" class="ui-button ui-primary ui-small">Save trace settings</button></p></form>' +
-    '<h3>Limits</h3><p class="ui-help">Limits come from the mirage.trace setting; this view shows them read-only.</p>' +
-    kit.kv([
-      ['Retained traces', e(settings.traces ?? '—')],
-      ['Spans per trace', e(settings.spansPerTrace ?? '—')],
-      ['Payload bytes', e(settings.payloadBytes ?? '—')],
-    ]) +
     '<h3>Store</h3>' +
     kit.kv([
       ['Traces kept', e(status.retained ?? 0)],
@@ -1193,9 +1428,10 @@ export const view = {
   route(ctx, params) {
     const d = stateOf(ctx),
       names = [...params.keys()];
-    if (!names.length) return;
+    // `#trace` alone is the default view: no filter, no open trace, as the address says.
+    const bare = !names.length;
     const before = { list: listKey(d), traceId: d.traceId, compare: d.compare?.join(',') ?? null };
-    if (!names.every((name) => DETAIL_NAMES.includes(name))) {
+    if (bare || !names.every((name) => DETAIL_NAMES.includes(name))) {
       d.filters = Object.fromEntries(FILTERS.map((name) => [name, params.get(name) ?? '']));
       const range = params.get('range');
       d.range = Object.hasOwn(RANGES, range) ? range : d.filters.from || d.filters.to ? 'custom' : 'all';
@@ -1206,7 +1442,7 @@ export const view = {
       d.bucketFocus = null;
       ctx.pager('trace-list').page = 1;
     }
-    if (names.includes('traceId') || names.some((name) => FILTERS.includes(name))) {
+    if (bare || names.includes('traceId') || names.some((name) => FILTERS.includes(name))) {
       d.traceId = params.get('traceId') || null;
       d.spanId = (d.traceId && params.get('spanId')) || null;
       d.spanSearch = params.get('spanSearch') ?? '';
@@ -1218,7 +1454,12 @@ export const view = {
       d.tree = null;
       d.children = null;
       d.copied = null;
+      d.linked = {};
     }
+    // The link names a span, a trace or a comparison: that lands in view once it rendered (DV-C-3).
+    if (d.spanId && names.includes('spanId')) ctx.reveal?.('#trace-span-drawer');
+    else if (d.traceId && names.includes('traceId')) ctx.reveal?.('#trace-detail-title');
+    else if (d.compare && names.includes('compare')) ctx.reveal?.('[data-ui-section="trace:compare"]');
     if ((d.compare?.join(',') ?? null) !== before.compare) d.compared = null;
     // After the first load, the next load fetches only what this link changed.
     if (d.loaded) {
@@ -1241,7 +1482,7 @@ export const view = {
     const now = Date.now();
     const filters = filterQuery(d, now);
     const jobs = [];
-    const get = (path) => ctx.request(path).catch(failure);
+    const get = (path) => ctx.request(path).catch(failureOf);
     const generation = (part) => (d.generations[part] = (d.generations[part] ?? 0) + 1);
     const fetchPart = (part, key, run) => {
       const stamp = generation(part);
@@ -1298,7 +1539,10 @@ export const view = {
         d.previousLength = key;
       } else if (part === 'settings') {
         const was = d.settings?.settings;
-        if (was && (was.level !== value?.settings?.level || was.persist !== value?.settings?.persist))
+        if (
+          was &&
+          ['level', 'persist', ...LIMITS.map(([name]) => name)].some((name) => was[name] !== value?.settings?.[name])
+        )
           ctx.forgetDraft?.(SETTINGS_FORM);
         d.settings = value;
       } else if (part === 'tree') d.tree = value;
@@ -1306,6 +1550,7 @@ export const view = {
     }
     d.loaded = true;
     if (d.live) connect(ctx, d);
+    if (d.spanId) await loadTargets(ctx, d);
   },
 
   leave(ctx) {
@@ -1316,6 +1561,9 @@ export const view = {
 
   render(ctx) {
     const d = stateOf(ctx);
+    // The scroll position of the column this render replaces (mounted puts it back).
+    const shown = globalThis.document?.querySelector?.('.ui-trace-side');
+    d.sideScroll = shown ? { key: shown.dataset.traceSide, top: shown.scrollTop } : null;
     const level = d.settings?.settings?.level;
     const served = liveServed(ctx);
     const query = sortQuery(d, filterQuery(d));
@@ -1334,22 +1582,7 @@ export const view = {
         ? kit.notice('Tracing is off: new requests are not recorded. Choose summary or full under Settings.', 'warn')
         : '';
     const count = activeCount(d);
-    return (
-      heading(ctx) +
-      toolbar +
-      (d.liveRefused ? kit.notice(d.liveRefused, 'warn') : '') +
-      off +
-      chips(d) +
-      panel(ctx, 'filters', 'Filters', count ? `${count} active` : 'none', filtersPanel(ctx, d), true) +
-      panel(ctx, 'overview', 'Overview', `${d.stats?.count ?? 0} spans`, overviewPanel(ctx, d), true) +
-      panel(
-        ctx,
-        'list',
-        'Traces',
-        Array.isArray(d.list?.items) ? `${d.list.total} traces` : 'unavailable',
-        listPanel(ctx, d),
-        true,
-      ) +
+    const side =
       (d.compare
         ? panel(
             ctx,
@@ -1359,10 +1592,44 @@ export const view = {
             comparePanel(ctx, d),
             true,
           )
-        : '') +
-      (d.traceId ? panel(ctx, 'detail', 'Trace detail', short(d.traceId), detailPanel(ctx, d), true) : '') +
-      panel(ctx, 'settings', 'Settings', level ? `level ${level}` : 'unavailable', settingsPanel(ctx, d))
+        : '') + (d.traceId ? panel(ctx, 'detail', 'Trace detail', short(d.traceId), detailPanel(ctx, d), true) : '');
+    const main =
+      panel(
+        ctx,
+        'filters',
+        'Filters',
+        count ? `${count} active` : 'none',
+        filtersPanel(ctx, d),
+        Boolean(refusedFilter(d)),
+      ) +
+      panel(
+        ctx,
+        'list',
+        'Traces',
+        Array.isArray(d.list?.items) ? `${d.list.total} traces` : 'unavailable',
+        listPanel(ctx, d),
+        true,
+      ) +
+      panel(ctx, 'overview', 'Overview', `${d.stats?.count ?? 0} spans`, overviewPanel(ctx, d), true) +
+      panel(ctx, 'settings', 'Settings', level ? `level ${level}` : 'unavailable', settingsPanel(ctx, d));
+    return (
+      heading(ctx) +
+      toolbar +
+      (d.liveRefused ? kit.notice(d.liveRefused, 'warn') : '') +
+      off +
+      chips(d) +
+      invalidFilter(d) +
+      // At 1200 px and wider the open trace sits beside the list (ui-kit.css .ui-trace-layout).
+      `<div class="ui-trace-layout${side ? ' has-detail' : ''}"><div class="ui-trace-main">${main}</div>${side ? `<div class="ui-trace-side" data-trace-side="${e(sideKey(d))}">${side}</div>` : ''}</div>`
     );
+  },
+
+  /** The open trace's column scrolls on its own beside the list (1200 px and wider); every render replaces it, so its
+   * scroll position, read in render() before the replacement, is put back here (a newly opened trace starts at its top). */
+  mounted(ctx) {
+    const d = stateOf(ctx);
+    const side = globalThis.document?.querySelector?.('.ui-trace-side');
+    if (side && d.sideScroll?.key === side.dataset.traceSide) side.scrollTop = d.sideScroll.top;
   },
 
   handle(ctx, event) {
@@ -1445,12 +1712,25 @@ export const view = {
         level: String(fields.get('level') ?? d.settings?.settings?.level ?? 'summary'),
         persist: fields.get('persist') !== null,
       };
+      for (const [name] of LIMITS) {
+        const value = fields.get(name);
+        if (value !== null && String(value).trim() !== '') body[name] = Number(value);
+      }
+      const before = d.settings?.settings ?? {};
+      const retained = before.traces;
       return pending(ctx, event.submitter ?? form.querySelector('[type=submit]'), async () => {
         d.settings = await ctx.request('/trace/settings', { method: 'PUT', body: JSON.stringify(body) });
-        // The saved settings are the truth now: the radios show them, not the clicks before the save.
+        // The saved settings are the truth now: the radios and limits show them, not the input before the save.
         ctx.forgetDraft?.(SETTINGS_FORM);
-        ctx.notify(`Tracing level ${d.settings?.settings?.level ?? body.level}${body.persist ? ', persisted' : ''}.`);
+        const saved = d.settings?.settings ?? body;
+        // The limits are named only when this save changed one.
+        const limits = LIMITS.some(([name]) => Object.hasOwn(body, name) && body[name] !== before[name])
+          ? `; keeps ${saved.traces} traces, ${saved.spansPerTrace} spans per trace, ${saved.payloadBytes} payload bytes`
+          : '';
+        ctx.notify(`Tracing level ${saved.level ?? body.level}${body.persist ? ', persisted' : ''}${limits}.`);
         ctx.render?.();
+        // A smaller retention drops the oldest traces at once.
+        if (retained !== undefined && saved.traces < retained) reload(ctx, LIST_PARTS);
       });
     }
     if (event.type === 'keydown') {
@@ -1472,6 +1752,10 @@ export const view = {
         ctx.render?.();
         focus(`trace-bucket-${d.bucketFocus}`);
         return true;
+      }
+      if (event.key === 'Escape' && d.spanId && !target('input, select, textarea')) {
+        event.preventDefault();
+        return closeSpan(ctx, d);
       }
       return false;
     }
@@ -1553,14 +1837,7 @@ export const view = {
       focus(`trace-open-${id}`);
       return true;
     }
-    if (action === 'close-span') {
-      const id = d.spanId;
-      d.spanId = null;
-      syncHash(d);
-      ctx.render?.();
-      focus(`trace-span-${id}`);
-      return true;
-    }
+    if (action === 'close-span') return closeSpan(ctx, d);
     const copyWhat = target('[data-trace-copy]')?.dataset.traceCopy;
     if (copyWhat) {
       copyAction(ctx, d, copyWhat);
@@ -1588,7 +1865,10 @@ export const view = {
       else if (FILTERS.includes(name)) d.filters[name] = '';
       if (d.range === 'custom' && !d.filters.from && !d.filters.to) d.range = 'all';
       apply();
-      focus('trace-apply');
+      const next = FILTERS.find((filter) => d.filters[filter]) ?? (RANGES[d.range] ? 'range' : null);
+      // The next chip; else Apply when the filter form is open, else Refresh (both survive the re-render by id).
+      const formOpen = globalThis.document?.querySelector?.('[data-ui-section="trace:filters"]')?.open;
+      focus(next ? `trace-chip-${next}` : formOpen ? 'trace-apply' : 'trace-refresh');
       return true;
     }
     const sort = target('[data-trace-sort]');
@@ -1630,6 +1910,7 @@ export const view = {
       // The landing is set before the render, so this render scrolls to and focuses the drawer.
       if (d.spanId) ctx.reveal?.('#trace-span-drawer');
       ctx.render?.();
+      if (d.spanId) loadTargets(ctx, d).then((read) => read && ctx.render?.());
       return true;
     }
     const open = target('[data-trace-open]');
@@ -1642,9 +1923,10 @@ export const view = {
         d.copied = null;
         d.spanSearch = '';
         d.errorsOnly = false;
+        d.linked = {};
       }
       syncHash(d);
-      ctx.reveal?.('[data-ui-section="trace:detail"]');
+      ctx.reveal?.('#trace-detail-title');
       reload(ctx, ['tree']);
       ctx.render?.();
       return true;
@@ -1653,6 +1935,17 @@ export const view = {
   },
 };
 
+/** What the side column shows: the open trace and the compared pair. */
+const sideKey = (d) => `${d.traceId ?? ''}|${d.compare?.join(',') ?? ''}`;
+/** Closes the span drawer; focus returns to the span's label. */
+function closeSpan(ctx, d) {
+  const id = d.spanId;
+  d.spanId = null;
+  syncHash(d);
+  ctx.render?.();
+  focus(`trace-span-${id}`);
+  return true;
+}
 /** The next index of a roving set for an arrow, Home or End key (wrapping). */
 function step(length, index, key) {
   if (key === 'Home') return 0;

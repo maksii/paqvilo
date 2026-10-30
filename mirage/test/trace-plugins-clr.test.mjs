@@ -135,3 +135,152 @@ test(
     );
   },
 );
+
+const CONTEXT_SOURCE = `using System;using Microsoft.Xrm.Sdk;
+namespace Invented {public sealed class Context:IPlugin{public void Execute(IServiceProvider services){var c=(IPluginExecutionContext)services.GetService(typeof(IPluginExecutionContext));var target=(Entity)c.InputParameters["Target"];if(c.Stage==20){if(target.GetAttributeValue<string>("x_name")=="Boom")throw new InvalidPluginExecutionException("Invented CLR refused Boom");c.SharedVariables["marker"]="clr-shared";}}}}`;
+
+test(
+  'a CLR step span carries the host bridge images by alias and filter, parameters, shared variables, context and fault identity',
+  { skip: CLR_SKIP },
+  async (t) => {
+    const sdkAssembly = clrSdk(),
+      root = await makeTemporaryDirectory(path.join(os.tmpdir(), 'paqvilo-trace-clr-'));
+    ownedFixture(t).remove(() => fs.rm(root, { recursive: true, force: true }));
+    await fs.writeFile(path.join(root, 'Context.cs'), CONTEXT_SOURCE);
+    compileClr(path.join(root, 'Context.cs'), path.join(root, 'Context.dll'), {
+      references: [sdkAssembly, 'System.Runtime.Serialization.dll', 'System.ServiceModel.dll'],
+    });
+    const UNIT = '60000000-0000-4000-8000-0000000000c2';
+    const runtime = await prepareClrRuntime({
+      trust: 'execute-local-assembly',
+      root,
+      assembly: 'Context.dll',
+      typeName: 'Invented.Context',
+      sdkRoot: path.dirname(sdkAssembly),
+      sdkAssembly: path.basename(sdkAssembly),
+      cacheRoot: path.join(root, '.paqvilo/cache'),
+      serviceProfile: profile,
+      context: {
+        initiatingUserId: USER,
+        organizationId: '50000000-0000-4000-8000-0000000000c2',
+        businessUnitId: UNIT,
+      },
+      timeoutMs: ORDINARY_CLR_TIMEOUT_MS,
+    });
+    const state = emptyState();
+    state.mappings.x_item = {
+      ...mapping('x_item'),
+      fields: { x_name: { dataverseType: 'nvarchar' }, x_code: { dataverseType: 'nvarchar' } },
+    };
+    state.tables.x_item = [];
+    const store = await new DataStore({ state }).init();
+    const organization = await createOrganizationRuntime({
+      store,
+      settings: dataverseSettings({ enabled: true }),
+      extensions: [...EXTENSIONS],
+    });
+    t.after(() => organization.close());
+    const PRE = '30000000-0000-4000-8000-0000000000c2',
+      POST = '30000000-0000-4000-8000-0000000000c3';
+    const step = (id, stage, image) => ({
+      id,
+      name: `Invented CLR context ${stage}`,
+      entity: 'x_item',
+      message: 'Update',
+      enabled: true,
+      stage,
+      rank: 1,
+      mode: 0,
+      typeName: 'Invented.Context',
+      assemblyId: 'invented-clr',
+      supportedDeployment: 0,
+      filteringAttributes: [],
+      images: [image],
+    });
+    const steps = [
+      step(PRE, 20, { type: 0, alias: 'before', name: 'before', attributes: ['x_name'] }),
+      step(POST, 40, { type: 1, alias: 'after', name: 'after', attributes: ['x_code'] }),
+    ];
+    const runtimes = new Map([
+        [PRE, runtime],
+        [POST, runtime],
+      ]),
+      handlers = new Map(),
+      items = pluginCatalogue({
+        plugins: { steps },
+        handlers,
+        runtimes,
+        overrides: { ['plugin-step:' + PRE]: { mode: 'clr' }, ['plugin-step:' + POST]: { mode: 'clr' } },
+      });
+    store.setPluginPipeline(
+      (context) => runPluginPhase({ ...context, store, runtimes, handlers, items }),
+      ({ entity }) => entity === 'x_item',
+    );
+    const service = localOrganizationService(store, profile);
+    const { x_itemid: id } = await service.create('x_item', { x_name: 'Old', x_code: 'A-1' });
+    store.traces = createTraceStore({ settings: { level: 'full' } });
+    const traces = store.traces;
+
+    const request = traces.start({ kind: 'http', name: 'PATCH /invented', module: 'portal' });
+    await traces.run(request, () => service.update('x_item', id, { x_name: 'New', x_code: 'B-2' }));
+    request.end();
+    const { spans } = traces.tree(request.traceId);
+    const [pre, post] = [PRE, POST].map((stepId) => spans.find((span) => span.attributes.stepId === stepId));
+    assert.deepEqual([pre.recordId, post.recordId], [id, id]);
+    assert.equal(pre.input.preImages.before.x_name, 'Old');
+    assert.equal('x_code' in pre.input.preImages.before, false, 'the registered attribute filter applies');
+    assert.deepEqual(pre.input.postImages, {});
+    assert.equal(pre.input.target.x_name, 'New');
+    assert.equal(pre.input.inputParameters.Target.$type, 'Entity');
+    assert.deepEqual(pre.input.sharedVariables, {});
+    assert.deepEqual(
+      {
+        messageName: pre.input.context.messageName,
+        stage: pre.input.context.stage,
+        mode: pre.input.context.mode,
+        depth: pre.input.context.depth,
+        initiatingUserId: pre.input.context.initiatingUserId,
+        businessUnitId: pre.input.context.businessUnitId,
+        isolationMode: pre.input.context.isolationMode,
+      },
+      {
+        messageName: 'Update',
+        stage: 20,
+        mode: 0,
+        depth: 1,
+        initiatingUserId: USER,
+        businessUnitId: UNIT,
+        isolationMode: 2,
+      },
+    );
+    assert.match(pre.input.context.correlationId, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(pre.output.sharedVariables, { marker: 'clr-shared' });
+    assert.equal(post.input.postImages.after.x_code, 'B-2');
+    assert.equal('x_name' in post.input.postImages.after, false);
+    assert.deepEqual(
+      post.input.sharedVariables,
+      { marker: 'clr-shared' },
+      'the PreOperation variable reached PostOperation',
+    );
+    assert.equal(post.input.context.correlationId, pre.input.context.correlationId);
+
+    const failing = traces.start({ kind: 'http', name: 'PATCH /invented', module: 'portal' });
+    assert.throws(
+      () => traces.run(failing, () => service.update('x_item', id, { x_name: 'Boom' })),
+      /Invented CLR refused Boom/,
+    );
+    failing.end();
+    const refused = traces.tree(failing.traceId).spans.find((span) => span.kind === 'plugin-step');
+    assert.equal(refused.status, 'error');
+    assert.deepEqual(refused.error, {
+      type: 'InvalidPluginExecutionException',
+      code: '0x80040265',
+      status: 'Failed',
+      message: 'Invented CLR refused Boom',
+      pluginType: 'Invented.Context',
+      step: PRE,
+      stage: 20,
+      depth: 1,
+    });
+  },
+);

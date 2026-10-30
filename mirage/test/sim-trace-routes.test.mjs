@@ -129,6 +129,72 @@ test('unknown ids are 404 and invalid filters are 400 InvalidTraceFilter', async
   assert.equal((await call('GET', '/_sim/api/trace/span/%E0%A4%A')).body.error.code, 'InvalidRequest');
 });
 
+test('an unknown enum value is a 400 InvalidTraceFilter naming its parameter on every read route', async (t) => {
+  const { call } = await fixture(t);
+  for (const route of ['/_sim/api/trace', '/_sim/api/trace/spans', '/_sim/api/trace/stats', '/_sim/api/trace/export'])
+    for (const [parameter, value, allowed] of [
+      ['status', 'bogus', 'ok, error, denied, cancelled, running'],
+      ['kind', 'invented-kind', 'http, webapi, dataverse'],
+      ['sort', 'sideways', 'start, duration, spans, errors'],
+      ['order', 'up', 'desc, asc'],
+    ]) {
+      const answer = await call('GET', `${route}?${parameter}=${value}`);
+      assert.equal(answer.status, 400, `${route} ${parameter}`);
+      assert.deepEqual(Object.keys(answer.body.error), ['code', 'message', 'parameter']);
+      assert.equal(answer.body.error.code, 'InvalidTraceFilter');
+      assert.equal(answer.body.error.parameter, parameter);
+      assert.ok(
+        answer.body.error.message.startsWith(`${parameter} must be one of ${allowed}`),
+        answer.body.error.message,
+      );
+      assert.ok(answer.body.error.message.endsWith(`(got "${value}").`), answer.body.error.message);
+    }
+  const format = await call('GET', '/_sim/api/trace/export?format=xml');
+  assert.deepEqual(format.body.error, {
+    code: 'InvalidTraceFilter',
+    message: 'format must be one of json, ndjson, otlp (got "xml").',
+    parameter: 'format',
+  });
+  assert.equal((await call('GET', '/_sim/api/trace/export?limit=0')).body.error.parameter, 'limit');
+  // Every status of the vocabulary is accepted, case-insensitively.
+  for (const status of ['OK', 'error', 'denied', 'cancelled', 'running'])
+    assert.equal((await call('GET', `/_sim/api/trace?status=${status}`)).status, 200, status);
+});
+
+test('recordId filters traces and spans by the record a span names, ignoring braces and case', async (t) => {
+  const { call, traces } = await fixture(t);
+  const id = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
+  const page = traces.start({ kind: 'http', name: 'GET /record' });
+  traces.run(page, () =>
+    traces
+      .start({ kind: 'dataverse', name: 'Update x_item', entity: 'x_item', recordId: id, operation: 'update' })
+      .end(),
+  );
+  page.end();
+  // An attribute named recordId is not the record identity.
+  traces.start({ kind: 'http', name: 'GET /other', attributes: { recordId: id } }).end();
+  const list = await call('GET', `/_sim/api/trace?recordId=${encodeURIComponent(`{${id.toUpperCase()}}`)}`);
+  assert.deepEqual(
+    list.body.items.map((item) => item.traceId),
+    [page.traceId],
+  );
+  const spans = await call('GET', `/_sim/api/trace/spans?recordId=${id}`);
+  assert.deepEqual(
+    spans.body.items.map((span) => span.name),
+    ['Update x_item'],
+  );
+  assert.equal((await call('GET', `/_sim/api/trace/stats?recordId=${id}`)).body.count, 1);
+});
+
+test('flush needs POST and the CSRF token and answers the status once the store flushed', async (t) => {
+  const { call, traces } = await fixture(t);
+  assert.equal((await call('POST', '/_sim/api/trace/flush')).status, 403);
+  assert.equal((await call('GET', '/_sim/api/trace/flush', undefined, { 'x-sim-csrf': CSRF })).status, 405);
+  const flushed = await call('POST', '/_sim/api/trace/flush', undefined, { 'x-sim-csrf': CSRF });
+  assert.equal(flushed.status, 200);
+  assert.deepEqual(flushed.body, JSON.parse(JSON.stringify(traces.status())));
+});
+
 test('settings change at run time behind the CSRF token; invalid settings are 400 and keep the old value', async (t) => {
   const { call, traces } = await fixture(t);
   const read = await call('GET', '/_sim/api/trace/settings');
@@ -240,7 +306,7 @@ function many(count) {
 }
 
 test('export streams json, ndjson and otlp, bounded by limit (default 200, at most 2000)', async (t) => {
-  const { call, root, failed } = await fixture(t);
+  const { call, root, failed, traces } = await fixture(t);
   const json = await call('GET', '/_sim/api/trace/export?format=json&sort=duration');
   assert.equal(json.status, 200);
   assert.match(json.headers.get('content-type'), /^application\/json/);
@@ -293,6 +359,17 @@ test('export streams json, ndjson and otlp, bounded by limit (default 200, at mo
     code: 2,
     message: 'Invented failure.',
   });
+  // A web hook delivery is a PRODUCER span; a cancelled span has the unset status; every span carries its level.
+  const delivery = traces.start({
+    kind: 'webhook',
+    name: 'POST invented-queue',
+    attributes: { transport: 'servicebus' },
+  });
+  delivery.end({ status: 'cancelled' });
+  const produced = (await call('GET', `/_sim/api/trace/export?format=otlp&traceId=${delivery.traceId}`)).body
+    .resourceSpans[0].scopeSpans[0].spans[0];
+  assert.deepEqual([produced.kind, produced.status], [4, { code: 0 }]);
+  assert.deepEqual(attribute(produced, 'mirage.level'), { stringValue: 'full' });
 
   for (const query of ['format=xml', 'limit=0', 'limit=2001', 'limit=ten', 'sort=sideways']) {
     const answer = await call('GET', `/_sim/api/trace/export?${query}`);
@@ -440,9 +517,10 @@ test('the trace channel unsubscribes when its last client disconnects and sends 
   assert.equal(traces.status().listeners, 0);
 });
 
-test('the trace channel drops a client whose writes report a full buffer three times in a row', async () => {
+test('the trace channel drops a client still waiting for drain past the stall limit, never a busy one', async () => {
+  let clock = 0;
   const traces = createTraceStore({ settings: { level: 'summary' } });
-  const attach = createTraceChannel(traces);
+  const attach = createTraceChannel(traces, { now: () => clock, stallMs: 5000 });
   // A client that never reads: the connected frame fills its buffer, and every later write reports it full.
   const stuck = new Writable({ highWaterMark: 1, write() {} });
   const healthy = new Writable({
@@ -453,10 +531,13 @@ test('the trace channel drops a client whose writes report a full buffer three t
   attach(stuck);
   attach(healthy);
   assert.equal(traces.status().listeners, 1);
-  traces.start({ kind: 'http', name: 'one' });
-  traces.start({ kind: 'http', name: 'two' });
+  for (let index = 0; index < 50; index++) traces.start({ kind: 'http', name: `burst ${index}` });
+  assert.equal(stuck.destroyed, false, 'a burst of refused writes within the stall limit keeps the client');
+  clock = 5000;
+  traces.start({ kind: 'http', name: 'at the limit' });
   assert.equal(stuck.destroyed, false);
-  traces.start({ kind: 'http', name: 'three' });
+  clock = 5001;
+  traces.start({ kind: 'http', name: 'past the limit' });
   assert.equal(stuck.destroyed, true);
   assert.equal(healthy.destroyed, false);
   assert.equal(traces.status().listeners, 1, 'the healthy client keeps the subscription');

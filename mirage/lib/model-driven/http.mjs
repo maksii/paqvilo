@@ -6,6 +6,8 @@ import { withFileSourceMap, identityMapUrl, hasSourceMap, fileSourceMapEstimate 
 import { metadataResponseChunks } from './metadata-response.mjs';
 import { metadataWorkerResponseChunks, createMetadataWorkers, indexFields } from './metadata-worker-response.mjs';
 import { acceptsGzip } from '../http-content-encoding.mjs';
+import { currentRequest, runWithRequest } from '../request-context.mjs';
+import { recordHttpError, statusFromHttp } from '../trace-store.mjs';
 
 const assets = {
   'app.mjs': 'text/javascript; charset=utf-8',
@@ -28,11 +30,36 @@ const assets = {
 };
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
 const cancelled = () => fail('Catalogue request was cancelled.', 499);
+// One trace header of the root (the host set it on the response before routing), as page text; empty without one.
+const traceHeader = (res, name) => {
+  const value = res.getHeader?.(name);
+  return typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value) ? value : '';
+};
+// The request root's error for a thrown error answered with status: a plug-in fault keeps the identity its spans carry
+// (the non-enumerable traceError, D-R3-19: type, code, pluginType, step, stage, depth); any other error the answer's code.
+const recordRootError = (span, status, error, answer) => {
+  if (!error?.traceError) return recordHttpError(span, status, answer);
+  if (span?.enabled && status >= 400) span.setStatus(statusFromHttp(status)).setError(error);
+  return span;
+};
+const RIGHTS = ['read', 'create', 'update', 'delete'];
 // Under the host's read: the principal's rights for every requested table. Rights
 // are small; table bodies are compiled and encoded after the read is released.
-const tableRights = async (catalogue, data, actor, res, { index, entity, compact }) => {
+// Tracing (D-R3-11): the evaluation is one aggregated `permission` event on the current span (result 'evaluated', tables,
+// allowed and denied decisions), not four per table: each table's checks run where the store finds no current span
+// (detached, under a copy of the request context that names none), so the security model records nothing for them.
+const tableRights = async (catalogue, data, actor, res, { index, entity, compact }, traces) => {
   const rights = new Map();
   if (!data.capabilities) return rights;
+  const span = traces?.enabled ? traces.current() : null;
+  const request = span ? currentRequest() : null;
+  const untraced = !span
+    ? (fn) => fn()
+    : request
+      ? (fn) => runWithRequest({ ...request, traceId: null, spanId: null }, () => traces.detached(fn))
+      : (fn) => traces.detached(fn);
+  let allowed = 0,
+    denied = 0;
   let yieldedAt = performance.now();
   for (const name of entity ? [entity] : Object.keys(catalogue.tables)) {
     if (res.destroyed) throw cancelled();
@@ -41,12 +68,17 @@ const tableRights = async (catalogue, data, actor, res, { index, entity, compact
       : !entity && catalogue.tableIndex
         ? indexFields(catalogue, name)
         : catalogue.tables[name].fields;
-    rights.set(name, data.capabilities(name, actor, undefined, fields, compact ? { compact } : undefined));
+    const value = untraced(() => data.capabilities(name, actor, undefined, fields, compact ? { compact } : undefined));
+    rights.set(name, value);
+    if (span && value) for (const right of RIGHTS) value[right] ? allowed++ : denied++;
     if (performance.now() - yieldedAt >= 8) {
       await setImmediate();
       yieldedAt = performance.now();
     }
   }
+  span?.event('permission', {
+    attributes: { result: 'evaluated', operation: 'rights', model: 'dataverse', tables: rights.size, allowed, denied },
+  });
   return rights;
 };
 // The 0.9.8 root: every catalogue key in its own order, `tables` in place.
@@ -114,6 +146,14 @@ export function createModelDrivenHandler({
   // time. Custom complete-value writers retain cooperative eager preparation.
   streamMetadata = false,
   workerMetadata = false,
+  // The host trace store: the request root's actor is traceActor(principal) (default: a staff or local administrator principal
+  // is the `staff` actor), every error answer is recorded on it (recordHttpError), the shell page names the root so its
+  // calls join the page trace, and table rights are one aggregated permission event.
+  traces = null,
+  traceActor = (principal) =>
+    ['staff', 'local-admin'].includes(principal?.kind)
+      ? { kind: 'staff', id: principal.principalId, name: null }
+      : null,
 }) {
   const mapLimits = { assetBytes: 16 * 1024 * 1024, totalBytes: 64 * 1024 * 1024 };
   for (const [key, value] of Object.entries(sourceMapLimits)) {
@@ -191,6 +231,13 @@ export function createModelDrivenHandler({
       })();
       const dataApi = Boolean(webApi) && fromAppPage && /^\/api\/data\/v9\.\d(?:\/|$)/.test(url.pathname);
       if (!shell && !asset && !api && !dataApi && !url.pathname.startsWith('/_apps/')) return false;
+      // The root's actor is the session's principal; an unusable session is answered by the paths that need one.
+      if (traces?.enabled)
+        try {
+          traces.current()?.setActor(traceActor(principal(req)));
+        } catch {
+          /* no actor */
+        }
       res.setHeader('cache-control', 'no-store');
       res.setHeader('x-content-type-options', 'nosniff');
       res.setHeader('x-frame-options', 'SAMEORIGIN');
@@ -223,7 +270,12 @@ export function createModelDrivenHandler({
           if (asset && !assets[asset[1]]) throw fail('Asset not found.', 404);
           const name = shell ? 'index.html' : asset[1];
           let content = await fs.readFile(new URL(name, import.meta.url), 'utf8');
-          if (shell) content = content.replace('__MIRAGE_CSRF__', csrf());
+          // The shell names its root (its response's trace headers) so the app's calls join the page trace.
+          if (shell)
+            content = content
+              .replace('__MIRAGE_CSRF__', csrf())
+              .replace('__MIRAGE_TRACE_ID__', traceHeader(res, 'x-trace-id'))
+              .replace('__MIRAGE_TRACE_PARENT__', traceHeader(res, 'x-sim-span-id'));
           // Only explicitly trusted local Solution scripts are served by the resource allowlist.
           res.setHeader(
             'content-security-policy',
@@ -383,7 +435,7 @@ export function createModelDrivenHandler({
             const worker = Boolean(
               workers && streamMetadata && !api[1] && source.tableInput && Object.keys(source.tables).length >= 128,
             );
-            const rights = await tableRights(source, data, actor, res, { index, entity, compact: worker });
+            const rights = await tableRights(source, data, actor, res, { index, entity, compact: worker }, traces);
             return { source, rights, worker };
           });
           if (res.destroyed) return true;
@@ -415,6 +467,9 @@ export function createModelDrivenHandler({
         const [, entity, encodedId] = route,
           id = encodedId ? decodeURIComponent(encodedId) : null;
         if (id && !/^[\w{}-]{1,128}$/.test(id)) throw fail('Invalid record ID.', 400);
+        // The root names its table and record (a create's once saved) and a grid read's view, page and search.
+        const root = traces?.enabled ? traces.current() : null;
+        root?.setEntity(entity, id);
         // The shell names its app (x-mirage-app): while that staff session is offline, records come from its offline copy.
         const records =
           typeof req.headers['x-mirage-app'] === 'string'
@@ -430,6 +485,14 @@ export function createModelDrivenHandler({
           }
           if (!query || typeof query !== 'object' || Array.isArray(query))
             throw fail('Provide a grid query object.', 400);
+          if (root)
+            root.set(
+              Object.fromEntries(
+                ['view', 'page', 'pageSize', 'search']
+                  .filter((key) => ['string', 'number'].includes(typeof query[key]))
+                  .map((key) => [key, query[key]]),
+              ),
+            );
           if (id) json(res, 200, await data.get(entity, id, reader, query));
           else json(res, 200, await data.list(entity, query, reader));
         } else {
@@ -438,12 +501,16 @@ export function createModelDrivenHandler({
           const write = () =>
             data.write(entity, id, values, { remove: method === 'DELETE', etag: req.headers['if-match'], ...reader });
           const result = records ? await write() : await change(write);
+          if (method === 'POST' && typeof result?.id === 'string') root?.setEntity(entity, result.id);
           json(res, method === 'POST' ? 201 : 200, result);
         }
       } catch (error) {
+        const status = error.status ?? 500,
+          code = error.code ?? 'ModelDrivenError';
         if (res.headersSent) res.destroy(error);
-        else if (!res.destroyed)
-          json(res, error.status ?? 500, { error: { message: error.message, code: error.code ?? 'ModelDrivenError' } });
+        else if (!res.destroyed) json(res, status, { error: { message: error.message, code } });
+        // After the answer (whose writer may record its envelope): a plug-in fault keeps its identity on the root.
+        recordRootError(traces?.current() ?? null, status, error, { code, message: error.message });
       }
       return true;
     },

@@ -16,6 +16,7 @@ import {
   HOOK_CODE,
   MEMBER,
   RECEIPT,
+  REJECTED,
   SDK_USER,
   SECRET_VALUE,
   STEP,
@@ -100,7 +101,11 @@ test('ONE trace holds every hop with exactly the expected parent at each', () =>
               'dataverse Create x_order',
               [
                 [
-                  'job Flow When an order is created',
+                  'job Order async follow-up',
+                  [[stage('x_order', 'PostOperation'), [leaf('plugin-step Order async follow-up')]]],
+                ],
+                [
+                  'job When an order is created',
                   [
                     [
                       'flow-run When an order is created',
@@ -110,7 +115,17 @@ test('ONE trace holds every hop with exactly the expected parent at each', () =>
                           [
                             [
                               'connector shared_commondataserviceforapps/PerformUnboundAction',
-                              [['dataverse PerformUnboundAction', [leaf('secret Secret inventedvault/x-api-key')]]],
+                              [
+                                [
+                                  'dataverse PerformUnboundAction',
+                                  [
+                                    [
+                                      'action RetrieveEnvironmentVariableSecretValue',
+                                      [leaf('secret Secret inventedvault/x-api-key')],
+                                    ],
+                                  ],
+                                ],
+                              ],
                             ],
                           ],
                         ],
@@ -127,10 +142,6 @@ test('ONE trace holds every hop with exactly the expected parent at each', () =>
                       ],
                     ],
                   ],
-                ],
-                [
-                  'job Order async follow-up',
-                  [[stage('x_order', 'PostOperation'), [leaf('plugin-step Order async follow-up')]]],
                 ],
                 [
                   stage('x_order', 'PostOperation'),
@@ -213,7 +224,7 @@ test('every span is ended with a duration, the expected actor, session and origi
   }
   const contact = (span, contactId = MEMBER) =>
     assert.deepEqual([span.actor.kind, span.actor.id], ['contact', contactId], `${span.kind} ${span.name} actor`);
-  const flowJob = named(spans, 'job', 'Flow When an order is created'),
+  const flowJob = named(spans, 'job', 'When an order is created'),
     pluginJob = named(spans, 'job', 'Order async follow-up'),
     deniedRoot = run.sim.trace.span(run.denied.spanId);
   for (const span of spans) {
@@ -329,7 +340,7 @@ test('query filters find the trace by entity, actor, session, kind, module, erro
   for (const filters of [{ hasErrors: 'true' }, { minDurationMs: String(total + 60000) }, { entity: 'x_absent' }])
     assert.equal(ids(filters).includes(traceId), false, JSON.stringify(filters));
   assert.equal(sim.trace.spans({ traceId, kind: 'plugin-step', pageSize: 200 }).total, 6);
-  assert.equal(sim.trace.spans({ traceId, actorKind: 'flow', pageSize: 200 }).total, 10);
+  assert.equal(sim.trace.spans({ traceId, actorKind: 'flow', pageSize: 200 }).total, 11);
 
   const stats = sim.trace.stats({ traceId });
   assert.equal(stats.count, tree.spans.length);
@@ -350,6 +361,7 @@ test('query filters find the trace by entity, actor, session, kind, module, erro
     'flow-run': 1,
     'flow-action': 3,
     connector: 3,
+    action: 1,
     secret: 1,
     render: 1,
     'render-template': 4,
@@ -399,4 +411,153 @@ test('level summary records the same causal shape without any input or output', 
   } finally {
     await sim.trace.configure({ level: 'full' });
   }
+});
+
+test('every Dataverse, plug-in and job span names its record; the member root names the contact by display name', () => {
+  const { tree, orderId, sim } = run;
+  const audit = sim.store.tableRows('x_audit')[0].x_auditid;
+  const expected = { x_order: orderId, x_audit: audit, x_receipt: RECEIPT };
+  // Every span whose target is a record carries the table and the record id (D-R3-1); a message without a target
+  // (PerformUnboundAction, its action and the secret it reads) names none.
+  const targeted = tree.spans.filter(
+    (span) =>
+      ['webapi', 'dataverse', 'plugin-stage', 'plugin-step', 'store'].includes(span.kind) ||
+      (span.kind === 'job' && span.attributes.kind === 'plugin'),
+  );
+  for (const span of targeted) {
+    if (span.kind === 'dataverse' && span.name === 'PerformUnboundAction') continue;
+    assert.equal(span.recordId, expected[span.entity], `${span.kind} ${span.name} names its record`);
+  }
+  assert.ok(targeted.length >= 20, `${targeted.length} record spans`);
+  assert.equal(sim.trace.query({ recordId: `{${orderId.toUpperCase()}}` }).items[0]?.traceId, run.traceId);
+  // The member has a first and last name and no full name: the roots name the contact by them (DV-C-9).
+  assert.equal(tree.root.actor.name, 'Ada Member');
+  assert.equal(sim.trace.span(run.denied.spanId).actor.name, 'Bo Stranger');
+});
+
+test('the row-triggered flow job and its run name the order; the plug-in job names its process (D-R3-1, D-R3-24)', () => {
+  const { tree, orderId } = run;
+  const spans = tree.spans;
+  const flowJob = named(spans, 'job', 'When an order is created'),
+    flowRun = named(spans, 'flow-run', 'When an order is created'),
+    pluginJob = named(spans, 'job', 'Order async follow-up');
+  for (const span of [flowJob, flowRun, pluginJob])
+    assert.deepEqual([span.entity, span.recordId], ['x_order', orderId], `${span.kind} ${span.name} names the order`);
+  assert.deepEqual(
+    [flowJob.attributes.processType, flowJob.attributes.processId, flowJob.attributes.processName],
+    ['cloud-flow', FLOW, 'When an order is created'],
+  );
+  assert.deepEqual(
+    [pluginJob.attributes.processType, pluginJob.attributes.processId, pluginJob.attributes.processName],
+    ['plugin', STEP.async, 'Order async follow-up'],
+  );
+});
+
+test('a step span carries its images by alias and filter, shared variables, input parameters and context (D-R3-20)', () => {
+  const { tree } = run;
+  const spans = tree.spans;
+  const preOperation = named(spans, 'plugin-step', 'Order pre-operation'),
+    postOperation = named(spans, 'plugin-step', 'Order post-operation');
+  // The post-image is the registered alias with its two columns only, never the whole row; a Create has no pre-image.
+  assert.deepEqual(postOperation.input.preImages, {});
+  assert.deepEqual(postOperation.input.postImages, { after: { x_name: 'Order one', x_status: 'new' } });
+  assert.deepEqual(preOperation.input.postImages, {});
+  // The shared variable PreOperation set is its output and the PostOperation step's input.
+  assert.deepEqual(preOperation.input.sharedVariables, {});
+  assert.deepEqual(preOperation.output.sharedVariables, { x_stamp: 'pre-operation' });
+  assert.deepEqual(postOperation.input.sharedVariables, { x_stamp: 'pre-operation' });
+  assert.equal(postOperation.input.inputParameters.Target.x_name, 'Order one');
+  assert.equal(postOperation.input.inputParameters.Target.x_accesstoken, '[redacted]');
+  // The execution context names the message, stage, mode and depth; every step of the request shares its correlation.
+  const context = postOperation.input.context;
+  assert.deepEqual(
+    [context.messageName, context.stage, context.mode, context.depth, context.isolationMode],
+    ['Create', 40, 0, 1, 2],
+  );
+  assert.deepEqual(Object.keys(context).sort(), [
+    'businessUnitId',
+    'correlationId',
+    'depth',
+    'initiatingUserId',
+    'isolationMode',
+    'messageName',
+    'mode',
+    'stage',
+    'userId',
+  ]);
+  assert.equal(preOperation.input.context.stage, 20);
+  assert.equal(preOperation.input.context.correlationId, context.correlationId);
+  assert.equal(named(spans, 'job', 'When an order is created').attributes.correlationId, context.correlationId);
+});
+
+test('the flow reads its secret through an action span between the Dataverse connector call and the secret', () => {
+  const spans = run.tree.spans;
+  const index = new Map(spans.map((span) => [span.spanId, span]));
+  const secret = byKind(spans, 'secret')[0];
+  const action = index.get(secret.parentSpanId);
+  assert.deepEqual([action.kind, action.name], ['action', 'RetrieveEnvironmentVariableSecretValue']);
+  assert.deepEqual(
+    [action.module, action.operation, action.attributes.message, action.attributes.binding, action.status],
+    ['dataverse', 'retrieveenvironmentvariablesecretvalue', 'RetrieveEnvironmentVariableSecretValue', 'unbound', 'ok'],
+  );
+  assert.deepEqual([action.actor.kind, action.actor.id], ['flow', FLOW]);
+  const chain = ancestors(spans, action).map((span) => `${span.kind} ${span.name}`);
+  assert.deepEqual(chain.slice(0, 4), [
+    'dataverse PerformUnboundAction',
+    'connector shared_commondataserviceforapps/PerformUnboundAction',
+    'flow-action GetSecret',
+    'flow-run When an order is created',
+  ]);
+  // The action's answer is redacted at full: the secret value never reaches the action's output.
+  assert.equal(JSON.stringify(action).includes(SECRET_VALUE), false);
+});
+
+test('a refused write names the plug-in fault on its step, stage, dispatch and Web API spans (D-R3-19)', async () => {
+  const { sim, member } = run;
+  const response = await fetch(sim.url + '/_api/x_orders', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: member, __requestverificationtoken: sim.csrf },
+    body: JSON.stringify({ x_name: `Order ${REJECTED}` }),
+  });
+  await response.text();
+  assert.equal(response.status, 400);
+  const tree = await endedTree(sim.trace, response.headers.get('x-trace-id'));
+  const fault = {
+    type: 'InvalidPluginExecutionException',
+    code: '0x80040265',
+    status: 'Failed',
+    message: `Order name ${REJECTED} is refused`,
+    pluginType: 'Invented.Orders.Rules',
+    step: STEP.preValidation,
+    stage: 10,
+    depth: 1,
+  };
+  const step = named(tree.spans, 'plugin-step', 'Order pre-validation');
+  assert.deepEqual([step.status, step.error], ['error', fault]);
+  for (const [kind, name] of [
+    ['plugin-stage', 'Create x_order · PreValidation'],
+    ['dataverse', 'Create x_order'],
+    ['webapi', 'POST x_orders'],
+  ]) {
+    const span = named(tree.spans, kind, name);
+    assert.equal(span.status, 'error', `${kind} ${name}`);
+    assert.deepEqual(span.error, fault, `${kind} ${name} carries the fault identity`);
+  }
+  // The refused write ran no later stage and staged no job.
+  assert.deepEqual(byKind(tree.spans, 'job'), []);
+  assert.equal(
+    tree.spans.some((span) => span.name === 'Order pre-operation'),
+    false,
+  );
+  assert.deepEqual(
+    [tree.root.status, tree.root.attributes.statusCode, tree.root.error.message],
+    ['error', 400, fault.message],
+  );
+  // The request root names the same fault identity as every span below it, not the portal answer's translated code
+  // (DV-Y8-3); the HTTP answer keeps the portal's own error.
+  assert.deepEqual(tree.root.error, fault, 'the root carries the plug-in fault identity');
+  assert.deepEqual(
+    [tree.root.error.code, tree.root.error.type, tree.root.error.pluginType, tree.root.error.step],
+    ['0x80040265', 'InvalidPluginExecutionException', 'Invented.Orders.Rules', STEP.preValidation],
+  );
 });

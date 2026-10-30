@@ -26,6 +26,7 @@ import { isExactNumeric } from './exact-numeric.mjs';
 import { collectPackExport } from './pack-exports.mjs';
 import { contextUrl } from './dataverse-odata.mjs';
 import { pluginFailure } from './plugin-fault.mjs';
+import { pluginExecutionDepth } from './plugin-clr.mjs';
 import { denied } from './dataverse-fls.mjs';
 import { changedColumns, dataverseHost } from './power-fx-dataverse.mjs';
 import { privilegeDeniedError, uuidV5 } from './dataverse-security.mjs';
@@ -526,12 +527,15 @@ async function invokeApi(api, name, c, { handlers, pluginTypes = new Map(), time
     bindingType: Number(row.bindingtype ?? 0),
     handler: registration ? 'handler' : fxIdOf(row) ? 'powerfx' : 'none',
   });
-  // The plug-in's type (the custom API name when the pack names none) and the trace lines its handler writes.
+  // The plug-in's type (the custom API name when the pack names none) and the trace lines its handler writes; it runs as
+  // the main operation (stage 30), one level below the plug-in that called it, if any (its fault identity, D-R3-19).
   const plugin = {
     name: row.uniquename,
     id: row.customapiid,
     type: registration?.pluginType ?? row.uniquename,
     traces: [],
+    stage: 30,
+    depth: pluginExecutionDepth() + 1,
   };
   // Typed inputs, the bound target (entity or collection) and the caller. Without a pack handler the outputs are the defaults.
   const ctx = {
@@ -877,27 +881,52 @@ async function executeMessageInternal(api, { principal, name, target = null, par
   const action = op.kind === 'action',
     origin = 'http://localhost';
   const url = new URL(`${origin}/api/data/v9.2/${name}`);
-  const result = await op.handle({
-    method: action ? 'POST' : 'GET',
-    url,
-    origin,
-    version: 'v9.2',
-    prefer: {},
-    headers: {},
-    body: action ? { ...parameters } : undefined,
-    params: action ? {} : { ...parameters },
-    user,
-    caller: null,
-    identity: { id: principal.userId, admin: true },
-    requestId: null,
-    api,
-    target:
-      binding === 'entity'
-        ? { mapping, id: row[mapping.idColumn], row }
-        : binding === 'collection'
-          ? { mapping }
-          : undefined,
-  });
+  const call = () =>
+    op.handle({
+      method: action ? 'POST' : 'GET',
+      url,
+      origin,
+      version: 'v9.2',
+      prefer: {},
+      headers: {},
+      body: action ? { ...parameters } : undefined,
+      params: action ? {} : { ...parameters },
+      user,
+      caller: null,
+      identity: { id: principal.userId, admin: true },
+      requestId: null,
+      api,
+      target:
+        binding === 'entity'
+          ? { mapping, id: row[mapping.idColumn], row }
+          : binding === 'collection'
+            ? { mapping }
+            : undefined,
+    });
+  // The message is one span named by it (D-R3-8, as a Web API message call): the bound record, the systemuser it runs as
+  // (the actor stays the caller's, a flow for a flow action), the parameters and the answer at level full. A custom API's own
+  // span and the writes it makes nest under it.
+  const traces = store.traces;
+  const result = traces?.enabled
+    ? await traces.wrap(
+        {
+          kind: action ? 'action' : 'function',
+          name: entity ? `${name} ${entity}` : name,
+          module: 'dataverse',
+          operation: name,
+          entity: entity ?? null,
+          recordId: row ? String(row[mapping.idColumn]) : null,
+          attributes: { message: name, binding, caller: 'internal', systemUserId: user.systemuserid ?? null },
+          input: () => ({ parameters }),
+        },
+        async (span) => {
+          const answer = await call();
+          span.set({ statusCode: answer?.status ?? 204 });
+          span.output(() => answer?.body ?? null);
+          return answer;
+        },
+      )
+    : await call();
   if (!result) return { statusCode: 204, body: {} };
   const body =
     result.body !== null && typeof result.body === 'object' && !Buffer.isBuffer(result.body)

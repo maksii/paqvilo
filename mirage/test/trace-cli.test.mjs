@@ -15,14 +15,31 @@ import { connectRuntime } from '../testing/runtime.mjs';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const CSRF = 'invented-csrf';
 const START = Date.parse('2026-02-01T10:00:00.000Z');
+const CONTACT = 'c0ffee00-0000-4000-8000-000000000001';
+const RECORD = '0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0';
 
 async function fixture(t, { endStream = false } = {}) {
   let time = START;
   const traces = createTraceStore({ settings: { level: 'full' }, now: () => time });
-  const page = traces.start({ kind: 'http', name: 'GET /invented', module: 'portal', operation: 'get' });
+  const page = traces.start({
+    kind: 'http',
+    name: 'GET /invented',
+    module: 'portal',
+    operation: 'get',
+    actor: { kind: 'contact', id: CONTACT, name: 'Invented Person' },
+    session: { visitorId: null, sessionKey: `contact:${CONTACT}` },
+    origin: { host: 'power-pages' },
+  });
   let child;
   traces.run(page, () => {
-    child = traces.start({ kind: 'dataverse', name: 'Create x_item', entity: 'x_item', operation: 'create' });
+    child = traces.start({
+      kind: 'dataverse',
+      name: 'Create x_item',
+      entity: 'x_item',
+      recordId: RECORD,
+      operation: 'create',
+    });
+    child.event('permission', { message: 'Invented rule allowed the create', attributes: { result: 'allow' } });
     time += 3;
     child.end();
   });
@@ -63,7 +80,7 @@ async function fixture(t, { endStream = false } = {}) {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
   });
-  return { traces, page, child, origin: `http://127.0.0.1:${server.address().port}` };
+  return { traces, page, child, origin: `http://127.0.0.1:${server.address().port}`, advance: (ms) => (time += ms) };
 }
 
 const cli = (...args) =>
@@ -85,10 +102,13 @@ const json = async (...args) => {
   assert.deepEqual([value.schemaVersion, value.ok, value.command], [1, true, args[0]]);
   return value.result;
 };
-// The --json envelope of a failure: exit 1, { schemaVersion: 1, ok: false, command, error: { code, message } }.
-const failure = async (...args) => {
+// The --json envelope of a failure: exit 1, or exit 2 for a refused filter or setting (refusal), { schemaVersion: 1,
+// ok: false, command, error: { code, message, parameter? } }.
+const failure = (...args) => failed(1, args);
+const refusal = (...args) => failed(2, args);
+const failed = async (exit, args) => {
   const outcome = await cli(...args, '--json');
-  assert.equal(outcome.status, 1, args.join(' '));
+  assert.equal(outcome.status, exit, args.join(' '));
   assert.equal(outcome.stderr, '', args.join(' '));
   const value = JSON.parse(outcome.stdout);
   assert.deepEqual(Object.keys(value), ['schemaVersion', 'ok', 'command', 'error']);
@@ -112,7 +132,7 @@ test('list, show, spans, stats and export read the runtime trace store in one en
   const show = await cli('show', page.traceId, '--origin', origin);
   assert.equal(show.status, 0, show.stderr);
   assert.match(show.stdout, /^GET \/invented \[http\] ok 4 ms$/m);
-  assert.match(show.stdout, /^ {2}Create x_item \[dataverse\] ok 3 ms x_item$/m);
+  assert.match(show.stdout, /^ {2}Create x_item \[dataverse\] ok 3 ms x_item \(1 event\)$/m);
   const tree = await json('show', page.traceId, '--origin', origin);
   assert.equal(tree.trace.traceId, page.traceId);
   assert.equal(tree.spans.length, 2);
@@ -129,10 +149,66 @@ test('list, show, spans, stats and export read the runtime trace store in one en
   assert.match(statsText, /^dataverse\s+1\s+0\s+3 ms/m);
   assert.match(statsText, /^Overall: 2 spans, 0 errors, p50 3 ms, p95 4 ms, max 4 ms\.$/m);
   assert.match(statsText, /^Roots: 1 trace, 0 errors, p50 4 ms, p95 4 ms, max 4 ms\.$/m);
-  const empty = (await cli('stats', '--kind', 'invented', '--origin', origin)).stdout;
+  const empty = (await cli('stats', '--kind', 'canvas', '--origin', origin)).stdout;
   assert.match(empty, /^0 spans from — to —\.$/m);
   assert.match(empty, /^Overall: 0 spans, 0 errors, p50 —, p95 —, max —\.$/m);
   assert.doesNotMatch(empty, /running/);
+});
+
+test('list prints the total duration it sorts by, the actor, the session and the error and denied counts', async (t) => {
+  const { origin, traces, page, advance } = await fixture(t);
+  // An async segment ends 10 ms after the root: the trace's total duration (14 ms) is longer than its root's (4 ms).
+  const job = traces.start({ kind: 'job', name: 'Invented job', traceId: page.traceId, parentSpanId: page.spanId });
+  advance(10);
+  job.end();
+  const denied = traces.start({ kind: 'http', name: 'GET /refused', actor: { kind: 'anonymous' } });
+  denied.end({ status: 'denied' });
+  const listed = await cli('list', '--sort', 'duration', '--origin', origin);
+  assert.equal(listed.status, 0, listed.stderr);
+  const [header, first, second] = listed.stdout.split('\n');
+  assert.match(
+    header,
+    /^STARTED\s+STATUS\s+DURATION\s+TOTAL\s+SPANS\s+ERRORS\s+DENIED\s+HOST\s+ACTOR\s+SESSION\s+NAME\s+TRACE$/,
+  );
+  const cells = (line) => line.split(/\s{2,}/);
+  assert.deepEqual(cells(first).slice(1, 11), [
+    'ok',
+    '4 ms',
+    '14 ms',
+    '3',
+    '0',
+    '0',
+    'power-pages',
+    'contact:Invented Person',
+    `contact:${CONTACT}`,
+    'GET /invented',
+  ]);
+  assert.deepEqual(cells(second).slice(1, 8), ['denied', '0 ms', '0 ms', '1', '0', '1', 'anonymous']);
+});
+
+test('record-id, search over event messages and flush reach the runtime', async (t) => {
+  const { origin, page, child } = await fixture(t);
+  const byRecord = await json('list', '--record-id', `{${RECORD.toUpperCase()}}`, '--origin', origin);
+  assert.deepEqual(
+    byRecord.items.map((item) => item.traceId),
+    [page.traceId],
+  );
+  const spans = await cli('spans', '--record-id', RECORD, '--origin', origin);
+  assert.match(spans.stdout, /^STARTED\s+KIND\s+STATUS\s+DURATION\s+ENTITY\s+RECORD\s+ACTOR\s+NAME\s+SPAN$/m);
+  assert.match(
+    spans.stdout,
+    new RegExp(`x_item\\s+${RECORD}\\s+contact:Invented Person\\s+Create x_item\\s+${child.spanId}`),
+  );
+  assert.equal((await json('spans', '--search', 'rule allowed the create', '--origin', origin)).total, 1);
+  assert.equal((await json('list', '--record-id', 'invented-other', '--origin', origin)).total, 0);
+  const flushed = await json('flush', '--origin', origin);
+  assert.equal(flushed.retained, 1);
+  const human = await cli('flush', '--origin', origin);
+  assert.equal(human.status, 0, human.stderr);
+  assert.match(human.stdout, /^Flushed every queued persisted line and trace stream frame\.$/m);
+  assert.match(human.stdout, /^Persistence: off; 0 lines written, 0 failed\.$/m);
+  const watched = await cli('watch', '--count', '1', '--search', 'UPDATE X_ITEM', '--origin', origin, '--json');
+  assert.equal(JSON.parse(watched.stdout).result.span.name, 'Update x_item');
 });
 
 test('export prints json, ndjson or otlp, bounded by --limit', async (t) => {
@@ -152,25 +228,47 @@ test('export prints json, ndjson or otlp, bounded by --limit', async (t) => {
     [page.traceId],
   );
   assert.equal((await json('export', '--origin', origin)).traces.length, 1);
-  const refused = await failure('export', '--format', 'xml', '--origin', origin);
-  assert.equal(refused.error.code, 'InvalidTraceFilter');
+  const refused = await refusal('export', '--format', 'xml', '--origin', origin);
+  assert.deepEqual(refused.error, {
+    code: 'InvalidTraceFilter',
+    message: 'format must be one of json, ndjson, otlp (got "xml").',
+    parameter: 'format',
+  });
   const human = await cli('export', '--limit', '0', '--origin', origin);
-  assert.equal(human.status, 1);
-  assert.match(human.stderr, /\(400\): limit must be an integer from 1 to 2000\./);
+  assert.equal(human.status, 2);
+  assert.equal(human.stderr, 'InvalidTraceFilter: limit must be an integer from 1 to 2000.\n');
 });
 
 test('every failure names its code', async (t) => {
   const { origin } = await fixture(t);
-  const invalid = await failure('list', '--page-size', '0', '--origin', origin);
+  const invalid = await refusal('list', '--page-size', '0', '--origin', origin);
   assert.equal(invalid.command, 'list');
-  assert.equal(invalid.error.code, 'InvalidTraceFilter');
-  assert.match(invalid.error.message, /\(400\): pageSize /);
+  assert.deepEqual(invalid.error, {
+    code: 'InvalidTraceFilter',
+    message: 'pageSize must be an integer from 1 to 200.',
+    parameter: 'pageSize',
+  });
+  // An unknown enum value is refused before connecting, with the allowed values and the value it got.
+  const status = await cli('list', '--status', 'bogus', '--origin', 'http://127.0.0.1:1');
+  assert.equal(status.status, 2);
+  assert.equal(
+    status.stderr,
+    'InvalidTraceFilter: status must be one of ok, error, denied, cancelled, running (got "bogus").\n',
+  );
+  for (const [flag, parameter] of [
+    ['--kind', 'kind'],
+    ['--sort', 'sort'],
+    ['--order', 'order'],
+  ])
+    assert.equal((await refusal('list', flag, 'bogus', '--origin', origin)).error.parameter, parameter);
   const unknown = await failure('show', 'invented-unknown', '--origin', origin);
   assert.deepEqual(unknown.error, { code: 'TraceNotFound', message: 'No retained trace has the id invented-unknown.' });
   const human = await cli('show', 'invented-unknown', '--origin', origin);
   assert.equal(human.status, 1);
   assert.match(human.stderr, /No retained trace has the id invented-unknown/);
-  assert.equal((await failure('settings', '--level', 'loud', '--origin', origin)).error.code, 'InvalidTraceSettings');
+  const loud = await refusal('settings', '--level', 'loud', '--origin', origin);
+  assert.equal(loud.error.code, 'InvalidTraceSettings');
+  assert.doesNotMatch(loud.error.message, /Local runtime request failed/, 'the runtime message itself');
   const unreachable = await failure('list', '--origin', 'http://127.0.0.1:1');
   assert.equal(unreachable.error.code, 'RuntimeUnreachable');
   assert.equal(
@@ -178,7 +276,7 @@ test('every failure names its code', async (t) => {
     'No Mirage runtime answers at http://127.0.0.1:1; start one or pass --origin.',
   );
   assert.equal((await failure('watch', '--origin', 'http://127.0.0.1:1')).error.code, 'RuntimeUnreachable');
-  assert.equal((await failure('watch', '--has-errors', 'maybe', '--origin', origin)).error.code, 'InvalidTraceFilter');
+  assert.equal((await refusal('watch', '--has-errors', 'maybe', '--origin', origin)).error.code, 'InvalidTraceFilter');
 });
 
 test('settings change the level at run time and clear drops every trace', async (t) => {
@@ -201,8 +299,8 @@ test('settings change the level at run time and clear drops every trace', async 
   assert.equal(changed.settings.traces, 20);
   assert.equal(traces.settings().level, 'summary');
   const refused = await cli('settings', '--level', 'loud', '--origin', origin);
-  assert.equal(refused.status, 1);
-  assert.match(refused.stderr, /\(400\).*level/);
+  assert.equal(refused.status, 2);
+  assert.match(refused.stderr, /^InvalidTraceSettings: .*level/);
   assert.equal(traces.settings().level, 'summary');
   assert.match((await cli('settings', '--origin', origin)).stdout, /^level: summary$/m);
   const cleared = await json('clear', '--origin', origin);
@@ -285,6 +383,9 @@ test('the command rejects unknown flags, actions and misplaced options before co
   assert.match(help.stdout, /paqvilo mirage trace .*--min-duration-ms N/);
   assert.match(help.stdout, /--sort start\|duration\|spans\|errors/);
   assert.match(help.stdout, /--format json\|ndjson\|otlp/);
+  assert.ok(help.stdout.includes('trace list|show TRACE_ID|spans|stats|settings|clear|flush|export|watch '));
+  assert.ok(help.stdout.includes('--record-id ID'));
+  assert.ok(help.stdout.includes('--status ok|error|denied|cancelled|running'));
 });
 
 test('connectRuntime().trace answers the store views and null for unknown ids', async (t) => {

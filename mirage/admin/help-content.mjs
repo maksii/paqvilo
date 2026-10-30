@@ -453,12 +453,12 @@ const HELP = {
 
   trace: {
     intro:
-      'What this runtime did for each request and job, as one trace of nested spans: the HTTP request, Web API and Dataverse operations, permission decisions, plug-in stages and steps, SDK calls, secrets, outbound HTTP, async jobs, flows, connectors and renders. Filter traces, read the timeline and breakdown, then open a trace for its waterfall, tree and span details. Only the newest traces are kept (500 by default); payloads are captured only at level full, always redacted.',
+      'What this runtime did for each request and job, as one trace of nested spans: the HTTP request, Web API and Dataverse operations, permission decisions, plug-in stages and steps, SDK calls, secrets, outbound HTTP, async jobs, flows, connectors and renders. Filter traces, read the timeline, breakdown, slowest spans and latest errors, then open a trace for its waterfall, tree and span details; at 1200 px and wider the open trace sits beside the list. Only the newest traces are kept (500 by default, changeable under Settings); payloads are captured only at level full, always redacted. The view follows the system light or dark theme.',
     steps: [
       'Run the portal page or API call you want to understand.',
       'Narrow the list with filters or a timeline bucket.',
-      'Open the trace and select a span for its attributes, events and payloads.',
-      'Follow Related links to the same session, actor, table or parent request.',
+      'Open the trace (Enter on a row moves to it) and select a span for its attributes, events and payloads; Escape closes the span.',
+      'Climb with the span path, Parent and Root, or follow Related links to the same session, actor, table, record or parent request.',
     ],
     doc: `${TRACING}#reading-a-trace`,
     fields: {
@@ -468,7 +468,7 @@ const HELP = {
   },
   'trace.filters': {
     intro:
-      'Every filter narrows the traces, the overview and the export; a trace matches when one of its spans meets all span filters. The filters are part of the address, so a filtered view can be bookmarked or shared as a link.',
+      'Every filter narrows the traces, the overview and the export; a trace matches when one of its spans meets all span filters. The filters are part of the address, so a filtered view can be bookmarked or shared as a link; #trace alone is the unfiltered view. A value the runtime refuses (such as an unknown status) is named in a red banner with a button that removes it.',
     doc: `${TRACING}#api`,
     fields: {
       range: 'Only traces with a span that started in this window before now; From and To set an exact window instead.',
@@ -478,27 +478,31 @@ const HELP = {
       module: 'Only traces with a span from this part of the runtime, such as portal, dataverse, plugins or flows.',
       operation: 'Only traces with a span of this operation, such as create, retrieve or render (lower case).',
       entity: 'Only traces with a span on this table logical name.',
-      status: 'Only traces with a span in this status: running, ok, error or denied (a permission decision).',
-      host: 'Only traces started by this host: Power Pages, standalone, the Dataverse API listener or a job.',
+      recordId:
+        'Only traces with a span on this record id (braces and case are ignored); Same record in a span sets it.',
+      status:
+        'Only traces with a span in this status: running, ok, error, denied (a permission decision or 401 / 403) or cancelled (a stopped flow run or action).',
+      host: 'Only traces started by this host: Power Pages, standalone, model-driven, canvas, code app, the Dataverse Web API, TDS or SOAP listener, a job or this workspace.',
       actorKind: 'Only traces with a span run as this kind of caller, such as contact, staff, app or plugin.',
       actorId: 'Only traces with a span run by this caller id; braces and case are ignored.',
       sessionKey:
         'Only traces of this browser session: contact:<id> once a contact signed in, visitor:<id> before (the visitor cookie).',
       visitorId: 'Only traces of this visitor cookie id.',
       portal: 'Only traces of this portal (site) name.',
-      search: 'Free text over span names, tables, error codes and messages, and attribute values.',
+      search:
+        'Free text over span names, kinds, modules, operations, tables, record ids, actor names and ids, error codes and messages, attribute names and values, event types, messages and attributes, and at level full the captured input and output (case is ignored).',
       minDurationMs: 'Only traces that lasted at least this many milliseconds from their first to their last span.',
       hasErrors: 'Only traces with, or without, a span that ended in error.',
     },
   },
   'trace.overview': {
     intro:
-      'Counts and durations of the matching spans. Root p50 / p95 are the median and 95th percentile durations of the root spans of the matching traces, whatever span the filters matched; Root p95 vs before compares it with the same filters over the equal-length window just before the chosen time range. Select a timeline bucket to narrow the time range to it (arrow keys move between buckets); Filter in the breakdown narrows to that kind, module, table, operation or actor. Times are local, with the UTC offset under the timeline.',
+      'Counts and durations of the matching spans. Root p50 / p95 are the median and 95th percentile durations of the root spans of the matching traces, whatever span the filters matched; Root p95 vs before compares it with the same filters over the equal-length window just before the chosen time range. Slowest spans and Latest errors link to those spans, with the error code and message. Select a timeline bucket to narrow the time range to it (arrow keys move between buckets); Filter in the breakdown narrows to that kind, module, table, operation or actor. Times are local, with the UTC offset under the timeline.',
     doc: `${TRACING}#reading-a-trace`,
   },
   'trace.list': {
     intro:
-      'Traces, newest first, one row per trace: when its root started, its status and duration, the root span with its host, actor and session, span and error counts and tables. Select a column heading to sort by it; select it again to reverse. Select a row to open the trace, or tick two rows and choose Compare. Live reloads the list as traces end, on hosts that stream traces.',
+      'Traces, newest first, one row per trace: when its root started, its status and duration, the root span with its host, actor and session, span and error counts with the first error message, and tables. Select a column heading to sort by it; select it again to reverse. Select a row to open the trace (Enter moves to the trace), or tick two rows and choose Compare. The legend under the list says what each status means. Live reloads the list as traces end, on hosts that stream traces.',
     doc: `${TRACING}#reading-a-trace`,
     fields: {
       pick: 'Tick two traces, then choose Compare to see their span trees side by side with the duration differences.',
@@ -506,11 +510,11 @@ const HELP = {
   },
   'trace.detail': {
     intro:
-      'One trace: its facts, then every span as a waterfall, a nested tree or the raw JSON. Select a span for its attributes, events (permission decisions, trace lines, staged jobs), redacted input and output, links and related traces. Copy id and Copy link put the trace id or a link to this view on the clipboard.',
+      'One trace: its facts, then every span as a waterfall, a nested tree or the raw JSON. Select a span for its path from the root, attributes, events (permission decisions, trace lines, staged jobs), redacted input and output, links and related traces; Parent and Root move up in one step, Escape closes the span. Flow run, system job and plug-in step ids link to their own views. Copy id and Copy link put the trace id or a link to this view on the clipboard.',
     doc: `${TRACING}#reading-a-trace`,
     fields: {
       spanSearch:
-        'Shows only spans whose name, kind, module, operation, table, error or attribute values contain this text; their parents stay visible, dimmed.',
+        'Shows only spans whose text contains this, matched like the Search filter: span names, kinds, modules, operations, tables, record ids, actor names and ids, error codes and messages, attribute names and values, event types, messages and attributes, and at level full the captured input and output (case is ignored). Their parents stay visible, dimmed.',
       errorsOnly: 'Shows only spans that ended in error or were denied, with their parents dimmed.',
       copyFallback:
         'The browser refused clipboard access. The text is selected: press Ctrl+C (Cmd+C on a Mac) to copy it.',
@@ -538,11 +542,15 @@ const HELP = {
   },
   'trace.settings': {
     intro:
-      'The tracing level applies at once, without a restart: off records nothing, summary records every span without payloads, full also captures redacted payloads at extra cost. Persisting appends each ended trace to a file under the runtime’s .paqvilo state folder.',
+      'The tracing level and the retention limits apply at once, without a restart: off records nothing, summary records every span without payloads, full also captures redacted payloads at extra cost. Each span remembers the level it was recorded at. Persisting appends each ended trace to a file under the runtime’s .paqvilo state folder.',
     doc: `${TRACING}#levels`,
     fields: {
       persist:
         'Appends each ended trace as one JSON line to <state folder>/traces/<date>.ndjson; secrets, tokens and cookies are never written.',
+      traces: 'How many traces are kept, from 10 to 10,000; the oldest beyond it are dropped as soon as you save.',
+      spansPerTrace: 'How many spans one trace keeps, from 50 to 20,000; spans beyond it are counted as refused.',
+      payloadBytes:
+        'The largest captured input or output per span at level full, from 256 to 1,048,576 bytes; larger ones are cut and marked truncated.',
     },
   },
 

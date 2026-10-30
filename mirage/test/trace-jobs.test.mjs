@@ -12,16 +12,11 @@ import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
 import { webhookDelivery } from '../lib/dataverse-webhooks.mjs';
 import { workflowExtension, workflowHandlers } from '../lib/dataverse-workflows.mjs';
-import {
-  pluginCatalogue,
-  pluginPhaseRequiresCheckpoint,
-  pluginStepMatchesEntity,
-  runPluginPhase,
-} from '../lib/exported-plugins.mjs';
+import { pluginCatalogue, runPluginPhase } from '../lib/exported-plugins.mjs';
 import { createTraceStore } from '../lib/trace-store.mjs';
+import { widgetApi, wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 
 const STEP = '10000000-0000-4000-8000-0000000000b1';
 const asyncStep = {
@@ -77,8 +72,23 @@ test('an async plug-in job opens its job span under the staging span, whatever c
   assert.equal(job.async, true);
   assert.equal(job.parentSpanId, request.spanId);
   assert.equal(job.module, 'jobs');
+  // The job names the process it runs and the record of its triggering event (D-R3-24, D-R3-1).
+  // The name is the process display name alone: the kind says it is a job (a tree line reads "job <process>").
   assert.equal(job.name, 'Invented asynchronous step');
+  assert.equal(job.name, job.attributes.processName);
+  assert.doesNotMatch(job.name, /^job /);
+  assert.deepEqual(
+    [job.attributes.processType, job.attributes.processId, job.attributes.processName],
+    ['plugin', STEP, 'Invented asynchronous step'],
+  );
+  const widgetId = store.tableRows('widget')[0].widgetid;
+  assert.deepEqual([job.entity, job.recordId], ['widget', widgetId]);
   assert.deepEqual(job.links, [{ traceId: request.traceId, spanId: request.spanId, relation: 'staged-by' }]);
+  assert.deepEqual(
+    spans.find((span) => span.spanId === request.spanId).links,
+    [{ traceId: request.traceId, spanId: job.spanId, relation: 'triggered' }],
+    'the staging span names the job it triggered',
+  );
   assert.equal(job.attributes.kind, 'plugin');
   assert.equal(job.attributes.jobId, staged.attributes.asyncOperationId);
   assert.equal(job.attributes.attempt, 1);
@@ -88,6 +98,7 @@ test('an async plug-in job opens its job span under the staging span, whatever c
   assert.equal(stage.attributes.asyncExecution, true);
   const run = spans.find((span) => span.kind === 'plugin-step');
   assert.equal(run.parentSpanId, stage.spanId);
+  assert.deepEqual([stage.recordId, run.recordId], [widgetId, widgetId], 'the stage and step name the job record');
   assert.deepEqual(
     run.events.filter((event) => event.type === 'trace').map((event) => event.message),
     ['Invented async line'],
@@ -246,28 +257,7 @@ test('a job of a capped staging trace never joins the trace of the context that 
 
 // A store with the Dataverse API and a web hook step on contoso_widget Create, wired as server.mjs wires it.
 async function webhookWorld(t, { mode, url }) {
-  const state = emptyState();
-  state.mappings.contoso_widget = {
-    logicalName: 'contoso_widget',
-    entitySet: 'contoso_widgets',
-    idColumn: 'contoso_widgetid',
-    nameColumn: 'contoso_name',
-    userConfigured: true,
-    fields: { contoso_name: { dataverseType: 'nvarchar' } },
-    relationships: {},
-  };
-  state.tables.contoso_widget = [];
-  const store = await new DataStore({ state }).init();
-  const api = await startDataverseApi({
-    store,
-    settings: dataverseSettings({ enabled: true }),
-    log: () => {},
-    extensions: [...EXTENSIONS],
-  });
-  const messageId = store.tableRows('sdkmessage').find((row) => row.name === 'Create').sdkmessageid;
-  const filterId = store
-    .tableRows('sdkmessagefilter')
-    .find((row) => row.sdkmessageid === messageId && row.primaryobjecttypecode === 'contoso_widget').sdkmessagefilterid;
+  const { store, api, messageId, filterId } = await widgetApi('contoso');
   const endpointId = 'cccccccc-0000-4000-8000-0000000000c1';
   await store.create(
     'serviceendpoint',
@@ -291,28 +281,7 @@ async function webhookWorld(t, { mode, url }) {
     { admin: true },
   );
   const webhooks = webhookDelivery(store);
-  const steps = () =>
-    pluginCatalogue({
-      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
-      handlers: new Map(),
-    });
-  store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store, items: steps(), handlers: new Map(), webhooks }),
-    ({ entity, operation }) =>
-      steps().some(
-        (item) =>
-          item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation,
-      ),
-    (context) => pluginPhaseRequiresCheckpoint(steps(), context),
-  );
-  const runner = createAsyncPluginRunner({
-    store,
-    items: steps,
-    handlers: new Map(),
-    runtimes: new Map(),
-    webhooks,
-    systemJobs: () => true,
-  });
+  const runner = wireRegisteredSteps(store, webhooks);
   t.after(async () => {
     await runner.close();
     await api.close();

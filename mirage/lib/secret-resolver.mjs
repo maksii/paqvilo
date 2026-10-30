@@ -146,19 +146,28 @@ export function createSecretResolver({
   const traced = async (reference, options, read) => {
     const store = typeof traces === 'function' ? traces() : traces;
     if (!store?.enabled) return read();
-    const key = parseSecretReference(reference)?.key ?? null;
+    const parsed = parseSecretReference(reference),
+      key = parsed?.key ?? null;
+    // The vault and secret name of the reference (never its value): which secret was asked for, by whom, and the outcome.
     const span = store.start({
       kind: 'secret',
       name: `Secret ${key ?? 'reference'}`,
       module: 'secrets',
       operation: 'resolve',
-      attributes: { key, purpose: options.purpose ?? null, principalId: options.principalId ?? null },
+      attributes: {
+        key,
+        vault: parsed?.vault ?? null,
+        secretName: parsed?.name ?? null,
+        version: parsed?.version ?? null,
+        purpose: options.purpose ?? null,
+        principalId: options.principalId ?? null,
+      },
     });
     try {
       const answer = await read();
       span.end({
         status: answer.status === 'resolved' ? 'ok' : answer.status === 'denied' ? 'denied' : 'error',
-        attributes: { status: answer.status },
+        attributes: { status: answer.status, ...(answer.version ? { resolvedVersion: answer.version } : {}) },
         ...(answer.status === 'resolved'
           ? {}
           : { error: { code: `SECRET_${answer.status.toUpperCase()}`, message: answer.reason } }),

@@ -7,6 +7,7 @@ import { assertDataverseRootBody } from './dataverse-reader-details.mjs';
 // properties, navigation, $ref and collection-bound actions. The Dataverse layer
 // authorizes each call here before the store runs under the bypass identity.
 import { DataError } from './data-error.mjs';
+import { isConnectorDataverseSpan } from './connector-definition.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
 import { parseEntityReference, parseFetchXml } from './data.mjs';
@@ -324,6 +325,97 @@ const OPERATION_LABEL = {
   disassociate: 'Disassociate',
   action: 'Action',
 };
+// Tracing of a Web API dispatch (docs/design/tracing.md, D-R3-1, D-R3-2, D-R3-22).
+const GUID_TEXT = /^\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?$/i;
+// The record a keyed route names by primary key; an alternate key resolves in the store (data.mjs traceRecord).
+function routeRecordId(route) {
+  if (route?.key == null) return null;
+  try {
+    return parseKey(route.key)?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+// The kind of query a request carries (attribute `query`), or null.
+function queryKindOf(url) {
+  const has = (name) => url.searchParams.has(name);
+  if (has('fetchXml') || has('fetchxml')) return 'fetchxml';
+  if (has('savedQuery')) return 'savedquery';
+  if (has('userQuery')) return 'userquery';
+  if (has('$deltatoken')) return 'delta';
+  if (has('$apply')) return 'apply';
+  return ['$filter', '$select', '$orderby', '$top', '$skip', '$expand', '$count', '$search', '$skiptoken'].some(has)
+    ? 'odata'
+    : null;
+}
+// Level full: the body, the query options (credential-named values redacted by the store) and the headers that change the
+// answer.
+const DISPATCH_HEADERS = ['prefer', 'if-match', 'if-none-match'];
+function dispatchInput(c) {
+  const headers = Object.fromEntries(
+    DISPATCH_HEADERS.filter((name) => c.headers?.[name] != null).map((name) => [name, String(c.headers[name])]),
+  );
+  return {
+    ...(c.body === undefined ? {} : { body: c.body }),
+    query: c.url.searchParams,
+    ...(Object.keys(headers).length ? { headers } : {}),
+  };
+}
+// One bypass event per bypass header on the request: what it asked and which logic the local pipeline skipped for it.
+// BypassCustomPluginExecution true and BypassBusinessLogicExecution CustomSync skip the synchronous plug-in stages.
+const BYPASS_HEADERS = [
+  ['mscrm.bypasscustompluginexecution', 'MSCRM.BypassCustomPluginExecution'],
+  ['mscrm.bypassbusinesslogicexecution', 'MSCRM.BypassBusinessLogicExecution'],
+];
+function bypassEvents(span, c) {
+  if (!span) return;
+  for (const [name, header] of BYPASS_HEADERS) {
+    const value = c.headers?.[name];
+    if (value == null || String(value).trim() === '') continue;
+    const words = String(value)
+      .split(',')
+      .map((word) => word.trim().toLowerCase());
+    const skips =
+      c.bypassCustomPlugins === true &&
+      (name === 'mscrm.bypasscustompluginexecution' ? ['true', '1'].includes(words[0]) : words.includes('customsync'));
+    span.event('bypass', { attributes: { header, value: String(value), skipped: skips ? ['sync-plugins'] : [] } });
+  }
+}
+// The answer of a dispatch: its status, a single row's id, and for a collection page its row count, page number and
+// (when the answer carries them) total count and whether more records follow; the output only at level full.
+function dispatchAnswer(span, c, mapping, answer) {
+  if (!span) return;
+  const body =
+    answer?.body && typeof answer.body === 'object' && !Buffer.isBuffer(answer.body) && !answer.body.pipe
+      ? answer.body
+      : null;
+  const page = Array.isArray(body?.value);
+  if (!page && span.recordId == null && body?.[mapping.idColumn] != null)
+    span.setEntity(mapping.logicalName, String(body[mapping.idColumn]));
+  let pageNumber;
+  if (page) {
+    try {
+      pageNumber = decodeSkipToken(c.url.searchParams.get('$skiptoken') ?? '')?.pageNumber ?? 1;
+    } catch {
+      pageNumber = 1;
+    }
+  }
+  const total = page ? (body['@odata.count'] ?? body['@Microsoft.Dynamics.CRM.totalrecordcount']) : undefined;
+  span.set({
+    statusCode: answer?.status ?? null,
+    rowCount: page ? body.value.length : undefined,
+    pageNumber,
+    query: queryKindOf(c.url) ?? undefined,
+  });
+  span.output(() => ({
+    id: span.recordId,
+    rowCount: page ? body.value.length : null,
+    ...(total != null ? { totalCount: total } : {}),
+    ...(page ? { moreRecords: body['@odata.nextLink'] != null } : {}),
+    statusCode: answer?.status ?? null,
+  }));
+}
+
 const WEB_API_OPERATION = {
   collection: { GET: 'retrievemultiple', POST: 'create' },
   count: { GET: 'retrievemultiple' },
@@ -357,17 +449,16 @@ export function createRecordHandlers({
     principals.authorize({ user: c.user, entity, operation, row, mapping });
   // One dataverse span per internal entry and per Web API dispatch (docs/design/tracing.md); a plug-in step's nested SDK
   // writes run on the same stack, so their spans nest under the step. c is the resolved context (internalContext).
-  const traced = (c, operation, entity, recordId, { sync, authorized } = {}, input, run) => {
+  // Record identity (D-R3-1): a primary key names the record at start; an alternate key or a create's id is named by the
+  // store as soon as it resolves the row (data.mjs traceRecord), and an internal entry's returned row names it otherwise.
+  // A Web API dispatch (dispatch: true) records its answer itself (dispatchAnswer).
+  const traced = (c, operation, entity, recordId, { sync, authorized, dispatch = false } = {}, input, run) => {
     const traces = store.traces;
     const current = traces?.enabled ? traces.current() : null;
     // A bulk message has one span; its per-row writes open none (plugin-bulk.mjs). A flow Dataverse connector call is one
-    // dataverse span too (connector-runtime.mjs dataverseProvider): the entries it drives open none.
-    if (
-      !traces?.enabled ||
-      current?.kind === 'bulk' ||
-      (current?.kind === 'dataverse' && current.module === 'connectors')
-    )
-      return run();
+    // dataverse span too (connector-runtime.mjs dataverseProvider, marked by markConnectorDataverseSpan): the entries it
+    // drives open none.
+    if (!traces?.enabled || current?.kind === 'bulk' || isConnectorDataverseSpan(current)) return run();
     const user = c.portal ? null : c.user;
     return traces.wrap(
       {
@@ -376,7 +467,7 @@ export function createRecordHandlers({
         module: 'dataverse',
         operation,
         entity,
-        recordId: recordId == null ? null : String(recordId),
+        recordId: GUID_TEXT.test(String(recordId ?? '')) ? String(recordId).replace(/[{}]/g, '').toLowerCase() : null,
         ...(user
           ? {
               actor: {
@@ -398,8 +489,11 @@ export function createRecordHandlers({
       },
       (span) => {
         const result = run(span);
+        if (dispatch) return result;
         const done = (value) => {
-          span.output(() => ({ id: value?.[store.resolveMapping(entity).idColumn] ?? null }));
+          const id = (value && typeof value === 'object' ? value[store.resolveMapping(entity).idColumn] : null) ?? null;
+          if (id != null && span.recordId == null) span.setEntity(entity, String(id));
+          span.output(() => ({ id: span.recordId }));
           return value;
         };
         return typeof result?.then === 'function' ? result.then(done) : done(result);
@@ -3013,11 +3107,21 @@ export function createRecordHandlers({
           null;
       }
       const operation = WEB_API_OPERATION[c.route.kind]?.[ctx.method] ?? String(ctx.method).toLowerCase();
-      const response = await traced(c, operation, mapping.logicalName, null, {}, undefined, async (span) => {
-        const answer = await dispatch(c);
-        span?.set({ statusCode: answer?.status ?? null });
-        return answer;
-      });
+      const tracing = store.traces?.enabled === true;
+      const response = await traced(
+        c,
+        operation,
+        mapping.logicalName,
+        tracing ? routeRecordId(c.route) : null,
+        { dispatch: true },
+        tracing ? () => dispatchInput(c) : undefined,
+        async (span) => {
+          bypassEvents(span, c);
+          const answer = await dispatch(c);
+          dispatchAnswer(span, c, mapping, answer);
+          return answer;
+        },
+      );
       if (isElastic(mapping) && ctx.method !== 'GET' && ctx.method !== 'DELETE' && response?.status < 400)
         response.headers = {
           ...response.headers,

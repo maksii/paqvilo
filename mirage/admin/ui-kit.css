@@ -1,5 +1,6 @@
 /* Shared UI kit for /_sim/ and /_setup/. Every selector is prefixed `ui-`, so existing unprefixed classes in
-   both pages keep their meaning. Light theme only; animation stops under prefers-reduced-motion. */
+   both pages keep their meaning. Light by default; a page with <html data-ui-theme="auto"> follows prefers-color-scheme (the dark tokens at the
+   end). Animation stops under prefers-reduced-motion. */
 :root {
   --ui-accent: #4254dc;
   --ui-line: #e4e8f1;
@@ -131,7 +132,7 @@
   width: 17px;
   height: 17px;
   padding: 0;
-  border: 1px solid #b6c1d6;
+  border: 1px solid var(--ui-l-b6c1d6, #b6c1d6);
   border-radius: 50%;
   background: var(--ui-surface);
   color: var(--ui-accent);
@@ -204,7 +205,7 @@
   margin: 8px 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: #f3f5fa;
+  background: var(--ui-c-f3f5fa, #f3f5fa);
   font-family: var(--ui-mono);
   font-size: 13px;
   white-space: pre;
@@ -374,7 +375,7 @@
   overflow: auto;
   border: 1px solid var(--ui-line);
   border-radius: var(--ui-radius);
-  background: #fbfcfe;
+  background: var(--ui-c-fbfcfe, #fbfcfe);
 }
 .ui-topology svg {
   display: block;
@@ -418,31 +419,31 @@
 }
 .ui-node.is-listening .ui-node-card,
 .ui-node.is-ready .ui-node-card {
-  fill: #f6fbf8;
-  stroke: #b9e0cb;
+  fill: var(--ui-c-f6fbf8, #f6fbf8);
+  stroke: var(--ui-l-b9e0cb, #b9e0cb);
 }
 .ui-node.is-declared .ui-node-card,
 .ui-node.is-planned .ui-node-card {
-  fill: #f6f8ff;
-  stroke: #c8d3f5;
+  fill: var(--ui-c-f6f8ff, #f6f8ff);
+  stroke: var(--ui-l-c8d3f5, #c8d3f5);
 }
 .ui-node.is-planned .ui-node-card {
   stroke-dasharray: 5 4;
 }
 .ui-node.is-disabled .ui-node-card {
-  fill: #f4f5f8;
-  stroke: #d5dae4;
+  fill: var(--ui-c-f4f5f8, #f4f5f8);
+  stroke: var(--ui-l-d5dae4, #d5dae4);
 }
 .ui-node.is-disabled .ui-node-label {
   fill: var(--ui-muted);
 }
 .ui-node.is-placeholder .ui-node-card {
-  fill: #fffaf0;
+  fill: var(--ui-c-fffaf0, #fffaf0);
   stroke: #f0d6a2;
 }
 .ui-node.is-missing .ui-node-card,
 .ui-node.is-error .ui-node-card {
-  fill: #fff6f7;
+  fill: var(--ui-c-fff6f7, #fff6f7);
   stroke: #e7b3ba;
 }
 .ui-status-dot {
@@ -477,7 +478,7 @@ span.ui-status-dot {
   background: var(--ui-bad);
 }
 .ui-edge {
-  stroke: #b4bfd3;
+  stroke: var(--ui-l-b4bfd3, #b4bfd3);
   stroke-width: 1.6;
 }
 .ui-edge.is-disabled,
@@ -496,7 +497,7 @@ span.ui-status-dot {
   animation: ui-flow 1.2s linear infinite;
 }
 .ui-edge-arrow {
-  fill: #b4bfd3;
+  fill: var(--ui-c-b4bfd3, #b4bfd3);
 }
 @keyframes ui-flow {
   to {
@@ -581,7 +582,7 @@ span.ui-status-dot {
   font-weight: 600;
 }
 .ui-rail .is-done a {
-  border-color: #b9e0cb;
+  border-color: var(--ui-l-b9e0cb, #b9e0cb);
 }
 .ui-rail .is-next a {
   border-color: var(--ui-accent);
@@ -1078,6 +1079,132 @@ span.ui-status-dot {
   font-weight: 600;
 }
 
+.ui-bar-fill.is-cancelled {
+  opacity: 0.45;
+  stroke: var(--ui-neutral);
+  stroke-dasharray: 2 2;
+}
+/* Trace view: the list beside the open trace, the span path, the spotlight lists and the status legend. */
+@media (min-width: 1200px) {
+  .ui-trace-layout.has-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    gap: 16px;
+    align-items: start;
+  }
+  .ui-trace-layout.has-detail .ui-trace-side {
+    position: sticky;
+    top: 8px;
+    max-height: calc(100vh - 16px);
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .ui-trace-layout.has-detail .ui-trace-main .ui-trace-extra,
+  .ui-trace-layout.has-detail .ui-trace-main .ui-trace-kinds {
+    display: none;
+  }
+  /* The start time takes two lines (date, then time) instead of breaking at every hyphen. */
+  .ui-trace-layout.has-detail .ui-trace-main td > time {
+    display: inline-block;
+    min-width: 12ch;
+  }
+  .ui-trace-layout.has-detail .ui-trace-root,
+  .ui-trace-layout.has-detail .ui-trace-origin {
+    max-width: 18em;
+  }
+  /* A first error keeps a readable measure in the narrow list instead of one word per line. */
+  .ui-trace-layout.has-detail .ui-trace-error {
+    min-width: 16em;
+  }
+  /* Beside the list the waterfall labels take over half of the narrower column, and a name wraps instead of being cut,
+     so sibling spans stay distinguishable; the bar scales to the remaining width (DV-Y8-6). */
+  .ui-trace-side .ui-waterfall-row {
+    grid-template-columns: minmax(0, 55%) minmax(80px, 1fr) 84px;
+  }
+  .ui-trace-side .ui-waterfall-label {
+    flex-wrap: wrap;
+  }
+  .ui-trace-side .ui-waterfall-name {
+    min-width: min(100%, 8em);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+.ui-trace-layout > div {
+  min-width: 0;
+}
+.ui-crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.ui-crumbs li {
+  overflow-wrap: anywhere;
+}
+.ui-crumbs li + li::before {
+  content: '›';
+  margin-right: 4px;
+  color: var(--ui-muted);
+}
+.ui-crumbs [aria-current] {
+  font-weight: 600;
+}
+.ui-span-spotlight {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 8px 24px;
+}
+.ui-span-refs {
+  margin: 0;
+  padding-left: 20px;
+}
+.ui-span-refs li {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+.ui-span-ref-error,
+.ui-trace-error {
+  display: block;
+  color: var(--ui-bad);
+  overflow-wrap: anywhere;
+}
+.ui-trace-error {
+  max-width: 24em;
+  margin: 2px 0 0;
+}
+.ui-status-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+.ui-limits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 8px 16px;
+}
+.ui-limits label {
+  display: block;
+  font-weight: 600;
+}
+.ui-form input[type='number'] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  font: inherit;
+}
+
 @media (min-width: 1100px) {
   .ui-rail {
     position: sticky;
@@ -1094,6 +1221,20 @@ span.ui-status-dot {
 }
 
 @media (max-width: 600px) {
+  .ui-waterfall-name,
+  .ui-trace-root .ui-trace-name,
+  .ui-trace-origin,
+  .ui-tree-span {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  /* A deep span keeps its indent; its name takes the next line instead of shrinking to a few letters. */
+  .ui-waterfall-label {
+    flex-wrap: wrap;
+  }
+  .ui-waterfall-name {
+    min-width: min(100%, 10em);
+  }
   .ui-waterfall-row {
     grid-template-columns: minmax(0, 1fr) 80px;
   }
@@ -1122,5 +1263,181 @@ span.ui-status-dot {
   }
   .ui-section > summary::before {
     transition: none;
+  }
+}
+
+/* Dark theme (generated from the light literals by a lightness transform: every light surface, line and ink colour of the
+   /_sim/ sheets is a --ui-c- (surface), --ui-l- (line) or --ui-t- (text) token named by its light hex, with that light
+   value as fallback. A page opts in with <html data-ui-theme="auto"> and then follows prefers-color-scheme.) */
+@media (prefers-color-scheme: dark) {
+  :root[data-ui-theme='auto'] {
+    color-scheme: dark;
+    --ui-accent: #8792e9;
+    --ui-line: #2b3753;
+    --ui-muted: #9aa4b4;
+    --ui-danger: #e38d96;
+    --ui-ok: #8de2b8;
+    --ui-warn: #f1c37e;
+    --ui-bad: #e38d96;
+    --ui-info: #8ba5e5;
+    --ui-neutral: #aab4c5;
+    --ui-surface: #292929;
+    --ui-ink: #dbe3ee;
+    --ui-ok-bg: #18251e;
+    --ui-warn-bg: #282113;
+    --ui-bad-bg: #30171b;
+    --ui-info-bg: #171d2f;
+    --ui-neutral-bg: #1a1e27;
+    --ui-focus: #7e95f1;
+    --accent: #8792e9;
+    --line: #2b3753;
+    --muted: #9aa4b4;
+    --danger: #e38d96;
+    --dm-ink: #e7ebf3;
+    --dm-ink-2: #c2cad8;
+    --dm-muted: #a3adbc;
+    --dm-line: #364153;
+    --dm-surface: #292929;
+    --dm-canvas: #1d212a;
+    --dm-off: #aeb5c1;
+    --dm-pages: #9691de;
+    --dm-apps: #cb93dc;
+    --dm-dataverse: #7ff0b7;
+    --dm-automate: #82a9ee;
+    --dm-azure: #7ebef1;
+    --dm-neutral: #abb4c4;
+    --dm-wire: #abb4c4;
+    --dm-wire-soft: #a8b4c7;
+    --dm-active: #7ea5f1;
+    --dm-hot: #918be5;
+    --ui-on-accent: #0e1426;
+    --ui-accent-hover: #a3adf5;
+    --ui-c-9aacc8: #465d81;
+    --ui-c-b4bfd3: #3d4c67;
+    --ui-c-b8c3d6: #3a4964;
+    --ui-c-b9c1cf: #424d61;
+    --ui-c-dce2ec: #121418;
+    --ui-c-e3e7ee: #16181c;
+    --ui-c-e3e9ff: #14192a;
+    --ui-c-eaf7f0: #18251e;
+    --ui-c-ebf3fc-a60: rgba(21, 32, 44, 0.6);
+    --ui-c-eceeff: #16192e;
+    --ui-c-ecf8f1-a60: rgba(24, 39, 30, 0.6);
+    --ui-c-edf0ff: #171b2f;
+    --ui-c-edf1fa: #181d2a;
+    --ui-c-edf1fb: #171d2c;
+    --ui-c-edf4ff: #17202f;
+    --ui-c-eef1f6: #1b1e25;
+    --ui-c-eef1f8: #1a1e27;
+    --ui-c-eef1ff: #171b2f;
+    --ui-c-eef2ff: #171d2f;
+    --ui-c-f0f2f7-a70: rgba(28, 31, 38, 0.7);
+    --ui-c-f0f5fb: #18212c;
+    --ui-c-f1f3f9: #1b1f29;
+    --ui-c-f1f4f9: #1b2029;
+    --ui-c-f1f8f4: #1c2721;
+    --ui-c-f3f4f8: #1e2027;
+    --ui-c-f3f5fa: #1c202a;
+    --ui-c-f3f5ff: #181c32;
+    --ui-c-f4f5f8: #1f2127;
+    --ui-c-f4f6fb: #1b202c;
+    --ui-c-f5f7fb: #1c222c;
+    --ui-c-f6f8fc: #1c222e;
+    --ui-c-f6f8ff: #191f33;
+    --ui-c-f6fbf8: #1e2c23;
+    --ui-c-f7f8fb: #1f222b;
+    --ui-c-f7f8ff: #191c34;
+    --ui-c-fafbfd: #1e242f;
+    --ui-c-fafbfe: #1a2134;
+    --ui-c-fbfcfe: #1c2433;
+    --ui-c-fff0f2: #30171b;
+    --ui-c-fff1f2: #311819;
+    --ui-c-fff5df: #282113;
+    --ui-c-fff6d9: #252012;
+    --ui-c-fff6f7: #33191c;
+    --ui-c-fff9ed: #2f2717;
+    --ui-c-fffaf0: #302817;
+    --ui-c-fffafa: #351a1a;
+    --ui-c-fffbf1: #312a18;
+    --ui-c-fffdf7: #342d19;
+    --ui-c-ffffff: #292929;
+    --ui-c-ffffff-a55: rgba(41, 41, 41, 0.55);
+    --ui-l-8fa3d8: #4b619b;
+    --ui-l-aebacf: #4e6183;
+    --ui-l-b4bfd3: #4a5c7e;
+    --ui-l-b6c1d6: #46597d;
+    --ui-l-b9c1cf: #515e76;
+    --ui-l-b9c4d7: #46597a;
+    --ui-l-b9e0cb: #3b7b59;
+    --ui-l-bfcee1: #395477;
+    --ui-l-c3cad6: #4a576d;
+    --ui-l-c8d3f5: #303d64;
+    --ui-l-c9d0dc: #435168;
+    --ui-l-c9d9ee: #324968;
+    --ui-l-cbd5e4: #374c6a;
+    --ui-l-cfe9da: #326748;
+    --ui-l-d4ddeb: #304463;
+    --ui-l-d5dae4: #3c475d;
+    --ui-l-d9deea: #333f5c;
+    --ui-l-d9dfeb: #31405d;
+    --ui-l-dce2ec: #314059;
+    --ui-l-dfe4ff: #262c4f;
+    --ui-l-e5e9f5: #273252;
+    --ui-l-e5eaf2: #293953;
+    --ui-l-e7eaf0: #30394c;
+    --ui-l-edf0f5: #283549;
+    --ui-l-eff1f6: #283147;
+    --ui-l-f1e5ca: #655531;
+    --ui-l-f2cbd0: #643037;
+    --ui-l-ffffff: #333333;
+    --ui-t-1d2b44: #dee5f1;
+    --ui-t-213047: #dbe3ee;
+    --ui-t-237657: #b4e9d5;
+    --ui-t-244874: #b6cce8;
+    --ui-t-273851: #d2dbe9;
+    --ui-t-293d65: #c1cde6;
+    --ui-t-33445e: #c5cfdf;
+    --ui-t-344666: #becade;
+    --ui-t-354666: #bec9dd;
+    --ui-t-3546a5: #8995d9;
+    --ui-t-354762: #c1cdde;
+    --ui-t-36445b: #c7cfde;
+    --ui-t-384a66: #bec9db;
+    --ui-t-40516a: #b9c4d5;
+    --ui-t-405277: #aebbd4;
+    --ui-t-455773: #b1bdd0;
+    --ui-t-4f5c74: #afb8c8;
+    --ui-t-52637b: #a9b5c6;
+    --ui-t-53617a: #a9b3c5;
+    --ui-t-5361c5: #6673cc;
+    --ui-t-566174: #aeb6c3;
+    --ui-t-56647b: #a8b2c2;
+    --ui-t-57658b: #9ba5c0;
+    --ui-t-586984: #a1adc0;
+    --ui-t-596880: #a4afc0;
+    --ui-t-5c6b87: #9ea9bd;
+    --ui-t-60708d: #98a4b9;
+    --ui-t-67758a: #9aa4b4;
+    --ui-t-718096: #8e9aac;
+    --ui-t-738198: #8c98aa;
+    --ui-t-7883da: #5f6cd3;
+    --ui-t-7a8599: #8c95a6;
+    --ui-t-7b899e: #8996a9;
+    --ui-t-7c89a0: #8994a9;
+    --ui-t-8390a4: #8996a9;
+    --ui-t-8391a6: #8896aa;
+    --ui-t-8491a5: #8996a9;
+    --ui-t-8590a4: #8a95a8;
+    --ui-t-8591a3: #8b96a7;
+    --ui-t-867342: #d1c4a2;
+    --ui-t-8994a7: #8a95a8;
+    --ui-t-8a5300: #eedabc;
+    --ui-t-8b5a00: #eedcbc;
+    --ui-t-967016: #e8d4a4;
+    --ui-t-97a2b5: #8894aa;
+    --ui-t-9ca9dc: #687cca;
+    --ui-t-9fb3dc: #6a89c8;
+    --ui-t-af3f4c: #d18089;
+    --ui-t-b33346: #da7e8b;
   }
 }

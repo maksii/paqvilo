@@ -11,6 +11,10 @@ import { Writable, finished } from 'node:stream';
 import { createSimulator } from '../api.mjs';
 import { AuditLog } from '../lib/audit-log.mjs';
 import { sseClients, traceSessionKey } from '../lib/trace-hosts.mjs';
+import { createTraceStore } from '../lib/trace-store.mjs';
+import { createAzuriteStorage } from '../lib/storage-azurite.mjs';
+import { createSharePointFixtureServer } from '../lib/sharepoint-contract.mjs';
+import { startAzuriteFake, FAKE_ACCOUNT_KEY } from '../testing/azurite-fake.mjs';
 import { drainFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 import { personaFixture } from './fixtures/persona-catalog.mjs';
 import { endedTree as ended } from './support/trace-scenario.mjs';
@@ -26,6 +30,15 @@ const portalFiles = {
   'Inner.webtemplate.yml': 'adx_webtemplateid: inner\nadx_name: Inner',
   'Inner.webtemplate.source.html':
     '{% fetchxml rows %}<fetch><entity name="x_item"><attribute name="x_name"/></entity></fetch>{% endfetchxml %}<p id="count">{{ rows.results.entities.size }}</p>',
+  'NotFound.webpage.yml':
+    'adx_webpageid: notfound\nadx_name: Page Not Found\nadx_partialurl: page-not-found\nadx_parentpageid: home\nadx_pagetemplateid: main',
+  'sitemarker.yml': '- adx_sitemarkerid: m-404\n  adx_name: Page Not Found\n  adx_pageid: notfound',
+  'Detail.webpage.yml':
+    'adx_webpageid: detail\nadx_name: Detail\nadx_partialurl: detail\nadx_parentpageid: home\nadx_pagetemplateid: detail',
+  'Detail.pagetemplate.yml': 'adx_pagetemplateid: detail\nadx_name: Detail\nadx_webtemplateid: detail',
+  'Detail.webtemplate.yml': 'adx_webtemplateid: detail\nadx_name: Detail',
+  'Detail.webtemplate.source.html':
+    '{% assign one = entities.x_item[request.params.id] %}<p id="one">{{ one.x_name }}</p>',
   'sitesetting.yml':
     '- adx_sitesettingid: s1\n  adx_name: Webapi/x_item/enabled\n  adx_value: "true"\n- adx_sitesettingid: s2\n  adx_name: Webapi/x_item/fields\n  adx_value: x_name',
   'webrole.yml': '- adx_webroleid: anonymous\n  adx_name: Anonymous Users\n  adx_anonymoususersrole: true',
@@ -181,7 +194,15 @@ test('Power Pages: a page GET is an http root with render, render-template and r
   const render = tree.spans.find((span) => span.kind === 'render');
   assert.equal(render.parentSpanId, root.spanId);
   const read = tree.spans.find((span) => span.kind === 'read');
-  assert.deepEqual([read.entity, read.operation, read.attributes.rowCount], ['x_item', 'liquid-fetchxml', 2]);
+  // A Liquid FetchXML read is a retrievemultiple whose source names it (D-R3-9); level full captures the rows read.
+  assert.deepEqual(
+    [read.entity, read.operation, read.attributes.rowCount, read.attributes.source, read.attributes.query],
+    ['x_item', 'retrievemultiple', 2, 'liquid-fetchxml', 'fetchxml'],
+  );
+  assert.deepEqual(
+    read.output.entities.map((row) => row.x_name),
+    ['First', 'Second'],
+  );
   // read → render-template (Inner) → render-template (Main) → render → http
   const chain = sim.trace.ancestry(read.spanId).map((span) => span.kind);
   assert.deepEqual(chain, ['http', 'render', 'render-template', 'render-template', 'read']);
@@ -398,7 +419,7 @@ test('standalone and Dataverse API listener: http roots carry their origin host;
   );
   assert.match(span.attributes.actorId, /^[0-9a-f-]{36}$/);
   assert.deepEqual([span.actor.kind, span.actor.id], ['app', span.attributes.actorId], 'the root takes the caller');
-  assert.equal(sim.trace.spans({ actorKind: 'app', actorId: span.actor.id, search: 'WhoAmI' }).total, 1);
+  assert.equal(sim.trace.spans({ kind: 'http', actorKind: 'app', actorId: span.actor.id, search: 'WhoAmI' }).total, 1);
   assert.match(span.attributes.requestId, /^[0-9a-f-]{36}$/);
   assert.equal(JSON.stringify(span).includes(token.access_token), false, 'the bearer token never reaches a span');
   const denied = await fetch(sim.dataverse.origin + '/api/data/v9.2/WhoAmI');
@@ -645,8 +666,9 @@ test('a persona runtime records into its parent trace store and follows its run-
   assert.equal(settings.settings.level, 'full', 'one store: the parent change applies to the persona runtime');
 });
 
-test('SSE clients: a closed response never joins, a closing one leaves, three stalled writes in a row drop a client', async () => {
-  const clients = sseClients();
+test('SSE clients: a closed response never joins, a closing one leaves, a client still waiting for drain past the stall limit is dropped', async () => {
+  let clock = 0;
+  const clients = sseClients({ now: () => clock, stallMs: 5000 });
   const accepting = () =>
     new Writable({
       write(chunk, encoding, done) {
@@ -666,8 +688,10 @@ test('SSE clients: a closed response never joins, a closing one leaves, three st
   assert.deepEqual([...clients], [live, stalled], 'stream.finished removes a client that closes');
   clients.send('event: log\ndata: 1\n\n');
   clients.send('event: log\ndata: 2\n\n');
-  assert.equal(clients.size, 2, 'two stalled writes keep the client');
   clients.send('event: log\ndata: 3\n\n');
+  assert.equal(clients.size, 2, 'refused writes within the stall limit keep the client');
+  clock = 5001;
+  clients.send('event: log\ndata: 4\n\n');
   assert.deepEqual([...clients], [live]);
   assert.equal(stalled.destroyed, true, 'the dropped client is destroyed');
   clients.end();
@@ -695,4 +719,218 @@ test('a memory-only runtime accepts persist but writes nothing and says why on t
   } finally {
     sim.trace.configure(settings);
   }
+});
+
+test('Power Pages: an entity read is a retrieve naming its record; the root records the query with secret values hidden', async () => {
+  const sim = await powerPages();
+  const id = '11111111-1111-4111-8111-111111111111';
+  const page = await fetch(`${sim.url}/detail/?id=${id}&code=invented-function-key`);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /<p id="one">First<\/p>/);
+  const tree = await ended(sim.trace, page.headers.get('x-trace-id'));
+  // Summary attributes name the query (secret-named values hidden); level full keeps the parameters as input.
+  assert.equal(tree.root.attributes.query, `id=${id}&code=[redacted]`);
+  assert.deepEqual(tree.root.input, { query: { id, code: '[redacted]' } });
+  const read = tree.spans.find((span) => span.kind === 'read');
+  assert.deepEqual(
+    [read.operation, read.entity, read.recordId, read.attributes.source, read.attributes.rowCount],
+    ['retrieve', 'x_item', id, 'entity-read', 1],
+  );
+  assert.equal(read.output.x_name, 'First', 'level full captures the row read');
+  assert.equal(
+    sim.trace.query({ recordId: id }).items[0]?.traceId,
+    tree.trace.traceId,
+    'the record id finds the trace',
+  );
+});
+
+test('Power Pages: a request root captures its body and content type; an answered error names its code and message', async () => {
+  const sim = await powerPages();
+  const created = await fetch(sim.url + '/_api/x_items', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', __requestverificationtoken: sim.csrf },
+    body: JSON.stringify({ x_name: 'Body capture' }),
+  });
+  assert.equal(created.status, 204, await created.text());
+  const tree = await ended(sim.trace, created.headers.get('x-trace-id'));
+  assert.deepEqual(tree.root.input, { contentType: 'application/json', body: { x_name: 'Body capture' } });
+  assert.deepEqual(
+    [tree.root.attributes.contentType, tree.root.attributes.contentLength],
+    ['application/json', JSON.stringify({ x_name: 'Body capture' }).length],
+  );
+  // The created row names the webapi span's record (D-R3-1).
+  const webapi = tree.spans.find((span) => span.kind === 'webapi');
+  assert.equal(webapi.recordId, webapi.attributes.id);
+  // An error page the router answers itself (a page that does not exist) names the route's code on its root.
+  const missing = await fetch(sim.url + '/no-such-page/');
+  assert.equal(missing.status, 404);
+  await missing.text();
+  const notFound = (await ended(sim.trace, missing.headers.get('x-trace-id'))).root;
+  assert.deepEqual([notFound.status, notFound.error?.status], ['error', 404]);
+  assert.ok(notFound.error.code && notFound.error.code !== 'Http404', JSON.stringify(notFound.error));
+  assert.match(notFound.error.message, /no-such-page|Page Not Found/);
+});
+
+test('Power Pages: an anonymous first page GET starts the visitor session, so every visitor has a visitor session key', async () => {
+  const sim = await powerPages();
+  const first = await fetch(sim.url + '/');
+  await first.text();
+  const cookie = first.headers.getSetCookie().find((line) => line.startsWith('paqvilo-mirage-visitor-'));
+  assert.ok(cookie, 'the first anonymous page GET sets the visitor cookie');
+  const pair = cookie.split(';')[0],
+    visitorId = pair.split('=')[1];
+  const firstRoot = (await ended(sim.trace, first.headers.get('x-trace-id'))).root;
+  assert.deepEqual(firstRoot.session, { visitorId, sessionKey: `visitor:${visitorId}` });
+  // The browser sends it back: the same visitor, no new cookie.
+  const again = await fetch(sim.url + '/', { headers: { cookie: pair } });
+  await again.text();
+  assert.equal(
+    again.headers.getSetCookie().some((line) => line.startsWith('paqvilo-mirage-visitor-')),
+    false,
+  );
+  assert.equal((await ended(sim.trace, again.headers.get('x-trace-id'))).root.session.visitorId, visitorId);
+  // Two anonymous browsers are two visitors.
+  const other = await fetch(sim.url + '/');
+  await other.text();
+  const otherRoot = (await ended(sim.trace, other.headers.get('x-trace-id'))).root;
+  assert.notEqual(otherRoot.session.visitorId, visitorId);
+  assert.match(otherRoot.session.sessionKey, /^visitor:[0-9a-f-]{36}$/);
+  // A signed-in member is named by the contact and gets no visitor cookie.
+  const member = await fetch(sim.url + '/', {
+    headers: { cookie: sim.signIn('44444444-4444-4444-8444-444444444444').cookieHeader },
+  });
+  await member.text();
+  assert.equal(
+    member.headers.getSetCookie().some((line) => line.startsWith('paqvilo-mirage-visitor-')),
+    false,
+  );
+});
+
+test('Power Pages: at level off a root parses no trace header and looks up no audit entry for it', async () => {
+  const sim = await powerPages();
+  const named = '55555555-5555-4555-8555-555555555555';
+  const original = AuditLog.prototype.byId;
+  const looked = [];
+  AuditLog.prototype.byId = function (id) {
+    looked.push(id);
+    return original.call(this, id);
+  };
+  try {
+    await sim.trace.configure({ level: 'off' });
+    const off = await fetch(sim.url + '/_api/x_items?$select=x_name', { headers: { 'x-sim-trace-id': named } });
+    assert.equal(off.status, 200);
+    await off.text();
+    assert.equal(off.headers.get('x-trace-id'), null);
+    assert.equal(looked.includes(named), false, 'level off: the trace header names no audit lookup');
+    await sim.trace.configure({ level: 'full' });
+    const on = await fetch(sim.url + '/_api/x_items?$select=x_name', { headers: { 'x-sim-trace-id': named } });
+    await on.text();
+    assert.equal(looked.includes(named), true, 'with tracing on the header is looked up as an audit id');
+  } finally {
+    AuditLog.prototype.byId = original;
+    await sim.trace.configure({ level: 'full' });
+  }
+});
+
+test('Power Pages: a page path with a file suffix that reaches the Liquid renderer has its http root', async () => {
+  const sim = await powerPages();
+  const response = await fetch(sim.url + '/missing-report.json');
+  await response.text();
+  const traceId = response.headers.get('x-trace-id');
+  assert.ok(traceId, 'the rendered answer names its trace');
+  const tree = await ended(sim.trace, traceId);
+  assert.deepEqual(
+    [tree.root.kind, tree.root.name, tree.root.parentSpanId],
+    ['http', 'GET /missing-report.json', null],
+  );
+  assert.equal(tree.spans.find((span) => span.kind === 'render')?.parentSpanId, tree.root.spanId);
+  assert.equal(tree.root.attributes.statusCode, response.status);
+});
+
+test('Power Pages: a /_sim administration write is a sim root acting as the simulator; reads open none', async () => {
+  const sim = await powerPages();
+  const write = await fetch(sim.url + '/_sim/api/session/sign-out', {
+    method: 'POST',
+    headers: { 'x-sim-csrf': sim.csrf, 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(write.status, 200, await write.text());
+  const traceId = write.headers.get('x-trace-id');
+  assert.ok(traceId, 'the administration write names its trace');
+  const root = (await ended(sim.trace, traceId)).root;
+  assert.deepEqual(
+    [root.kind, root.module, root.origin.host, root.actor.kind, root.actor.name, root.attributes.routeFamily],
+    ['http', 'sim', 'sim', 'system', 'simulator', '__sim'],
+  );
+  const read = await fetch(sim.url + '/_sim/api/status');
+  await read.text();
+  assert.equal(read.headers.get('x-trace-id'), null, 'an administration read opens no root');
+});
+
+test('Azurite Blob requests are http-out spans of the current trace without their bytes; a refused key names the Azure code', async (t) => {
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const fake = await startAzuriteFake();
+  t.after(() => fake.close());
+  const storage = (key = FAKE_ACCOUNT_KEY) =>
+    createAzuriteStorage({
+      id: 'fxblob',
+      settings: { connectionString: 'env:FX_AZURITE', container: 'fx-trace' },
+      env: { FX_AZURITE: `AccountName=devstoreaccount1;AccountKey=${key};BlobEndpoint=${fake.blobEndpoint}` },
+      traces: () => traces,
+    });
+  const bytes = 'invented blob bytes for the trace';
+  const parent = traces.start({ kind: 'http', name: 'POST /upload' });
+  await traces.run(parent, () => storage().put('docs/a.txt', Buffer.from(bytes), { contentType: 'text/plain' }));
+  parent.end();
+  const calls = traces.spans({ kind: 'http-out', module: 'storage', order: 'asc' }).items;
+  assert.ok(calls.length >= 2, calls.map((span) => span.name).join(', '));
+  for (const span of calls) {
+    assert.deepEqual([span.parentSpanId, span.status, span.attributes.provider], [parent.spanId, 'ok', 'fxblob']);
+    assert.deepEqual([Object.hasOwn(span, 'input'), Object.hasOwn(span, 'output')], [false, false], 'no blob bytes');
+  }
+  assert.ok(calls.some((span) => span.attributes.bytes === bytes.length && span.operation === 'put'));
+  assert.equal(JSON.stringify(traces.export({})).includes(bytes), false);
+  // The signed request still verifies with the forwarded trace headers: the blob is stored.
+  assert.equal((await storage().head('docs/a.txt'))?.size, bytes.length);
+  // A wrong account key is refused by the endpoint: the span names the status.
+  const refused = traces.start({ kind: 'http', name: 'POST /refused' });
+  await traces
+    .run(refused, () =>
+      storage(Buffer.from('fx-wrong-key-0000000000000000000').toString('base64')).put('docs/b.txt', Buffer.from('x')),
+    )
+    .catch(() => {});
+  refused.end();
+  const failed = traces.spans({ kind: 'http-out', parentSpanId: refused.spanId }).items;
+  assert.ok(failed.length > 0);
+  assert.deepEqual([failed[0].status, failed[0].error?.status], ['denied', 403]);
+});
+
+test('the SharePoint fixture server opens a root per request joined to its caller, naming the Graph error', async (t) => {
+  const traces = createTraceStore({ settings: { level: 'summary' } });
+  const fixture = await createSharePointFixtureServer({
+    traces,
+    fixtures: {
+      sites: { 'site-a': { name: 'Invented site' } },
+      drives: { 'drive-a': { siteId: 'site-a' } },
+      items: [{ driveId: 'drive-a', path: 'x_case/notes.txt', content: 'hello', contentType: 'text/plain' }],
+    },
+  });
+  t.after(() => fixture.close());
+  const caller = traces.start({ kind: 'http-out', name: 'GET children' });
+  const listed = await fetch(`${fixture.url}/v1.0/sites/site-a/drives/drive-a/root:/x_case:/children`, {
+    headers: traces.headers(caller),
+  });
+  assert.equal(listed.status, 200);
+  await listed.text();
+  caller.end();
+  const root = traces.span(listed.headers.get('x-sim-span-id'));
+  assert.deepEqual(
+    [root.kind, root.module, root.origin.host, root.parentSpanId, root.traceId, root.status],
+    ['http', 'sharepoint', 'sharepoint', caller.spanId, caller.traceId, 'ok'],
+  );
+  const missing = await fetch(`${fixture.url}/v1.0/sites/site-a/drives/drive-a/root:/x_case/none:/children`);
+  assert.equal(missing.status, 404);
+  await missing.text();
+  const refused = traces.span(missing.headers.get('x-sim-span-id'));
+  assert.deepEqual([refused.parentSpanId, refused.status, refused.error?.code], [null, 'error', 'itemNotFound']);
 });

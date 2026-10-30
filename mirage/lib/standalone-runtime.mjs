@@ -50,6 +50,8 @@ import {
   activeDeploymentProfile,
   simApiRoutes,
   modelDrivenAppsOf,
+  appTraceSurface,
+  staffActor,
 } from './organization-host.mjs';
 import { deploymentProfilesSummary } from './deployment-profiles.mjs';
 import { createCanvasHandler } from './canvas-http.mjs';
@@ -60,7 +62,7 @@ import { createRequestContext, runWithRequest, correlationOf } from './request-c
 import { createMessagingRoutes, routes as MESSAGING_ROUTES } from './sim-messaging-routes.mjs';
 import { createFlowRoutes, routes as FLOW_ROUTES } from './sim-flow-routes.mjs';
 import { createTraceChannel, createTraceRoutes, routes as TRACE_ROUTES } from './sim-trace-routes.mjs';
-import { statusFromHttp } from './trace-store.mjs';
+import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
 import { buildSourceGraph } from './source-graph.mjs';
 import { scenarioSettings } from './capability-report.mjs';
@@ -80,7 +82,13 @@ const fail = (message, status = 400, code = 'RuntimeRequestInvalid') =>
   Object.assign(new Error(message), { status, code });
 const toolkitPackage = JSON.parse(await fs.readFile(new URL('../../package.json', import.meta.url), 'utf8'));
 const DOCS = docsLinks(toolkitPackage.version, toolkitPackage.repository?.url ?? toolkitPackage.repository);
-const json = (res, status, value, headers = {}, { chunks } = {}) => {
+// A /_sim/api write traced as an administration action (D-R3-7): not a trace route (the store's own settings, clear and
+// flush) and not a run-starting flow route, whose root sim-flow-routes.mjs opens (POST /flow-runs, POST
+// /flow-triggers/<id>, the HTTP Request trigger invoke path).
+const SIM_ACTION =
+  /^\/(?:_sim|__sim)\/api\/(?!trace(?:\/|$)|flow-runs$|flow-triggers\/[^/]+$|flow-triggers\/[^/]+\/triggers\/[^/]+\/paths\/invoke$)/;
+const SIM_ACTOR = Object.freeze({ kind: 'system', id: null, name: 'simulator' });
+const writeJson = (res, status, value, headers = {}, { chunks } = {}) => {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers });
   if (chunks && status !== 204) return writeJsonChunks(res, chunks);
   res.end(status === 204 ? undefined : stringifyExactJson(value));
@@ -293,6 +301,12 @@ export async function createStandaloneRuntime(options = {}) {
     trace: options.trace,
   });
   const { operations, traces } = organizationHost;
+  // Every JSON answer of 400 or more of this host's routers is its request root's error (recordHttpError, D-R3-4).
+  const json = (res, status, value, ...rest) => {
+    if (status >= 400)
+      recordHttpError(traces.current(), status, { code: value?.error?.code, message: value?.error?.message });
+    return writeJson(res, status, value, ...rest);
+  };
   const codeApps = codeAppSettings(options.codeApps);
   const links = () => ({
     administration: '/_sim/',
@@ -586,6 +600,8 @@ export async function createStandaloneRuntime(options = {}) {
         return principal.kind === 'staff' ? principal : null;
       },
       csrf: () => csrf,
+      traces,
+      traceActor: (principal) => staffActor(organization, principal),
     });
     codeAppRecords = loadCodeApps(codeApps, projectRoot, { bindings: options.connections ?? {} });
     for (const app of codeAppRecords) for (const entry of app.diagnostics) diagnostic({ ...entry, app: app.name });
@@ -612,6 +628,7 @@ export async function createStandaloneRuntime(options = {}) {
       dataverse: codeAppDataverse({ organization, change, origin: () => dataverse?.origin ?? localOrigin }),
       connectors: codeAppConnectors(organizationHost.connectors, options.connections ?? {}),
       csrf: () => csrf,
+      traces,
       diagnostic,
     });
     model = createModelDrivenHandler({
@@ -627,6 +644,8 @@ export async function createStandaloneRuntime(options = {}) {
       change,
       read: (fn) => organization.read(() => overlay.withReadEpoch(fn)),
       principal: (req) => sessions.resolve(req),
+      traces,
+      traceActor: (principal) => staffActor(organization, principal),
       webApi: createModelDrivenWebApi({ organization: () => organization }),
       offlineState: offlineSessionState(store, change),
       clientAssets: () =>
@@ -693,7 +712,11 @@ export async function createStandaloneRuntime(options = {}) {
     adminRoutes = admin.routes;
     // /_sim/api/messages and /_sim/api/outbox (sim-messaging-routes.mjs) answer before the generic admin router.
     const messagingRoutes = createMessagingRoutes({ api: organization.api, csrf: () => csrf });
-    const flowRoutes = createFlowRoutes({ api: organization.api, csrf: () => csrf });
+    const flowRoutes = createFlowRoutes({
+      api: organization.api,
+      csrf: () => csrf,
+      origin: { host: 'standalone', portal: null, preset: null },
+    });
     const traceRoutes = createTraceRoutes({ traces, csrf: () => csrf, json });
     const traceChannel = createTraceChannel(traces);
     // GET /_sim/api/dashboard (sim-dashboard-routes.mjs): the shared topology plus this host's listener and request count.
@@ -877,22 +900,29 @@ export async function createStandaloneRuntime(options = {}) {
         }
         throw fail('Resource not found.', 404);
       };
-      // The http root span of this host (docs/design/tracing.md); administration and setup traffic opens none. The root is
-      // explicitly anonymous with no session (this host has no visitor sign-in), so a header-named parent never lends it
-      // another visitor's actor or session; in-process Dataverse calls under it set their own caller after authentication.
+      // The http root span of this host (docs/design/tracing.md). App surfaces name their host and module (model-driven,
+      // canvas, code-app; appTraceSurface), any other path the standalone host. The root starts explicitly anonymous with
+      // no session (this host has no visitor sign-in), so a header-named parent never lends it another visitor's actor or
+      // session; the app handlers name the staff user once they resolve the session. Administration actions (a /_sim/api
+      // write) are `sim` roots acting as the simulator; reads, setup, the trace routes and the run-starting flow routes
+      // (sim-flow-routes.mjs opens their roots) open none.
       const pathname = String(req.url ?? '/').split('?')[0];
-      const span = /^\/(?:_sim|__sim|_setup)(?:\/|$)/.test(pathname)
-        ? null
-        : traces.start({
-            kind: 'http',
-            name: `${req.method} ${pathname}`,
-            module: null,
-            operation: req.method,
-            origin: { host: 'standalone', portal: null, preset: null },
-            ...ANONYMOUS_ROOT,
-            attributes: { routeFamily: pathname.split('/')[1] || 'root' },
-            ...traces.fromHeaders(req.headers),
-          });
+      const adminPath = /^\/(?:_sim|__sim|_setup)(?:\/|$)/.test(pathname);
+      const simAction = adminPath && !['GET', 'HEAD', 'OPTIONS'].includes(req.method) && SIM_ACTION.test(pathname);
+      const surface = adminPath ? null : appTraceSurface(pathname);
+      const span =
+        traces.enabled && (!adminPath || simAction)
+          ? traces.start({
+              kind: 'http',
+              name: `${req.method} ${pathname}`,
+              module: simAction ? 'sim' : (surface?.module ?? null),
+              operation: req.method,
+              origin: { host: simAction ? 'sim' : (surface?.host ?? 'standalone'), portal: null, preset: null },
+              ...(simAction ? { actor: SIM_ACTOR, session: ANONYMOUS_ROOT.session } : ANONYMOUS_ROOT),
+              attributes: { routeFamily: pathname.split('/')[1] || 'root' },
+              ...traces.fromHeaders(req.headers),
+            })
+          : null;
       setTraceHeaders(res, span);
       let failure;
       res.on('close', () => {

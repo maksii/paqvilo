@@ -1,5 +1,17 @@
 import { DataError } from './data-error.mjs';
 
+// The dataverse spans of flow Dataverse connector calls (connector-runtime.mjs dataverseProvider, docs/design/tracing.md):
+// one span per call, module dataverse; the record entries the call drives open none of their own (dataverse-records.mjs).
+// Kept here, in a module without imports of the record layer, so dataverse-records.mjs can ask without an import cycle.
+const connectorDataverseSpans = new WeakSet();
+/** Marks span as the dataverse span of a flow Dataverse connector call. */
+export const markConnectorDataverseSpan = (span) => {
+  if (span?.spanId) connectorDataverseSpans.add(span);
+  return span;
+};
+/** True when span is the dataverse span of a flow Dataverse connector call. */
+export const isConnectorDataverseSpan = (span) => Boolean(span) && connectorDataverseSpans.has(span);
+
 const map = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const methods = ['get', 'put', 'post', 'patch', 'delete', 'head', 'options'];
 const error = (message, status = 400, code = 'ConnectorParameterInvalid') => {

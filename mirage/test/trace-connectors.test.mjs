@@ -181,3 +181,72 @@ test('a provider answer maps to the span status like a thrown error: 401/403 den
     ],
   );
 });
+
+// D-R3-4 (DV-A-11, DV-B1-6, DV-C-1, DV-B2-13): the span error is the provider's own, whether it threw or answered.
+test("a provider's own exception and error answer are the connector span's error, with the exception's cause", async () => {
+  const { traces, connectors } = await traced('full', [
+    invented({
+      Explode: () => {
+        throw Object.assign(new Error('Invented connector exploded', { cause: new Error('Invented socket reset') }), {
+          code: 'InventedExplode',
+        });
+      },
+      Plain: () => {
+        throw new Error('Invented plain failure');
+      },
+      Down: () => ({
+        statusCode: 502,
+        body: { error: { code: 'InventedBackendDown', message: 'Invented backend unavailable' } },
+      }),
+      Flat: () => ({ statusCode: 409, body: { code: 'InventedConflict', message: 'Invented conflict' } }),
+      Bare: () => ({ statusCode: 500, body: 'oops' }),
+    }),
+  ]);
+  const thrown = await call(connectors, 'Explode').catch((error) => error);
+  assert.deepEqual([thrown.code, thrown.status, thrown.cause.code], ['ProviderFailed', 502, 'InventedExplode']);
+  await assert.rejects(async () => call(connectors, 'Plain'), { code: 'ProviderFailed' });
+  for (const operationId of ['Down', 'Flat', 'Bare']) await call(connectors, operationId);
+  const byOperation = Object.fromEntries(
+    traces.spans({ kind: 'connector' }).items.map((span) => [span.attributes.operationId, span]),
+  );
+  const exploded = byOperation.Explode;
+  assert.equal(exploded.status, 'error');
+  assert.deepEqual(
+    [exploded.error.code, exploded.error.message, exploded.error.status, exploded.attributes.mappedCode],
+    ['InventedExplode', 'Invented connector exploded', 502, 'ProviderFailed'],
+  );
+  assert.deepEqual(exploded.error.cause, { code: 'Error', message: 'Invented socket reset' });
+  assert.deepEqual(
+    [byOperation.Plain.error.code, byOperation.Plain.error.message],
+    ['ProviderFailed', 'Invented plain failure'],
+  );
+  assert.deepEqual(
+    ['Down', 'Flat', 'Bare'].map((operationId) => {
+      const { status, error } = byOperation[operationId];
+      return [status, error.code, error.message, error.status];
+    }),
+    [
+      ['error', 'InventedBackendDown', 'Invented backend unavailable', 502],
+      ['error', 'InventedConflict', 'Invented conflict', 409],
+      ['error', 'Http500', 'The connector answered status 500.', 500],
+    ],
+  );
+  // The error object is no payload: the summary level keeps it too; a sealed call keeps only the codes and status.
+  traces.clear();
+  traces.configure({ level: 'summary' });
+  await call(connectors, 'Down');
+  await assert.rejects(async () => call(connectors, 'Explode', {}, { secure: true }), { code: 'ProviderFailed' });
+  await call(connectors, 'Down', {}, { secure: true });
+  const [sealedDown, sealedExplode, summaryDown] = traces.spans({ kind: 'connector' }).items;
+  assert.deepEqual(
+    [summaryDown.error.code, summaryDown.error.message],
+    ['InventedBackendDown', 'Invented backend unavailable'],
+  );
+  assert.deepEqual(
+    [sealedExplode.error.code, sealedExplode.error.message],
+    ['InventedExplode', 'The connector provider failed.'],
+  );
+  assert.equal(sealedExplode.error.cause, undefined);
+  assert.deepEqual([sealedDown.error.code, sealedDown.error.status], ['Http502', 502]);
+  assert.doesNotMatch(JSON.stringify(sealedDown), /Invented backend/);
+});

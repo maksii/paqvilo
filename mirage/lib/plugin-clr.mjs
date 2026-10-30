@@ -609,6 +609,9 @@ export function dispatchSdkCall(args) {
     return store.traces?.enabled
       ? store.traces.wrap(sdkCallSpan(message), (span) => {
           const value = dispatchSdkCallCore(args);
+          // A create names its new record (D-R3-23): the span's record id and the output id.
+          const created = createdIdOf(value);
+          if (created && span.recordId == null) span.setEntity(span.entity, created);
           span.output(() => sdkAnswerSummary(value));
           return value;
         })
@@ -619,6 +622,19 @@ export function dispatchSdkCall(args) {
 }
 // The sdk-call span of one CLR RPC (tracing): it runs on the main thread inside the plugin-step span, so the record entries it
 // calls nest under it. The arguments are captured only at level full.
+// A record id of an SDK call, or null: the empty GUID an unsaved Entity carries names no record.
+const EMPTY_GUID = /^\{?0{8}-0{4}-0{4}-0{4}-0{12}\}?$/;
+const sdkId = (value) => {
+  const id = value && typeof value === 'object' ? value.value : value;
+  return typeof id === 'string' && id && !EMPTY_GUID.test(id) ? id : null;
+};
+// The id a Create answers: the Guid of IOrganizationService.Create, or the id result of an Execute CreateResponse.
+const createdIdOf = (value) =>
+  value?.$type === 'Guid'
+    ? sdkId(value)
+    : value?.$type === 'OrganizationResponse' && value.responseName === 'Create'
+      ? sdkId(value.results?.id)
+      : null;
 function sdkCallSpan(message) {
   const [first, second] = message.arguments ?? [];
   const request = first?.$type === 'OrganizationRequest' ? first : null;
@@ -630,12 +646,7 @@ function sdkCallSpan(message) {
     module: 'clr',
     operation: name,
     entity: typeof target === 'string' ? target : (target?.logicalName ?? null),
-    recordId:
-      typeof target === 'string'
-        ? typeof second === 'string'
-          ? second
-          : null
-        : (target?.id?.value ?? target?.id ?? null),
+    recordId: typeof target === 'string' ? sdkId(second) : sdkId(target?.id),
     attributes: {
       method: message.method ?? null,
       userId: message.userId ?? null,
@@ -648,7 +659,7 @@ const sdkAnswerSummary = (value) =>
   value && typeof value === 'object'
     ? {
         type: value.$type ?? null,
-        id: value.id ?? null,
+        id: createdIdOf(value) ?? sdkId(value.id),
         ...(Array.isArray(value.entities) ? { count: value.entities.length } : {}),
       }
     : (value ?? null);

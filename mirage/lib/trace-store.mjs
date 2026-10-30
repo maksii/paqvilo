@@ -2,7 +2,7 @@
 // Spans nest through this module's own AsyncLocalStorage; without a current span the organization request context
 // (request-context.mjs traceId / spanId) supplies the parent. Async job runners always parent explicitly.
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -11,15 +11,61 @@ import { currentRequest } from './request-context.mjs';
 import { mergeTraceSettings, traceSettings } from './trace-settings.mjs';
 
 const REDACTED = '[redacted]';
-const STATUSES = ['ok', 'error', 'denied'];
+/** Every span status (D-R3-29): `running` until the span ends, then one of the other four. */
+export const SPAN_STATUSES = Object.freeze(['ok', 'error', 'denied', 'cancelled', 'running']);
+/** The span kinds of the span model; the `kind` filter refuses any other value (docs/design/tracing.md). */
+export const SPAN_KINDS = Object.freeze([
+  'http',
+  'webapi',
+  'dataverse',
+  'function',
+  'action',
+  'batch',
+  'part',
+  'changeset',
+  'bulk',
+  'store',
+  'permission',
+  'plugin-stage',
+  'plugin-step',
+  'sdk-call',
+  'custom-api',
+  'secret',
+  'http-out',
+  'webhook',
+  'job',
+  'workflow',
+  'server-logic',
+  'flow-run',
+  'flow-action',
+  'connector',
+  'render',
+  'render-template',
+  'read',
+  'native-service',
+  'form',
+  'canvas',
+  'internal',
+]);
+const STATUSES = SPAN_STATUSES.filter((status) => status !== 'running');
 const SORTS = ['start', 'duration', 'spans', 'errors'];
+// The search text of one span (D-R3-15): its metadata, attributes and events, then (level full) its payloads, each part
+// bounded so a search never scans more than SEARCH_META + SEARCH_PAYLOAD characters of one span.
+const SEARCH_META = 4096;
+const SEARCH_PAYLOAD = 8192;
+// File and binary columns (D-R3-10): a value under one of these keys, a data URL or a base64 string of more than 1 KB is
+// summarised as { bytes, mimetype?, filename?, sha256 } instead of being copied.
+const FILE_KEY = /^(?:documentbody|body)$|image/i;
+const BASE64 = /^[A-Za-z0-9+/\r\n]+={0,2}$/;
+const DATA_URL = /^data:([\w.+-]+\/[\w.+-]+)?(?:;[\w-]+=[^;,]*)*;base64,/i;
+const BASE64_MIN = 1024;
 const ID = /^[A-Za-z0-9._:-]{1,128}$/;
 // Inbound trace headers name only UUID-shaped ids, so a client can never choose a route name or another reserved word.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 // Credential-named keys, compared without separators (api_key, x-functions-key, client-secret); `sas` and `sig` only as
 // whole keys.
 const SECRET_KEY =
-  /password|passwd|secret|token|authorization|authentication|cookie|credential|apikey|signature|sharedaccesssignature|authvalue|connectionstring|saskey|sharedaccesskey|accountkey|functionskey|functionkey|^sas$|^sig$/i;
+  /password|passwd|secret|token|authorization|authentication|cookie|credential|apikey|signature|sharedaccesssignature|authvalue|connectionstring|saskey|sharedaccesskey|accountkey|functionskey|functionkey|subscriptionkey|privatekey|^sas$|^sig$/i;
 const MAX_EVENTS = 1000;
 const MAX_DEPTH = 16;
 const MAX_ITEMS = 1000;
@@ -37,7 +83,9 @@ const TRACE_ID_HEADER = 'x-trace-id';
 
 const round = (value) => Math.round(value * 100) / 100;
 const validId = (value) => (typeof value === 'string' && ID.test(value) ? value : null);
-const secretKey = (key) => SECRET_KEY.test(String(key).replace(/[^A-Za-z0-9]/g, ''));
+// secretName holds a Key Vault secret's name from a reference (secret spans), never its value, so it stays readable.
+const NAME_KEYS = new Set(['secretName']);
+const secretKey = (key) => !NAME_KEYS.has(String(key)) && SECRET_KEY.test(String(key).replace(/[^A-Za-z0-9]/g, ''));
 const orNull = (value) => (value === undefined || value === null || value === '' ? null : String(value));
 const lower = (value) => String(value ?? '').toLowerCase();
 const actorKey = (value) =>
@@ -49,6 +97,46 @@ const actorKey = (value) =>
 export function statusFromHttp(status) {
   const code = Number(status);
   return code === 401 || code === 403 ? 'denied' : code >= 400 ? 'error' : 'ok';
+}
+
+// Base64 of binary content: only base64 characters, a whole number of 4-character groups (line breaks aside), and upper
+// case, lower case and a digit or + or /, so a long word, hex string or repeated letter is never taken for a file.
+const looksBase64 = (text) =>
+  BASE64.test(text) &&
+  text.replaceAll('\r', '').replaceAll('\n', '').length % 4 === 0 &&
+  /[a-z]/.test(text) &&
+  /[A-Z]/.test(text) &&
+  /[0-9+/]/.test(text);
+
+// { bytes, mimetype?, filename?, sha256 } of a file column value (decoded bytes), or null when the value is not one.
+// documentbody is always a file; body and *image* keys hold one when the value is binary, a data URL or base64 of at
+// least 64 characters; any other key only when the value is a data URL or base64 longer than 1 KB.
+function fileSummary(key, value, siblings) {
+  const named = FILE_KEY.test(key);
+  let bytes,
+    mimetype = null;
+  if (named && (value instanceof ArrayBuffer || ArrayBuffer.isView(value)))
+    bytes = Buffer.from(value instanceof ArrayBuffer ? value : value.buffer, value.byteOffset ?? 0, value.byteLength);
+  else if (typeof value === 'string') {
+    const data = DATA_URL.exec(value);
+    const text = data ? value.slice(data[0].length) : value;
+    const file =
+      data ||
+      (/^documentbody$/i.test(key) && value !== '') ||
+      (text.length >= (named ? 64 : BASE64_MIN + 1) && looksBase64(text));
+    if (!file) return null;
+    bytes = Buffer.from(text, 'base64');
+    mimetype = data?.[1] ?? null;
+  } else return null;
+  const sibling = (name) => (typeof siblings?.[name] === 'string' ? auditText(siblings[name], 300) : null);
+  mimetype = sibling('mimetype') ?? mimetype;
+  const filename = sibling('filename') ?? sibling('name');
+  return {
+    bytes: bytes.length,
+    ...(mimetype ? { mimetype } : {}),
+    ...(filename && /^(?:documentbody|body)$/i.test(key) ? { filename } : {}),
+    sha256: createHash('sha256').update(bytes).digest('hex'),
+  };
 }
 
 function clean(value, limit, depth, seen) {
@@ -87,7 +175,10 @@ function clean(value, limit, depth, seen) {
       const item = source[key];
       if ((pair && key === 'value') || secretKey(key)) result[key] = item == null ? item : REDACTED;
       else {
-        const cleaned = clean(item, limit, depth + 1, seen);
+        // A { key, value } pair names its column in key (SOAP attribute collections).
+        const column = key === 'value' && typeof source.key === 'string' ? source.key : key;
+        const file = item != null && fileSummary(column, item, source);
+        const cleaned = file || clean(item, limit, depth + 1, seen);
         if (cleaned !== undefined) result[key] = cleaned;
       }
     }
@@ -96,9 +187,13 @@ function clean(value, limit, depth, seen) {
   return result;
 }
 
-/** A JSON-safe copy of `value` with credential-named keys, bearer tokens and secret conditions redacted, capped at `limitBytes` of JSON. */
+/**
+ * A JSON-safe copy of `value` with credential-named keys, bearer tokens and secret conditions redacted, file and binary
+ * columns summarised as { bytes, mimetype?, filename?, sha256 }, capped at `limitBytes` of JSON.
+ */
 export function redactPayload(value, limitBytes = 16_384) {
-  const cleaned = clean(value, limitBytes, 0, new WeakSet());
+  const cleaned =
+    (typeof value === 'string' && fileSummary('', value, null)) || clean(value, limitBytes, 0, new WeakSet());
   const json = JSON.stringify(cleaned) ?? 'null';
   const bytes = Buffer.byteLength(json);
   if (bytes <= limitBytes) return { value: cleaned ?? null, bytes };
@@ -154,10 +249,41 @@ const merge = (target, incoming) => {
   return delta;
 };
 
-const errorOf = (error) =>
-  error && typeof error === 'object'
-    ? { code: auditText(error.code ?? error.name ?? 'Error', 160), message: auditText(error.message ?? '', 2000) }
-    : { code: 'Error', message: auditText(error, 2000) };
+// The facts an error keeps besides code and message (D-R3-4, D-R3-19): scalars only, strings capped.
+const ERROR_FACTS = ['status', 'type', 'action', 'parameter', 'pluginType', 'step', 'stage', 'depth', 'rolledBack'];
+// A plug-in fault keeps its own code and status for the HTTP envelope and carries its trace identity (D-R3-19) as a
+// non-enumerable traceError, which every span the error fails records instead.
+function errorOf(error, nested = false) {
+  if (error?.traceError && typeof error.traceError === 'object' && error.traceError !== error)
+    return errorOf(error.traceError, nested);
+  if (!error || typeof error !== 'object') return { code: 'Error', message: auditText(error, 2000) };
+  const result = {
+    code: auditText(error.code ?? error.name ?? 'Error', 160),
+    message: auditText(error.message ?? '', 2000),
+  };
+  for (const key of ERROR_FACTS) {
+    const value = key === 'status' ? (error.status ?? error.statusCode) : error[key];
+    if (typeof value === 'string') result[key] = auditText(value, 300);
+    else if (typeof value === 'number' || typeof value === 'boolean') result[key] = value;
+  }
+  if (error.details !== undefined && error.details !== null)
+    result.details = clean(error.details, 2048, 0, new WeakSet());
+  if (!nested && error.cause && typeof error.cause === 'object') result.cause = errorOf(error.cause, true);
+  return result;
+}
+
+/**
+ * Records a handler's own error answer on span (D-R3-4): for an HTTP status of 400 or more, the span status becomes
+ * statusFromHttp(status) and its error { code, message, status, details? }; a lower status changes nothing. The no-op
+ * span, an overflow handle and an ended span ignore it. Returns span.
+ */
+export function recordHttpError(span, status, { code, message, details } = {}) {
+  const value = Number(status);
+  if (!span?.enabled || !(value >= 400)) return span;
+  span.setStatus(statusFromHttp(value));
+  span.setError({ code: code ?? `Http${value}`, message: message ?? `HTTP ${value}`, status: value, details });
+  return span;
+}
 const deniedError = (error) =>
   [401, 403].includes(error?.status ?? error?.statusCode) || /denied/i.test(String(error?.code ?? ''));
 
@@ -211,7 +337,19 @@ function inert(traceId) {
     depth: 0,
     async: false,
   };
-  for (const method of ['event', 'set', 'setName', 'setActor', 'setEntity', 'setInput', 'output', 'end', 'fail'])
+  for (const method of [
+    'event',
+    'set',
+    'setName',
+    'setActor',
+    'setEntity',
+    'setStatus',
+    'setError',
+    'setInput',
+    'output',
+    'end',
+    'fail',
+  ])
     handle[method] = () => handle;
   return Object.freeze(handle);
 }
@@ -231,6 +369,7 @@ class Span {
   #trace;
   #record;
   #start;
+  #status = null;
   constructor(core, trace, record, start) {
     this.#core = core;
     this.#trace = trace;
@@ -298,6 +437,16 @@ class Span {
     }
     return this;
   }
+  // The status end uses when it is given none (recordHttpError); `running` or an unknown status is ignored.
+  setStatus(status) {
+    if (this.#record.status === 'running' && STATUSES.includes(status)) this.#status = status;
+    return this;
+  }
+  // The span's error ({ code, message, ...facts }, as for end) while it runs; a later end({ error }) replaces it.
+  setError(error) {
+    if (this.#record.status === 'running' && error != null) this.#record.error = errorOf(error);
+    return this;
+  }
   setInput(thunk) {
     return this.#capture('input', thunk);
   }
@@ -321,10 +470,12 @@ class Span {
     if (attributes) entry.attributes = flat(attributes);
     record.events.push(entry);
     this.#core.grow(this.#trace, 96 + (entry.message?.length ?? 0) + attributeBytes(entry.attributes));
+    if (record.status !== 'running') this.#core.changed(this.#trace, record);
     return this;
   }
   set(attributes) {
     this.#core.grow(this.#trace, merge(this.#record.attributes, flat(attributes)));
+    if (this.#record.status !== 'running') this.#core.changed(this.#trace, this.#record);
     return this;
   }
   output(thunk) {
@@ -336,7 +487,7 @@ class Span {
     if (attributes) this.#core.grow(this.#trace, merge(record.attributes, flat(attributes)));
     if (error != null) record.error = errorOf(error);
     record.durationMs = round(this.#core.now() - this.#start);
-    record.status = STATUSES.includes(status) ? status : record.error ? 'error' : 'ok';
+    record.status = STATUSES.includes(status) ? status : (this.#status ?? (record.error ? 'error' : 'ok'));
     this.#core.ended(this.#trace, record, this.#start);
     return this;
   }
@@ -345,8 +496,18 @@ class Span {
   }
 }
 
-const invalid = (key, rule) =>
-  Object.assign(new RangeError(`${key} ${rule}.`), { status: 400, code: 'InvalidTraceFilter' });
+// A refused filter: RangeError { status: 400, code: 'InvalidTraceFilter', parameter }, the message starting with the
+// filter name; an unknown enum value adds the value it got.
+const invalid = (key, rule, got) =>
+  Object.assign(new RangeError(`${key} ${rule}${got === undefined ? '' : ` (got ${JSON.stringify(String(got))})`}.`), {
+    status: 400,
+    code: 'InvalidTraceFilter',
+    parameter: key,
+  });
+const oneOf = (key, value, allowed) => {
+  if (value !== null && !allowed.includes(value)) throw invalid(key, `must be one of ${allowed.join(', ')}`, value);
+  return value;
+};
 
 function parseFilters(filters = {}) {
   const get = (key) => {
@@ -380,16 +541,15 @@ function parseFilters(filters = {}) {
   const flag = get('hasErrors');
   if (flag !== null && ![true, false, 'true', 'false', '1', '0'].includes(flag))
     throw invalid('hasErrors', 'must be true or false');
-  const order = text('order');
-  if (order !== null && !['asc', 'desc'].includes(order)) throw invalid('order', 'must be asc or desc');
-  const sort = text('sort');
-  if (sort !== null && !SORTS.includes(sort)) throw invalid('sort', 'must be start, duration, spans or errors');
+  const order = oneOf('order', text('order'), ['desc', 'asc']);
+  const sort = oneOf('sort', text('sort'), SORTS);
   const span = {
-    kind: text('kind'),
+    kind: oneOf('kind', text('kind'), SPAN_KINDS),
     module: text('module'),
     operation: text('operation'),
     entity: text('entity'),
-    status: text('status'),
+    recordId: get('recordId') === null ? null : actorKey(get('recordId')).trim() || null,
+    status: oneOf('status', text('status'), SPAN_STATUSES),
     host: text('host'),
     actorKind: text('actorKind'),
     actorId: get('actorId') === null ? null : actorKey(get('actorId')).trim() || null,
@@ -416,12 +576,56 @@ function parseFilters(filters = {}) {
   };
 }
 
-function spanMatches(record, f) {
+/**
+ * The lowercase text the `search` filter looks in for a span record: name, kind, module, operation, entity, record id,
+ * actor, error, attribute keys and values and event types, messages and attributes (at most 4096 characters), then the
+ * captured input and output JSON (at most 8192; present only at level full). trace watch applies it to its frames.
+ */
+export function searchText(record) {
+  const parts = [
+    record.name,
+    record.kind,
+    record.module,
+    record.operation,
+    record.entity,
+    record.recordId,
+    record.actor?.name,
+    record.actor?.id,
+    record.error?.code,
+    record.error?.message,
+    JSON.stringify(record.attributes),
+  ];
+  let size = parts.reduce((sum, part) => sum + (part?.length ?? 0), 0);
+  for (const event of record.events ?? []) {
+    if (size > SEARCH_META) break;
+    const attributes = event.attributes ? JSON.stringify(event.attributes) : '';
+    parts.push(event.type, event.message, attributes);
+    size += event.type.length + (event.message?.length ?? 0) + attributes.length;
+  }
+  let text = parts
+    .filter((part) => part)
+    .join('\n')
+    .slice(0, SEARCH_META);
+  const payload = [record.input, record.output]
+    .filter((value) => value !== undefined)
+    .map((value) => JSON.stringify(value))
+    .join('\n');
+  if (payload) text += `\n${payload.slice(0, SEARCH_PAYLOAD)}`;
+  return text.toLowerCase();
+}
+
+/** Throws the RangeError { status: 400, code: 'InvalidTraceFilter', parameter } that query would throw for filters. */
+export function checkTraceFilters(filters = {}) {
+  parseFilters(filters);
+}
+
+function spanMatches(record, f, searchOf = searchText) {
   return (
     (!f.kind || record.kind === f.kind) &&
     (!f.module || lower(record.module) === f.module) &&
     (!f.operation || lower(record.operation) === f.operation) &&
     (!f.entity || lower(record.entity) === f.entity) &&
+    (!f.recordId || (record.recordId !== null && actorKey(record.recordId) === f.recordId)) &&
     (!f.status || record.status === f.status) &&
     (!f.host || lower(record.origin.host) === f.host) &&
     (!f.actorKind || lower(record.actor.kind) === f.actorKind) &&
@@ -429,11 +633,7 @@ function spanMatches(record, f) {
     (!f.sessionKey || record.session.sessionKey === f.sessionKey) &&
     (!f.visitorId || record.session.visitorId === f.visitorId) &&
     (!f.portal || record.origin.portal === f.portal) &&
-    (!f.search ||
-      [record.name, record.entity, record.error?.code, record.error?.message, JSON.stringify(record.attributes)]
-        .join('\n')
-        .toLowerCase()
-        .includes(f.search))
+    (!f.search || searchOf(record).includes(f.search))
   );
 }
 
@@ -491,7 +691,8 @@ export function createTraceStore({
   const traces = new Map(); // traceId -> trace, least recently touched first
   const spans = new Map(); // spanId -> Span
   const remembered = new Map(); // key -> { traceId, spanId }, least recently used first
-  const listeners = new Map(); // listener -> payloads
+  const listeners = new Map(); // listener -> { payloads, flush }
+  const searches = new WeakMap(); // ended span record -> its search text, built by the first search that reads it
   const als = new AsyncLocalStorage();
   const persistence = { written: 0, failures: 0, lastError: null };
   const directories = new Set();
@@ -518,6 +719,7 @@ export function createTraceStore({
       droppedSpans: trace.droppedSpans,
       errorCount: trace.errorCount,
       deniedCount: trace.deniedCount,
+      ...(trace.firstError ? { firstError: { ...trace.firstError } } : {}),
       pluginCount: kinds['plugin-step'] ?? 0,
       flowCount: kinds['flow-run'] ?? 0,
       connectorCount: kinds.connector ?? 0,
@@ -533,7 +735,7 @@ export function createTraceStore({
   const emit = (type, record, summary) => {
     if (!listeners.size) return;
     let full, slim;
-    for (const [listener, payloads] of listeners) {
+    for (const [listener, { payloads }] of listeners) {
       const event = payloads
         ? (full ??= Object.freeze({ type, span: Object.freeze(copy(record)), ...(summary ? { trace: summary } : {}) }))
         : (slim ??= Object.freeze({
@@ -618,6 +820,16 @@ export function createTraceStore({
       const kept = retained(trace);
       if (kept) running--;
       if (record.status === 'error') trace.errorCount++;
+      // The first span of the trace that ended error or denied (the trace list shows its message).
+      if ((record.status === 'error' || record.status === 'denied') && !trace.firstError)
+        trace.firstError = {
+          spanId: record.spanId,
+          kind: record.kind,
+          name: record.name,
+          status: record.status,
+          code: record.error?.code ?? null,
+          message: record.error?.message ?? null,
+        };
       if (record.status === 'denied') trace.deniedCount++;
       trace.lastEnd = Math.max(trace.lastEnd, start + record.durationMs);
       emit('span-end', record);
@@ -628,6 +840,25 @@ export function createTraceStore({
         persist(trace);
       }
     },
+    // An ended span changed (a late event or attribute): its cached search text is stale.
+    changed(trace, record) {
+      const text = searches.get(record);
+      if (text === undefined) return;
+      searches.delete(record);
+      core.grow(trace, -text.length);
+    },
+  };
+  // The search text of a span (searchText); cached once the span has ended and counted in the memory estimate.
+  const searchOf = (record) => {
+    let text = searches.get(record);
+    if (text !== undefined) return text;
+    text = searchText(record);
+    const trace = record.status === 'running' ? null : traces.get(record.traceId);
+    if (trace) {
+      searches.set(record, text);
+      core.grow(trace, text.length);
+    }
+    return text;
   };
 
   const SORT_KEYS = {
@@ -648,7 +879,7 @@ export function createTraceStore({
         if ((f.from !== null && trace.lastStart < f.from) || (f.to !== null && trace.first > f.to)) continue;
         if (!trace.spans.some((span) => inRange(startOf(span)))) continue;
       }
-      if (f.spanFiltered && !trace.spans.some((span) => spanMatches(recordOf(span), f.span))) continue;
+      if (f.spanFiltered && !trace.spans.some((span) => spanMatches(recordOf(span), f.span, searchOf))) continue;
       if (f.minDurationMs !== null && totalOf(trace) < f.minDurationMs) continue;
       if (f.hasErrors !== null && trace.errorCount > 0 !== f.hasErrors) continue;
       rows.push(trace);
@@ -672,7 +903,7 @@ export function createTraceStore({
         if (f.hasErrors !== null && (record.status === 'error') !== f.hasErrors) continue;
         if (f.parentSpanId && record.parentSpanId !== f.parentSpanId) continue;
         if (f.depth !== null && record.depth !== f.depth) continue;
-        if (f.spanFiltered && !spanMatches(record, f.span)) continue;
+        if (f.spanFiltered && !spanMatches(record, f.span, searchOf)) continue;
         rows.push(span);
       }
     }
@@ -763,6 +994,7 @@ export function createTraceStore({
           droppedSpans: 0,
           bytes: 0,
           errorCount: 0,
+          firstError: null,
           deniedCount: 0,
           kinds: {},
           entities: new Set(),
@@ -795,6 +1027,7 @@ export function createTraceStore({
         durationMs: null,
         status: 'running',
         depth: parentRecord ? parentRecord.depth + 1 : 0,
+        level: settings.level,
         async: args.async === true,
         actor: actorOf(args.actor) ?? parentRecord?.actor ?? requestActor(request ?? currentRequest()) ?? SYSTEM_ACTOR,
         session: sessionOf(args.session) ?? parentRecord?.session ?? NO_SESSION,
@@ -905,6 +1138,29 @@ export function createTraceStore({
       remembered.set(key, value);
       return { ...value };
     },
+    /**
+     * Adds one link { traceId, spanId, relation } (relation 'triggered' by default) to the retained span spanId, running
+     * or ended: how a job runner, which holds only the recalled { traceId, spanId }, marks its staging span (D-R3-6). An
+     * identical { spanId, relation } link, an unknown span, a link without ids and level off are ignored. A linked span
+     * that was already persisted is written again in the trace's next line. Returns true when the link was added.
+     */
+    link(spanId, link = {}) {
+      if (settings.level === 'off') return false;
+      const span = spans.get(spanId);
+      const [value] = linksOf([link]);
+      if (!span || !value) return false;
+      const record = recordOf(span);
+      if (record.links.some((item) => item.spanId === value.spanId && item.relation === value.relation)) return false;
+      record.links.push(value);
+      const trace = traces.get(record.traceId);
+      if (!trace) return true;
+      core.grow(trace, 128);
+      if (settings.persist && !trace.partial.includes(span) && trace.spans.indexOf(span) < trace.persisted) {
+        trace.partial.push(span);
+        if (trace.running === 0) persist(trace);
+      }
+      return true;
+    },
     /** Trace summaries matching the filters, newest first by default, paged. */
     query(filters = {}) {
       const f = parseFilters(filters);
@@ -1013,11 +1269,13 @@ export function createTraceStore({
     },
     /**
      * Observes { type: 'span-start'|'span-end'|'trace-end', span, trace? } with frozen copies (without input and output
-     * when payloads is false); returns an unsubscribe function.
+     * when payloads is false); returns an unsubscribe function. flush: an optional () => Promise that flush() awaits
+     * (an SSE channel resolves it once its frames reached every client).
      */
-    subscribe(listener, { payloads = true } = {}) {
+    subscribe(listener, { payloads = true, flush = null } = {}) {
       if (typeof listener !== 'function') throw new TypeError('Trace listeners must be functions.');
-      listeners.set(listener, payloads !== false);
+      if (flush !== null && typeof flush !== 'function') throw new TypeError('A listener flush must be a function.');
+      listeners.set(listener, { payloads: payloads !== false, flush });
       return () => listeners.delete(listener);
     },
     /** Every trace matching the filters (no paging) as trees, with the settings in force. */
@@ -1077,9 +1335,17 @@ export function createTraceStore({
         },
       };
     },
-    /** Resolves when every persisted line queued so far is written (or has failed). */
-    flush() {
-      return queue;
+    /**
+     * Resolves (never rejects) once every persisted line queued so far, and any queued while waiting, is written or has
+     * failed, and every subscriber's flush (SSE frames handed to the socket) has settled. Spans still running are not
+     * waited for: their trace is persisted when it ends.
+     */
+    async flush() {
+      const subscribers = Promise.allSettled(
+        [...listeners.values()].filter(({ flush }) => flush).map(({ flush }) => Promise.resolve().then(flush)),
+      );
+      for (let pending = null; pending !== queue;) await (pending = queue);
+      await subscribers;
     },
   };
   return Object.freeze(store);

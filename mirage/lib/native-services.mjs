@@ -2136,9 +2136,12 @@ function sendAccessDenied(res) {
   });
   res.end(body);
 }
+// The error a handler answered itself, read by the request's http root (server.mjs, D-R3-4).
+const HTTP_ERROR = Symbol.for('paqvilo.mirage.httpError');
 function sendError(res, error) {
   const status = error.status ?? error.statusCode ?? 500;
   const message = error.message || 'Error completing request.';
+  res[HTTP_ERROR] = { code: error.code ?? 'Error', message };
   // Native grid services return the reason phrase; JSON bodies carry
   // {Message, InnerError} so the native client can display the cause.
   sendJson(res, status, { Message: message, InnerError: { Message: message, Code: error.code ?? 'Error' } });
@@ -2498,6 +2501,7 @@ async function handleNotes(action, req, res, context) {
       values.mimetype = String(body.file.type || 'application/octet-stream').slice(0, 255);
       values.documentbody = String(body.file.content ?? '');
       values.filesize = Buffer.from(values.documentbody, 'base64').length;
+      noteFileTrace(context, values, 'upload');
     }
     const created = await context.change(() =>
       portalWrite(context, (writes) => writes.create('annotation', values, context.identity)),
@@ -2525,6 +2529,7 @@ async function handleNotes(action, req, res, context) {
       values.mimetype = String(body.file.type || 'application/octet-stream').slice(0, 255);
       values.documentbody = String(body.file.content ?? '');
       values.filesize = Buffer.from(values.documentbody, 'base64').length;
+      noteFileTrace(context, values, 'upload');
     }
     await context.change(() =>
       portalWrite(context, (writes) => writes.update('annotation', id, values, context.identity)),
@@ -2533,6 +2538,21 @@ async function handleNotes(action, req, res, context) {
   }
   await context.change(() => portalWrite(context, (writes) => writes.remove('annotation', id, context.identity)));
   return sendJson(res, 200, { Id: canonical(id) });
+}
+
+/** A note attachment transfer on the current span (D-R3-10): the file column, name, size and type, never the bytes. */
+function noteFileTrace(context, { filename, mimetype, filesize }, transfer, id = null) {
+  const traces = context.store?.traces;
+  const span = traces?.enabled ? traces.current() : null;
+  if (!span) return;
+  if (id) span.setEntity('annotation', canonical(id));
+  span.set({
+    fileColumn: 'documentbody',
+    transfer,
+    fileName: filename ?? null,
+    fileSize: filesize ?? null,
+    mimetype: mimetype ?? null,
+  });
 }
 
 async function handleAnnotation(req, res, id, context) {
@@ -2552,6 +2572,7 @@ async function handleAnnotation(req, res, id, context) {
     res.writeHead(204, { 'cache-control': 'private' });
     return res.end();
   }
+  noteFileTrace(context, { filename: note.filename, mimetype: note.mimetype, filesize: bytes.length }, 'download', id);
   const type = note.mimetype || 'application/octet-stream';
   const inline = /^image\/(gif|jpeg|png|tiff|bmp|x-icon)$/i.test(type);
   const name = encodeURIComponent(note.filename || 'attachment').replace(/%20/g, '+');
@@ -2781,11 +2802,18 @@ async function nativeServiceAction(req, res, url, context, action, websiteId, sp
       }[normalized];
       if (!expected.includes(secure.t)) fail('Invalid_Request', 403, 'Invalid_Request');
       const model = modelFor(secure, context);
+      // The grid names its table and the view it reads (the view gridData selects: the configured one, else the first).
+      const view =
+        model.views?.find((candidate) => canonical(candidate.id) === canonical(secure.view ?? body.viewId)) ??
+        model.views?.[0];
+      span?.setEntity(model.entity ?? view?.entity ?? null, null);
       span?.set({
         grid: secure.t,
         listId: secure.list,
         formId: secure.form,
         gridId: secure.grid,
+        view: view?.name ?? null,
+        savedquery: view?.id ?? null,
         page: Math.max(1, Number(body.page) || 1),
         pageSize: Number(body.pageSize) || null,
       });
@@ -2799,9 +2827,16 @@ async function nativeServiceAction(req, res, url, context, action, websiteId, sp
         timezoneOffset: Number(body.timezoneOffset) || 0,
         timeZone: requestTimeZone(req, body.timezoneOffset),
       });
-      if (data.AccessDenied)
+      if (data.AccessDenied) {
+        span?.event('permission', {
+          message: `Table permission denies read on ${model.entity}`,
+          attributes: { table: model.entity, operation: 'read', result: 'deny', code: 'AccessDenied' },
+        });
         (model.kind === 'subgrid' || model.kind === 'associate' ? sendSubgridAccessDenied : sendAccessDenied)(res);
-      else sendJson(res, 200, data);
+      } else {
+        span?.set({ rowCount: data.Records?.length ?? 0, itemCount: data.ItemCount, moreRecords: data.MoreRecords });
+        sendJson(res, 200, data);
+      }
       return true;
     }
     if (normalized === 'entity-grid-delete') {

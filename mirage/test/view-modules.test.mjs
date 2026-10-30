@@ -24,6 +24,8 @@ import {
   MODULES,
   LIVE_INTERVAL_MS,
 } from '../admin/view-trace.mjs';
+import { PRODUCT_OF } from '../admin/dashboard-map.mjs';
+import { createTraceStore, SPAN_KINDS, SPAN_STATUSES } from '../lib/trace-store.mjs';
 import { bar, tabs } from '../admin/ui-kit.mjs';
 import fs from 'node:fs/promises';
 
@@ -660,6 +662,11 @@ class FakeFormData {
   }
 }
 const count = (html, pattern) => (html.match(pattern) ?? []).length;
+// The values a rendered <select id> offers after its empty "Any ..." option, in order.
+const selectOptions = (html, id) =>
+  [...new RegExp(`<select id="${id}"[^>]*>(.*?)</select>`).exec(html)[1].matchAll(/<option value="([^"]+)"/g)].map(
+    ([, value]) => value,
+  );
 
 test('kit bar and tabs carry geometry and state as attributes only', () => {
   const html = bar({ offset: 0.25, width: 0.5, className: 'ui-series-1 is-async', marks: [0.3], label: 'a <b>' });
@@ -819,11 +826,13 @@ test('trace view renders KPIs, timeline, list, waterfall, tree and the drawer of
   assert.ok(ctx.requested.includes(`/trace/spans?parentSpanId=${stepSpan.spanId}&pageSize=200`));
   assert.match(trace.render(ctx), /<a href="#trace\?traceId=fx-child">Trace <code>fx-child<\/code><\/a>/);
 
-  // A summary-level runtime says why a span has no payload; a staged job links to its staging span.
+  // A span recorded at summary says so (its own level, not the runtime's); a staged job links to its staging span.
   ctx.data.trace.spanId = jobSpan.spanId;
-  ctx.data.trace.settings = { ...sample.settings, settings: { ...sample.settings.settings, level: 'summary' } };
   html = trace.render(ctx);
-  assert.match(html, /Input: captured at level full only; this span was recorded at level summary or has none\./);
+  assert.match(
+    html,
+    /Input: not captured: this span was recorded at level summary, which keeps attributes and events only\./,
+  );
   assert.match(html, /staged-by: <a href="#trace\?traceId=/);
   assert.match(html, /FX_FAILED: Invented failure/);
 });
@@ -967,10 +976,22 @@ test('trace deep links set filters, range and the open trace; filterQuery and ha
   assert.equal(d.range, 'custom');
   assert.equal(d.traceId, null);
   assert.equal(filterQuery(d).get('from'), '2026-10-22T09:00:00.000Z');
-  // `#trace` alone and `#trace?panel=…` change nothing.
-  trace.route(ctx, new URLSearchParams());
+  // `#trace?panel=…` changes nothing; `#trace` alone is the default view its address shows (DV-C-12).
+  trace.route(ctx, new URLSearchParams({ traceId: 'fx-trace', spanId: 'fx-span' }));
   trace.route(ctx, new URLSearchParams({ panel: 'settings' }));
   assert.equal(d.filters.sessionKey, 'visitor-1');
+  assert.equal(d.traceId, 'fx-trace');
+  d.sort = { by: 'duration', order: 'asc' };
+  trace.route(ctx, new URLSearchParams());
+  assert.deepEqual(
+    FILTERS.filter((name) => d.filters[name]),
+    [],
+  );
+  assert.deepEqual(
+    [d.range, d.sort.by, d.sort.order, d.traceId, d.spanId, d.compare],
+    ['all', 'start', 'desc', null, null, null],
+  );
+  assert.equal(hashOf(d), 'trace');
 });
 
 test('trace filters, pivots, buckets, paging and rows update ctx.data and the address, then load', async () => {
@@ -1088,7 +1109,16 @@ test('trace settings save with PUT { level, persist }; clear asks first, then po
     /<input type="radio" id="trace-level-off" name="level" value="off" checked aria-describedby="trace-level-off-help">/,
   );
   assert.match(html, /id="trace-level-full-help">Summary plus redacted inputs and outputs/);
-  assert.match(html, /Payload bytes<\/dt><dd>16384/);
+  // The retention limits are editable (DV-C-20), bounded like mirage.trace.
+  assert.match(
+    html,
+    /<input id="trace-limit-payloadBytes" name="payloadBytes" type="number" min="256" max="1048576" step="1" required value="16384" aria-describedby="trace-limit-payloadBytes-help">/,
+  );
+  assert.match(
+    html,
+    /id="trace-limit-traces" name="traces" type="number" min="10" max="10000" step="1" required value="500"/,
+  );
+  assert.doesNotMatch(html, /read-only/);
 
   trace.handle(ctx, uiEvent('click', { '[data-trace-action]': { dataset: { traceAction: 'clear' } } }));
   assert.deepEqual([confirmed.title, confirmed.label], ['Clear traces?', 'Clear traces']);
@@ -1730,4 +1760,537 @@ test('flow run details and audit rows link to their trace', async () => {
   const app = await fs.readFile(new URL('../admin/app.mjs', import.meta.url), 'utf8');
   assert.match(app, /\$\{item\.traceId \? ` <a class="button small" href="#trace\?/);
   assert.match(app, /\['Monitor', \['dashboard', 'overview', 'logs', 'audit', 'trace', 'evidence'\]\]/);
+});
+
+// ---- Traces round 3 (DV-C findings, D-R3-1, D-R3-15..17, D-R3-29).
+const sdkSpan = sample.tree.spans.find((span) => span.kind === 'sdk-call');
+const dataverseSpan = sample.tree.spans.find((span) => span.kind === 'dataverse');
+/** A failure as ctx.request throws it for a JSON error answer. */
+const refused = (status, error) => Object.assign(new Error(error.message), { status, details: { error } });
+
+test('trace deep links land on the drawer, the trace heading or the comparison; Enter lands on the trace (DV-C-3, DV-C-17)', async () => {
+  const ctx = traceContext({ responses: traceResponses() });
+  const revealed = [];
+  ctx.reveal = (selector) => revealed.push(selector);
+  trace.route(ctx, new URLSearchParams({ traceId, spanId: stepSpan.spanId }));
+  trace.route(ctx, new URLSearchParams({ traceId }));
+  trace.route(ctx, new URLSearchParams({ compare: `${traceId},fx-b` }));
+  trace.route(ctx, new URLSearchParams({ kind: 'http' }));
+  trace.route(ctx, new URLSearchParams({ panel: 'settings' }));
+  assert.deepEqual(revealed, ['#trace-span-drawer', '#trace-detail-title', '[data-ui-section="trace:compare"]']);
+  // The trace heading exists while the trace loads, once it loaded and when it is gone, so the landing and every
+  // later re-render keep focus on it.
+  trace.route(ctx, new URLSearchParams({ traceId }));
+  assert.match(
+    trace.render(ctx),
+    /<h3 id="trace-detail-title" tabindex="-1">Trace <code>a6b72bdc<\/code><\/h3><p role="status"/,
+  );
+  await trace.load(ctx);
+  assert.match(
+    trace.render(ctx),
+    /<div class="ui-drawer-head"><h3 id="trace-detail-title" tabindex="-1">Trace <code>a6b72bdc/,
+  );
+  // A row opened with Enter (a click on its button) lands on the heading of the trace it opens.
+  revealed.length = 0;
+  await withDom(async () => {
+    trace.handle(ctx, click('[data-trace-open]', { traceOpen: 'fx-other' }));
+  });
+  assert.deepEqual(revealed, ['#trace-detail-title']);
+  await ctx.data.trace.reloading;
+  assert.match(trace.render(ctx), /<h3 id="trace-detail-title" tabindex="-1">Trace <code>fx-other<\/code><\/h3>/);
+});
+
+test('the span drawer shows its path from the root, one-click Parent and Root, and named link targets (DV-C-4)', async () => {
+  const linked = { traceId: 'fx-other-trace', spanId: 'fx-linked-span', kind: 'flow-run', name: 'Invented flow' };
+  const ctx = traceContext({ responses: traceResponses({ '/trace/span/fx-linked-span': linked }) });
+  trace.route(ctx, new URLSearchParams({ traceId, spanId: sdkSpan.spanId }));
+  await trace.load(ctx);
+  let html = trace.render(ctx);
+  safeMarkup(html);
+  const path = html.match(/<nav class="ui-crumbs" aria-label="Span path"><ol>(.*?)<\/ol><\/nav>/)[1];
+  assert.equal(count(path, /<li/g), 6, 'root, webapi, dataverse, stage, step, the span');
+  assert.match(
+    path,
+    new RegExp(
+      `^<li><a href="#trace\\?traceId=${traceId}&amp;spanId=${rootSpan.spanId}"><span[^>]*>http</span> POST /_api/x_items</a></li>`,
+    ),
+  );
+  assert.match(path, /<li aria-current="location"><span[^>]*>sdk-call<\/span> /);
+  assert.match(
+    html,
+    new RegExp(
+      `id="trace-span-root" href="#trace\\?traceId=${traceId}&amp;spanId=${rootSpan.spanId}" aria-label="Root span: http POST /_api/x_items">Root</a>`,
+    ),
+  );
+  assert.match(
+    html,
+    new RegExp(
+      `id="trace-span-parent" href="#trace\\?traceId=${traceId}&amp;spanId=${stepSpan.spanId}" aria-label="Parent span: plugin-step Invented.Plugin.PreCreate">Parent</a>`,
+    ),
+  );
+  assert.match(
+    html,
+    /<dt>Parent<\/dt><dd><a href="[^"]+"><span class="ui-badge ui-tone-neutral">plugin-step<\/span> Invented\.Plugin\.PreCreate<\/a>/,
+  );
+  assert.ok(!ctx.requested.some((path) => path.startsWith('/trace/span/')), 'targets inside the trace need no read');
+  // A root span has neither Parent nor Root.
+  ctx.data.trace.spanId = rootSpan.spanId;
+  html = trace.render(ctx);
+  assert.match(html, /<dt>Parent<\/dt><dd>none \(root\)/);
+  assert.doesNotMatch(html, /id="trace-span-(parent|root)"/);
+  // Links: the staging span by kind and name from the trace; a target in another trace is read once.
+  await withDom(async () => {
+    trace.handle(ctx, click('[data-trace-span]', { traceSpan: jobSpan.spanId }));
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+  html = trace.render(ctx);
+  assert.match(
+    html,
+    /staged-by: <a href="[^"]+"><span class="ui-badge ui-tone-neutral">webapi<\/span> POST x_items<\/a> in trace <code>a6b72bdc<\/code>/,
+  );
+  assert.match(
+    html,
+    /triggered: <a href="#trace\?traceId=fx-other-trace&amp;spanId=fx-linked-span"><span class="ui-badge ui-tone-neutral">flow-run<\/span> Invented flow<\/a>/,
+  );
+  assert.deepEqual(
+    ctx.requested.filter((path) => path.startsWith('/trace/span/')),
+    ['/trace/span/fx-linked-span'],
+  );
+  await trace.load(ctx, []);
+  assert.equal(ctx.requested.filter((path) => path.startsWith('/trace/span/')).length, 1, 'read once');
+  // A target that is no longer retained keeps its link and says so.
+  const gone = traceContext({
+    responses: traceResponses({
+      '/trace/span/fx-linked-span': refused(404, { code: 'SpanNotFound', message: 'No retained span has this id.' }),
+    }),
+  });
+  trace.route(gone, new URLSearchParams({ traceId, spanId: jobSpan.spanId }));
+  await trace.load(gone);
+  assert.match(
+    trace.render(gone),
+    /triggered: <a href="[^"]+">span <code>fx-linke<\/code><\/a> in trace <code>fx-other<\/code> \(no longer retained\)/,
+  );
+});
+
+test('a parent or link target that failed is still named by kind and name; only a failed read is not (DV-Y8-1)', async () => {
+  // The job failed (error object, status error): its child names it; a failed linked span read from another trace too.
+  const tree = structuredClone(sample.tree);
+  const child = {
+    ...structuredClone(sdkSpan),
+    spanId: 'fx-under-job',
+    parentSpanId: jobSpan.spanId,
+    name: 'Retrieve x_after',
+    links: [{ traceId: 'fx-other-trace', spanId: 'fx-failed-span', relation: 'triggered' }],
+  };
+  tree.spans.push(child);
+  const failed = {
+    traceId: 'fx-other-trace',
+    spanId: 'fx-failed-span',
+    kind: 'connector',
+    name: 'x_quotes/Quote',
+    status: 'error',
+    error: { code: 'QuoteBackendDown', message: 'Quote backend unavailable' },
+  };
+  const ctx = traceContext({
+    responses: traceResponses({ [`/trace/id/${traceId}`]: tree, '/trace/span/fx-failed-span': failed }),
+  });
+  trace.route(ctx, new URLSearchParams({ traceId, spanId: child.spanId }));
+  await trace.load(ctx);
+  const html = trace.render(ctx);
+  assert.match(
+    html,
+    /<dt>Parent<\/dt><dd><a href="[^"]+"><span class="ui-badge ui-tone-neutral">job<\/span> Invented\.Plugin\.PostCreate \(async\)<\/a>/,
+  );
+  assert.match(html, /aria-label="Parent span: job Invented\.Plugin\.PostCreate \(async\)">Parent<\/a>/);
+  assert.match(
+    html,
+    /triggered: <a href="[^"]+"><span class="ui-badge ui-tone-neutral">connector<\/span> x_quotes\/Quote<\/a> in trace <code>fx-other<\/code><\/li>/,
+  );
+  assert.doesNotMatch(html, /span <code>(05fe8769|fx-faile)<\/code>/);
+});
+
+test('flow run, system job and plug-in step ids link to their views; Same record pivots on the record (DV-C-22, D-R3-1)', async () => {
+  const tree = structuredClone(sample.tree);
+  tree.spans.find((span) => span.kind === 'sdk-call').attributes.runId = 'run-1';
+  const ctx = traceContext({ responses: traceResponses({ [`/trace/id/${traceId}`]: tree }) });
+  trace.route(ctx, new URLSearchParams({ traceId, spanId: stepSpan.spanId }));
+  await trace.load(ctx);
+  let html = trace.render(ctx);
+  assert.match(
+    html,
+    /<a href="#operations\?key=plugin-step%3Astep-1" aria-label="Open plug-in step step-1 in Backend operations"><code>step-1<\/code><\/a>/,
+  );
+  assert.match(html, /href="#trace\?entity=x_item&amp;recordId=item-1">Same record</);
+  ctx.data.trace.spanId = jobSpan.spanId;
+  html = trace.render(ctx);
+  assert.match(
+    html,
+    /<a href="#records\?entity=asyncoperation&amp;id=job-1" aria-label="Open system job job-1 in Data records">/,
+  );
+  assert.doesNotMatch(html, />Same record</, 'a span without a record id has no record pivot');
+  ctx.data.trace.spanId = sdkSpan.spanId;
+  assert.match(
+    trace.render(ctx),
+    /<a href="#flows\?run=run-1" aria-label="Open flow run run-1 in Flows &amp; jobs"><code>run-1<\/code><\/a>/,
+  );
+  // recordId is a filter like the others: form field, deep link, query, chip.
+  assert.ok(FILTERS.includes('recordId'));
+  trace.route(ctx, new URLSearchParams({ entity: 'x_item', recordId: 'item-1' }));
+  assert.equal(filterQuery(ctx.data.trace).toString(), 'entity=x_item&recordId=item-1');
+  html = trace.render(ctx);
+  assert.match(html, /<input id="trace-record" name="recordId" type="text" value="item-1"/);
+  assert.match(html, /data-trace-unfilter="recordId" aria-label="Remove filter Record id: item-1"/);
+});
+
+test("a missing payload names the span's own capture level and the reason (DV-C-14)", async () => {
+  const tree = structuredClone(sample.tree);
+  const sealed = tree.spans.find((span) => span.kind === 'plugin-stage');
+  sealed.attributes.secure = true;
+  const ctx = traceContext({ responses: traceResponses({ [`/trace/id/${traceId}`]: tree }) });
+  trace.route(ctx, new URLSearchParams({ traceId, spanId: dataverseSpan.spanId }));
+  await trace.load(ctx);
+  // The runtime is at summary now; the span was recorded at full, so that is what the drawer says.
+  ctx.data.trace.settings = { ...sample.settings, settings: { ...sample.settings.settings, level: 'summary' } };
+  let html = trace.render(ctx);
+  assert.match(
+    html,
+    /Input: none: this span was recorded at level full and its operation passed no input to the trace\./,
+  );
+  assert.match(
+    html,
+    /Output: none: this span was recorded at level full and its operation passed no output to the trace\./,
+  );
+  assert.match(html, /<dt>Captured at<\/dt><dd>level full<\/dd>/);
+  ctx.data.trace.spanId = sealed.spanId;
+  html = trace.render(ctx);
+  assert.match(
+    html,
+    /Input: not captured: this span belongs to a sealed flow run \(a Secret parameter or secure inputs or outputs\)/,
+  );
+  // A summary span, whatever the runtime level is now.
+  ctx.data.trace.settings = structuredClone(sample.settings);
+  ctx.data.trace.spanId = jobSpan.spanId;
+  html = trace.render(ctx);
+  assert.match(
+    html,
+    /Output: not captured: this span was recorded at level summary, which keeps attributes and events only\. Choose full under Settings and run the request again to capture the output\./,
+  );
+  assert.doesNotMatch(html, /opened before level full|or has none/);
+});
+
+test('Escape closes the span drawer, except while typing in a field (DV-C-17)', async () => {
+  const ctx = traceContext({ responses: traceResponses() });
+  trace.route(ctx, new URLSearchParams({ traceId, spanId: stepSpan.spanId }));
+  await trace.load(ctx);
+  await withDom(async ({ hashes, focused }) => {
+    const escape = (found) => uiEvent('keydown', found, { key: 'Escape' });
+    assert.equal(trace.handle(ctx, escape({ 'input, select, textarea': { value: 'x' } })), false);
+    assert.equal(ctx.data.trace.spanId, stepSpan.spanId);
+    assert.equal(trace.handle(ctx, escape({})), true);
+    assert.equal(ctx.data.trace.spanId, null);
+    assert.deepEqual(focused, [`trace-span-${stepSpan.spanId}`]);
+    assert.equal(hashes.at(-1), `#trace?traceId=${traceId}`);
+    assert.equal(trace.handle(ctx, escape({})), false, 'nothing to close');
+  });
+  assert.match(trace.render(ctx), /<button type="button" class="ui-button ui-small" data-trace-copy="id">/);
+});
+
+test('the overview names the slowest spans and latest errors, the list the first error, the legend every status (DV-C-11, D-R3-29)', async () => {
+  const ctx = traceContext({ responses: traceResponses() });
+  await trace.load(ctx);
+  const html = trace.render(ctx);
+  safeMarkup(html);
+  const slowest = html.slice(html.indexOf('id="trace-slowest-title"'), html.indexOf('id="trace-errors-title"'));
+  assert.match(
+    slowest,
+    new RegExp(
+      `<li><a href="#trace\\?traceId=${traceId}&amp;spanId=${rootSpan.spanId}"><span[^>]*>http</span> <span class="ui-span-ref-name">POST /_api/x_items</span></a> <span class="ui-help">21\\.0 ms · `,
+    ),
+  );
+  const errors = html.slice(html.indexOf('id="trace-errors-title"'));
+  assert.match(
+    errors,
+    new RegExp(
+      `spanId=${jobSpan.spanId}"><span[^>]*>job</span> <span class="ui-span-ref-name">Invented\\.Plugin\\.PostCreate \\(async\\)</span></a>`,
+    ),
+  );
+  assert.match(errors, /<span class="ui-span-ref-error">FX_FAILED: Invented failure<\/span>/);
+  // The list row of the failing trace: its first error by span name, code and message.
+  assert.match(
+    html,
+    /<span class="ui-help ui-trace-error" title="FX_FAILED: Invented failure">Invented\.Plugin\.PostCreate \(async\): FX_FAILED: Invented failure<\/span>/,
+  );
+  // Every status the store records, with its meaning; the filter offers the same five.
+  const legend = html.match(/<ul class="ui-status-legend" aria-label="Span statuses">(.*?)<\/ul>/)[1];
+  assert.equal(count(legend, /<li>/g), 5);
+  const meanings = [...legend.matchAll(/<li><span class="ui-badge [^"]*">([a-z]+)<\/span> ([^<]+)<\/li>/g)];
+  assert.deepEqual(meanings.map(([, status]) => status).sort(), [...SPAN_STATUSES].sort());
+  assert.ok(
+    meanings.every(([, , meaning]) => meaning.trim()),
+    'each status says what it means',
+  );
+  assert.match(legend, /<span class="ui-badge ui-tone-neutral">cancelled<\/span> stopped before it finished/);
+  assert.match(html, /<option value="cancelled">cancelled<\/option>/);
+  assert.deepEqual(selectOptions(html, 'trace-status').sort(), [...SPAN_STATUSES].sort());
+  // The kind filter offers exactly the store's kinds, in its order (anything else is refused with 400).
+  assert.deepEqual(selectOptions(html, 'trace-kind'), [...SPAN_KINDS]);
+  // An empty store says so instead of listing nothing.
+  const empty = traceContext({
+    responses: traceResponses({ '/trace/stats': { ...sample.stats, slowest: [], errors: [] } }),
+  });
+  await trace.load(empty);
+  assert.match(
+    trace.render(empty),
+    /No span has ended\.<\/p><\/section><section aria-labelledby="trace-errors-title"><h3 id="trace-errors-title">Latest errors<\/h3><p class="ui-help">No span ended in error\./,
+  );
+});
+
+test('a filter the runtime refuses is named in a banner with a way out, not shown as "Any status" over nothing (D-R3-15)', async () => {
+  const bogus = refused(400, {
+    code: 'InvalidTraceFilter',
+    message: 'status must be one of ok, error, denied, cancelled, running (got "bogus").',
+    parameter: 'status',
+  });
+  const ctx = traceContext({ responses: traceResponses({ '/trace': bogus, '/trace/stats': bogus }) });
+  trace.route(ctx, new URLSearchParams({ status: 'bogus' }));
+  await trace.load(ctx);
+  const html = trace.render(ctx);
+  safeMarkup(html);
+  assert.match(
+    html,
+    /<p class="ui-notice ui-tone-bad">The Span status \(status\) filter value &quot;bogus&quot; is not valid: status must be one of ok, error, denied, cancelled, running \(got &quot;bogus&quot;\)\. No trace is listed until you change or remove it\.<\/p>/,
+  );
+  assert.match(
+    html,
+    /id="trace-unfilter-invalid" data-trace-unfilter="status">Remove the Span status filter<\/button>/,
+  );
+  assert.match(html, /<option value="bogus" selected>bogus \(not a valid value\)<\/option>/);
+  assert.doesNotMatch(html, /<option value="" selected>Any status/);
+  assert.doesNotMatch(html, /could not be read/);
+  assert.match(html, /data-ui-section="trace:filters" open/);
+  // The banner's button removes the filter like its chip.
+  await withDom(async ({ hashes }) => {
+    ctx.request = async (path) => (
+      ctx.requested.push(path),
+      path.startsWith('/trace/stats') ? sample.stats : sample.query
+    );
+    trace.handle(ctx, click('[data-trace-unfilter]', { traceUnfilter: 'status' }));
+    await ctx.data.trace.reloading;
+    assert.equal(hashes.at(-1), '#trace');
+  });
+  assert.doesNotMatch(trace.render(ctx), /is not valid/);
+  // The search hint lists what search covers.
+  assert.match(
+    HELP['trace.filters'].fields.search,
+    /event types, messages and attributes, and at level full the captured input and output/,
+  );
+  assert.match(HELP['trace.detail'].fields.spanSearch, /matched like the Search filter/);
+});
+
+test("Find spans matches exactly the spans the store's search matches (DV-C-2)", () => {
+  const traces = createTraceStore({ settings: { level: 'full' } });
+  const root = traces.start({ kind: 'http', name: 'POST /_api/x_orders', module: 'portal' });
+  traces.run(root, () => {
+    const connector = traces.start({
+      kind: 'connector',
+      name: 'x_quotes/Quote',
+      module: 'connectors',
+      input: () => ({ x_name: 'Order SLOW' }),
+    });
+    connector.event('trace', { message: 'Quote backend unavailable', attributes: { code: 'QuoteBackendDown' } });
+    connector.end({ status: 'error' });
+    traces.start({ kind: 'flow-action', name: 'Notify', module: 'flows', attributes: { status: 'Skipped' } }).end();
+  });
+  root.end();
+  const tree = traces.tree(root.traceId);
+  for (const query of [
+    'order slow',
+    'backend unavailable',
+    'quotebackenddown',
+    'skipped',
+    'POST /_api',
+    'nothing like it',
+  ]) {
+    const listed = traces
+      .spans({ search: query })
+      .items.map((span) => span.spanId)
+      .sort();
+    const found = spanFilter(tree, { spanSearch: query });
+    assert.deepEqual([...found.matched].sort(), listed, query);
+  }
+  // The search text is built once per span object: a later change to the same object does not rebuild it.
+  const connector = tree.spans.find((span) => span.name === 'x_quotes/Quote');
+  connector.name = 'renamed after the first search';
+  assert.deepEqual([...spanFilter(tree, { spanSearch: 'x_quotes/quote' }).matched], [connector.spanId]);
+  assert.equal(spanFilter(tree, { spanSearch: 'renamed after' }).matched.size, 0, 'built once per span');
+});
+
+test('trace settings save the retention limits as numbers; a smaller retention reloads the list (DV-C-20)', async () => {
+  const ctx = traceContext({ responses: traceResponses() });
+  await trace.load(ctx);
+  const saved = { ...sample.settings, settings: { ...sample.settings.settings, traces: 100, spansPerTrace: 400 } };
+  const writes = [],
+    notes = [];
+  const read = ctx.request;
+  ctx.request = (path, init) => {
+    if (init?.method) {
+      writes.push(JSON.parse(init.body));
+      return Promise.resolve(structuredClone(saved));
+    }
+    return read(path, init);
+  };
+  ctx.notify = (text) => notes.push(text);
+  let done;
+  const finished = new Promise((resolve) => (done = resolve));
+  ctx.setButtonPending = (button, on) => (on ? true : done());
+  ctx.requested.length = 0;
+  await withDom(async () => {
+    const form = { values: { level: 'full', traces: '100', spansPerTrace: '400', payloadBytes: '16384' } };
+    trace.handle(ctx, uiEvent('submit', { '[data-trace-settings]': form }, { submitter: {} }));
+    await finished;
+    await ctx.data.trace.reloading;
+  });
+  assert.deepEqual(writes, [{ level: 'full', persist: false, traces: 100, spansPerTrace: 400, payloadBytes: 16384 }]);
+  assert.deepEqual(notes, ['Tracing level full; keeps 100 traces, 400 spans per trace, 16384 payload bytes.']);
+  assert.deepEqual(ctx.requested, ['/trace?page=1&pageSize=10', '/trace/stats']);
+  assert.match(
+    trace.render(ctx),
+    /id="trace-limit-traces" name="traces" type="number" min="10" max="10000" step="1" required value="100"/,
+  );
+});
+
+test('the list sits beside the open trace at 1200 px and wider; the filter form stays folded under its chips (DV-C-16)', async () => {
+  const ctx = traceContext({ responses: traceResponses() });
+  await trace.load(ctx);
+  let html = trace.render(ctx);
+  assert.match(
+    html,
+    /<div class="ui-trace-layout"><div class="ui-trace-main"><details class="ui-section" data-ui-section="trace:filters"><summary>/,
+  );
+  assert.doesNotMatch(html, /ui-trace-side/);
+  // Filters, then the list, then the overview: the list is the first thing under the toolbar.
+  assert.ok(html.indexOf('data-ui-section="trace:list"') < html.indexOf('data-ui-section="trace:overview"'));
+  trace.route(ctx, new URLSearchParams({ kind: 'http', traceId }));
+  await trace.load(ctx);
+  html = trace.render(ctx);
+  // Active filters show as chips; the form opens when the person opens it (the shell remembers that) or a filter is
+  // refused, so the list stays in view.
+  assert.match(html, /data-trace-unfilter="kind"/);
+  assert.match(
+    html,
+    /<div class="ui-trace-layout has-detail"><div class="ui-trace-main"><details class="ui-section" data-ui-section="trace:filters"><summary>/,
+  );
+  assert.match(
+    html,
+    new RegExp(
+      `</div><div class="ui-trace-side" data-trace-side="${traceId}\\|"><details class="ui-section" data-ui-section="trace:detail" open>`,
+    ),
+  );
+  assert.match(html, /<th scope="col" class="ui-trace-extra">Tables<\/th>/);
+  // The side column scrolls on its own; a re-render (Live, a loaded part, a span search) keeps its position for the same
+  // trace, and another trace starts at its top.
+  const column = (key, top) => ({ dataset: { traceSide: key }, scrollTop: top });
+  let shown = column(`${traceId}|`, 640);
+  globalThis.document = { querySelector: (selector) => (selector === '.ui-trace-side' ? shown : null) };
+  try {
+    trace.render(ctx);
+    shown = column(`${traceId}|`, 0);
+    trace.mounted(ctx);
+    assert.equal(shown.scrollTop, 640);
+    trace.render(ctx);
+    ctx.data.trace.traceId = 'fx-other';
+    shown = column('fx-other|', 0);
+    trace.mounted(ctx);
+    assert.equal(shown.scrollTop, 0);
+  } finally {
+    delete globalThis.document;
+  }
+  const css = await fs.readFile(new URL('../admin/ui-kit.css', import.meta.url), 'utf8');
+  const wide = css.slice(css.indexOf('@media (min-width: 1200px)'));
+  assert.match(
+    wide,
+    /\.ui-trace-layout\.has-detail \{\s*display: grid;\s*grid-template-columns: minmax\(0, 5fr\) minmax\(0, 7fr\);/,
+  );
+  assert.match(
+    wide,
+    /\.ui-trace-layout\.has-detail \.ui-trace-side \{\s*position: sticky;\s*top: 8px;\s*max-height: calc\(100vh - 16px\);\s*overflow: auto;/,
+  );
+  // Beside the list the waterfall names take over half the column and wrap rather than being cut (DV-Y8-6).
+  const wideOnly = wide.slice(0, wide.indexOf('\n}\n'));
+  assert.match(
+    wideOnly,
+    /\.ui-trace-side \.ui-waterfall-row \{\s*grid-template-columns: minmax\(0, 55%\) minmax\(80px, 1fr\) 84px;/,
+  );
+  assert.match(wideOnly, /\.ui-trace-side \.ui-waterfall-label \{\s*flex-wrap: wrap;/);
+  assert.match(
+    wideOnly,
+    /\.ui-trace-side \.ui-waterfall-name \{\s*min-width: min\(100%, 8em\);\s*white-space: normal;\s*overflow-wrap: anywhere;/,
+  );
+  const phone = css.slice(css.indexOf('@media (max-width: 600px)'));
+  assert.match(
+    phone,
+    /\.ui-waterfall-name,\s*\.ui-trace-root \.ui-trace-name,\s*\.ui-trace-origin,\s*\.ui-tree-span \{\s*white-space: normal;\s*overflow-wrap: anywhere;/,
+  );
+});
+
+test('the /_sim/ admin follows the system dark theme through tokens only; the light theme is unchanged (DV-C-18)', async () => {
+  const read = (name) => fs.readFile(new URL(`../admin/${name}`, import.meta.url), 'utf8');
+  const kitCss = await read('ui-kit.css');
+  const dark = kitCss.slice(kitCss.indexOf('@media (prefers-color-scheme: dark)'));
+  assert.match(
+    dark,
+    /^@media \(prefers-color-scheme: dark\) \{\s*:root\[data-ui-theme='auto'\] \{\s*color-scheme: dark;/,
+  );
+  const defined = new Map([...dark.matchAll(/(--[\w-]+): (#[0-9a-f]{6});/g)].map((match) => [match[1], match[2]]));
+  // Every colour token a sheet uses carries its light value as fallback and has a dark value.
+  for (const name of ['ui-kit.css', 'shell.css', 'style.css', 'dashboard.css', 'persona-picker.css']) {
+    const css = name === 'ui-kit.css' ? kitCss.slice(0, kitCss.indexOf('/* Dark theme')) : await read(name);
+    assert.doesNotMatch(css, /@media \(prefers-color-scheme/, `${name}: dark values live in ui-kit.css only`);
+    for (const [, role, hex, fallback] of css.matchAll(/var\(--ui-([clt])-([0-9a-f]{6}), ([^)]+)\)/g)) {
+      assert.ok(defined.has(`--ui-${role}-${hex}`), `${name}: --ui-${role}-${hex} has a dark value`);
+      const literal = fallback.toLowerCase();
+      const expanded =
+        literal === 'white'
+          ? '#ffffff'
+          : literal.length === 4
+            ? `#${[...literal.slice(1)].map((c) => c + c).join('')}`
+            : literal;
+      assert.equal(expanded, `#${hex}`, `${name}: the fallback is the light value`);
+    }
+    // Translucent pale surfaces (the map bands) keep their alpha and turn dark.
+    for (const [, hex, alpha, r, g, b, a] of css.matchAll(
+      /var\(--ui-c-([0-9a-f]{6})-a(\d+), rgba\((\d+), (\d+), (\d+), ([\d.]+)\)\)/g,
+    )) {
+      assert.equal([r, g, b].map((c) => Number(c).toString(16).padStart(2, '0')).join(''), hex, name);
+      assert.equal(Math.round(Number(a) * 100), Number(alpha), name);
+      const value = dark.match(new RegExp(`--ui-c-${hex}-a${alpha}: rgba\\((\\d+), (\\d+), (\\d+), ([\\d.]+)\\);`));
+      assert.ok(value, `${name}: --ui-c-${hex}-a${alpha} has a dark value`);
+      assert.ok(Math.max(...value.slice(1, 4).map(Number)) < 80, `${name}: --ui-c-${hex}-a${alpha} is dark`);
+    }
+  }
+  // Readable pairs in the dark theme (WCAG AA for text).
+  const luminance = (hex) => {
+    const [r, g, b] = [1, 3, 5].map((at) => {
+      const c = parseInt(hex.slice(at, at + 2), 16) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a, b) => {
+    const [x, y] = [luminance(a), luminance(b)].sort((p, q) => q - p);
+    return (x + 0.05) / (y + 0.05);
+  };
+  const surface = defined.get('--ui-surface');
+  assert.ok(luminance(surface) < 0.05, 'surfaces turn dark');
+  for (const token of ['--ui-ink', '--ui-muted', '--ui-accent', '--ui-ok', '--ui-warn', '--ui-bad', '--ui-info'])
+    assert.ok(ratio(defined.get(token), surface) >= 4.5, `${token} on --ui-surface`);
+  assert.ok(ratio(defined.get('--ui-on-accent'), defined.get('--accent')) >= 4.5, 'primary button text');
+  const html = await read('index.html');
+  assert.match(html, /<html lang="en" data-ui-theme="auto">/);
+  assert.match(html, /<meta name="color-scheme" content="light dark" \/>/);
+});
+
+test('the trace store sits in the Monitor group of the system map (DV-C-19)', () => {
+  const product = PRODUCT_OF('org:trace', 'org', 'Tracing');
+  assert.deepEqual([product.band, product.group, product.name], ['organization', 'monitor', 'Tracing']);
 });

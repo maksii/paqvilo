@@ -76,25 +76,44 @@
   Chromium and Edge; an 8.3 `TEMP` alias and an empty npm cache for the package smoke, as on hosted runners; and two
   extra runs of each changed test file. See [CONTRIBUTING](../CONTRIBUTING.md).
 - Write the code app bootstrap specifier as an inert module string literal, as page script URLs already are.
-- Trace each local request as a tree of spans: the HTTP request, portal Web API call, Dataverse operation, permission
-  decisions, plug-in stages and steps with their SDK calls and trace lines, secrets, web hooks, asynchronous jobs, cloud
-  flow runs and actions, connector calls and page renders. Loopback calls and staged jobs join the trace of the request
-  that caused them, and each audit entry links to its trace. `mirage.trace` sets the level (`off`, `summary` by
-  default, or `full` with redacted inputs and outputs), retention and optional persistence under the state folder; the
-  level also changes at run time. Read traces in the `_sim` **Traces** view, through `/_sim/api/trace`, with
-  `paqvilo mirage trace list|show|spans|stats|settings|clear|export|watch` or with `connectRuntime().trace`. See
+- Trace each local request as a tree of spans: the HTTP request, portal Web API call, form submission, Dataverse
+  operation, function, action, bulk message and `$batch` part, permission decisions, plug-in stages and steps with
+  their SDK calls and trace lines, secrets, outbound HTTP, web hook and Service Bus deliveries, asynchronous and
+  background jobs, classic workflows, server logic, cloud flow runs and actions, connector calls, canvas app actions
+  and page renders. Every host of a runtime shares one store: Power Pages, the standalone host with its model-driven,
+  canvas and code apps, the Dataverse Web API listener and its SOAP endpoint, TDS and the local identity provider, and
+  `/_sim/api` administration writes are traced too. Loopback calls, portal pages, the model-driven shell, the canvas player, the
+  code-app client and staged jobs join the trace of the request that caused them, with `staged-by` and `triggered`
+  links, and each audit entry links to its trace. `mirage.trace` sets the level (`off`, `summary` by default, or `full`
+  with redacted inputs and outputs), retention and optional persistence under the state folder; the level and the
+  retention limits also change at run time. Read traces in the `_sim` **Traces** view, through `/_sim/api/trace`, with
+  `paqvilo mirage trace list|show|spans|stats|settings|clear|flush|export|watch` or with `connectRuntime().trace`. See
   [request tracing](../mirage/docs/tracing.md).
+- Every span that acts on a row names its table and record id, from the dispatch and the plug-in steps to the jobs,
+  web hooks and flows it starts; filter on `recordId` in the API, `--record-id` in the CLI or **Same record** in the
+  view. Plug-in step spans keep their registered images by alias, shared variables and execution context at `full`,
+  and a plug-in fault keeps one identity (type, code, status, plug-in type, step, stage, depth) on the step, the
+  dispatch and the request. Jobs are named by their process, a failed flow run names its failing action, a connector
+  error keeps the provider's own code and cause, sealed flow runs are marked `secure: true`, and spans can end
+  `cancelled`.
+- JavaScript plug-in handlers receive the operation's `sharedVariables` (and `context.SharedVariables` for a
+  `pluginTypes` handler), shared with later JavaScript and CLR steps of the operation. See
+  [project extensions](project-extensions.md#plug-in-type-handlers).
 - Sort the trace list by start, duration, span count or errors; search the spans of a trace, keep only its errors and
   denials, read it as JSON, copy its id or link, and compare two traces side by side with the duration delta of each
-  matched span. The overview compares the root p95 with the previous range of the same length, and times show in local
-  time with the UTC offset.
+  matched span. The overview compares the root p95 with the previous range of the same length, lists the slowest spans
+  and latest errors, and times show in local time with the UTC offset. The list sits beside the open trace on wide
+  screens and names each trace's first error; the span drawer shows the path from the root, Parent and Root, and links
+  flow run, job and plug-in step ids to their views. The `_sim` pages follow the browser's dark colour scheme.
 - Export traces as JSON, NDJSON or OTLP JSON (`resourceSpans`), streamed one trace at a time and bounded by `limit`
   (200 by default, at most 2000). `trace watch` takes the list filters and `--trace-end`, and ends with exit 0 when the
   runtime stops; every `trace --json` action prints one envelope, and failures name a code such as `TraceNotFound` or
-  `RuntimeUnreachable`. `connectRuntime().trace` adds `ancestry` and `subscribe`.
+  `RuntimeUnreachable`. A filter outside its values answers 400 `InvalidTraceFilter` naming its `parameter`, and the
+  CLI exits 2 for it. `connectRuntime().trace` adds `ancestry`, `subscribe` and `flush`.
 - A trace that reaches `spansPerTrace` stays one trace and counts the refused spans; trace ids from headers must be
   UUIDs, and `/_sim/api/trace/id/<traceId>` reads any trace id. Persisted traces are written as delta lines after the
-  response, a runtime without a state folder reports `NoStateDirectory`, and trace ids stay out of the state file.
+  response, a runtime without a state folder reports `NoStateDirectory`, and trace ids stay out of the state file. File
+  and binary columns are captured as their size and SHA-256, never their bytes.
 
 Synthetic and native qualification are distinct. Loopback passes establish the exercised contracts; they do not
 establish native control coverage, a deployed source revision or production readiness.

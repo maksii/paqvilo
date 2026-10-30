@@ -133,3 +133,30 @@ test('a source without a reference is named by its slot; an empty source keeps i
   }
   assert.equal(templates.find((item) => /Content/.test(item.name)).attributes.empty, undefined);
 });
+
+test('a runtime template and a missing include are named by their include name, never a bare "template"', async (t) => {
+  const dir = await makeTemporaryDirectory(path.join(os.tmpdir(), 'trace-render-builtin-'));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const sources = {
+    ...files,
+    'web-templates/content/Content.webtemplate.source.html':
+      "<main>{% include 'breadcrumbs' %}{% include 'No such template' %}{{ snippets['Greeting'] }}</main>",
+    'content-snippets/Greeting.contentsnippet.yml': 'adx_contentsnippetid: greeting\nadx_name: Greeting',
+    'content-snippets/Greeting.contentsnippet.value.html': 'Hello {{ page.title }}',
+  };
+  for (const [name, content] of Object.entries(sources)) {
+    await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
+    await fs.writeFile(path.join(dir, name), content);
+  }
+  const traces = createTraceStore({ settings: { level: 'summary' } });
+  const renderer = createPortalRenderer(await importPortal(dir), {
+    traces,
+    fetchXml: async () => ({ entities: [], more_records: false }),
+  });
+  assert.equal((await renderer.renderPage('/')).status, 200);
+  const tree = traces.tree(traces.query({ kind: 'render' }).items[0].traceId);
+  const names = tree.spans.filter((span) => span.kind === 'render-template').map((span) => span.name);
+  assert.ok(names.includes('builtin breadcrumbs'), names.join(', '));
+  assert.ok(names.includes('missing No such template'), names.join(', '));
+  assert.equal(names.includes('template'), false, names.join(', '));
+});
