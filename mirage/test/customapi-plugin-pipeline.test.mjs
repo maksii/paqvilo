@@ -843,13 +843,14 @@ test('synchronous SDK execution refuses an async-only main handler and fences it
   assert.equal(f.store.tableRows('child').length, 0);
 });
 
-test('recursive JavaScript custom API main operations share the eight-level plugin depth limit', async (t) => {
+// The shared cap is 16 levels (native corpus: a nested Create chain reached Depth 10 and succeeded).
+test('recursive JavaScript custom API main operations share the sixteen-level plugin depth limit', async (t) => {
   let calls = 0;
   const f = await fixture(t, {
     stages: [],
     main: () => {
       calls++;
-      if (calls < 10)
+      if (calls < 18)
         return {
           outputs: pluginMessageValues(
             f.api.records.executeMessageSyncInternal({
@@ -867,7 +868,7 @@ test('recursive JavaScript custom API main operations share the eight-level plug
     },
   });
   await assert.rejects(f.call(), (error) => error.code === 'LocalPluginDepth');
-  assert.equal(calls, 8);
+  assert.equal(calls, 16);
 });
 
 test('overlapping asynchronous main operations on separate organizations keep independent invocation depths', async (t) => {

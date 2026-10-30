@@ -90,7 +90,11 @@ test('record hooks preserve nested JavaScript main depth and caught SDK write po
     store.transact(() => sdk.executeMessageSync('x_Hooked', null, { $type: 'ParameterCollection', values: {} })),
     { code: 'LocalPluginDepth' },
   );
-  assert.deepEqual(depths, [1, 2, 3, 4, 5, 6, 7, 8]);
+  // The nested depth cap is 16 (native corpus: a nested Create chain reached Depth 10 and succeeded).
+  assert.deepEqual(
+    depths,
+    Array.from({ length: 16 }, (_, i) => i + 1),
+  );
   assert.deepEqual(hookDepths, [0, ...depths]);
   mode = 'reject';
   await assert.rejects(

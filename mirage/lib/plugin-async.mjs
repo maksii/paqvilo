@@ -451,6 +451,43 @@ export function createAsyncPluginRunner({
     jobs.register('plugin', inContext(runStep), { diagnostic }),
     jobs.register('webhook', inContext(deliverWebhook), { concurrent: true, diagnostic }),
   ];
+  // Native corpus (async, crud, ownerAndState): an asynchronous Create/Update step whose row is deleted before its job
+  // runs never executes, also when a retry waits. Inside the deleting transaction, the row's waiting plug-in jobs fail
+  // with the row's absence (the native job's own error text is not recorded).
+  const failWaitingWrites = (event) => {
+    let idColumn;
+    try {
+      idColumn = store.resolveMapping(event.entity)?.idColumn;
+    } catch {
+      return;
+    }
+    const rowId = idColumn && event.row?.[idColumn],
+      rows = store.state.tables?.asyncoperation ?? [];
+    if (!rowId) return;
+    const message = `${event.entity} With Id = ${rowId} Does Not Exist`;
+    for (let index = rows.length - 1; index >= 0; index--) {
+      const job = rows[index];
+      if (
+        job.statecode !== 0 ||
+        !['Create', 'Update'].includes(job.messagename) ||
+        job.regardingobjectid?.logical_name !== event.entity ||
+        !sameId(job.regardingobjectid?.id, rowId) ||
+        !String(job.data ?? '').includes('"kind":"plugin"')
+      )
+        continue;
+      own.delete(job.asyncoperationid);
+      if (!systemJobs()) store.removeRow('asyncoperation', rows, index);
+      else
+        Object.assign(job, {
+          statecode: 3,
+          statuscode: 31,
+          completedon: new Date(clockFunction(store.clock ?? systemClock)()).toISOString(),
+          message,
+          friendlymessage: message,
+          errorcode: 0x80040217 | 0,
+        });
+    }
+  };
   // Selection runs inside the committing transaction (a data.mjs commit stager): the Ready rows commit or roll back with
   // the triggering rows. Chain counters, diagnostics and the runner start apply only after that commit.
   const stage = (events, { sequence = 0 } = {}) => {
@@ -459,6 +496,7 @@ export function createAsyncPluginRunner({
       notes = [],
       counts = new Map();
     for (const event of events) {
+      if (event.operation === 'delete') failWaitingWrites(event);
       if (closing && sequence > stopSequence && !acceptedChains.has(event.chain?.id)) {
         notes.push({
           code: 'PLUGIN_ASYNC_STOPPED',

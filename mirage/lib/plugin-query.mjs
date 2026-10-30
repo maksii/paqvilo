@@ -5,6 +5,9 @@ const fail = (message) => {
   throw new DataError(message, 501, 'LocalPluginQueryUnsupported');
 };
 const name = (value) => {
+  // A Web API lookup property (_x_value) names the SDK attribute x.
+  const lookup = typeof value === 'string' && /^_([a-z]\w*)_value$/i.exec(value);
+  if (lookup) return lookup[1];
   if (typeof value !== 'string' || !/^[a-z][\w]*$/i.test(value))
     fail('SDK query projection requires logical column names.');
   return value;

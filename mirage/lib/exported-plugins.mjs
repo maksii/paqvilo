@@ -17,6 +17,8 @@ import {
   leavePluginExecution,
   pluginExecutionDepth,
   recordToSdkEntity,
+  PLUGIN_MAX_DEPTH,
+  PLUGIN_DEPTH_MESSAGE,
 } from './plugin-clr.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import {
@@ -471,7 +473,7 @@ export function pluginUnsupported(step, { images = false, impersonation = false 
     step.unfiltered === true &&
     (step.entity ||
       step.messageFilterId ||
-      !['retrievemultiple', 'associate', 'disassociate', 'update', 'delete'].includes(
+      !['retrievemultiple', 'associate', 'disassociate', 'create', 'update', 'delete'].includes(
         String(step.message).toLowerCase(),
       ) ||
       (String(step.message).toLowerCase() === 'retrievemultiple' && step.mode !== 0))
@@ -479,7 +481,7 @@ export function pluginUnsupported(step, { images = false, impersonation = false 
     return 'Unfiltered execution requires an explicit null filter on a supported read, association, Update or Delete message.';
   if (
     step.unfiltered === true &&
-    ['update', 'delete'].includes(String(step.message).toLowerCase()) &&
+    ['create', 'update', 'delete'].includes(String(step.message).toLowerCase()) &&
     step.images?.length
   )
     return 'Images on global write registrations require a separately qualified table-specific projection adapter.';
@@ -513,7 +515,7 @@ export function pluginStepMatchesEntity(step, entity) {
     (step.unfiltered === true &&
       step.entity == null &&
       step.messageFilterId == null &&
-      ['retrievemultiple', 'associate', 'disassociate', 'update', 'delete'].includes(
+      ['retrievemultiple', 'associate', 'disassociate', 'create', 'update', 'delete'].includes(
         String(step.message).toLowerCase(),
       ) &&
       (String(step.message).toLowerCase() !== 'retrievemultiple' || (step.contract?.mode ?? step.mode) === 0))
@@ -530,8 +532,7 @@ export function pluginHandlers(packs = []) {
 const handlerOf = (handlers, step) => handlers.get(step.id) ?? handlers.get(step.typeName);
 // Nesting of synchronous JavaScript handlers (step id and plug-in type): a write a handler makes runs its own steps one level
 // deeper (Depth). The counter is the one CLR steps use (plugin-clr.mjs pluginExecutionDepth), so a JS/CLR chain shares one
-// Depth. Handlers must return synchronously, so it is balanced within one call stack. Depth past eight fails.
-const HANDLER_DEPTH_LIMIT = 8;
+// Depth. Handlers must return synchronously, so it is balanced within one call stack. Depth past PLUGIN_MAX_DEPTH fails.
 // A plug-in type handler's exception is the InvalidPluginExecutionException fault: 0x80040265 with the SubErrorCode native sends.
 const pluginFault = (cause, item) =>
   pluginFailure(
@@ -631,13 +632,14 @@ function typedContext({
               : ['createmultiple', 'updatemultiple'].includes(operation)
                 ? { Targets: Array.isArray(targets) ? targets.map(detachedRecord) : cloneStateData(targets) }
                 : {},
+    // The main operation's Create id is an output of every PostOperation context, also when earlier stages
+    // already gave the frame an (empty) output collection.
     OutputParameters: customApi
       ? pluginMessageValues(messageParameters.outputParameters, store)
-      : frame?.outputParameters
-        ? pluginMessageValues(frame.outputParameters, store)
-        : stage === 40 && operation === 'create' && idColumn
-          ? { id: record[idColumn] }
-          : {},
+      : {
+          ...(stage === 40 && operation === 'create' && idColumn ? { id: record[idColumn] } : {}),
+          ...(frame?.outputParameters ? pluginMessageValues(frame.outputParameters, store) : {}),
+        },
     SharedVariables: pluginMessageValues(frame?.sharedVariables, store),
     IsInTransaction: store?.pluginInTransaction === true,
     IsolationMode: item.isolationMode ?? 2,
@@ -895,7 +897,8 @@ export function pluginCatalogue({
       descriptor = descriptors.get(step.id),
       unsupported = pluginUnsupported(step, {
         images: Boolean(runtime || descriptor || registered),
-        impersonation: !handlers.has(step.id) && handlers.has(step.typeName),
+        // A CLR context runs as the step's impersonated user (clrContext UserId).
+        impersonation: Boolean(runtime || descriptor) || (!handlers.has(step.id) && handlers.has(step.typeName)),
       });
     const clrAvailable = Boolean((runtime?.descriptor ?? descriptor)?.typeName === step.typeName);
     return copyStepConstructorSettings(step, {
@@ -1487,8 +1490,7 @@ export function runPluginPhase({
                 Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0) + 1,
               );
           nested = true;
-          if (handlerDepth > HANDLER_DEPTH_LIMIT)
-            throw new DataError('Plug-in nested execution depth exceeds eight.', 400, 'LocalPluginDepth');
+          if (handlerDepth > PLUGIN_MAX_DEPTH) throw new DataError(PLUGIN_DEPTH_MESSAGE, 400, 'LocalPluginDepth');
           executed = true;
           started = performance.now();
           startedAt = new Date((store?.clock ?? systemClock).now()).toISOString();

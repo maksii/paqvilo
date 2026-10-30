@@ -6,9 +6,6 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.Remoting.Messaging;
-using System.Runtime.Remoting.Proxies;
-using System.Runtime.Remoting;
 using System.Runtime.CompilerServices;
 using System.ServiceModel;
 using System.Diagnostics;
@@ -119,13 +116,6 @@ public static class PaqviloPluginHost {
  static object Filter(FilterExpression filter){var result=new Dictionary<string,object>{{"operatorName",filter.FilterOperator.ToString()},{"conditions",filter.Conditions.Select(c=>{var comparison=new Dictionary<string,object>{{"attributeName",c.AttributeName},{"entityName",c.EntityName},{"operatorName",c.Operator.ToString()},{"values",c.Values.Select(v=>Wire(v)).ToArray()}};var compare=typeof(ConditionExpression).GetProperty("CompareColumns");if(compare!=null&&Convert.ToBoolean(compare.GetValue(c,null)))comparison["compareColumns"]=true;return comparison;}).ToArray()},{"filters",filter.Filters.Select(Filter).ToArray()}};var hint=typeof(FilterExpression).GetProperty("FilterHint");var hintValue=hint==null?null:hint.GetValue(filter,null);if(hintValue!=null)result["filterHint"]=hintValue;if(filter.IsQuickFindFilter)result["isQuickFindFilter"]=true;var property=typeof(FilterExpression).GetProperty("AnyAllFilterLinkEntity");var link=property==null?null:property.GetValue(filter,null);if(link!=null)result["anyAllFilterLinkEntity"]=Encode(link);return result;}
  static object EncodeContext(Dictionary<string,object> context,int depth=0){return new Dictionary<string,object>{{"$type","ExecutionContext"},{"values",context.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))}};}
  static object Rpc(InvocationLease lease,string method,object[] args,Guid? user){lease.Check();Send(new {kind="rpc",method=method,arguments=args.Select(a=>Wire(a)).ToArray(),userId=user.HasValue?(object)user.Value.ToString():null});var answer=Map(Json.DeserializeObject(Console.ReadLine()??"{}"));lease.Check();if(Str(answer,"kind")!="rpc-answer")throw new InvalidOperationException("Invalid SDK RPC answer.");var error=Map(Get(answer,"error"));if(error.Count>0){if(Str(error,"clrExceptionType")=="System.ArgumentException"&&Str(error,"code")=="LocalPluginTagDuplicate"){var argument=new ArgumentException(Str(error,"message"));lease.CallbackErrors[argument]=unchecked((int)0x80040224);throw argument;}var fault=Map(Get(error,"organizationServiceFault"));if(fault.Count>0){var detail=new OrganizationServiceFault {ErrorCode=Convert.ToInt32(Get(fault,"errorCode")),Message=Str(fault,"message"),Timestamp=DateTime.Parse(Str(fault,"timestamp"),CultureInfo.InvariantCulture,DateTimeStyles.RoundtripKind)};foreach(var entry in Map(Get(fault,"errorDetails")))detail.ErrorDetails[entry.Key]=Decode(entry.Value);throw new FaultException<OrganizationServiceFault>(detail,new FaultReason(detail.Message));}throw Unsupported("Local SDK callback cannot supply a native OrganizationServiceFault for "+Str(error,"code")+": "+Str(error,"message"));}return Decode(Get(answer,"value"));}
- sealed class InterfaceProxy:RealProxy {
-  readonly Func<IMethodCallMessage,object> Handler;public readonly InvocationLease Lease;
-  public Dictionary<string,object> Data;
-  public InterfaceProxy(Type type,Func<IMethodCallMessage,object> handler,InvocationLease lease=null):base(type){Handler=handler;Lease=lease;}
-  public override IMessage Invoke(IMessage message){var call=(IMethodCallMessage)message;try{if(Lease!=null)Lease.Check();return new ReturnMessage(Handler(call),null,0,call.LogicalCallContext,call);}catch(Exception e){return new ReturnMessage(e,call);}}
- }
- static object Proxy(Type type,Func<IMethodCallMessage,object> handler,InvocationLease lease=null){return new InterfaceProxy(type,handler,lease).GetTransparentProxy();}
  // Native hands plug-ins a concrete context object implementing every context interface of the
  // installed SDK, so GetType, reflection and interface checks behave as they do online.
  static object ContextProxy(Dictionary<string,object> context,InvocationLease lease=null){return new LocalContext(context,lease);}
@@ -186,10 +176,48 @@ public static class PaqviloPluginHost {
   public Services(Dictionary<string,object> context,InvocationLease lease){Context=context;Lease=lease;}
   public object GetService(Type type){Lease.Check();
    if(type.IsInterface&&typeof(IExecutionContext).IsAssignableFrom(type)&&type.IsAssignableFrom(typeof(LocalContext)))return ContextProxy(Context,Lease);
-   if(type==typeof(ITracingService))return Proxy(type,call=>{if(call.MethodName!="Trace")throw Unsupported("Unsupported tracing method.");var args=(object[])call.Args[1];Send(new {kind="trace",message=String.Format(CultureInfo.InvariantCulture,(string)call.Args[0],args)});return null;},Lease);
-   if(type==typeof(IOrganizationServiceFactory))return Proxy(type,call=>{if(call.MethodName!="CreateOrganizationService")throw Unsupported("Unsupported factory method.");Guid? user=(Guid?)call.Args[0];return Proxy(typeof(IOrganizationService),c=>Rpc(Lease,c.MethodName,c.Args,user),Lease);},Lease);
+   if(type==typeof(ITracingService))return new LocalTracing(Lease);
+   if(type==typeof(IOrganizationServiceFactory))return new LocalServiceFactory(Lease);
    throw Unsupported("Unconfigured service: "+type.FullName);
   }
+ }
+ // Concrete service objects with the public SDK interfaces the online sandbox objects implement (native corpus
+ // 'services': ITracingService; the factory adds IClusterServiceFactory, IProxyTypesAssemblyProvider,
+ // IServiceEndpointNotificationService and IDisposable; the service adds IClusterService).
+ sealed class LocalTracing:ITracingService {
+  readonly InvocationLease Lease;public LocalTracing(InvocationLease lease){Lease=lease;}
+  public void Trace(string format,params object[] args){Lease.Check();Send(new {kind="trace",message=String.Format(CultureInfo.InvariantCulture,format,args)});}
+ }
+ sealed class LocalServiceFactory:IOrganizationServiceFactory,IProxyTypesAssemblyProvider,IServiceEndpointNotificationService,IDisposable
+#if PAQVILO_CONTEXT7
+  ,IClusterServiceFactory
+#endif
+ {
+  readonly InvocationLease Lease;public LocalServiceFactory(InvocationLease lease){Lease=lease;}
+  public Assembly ProxyTypesAssembly{get;set;}
+  public IOrganizationService CreateOrganizationService(Guid? userId){Lease.Check();return new LocalOrganizationService(Lease,userId);}
+#if PAQVILO_CONTEXT7
+  public IClusterService CreateClusterService(Guid? userId){Lease.Check();return new LocalOrganizationService(Lease,userId);}
+#endif
+  public string Execute(EntityReference serviceEndpoint,IExecutionContext context){Lease.Check();throw Unsupported("Service endpoint notification from a plug-in is not simulated.");}
+  public void Dispose(){}
+ }
+ sealed class LocalOrganizationService:IOrganizationService
+#if PAQVILO_CONTEXT7
+  ,IClusterService
+#endif
+ {
+  readonly InvocationLease Lease;readonly Guid? User;
+  public LocalOrganizationService(InvocationLease lease,Guid? user){Lease=lease;User=user;}
+  object Call(string method,object[] args){return Rpc(Lease,method,args,User);}
+  public Guid Create(Entity entity){return (Guid)Call("Create",new object[]{entity});}
+  public Entity Retrieve(string entityName,Guid id,ColumnSet columnSet){return (Entity)Call("Retrieve",new object[]{entityName,id,columnSet});}
+  public void Update(Entity entity){Call("Update",new object[]{entity});}
+  public void Delete(string entityName,Guid id){Call("Delete",new object[]{entityName,id});}
+  public OrganizationResponse Execute(OrganizationRequest request){return (OrganizationResponse)Call("Execute",new object[]{request});}
+  public void Associate(string entityName,Guid entityId,Relationship relationship,EntityReferenceCollection relatedEntities){Call("Associate",new object[]{entityName,entityId,relationship,relatedEntities});}
+  public void Disassociate(string entityName,Guid entityId,Relationship relationship,EntityReferenceCollection relatedEntities){Call("Disassociate",new object[]{entityName,entityId,relationship,relatedEntities});}
+  public EntityCollection RetrieveMultiple(QueryBase query){return (EntityCollection)Call("RetrieveMultiple",new object[]{query});}
  }
  static EntityImageCollection Images(object value){var result=new EntityImageCollection();foreach(var pair in Map(value))result[pair.Key]=(Entity)Decode(pair.Value);return result;}
  public static int Main(string[] args){

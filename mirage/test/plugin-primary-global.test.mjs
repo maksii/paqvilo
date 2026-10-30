@@ -198,7 +198,7 @@ test(
   },
 );
 
-test('source and HTTP registrations retain explicit global Update/Delete bindings without inferring global Create or image projections', async (t) => {
+test('source and HTTP registrations retain explicit global Update/Delete bindings without inferring image projections', async (t) => {
   const f = await contractModuleFixture(t, {
     mappings,
     tables: {
@@ -240,8 +240,15 @@ test('source and HTTP registrations retain explicit global Update/Delete binding
       /global write registrations/,
     );
   }
-  assert.ok(
-    pluginUnsupported(definition(99, 'Create', 20)),
-    'Global Create remains outside the qualified binding contract',
+  // Native corpus (dataverse-recorder): an unfiltered Create step runs for every table's Create. Its images stay
+  // unqualified like other global write images.
+  const globalCreate = definition(99, 'Create', 20);
+  assert.equal(pluginUnsupported(globalCreate), null);
+  assert.match(
+    pluginUnsupported(
+      { ...globalCreate, images: [{ name: 'After', alias: 'After', type: 1, attributes: [] }] },
+      { images: true },
+    ),
+    /global write registrations/,
   );
 });

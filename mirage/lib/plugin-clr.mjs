@@ -39,6 +39,13 @@ const canon = (id) =>
     .toLowerCase();
 const hostSource = fileURLToPath(new URL('./plugin-clr-host.cs', import.meta.url));
 let executionDepth = 0;
+// The nested plug-in Depth cap. Native evidence: a synchronous Create chain reached Depth 10 and the request
+// succeeded (the documented on-premises default of 8 does not apply online); the native limit itself is not observed.
+export const PLUGIN_MAX_DEPTH = 16;
+// An invocation's deadline includes its nested SDK calls (and their plug-ins). Native plug-in execution and the whole
+// message operation are limited to 2 minutes (Learn: Analyze plug-in performance), so a descriptor may ask up to that.
+const CLR_MAX_TIMEOUT_MS = 120_000;
+export const PLUGIN_DEPTH_MESSAGE = `Plug-in nested execution depth exceeds ${PLUGIN_MAX_DEPTH}.`;
 let parentStartTicks;
 function clrParentIdentity(executable) {
   if (!parentStartTicks) {
@@ -83,7 +90,7 @@ function clrTimeout(descriptor) {
   const value = descriptor.timeoutMs;
   if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
     fail('CLR timeoutMs must be a positive safe integer in milliseconds.');
-  return Math.max(100, Math.min(value ?? 2000, 10000));
+  return Math.max(100, Math.min(value ?? 2000, CLR_MAX_TIMEOUT_MS));
 }
 export function validateClrDescriptor(value) {
   if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
@@ -1298,7 +1305,7 @@ export function clrHostPoolStatus() {
 function executePooledClr(runtime, input, options, verified) {
   const depth = executionDepth + 1,
     key = runtime.directory + '\0' + runtime.descriptor.typeName + '\0' + depth;
-  if (depth > 8) fail('CLR nested execution depth exceeds eight.', 'LocalPluginDepth', 400);
+  if (depth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
   let session = pooledHosts.get(key);
   if (!session) {
     if (pooledHosts.size >= 32) {
@@ -1415,7 +1422,7 @@ function executeClrSnapshot(runtime, input, { store, diagnostic, constructorConf
     completed = false;
   executionDepth++;
   try {
-    if (executionDepth > 8) fail('CLR nested execution depth exceeds eight.', 'LocalPluginDepth', 400);
+    if (executionDepth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
     while (!result) {
       let packet;
       while ((packet = receiveMessageOnPort(port1))) {
@@ -1555,7 +1562,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
         frame.operationDepth ?? 0,
         parent ? Number(parent.values.Depth) + 1 : 0,
       );
-  if (contextDepth > 8) fail('Plug-in nested execution depth exceeds eight.', 'LocalPluginDepth', 400);
+  if (contextDepth > PLUGIN_MAX_DEPTH) fail(PLUGIN_DEPTH_MESSAGE, 'LocalPluginDepth', 400);
   const preValidationParent =
     stage !== 10 &&
     (step.contract?.mode ?? 0) === 0 &&
