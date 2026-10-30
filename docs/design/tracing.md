@@ -544,12 +544,16 @@ waits for them.
 `mirage/lib/trace-hosts.mjs` holds what every host shares:
 
 - `traceSessionKey(contactId, visitorId)`, `ANONYMOUS_ROOT` and `setTraceHeaders(res, span)` (roots).
-- `sseClients({ onEmpty, now = Date.now, stallMs = 5000 })` → `{ add(res), send(message), flush(), end(), size,
+- `sseClients({ onEmpty, now = Date.now, stallMs = 5000, defer })` → `{ add(res), send(message), flush(), end(), size,
 [Symbol.iterator] }`, the client set of an SSE channel (D-R3-18). Every frame is written, so a reader that keeps up
-  loses nothing however large a burst is. A write that returns `false` starts a wait for `drain`; the client is dropped
-  and destroyed only when it is still waiting more than `stallMs` after that write, or when the first write after each
-  of three consecutive drains returns `false` again. `flush()` writes an SSE comment to each client and resolves once its
-  callback ran (every earlier frame reached the socket) or the client closed.
+  loses nothing however large a burst is. A write that returns `false` starts a wait for `drain`. `send` never drops a
+  client on time: a synchronous burst can hold the event loop longer than `stallMs`, and no reader can drain while it
+  does. A deferred check (`defer(fn)`; by default a timer of `min(stallMs, 1 s)` followed by `setImmediate`, so it runs
+  after the I/O poll of a free loop) compares the bytes the client has taken since the previous check: progress restarts
+  the stall clock, and a client still waiting that took nothing for more than `stallMs` is dropped and destroyed. A
+  client whose first write after each of three consecutive drains is refused again is dropped too. `flush()` writes an
+  SSE comment to each client and resolves once its callback ran (every earlier frame reached the socket) or the client
+  closed.
 - `tracedFetch(traces, { module = 'http', operation, url, init = {}, forwardHeaders = true, capture = 'full', attributes,
 fetch })` → the `Response` (D-R3-5). It opens an `http-out` span named `<METHOD> <host><path>` under the current span
   (attributes `method`, `url` without credentials and with secret query values hidden, then `status`), sends
@@ -741,7 +745,10 @@ message, parameter }`) and exits 2; `Local runtime request failed (<status>)` pr
   `organization-host.mjs`); hook-site members (`start`, `run`, `wrap`, `detached`, `current`, `headers`, `fromHeaders`,
   `remember`, `recall`) stay on `host.traces`. The **testing client** `connectRuntime().trace`
   (`mirage/testing/runtime.mjs`) offers the read, settings, clear, flush and export members over the `_sim` routes,
-  serialising a `Date` filter with `toISOString()`; its request errors carry `status`, `code` and `parameter`.
+  serialising a `Date` filter with `toISOString()`; its request errors carry `status`, `code` and `parameter`. A runtime
+  that never answered rejects with `RuntimeUnreachable`; one that accepted the connection and closed it before the
+  response completed (a reset, `terminated`, a body cut short) rejects with `RuntimeConnectionLost`; both keep the fetch
+  error as `cause`.
 - **`_sim` view** `#trace` in the Monitor group: filters (record id included), KPI tiles with the slowest and latest
   error spans, a timeline, the trace list with the first error message, a waterfall and nested tree per trace, a span
   drawer with a breadcrumb from `ancestry()`, named parent and link targets and the span's own capture level, pivots to

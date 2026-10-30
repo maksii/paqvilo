@@ -517,10 +517,13 @@ test('the trace channel unsubscribes when its last client disconnects and sends 
   assert.equal(traces.status().listeners, 0);
 });
 
-test('the trace channel drops a client still waiting for drain past the stall limit, never a busy one', async () => {
+test('the trace channel drops a client that takes nothing past the stall limit, never during a burst', async () => {
   let clock = 0;
+  const checks = [];
   const traces = createTraceStore({ settings: { level: 'summary' } });
-  const attach = createTraceChannel(traces, { now: () => clock, stallMs: 5000 });
+  // The stall checks run when the test runs them, as the event loop would once it is free.
+  const attach = createTraceChannel(traces, { now: () => clock, stallMs: 5000, defer: (fn) => checks.push(fn) });
+  const runChecks = () => checks.splice(0).forEach((fn) => fn());
   // A client that never reads: the connected frame fills its buffer, and every later write reports it full.
   const stuck = new Writable({ highWaterMark: 1, write() {} });
   const healthy = new Writable({
@@ -532,13 +535,12 @@ test('the trace channel drops a client still waiting for drain past the stall li
   attach(healthy);
   assert.equal(traces.status().listeners, 1);
   for (let index = 0; index < 50; index++) traces.start({ kind: 'http', name: `burst ${index}` });
-  assert.equal(stuck.destroyed, false, 'a burst of refused writes within the stall limit keeps the client');
-  clock = 5000;
-  traces.start({ kind: 'http', name: 'at the limit' });
-  assert.equal(stuck.destroyed, false);
-  clock = 5001;
-  traces.start({ kind: 'http', name: 'past the limit' });
-  assert.equal(stuck.destroyed, true);
+  clock = 60_000; // the burst blocked the loop for a minute: sending never drops a client
+  traces.start({ kind: 'http', name: 'after the burst' });
+  assert.equal(stuck.destroyed, false, 'a burst of refused writes keeps the client');
+  assert.equal(checks.length, 1, 'one deferred check per waiting client');
+  runChecks();
+  assert.equal(stuck.destroyed, true, 'a free loop and nothing taken past the limit drops it');
   assert.equal(healthy.destroyed, false);
   assert.equal(traces.status().listeners, 1, 'the healthy client keeps the subscription');
   healthy.destroy();

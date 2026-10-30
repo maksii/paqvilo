@@ -93,6 +93,39 @@ test('a client is dropped when the first write after each of three drains is ref
   assert.equal(clients.size, 0);
 });
 
+test('a blocked event loop never drops a reader that takes bytes once the loop is free', () => {
+  let clock = 0;
+  const checks = [];
+  // The stall checks run when the test runs them, as the event loop would once it is free again.
+  const clients = sseClients({ now: () => clock, stallMs: 5000, defer: (fn) => checks.push(fn) });
+  const runChecks = () => checks.splice(0).forEach((fn) => fn());
+  // highWaterMark 16: every frame is refused; the test completes the reader's writes by hand.
+  const pending = [];
+  const reader = new Writable({
+    highWaterMark: 16,
+    write(_chunk, _encoding, done) {
+      pending.push(done);
+    },
+  });
+  clients.add(reader);
+  clients.send(`event: a\ndata: ${'x'.repeat(64)}\n\n`); // refused at 0 ms: the stall clock starts
+  clock = 6000; // a synchronous burst held the loop for 6 s, so the reader could take nothing
+  for (let index = 0; index < 20; index++) clients.send(`event: a\ndata: ${index}\n\n`);
+  assert.equal(reader.destroyed, false, 'sending inside the blocked stretch drops nobody');
+  pending.shift()(); // the loop is free: the reader takes the first frame
+  runChecks();
+  assert.equal(reader.destroyed, false, 'progress at the first check after the block keeps the reader');
+  assert.equal(clients.size, 1);
+  clock = 11_000; // 5 s with a free loop and nothing more taken: still within the limit
+  runChecks();
+  assert.equal(reader.destroyed, false);
+  clock = 11_001;
+  runChecks();
+  assert.equal(reader.destroyed, true, 'a reader that took nothing past the limit while the loop was free is dropped');
+  assert.equal(clients.size, 0);
+  assert.equal(checks.length, 0, 'no check outlives the client');
+});
+
 test('the trace channel delivers every frame of a burst to connectRuntime().trace.subscribe, and flush waits for them', async (t) => {
   const traces = createTraceStore({ settings: { level: 'summary' } });
   const channel = createTraceChannel(traces);
@@ -175,4 +208,43 @@ test('traces.flush waits for a persisted line queued while it waits', async (t) 
     ['GET /first', 'GET /second'],
   );
   assert.equal(traces.status().persist.written, 2);
+});
+
+test('connectRuntime names a connection the runtime dropped apart from a runtime that never answered', async (t) => {
+  const origin = await serve(t, (req, res) => {
+    const url = new URL(req.url, 'http://127.0.0.1');
+    if (url.pathname === '/_sim/api/status') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ sourceDir: null }));
+    }
+    if (url.pathname === '/_sim/api/trace') {
+      // Headers and half a body, then the socket goes away.
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+      return res.write('{"items":[', () => res.socket.destroy());
+    }
+    // Accepted, then closed before any answer.
+    req.socket.destroy();
+  });
+  const client = await connectRuntime({ origin });
+  const message = `The Mirage runtime at ${origin} closed the connection before the response completed.`;
+  await assert.rejects(client.trace.query(), (error) => {
+    assert.deepEqual([error.code, error.message], ['RuntimeConnectionLost', message]);
+    assert.ok(error.cause instanceof TypeError);
+    return true;
+  });
+  await assert.rejects(client.trace.spans(), { code: 'RuntimeConnectionLost', message });
+  await assert.rejects(client.trace.export(), { code: 'RuntimeConnectionLost', message });
+
+  const closed = http.createServer();
+  await new Promise((resolve) => closed.listen(0, '127.0.0.1', resolve));
+  const port = closed.address().port;
+  await new Promise((resolve) => closed.close(resolve));
+  await assert.rejects(connectRuntime({ origin: `http://127.0.0.1:${port}` }), (error) => {
+    assert.deepEqual(
+      [error.code, error.message],
+      ['RuntimeUnreachable', `No Mirage runtime answers at http://127.0.0.1:${port}; start one or pass --origin.`],
+    );
+    assert.ok(error.cause instanceof TypeError);
+    return true;
+  });
 });

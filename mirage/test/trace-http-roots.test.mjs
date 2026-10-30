@@ -666,9 +666,10 @@ test('a persona runtime records into its parent trace store and follows its run-
   assert.equal(settings.settings.level, 'full', 'one store: the parent change applies to the persona runtime');
 });
 
-test('SSE clients: a closed response never joins, a closing one leaves, a client still waiting for drain past the stall limit is dropped', async () => {
+test('SSE clients: a closed response never joins, a closing one leaves, a client that takes nothing past the stall limit while the loop is free is dropped', async () => {
   let clock = 0;
-  const clients = sseClients({ now: () => clock, stallMs: 5000 });
+  const checks = [];
+  const clients = sseClients({ now: () => clock, stallMs: 5000, defer: (fn) => checks.push(fn) });
   const accepting = () =>
     new Writable({
       write(chunk, encoding, done) {
@@ -689,9 +690,10 @@ test('SSE clients: a closed response never joins, a closing one leaves, a client
   clients.send('event: log\ndata: 1\n\n');
   clients.send('event: log\ndata: 2\n\n');
   clients.send('event: log\ndata: 3\n\n');
-  assert.equal(clients.size, 2, 'refused writes within the stall limit keep the client');
   clock = 5001;
   clients.send('event: log\ndata: 4\n\n');
+  assert.equal(clients.size, 2, 'sending never drops a client, however long the burst');
+  checks.splice(0).forEach((fn) => fn()); // the loop is free: the stalled reader took nothing past the limit
   assert.deepEqual([...clients], [live]);
   assert.equal(stalled.destroyed, true, 'the dropped client is destroyed');
   clients.end();

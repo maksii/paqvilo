@@ -14,6 +14,9 @@ function requestError(status, value, label = 'Local runtime request') {
   });
 }
 
+// Socket failures after the runtime accepted the connection (undici and Node codes).
+const CONNECTION_LOST = new Set(['UND_ERR_SOCKET', 'UND_ERR_CLOSED', 'ECONNRESET', 'EPIPE', 'ECONNABORTED']);
+
 // An unknown trace or span answers null, like the in-process trace store.
 const unretained = (error) => {
   if (error.code === 'TraceNotFound' || error.code === 'SpanNotFound') return null;
@@ -89,13 +92,30 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
   }
   origin = runtimeOrigin(origin);
   let cookie = '';
-  // fetch, with an unreachable runtime reported as RuntimeUnreachable instead of a bare "fetch failed".
+  // A fetch TypeError named for what happened instead of a bare "fetch failed": a connection the runtime accepted and
+  // then closed or reset (undici `terminated`, UND_ERR_SOCKET, ECONNRESET, EPIPE; any failure while reading a body) is
+  // RuntimeConnectionLost; no connection at all (refused, unresolvable, a bad port) is RuntimeUnreachable.
+  const lost = (cause) =>
+    cause?.message === 'terminated' || CONNECTION_LOST.has(cause?.code) || CONNECTION_LOST.has(cause?.cause?.code);
+  const fetchFailure = (cause, { reading = false } = {}) =>
+    reading || lost(cause)
+      ? Object.assign(
+          new Error(`The Mirage runtime at ${origin} closed the connection before the response completed.`, { cause }),
+          { code: 'RuntimeConnectionLost' },
+        )
+      : Object.assign(new Error(`No Mirage runtime answers at ${origin}; start one or pass --origin.`, { cause }), {
+          code: 'RuntimeUnreachable',
+        });
   const reach = (url, init) =>
     fetchImpl(url, init).catch((cause) => {
       if (init.signal?.aborted || !(cause instanceof TypeError)) throw cause;
-      throw Object.assign(new Error(`No Mirage runtime answers at ${origin}; start one or pass --origin.`, { cause }), {
-        code: 'RuntimeUnreachable',
-      });
+      throw fetchFailure(cause);
+    });
+  // A response body, with a connection lost while reading it reported as RuntimeConnectionLost.
+  const bodyOf = (response, read, signal) =>
+    response[read]().catch((cause) => {
+      if (signal?.aborted || !(cause instanceof TypeError)) throw cause;
+      throw fetchFailure(cause, { reading: true });
     });
   const request = async (
     route,
@@ -118,10 +138,14 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
         ...(signal ? { signal } : {}),
       });
       if (response.status === 204) return null;
-      const value = await response.json().catch((error) => {
-        if (signal?.aborted) throw error;
-        return null;
-      });
+      // A body that is not JSON reads as null; a connection lost mid-body is RuntimeConnectionLost.
+      const text = await bodyOf(response, 'text', signal);
+      let value = null;
+      try {
+        value = JSON.parse(text);
+      } catch {
+        /* not JSON: null */
+      }
       if (
         !response.ok &&
         !(captureReport && response.status === 409 && value?.shellProfile && Array.isArray(value.failures))
@@ -179,7 +203,7 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
         headers: cookie ? { cookie } : {},
         redirect: 'error',
       });
-      const text = await response.text();
+      const text = await bodyOf(response, 'text');
       if (!response.ok) throw requestError(response.status, /^\s*\{/.test(text) ? JSON.parse(text) : null);
       return new URLSearchParams(query).get('format') === 'ndjson'
         ? text

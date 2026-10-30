@@ -56,19 +56,20 @@ const segment = (value) => {
 
 const traceFrame = (event) => `event: trace\ndata: ${JSON.stringify(event)}\n\n`;
 /**
- * createTraceChannel(traces, { now, stallMs }) -> attach(res): the `trace` channel of a host's /_sim/events stream,
+ * createTraceChannel(traces, { now, stallMs, defer }) -> attach(res): the `trace` channel of a host's /_sim/events stream,
  * shared by both hosts. attach writes a `connected` frame with the store status, then one payload-free frame per store
  * event until the response finishes or closes; the store is observed only while a client listens, and its flush() waits
  * until the frames reached every client. Client bookkeeping (closed responses never join; every frame is written; a
- * reader still waiting for drain stallMs after a refused write is dropped) is trace-hosts.mjs sseClients, which takes
- * now and stallMs. traces: the trace store, or a function returning it.
+ * reader that takes nothing for stallMs while the loop is free is dropped) is trace-hosts.mjs sseClients, which takes
+ * now, stallMs and defer. traces: the trace store, or a function returning it.
  */
-export function createTraceChannel(traces, { now, stallMs } = {}) {
+export function createTraceChannel(traces, { now, stallMs, defer } = {}) {
   const store = typeof traces === 'function' ? traces : () => traces;
   let unsubscribe = null;
   const clients = sseClients({
     now,
     stallMs,
+    defer,
     onEmpty() {
       unsubscribe?.();
       unsubscribe = null;
