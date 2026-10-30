@@ -34,6 +34,7 @@ import {
 } from './alternate-key-values.mjs';
 import { assertElasticRecord, isElastic, samePartition, recordKey } from './dataverse-elastic.mjs';
 import { relationshipsOf } from './dataverse-standard.mjs';
+import { traceDecision } from './dataverse-security.mjs';
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
 import { jsonChunks, stateDigest } from './state-stream.mjs';
@@ -113,6 +114,18 @@ const transactionFrameOf = (store, { closed = false } = {}) => {
     if (frame.store === store && (closed || !frame.closed)) return frame;
   return null;
 };
+// Tracing (trace-store.mjs): a read inside one of these spans is already covered and opens no store span of its own.
+const COVERED_READS = new Set(['dataverse', 'store', 'read', 'bulk']);
+const READ_LABEL = { retrieve: 'Retrieve', retrievemultiple: 'RetrieveMultiple', fetchxml: 'FetchXml' };
+const FETCH_ENTITY = /<entity\s+name\s*=\s*["']([^"']{1,128})["']/;
+const rowCountOf = (value) =>
+  Array.isArray(value?.value)
+    ? value.value.length
+    : Array.isArray(value?.entities)
+      ? value.entities.length
+      : value == null
+        ? 0
+        : 1;
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 // Row columns a write's Target never shows: the row version, and empty on-behalf/team ownership lookups
 // (native Create Targets carry an empty modifiedonbehalfby, never an empty createdonbehalfby or owningteam).
@@ -399,55 +412,112 @@ const insertSorted = (list, value) => {
  * cannot be keyed: a `wild` index keeps it in a list that every lookup also scans; any other
  * index becomes `linear` and callers scan). The maintenance methods answer false when the
  * owner should drop the index instead of updating it.
+ *
+ * Positions are kept as slots: a row keeps the slot it was indexed at, a removal marks its slot dead in a Fenwick tree of
+ * live slots, and a lookup maps a slot to its row position by counting the live slots before it (O(log n)). A removal is
+ * therefore O(log n), not a shift of every later position, so a cascade delete of n rows stays O(n log n). Until the first
+ * removal a slot is its position; the slots are renumbered once half of them are dead or the tree is full.
  */
 class RowKeyIndex {
   constructor(rows, keyOf, { frame, wild = false } = {}) {
     this.keyOf = keyOf;
     this.frame = frame;
-    this.wild = wild ? [] : null;
+    this.wildSlots = wild ? [] : null;
     this.map = new Map();
     this.linear = false;
     this.length = rows.length;
+    this.slots = rows.length; // the next slot
+    this.live = null; // Fenwick tree (1-based) of live slots, from the first removal on
+    this.dead = 0;
     for (let index = 0; index < rows.length; index++)
-      if (!this.add(keyOf(rows[index]), index)) {
+      if (!this.place(keyOf(rows[index]), index)) {
         this.linear = true;
         this.map.clear();
         break;
       }
   }
-  add(key, index) {
+  // The row position of a slot: the number of live slots before it.
+  position(slot) {
+    if (!this.dead) return slot;
+    let count = 0;
+    for (let i = slot; i > 0; i -= i & -i) count += this.live[i];
+    return count;
+  }
+  // The slot of a row position: the (position + 1)-th live slot (Fenwick descent).
+  slotOf(position) {
+    if (!this.dead) return position;
+    const tree = this.live,
+      size = tree.length - 1;
+    let slot = 0,
+      remaining = position + 1;
+    for (let step = 1 << Math.floor(Math.log2(size)); step; step >>= 1)
+      if (slot + step <= size && tree[slot + step] < remaining) {
+        slot += step;
+        remaining -= tree[slot];
+      }
+    return slot;
+  }
+  // Renumbers every slot to its row position and drops the tree.
+  compact() {
+    const renumber = (list) => {
+      for (let i = 0; i < list.length; i++) list[i] = this.position(list[i]);
+    };
+    this.map.forEach((list, key) => {
+      if (typeof list === 'number') this.map.set(key, this.position(list));
+      else renumber(list);
+    });
+    if (this.wildSlots) renumber(this.wildSlots);
+    this.slots = this.length;
+    this.live = null;
+    this.dead = 0;
+  }
+  /** The positions of the rows that cannot be keyed (a wild index), ascending; null for another index. */
+  get wild() {
+    return this.wildSlots && this.dead ? this.wildSlots.map((slot) => this.position(slot)) : this.wildSlots;
+  }
+  // Indexes key at slot.
+  place(key, slot) {
     if (key === null) return true;
     if (key === undefined) {
-      if (!this.wild) return false;
-      insertSorted(this.wild, index);
+      if (!this.wildSlots) return false;
+      insertSorted(this.wildSlots, slot);
       return true;
     }
     const list = this.map.get(key);
-    if (list === undefined) this.map.set(key, index);
-    else if (typeof list === 'number') this.map.set(key, list <= index ? [list, index] : [index, list]);
-    else insertSorted(list, index);
+    if (list === undefined) this.map.set(key, slot);
+    else if (typeof list === 'number') this.map.set(key, list <= slot ? [list, slot] : [slot, list]);
+    else insertSorted(list, slot);
     return true;
   }
+  add(key, index) {
+    return this.place(key, this.slotOf(index));
+  }
   delete(key, index) {
-    const list = key === undefined ? this.wild : key === null ? null : this.map.get(key);
+    const slot = this.slotOf(index);
+    const list = key === undefined ? this.wildSlots : key === null ? null : this.map.get(key);
     if (typeof list === 'number') {
-      if (list === index) this.map.delete(key);
+      if (list === slot) this.map.delete(key);
       return;
     }
-    const at = list ? list.indexOf(index) : -1;
+    const at = list ? list.indexOf(slot) : -1;
     if (at < 0) return;
     list.splice(at, 1);
     if (!list.length && key != null) this.map.delete(key);
     else if (list.length === 1 && key != null) this.map.set(key, list[0]);
   }
   get(key) {
-    const positions = this.map.get(key);
-    return typeof positions === 'number' ? [positions] : (positions ?? []);
+    const slots = this.map.get(key);
+    if (slots === undefined) return [];
+    if (typeof slots === 'number') return [this.position(slots)];
+    return this.dead ? slots.map((slot) => this.position(slot)) : slots;
   }
   appended(rows, row) {
     if (this.linear || this.length !== rows.length - 1) return false;
+    if (this.live && this.slots >= this.live.length - 1) this.compact();
+    const slot = this.slots++;
+    if (this.live) for (let i = slot + 1; i < this.live.length; i += i & -i) this.live[i]++;
     this.length = rows.length;
-    return this.add(this.keyOf(row), rows.length - 1);
+    return this.place(this.keyOf(row), slot);
   }
   moved(rows, index, previousRow, row, previousKey) {
     if (this.linear || this.length !== rows.length) return false;
@@ -456,23 +526,29 @@ class RowKeyIndex {
     if (arguments.length < 5) previousKey = this.keyOf(previousRow);
     const key = this.keyOf(row);
     if (key === previousKey) return true;
-    if (previousKey === undefined && !this.wild) return false;
+    if (previousKey === undefined && !this.wildSlots) return false;
     this.delete(previousKey, index);
     return this.add(key, index);
   }
   removed(rows, index, row) {
     if (this.linear || this.length !== rows.length + 1) return false;
+    const slot = this.slotOf(index);
     this.delete(this.keyOf(row), index);
-    const shift = (list) => {
-      for (let i = 0; i < list.length; i++) if (list[i] > index) list[i]--;
-    };
-    this.map.forEach((list, key) => {
-      if (typeof list === 'number') {
-        if (list > index) this.map.set(key, list - 1);
-      } else shift(list);
-    });
-    if (this.wild) shift(this.wild);
+    if (!this.live) {
+      // Every slot before the first removal is live: the tree is built in O(n), with room to append as many again.
+      const size = Math.max(16, this.slots * 2),
+        tree = new Int32Array(size + 1);
+      for (let i = 1; i <= size; i++) {
+        if (i <= this.slots) tree[i] += 1;
+        const parent = i + (i & -i);
+        if (parent <= size) tree[parent] += tree[i];
+      }
+      this.live = tree;
+    }
+    for (let i = slot + 1; i < this.live.length; i += i & -i) this.live[i]--;
+    this.dead++;
     this.length = rows.length;
+    if (this.dead * 2 > this.slots) this.compact();
     return true;
   }
 }
@@ -1487,6 +1563,25 @@ export class DataStore {
     this.ensureStorage();
     return this.storage.persistedDigest();
   }
+  /** Record identity (docs/design/tracing.md, D-R3-1): the first row a Dataverse operation addresses names its current
+   * `dataverse` span (a create as soon as its id is assigned, before its plug-in stages run, so the stage and step spans
+   * and every later span read it). A span that already names a record, or names another table, is left as it is. */
+  traceRecord(logical, id) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    if (span?.kind === 'dataverse' && span.recordId == null && id != null && span.entity === logical)
+      span.setEntity(logical, scalar(id));
+  }
+  /** The tracing of one commit (docs/design/tracing.md): a commit event on the current span; end(...) records the staged
+   * events and the save. null without a current span: a commit outside any span (job bookkeeping, startup) opens none. */
+  traceCommit() {
+    const current = this.traces?.enabled ? this.traces.current() : null;
+    if (!current) return null;
+    return {
+      fail: (error) =>
+        traceDecision(current, 'commit', { message: 'Save failed', attributes: { error: error?.code ?? 'Error' } }),
+      end: ({ attributes }) => traceDecision(current, 'commit', { attributes }),
+    };
+  }
   /** Serialize reads that may invoke backend plugin writes. Pure reads do not
    * change the persisted state or its revision. Invoke this only at a request
    * boundary; nested SDK reads already use their caller's synchronous frame. */
@@ -1662,7 +1757,20 @@ export class DataStore {
               (boundary.backup !== null && !privateRecordEqual(this.state, boundary.backup))
             ) {
               frame.committing = true;
-              await this.save();
+              const commit = this.traceCommit();
+              try {
+                await this.save();
+              } catch (error) {
+                commit?.fail(error);
+                throw error;
+              }
+              commit?.end({
+                attributes: {
+                  eventsStaged: this.committedEventCandidates.length,
+                  saveMs: this.lastSave?.durationMs ?? null,
+                  saveMode: this.lastSave?.mode ?? null,
+                },
+              });
               this.committed(
                 rowTransaction && !rowTransaction.promoted && !isolated ? rowTransaction.touchedTables() : null,
               );
@@ -2219,6 +2327,10 @@ export class DataStore {
     this.deleteGuards.add(fn);
     return () => this.deleteGuards.delete(fn);
   }
+  /** The span (or request-context ids) current when `event` was recorded (tracing), or null. */
+  stagingSpan(event) {
+    return (event && typeof event === 'object' && this.stagingSpans?.get(event)) || null;
+  }
   recordCommittedEvent(entity, operation, row, attributes, details = {}) {
     if (
       !this.mutationObservers?.size &&
@@ -2237,6 +2349,10 @@ export class DataStore {
       chain: this.flowChain ? clone(this.flowChain) : null,
       correlationId: currentRequest()?.correlationId ?? null,
     };
+    // The staging span (tracing): kept beside the event, never in it (the event is persisted in asyncoperation.data), so a
+    // job staged from it remembers it as its parent (committed-work.mjs stage, stagingSpan).
+    const staging = this.traces?.enabled ? (this.traces.current() ?? currentRequest()) : null;
+    if (staging?.traceId) (this.stagingSpans ??= new WeakMap()).set(event, staging);
     for (const observer of details.messageEvent ? [] : (this.mutationObservers ?? [])) {
       const matched = observer.matches ? observer.matches(clone(event)) : true;
       if (matched && typeof matched.then === 'function') {
@@ -2567,6 +2683,19 @@ export class DataStore {
         'NotImplemented',
       );
   }
+  /**
+   * The lowercase names a table filter value stands for (DV-N4-2): the logical name and the entity set name of the mapped
+   * table it names either way (any case), else the value itself.
+   */
+  entityNames(name) {
+    const wanted = String(name ?? '')
+      .trim()
+      .toLowerCase();
+    for (const [logical, mapping] of Object.entries(this.state.mappings ?? {}))
+      if (logical.toLowerCase() === wanted || String(mapping?.entitySet ?? '').toLowerCase() === wanted)
+        return [logical.toLowerCase(), ...(mapping?.entitySet ? [String(mapping.entitySet).toLowerCase()] : [])];
+    return [wanted];
+  }
   resolveMapping(entity) {
     safeName(entity);
     let logical = entity;
@@ -2767,7 +2896,10 @@ export class DataStore {
     return result;
   }
   assertAllowed(entity, operation, row, identity, related) {
-    if (!this.allowed(entity, operation, row, identity)) {
+    const memo = this.permissionMemo();
+    if (this.allowed(entity, operation, row, identity, new Set(), null, memo))
+      this.tracePermission(entity, operation, identity, memo, { result: 'allow' });
+    else {
       const permissions = this.rules(entity, operation, identity).map((grant) => {
         const permission = { id: grant.id, name: grant.name ?? grant.id, scope: grant.scope ?? 'global' };
         for (const key of ['field', 'relationship', 'relationshipName', 'parentPermissionId'])
@@ -2795,6 +2927,8 @@ export class DataStore {
       const message =
         `Table permission denies ${operation} on ${entity}` +
         (descriptions.length ? ': ' + descriptions.join('; ') : '');
+      const model = this.portalAuthorization?.describe().model ?? 'standard';
+      this.traceDenial({ table: entity, operation, model, permissions, message });
       throw new DataError(message, 403, 'PermissionDenied', {
         operation,
         table: entity,
@@ -2806,16 +2940,69 @@ export class DataStore {
           table: entity,
           permissions,
           message,
-          model: this.portalAuthorization?.describe().model ?? 'standard',
+          model,
         },
         ...(related ? { related } : {}),
       });
     }
   }
+  /** A table permission denial (tracing): an event on the current span, else a dedicated permission span with status denied. */
+  traceDenial({ table, operation, model, permissions, message }) {
+    const traces = this.traces;
+    if (!traces?.enabled) return;
+    const attributes = {
+      table,
+      operation,
+      result: 'deny',
+      model,
+      permissions: permissions.map((grant) => grant.name),
+      code: 'TABLE_PERMISSION_DENIED',
+    };
+    const current = traces.current();
+    if (current) traceDecision(current, 'permission', { message, attributes });
+    else
+      traces
+        .start({ kind: 'permission', name: `Deny ${operation} ${table}`, module: 'security', operation, entity: table })
+        .event('permission', { message, attributes })
+        .end({ status: 'denied', error: { code: 'PermissionDenied', message } });
+  }
+  /**
+   * One permission event on the current span (tracing, docs/design/tracing.md): an allowed assertAllowed decision
+   * (facts { result: 'allow' }; a denial is traceDenial) or one permission-filtering read call (facts { result: 'filtered',
+   * rows, allowed }), never one per row. The table's rules come from `memo`, so a call that evaluated them computes them once.
+   */
+  tracePermission(entity, operation, identity, memo, facts) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    if (!span) return;
+    const table = this.resolveMapping(entity).logicalName;
+    traceDecision(span, 'permission', {
+      attributes: {
+        table,
+        operation,
+        ...facts,
+        model: this.portalAuthorization?.describe().model ?? 'standard',
+        permissions: memo.rules(table, operation, identity ?? {}).map((grant) => grant.name ?? grant.id),
+      },
+    });
+  }
+  /** tracePermission for a filtering read: `rows` were considered, `allowed` of them are visible (admin and permissive record none). */
+  traceFiltered(entity, identity, rows, allowed, memo) {
+    if (!this.traces?.enabled || identity?.admin || this.state.settings.permissionMode === 'permissive') return;
+    this.tracePermission(entity, 'read', identity, memo, {
+      result: 'filtered',
+      rows: pagedRecordsOf(rows)?.present ?? rows.length,
+      allowed,
+    });
+  }
   rows(entity, identity = {}, subset) {
     const m = this.resolveMapping(entity);
     const memo = this.permissionMemo();
     const rows = subset ?? this.tableRows(m.logicalName);
+    const kept = this.permittedRows(m, rows, identity, memo);
+    this.traceFiltered(m.logicalName, identity, rows, kept.length, memo);
+    return kept;
+  }
+  permittedRows(m, rows, identity, memo) {
     if (this.allowed === DataStore.prototype.allowed) {
       if (identity.admin || this.state.settings.permissionMode === 'permissive') return rows.filter(() => true);
       const length = rows.length;
@@ -2832,12 +3019,17 @@ export class DataStore {
     }
     return rows.filter((r) => this.allowed(m.logicalName, 'read', r, identity, new Set(), null, memo));
   }
-  /** Exact permission-filtered count without materializing the visible rows. */
+  /** Exact permission-filtered count without materializing the visible rows; one `filtered` permission event per call. */
   rowCount(entity, identity = {}, subset) {
     const m = this.resolveMapping(entity);
     const rows = subset ?? this.tableRows(m.logicalName);
     const unrestricted = identity.admin || this.state.settings.permissionMode === 'permissive';
     const memo = unrestricted ? null : this.permissionMemo();
+    const count = this.permittedCount(m, rows, identity, unrestricted, memo);
+    this.traceFiltered(m.logicalName, identity, rows, count, memo);
+    return count;
+  }
+  permittedCount(m, rows, identity, unrestricted, memo) {
     const length = rows.length;
     const storedCount = pagedRecordsOf(rows)?.present;
     if (storedCount === 0 || (unrestricted && storedCount !== undefined)) return storedCount;
@@ -2928,11 +3120,54 @@ export class DataStore {
   }
   get(entity, id, identity = {}, options = {}) {
     if (!this.hasOperationContext()) return this.withOperationContext(() => this.get(entity, id, identity, options));
+    return this.tracedRead(
+      'retrieve',
+      entity,
+      () => ({ id }),
+      options,
+      () => this.readRecord(entity, id, identity, options),
+      id,
+    );
+  }
+  /**
+   * One store span per read call that no Dataverse, store or Liquid read span already covers (docs/design/tracing.md):
+   * entity, operation, rowCount and portalRequest; the query is captured only at level full. A FetchXML read is operation
+   * retrievemultiple with attribute query: 'fetchxml' (the label stays FetchXml).
+   */
+  tracedRead(operation, entity, input, options, read, recordId = null) {
+    const traces = this.traces;
+    if (!traces?.enabled || COVERED_READS.has(traces.current()?.kind)) return read();
+    return traces.wrap(
+      {
+        kind: 'store',
+        name: `${READ_LABEL[operation]} ${entity ?? ''}`.trim(),
+        module: 'dataverse',
+        operation: operation === 'fetchxml' ? 'retrievemultiple' : operation,
+        entity,
+        recordId: recordId == null ? null : String(scalar(recordId)),
+        attributes: {
+          portalRequest: options.portalRequest === true,
+          ...(operation === 'fetchxml' ? { query: 'fetchxml' } : {}),
+        },
+        input,
+      },
+      (span) => {
+        const result = read();
+        const count = (value) => {
+          span.set({ rowCount: rowCountOf(value) });
+          return value;
+        };
+        return typeof result?.then === 'function' ? result.then(count) : count(result);
+      },
+    );
+  }
+  readRecord(entity, id, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
     const read = (key, columns = options.sdkColumns) => {
       const rows = options.readRow ? null : this.tableRows(m.logicalName);
       let row = options.readRow ? options.readRow(key) : rows[this.rowIndex(m, rows, key, options)];
       if (!row) return null;
+      this.traceRecord(m.logicalName, row[m.idColumn]);
       this.assertAllowed(m.logicalName, 'read', row, identity);
       options.authorizeRead?.(row);
       // A portal read (forms, Liquid entity reads) sees what a Dataverse read answers: computed columns hold their value and
@@ -3250,13 +3485,18 @@ export class DataStore {
       let unrestricted = identity.admin || this.state.settings.permissionMode === 'permissive';
       if (!unrestricted && paged.present) {
         const rules = memo.rules(name, 'read', identity);
-        if (!rules.length) return [];
+        if (!rules.length) {
+          this.traceFiltered(name, identity, source, 0, memo);
+          return [];
+        }
         unrestricted = (rules[0].scope ?? 'global') === 'global';
       }
-      const rows = readCopies(source);
-      return unrestricted
-        ? rows
-        : rows.filter((row) => this.allowed(name, 'read', row, identity, new Set(), null, memo));
+      const rows = readCopies(source),
+        kept = unrestricted
+          ? rows
+          : rows.filter((row) => this.allowed(name, 'read', row, identity, new Set(), null, memo));
+      this.traceFiltered(name, identity, source, kept.length, memo);
+      return kept;
     };
     const readRows = (logical, node, subset) => {
       const name = this.resolveMapping(logical).logicalName;
@@ -3521,6 +3761,15 @@ export class DataStore {
   query(entity, params = {}, identity = {}, paging, options = {}) {
     if (!this.hasOperationContext())
       return this.withOperationContext(() => this.query(entity, params, identity, paging, options));
+    return this.tracedRead(
+      'retrievemultiple',
+      entity,
+      () => params,
+      options,
+      () => this.queryRecords(entity, params, identity, paging, options),
+    );
+  }
+  queryRecords(entity, params = {}, identity = {}, paging, options = {}) {
     const p = params instanceof URLSearchParams ? Object.fromEntries(params) : params;
     if (p.fetchXml || p.fetchxml) return this.queryCore(entity, params, identity, paging, options);
     // Column security of the reading principal on every returned row (portal-authorization.mjs maskRow), as get() and fetchXml().
@@ -4254,11 +4503,14 @@ export class DataStore {
           this.evaluate(value, context),
         ]);
         if (!matches.length) throw new DataError('Plugin find requires explicit matching fields', 400, 'InvalidPlugin');
-        const record = this.tableRows(mapping.logicalName).find(
-          (row) =>
-            matches.every(([key, value]) => equal(field(row, key), value)) &&
-            this.allowed(mapping.logicalName, 'read', row, context.identity),
-        );
+        const memo = this.permissionMemo(),
+          candidates = this.tableRows(mapping.logicalName).filter((row) =>
+            matches.every(([key, value]) => equal(field(row, key), value)),
+          ),
+          record = candidates.find((row) =>
+            this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
+          );
+        this.traceFiltered(mapping.logicalName, context.identity, candidates, record ? 1 : 0, memo);
         return clone(record ? (args[1] ? field(record, safeName(String(args[1]))) : record) : null);
       }
       case 'findMany': {
@@ -4269,14 +4521,18 @@ export class DataStore {
         ]);
         if (!matches.length)
           throw new DataError('Plugin findMany requires explicit matching fields', 400, 'InvalidPlugin');
-        const records = this.tableRows(mapping.logicalName).filter(
-          (row) =>
+        const memo = this.permissionMemo(),
+          candidates = this.tableRows(mapping.logicalName).filter((row) =>
             matches.every(([key, value]) =>
               Array.isArray(value)
                 ? value.some((candidate) => equal(field(row, key), candidate))
                 : equal(field(row, key), value),
-            ) && this.allowed(mapping.logicalName, 'read', row, context.identity),
-        );
+            ),
+          ),
+          records = candidates.filter((row) =>
+            this.allowed(mapping.logicalName, 'read', row, context.identity, new Set(), null, memo),
+          );
+        this.traceFiltered(mapping.logicalName, context.identity, candidates, records.length, memo);
         if (records.length > 1024) throw new DataError('Plugin findMany exceeds 1024 records', 400, 'InvalidPlugin');
         return clone(records.map((row) => (args[1] ? field(row, safeName(String(args[1]))) : row)));
       }
@@ -4326,47 +4582,101 @@ export class DataStore {
         (p.entity === entity || p.entity === '*') &&
         (p.operations ?? ['create', 'update']).includes(operation),
     )) {
-      if (p.when && !compileFilter(p.when)(row)) continue;
-      for (const [key, expr] of Object.entries(p.defaults ?? {}))
-        if (row[key] == null) {
-          safeName(key);
-          row[key] = this.evaluate(expr, context);
-        }
-      for (const [key, expr] of Object.entries(p.set ?? {})) {
-        safeName(key);
-        row[key] = this.evaluate(expr, context);
+      const started = performance.now(),
+        changes = [];
+      const evaluated = (result, extra = {}) =>
+        this.ruleEvaluated({
+          rule: String(p.id ?? p.name ?? 'plugin'),
+          table: entity,
+          operation,
+          result,
+          changes,
+          secondaryEffects: result === 'applied' ? (p.secondary ?? []).length : 0,
+          durationMs: Math.round((performance.now() - started) * 100) / 100,
+          ...extra,
+        });
+      if (p.when && !compileFilter(p.when)(row)) {
+        evaluated('skipped');
+        continue;
       }
-      for (const v of p.validate ?? []) {
-        const value = field(row, v.field ?? '');
-        let valid = true;
-        if (v.required) valid = value != null && value !== '';
-        if (v.pattern) valid = valid && new RegExp(v.pattern).test(String(value ?? ''));
-        if (v.min != null) valid = valid && Number(value) >= v.min;
-        if (v.max != null) valid = valid && Number(value) <= v.max;
-        if (v.oneOf) valid = valid && v.oneOf.some((x) => equal(x, value));
-        if (v.assert) valid = valid && compileFilter(v.assert)(row);
-        if (v.unique) {
-          const m = this.resolveMapping(entity);
-          valid =
-            valid &&
-            !(this.state.tables[entity] ?? []).some(
-              (r) => !equal(r[m.idColumn], row[m.idColumn]) && equal(field(r, v.field), value),
-            );
-        }
-        if (!valid)
-          throw new DataError(
-            v.message ?? `Plugin ${p.id ?? 'validation'} rejected ${v.field ?? 'record'}`,
-            400,
-            'PluginValidation',
-            {
-              innerCode: String(v.innerCode ?? '0x80040265').toLowerCase(),
-              ...(typeof v.message === 'string' && v.message.trim() ? { declaredValidationMessage: true } : {}),
-            },
-          );
+      try {
+        this.applyRule(p, row, context, changes, entity);
+      } catch (error) {
+        evaluated('rejected', { error: { code: error.code ?? 'PLUGIN_ERROR', message: error.message } });
+        throw error;
       }
+      evaluated('applied');
       secondary.push(...(p.secondary ?? []).map((action) => ({ action, context })));
     }
     return secondary;
+  }
+  /**
+   * One declarative plugin rule's evaluation { rule, table, operation, result: applied|skipped|rejected, changes,
+   * secondaryEffects, durationMs, error? } (D-M-4): a `rule` event on the current span, then onRuleEvaluated (the host's
+   * `plugin` log line), so both come from this one hook. Trace level off costs one property read here.
+   */
+  ruleEvaluated(evaluation) {
+    const span = this.traces?.enabled ? this.traces.current() : null;
+    // Under a bulk span the evaluations of every row are one rule event and the span's `rules` counts (traceDecision).
+    traceDecision(span, 'rule', {
+      message: `${evaluation.rule} ${evaluation.result}`,
+      attributes: {
+        rule: evaluation.rule,
+        table: evaluation.table,
+        operation: evaluation.operation,
+        result: evaluation.result,
+        changes: evaluation.changes,
+        secondaryEffects: evaluation.secondaryEffects,
+        ...(evaluation.error ? { code: evaluation.error.code, message: evaluation.error.message } : {}),
+      },
+    });
+    try {
+      this.onRuleEvaluated?.(evaluation, span);
+    } catch {
+      /* an observer failure never affects the write */
+    }
+  }
+  // The defaults, set and validate parts of one plugin rule on row; the names it assigns are pushed to changes.
+  applyRule(p, row, context, changes, entity) {
+    for (const [key, expr] of Object.entries(p.defaults ?? {}))
+      if (row[key] == null) {
+        safeName(key);
+        row[key] = this.evaluate(expr, context);
+        changes.push(key);
+      }
+    for (const [key, expr] of Object.entries(p.set ?? {})) {
+      safeName(key);
+      row[key] = this.evaluate(expr, context);
+      if (!changes.includes(key)) changes.push(key);
+    }
+    for (const v of p.validate ?? []) {
+      const value = field(row, v.field ?? '');
+      let valid = true;
+      if (v.required) valid = value != null && value !== '';
+      if (v.pattern) valid = valid && new RegExp(v.pattern).test(String(value ?? ''));
+      if (v.min != null) valid = valid && Number(value) >= v.min;
+      if (v.max != null) valid = valid && Number(value) <= v.max;
+      if (v.oneOf) valid = valid && v.oneOf.some((x) => equal(x, value));
+      if (v.assert) valid = valid && compileFilter(v.assert)(row);
+      if (v.unique) {
+        const m = this.resolveMapping(entity);
+        valid =
+          valid &&
+          !(this.state.tables[entity] ?? []).some(
+            (r) => !equal(r[m.idColumn], row[m.idColumn]) && equal(field(r, v.field), value),
+          );
+      }
+      if (!valid)
+        throw new DataError(
+          v.message ?? `Plugin ${p.id ?? 'validation'} rejected ${v.field ?? 'record'}`,
+          400,
+          'PluginValidation',
+          {
+            innerCode: String(v.innerCode ?? '0x80040265').toLowerCase(),
+            ...(typeof v.message === 'string' && v.message.trim() ? { declaredValidationMessage: true } : {}),
+          },
+        );
+    }
   }
   applySecondary(effects) {
     for (const { action, context } of effects) {
@@ -4737,6 +5047,7 @@ export class DataStore {
     // A caller's empty primary Attribute remains visible to PreValidation,
     // while the operation and Target Entity.Id already have an allocated GUID.
     if (suppliedEmptyPrimary && !seededId) row[m.idColumn] = this.ids.uuid();
+    this.traceRecord(m.logicalName, row[m.idColumn]);
     if (isElastic(m)) assertElasticRecord(row);
     const assertUniqueIdentity = () => {
       if (
@@ -4982,6 +5293,7 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const index = this.rowIndex(m, rows, id, { ...options, partitionId: options.partitionId ?? data.partitionid });
     if (index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    this.traceRecord(m.logicalName, rows[index][m.idColumn]);
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, 'update', rows[index], identity);
     const changes = this.normalizeRecord(m, data, identity);
@@ -5260,6 +5572,7 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const index = this.rowIndex(m, rows, id, options);
     if (index < 0) throw new DataError('Record not found', 404, 'NotFound');
+    this.traceRecord(m.logicalName, rows[index][m.idColumn]);
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, 'delete', rows[index], identity);
     // Dataverse deletes hand the deleted rows (children first, root last) to the recycle bin; portal deletes never collect them.
@@ -5648,6 +5961,15 @@ export class DataStore {
   }
   fetchXml(xml, identity = {}, options = {}) {
     if (!this.hasOperationContext()) return this.withOperationContext(() => this.fetchXml(xml, identity, options));
+    return this.tracedRead(
+      'fetchxml',
+      this.traces?.enabled && typeof xml === 'string' ? (FETCH_ENTITY.exec(xml)?.[1] ?? null) : null,
+      () => xml,
+      options,
+      () => this.fetchXmlRecords(xml, identity, options),
+    );
+  }
+  fetchXmlRecords(xml, identity = {}, options = {}) {
     // Column security of the reading principal on every returned row, link-entity and aliased column included
     // (portal-authorization.mjs maskRow), as get() and query().
     // A condition, order, aggregate or distinct over a column it reads masked is refused first (assertOperands, 0x80041155).

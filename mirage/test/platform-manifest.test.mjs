@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -907,7 +908,7 @@ test("platform resources on the portal origin carry the platform's headers; /dis
     await response.arrayBuffer();
     return Object.fromEntries(
       [...response.headers].filter(
-        ([name]) => !/^(?:date|connection|keep-alive|transfer-encoding|content-length|x-sim-.*)$/.test(name),
+        ([name]) => !/^(?:date|connection|keep-alive|transfer-encoding|content-length|x-sim-.*|x-trace-id)$/.test(name),
       ),
     );
   };

@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of cascade delete and assign behaviour; no native capture cited
 // Cascade actions (lib/dataverse-cascade.mjs): Assign executes per relationship; Share, Unshare, Reparent and Merge are
 // diagnostics only.
 import test from 'node:test';
@@ -5,6 +6,7 @@ import assert from 'node:assert/strict';
 import { EXTENSION } from '../lib/dataverse-cascade.mjs';
 import { DataError } from '../lib/data-error.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
+import { cascadeMappings, systemUserMapping } from './support/parent-child-tables.mjs';
 
 const PARENT = '55555555-5555-4555-8555-555555555501';
 const ACTIVE = '55555555-5555-4555-8555-555555555502';
@@ -20,56 +22,27 @@ const parentRef = { id: PARENT, logical_name: 'x_parent', name: 'Invented parent
 
 // The parent and its children share one relationship cascade; withGrandchild adds a level below the active child.
 function mappingsFor(cascade, { withGrandchild = false } = {}) {
-  const link = { from: 'x_parentid', to: 'x_parentid', cascade };
-  return {
-    systemuser: {
-      logicalName: 'systemuser',
-      entitySet: 'systemusers',
-      idColumn: 'systemuserid',
-      nameColumn: 'fullname',
-      fields: { fullname: { dataverseType: 'nvarchar' } },
-    },
-    x_parent: {
-      logicalName: 'x_parent',
-      entitySet: 'x_parents',
-      idColumn: 'x_parentid',
-      nameColumn: 'x_name',
-      relationships: { children: { entity: 'x_child', many: true, ...link } },
-      fields: { x_name: { dataverseType: 'nvarchar' }, ownerid: { dataverseType: 'owner' } },
-    },
-    x_child: {
-      logicalName: 'x_child',
-      entitySet: 'x_children',
-      idColumn: 'x_childid',
-      nameColumn: 'x_name',
-      relationships: {
-        parent: { entity: 'x_parent', many: false, ...link },
-        ...(withGrandchild
-          ? { grandchildren: { entity: 'x_grandchild', many: true, from: 'x_childid', to: 'x_childid', cascade } }
-          : {}),
-      },
-      fields: {
-        x_name: { dataverseType: 'nvarchar' },
-        x_parentid: { dataverseType: 'lookup' },
-        ownerid: { dataverseType: 'owner' },
-      },
-    },
-    ...(withGrandchild
-      ? {
-          x_grandchild: {
-            logicalName: 'x_grandchild',
-            entitySet: 'x_grandchildren',
-            idColumn: 'x_grandchildid',
-            nameColumn: 'x_name',
-            fields: {
-              x_name: { dataverseType: 'nvarchar' },
-              x_childid: { dataverseType: 'lookup' },
-              ownerid: { dataverseType: 'owner' },
-            },
-          },
-        }
-      : {}),
+  const mappings = { systemuser: systemUserMapping(), ...cascadeMappings(cascade) };
+  if (!withGrandchild) return mappings;
+  mappings.x_child.relationships.grandchildren = {
+    entity: 'x_grandchild',
+    many: true,
+    from: 'x_childid',
+    to: 'x_childid',
+    cascade,
   };
+  mappings.x_grandchild = {
+    logicalName: 'x_grandchild',
+    entitySet: 'x_grandchildren',
+    idColumn: 'x_grandchildid',
+    nameColumn: 'x_name',
+    fields: {
+      x_name: { dataverseType: 'nvarchar' },
+      x_childid: { dataverseType: 'lookup' },
+      ownerid: { dataverseType: 'owner' },
+    },
+  };
+  return mappings;
 }
 
 function tablesFor({ withGrandchild = false } = {}) {
