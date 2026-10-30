@@ -13,6 +13,7 @@ import { pluginCatalogue } from '../lib/exported-plugins.mjs';
 import { localOrganizationService } from '../lib/local-organization-service.mjs';
 import { createScheduler, fixedClock } from '../lib/runtime-clock.mjs';
 import { prepareClrRuntime } from '../lib/plugin-clr.mjs';
+import { asyncMultipleJobParent } from '../lib/plugin-sdk-parent.mjs';
 import { makeTemporaryDirectory, ownedFixture } from '../testing/owned-fixture.mjs';
 import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 import { ORDINARY_CLR_TIMEOUT_MS } from './fixtures/clr-budget.mjs';
@@ -356,4 +357,51 @@ test('an asynchronous named message job reports its synchronous caller chain as 
   assertJobFrames(context);
   for (let parent = context.ParentContext; parent; parent = parent.ParentContext)
     assert.equal(parent.PrimaryEntityName, 'x_node');
+});
+
+// Native depth.json and crud: a bridged CreateMultiple/UpdateMultiple job's parent frames report the job's identities
+// (user, initiating user, business unit, organization), although the queued single operation kept only its request.
+test('a bridged multiple job parent reports the job identities', () => {
+  const guid = (value) => ({ $type: 'Guid', value });
+  const context = {
+    MessageName: 'CreateMultiple',
+    Depth: 2,
+    PrimaryEntityId: guid('00000000-0000-0000-0000-000000000000'),
+    IsolationMode: 2,
+    OwningExtension: { $type: 'EntityReference', logicalName: 'sdkmessageprocessingstep', id: id(9), name: null },
+    OperationId: guid(id(10)),
+    OperationCreatedOn: { $type: 'DateTime', value: '2030-01-02T03:04:05' },
+    UserId: guid(CALLER),
+    InitiatingUserId: guid(CALLER),
+    BusinessUnitId: guid(id(11)),
+    OrganizationId: guid(id(12)),
+    OrganizationName: 'invented_unique',
+    SecondaryEntityName: 'none',
+  };
+  const frame = {
+    asyncSourceParent: {
+      primaryId: id(13),
+      inputParameters: { $type: 'ParameterCollection', values: {} },
+    },
+    operationDepth: 2,
+    operationId: id(10),
+    asyncCallerParent: {
+      $type: 'ExecutionContext',
+      values: { MessageName: 'Create', Stage: 40, UserId: guid(SYSTEM), ParentContext: null },
+    },
+  };
+  const parent = asyncMultipleJobParent(frame, 'createmultiple', 'x_node', context);
+  assert.equal(parent.values.PrimaryEntityId.value, id(13));
+  for (const key of [
+    'UserId',
+    'InitiatingUserId',
+    'BusinessUnitId',
+    'OrganizationId',
+    'OrganizationName',
+    'SecondaryEntityName',
+  ])
+    assert.deepEqual(parent.values[key], context[key], key);
+  // A caller frame keeps its own identities.
+  assert.deepEqual(parent.values.ParentContext.values.UserId, guid(SYSTEM));
+  assert.equal(parent.values.ParentContext.values.MessageName, 'CreateMultiple');
 });

@@ -137,6 +137,28 @@ export function mainOperationParent({ frame, context, parent, callerUserId, obje
   };
 }
 
+// Context facts a frame without its own value shares with the job (a bridged multiple's main frame keeps only its
+// operation's request): native parent frames report the job's identities.
+const SHARED_FACTS = [
+  'UserId',
+  'InitiatingUserId',
+  'BusinessUnitId',
+  'OrganizationId',
+  'OrganizationName',
+  'SecondaryEntityName',
+  'IsExecutingOffline',
+  'IsOfflinePlayback',
+  'UserAzureActiveDirectoryObjectId',
+  'InitiatingUserAzureActiveDirectoryObjectId',
+  'InitiatingUserApplicationId',
+  'PortalsContactId',
+  'IsPortalsClientCall',
+  'AuthenticatedUserId',
+  'InitiatingUserAgent',
+  'EnvironmentId',
+  'TenantId',
+  'IsApplicationUser',
+];
 /** Native async parents hold at most three frames (corpus depth.json: Depth 2-10 jobs all report X/30 < X/40 < X/30). */
 const ASYNC_PARENT_FRAMES = 3;
 
@@ -152,10 +174,17 @@ export function asynchronousParentChain(
   { remaining = ASYNC_PARENT_FRAMES, primaryEntityId = context.PrimaryEntityId } = {},
 ) {
   if (!node?.values || remaining <= 0) return null;
+  const shared = Object.fromEntries(
+    SHARED_FACTS.filter((key) => node.values[key] === undefined && context[key] !== undefined).map((key) => [
+      key,
+      cloneStateData(context[key]),
+    ]),
+  );
   return {
     $type: 'ExecutionContext',
     values: {
       ...node.values,
+      ...shared,
       Mode: 1,
       Depth: context.Depth,
       MessageName: context.MessageName,
