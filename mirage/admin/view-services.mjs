@@ -84,7 +84,7 @@ function storagePanel(ctx, d, node, byPrefix, activity) {
           .map((item) => [`Reason (${e(item.id)})`, e(item.reason)]),
       ])}` +
       `<p><button type="button" class="ui-button ui-small" data-svc-probe-storage>Probe storage now</button></p>${probe}`
-    : '<p class="ui-help">No Azurite provider is declared. Core talks to Azurite over the Blob REST API with Shared Key authorization once its connection string is set; without one the provider is declared only. Paqvilo never starts Azurite.</p>';
+    : `<p class="ui-help">No Azurite provider is declared.${kit.info({ label: 'About Azurite', text: 'Core talks to Azurite over the Blob REST API with Shared Key authorization once its connection string is set; without one the provider is declared only. Paqvilo never starts Azurite.' })}</p>`;
   return `<h3>Providers</h3>${providers}<h3>Routes</h3>${routes}<h3>Azurite</h3>${declared}`;
 }
 

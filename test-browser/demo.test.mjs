@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 import { makeTemporaryDirectory } from '../mirage/testing/owned-fixture.mjs';
 // Exercise the newcomer command itself, including browser launch and owned runtime cleanup.
 import test from 'node:test';
@@ -469,22 +470,29 @@ test(
     await admin.goto(url + '/_sim/#plugins');
     await admin.getByRole('heading', { name: 'Simulation presets', exact: true }).waitFor();
     await evidence('demo-admin', admin);
-    await admin.locator('[data-apply="example-empty"]').click();
-    const presetApplied = admin.waitForResponse(
-      (response) =>
-        response.request().method() === 'POST' &&
-        /^\/(?:_sim|__sim)\/api\/presets\/example-empty\/apply$/.test(new URL(response.url()).pathname),
-    );
-    await admin.locator('#confirm-submit').click();
-    const presetResponse = await presetApplied;
-    assert.equal(presetResponse.status(), 200, await presetResponse.text());
+    // Applying a preset saves state, which publishes `reload` on /__sim/events before the
+    // POST answers; the portal page reloads itself. A test reload would race that navigation,
+    // so wait until the page renders the runtime revision published with the response.
+    const applyPreset = async (id) => {
+      await admin.locator(`[data-apply="${id}"]`).click();
+      const presetApplied = admin.waitForResponse(
+        (response) =>
+          response.request().method() === 'POST' &&
+          [`/_sim/api/presets/${id}/apply`, `/__sim/api/presets/${id}/apply`].includes(
+            new URL(response.url()).pathname,
+          ),
+      );
+      await admin.locator('#confirm-submit').click();
+      const presetResponse = await presetApplied;
+      assert.equal(presetResponse.status(), 200, await presetResponse.text());
+      const { revision } = await admin.evaluate(() => fetch('/_sim/api/status').then((response) => response.json()));
+      await page.waitForFunction((expected) => window.__portalSimulation?.revision === expected, revision);
+    };
+    await applyPreset('example-empty');
     await admin.getByText('Preset applied.', { exact: true }).waitFor();
-    await page.reload();
     await page.locator('[data-account-empty]').waitFor({ state: 'visible' });
-    await admin.locator('[data-apply="example-demo"]').click();
-    await admin.locator('#confirm-submit').click();
+    await applyPreset('example-demo');
     await admin.locator('#confirm').waitFor({ state: 'hidden' });
-    await page.reload();
     await page.locator('[data-account-rows] tr').first().waitFor();
     assert.equal(await page.locator('[data-account-rows] tr').count(), 8);
     await admin.close();

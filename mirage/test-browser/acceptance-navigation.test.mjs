@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own _sim, Lense and setup user interface behaviour
 import test, { describe } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -526,24 +527,29 @@ describe('acceptance navigation boundaries', { concurrency: TESTS_IN_PARALLEL },
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
     });
-    for (const kind of ['abort', 'fail', 'external'])
-      await t.test(kind, async () => {
-        const result = await runAcceptance({
-          localUrl: `http://127.0.0.1:${server.address().port}`,
-          outputDir: path.join(directory, kind),
-          flows: [
-            {
-              name: kind,
-              steps: [
-                { action: 'navigate', path: '/' + kind },
-                // A refused or failed write can stay pending until settlement ends; the page load keeps the default.
-                { action: 'click', frame: '#child', selector: '#send', timeout: 3000 },
-                { action: 'settle', timeout: 3000 },
-              ],
-            },
-          ],
-        });
-        const flow = result.flows[0];
+    const kinds = ['abort', 'fail', 'external'];
+    // One runner session: every owned Edge session costs seconds on a loaded host, while each flow
+    // has its own page and observation.
+    const result = await runAcceptance({
+      localUrl: `http://127.0.0.1:${server.address().port}`,
+      outputDir: path.join(directory, 'evidence'),
+      flows: kinds.map((kind) => ({
+        name: kind,
+        steps: [
+          { action: 'navigate', path: '/' + kind },
+          // A refused or failed write can stay pending until settlement ends; the page load keeps the default.
+          { action: 'click', frame: '#child', selector: '#send', timeout: 3000 },
+          { action: 'settle', timeout: 3000 },
+        ],
+      })),
+    });
+    assert.deepEqual(
+      result.flows.map((flow) => flow.name),
+      kinds,
+    );
+    for (const [index, kind] of kinds.entries())
+      await t.test(kind, () => {
+        const flow = result.flows[index];
         assert.equal(flow.passed, false, JSON.stringify(flow));
         assert.ok(
           flow.failedRequests.some((request) => request.method === (kind === 'abort' ? 'PATCH' : 'POST')),

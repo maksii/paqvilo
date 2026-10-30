@@ -100,13 +100,16 @@ const dpapi = {
   unprotect: async (blob) => (await import('../../lense/dataverse/connection.mjs')).protectSecret(blob, true),
 };
 
-/** Resolves Key Vault references from the `secrets` config. resolve() is the only place a value is read. */
+/** Resolves Key Vault references from the `secrets` config. resolve() is the only place a value is read.
+ * traces: the trace store (or a getter of it, read per call): each resolve() is a secret span with the key name, purpose,
+ * principal and status only, never the value (docs/design/tracing.md). */
 export function createSecretResolver({
   secrets = {},
   env = process.env,
   protect = dpapi,
   clock = systemClock.now,
   diagnostic = () => {},
+  traces = null,
 } = {}) {
   const settings = secretSettings(secrets);
   const now = () => {
@@ -140,7 +143,42 @@ export function createSecretResolver({
     });
     return { status: state.status, reason: state.reason };
   };
-  return {
+  const traced = async (reference, options, read) => {
+    const store = typeof traces === 'function' ? traces() : traces;
+    if (!store?.enabled) return read();
+    const parsed = parseSecretReference(reference),
+      key = parsed?.key ?? null;
+    // The vault and secret name of the reference (never its value): which secret was asked for, by whom, and the outcome.
+    const span = store.start({
+      kind: 'secret',
+      name: `Secret ${key ?? 'reference'}`,
+      module: 'secrets',
+      operation: 'resolve',
+      attributes: {
+        key,
+        vault: parsed?.vault ?? null,
+        secretName: parsed?.name ?? null,
+        version: parsed?.version ?? null,
+        purpose: options.purpose ?? null,
+        principalId: options.principalId ?? null,
+      },
+    });
+    try {
+      const answer = await read();
+      span.end({
+        status: answer.status === 'resolved' ? 'ok' : answer.status === 'denied' ? 'denied' : 'error',
+        attributes: { status: answer.status, ...(answer.version ? { resolvedVersion: answer.version } : {}) },
+        ...(answer.status === 'resolved'
+          ? {}
+          : { error: { code: `SECRET_${answer.status.toUpperCase()}`, message: answer.reason } }),
+      });
+      return answer;
+    } catch (error) {
+      span.fail(error);
+      throw error;
+    }
+  };
+  const resolver = {
     async resolve(reference, { principalId, purpose } = {}) {
       const state = inspect(reference);
       if (state.status !== 'available') return refuse(state, purpose);
@@ -187,6 +225,9 @@ export function createSecretResolver({
     },
     keys: () => Object.keys(settings),
   };
+  const resolve = resolver.resolve;
+  resolver.resolve = (reference, options = {}) => traced(reference, options, () => resolve(reference, options));
+  return resolver;
 }
 
 const rowsOf = (state, logical) => state?.tables?.[logical] ?? [];

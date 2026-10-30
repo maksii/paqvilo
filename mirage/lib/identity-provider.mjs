@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { chooserReport, chooserResults, chooserSearch, CHOOSER_PARAMETERS } from './persona-chooser.mjs';
 import { identityProviderSettings, newUserPolicy } from './identity-provider-settings.mjs';
+import { recordHttpError } from './trace-store.mjs';
+import { ANONYMOUS_ROOT, setTraceHeaders } from './trace-hosts.mjs';
 
 /**
  * Local identity provider for the portal's external sign-in. Each runtime starts one on its
@@ -136,6 +138,9 @@ export async function startIdentityProvider({
   provision = async () => {},
   allowRedirect = () => false,
   clock = () => Date.now(),
+  // The runtime's trace store (docs/design/tracing.md): each request is an http root of host identity-provider, joined to
+  // the portal's back-channel calls through their forwarded trace headers (D-R3-8).
+  traces = null,
 }) {
   settings = identityProviderSettings(settings);
   const builtinAssets = new Map(
@@ -191,17 +196,23 @@ export async function startIdentityProvider({
     });
     res.end(JSON.stringify(value));
   };
-  const fail = (res, status, message) =>
-    respond(
+  // The refusal a response names, for the request's http root (D-R3-4).
+  const refusals = new WeakMap();
+  const fail = (res, status, message) => {
+    refusals.set(res, { code: 'IdentityProviderRequestRejected', message });
+    return respond(
       res,
       status,
       page(
         `<h1>${TITLE}</h1><p class="note">The request was rejected.</p><p role="alert" id="paqvilo-mirage-idp-error">${escapeHtml(message)}</p>`,
       ),
     );
+  };
   /** A token endpoint error (RFC 6749 5.2); invalid_client answers 401. */
-  const tokenError = (res, error, description) =>
-    json(res, error === 'invalid_client' ? 401 : 400, { error, error_description: description });
+  const tokenError = (res, error, description) => {
+    refusals.set(res, { code: error, message: description });
+    return json(res, error === 'invalid_client' ? 401 : 400, { error, error_description: description });
+  };
   const readForm = (req) =>
     new Promise((resolve, reject) => {
       const chunks = [];
@@ -722,11 +733,36 @@ export async function startIdentityProvider({
     }
     return fail(res, 404, 'Unknown identity provider endpoint.');
   }
-  const server = http.createServer((req, res) => {
+  const serve = (req, res) =>
     handle(req, res).catch((error) => {
       if (!res.headersSent) fail(res, error.status ?? 500, error.message);
       else res.end();
     });
+  const server = http.createServer((req, res) => {
+    if (!traces?.enabled) return serve(req, res);
+    const span = traces.start({
+      kind: 'http',
+      name: `${req.method} ${String(req.url ?? '/').split('?')[0]}`,
+      module: 'identity',
+      operation: req.method,
+      ...ANONYMOUS_ROOT,
+      origin: { host: 'identity-provider', portal: null, preset: null },
+      ...traces.fromHeaders(req.headers),
+    });
+    setTraceHeaders(res, span);
+    res.on('close', () => {
+      if (!res.writableFinished)
+        span.end({
+          status: 'error',
+          error: { code: 'REQUEST_ABORTED', message: 'The client closed the request before completion.' },
+          attributes: { statusCode: 499 },
+        });
+    });
+    res.on('finish', () => {
+      recordHttpError(span, res.statusCode, refusals.get(res));
+      span.end({ attributes: { statusCode: res.statusCode } });
+    });
+    return traces.run(span, () => serve(req, res));
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);

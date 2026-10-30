@@ -276,8 +276,11 @@ export function schemaFromFormXml(xml, { entity, title, fieldTypes = {}, lcid = 
 }
 
 /** Client shims only for portal-owned APIs, leaving the export's scripts and markup intact. */
+// traceId: the page's audit id (X-Sim-Parent-Trace); site.rootTraceId: its trace-store trace id (X-Trace-Id), so
+// same-origin follow-up requests join the page's trace (docs/design/tracing.md).
 export function clientRuntime(token, revision, identity = {}, traceId = null, site = {}) {
   identity ??= {};
+  const { rootTraceId = null, ...portalSite } = site ?? {};
   const scriptJson = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
   return `(() => {
     const token = ${JSON.stringify(token)};
@@ -288,11 +291,11 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
     if(simulation.runtimeInstalled)return;simulation.runtimeInstalled=true;
     ${clientLocalSelfOriginRuntime()}
     ${clientDateControlsRuntime()}
-    const parentTrace=${scriptJson(traceId)};
+    const parentTrace=${scriptJson(traceId)};const rootTrace=${scriptJson(rootTraceId)};
     if(parentTrace){
       const sameOrigin=value=>{try{return new URL(localSelfUrl(typeof value==='string'?value:value?.url||String(value)),location.href).origin===location.origin;}catch{return false;}};
-      if(typeof window.fetch==='function'){const fetch=window.fetch;window.fetch=function(input,options){if(!sameOrigin(input))return fetch.call(this,input,options);const headers=new Headers(options?.headers??input?.headers);if(!headers.has('X-Sim-Parent-Trace'))headers.set('X-Sim-Parent-Trace',parentTrace);return fetch.call(this,input,{...options,headers});};}
-      const xhr=window.XMLHttpRequest?.prototype;if(xhr){const open=xhr.open,set=xhr.setRequestHeader,send=xhr.send;xhr.open=function(method,url,...args){this.__ppSimSameOrigin=sameOrigin(url);this.__ppSimExplicitTrace=false;return open.call(this,method,url,...args);};xhr.setRequestHeader=function(name,value){if(String(name).toLowerCase()==='x-sim-parent-trace')this.__ppSimExplicitTrace=true;return set.call(this,name,value);};xhr.send=function(...args){if(this.__ppSimSameOrigin&&!this.__ppSimExplicitTrace)set.call(this,'X-Sim-Parent-Trace',parentTrace);return send.apply(this,args);};}
+      if(typeof window.fetch==='function'){const fetch=window.fetch;window.fetch=function(input,options){if(!sameOrigin(input))return fetch.call(this,input,options);const headers=new Headers(options?.headers??input?.headers);if(!headers.has('X-Sim-Parent-Trace')){headers.set('X-Sim-Parent-Trace',parentTrace);if(rootTrace&&!headers.has('X-Trace-Id'))headers.set('X-Trace-Id',rootTrace);}return fetch.call(this,input,{...options,headers});};}
+      const xhr=window.XMLHttpRequest?.prototype;if(xhr){const open=xhr.open,set=xhr.setRequestHeader,send=xhr.send;xhr.open=function(method,url,...args){this.__ppSimSameOrigin=sameOrigin(url);this.__ppSimExplicitTrace=false;return open.call(this,method,url,...args);};xhr.setRequestHeader=function(name,value){if(/^x-(?:sim-parent-trace|sim-trace-id|trace-id)$/i.test(String(name)))this.__ppSimExplicitTrace=true;return set.call(this,name,value);};xhr.send=function(...args){if(this.__ppSimSameOrigin&&!this.__ppSimExplicitTrace){set.call(this,'X-Sim-Parent-Trace',parentTrace);if(rootTrace)set.call(this,'X-Trace-Id',rootTrace);}return send.apply(this,args);};}
     }
     for (const prototype of [String.prototype, Array.prototype]) if (!prototype.contains) Object.defineProperty(prototype, 'contains', { value: function(value) { return this.includes(value); }, configurable: true, writable: true });
     // Native shell (postpreform.bundle antiforgerytoken): the platform renders
@@ -358,7 +361,7 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
     };
     window.portal ||= {};window.portal.IsRequestedFromMaker ||= function(){return false;};
     const installLegacyJQueryEvents=()=>{const jq=window.jQuery;if(!jq?.fn||jq.fn.load?.__ppSimLegacy)return;const load=jq.fn.load;const handler=function(first,...rest){return typeof first==='function'?this.on('load',first):load.apply(this,[first,...rest]);};handler.__ppSimLegacy=true;jq.fn.load=handler;};installLegacyJQueryEvents();document.addEventListener('load',installLegacyJQueryEvents,true);
-    ${clientPortalObjectRuntime(identity, { ...site, traceId })}
+    ${clientPortalObjectRuntime(identity, { ...portalSite, traceId })}
     // One stream per portal tab. Parent navigation reloads its managed frames;
     // per-frame streams exhaust the browser's same-origin HTTP connection pool.
     if(window.parent===window){
@@ -482,7 +485,15 @@ function pageSite(html) {
   return { websiteId: resources?.[1] ?? '', language };
 }
 
-export function injectRuntime(html, token, revision, identity = {}, traceId = null, languages = null) {
+export function injectRuntime(
+  html,
+  token,
+  revision,
+  identity = {},
+  traceId = null,
+  languages = null,
+  rootTraceId = null,
+) {
   // The trace id travels in the x-sim-trace-id header and the runtime script only: a meta
   // element would shift every head child the platform renders (charset, viewport, links).
   // The $pages client API (lib/pages-client-api.js) runs right after the runtime, before authored scripts.
@@ -490,6 +501,7 @@ export function injectRuntime(html, token, revision, identity = {}, traceId = nu
   const runtime = clientRuntime(token, revision, identity, traceId, {
     ...pageSite(html),
     ...(languages?.length ? { languages } : {}),
+    rootTraceId,
   });
   const script = hasPlatformBundles(html)
     ? `<script data-paqvilo-mirage-runtime>${runtime}\n${PAGES_CLIENT_API_SOURCE}</script>`

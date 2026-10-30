@@ -16,7 +16,7 @@ import { descendants, parseSolutionXml } from './solution-xml.mjs';
 import { solutionLayerFiles } from './solution-content-fingerprint.mjs';
 import { contextUrl, dataverseError } from './dataverse-odata.mjs';
 import { ownerColumns, uuidV5 } from './dataverse-security.mjs';
-import { committedJobs, liveJob, stageCommittedJobs } from './committed-work.mjs';
+import { committedJobs, liveJob, stageCommittedJobs, traceJob } from './committed-work.mjs';
 import { runTrackedFlow, inspectFlowTrigger } from './flow-runtime.mjs';
 import { pluginStepBypassed, pluginBypassOwnership } from './plugin-bypass.mjs';
 
@@ -408,6 +408,8 @@ async function runClassic(api, config, run) {
     return choice.message;
   }
   const trace = [];
+  // Each trace() line is also a trace event on the run's workflow span (current here; tracedRun), so it reads in the trace.
+  const span = store.traces?.enabled ? store.traces.current() : null;
   const previous = store.flowChain;
   store.flowChain = { id: outer?.id ?? (api.ids ?? systemIds).uuid(), depth: (outer?.depth ?? 0) + 1 };
   let message;
@@ -416,7 +418,13 @@ async function runClassic(api, config, run) {
       api,
       choice.handler,
       { workflow: run.row, target: run.target, caller: run.caller, inputs: run.inputs },
-      { workingTarget: true, trace: (text) => trace.push(String(text)) },
+      {
+        workingTarget: true,
+        trace: (text) => {
+          trace.push(String(text));
+          span?.event('trace', { message: String(text) });
+        },
+      },
     );
     message = result?.message ?? (trace.join('\n') || null);
   } finally {
@@ -459,10 +467,42 @@ function writeProcessSession(store, api, run, error) {
   });
 }
 
+// One workflow span per run (docs/design/tracing.md), nested where it runs: a background run runs inside its job span (the
+// system job's, dataverse-async.mjs runJob, or the committed job's, committed-work.mjs traceJob), which is parented by the
+// span that queued it. The run's result (the workflow message, or the cloud flow run) is the span output.
+function tracedRun(api, run, work, { cloud = false } = {}) {
+  const traces = api.store.traces;
+  if (!traces?.enabled) return work();
+  return traces.wrap(
+    {
+      kind: 'workflow',
+      name: run.row?.name ?? bare(run.row?.workflowid),
+      module: cloud ? 'flows' : 'dataverse',
+      operation: 'run',
+      entity: run.regarding?.logicalName ?? run.target?.logicalName ?? null,
+      recordId: run.regarding?.id ?? run.target?.id ?? null,
+      attributes: {
+        workflowId: bare(run.row?.workflowid),
+        processId: bare(run.row?.workflowid),
+        processName: run.row?.name ?? null,
+        cloud,
+        realtime: run.realtime === true,
+        jobId: run.jobId ?? null,
+      },
+      input: () => ({ target: run.target?.row ?? null, inputs: run.inputs ?? {} }),
+    },
+    async (span) => {
+      const result = await work();
+      span.output(() => (cloud ? result : { message: result ?? null }));
+      return result;
+    },
+  );
+}
+
 // One run, atomic: the handler's writes commit or roll back with it. A failed run records its log outside the rolled-back work.
 async function attempt(api, config, run) {
   try {
-    return await api.change(() => api.runAtomic(() => runClassic(api, config, run)));
+    return await tracedRun(api, run, () => api.change(() => api.runAtomic(() => runClassic(api, config, run))));
   } catch (error) {
     const choice = classicChoice(config, run.row);
     const logged = choice.mode === 'handler' || choice.mode === 'mock';
@@ -501,6 +541,7 @@ function runCloudFlow(api, config, run) {
   return runTrackedFlow({
     runs: api.flowRuns ?? null,
     processId: bare(run.row.workflowid),
+    name: flow.name ?? run.row.name ?? null,
     trigger: 'ExecuteWorkflow',
     wrap: (fn) => api.change(() => api.store.transact(async () => await fn(), { cloneResult: false })),
     definition: flow.definition,
@@ -593,7 +634,13 @@ async function executeWorkflow(api, config, c, workflowId, body = {}) {
           primaryentitytype: regarding.logicalName,
         },
       },
-      () => runCloudFlow(api, config, { row, target: { row: target }, caller, inputs }),
+      () =>
+        tracedRun(
+          api,
+          { row, regarding },
+          () => runCloudFlow(api, config, { row, target: { row: target }, caller, inputs }),
+          { cloud: true },
+        ),
     );
     return {
       status: 200,
@@ -1045,7 +1092,7 @@ export function workflowExtension(config = {}) {
       const unstage = api.store.addCommitStager((events) => stageBackgroundRuns(api, settings, events));
       const unregister = jobs.register(
         JOB_KIND,
-        (job) => runBackgroundJob(api, settings, job),
+        (job) => traceJob(api.store, job, () => runBackgroundJob(api, settings, job)),
         settings.diagnostic ? { diagnostic: settings.diagnostic } : {},
       );
       subscriptions.set(api.store, () => {

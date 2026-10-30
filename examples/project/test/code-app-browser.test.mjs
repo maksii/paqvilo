@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -49,7 +50,24 @@ test('example uses the standalone organization and selected staff session', { ti
     data: { userId: (await made.json()).systemuserid },
   });
   assert.equal(selected.status(), 200);
-  await page.goto(`${origin}/_apps/code/invented-items/`);
+  // The host page and its framed app reach `load` without waiting for the app's getContext() call: the call is held
+  // until the navigation resolves, so a load that waited on it would never finish (the test timeout reports it).
+  // Navigation is setup, not an asserted step, so it has no deadline of its own: a freshly launched Edge on a busy
+  // runner can take seconds to commit its first document.
+  let releaseContext, contextRequested;
+  const contextHeld = new Promise((resolve) => (releaseContext = resolve));
+  const contextRequest = new Promise((resolve) => (contextRequested = resolve));
+  await page.route(
+    (url) => url.pathname === '/_apps/code/invented-items/context',
+    async (route) => {
+      contextRequested();
+      await contextHeld;
+      await route.continue();
+    },
+  );
+  await page.goto(`${origin}/_apps/code/invented-items/`, { timeout: 0 });
+  await contextRequest;
+  releaseContext();
   const frame = page.frameLocator('iframe');
   await frame.getByText('Signed in locally as Example Staff').waitFor();
   await frame.getByLabel('Item name').fill('Actual item');

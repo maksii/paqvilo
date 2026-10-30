@@ -18,28 +18,55 @@ const uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginBulkUnsupported', status = 501) => {
   throw new DataError(message, status, code);
 };
-/** The two drivers share validation, stage ordering and atomic main writes. */
+/** The two drivers share validation, stage ordering and atomic main writes.
+ * Tracing: one bulk span per message (docs/design/tracing.md); its per-row reads and writes open no spans of their own. */
 export function executeBulkRecords(options) {
   if (!options.store.hasOperationContext())
     return options.store.withOperationContext(() => executeBulkRecords(options));
-  const steps = bulkSteps(options, false);
-  let next = steps.next();
-  while (!next.done) next = steps.next(next.value);
-  return next.value;
+  return traceBulk(options, () => {
+    const steps = bulkSteps(options, false);
+    let next = steps.next();
+    while (!next.done) next = steps.next(next.value);
+    return next.value;
+  });
 }
 export async function executeBulkRecordsAsync(options) {
   if (!options.store.hasOperationContext())
     return options.store.withOperationContext(() => executeBulkRecordsAsync(options));
-  const steps = bulkSteps(options, true);
-  let next = steps.next();
-  while (!next.done) {
-    try {
-      next = steps.next(await next.value);
-    } catch (error) {
-      next = steps.throw(error);
+  return traceBulk(options, async () => {
+    const steps = bulkSteps(options, true);
+    let next = steps.next();
+    while (!next.done) {
+      try {
+        next = steps.next(await next.value);
+      } catch (error) {
+        next = steps.throw(error);
+      }
     }
-  }
-  return next.value;
+    return next.value;
+  });
+}
+function traceBulk(options, run) {
+  const traces = options.store.traces;
+  if (!traces?.enabled) return run();
+  return traces.wrap(
+    {
+      kind: 'bulk',
+      name: `${options.operation === 'updatemultiple' ? 'UpdateMultiple' : 'CreateMultiple'} ${options.entity}`,
+      module: 'dataverse',
+      operation: options.operation,
+      entity: options.entity,
+      attributes: { targets: Array.isArray(options.targets) ? options.targets.length : null, entity: options.entity },
+    },
+    (span) => {
+      const output = (result) => {
+        span.output(() => ({ ids: result?.ids }));
+        return result;
+      };
+      const result = run();
+      return typeof result?.then === 'function' ? result.then(output) : output(result);
+    },
+  );
 }
 function* bulkSteps(
   {
