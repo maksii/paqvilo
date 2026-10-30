@@ -575,7 +575,7 @@ export function refuseDeleteMultiple(store, { mapping, rows, identity, options =
               identity,
               Object.keys(target),
               // Native: the per-record Delete has only its Target as input (no ConcurrencyBehavior).
-              { ...options, omitConcurrencyBehavior: true },
+              { ...options, bulkOrigin: true, omitConcurrencyBehavior: true },
             ];
           })(),
         );

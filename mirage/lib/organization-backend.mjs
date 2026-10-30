@@ -46,7 +46,7 @@ export async function createOrganizationBackend({
       webhooks,
       diagnostic,
     });
-  const pipeline = singleMultiplePipeline(store, items, executePhase);
+  const pipeline = singleMultiplePipeline(executePhase);
   // Bulk operations order the multiple-message and single-message registrations
   // in their respective ranked groups for each stage.
   // A getter keeps API registration edits visible without caching source facts.

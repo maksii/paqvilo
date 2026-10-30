@@ -1,15 +1,33 @@
 import { mainOperationStep } from './plugin-sdk-parent.mjs';
+import { currentRequest } from './request-context.mjs';
+
+const upsertIdentities = new WeakMap();
+// The request identity of the Upsert main operation an inbound request runs: its existence read and the Create or Update
+// it then runs share it (native crud: a PATCH's RetrieveMultiple and Update carry one RequestId, OperationId and
+// CorrelationId).
+function upsertRequestIdentity() {
+  const request = currentRequest();
+  if (!request?.ids) return {};
+  let identity = upsertIdentities.get(request);
+  if (!identity) {
+    const requestId = request.ids.uuid();
+    identity = { requestId, operationId: requestId, correlationId: request.ids.uuid() };
+    upsertIdentities.set(request, identity);
+  }
+  return { ...identity };
+}
 
 /** A platform single-to-multiple delegation is a core main-operation parent at the same plug-in depth, owned by the
  * message's ObjectModel step on its table (native Upsert/30, UpsertMultiple/30, CreateMultiple/30, UpdateMultiple/30). */
 export function delegatedPluginParent(source, context, executionUserId) {
   const values = {
     ...context,
-    MessageName: source.operation[0].toUpperCase() + source.operation.slice(1),
+    MessageName: source.messageName ?? source.operation[0].toUpperCase() + source.operation.slice(1),
     // An Upsert main operation names no primary table (native bare-PATCH parent: PrimaryEntityName none).
     PrimaryEntityName: source.operation === 'upsert' ? 'none' : source.entity,
     PrimaryEntityId: { $type: 'Guid', value: source.primaryId },
-    Stage: 30,
+    // A bulk message's stage context (the parent of the records it delegates) keeps that stage.
+    Stage: source.stage ?? 30,
     Mode: 0,
     Depth: source.depth ?? context.Depth,
     IsInTransaction: context.IsInTransaction,
@@ -23,7 +41,10 @@ export function delegatedPluginParent(source, context, executionUserId) {
     PreEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
     PostEntityImagesCollection: { $type: 'EntityImageCollectionArray', values: [] },
   };
-  values.OwningExtension = mainOperationStep(values.MessageName, values.PrimaryEntityName);
+  // A bulk message's stage context is owned by its step; a main operation by the message's ObjectModel step.
+  values.OwningExtension = source.owningExtension
+    ? structuredClone(source.owningExtension)
+    : mainOperationStep(values.MessageName, values.PrimaryEntityName);
   delete values.trace;
   for (const [field, key, type] of [
     ['CorrelationId', 'correlationId', 'Guid'],
@@ -56,7 +77,7 @@ export function upsertSourceOperation({ target, id, acceptLanguage = '', tag, id
       $type: 'ParameterCollection',
       values: withTag({ IsAutoTransact: false, AcceptLang: acceptLanguage }),
     },
-    frame: {},
+    frame: upsertRequestIdentity(),
     identity,
     depth,
   };

@@ -28,6 +28,7 @@ export function decodeClrMessage(line, { pending = false, pooled = false, active
     if (pending) return { error: protocolFailure('Concurrent CLR SDK calls are unsupported.') };
   } else if (['result', 'failure'].includes(message.kind)) {
     if (pending) return { error: protocolFailure('CLR completed with a pending SDK callback.') };
-  } else if (message.kind !== 'trace') return { error: protocolFailure('Unknown CLR host message.') };
+  } else if (!['trace', 'telemetry'].includes(message.kind))
+    return { error: protocolFailure('Unknown CLR host message.') };
   return { message };
 }

@@ -52,7 +52,12 @@ test('Named SDK Execute validates parameter contracts before writes and retains 
       ),
     (error) => error.code === 'LocalBackendPermissionDenied' && error.status === 403,
   );
-  assert.throws(() => invoke(store, request('ExecuteTransaction', { Requests: [] })), /Unsupported SDK Execute/);
+  // ExecuteTransaction is answered now (plugin-sdk-messages.mjs); Requests must be an OrganizationRequestCollection.
+  assert.throws(
+    () => invoke(store, request('ExecuteTransaction', { Requests: [] })),
+    (error) => error.code === 'InvalidArgument' && error.details?.innerCode === '0x80040203',
+  );
+  assert.throws(() => invoke(store, request('NotAMessage', {})), /Unsupported SDK Execute/);
   assert.deepEqual(store.snapshot(), before);
   const bypassStore = storeOf();
   let observed = 0;
