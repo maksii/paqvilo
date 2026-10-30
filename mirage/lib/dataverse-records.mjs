@@ -427,6 +427,13 @@ export function createRecordHandlers({
           },
         }
       : undefined;
+  // A collection GET's FetchXML for its steps names the client's own $select, without the key the Web API adds.
+  const fetchPresentation = (c, mapping) => {
+    const selected = c.url.searchParams.get('$select');
+    return selected && !selected.split(',').some((name) => name.trim() === mapping.idColumn)
+      ? { hidden: mapping.idColumn }
+      : {};
+  };
   const secured = (c, extra = {}) =>
     queryOptions({
       bypassCustomPlugins: c.bypassCustomPlugins === true,
@@ -1403,7 +1410,12 @@ export function createRecordHandlers({
     const after =
       cookie && cookie.countOfRecords === undefined ? { id: cookie.lastId, values: cookie.orderValues ?? {} } : null;
     const paging = { params, offset, pageSize, after, preferenceApplied: null, nextLink: () => null };
-    const options = secured(c, { ...(ids ? { ids } : {}), readInitialFrame: webApiReadFrame(c, true) });
+    const readFrame = webApiReadFrame(c, true);
+    const options = secured(c, {
+      ...(ids ? { ids } : {}),
+      readInitialFrame: readFrame,
+      ...(readFrame ? { webApiFetchQuery: fetchPresentation(c, mapping) } : {}),
+    });
     // The filter resolves field definitions per row; they are derived once for the whole synchronous query.
     const result =
       ids?.length === 0
@@ -1950,6 +1962,8 @@ export function createRecordHandlers({
       bypassCustomPlugins: c.bypassCustomPlugins === true,
       bypassStepIds: c.bypassStepIds,
       readInitialFrame: {
+        // The platform's own read: no IncludeAnnotations input (recorded native crud and upsert).
+        internalRead: true,
         inputParameters: {
           $type: 'ParameterCollection',
           values: { AppModuleId: { $type: 'Guid', value: empty }, IsAppModuleContext: false },
@@ -3136,7 +3150,12 @@ export function createRecordHandlers({
             }),
             'value',
             undefined,
-            { bypassStepIds: c.bypassStepIds, bypassCustomPlugins: c.bypassCustomPlugins === true },
+            {
+              bypassStepIds: c.bypassStepIds,
+              bypassCustomPlugins: c.bypassCustomPlugins === true,
+              // The platform's own read: no IncludeAnnotations input (recorded native associate).
+              readInitialFrame: { internalRead: true },
+            },
           );
         }
       const phase = function* (stage) {

@@ -406,13 +406,14 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
       // Natively both run at the calling plug-in's depth, with its context as their parent (recorded corpus).
       const caller = store.pluginParentContext ?? pluginInvocationSdkParent(store),
         previousMain = store.pluginMainOperation;
-      if (caller)
-        store.pluginMainOperation = {
-          context: caller,
-          depth: Number(caller.values?.Depth ?? 1),
-          exactDepth: true,
-          keepsRequestTag: true,
-        };
+      const delegated = caller && {
+        context: caller,
+        depth: Number(caller.values?.Depth ?? 1),
+        exactDepth: true,
+        keepsRequestTag: true,
+      };
+      // The existence query is the platform's own read (app-module inputs, no IncludeAnnotations; recorded sdkMessages).
+      if (delegated) store.pluginMainOperation = { ...delegated, internalRead: true };
       let created;
       try {
         const found = invoke('RetrieveMultiple', [
@@ -439,6 +440,7 @@ export function executePlatformSdkMessage({ store, profile, service, request, pa
           },
         ]);
         created = !found?.entities?.length;
+        if (delegated) store.pluginMainOperation = delegated;
         invoke(created ? 'Create' : 'Update', [target]);
       } finally {
         store.pluginMainOperation = previousMain;

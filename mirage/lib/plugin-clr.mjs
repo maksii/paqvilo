@@ -1903,12 +1903,14 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
   // the app module is empty outside a model-driven app).
   // Explicit descriptor observations (portalInputParameters) keep precedence.
   const outsidePlugin = !store.pluginParentContext && !pluginInvocationSdkParent(store);
+  // The platform's own reads (an Upsert's existence query, an N:N intersect check; frame.internalRead) carry the
+  // app-module inputs, also inside a plug-in, and never IncludeAnnotations (recorded native crud, associate, sdkMessages).
   const readRequestParameters = Object.fromEntries(
     Object.entries(
-      !outsidePlugin
+      !outsidePlugin && !frame.internalRead
         ? {}
         : {
-            ...(frame.delegatedParentContext ? {} : { IncludeAnnotations: false }),
+            ...(frame.delegatedParentContext || frame.internalRead ? {} : { IncludeAnnotations: false }),
             ...(operation === 'retrievemultiple'
               ? { AppModuleId: typed('Guid', empty), IsAppModuleContext: false }
               : {}),

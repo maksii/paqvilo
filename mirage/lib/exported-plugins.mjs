@@ -1039,6 +1039,7 @@ export function runPluginPhase({
     phaseFrame.delegatedParentContext ??= cloneStateData(mainOperation.context);
     phaseFrame.delegatedDepth ??= mainOperation.depth;
     if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
+    if (mainOperation.internalRead && operation === 'retrievemultiple') phaseFrame.internalRead = true;
     // The request tag is an input of the message, not of the operations it delegates (SDK Upsert keeps it).
     if (!mainOperation.keepsRequestTag) phaseFrame.inputTagConsumed = true;
     delete phaseFrame.delegatedSourceOperation;

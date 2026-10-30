@@ -54,7 +54,13 @@ import {
   multiplyNumeric,
   parseNumericLiteral,
 } from './exact-numeric.mjs';
-import { odataToSdkQuery, sameSdkQuery } from './plugin-query.mjs';
+import {
+  odataToSdkQuery,
+  readPagingCookie,
+  sameSdkQuery,
+  webApiFetchExpression,
+  webApiFetchToQuery,
+} from './plugin-query.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
 import { compilePermissionFetchXml, serializePermissionFetchXml } from './permission-query.mjs';
 import { rebindPermissionQuery } from './permission-query-mutation.mjs';
@@ -3648,11 +3654,22 @@ export class DataStore {
       return this.queryCore(entity, params, identity, paging, options);
     if (options.skipPluginRead) return this.queryCore(entity, params, identity, paging, options);
     const original = options.sdkQuery ?? odataToSdkQuery(mapping.logicalName, params, this);
+    // A Web API collection GET shows its steps the query as FetchXML (recorded native reads); an edited one is read back.
+    const shown =
+      (!options.sdkQuery &&
+        options.webApiFetchQuery &&
+        webApiFetchExpression(original, this, options.webApiFetchQuery)) ||
+      original;
+    // The result's entities keep the columns the effective query selects (the FetchExpression names none itself).
+    const columnsOf = (answer, query) =>
+      shown === original ? answer : Object.defineProperty(answer, 'sdkColumnSet', { value: query.columnSet });
     return this.retrieveMultipleOperation(
       mapping.logicalName,
-      original,
+      shown,
       identity,
       (query) => {
+        if (shown.$type === 'FetchExpression' && query.$type === 'FetchExpression')
+          query = query.query === shown.query ? original : webApiFetchToQuery(query.query, this);
         if (!['QueryExpression', 'QueryByAttribute'].includes(query.$type) || query.entityName !== mapping.logicalName)
           throw new DataError(
             'A RetrieveMultiple plugin cannot change the bound query table or query language.',
@@ -3660,7 +3677,10 @@ export class DataStore {
             'LocalPluginQueryUnsupported',
           );
         if (sameSdkQuery(query, original))
-          return this.queryCore(entity, params, identity, paging, { ...options, captureRootIds: true });
+          return columnsOf(
+            this.queryCore(entity, params, identity, paging, { ...options, captureRootIds: true }),
+            query,
+          );
         const projectedQuery = clone(query);
         const preserveFilter = sameSdkQuery(query.criteria, original.criteria);
         if (preserveFilter) projectedQuery.criteria = { operatorName: 'And', conditions: [], filters: [] };
@@ -3674,7 +3694,7 @@ export class DataStore {
         if (!query.columnSet?.allColumns && !query.columnSet?.columns?.length) converted.$select = mapping.idColumn;
         if (converted.$select && !converted.$select.split(',').includes(mapping.idColumn))
           converted.$select += ',' + mapping.idColumn;
-        return this.queryCore(entity, converted, identity, paging, options);
+        return columnsOf(this.queryCore(entity, converted, identity, paging, options), query);
       },
       'value',
       options.sdkResponseToken,
@@ -3747,13 +3767,19 @@ export class DataStore {
                     answer.sdkRootIds?.[index] === undefined
                       ? row
                       : { ...row, [mapping.idColumn]: row[mapping.idColumn] ?? answer.sdkRootIds[index] },
-                    query.columnSet ?? { allColumns: false, columns: [] },
+                    answer.sdkColumnSet ?? query.columnSet ?? { allColumns: false, columns: [] },
                   ),
                 ),
                 entityName: entity,
                 minActiveRowVersion: '-1',
                 moreRecords: Boolean(answer['@odata.nextLink'] ?? answer.more_records),
-                pagingCookie: answer.paging_cookie ?? null,
+                pagingCookie:
+                  answer.paging_cookie ??
+                  readPagingCookie(
+                    query,
+                    mapping.idColumn,
+                    (answer[key] ?? []).map((row, index) => row[mapping.idColumn] ?? answer.sdkRootIds?.[index]),
+                  ),
                 totalRecordCount: answer['@odata.count'] ?? answer.total_record_count ?? -1,
               };
       const responseFrame = this.pluginPipeline({

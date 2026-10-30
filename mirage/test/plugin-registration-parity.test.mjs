@@ -234,7 +234,8 @@ test('a global Create runs for the table it fires on, and an asynchronous Retrie
     seen.map(({ name, entity, mode }) => [name, entity, mode]),
     [['Async read', 'x_shared', 1]],
   );
-  assert.equal(seen[0].context.InputParameters.Query.entityName, 'x_shared');
+  // @parity-evidence: native recorder corpus 2026-10-30 reads: a Web API collection GET hands RetrieveMultiple (also its asynchronous step) a FetchExpression of the read table, not a QueryExpression
+  assert.match(seen[0].context.InputParameters.Query.query, /<entity name="x_shared">/);
   assert.equal(seen[0].context.OutputParameters.BusinessEntityCollection.length, 1);
 });
 
