@@ -66,6 +66,7 @@ import { queryExpressionToFetch, fetchResultToSdkCollection } from './plugin-sdk
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { assertPluginExecutionActive, pluginInvocationDepth } from './plugin-execution-lifetime.mjs';
+import { runStateMessage } from './plugin-platform-messages.mjs';
 import {
   storeOperationFields,
   hasStoreOperationContext,
@@ -2450,9 +2451,11 @@ export class DataStore {
       ...(options.preValidationSourceOperation
         ? { preValidationSourceOperation: options.preValidationSourceOperation }
         : {}),
-      ...(options.pluginConcurrencyBehavior === undefined
-        ? {}
-        : { concurrencyBehavior: options.pluginConcurrencyBehavior }),
+      ...(options.omitConcurrencyBehavior
+        ? { concurrencyBehavior: null }
+        : options.pluginConcurrencyBehavior === undefined
+          ? {}
+          : { concurrencyBehavior: options.pluginConcurrencyBehavior }),
       bypassStepIds: options.bypassStepIds,
       bypassCustomPlugins: options.bypassCustomPlugins,
       ...(awaitIo ? { awaitIo: true } : {}),
@@ -4944,7 +4947,9 @@ export class DataStore {
     const stagedDefaults = Object.keys(row).filter(
       (key) => !own(target, key) && !isDeepStrictEqual(row[key], previous[key]),
     );
-    yield [mapping, 'update', 10, target, row, previous, identity, changedAttributes, options];
+    // A named message's main-operation Update (plugin-platform-messages.mjs) has no PreValidation stage natively.
+    if (!options.skipPreValidation)
+      yield [mapping, 'update', 10, target, row, previous, identity, changedAttributes, options];
     options.afterPreValidation?.(mapping.logicalName, 'update', target, previous);
     yield [mapping, 'update', 20, target, row, previous, identity, changedAttributes, options];
     // A nested SDK request may patch or delete this row, or shift its position.
@@ -4987,6 +4992,10 @@ export class DataStore {
     options.authorizeEffectiveWrite?.(mapping.logicalName, 'update', row, latest);
     this.writeRow(mapping.logicalName, rows, index, row);
     this.applySecondary(effects);
+    // Natively an Update that sets statecode runs the SetStateDynamicEntity pipeline inside its main operation, one
+    // level deeper (recorded Web API PATCH statecode); the SetState message's own Update does not.
+    if (options.stateMessage !== false && own(rawInput, 'statecode') && this.pluginPipeline)
+      runStateMessage(this, mapping, row, identity, options);
     // The asynchronous copy adds platform modification stamps without changing
     // the synchronous partial Target or its qualified core-parent projection.
     const asyncTargetBaseline = Object.fromEntries(

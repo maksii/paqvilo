@@ -1,3 +1,4 @@
+// @test-kind unproven: local exported-registration and pipeline models; evidenced tests carry their own tag
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -154,10 +155,13 @@ test('solution plugin facts preserve assembly/type/step registrations and exact 
   assert.equal(unresolved.steps[0].message, null, 'message GUIDs are never guessed');
 });
 
+// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, crud and reads scenarios: global (null-filter) Create and RetrieveMultiple steps run for the table; global Retrieve stays unqualified locally
 test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root and never guesses an unresolved filter', () => {
   const step = (id, binding, message = 'RetrieveMultiple') =>
     `<SdkMessageProcessingStep SdkMessageProcessingStepId="${pluginId(id)}"><PluginTypeId>${pluginId(2)}</PluginTypeId><SdkMessageName>${message}</SdkMessageName>${binding}<Stage>20</Stage><Rank>${id}</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment></SdkMessageProcessingStep>`;
-  const xml = `<ImportExportXml>${assemblyXml}${step(21, '<SdkMessageFilterId/>')}${step(22, '<PrimaryEntity>none</PrimaryEntity>')}${step(23, '')}${step(24, `<SdkMessageFilterId>${pluginId(99)}</SdkMessageFilterId>`)}${step(25, '<SdkMessageFilterId/>', 'Create')}</ImportExportXml>`;
+  const xml = `<ImportExportXml>${assemblyXml}${step(21, '<SdkMessageFilterId/>')}${step(22, '<PrimaryEntity>none</PrimaryEntity>')}${step(23, '')}${step(24, `<SdkMessageFilterId>${pluginId(99)}</SdkMessageFilterId>`)}${step(25, '<SdkMessageFilterId/>', 'Retrieve')}</ImportExportXml>`;
+  // A global Create step runs for every table natively (recorded corpus: 'Recorder: Create begin' has no filter), so the
+  // unsupported unfiltered message here is Retrieve.
   const parsed = parsePluginDocument(xml),
     plugins = importSolutionPlugins([{ documents: [{ file: '/invented/global.xml', facts: { plugins: parsed } }] }]);
   for (const id of [21, 22]) {

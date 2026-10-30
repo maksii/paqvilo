@@ -173,7 +173,8 @@ export function singleMultiplePipeline(store, items, execute) {
             ...(context.operation === 'update'
               ? {
                   ...(context.stage === 10 && context.sdkFromSandbox === true ? { FromSandbox: true } : {}),
-                  ConcurrencyBehavior: concurrencyBehavior,
+                  // A named message's own Update has no ConcurrencyBehavior input (plugin-platform-messages.mjs).
+                  ...(context.concurrencyBehavior === null ? {} : { ConcurrencyBehavior: concurrencyBehavior }),
                 }
               : {}),
             ...priorValues,

@@ -12,12 +12,44 @@ const messages = new Set([
   'associate',
   'disassociate',
 ]);
+// Named platform messages with their own local pipeline (plugin-platform-messages.mjs): issued by a plug-in through the
+// SDK, an Update setting statecode (SetStateDynamicEntity) and Web API DeleteMultiple on a standard table (PreValidation
+// before the native refusal). Their other entry points (SOAP, Web API actions) still refuse their steps.
+export const PLATFORM_MESSAGES = new Set([
+  'assign',
+  'setstatedynamicentity',
+  'grantaccess',
+  'modifyaccess',
+  'revokeaccess',
+  'retrieveprincipalaccess',
+  'retrievesharedprincipalsandaccess',
+  'deletemultiple',
+]);
+// Native accepts steps on these messages but never executes them: the platform runs Upsert as Create/Update,
+// UpsertMultiple as CreateMultiple/UpdateMultiple and SetState as SetStateDynamicEntity (recorded native corpus).
+const NEVER_EXECUTED_MESSAGES = new Set(['upsert', 'upsertmultiple', 'setstate']);
+// Messages a step without a table filter (sdkmessagefilter 'none') executes for every table.
+export const UNFILTERED_MESSAGES = new Set([
+  'retrievemultiple',
+  'associate',
+  'disassociate',
+  'create',
+  'update',
+  'delete',
+  'createmultiple',
+  'updatemultiple',
+  ...PLATFORM_MESSAGES,
+  ...NEVER_EXECUTED_MESSAGES,
+]);
 
 export function pluginMessageHasPipeline(step) {
+  const name = String(step.message).toLowerCase();
   return Boolean(
     step.customApi ||
-    messages.has(String(step.message).toLowerCase()) ||
-    /^onexternal(created|updated|deleted)$/.test(String(step.message).toLowerCase()),
+    messages.has(name) ||
+    PLATFORM_MESSAGES.has(name) ||
+    NEVER_EXECUTED_MESSAGES.has(name) ||
+    /^onexternal(created|updated|deleted)$/.test(name),
   );
 }
 
@@ -27,6 +59,7 @@ export function pluginMessageHasPipeline(step) {
 // substitute implementation of the missing native message pipeline.
 export function assertPluginMessageAdmission(store, message, context = {}, entity) {
   const name = String(message).toLowerCase();
+  if (NEVER_EXECUTED_MESSAGES.has(name)) return;
   const pipeline = store?.pluginPipeline;
   const candidates = (pipeline?.steps?.() ?? []).filter(
     (item) =>
@@ -34,7 +67,9 @@ export function assertPluginMessageAdmission(store, message, context = {}, entit
       item.contract?.supportedDeployment !== 1 &&
       !['placeholder', 'disabled'].includes(item.mode) &&
       String(item.message).toLowerCase() === name &&
-      !pluginMessageHasPipeline(item),
+      !item.customApi &&
+      !messages.has(name) &&
+      !/^onexternal(created|updated|deleted)$/.test(name),
   );
   if (!candidates.length) return;
   const target =

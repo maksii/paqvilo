@@ -1,3 +1,4 @@
+// @test-kind contract: named entry points without a local pipeline refuse explicitly chosen steps (Paqvilo admission design)
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assertPluginMessageAdmission } from '../lib/plugin-message-admission.mjs';
@@ -167,22 +168,26 @@ test('direct record-message installation also refuses before delegated Merge wri
   assert.equal(f.calls(), 0);
 });
 
+// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, upsert and bulk scenarios: registered Upsert and UpsertMultiple steps never execute
+// Recorded native corpus: registered Upsert and UpsertMultiple steps never execute. The platform runs the delegated
+// Create/Update (or CreateMultiple/UpdateMultiple) pipelines instead, so these requests neither refuse nor run the step.
 for (const message of ['Upsert', 'UpsertMultiple'])
-  test(`HTTP ${message} refuses before its delegated CRUD writes`, async (t) => {
+  test(`HTTP ${message} runs its delegated writes without executing its own never-executed steps`, async (t) => {
     const f = await fixture(t, message);
     const response = await f.request(
       message === 'Upsert' ? 'PATCH' : 'POST',
       message === 'Upsert' ? `/accounts(${a})` : '/accounts/Microsoft.Dynamics.CRM.UpsertMultiple',
       message === 'Upsert' ? { title: 'Changed' } : { Targets: [{ '@odata.id': `accounts(${a})`, title: 'Changed' }] },
     );
-    assert.equal(response.status, 501, await response.text());
-    assert.equal(f.store.tableRows('account')[0].title, null);
+    assert.ok(response.status < 300, await response.text());
+    assert.equal(f.store.tableRows('account')[0].title, 'Changed');
     assert.equal(f.calls(), 0);
     // An explicit update does not claim to execute Upsert.
     assert.equal((await f.request('PATCH', `/accounts(${a})`, { title: 'Update' }, { 'if-match': '*' })).status, 200);
   });
 
-for (const message of ['Assign', 'SetState', 'ExecuteMultiple', 'ExecuteTransaction', 'GrantAccess'])
+// SetState is absent: its registered steps never execute natively (it runs as SetStateDynamicEntity).
+for (const message of ['Assign', 'ExecuteMultiple', 'ExecuteTransaction', 'GrantAccess'])
   test(`SOAP ${message} refuses before the direct message switch applies effects`, async (t) => {
     const f = await fixture(t, message);
     const targetKey = message === 'SetState' ? 'EntityMoniker' : 'Target';

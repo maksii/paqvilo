@@ -37,7 +37,7 @@ import { delegatedPluginParent } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
 import { pluginFailure } from './plugin-fault.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
-import { pluginMessageHasPipeline } from './plugin-message-admission.mjs';
+import { pluginMessageHasPipeline, PLATFORM_MESSAGES, UNFILTERED_MESSAGES } from './plugin-message-admission.mjs';
 import {
   recordStepConstructorSettings,
   copyStepConstructorSettings,
@@ -460,7 +460,8 @@ export function pluginUnsupported(step, { images = false, impersonation = false 
           'onexternalcreated',
           'onexternalupdated',
           'onexternaldeleted',
-        ].includes(String(step.message).toLowerCase())))
+        ].includes(String(step.message).toLowerCase()) &&
+        !PLATFORM_MESSAGES.has(String(step.message).toLowerCase())))
   )
     return 'Asynchronous execution supports post-commit stage 40 mutation and external virtual-table event registrations.';
   if (!stages[step.stage]) return 'Only synchronous stages 10, 20 and 40 are simulated.';
@@ -471,12 +472,10 @@ export function pluginUnsupported(step, { images = false, impersonation = false 
     step.unfiltered === true &&
     (step.entity ||
       step.messageFilterId ||
-      !['retrievemultiple', 'associate', 'disassociate', 'update', 'delete'].includes(
-        String(step.message).toLowerCase(),
-      ) ||
+      !UNFILTERED_MESSAGES.has(String(step.message).toLowerCase()) ||
       (String(step.message).toLowerCase() === 'retrievemultiple' && step.mode !== 0))
   )
-    return 'Unfiltered execution requires an explicit null filter on a supported read, association, Update or Delete message.';
+    return 'Unfiltered execution requires an explicit null filter on a message that runs for every table.';
   if (
     step.unfiltered === true &&
     ['update', 'delete'].includes(String(step.message).toLowerCase()) &&
@@ -513,9 +512,7 @@ export function pluginStepMatchesEntity(step, entity) {
     (step.unfiltered === true &&
       step.entity == null &&
       step.messageFilterId == null &&
-      ['retrievemultiple', 'associate', 'disassociate', 'update', 'delete'].includes(
-        String(step.message).toLowerCase(),
-      ) &&
+      UNFILTERED_MESSAGES.has(String(step.message).toLowerCase()) &&
       (String(step.message).toLowerCase() !== 'retrievemultiple' || (step.contract?.mode ?? step.mode) === 0))
   );
 }
@@ -1010,6 +1007,8 @@ export function runPluginPhase({
   preValidationSourceOperation,
   frameworkInputTarget,
   concurrencyBehavior = 0,
+  bulkConcurrencyBehavior,
+  inheritsRequestTag = true,
   acceptLanguage = '',
   asyncExecution = false,
   initialFrame,
@@ -1025,8 +1024,22 @@ export function runPluginPhase({
   store?.assertPluginTransactionActive?.();
   if (stage === 10 && !continuePhase && !asyncExecution && !['retrieve', 'retrievemultiple'].includes(operation))
     executionFrames.set(record, {});
+  const continued = executionFrames.has(record) && !initialFrame && !(stage === 10 && !continuePhase);
   if (initialFrame) executionFrames.set(record, cloneStateData(initialFrame));
   const phaseFrame = executionFrames.get(record) ?? {};
+  // A record operation a named message's main operation starts (plugin-platform-messages.mjs) runs at that message's
+  // depth with its stage-30 context as parent, as a platform main operation's delegated write does.
+  const mainOperation = store?.pluginMainOperation;
+  if (mainOperation && !asyncExecution && !continued) {
+    phaseFrame.delegatedParentContext ??= cloneStateData(mainOperation.context);
+    phaseFrame.delegatedDepth ??= mainOperation.depth;
+    if (mainOperation.exactDepth) phaseFrame.exactDepth = true;
+    // The request tag is an input of the message, not of the operations it delegates (SDK Upsert keeps it).
+    if (!mainOperation.keepsRequestTag) phaseFrame.inputTagConsumed = true;
+    delete phaseFrame.delegatedSourceOperation;
+  }
+  // Records a bulk message delegates, and a bulk message UpsertMultiple delegates, have no tag input (recorded corpus).
+  if (!inheritsRequestTag && !continued) phaseFrame.inputTagConsumed = true;
   // Durable jobs must retain the originating operation depth even when no
   // synchronous registration executes. Internal message delegation shares it.
   phaseFrame.operationDepth ??=
@@ -1038,7 +1051,15 @@ export function runPluginPhase({
       Number((store?.pluginParentContext ?? pluginInvocationSdkParent(store))?.values?.Depth ?? 0),
     ) + 1;
   executionFrames.set(record, phaseFrame);
-  if (operation === 'update') {
+  // UpsertMultiple's UpdateMultiple carries ConcurrencyBehavior on the message (dataverse-records.mjs bulkWrite).
+  if (operation === 'updatemultiple' && bulkConcurrencyBehavior !== undefined) {
+    phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
+    phaseFrame.inputParameters.values.ConcurrencyBehavior ??= {
+      $type: 'ConcurrencyBehavior',
+      value: bulkConcurrencyBehavior,
+    };
+  }
+  if (operation === 'update' && concurrencyBehavior !== null) {
     phaseFrame.inputParameters ??= { $type: 'ParameterCollection', values: {} };
     phaseFrame.inputParameters.values.ConcurrencyBehavior ??= {
       $type: 'ConcurrencyBehavior',
@@ -1061,7 +1082,7 @@ export function runPluginPhase({
   if (
     !asyncExecution &&
     stage !== 10 &&
-    ['create', 'update', 'delete'].includes(operation) &&
+    ['create', 'update', 'delete', 'createmultiple', 'updatemultiple'].includes(operation) &&
     !phaseFrame.inputTagConsumed
   ) {
     if (phaseFrame.inputParameters?.values) delete phaseFrame.inputParameters.values.tag;

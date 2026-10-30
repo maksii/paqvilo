@@ -21,8 +21,25 @@ Supported source mode 1 stage 40 registrations use a bounded queue after commit.
 
 Mocks can replace a supported read query/result or bulk Targets through Backend operations, using the same typed local contracts as project handlers. The admin endpoint checks result shape, source table and execution stage before saving. An eligible explicit mock still applies its configured result when the original registration needs an unavailable image or identity adapter; diagnostics state that original logic was not executed. Unknown messages/stages do not gain an execution pipeline through a mock choice.
 
-Named operations such as Assign, SetState, Upsert, Merge, other bulk messages and
-classic actions do not acquire their own plug-in pipeline merely because their
+A plug-in's SDK requests for Assign, SetState, GrantAccess, ModifyAccess,
+RevokeAccess, RetrievePrincipalAccess and RetrieveSharedPrincipalsAndAccess run
+their own pipeline as natively: PreValidation, PreOperation, the main operation,
+PostOperation with its outputs (`IsValid`, `AccessRights`, `PrincipalAccesses`)
+and queued asynchronous steps. SetState runs as SetStateDynamicEntity. The Assign
+and SetState main operations update the row through the Update pipeline at the
+message's depth, without its PreValidation stage, ConcurrencyBehavior input or a
+nested SetStateDynamicEntity; Assign's Update runs as the organization's SYSTEM
+user. An Update that sets `statecode` runs the SetStateDynamicEntity pipeline
+inside its main operation. Sharing changes and reads use `principalobjectaccess`.
+Registered Upsert, UpsertMultiple and SetState steps never execute, as natively:
+an SDK Upsert reads the record and runs Create or Update, and UpsertMultiple runs
+CreateMultiple for new records, then UpdateMultiple. DeleteMultiple on a standard
+table runs its PreValidation stage and each target's Delete PreValidation, then
+answers `405 0x8004023b`. SDK Merge on a table without a Merge filter fails with
+the native `0x80040800` fault.
+
+Other named operations, and the SOAP and Web API entry points of the messages
+above, do not acquire their own plug-in pipeline merely because their
 local operation handler performs CRUD. An enabled, explicitly selected handler,
 CLR, mock or webhook step for a missing pipeline stops the request with
 `501 LocalPluginUnsupported` before those delegated effects. This check covers

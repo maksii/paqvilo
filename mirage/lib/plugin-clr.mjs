@@ -28,6 +28,7 @@ import { convertSdkQuery } from './plugin-query-conversion.mjs';
 import { CRM_FUNCTIONS } from './dataverse-conditions.mjs';
 import { runtimeConstructorSettings } from './plugin-constructor-configuration.mjs';
 import { validateSdkTag, canonicalTagParent } from './plugin-request-tag.mjs';
+import { executePlatformSdkMessage, isPlatformSdkMessage } from './plugin-platform-messages.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginClrConfiguration', status = 409) => {
@@ -79,11 +80,13 @@ export const enterPluginExecution = () => ++executionDepth;
 export const leavePluginExecution = () => {
   executionDepth--;
 };
+const CLR_TIMEOUT_LIMIT_MS = 120_000;
 function clrTimeout(descriptor) {
   const value = descriptor.timeoutMs;
   if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0))
     fail('CLR timeoutMs must be a positive safe integer in milliseconds.');
-  return Math.max(100, Math.min(value ?? 2000, 10000));
+  // At most the native sandbox limit of 2 minutes, which includes the nested SDK requests a plug-in waits for.
+  return Math.max(100, Math.min(value ?? 2000, CLR_TIMEOUT_LIMIT_MS));
 }
 export function validateClrDescriptor(value) {
   if (!value || typeof value !== 'object' || value.trust !== 'execute-local-assembly')
@@ -694,7 +697,10 @@ export function sdkQueryParameters(query) {
 export function dispatchSdkCall(args) {
   const { store, message } = args,
     previous = store.pluginParentContext,
-    previousRequestMetadata = store.pluginRequestId;
+    previousRequestMetadata = store.pluginRequestId,
+    previousMainOperation = store.pluginMainOperation;
+  // A plug-in's SDK request is its own operation, never part of a named message's main operation.
+  store.pluginMainOperation = null;
   const sdkParent = args.sdkParentContext ?? message.parentContext ?? pluginInvocationSdkParent(store);
   if (sdkParent) {
     if (sdkParent.$type !== 'ExecutionContext' || Buffer.byteLength(JSON.stringify(sdkParent)) > 4 * 1024 * 1024)
@@ -708,9 +714,22 @@ export function dispatchSdkCall(args) {
     const method = message.method === 'Execute' ? message.arguments?.[0]?.requestName : message.method;
     if (
       error.code !== 'LocalPluginTagDuplicate' &&
-      (['Create', 'Update', 'Delete', 'Associate', 'Disassociate', 'CreateMultiple', 'UpdateMultiple'].includes(
-        method,
-      ) ||
+      ([
+        'Create',
+        'Update',
+        'Delete',
+        'Associate',
+        'Disassociate',
+        'CreateMultiple',
+        'UpdateMultiple',
+        'Assign',
+        'SetState',
+        'SetStateDynamicEntity',
+        'GrantAccess',
+        'ModifyAccess',
+        'RevokeAccess',
+        'Upsert',
+      ].includes(method) ||
         store.tableRows('customapi').some((row) => row.uniquename === method && !row.isfunction))
     )
       store.markPluginTransactionFailure?.(error);
@@ -718,6 +737,7 @@ export function dispatchSdkCall(args) {
   } finally {
     store.pluginParentContext = previous;
     store.pluginRequestId = previousRequestMetadata;
+    store.pluginMainOperation = previousMainOperation;
   }
 }
 function dispatchSdkCallCore({
@@ -862,6 +882,27 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
           responseName: request.requestName,
           results: convertSdkQuery(store, request.requestName, parameters),
         };
+      }
+      if (isPlatformSdkMessage(request.requestName)) {
+        validateSdkTag(parameters, store.pluginSdkTag);
+        const previousTag = store.pluginSdkTag;
+        store.pluginSdkTag = Object.hasOwn(parameters, 'tag') ? parameters.tag : previousTag;
+        const options = { ...bypass, sdkFromSandbox },
+          scoped = localOrganizationService(store, profile, undefined, { diagnostic, requestOptions: options });
+        try {
+          return executePlatformSdkMessage({
+            store,
+            profile,
+            service: scoped,
+            request,
+            parameters,
+            options,
+            invoke: (method, args) =>
+              invokeSdkMethod({ store, service: scoped, message: { ...message, method, arguments: args } }, false),
+          });
+        } finally {
+          store.pluginSdkTag = previousTag;
+        }
       }
       const shapes = {
           Create: ['Target'],
@@ -1547,14 +1588,16 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     context = descriptor.context,
     parent = frame.delegatedParentContext ?? store.pluginParentContext ?? pluginInvocationSdkParent(store),
     primary = entity && !(frame.customApi && entity === 'none') ? store.resolveMapping(entity).idColumn : null;
-  const contextDepth = frame.delegatedParentContext
-    ? Math.max(depth, pluginInvocationDepth(store) + 1, frame.delegatedDepth ?? 0, frame.operationDepth ?? 0)
-    : Math.max(
-        depth,
-        pluginInvocationDepth(store) + 1,
-        frame.operationDepth ?? 0,
-        parent ? Number(parent.values.Depth) + 1 : 0,
-      );
+  const contextDepth = frame.exactDepth
+    ? frame.delegatedDepth
+    : frame.delegatedParentContext
+      ? Math.max(depth, pluginInvocationDepth(store) + 1, frame.delegatedDepth ?? 0, frame.operationDepth ?? 0)
+      : Math.max(
+          depth,
+          pluginInvocationDepth(store) + 1,
+          frame.operationDepth ?? 0,
+          parent ? Number(parent.values.Depth) + 1 : 0,
+        );
   if (contextDepth > 8) fail('Plug-in nested execution depth exceeds eight.', 'LocalPluginDepth', 400);
   const preValidationParent =
     stage !== 10 &&

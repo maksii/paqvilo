@@ -1100,45 +1100,45 @@ const shareOf = (store, target, principal) =>
  */
 // Share rows change through the store's row operations, so a share is an incremental (journaled) write
 // that advances only the principalobjectaccess revision: the security index keeps everything but its shares.
-export function grantAccess(store, { target, principal, mask }, { replace = false } = {}) {
-  return store.transact(
-    () => {
-      const existing = shareOf(store, target, principal);
-      if (existing) {
-        const rows = rowsOf(store, 'principalobjectaccess');
-        store.mutateRow('principalobjectaccess', rows, rows.indexOf(existing), {
-          accessrightsmask: replace ? mask : Number(existing.accessrightsmask) | mask,
-        });
-        return existing;
-      }
-      const logical = key(principal.logical_name) === 'team' ? 'team' : 'systemuser';
-      const row = {
-        principalobjectaccessid: uuidV5(target.id, `share:${logical}:${principal.id}`),
-        principalid: lookupRow(store, logical, principal.id),
-        objectid: String(target.id).toLowerCase(),
-        objecttypecode: target.logical,
-        accessrightsmask: mask,
-        inheritedaccessrightsmask: 0,
-      };
-      store.insertRow('principalobjectaccess', rowsOf(store, 'principalobjectaccess'), row);
-      return row;
-    },
-    { incremental: true },
-  );
+export function grantAccess(store, share, options) {
+  return store.transact(() => grantAccessNow(store, share, options), { incremental: true });
+}
+
+/** grantAccess inside the caller's own transaction (a plug-in's SDK GrantAccess/ModifyAccess, plugin-platform-messages.mjs). */
+export function grantAccessNow(store, { target, principal, mask }, { replace = false } = {}) {
+  const existing = shareOf(store, target, principal);
+  if (existing) {
+    const rows = rowsOf(store, 'principalobjectaccess');
+    store.mutateRow('principalobjectaccess', rows, rows.indexOf(existing), {
+      accessrightsmask: replace ? mask : Number(existing.accessrightsmask) | mask,
+    });
+    return existing;
+  }
+  const logical = key(principal.logical_name) === 'team' ? 'team' : 'systemuser';
+  const row = {
+    principalobjectaccessid: uuidV5(target.id, `share:${logical}:${principal.id}`),
+    principalid: lookupRow(store, logical, principal.id),
+    objectid: String(target.id).toLowerCase(),
+    objecttypecode: target.logical,
+    accessrightsmask: mask,
+    inheritedaccessrightsmask: 0,
+  };
+  store.insertRow('principalobjectaccess', rowsOf(store, 'principalobjectaccess'), row);
+  return row;
 }
 
 export const modifyAccess = (store, args) => grantAccess(store, args, { replace: true });
 
-export function revokeAccess(store, { target, principal }) {
-  return store.transact(
-    () => {
-      const rows = rowsOf(store, 'principalobjectaccess');
-      const index = rows.indexOf(shareOf(store, target, principal));
-      if (index >= 0) store.removeRow('principalobjectaccess', rows, index);
-      return index >= 0;
-    },
-    { incremental: true },
-  );
+export function revokeAccess(store, share) {
+  return store.transact(() => revokeAccessNow(store, share), { incremental: true });
+}
+
+/** revokeAccess inside the caller's own transaction. */
+export function revokeAccessNow(store, { target, principal }) {
+  const rows = rowsOf(store, 'principalobjectaccess');
+  const index = rows.indexOf(shareOf(store, target, principal));
+  if (index >= 0) store.removeRow('principalobjectaccess', rows, index);
+  return index >= 0;
 }
 
 // Derived indexes per store: the principal/role/privilege part is rebuilt only when one of its tables

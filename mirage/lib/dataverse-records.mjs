@@ -10,6 +10,7 @@ import { assertDataverseRootBody } from './dataverse-reader-details.mjs';
 // authorizes each call here before the store runs under the bypass identity.
 import { DataError } from './data-error.mjs';
 import { assertPluginMessageAdmission } from './plugin-message-admission.mjs';
+import { refuseDeleteMultiple } from './plugin-platform-messages.mjs';
 import { handoffPluginResponse } from './plugin-response.mjs';
 import { executeBulkRecordsAsync } from './plugin-bulk.mjs';
 import { associationRequestBinding } from './plugin-association.mjs';
@@ -2395,6 +2396,7 @@ export function createRecordHandlers({
 
   async function boundAction(c) {
     const { mapping, route } = c;
+    if (route.key == null && route.name === 'DeleteMultiple' && !isElastic(mapping)) return deleteMultipleRefusal(c);
     assertPluginMessageAdmission(store, route.name, c, mapping.logicalName);
     if (route.key != null) throw noResource(c);
     if (
@@ -2404,37 +2406,52 @@ export function createRecordHandlers({
       return elasticBulk(c);
     if (route.name === 'CreateMultiple' || route.name === 'UpdateMultiple') return standardBulk(c);
     if (route.name === 'UpsertMultiple') {
-      const update = route.name === 'UpdateMultiple';
       const targets = targetsOf(c);
       refuseBulkTargets(mapping, route.name, targets);
+      // A target names its record by @odata.id or by its primary key column.
       const texts = targets.map((target) =>
-        update ? String(target[mapping.idColumn] ?? '') : refOf(target['@odata.id']).id,
+        target['@odata.id'] == null ? String(target[mapping.idColumn] ?? '') : refOf(target['@odata.id']).id,
       );
-      // The first target per key wins: UpdateMultiple drops later repeats, UpsertMultiple refuses the batch.
-      const seen = new Set();
-      const work = [];
-      targets.forEach((target, index) => {
+      const seen = new Set(),
+        creates = [],
+        updates = [];
+      for (const [index, target] of targets.entries()) {
         const folded = texts[index].toLowerCase();
-        if (seen.has(folded)) return;
+        if (seen.has(folded)) throw invalid('Duplicate key in Targets.', '0x80040203'); // native message text is a guess
         seen.add(folded);
-        work.push({ target, text: texts[index] });
-      });
-      if (!update && work.length !== targets.length) throw invalid('Duplicate key in Targets.', '0x80040203'); // native message text is a guess
+        const key = lookupKey(c, mapping, texts[index]);
+        const values = { ...target };
+        delete values['@odata.id'];
+        if (key.row) updates.push({ ...values, [mapping.idColumn]: key.row[mapping.idColumn] });
+        else creates.push(values);
+      }
+      // Natively UpsertMultiple runs no pipeline of its own: the new records go through the CreateMultiple pipeline,
+      // then the existing ones through UpdateMultiple, whose message input carries ConcurrencyBehavior (recorded corpus).
       await runWrite(async () => {
-        for (const { target, text } of work) {
-          const key = lookupKey(c, mapping, text);
-          if (update && !key.row) throw notFoundRecord(mapping.logicalName, key.text);
-          await upsertNow(c, mapping, key, target, {});
-        }
+        if (creates.length) await bulkWrite(c, false, creates, { delegated: true });
+        if (updates.length) await bulkWrite(c, true, updates, { concurrencyBehavior: 0, delegated: true });
       });
       return { status: 204 };
     }
-    if (route.name === 'DeleteMultiple') {
-      throw new DataError('DeleteMultiple has not yet been implemented.', 501, 'NotImplemented', {
-        innerCode: '0x80040216',
-      });
-    }
     throw noResource(c);
+  }
+
+  // DeleteMultiple is available on elastic tables only: a standard table runs its PreValidation, then refuses.
+  async function deleteMultipleRefusal(c) {
+    const { mapping } = c;
+    const targets = targetsOf(c);
+    refuseBulkTargets(mapping, 'DeleteMultiple', targets);
+    const rows = targets.map((target) => {
+      const text = target['@odata.id'] == null ? target[mapping.idColumn] : refOf(target['@odata.id']).id;
+      if (text == null) throw invalid(`The ${mapping.idColumn} property is required.`);
+      const key = lookupKey(c, mapping, String(text));
+      if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
+      authorize(c, mapping.logicalName, 'delete', mapping, key.row);
+      return key.row;
+    });
+    await runWrite(async () =>
+      refuseDeleteMultiple(store, { mapping, rows, identity: c.identity, options: updateOptions(c) }),
+    );
   }
 
   // Both HTTP and the synchronous SDK enter the same grouped plug-in pipeline.
@@ -2444,46 +2461,7 @@ export function createRecordHandlers({
       update = route.name === 'UpdateMultiple',
       raw = targetsOf(c);
     refuseBulkTargets(mapping, route.name, raw);
-    const result = await runWrite(async () => {
-      const targets = [];
-      for (const target of raw) {
-        const text = target[mapping.idColumn];
-        if (update && text == null) throw invalid(`The ${mapping.idColumn} property is required.`);
-        const existing = update ? lookupKey(c, mapping, String(text)).row : null;
-        if (update && !existing) throw notFoundRecord(mapping.logicalName, String(text));
-        const data = update ? await updateData(c, mapping, target, existing) : await createData(c, mapping, target);
-        const id = update ? existing[mapping.idColumn] : data[mapping.idColumn];
-        delete data[mapping.idColumn];
-        const encoded = recordToSdkEntity(store, mapping.logicalName, store.normalizeRecord(mapping, data, c.identity));
-        delete encoded.attributes[mapping.idColumn];
-        targets.push({ ...encoded, id: id ?? '00000000-0000-0000-0000-000000000000' });
-      }
-      return executeBulkRecordsAsync({
-        store,
-        entity: mapping.logicalName,
-        operation: update ? 'updatemultiple' : 'createmultiple',
-        targets,
-        identity: c.identity,
-        bypassCustomPlugins: c.bypassCustomPlugins === true,
-        bypassCustomAsync: c.bypassCustomAsync === true,
-        bypassStepIds: c.bypassStepIds,
-        authorize: (operation, values, previous) => {
-          authorize(c, mapping.logicalName, operation, mapping, previous ?? values);
-          authorizeLookups(c, mapping, values);
-        },
-        write: async (_update, id, data, options) => {
-          const row = await withKeyViolation(mapping, data, () =>
-            update
-              ? store.updateRecordAsync(mapping.logicalName, id, data, c.identity, updateOptions(c, options))
-              : store.createRecordAsync(mapping.logicalName, data, c.identity, createOptions(c, options, data)),
-          );
-          options.postWriteEffects.push(() =>
-            afterWrite(c, mapping, { operation: update ? 'update' : 'create', id: row[mapping.idColumn] }),
-          );
-          return row;
-        },
-      });
-    });
+    const result = await runWrite(() => bulkWrite(c, update, raw));
     if (update) return { status: 204 };
     const outputs = result.outputParameters?.values;
     let ids = result.ids;
@@ -2506,6 +2484,51 @@ export function createRecordHandlers({
         ...(ids === undefined ? {} : { Ids: ids }),
       },
     };
+  }
+
+  // The grouped CreateMultiple/UpdateMultiple pipeline over Web API targets, inside the caller's write.
+  async function bulkWrite(c, update, raw, { concurrencyBehavior, delegated = false } = {}) {
+    const { mapping } = c;
+    const targets = [];
+    for (const target of raw) {
+      const text = target[mapping.idColumn];
+      if (update && text == null) throw invalid(`The ${mapping.idColumn} property is required.`);
+      const existing = update ? lookupKey(c, mapping, String(text)).row : null;
+      if (update && !existing) throw notFoundRecord(mapping.logicalName, String(text));
+      const data = update ? await updateData(c, mapping, target, existing) : await createData(c, mapping, target);
+      const id = update ? existing[mapping.idColumn] : data[mapping.idColumn];
+      delete data[mapping.idColumn];
+      const encoded = recordToSdkEntity(store, mapping.logicalName, store.normalizeRecord(mapping, data, c.identity));
+      delete encoded.attributes[mapping.idColumn];
+      targets.push({ ...encoded, id: id ?? '00000000-0000-0000-0000-000000000000' });
+    }
+    return executeBulkRecordsAsync({
+      store,
+      entity: mapping.logicalName,
+      operation: update ? 'updatemultiple' : 'createmultiple',
+      targets,
+      identity: c.identity,
+      bypassCustomPlugins: c.bypassCustomPlugins === true,
+      bypassCustomAsync: c.bypassCustomAsync === true,
+      bypassStepIds: c.bypassStepIds,
+      authorize: (operation, values, previous) => {
+        authorize(c, mapping.logicalName, operation, mapping, previous ?? values);
+        authorizeLookups(c, mapping, values);
+      },
+      write: async (_update, id, data, options) => {
+        const row = await withKeyViolation(mapping, data, () =>
+          update
+            ? store.updateRecordAsync(mapping.logicalName, id, data, c.identity, updateOptions(c, options))
+            : store.createRecordAsync(mapping.logicalName, data, c.identity, createOptions(c, options, data)),
+        );
+        options.postWriteEffects.push(() =>
+          afterWrite(c, mapping, { operation: update ? 'update' : 'create', id: row[mapping.idColumn] }),
+        );
+        return row;
+      },
+      ...(concurrencyBehavior === undefined ? {} : { concurrencyBehavior }),
+      delegated,
+    });
   }
 
   // A verb a record does not take. PUT and POST on a record have their own native 0x80060888 messages; others are the generic 405.
@@ -2953,6 +2976,47 @@ export function createRecordHandlers({
         holder = cloneStateData(existing),
         inherited = store.pluginInTransaction;
       let finalFrame;
+      // Natively a Web API many-to-many association first reads the intersect row of each pair: a RetrieveMultiple of
+      // the intersect table with this FetchExpression runs its own pipeline before Associate (recorded corpus).
+      if (
+        !suppliedParameters &&
+        operation === 'associate' &&
+        rel.intersect?.entity &&
+        store.pluginPipeline &&
+        store.pluginPipelineActive({
+          entity: rel.intersect.entity,
+          operation: 'retrievemultiple',
+          bypassCustomPlugins: c.bypassCustomPlugins,
+          bypassStepIds: c.bypassStepIds,
+        })
+      )
+        for (const relatedId of relatedIds) {
+          const braced = (value) => '{' + String(value).toUpperCase() + '}';
+          const xml =
+            '<fetch distinct="false" useraworderby="false" no-lock="false" mapping="logical">' +
+            `<entity name="${rel.intersect.entity}"><filter type="and">` +
+            `<condition attribute="${rel.intersect.from}" operator="eq" value="${braced(rowId)}" />` +
+            `<condition attribute="${rel.intersect.to}" operator="eq" value="${braced(relatedId)}" />` +
+            '</filter></entity></fetch>';
+          // The platform's own check: the caller's read permission on the intersect table does not apply.
+          store.retrieveMultipleOperation(
+            rel.intersect.entity,
+            { $type: 'FetchExpression', query: xml },
+            { ...(c.identity ?? {}), admin: true },
+            () => ({
+              value: store
+                .tableRows(rel.intersect.entity)
+                .filter(
+                  (row) =>
+                    guidKey(row[rel.intersect.from]) === guidKey(rowId) &&
+                    guidKey(row[rel.intersect.to]) === guidKey(relatedId),
+                ),
+            }),
+            'value',
+            undefined,
+            { bypassStepIds: c.bypassStepIds, bypassCustomPlugins: c.bypassCustomPlugins === true },
+          );
+        }
       const phase = function* (stage) {
         if (
           !store.pluginPipeline ||

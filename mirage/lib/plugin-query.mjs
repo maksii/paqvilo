@@ -4,7 +4,9 @@ import { isExactNumeric, decimalParts } from './exact-numeric.mjs';
 const fail = (message) => {
   throw new DataError(message, 501, 'LocalPluginQueryUnsupported');
 };
+// A Web API lookup property (_parentid_value) names its logical attribute (parentid) in a QueryExpression.
 const name = (value) => {
+  if (typeof value === 'string') value = /^_([a-z]\w*)_value$/i.exec(value)?.[1] ?? value;
   if (typeof value !== 'string' || !/^[a-z][\w]*$/i.test(value))
     fail('SDK query projection requires logical column names.');
   return value;

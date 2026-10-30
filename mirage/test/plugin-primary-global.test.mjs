@@ -1,3 +1,4 @@
+// @test-kind unproven: local global (null-filter) registration models; evidenced tests carry their own tag
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -198,7 +199,8 @@ test(
   },
 );
 
-test('source and HTTP registrations retain explicit global Update/Delete bindings without inferring global Create or image projections', async (t) => {
+// @test-kind parity: native dev-environment plug-in recorder corpus 2026-10-30, crud scenario: the global 'Recorder: Create' steps execute for the probe table
+test('source and HTTP registrations retain explicit global Update/Delete bindings, global Create and no global image projections', async (t) => {
   const f = await contractModuleFixture(t, {
     mappings,
     tables: {
@@ -240,8 +242,11 @@ test('source and HTTP registrations retain explicit global Update/Delete binding
       /global write registrations/,
     );
   }
+  // A global Create step runs for every table natively (recorded corpus: 'Recorder: Create begin' has no filter);
+  // global Retrieve remains outside the qualified binding contract.
+  assert.equal(pluginUnsupported(definition(99, 'Create', 20)), null);
   assert.ok(
-    pluginUnsupported(definition(99, 'Create', 20)),
-    'Global Create remains outside the qualified binding contract',
+    pluginUnsupported(definition(99, 'Retrieve', 20)),
+    'Global Retrieve remains outside the qualified binding contract',
   );
 });
