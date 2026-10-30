@@ -35,7 +35,7 @@ import {
 } from './plugin-execution-lifetime.mjs';
 import { asyncMultiplePluginParent, selectSdkEntryParent } from './plugin-sdk-parent.mjs';
 import { recordPluginTrace } from './plugin-trace.mjs';
-import { delegatedPluginParent } from './plugin-delegation.mjs';
+import { delegatedPluginParent, upsertSourceOperation } from './plugin-delegation.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
 import { pluginFailure } from './plugin-fault.mjs';
 import { pluginStepBypassed } from './plugin-bypass.mjs';
@@ -1077,6 +1077,34 @@ export function runPluginPhase({
           [store.resolveMapping(entity).idColumn]: record[store.resolveMapping(entity).idColumn],
         }),
       };
+  }
+  // A bare Web API PATCH runs Create or Update inside an Upsert main operation: PreValidation's parent is that
+  // Upsert, whose Target is the one handed to the inner message (native recorder parity corpus, upsert).
+  if (
+    store &&
+    preValidationSourceOperation === 'upsert' &&
+    ['create', 'update'].includes(operation) &&
+    !asyncExecution
+  ) {
+    if (stage === 10) {
+      const primary = store.resolveMapping(entity).idColumn;
+      phaseFrame.delegatedSourceOperation = upsertSourceOperation({
+        store,
+        entity,
+        // An Update Target names its primary key; an upsert-create Target carries it only as Entity.Id.
+        target: recordToSdkEntity(
+          store,
+          entity,
+          operation === 'update' ? { ...target, [primary]: record[primary] } : target,
+          { allColumns: true, submitted: true, target: true },
+        ),
+        id: record[primary],
+        acceptLanguage,
+        tag: phaseFrame.requestTag ?? store.pluginSdkTag,
+        identity,
+        depth: phaseFrame.operationDepth,
+      });
+    } else if (phaseFrame.delegatedSourceOperation?.operation === 'upsert') delete phaseFrame.delegatedSourceOperation;
   }
   phaseFrame.suppliedRequestId ??= store?.pluginRequestId;
   phaseFrame.requestId ??=

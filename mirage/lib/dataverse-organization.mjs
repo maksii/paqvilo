@@ -468,6 +468,9 @@ async function composeOrganizationRuntime({
     store.hierarchyResolver = (table, id, mode) => api.hierarchy.resolve(table, id, mode);
     api.hierarchyQueryWired = true;
   }
+  // Plug-in SDK values type the platform columns a Solution export omits (createdon, transactioncurrencyid,
+  // exchangerate, <money>_base) from the organization's attribute metadata.
+  store.platformFields = (logical) => metadata.recordFields(logical, { includeNonOData: true });
   // The organization's row-version counter starts above every stored row version, so the first write through the pipeline
   // (nextRowVersion) never stamps a row with a version at or below the one it carries (a seeded or restored state).
   store.state.rowVersion = Math.max(Number(store.state.rowVersion ?? 0), maxRowVersion(store.state));

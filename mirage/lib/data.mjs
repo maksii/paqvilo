@@ -114,6 +114,21 @@ const transactionFrameOf = (store, { closed = false } = {}) => {
   return null;
 };
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+// Row columns a write's Target never shows: the row version, and empty on-behalf/team ownership lookups
+// (native Create Targets carry an empty modifiedonbehalfby, never an empty createdonbehalfby or owningteam).
+const notInTarget = (name, value) =>
+  name === 'versionnumber' || (value == null && (name === 'createdonbehalfby' || name === 'owningteam'));
+// Update stamps the platform adds to the Target after PreValidation (native PreOperation/PostOperation Update).
+const UPDATE_TARGET_STAMPS = ['modifiedon', 'modifiedby', 'modifiedonbehalfby'];
+// A Web API string column written as null or empty reaches the Target as an empty string; the row stores null.
+function blankTextColumns(store, mapping, input, options) {
+  if (!options.dataverseWebApi) return [];
+  return Object.keys(input).filter(
+    (name) =>
+      (input[name] === null || input[name] === '') &&
+      fieldKind(store.fieldDefinition(mapping.logicalName, name, options.metadata)) === 'string',
+  );
+}
 const formattedAnnotation = '@OData.Community.Display.V1.FormattedValue';
 const lookupAnnotation = '@Microsoft.Dynamics.CRM.lookuplogicalname';
 
@@ -2465,6 +2480,7 @@ export class DataStore {
       sdkFromSandbox: options.sdkFromSandbox === true,
       acceptLanguage: options.pluginAcceptLanguage ?? '',
       ...(options.frameworkInputTarget ? { frameworkInputTarget: options.frameworkInputTarget } : {}),
+      ...(stage !== 10 && this.pluginMainTargets?.has(row) ? { mainTarget: this.pluginMainTargets.get(row) } : {}),
       ...(options.preValidationSourceOperation
         ? { preValidationSourceOperation: options.preValidationSourceOperation }
         : {}),
@@ -2503,7 +2519,12 @@ export class DataStore {
           )
             normalized[key] = value.join(',');
       if (options.coerce)
-        this.coerceRecord(mapping, normalized, { ...options, dataverseWebApi: false, dataverseHttpReader: undefined });
+        this.coerceRecord(mapping, normalized, {
+          ...options,
+          dataverseWebApi: false,
+          dataverseHttpReader: undefined,
+          odataErrorDetails: false,
+        });
       const retainsEmpty =
         operation === 'create' &&
         stage === 10 &&
@@ -2511,7 +2532,13 @@ export class DataStore {
         normalized[mapping.idColumn] === targetPrimary;
       if (normalized[mapping.idColumn] !== undefined && !equal(normalized[mapping.idColumn], id) && !retainsEmpty)
         throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
+      // An empty text value stays an empty string in the Target while the row stores null.
+      const blanks = Object.keys(normalized).filter((name) => target[name] === '' && normalized[name] === null);
       Object.assign(target, normalized);
+      for (const name of blanks) target[name] = '';
+      // The main operation's own Target (a later step's Create/Update stage-30 parent) is the Target as
+      // PreValidation left it, before platform stamps and PreOperation edits.
+      if (stage === 10) (this.pluginMainTargets ??= new WeakMap()).set(row, clone(target));
       if (retainsEmpty) delete normalized[mapping.idColumn];
       Object.assign(row, normalized);
       if (options.coerce) this.assertStateStatus(mapping, row, options);
@@ -2954,6 +2981,7 @@ export class DataStore {
           columns,
           holder,
           changedAttributes: [],
+          ...(options.readInitialFrame ? { initialFrame: options.readInitialFrame } : {}),
           bypassCustomPlugins: options.bypassCustomPlugins === true,
           bypassStepIds: options.bypassStepIds,
           portalRequest: options.portalRequest === true,
@@ -3678,6 +3706,7 @@ export class DataStore {
         record,
         identity,
         changedAttributes: [],
+        ...(options.readInitialFrame ? { initialFrame: options.readInitialFrame } : {}),
         bypassCustomPlugins: options.bypassCustomPlugins === true,
         bypassStepIds: options.bypassStepIds,
         portalRequest: options.portalRequest === true,
@@ -4665,8 +4694,10 @@ export class DataStore {
     const rows = (this.state.tables[m.logicalName] ??= []);
     const { input, nested, collectionBinds } = this.splitDeepInsert(m, data, identity);
     const row = { ...this.normalizeRecord(m, input, identity) };
+    const blanks = blankTextColumns(this, m, row, options);
     if (options.coerce) this.coerceRecord(m, row, options);
     const pluginTarget = clone(row);
+    for (const name of blanks) pluginTarget[name] = '';
     for (const [name, value] of Object.entries(options.derivedCreateColumns ?? {}))
       if (isDeepStrictEqual(pluginTarget[name], value)) delete pluginTarget[name];
     // Caller-owned audit and ownership columns (Dataverse layer); merged after coercion, only when passed.
@@ -4792,7 +4823,8 @@ export class DataStore {
     }
     pluginTarget[m.idColumn] ??= row[m.idColumn];
     for (const name of derivedTargetColumns)
-      if (!own(pluginTarget, name) && own(row, name)) pluginTarget[name] = clone(row[name]);
+      if (!own(pluginTarget, name) && own(row, name) && !notInTarget(name, row[name]))
+        pluginTarget[name] = clone(row[name]);
     // Deep insert: single-valued navigation records are created first and bound.
     for (const item of nested.filter((entry) => entry.rel.many === false)) {
       const target = this.resolveMapping(item.rel.entity);
@@ -4806,6 +4838,7 @@ export class DataStore {
       };
     }
     yield [m, 'create', 20, pluginTarget, row, null, identity, changedAttributes, options];
+    options.mainOperation?.(m, 'create', row, null, pluginTarget);
     const effects = this.applyPlugins(m.logicalName, 'create', row, null, identity);
     assertAttachmentPolicy(this.state, m.logicalName, row);
     assertUniqueIdentity();
@@ -4881,11 +4914,27 @@ export class DataStore {
         );
       }
     // Native asynchronous Create snapshots include materialized defaults and
-    // main-operation fields, as they stood before PostOperation ran.
-    Object.assign(pluginTarget, clone(row));
+    // main-operation fields, as they stood before PostOperation ran (never the row version or empty on-behalf/team
+    // lookups).
+    for (const [name, value] of Object.entries(row))
+      if (!notInTarget(name, value) && !(pluginTarget[name] === '' && value === null))
+        pluginTarget[name] = clone(value);
     const asyncSourceParent = committedPluginParent(this, m, 'create', pluginTarget, row, options),
       asyncTarget = clone(pluginTarget),
       beforePost = prePostOperationFrame(this.pluginFrames?.get(row));
+    // Values the main operation derived after PreOperation (exchangerate, <money>_base) belong to the Target the
+    // asynchronous steps see (native crud: asynchronous Create Target carries them).
+    const queuedTarget = beforePost.inputParameters?.values?.Target;
+    if (queuedTarget?.$type === 'Entity') {
+      const missing = Object.fromEntries(
+        Object.entries(asyncTarget).filter(([name]) => !own(queuedTarget.attributes ?? {}, name)),
+      );
+      if (Object.keys(missing).length)
+        Object.assign(
+          (queuedTarget.attributes ??= {}),
+          recordToSdkEntity(this, m.logicalName, missing, { allColumns: true, target: true }).attributes,
+        );
+    }
     if (isElastic(m)) {
       this.recordCommittedEvent(m.logicalName, 'create', row, changedAttributes, {
         target: pluginTarget,
@@ -4938,6 +4987,7 @@ export class DataStore {
     const changes = this.normalizeRecord(m, data, identity);
     if (isElastic(m) && own(changes, 'partitionid') && !samePartition(changes.partitionid, rows[index].partitionid))
       throw new DataError('The partitionid value of an elastic table row cannot be changed.', 400, 'InvalidRequest');
+    const blanks = blankTextColumns(this, m, changes, options);
     if (options.coerce) this.coerceRecord(m, changes, options);
     if (isElastic(m)) assertElasticRecord(changes);
     const input = {
@@ -4953,6 +5003,7 @@ export class DataStore {
     if (options.coerce) this.assertStateStatus(m, row, options);
     this.assertAllowed(m.logicalName, 'update', row, identity);
     this.validateBindings(m, data, row, identity, rows[index]);
+    for (const name of blanks) changes[name] = '';
     return yield* this.commitUpdateSteps(m, rows, index, row, identity, changes, options, data);
   }
   /** The systemColumns option: a plain object, or a function (mapping, row) => columns evaluated per row. */
@@ -4998,6 +5049,8 @@ export class DataStore {
     if (!options.skipPreValidation)
       yield [mapping, 'update', 10, target, row, previous, identity, changedAttributes, options];
     options.afterPreValidation?.(mapping.logicalName, 'update', target, previous);
+    for (const name of UPDATE_TARGET_STAMPS)
+      if (authorizedWrite && !own(target, name) && own(row, name)) target[name] = clone(row[name]);
     yield [mapping, 'update', 20, target, row, previous, identity, changedAttributes, options];
     // A nested SDK request may patch or delete this row, or shift its position.
     // The outer update owns its current Target and staged system/default values;
@@ -5028,6 +5081,7 @@ export class DataStore {
         latest,
       );
     }
+    options.mainOperation?.(mapping, 'update', row, latest, target);
     const effects = this.applyPlugins(mapping.logicalName, 'update', row, rows[index], identity);
     // Declarative plugins mutate the row directly, independently of Target. Only changed columns reach the
     // attachment policy, so files already stored are not revalidated.

@@ -15,6 +15,8 @@ import { handoffPluginResponse } from './plugin-response.mjs';
 import { executeBulkRecordsAsync } from './plugin-bulk.mjs';
 import { associationRequestBinding } from './plugin-association.mjs';
 import { recordToSdkEntity } from './plugin-clr.mjs';
+import { odataToSdkQuery } from './plugin-query.mjs';
+import { upsertSourceOperation } from './plugin-delegation.mjs';
 import { isElastic, recordKey, samePartition } from './dataverse-elastic.mjs';
 import { parseEntityReference, parseFetchXml } from './data.mjs';
 import { DATAVERSE_SYSTEM_COLUMNS, parseXmlDocument, webApiPagingCookie } from './fetchxml-engine.mjs';
@@ -405,6 +407,26 @@ export function createRecordHandlers({
       ...(fs?.rowMask ? { backendRowsMask: (name) => fs.rowMask(c.user, name) } : {}),
     };
   };
+  // Web API reads add their request inputs to the Retrieve/RetrieveMultiple Target-less parameters (native recorder
+  // parity corpus, reads): IncludeAnnotations (whether Prefer asks for annotations), and for collections the app-module
+  // inputs of a request outside an app.
+  const webApiReadFrame = (c, multiple) =>
+    c.method === 'GET' && !c.portal
+      ? {
+          inputParameters: {
+            $type: 'ParameterCollection',
+            values: {
+              IncludeAnnotations: Boolean(c.prefer?.annotations),
+              ...(multiple
+                ? {
+                    AppModuleId: { $type: 'Guid', value: '00000000-0000-0000-0000-000000000000' },
+                    IsAppModuleContext: false,
+                  }
+                : { ReturnNotifications: false }),
+            },
+          },
+        }
+      : undefined;
   const secured = (c, extra = {}) =>
     queryOptions({
       bypassCustomPlugins: c.bypassCustomPlugins === true,
@@ -1078,8 +1100,14 @@ export function createRecordHandlers({
                 .get('$select')
                 .split(',')
                 .some((column) => column.trim() === '*'),
-            columns: parseSelect(params.get('$select')) ?? [],
+            // The ColumnSet names the caller's columns; the projection's own primary key is not one of them.
+            columns: (parseSelect(params.get('$select')) ?? []).filter(
+              (column) =>
+                column !== mapping.idColumn ||
+                (parseSelect(c.url?.searchParams?.get('$select')) ?? []).includes(column),
+            ),
           },
+          ...(c.sdkColumns ? {} : { readInitialFrame: webApiReadFrame(c, false) }),
           sdkTarget: c.sdkTarget,
           ...(c.sdkTarget
             ? {
@@ -1375,7 +1403,7 @@ export function createRecordHandlers({
     const after =
       cookie && cookie.countOfRecords === undefined ? { id: cookie.lastId, values: cookie.orderValues ?? {} } : null;
     const paging = { params, offset, pageSize, after, preferenceApplied: null, nextLink: () => null };
-    const options = secured(c, ids ? { ids } : {});
+    const options = secured(c, { ...(ids ? { ids } : {}), readInitialFrame: webApiReadFrame(c, true) });
     // The filter resolves field definitions per row; they are derived once for the whole synchronous query.
     const result =
       ids?.length === 0
@@ -1777,11 +1805,28 @@ export function createRecordHandlers({
     versionnumber: nextRowVersion(store),
     ...currencyOnWrite(mapping, input),
     ...timeZoneOnWrite(mapping, input),
+    ...organizationOnCreate(mapping, create),
   });
+  // An organization-owned row records its organization when created (native PreOperation Create Target: organizationid).
+  function organizationOnCreate(mapping, create) {
+    const organizationId = organizationRecord(store)?.organizationid;
+    return create && organizationId && ownershipOf(mapping.logicalName, undefined, mapping) === 'org'
+      ? { organizationid: { id: organizationId, logical_name: 'organization' } }
+      : {};
+  }
+  // The main operation (after PreOperation, before the row is stored) runs the synchronous mainOperation hooks on the
+  // final row: platform values derived from it, such as the exchange rate and base amounts (dataverse-currency.mjs).
+  const mainOperation = (c) =>
+    hookList('mainOperation').length
+      ? (mapping, operation, row, previous, target) =>
+          runHooks('mainOperation', c, mapping, { operation, row, previous, target })
+      : undefined;
   const derivedCreateColumns = new WeakMap();
   const createOptions = (c, extra = {}, data) =>
     writeOptions({
       ...extra,
+      mainOperation: mainOperation(c),
+      pluginAcceptLanguage: c.headers?.get?.('accept-language') ?? c.headers?.['accept-language'] ?? '',
       derivedCreateColumns: derivedCreateColumns.get(data),
       afterPreValidation: phaseValidation(c, extra),
       sdkResponseToken: extra.sdkResponseToken ?? c.sdkResponseToken,
@@ -1800,6 +1845,7 @@ export function createRecordHandlers({
     return writeOptions({
       partitionId: c.partitionId,
       ...extra,
+      mainOperation: mainOperation(c),
       afterPreValidation: phaseValidation(c, extra),
       sdkResponseToken: extra.sdkResponseToken ?? c.sdkResponseToken,
       dataverseHttpReader: c.dataverseHttpReader,
@@ -1865,6 +1911,59 @@ export function createRecordHandlers({
     return data;
   }
 
+  // A bare PATCH (Upsert) first asks whether the row exists: a RetrieveMultiple pipeline under the Upsert main operation
+  // (native: a QueryExpression on the URL key with no columns and TopCount 2, Query/AppModuleId/IsAppModuleContext
+  // inputs). The key lookup already decided create or update; the check only runs the registered read steps.
+  function upsertExistenceCheck(c, mapping, key, body) {
+    if (!store.pluginPipeline || isElastic(mapping)) return;
+    const empty = '00000000-0000-0000-0000-000000000000';
+    const keys = key.alternate ?? { [mapping.idColumn]: key.id };
+    const literal = (value) =>
+      typeof value === 'string' && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+        ? `'${value.replaceAll("'", "''")}'`
+        : String(value);
+    const params = {
+      $select: mapping.idColumn,
+      $filter: Object.entries(keys)
+        .map(([name, value]) => `${name} eq ${literal(value)}`)
+        .join(' and '),
+      $top: '2',
+    };
+    const sdkQuery = {
+      ...odataToSdkQuery(mapping.logicalName, params, store),
+      columnSet: { allColumns: false, columns: [] },
+    };
+    const target = recordToSdkEntity(
+      store,
+      mapping.logicalName,
+      store.normalizeRecord(mapping, payload(mapping, structuredClone(body))),
+      {
+        allColumns: true,
+        submitted: true,
+        target: true,
+      },
+    );
+    target.id = key.alternate ? empty : key.id;
+    if (key.alternate) target.keyAttributes = { ...key.alternate };
+    store.query(mapping.logicalName, params, c.identity, null, {
+      sdkQuery,
+      bypassCustomPlugins: c.bypassCustomPlugins === true,
+      bypassStepIds: c.bypassStepIds,
+      readInitialFrame: {
+        inputParameters: {
+          $type: 'ParameterCollection',
+          values: { AppModuleId: { $type: 'Guid', value: empty }, IsAppModuleContext: false },
+        },
+        delegatedSourceOperation: upsertSourceOperation({
+          target,
+          acceptLanguage: c.headers?.get?.('accept-language') ?? c.headers?.['accept-language'] ?? '',
+          tag: store.pluginSdkTag,
+          identity: c.identity,
+        }),
+      },
+    });
+  }
+
   // Upsert semantics per If-Match / If-None-Match; runs inside the caller's transaction and returns { created, id }.
   async function upsertNow(c, mapping, key, body, { ifMatch, ifNoneMatch }) {
     const logical = mapping.logicalName;
@@ -1900,6 +1999,7 @@ export function createRecordHandlers({
       await afterWrite(c, mapping, { operation: 'upsert', id: result.row[mapping.idColumn] });
       return { created: result.created, id: result.row[mapping.idColumn] };
     }
+    if (ifMatch == null) upsertExistenceCheck(c, mapping, key, body);
     if (key.row) {
       authorize(c, logical, 'update', mapping, key.row);
       // An elastic row's partitionid key is its partition: a body that changes it stays refused (elastic tables), not dropped.
@@ -1935,9 +2035,24 @@ export function createRecordHandlers({
       for (const [name, value] of Object.entries(key.alternate)) {
         if (!Object.hasOwn(data, name)) data[name] = value;
       }
-    else data[mapping.idColumn] = key.id;
+    // The URL id is the new Entity.Id, not an authored primary-key attribute (native upsert-create Target).
+    const createId = !key.alternate && ifMatch == null && !Object.hasOwn(data, mapping.idColumn) ? key.id : null;
+    if (!key.alternate && createId === null) data[mapping.idColumn] = key.id;
     const row = await withKeyViolation(mapping, data, () =>
-      store.createRecordAsync(logical, data, c.identity, createOptions(c, { ifNoneMatch }, data)),
+      store.createRecordAsync(
+        logical,
+        data,
+        c.identity,
+        createOptions(
+          c,
+          {
+            ifNoneMatch,
+            ...(ifMatch == null ? { preValidationSourceOperation: 'upsert' } : {}),
+            ...(createId ? { sdkCreateId: createId } : {}),
+          },
+          data,
+        ),
+      ),
     );
     await afterWrite(c, mapping, { operation: 'create', id: row[mapping.idColumn] });
     return { created: true, id: row[mapping.idColumn] };

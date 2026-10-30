@@ -27,6 +27,7 @@ import {
   sdkReadColumns,
 } from './plugin-sdk-query.mjs';
 import { isExactNumeric } from './exact-numeric.mjs';
+import { dateTimeBehavior } from './dataverse-values.mjs';
 import { imageAttributes } from './plugin-images.mjs';
 import { captureSdkResponse } from './plugin-response.mjs';
 import { isElastic, samePartition } from './dataverse-elastic.mjs';
@@ -446,6 +447,7 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
   const mapping = store.resolveMapping(entity),
     attributes = {},
     formattedValues = {};
+  let platform;
   const reference = (logicalName, id, suppliedName, partitionId) => {
     let target;
     try {
@@ -470,7 +472,9 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
             )
         : null,
       name = suppliedName ?? record?.[primaryName] ?? null;
-    return { $type: 'EntityReference', logicalName, id, name };
+    // A message Target's references carry no resolved names (native Create/Update Targets: Name null);
+    // retrieved rows and images name them.
+    return { $type: 'EntityReference', logicalName, id, name: columns.target ? null : name };
   };
   for (const [key, value] of Object.entries(row ?? {})) {
     if (!columns.allColumns && !(columns.columns ?? []).includes(key)) continue;
@@ -478,7 +482,12 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
       attributes[key] = null;
       continue;
     }
-    const field = store.fieldDefinition(mapping.logicalName, key) ?? {},
+    // Platform columns a Solution export omits (createdon, transactioncurrencyid, exchangerate, <money>_base)
+    // are typed from the organization's attribute metadata.
+    const field =
+        store.fieldDefinition(mapping.logicalName, key) ??
+        (platform ??= store.platformFields?.(mapping.logicalName) ?? {})[key] ??
+        {},
       type = String(field.dataverseType ?? field.type ?? '').toLowerCase();
     if (value && typeof value === 'object' && value.id && value.logical_name)
       attributes[key] = reference(value.logical_name, value.id, value.name, value.partitionid ?? row[`${key}pid`]);
@@ -513,9 +522,16 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
       )
         fail('SDK lookup GUID requires one exact source-declared target table.', 'LocalPluginSdkUnsupported', 501);
       attributes[key] = reference(targets[0], canon(value), undefined, row[`${key}pid`]);
-    } else if (['money', 'decimal'].includes(type))
-      attributes[key] = typed(type === 'money' ? 'Money' : 'Decimal', String(value?.value ?? value));
-    else if (type === 'bigint') attributes[key] = typed('Int64', String(value?.value ?? value));
+    } else if (['money', 'decimal'].includes(type)) {
+      let text = String(value?.value ?? value);
+      // A stored decimal (a retrieved row, or a value only the platform writes) carries its storage scale: ten
+      // places, or the column's precision when larger (native images: 1.5000000000; exchangerate 1.000000000000).
+      const scale = Math.max(10, Number.isInteger(field.precision) ? field.precision : 0),
+        match = /^-?\d+(?:\.(\d*))?$/.exec(text);
+      if (type === 'decimal' && (columns.retrieved || field.validForCreate === false) && match)
+        text = (match[1] === undefined ? text + '.' : text) + '0'.repeat(Math.max(0, scale - (match[1] ?? '').length));
+      attributes[key] = typed(type === 'money' ? 'Money' : 'Decimal', text);
+    } else if (type === 'bigint') attributes[key] = typed('Int64', String(value?.value ?? value));
     else if (['double', 'float'].includes(type)) {
       const raw = isExactNumeric(value) ? value.value : value,
         number =
@@ -566,12 +582,49 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
           return typed('OptionSetValue', number);
         }),
       };
-    } else if (['datetime', 'date'].includes(type)) attributes[key] = typed('DateTime', value);
+    } else if (['datetime', 'date'].includes(type))
+      // DateOnly and TimeZoneIndependent values carry no time zone: their SDK DateTime kind is Unspecified. The
+      // PreValidation Target (columns.submitted) still shows a TimeZoneIndependent value as the caller sent it.
+      attributes[key] = typed(
+        'DateTime',
+        typeof value === 'string' &&
+          (dateTimeBehavior(field) === 'dateonly' ||
+            (dateTimeBehavior(field) === 'timezoneindependent' && !columns.submitted))
+          ? value.replace(/(?:Z|[+-]\d{2}:\d{2})$/i, '')
+          : value,
+      );
     else if (type === 'uniqueidentifier' || key === mapping.idColumn) attributes[key] = typed('Guid', value);
     else attributes[key] = cloneStateData(value);
     if (attributes[key]?.$type === 'EntityReference' && typeof attributes[key].name === 'string')
       formattedValues[key] = attributes[key].name;
   }
+  // A retrieved row carries the phonetic-name companion of a lookup whose metadata declares one
+  // (native images: createdbyyominame, owneridyominame), valued from the referenced row.
+  // A lookup without a name companion (owninguser, owningteam) is retrieved unnamed.
+  if (columns.retrieved)
+    for (const [key, value] of Object.entries(attributes)) {
+      const companion = `${key}yominame`,
+        declared = (name) =>
+          store.fieldDefinition(mapping.logicalName, name) ??
+          (platform ??= store.platformFields?.(mapping.logicalName) ?? {})[name];
+      if (value?.$type !== 'EntityReference') continue;
+      if (store.platformFields && !declared(`${key}name`)) {
+        value.name = null;
+        delete formattedValues[key];
+      }
+      if (Object.hasOwn(attributes, companion) || !declared(companion)) continue;
+      if (!columns.allColumns && !(columns.columns ?? []).includes(companion)) continue;
+      let related;
+      try {
+        related = store.resolveMapping(value.logicalName);
+      } catch (error) {
+        if (error.code !== 'UnknownEntity') throw error;
+      }
+      const source =
+        related && store.tableRows(related.logicalName).find((r) => canon(r[related.idColumn]) === canon(value.id));
+      const yomi = source?.yomifullname ?? value.name;
+      if (yomi != null) attributes[companion] = yomi;
+    }
   const id = row?.[mapping.idColumn] ?? '00000000-0000-0000-0000-000000000000',
     versionColumn = mapping.sdkRowVersionColumn;
   const sourceVersion =
@@ -592,12 +645,26 @@ export function recordToSdkEntity(store, entity, row, columns = { allColumns: tr
     id,
     attributes,
     ...(versionColumn ? { rowVersion } : {}),
-    ...(Object.keys(formattedValues).length ? { formattedValues } : {}),
+    // A message Target carries formatted values only once PostOperation runs (native PreValidation/PreOperation: none).
+    ...(Object.keys(formattedValues).length && !(columns.target && !columns.postOperation) ? { formattedValues } : {}),
   };
 }
 export function recordToSdkReadEntity(store, entity, row, columns) {
   const present = Object.fromEntries(Object.entries(row ?? {}).filter(([, value]) => value != null));
-  return recordToSdkEntity(store, entity, present, sdkReadColumns(store, entity, columns));
+  const result = recordToSdkEntity(store, entity, present, {
+    ...sdkReadColumns(store, entity, columns),
+    retrieved: true,
+  });
+  // A retrieved Dataverse row reports its stored row version as Entity.RowVersion (native Retrieve/RetrieveMultiple).
+  if (result.rowVersion == null && store.platformFields) {
+    const mapping = store.resolveMapping(entity),
+      stored = store
+        .tableRows(mapping.logicalName)
+        .find((source) => canon(source[mapping.idColumn]) === canon(result.id))?.versionnumber;
+    const version = stored == null ? null : String(stored?.value ?? stored);
+    if (version !== null && /^\d+$/.test(version)) result.rowVersion = version;
+  }
+  return result;
 }
 export function sdkQueryParameters(query) {
   if (query.pageInfo?.returnTotalRecordCount === true)
@@ -1628,6 +1695,7 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
     return recordToSdkEntity(store, entity, imageAttributes(row), {
       allColumns: !registration.attributes?.length,
       columns: registration.attributes ?? [],
+      retrieved: true,
     });
   };
   const asynchronous = (step.contract?.mode ?? 0) === 1,
@@ -1927,8 +1995,18 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
                                       : { [primary]: record[primary] }),
                                   },
                                   operation === 'create' && stage === 10
-                                    ? { allColumns: false, columns: Object.keys(target ?? {}) }
-                                    : { allColumns: true },
+                                    ? {
+                                        allColumns: false,
+                                        columns: Object.keys(target ?? {}),
+                                        submitted: true,
+                                        target: true,
+                                      }
+                                    : {
+                                        allColumns: true,
+                                        submitted: stage === 10,
+                                        target: true,
+                                        postOperation: stage === 40,
+                                      },
                                 ),
                                 id: frame.inputParameters?.values?.Target?.id ?? record[primary],
                               },
@@ -1980,6 +2058,22 @@ export function clrContext({ runtime, store, step, entity, operation, stage, tar
       }),
       images: stageCollection(10, false),
     });
+  // The Create main operation's Target names the key it allocated after PreValidation (native upsert and
+  // nested-SDK creates: the Create/30 parent Target carries the primary-key attribute).
+  const mainParentTarget = answer.context.ParentContext?.values?.InputParameters?.values?.Target;
+  if (
+    operation === 'create' &&
+    crud &&
+    stage !== 10 &&
+    !frame.delegatedSourceOperation &&
+    mainParentTarget?.$type === 'Entity' &&
+    record[primary] != null &&
+    !Object.hasOwn(mainParentTarget.attributes ?? {}, primary)
+  )
+    mainParentTarget.attributes = {
+      ...mainParentTarget.attributes,
+      ...recordToSdkEntity(store, entity, { [primary]: record[primary] }).attributes,
+    };
   if (!asynchronous && crud && stage !== 10) frame.mainOuterParent ??= parent ? cloneStateData(parent) : null;
   // An asynchronous job sees the committed synchronous chain as its own operation: every level reports the job's
   // mode, depth, message, row, step, operation id and time, outside a transaction.

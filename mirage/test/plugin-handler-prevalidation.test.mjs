@@ -19,10 +19,13 @@ test(
       sdk = clrSdk(),
       source = path.join(root, 'Parent.cs'),
       assembly = path.join(root, 'Parent.dll');
+    // @parity-evidence: native dev-environment recorder corpus 2026-10-30: a Create without an authored key (upsert
+    // scenario bare-PATCH creates; pipelineEffects nested SDK child create) has a Create/30 parent whose Target carries
+    // the allocated primary-key attribute, although its PreValidation Target does not.
     // Native (parity corpus crud): the PreOperation/PostOperation parent is the stage-30 main operation inside the transaction, holding the PreValidation variables.
     await fs.writeFile(
       source,
-      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class AssertParent:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(parent==null||parent.Stage!=30||!parent.IsInTransaction||(string)parent.SharedVariables["Early"]!="second"||((Money)parent.SharedVariables["Cost"]).Value!=4.25m||c.SharedVariables.Contains("Early")||(string)c.SharedVariables["Current"]!=(c.Stage==20?"main":"post"))throw new Exception("PreValidation parent or later shared frame lost");var target=(Entity)parent.InputParameters["Target"];if(target.Id!=c.PrimaryEntityId||target.Attributes.Contains("widgetid"))throw new Exception("PreValidation target identity/attributes lost");}}}`,
+      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class AssertParent:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(parent==null||parent.Stage!=30||!parent.IsInTransaction||(string)parent.SharedVariables["Early"]!="second"||((Money)parent.SharedVariables["Cost"]).Value!=4.25m||c.SharedVariables.Contains("Early")||(string)c.SharedVariables["Current"]!=(c.Stage==20?"main":"post"))throw new Exception("PreValidation parent or later shared frame lost");var target=(Entity)parent.InputParameters["Target"];if(target.Id!=c.PrimaryEntityId||!target.Attributes.Contains("widgetid"))throw new Exception("PreValidation target identity/attributes lost");}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
