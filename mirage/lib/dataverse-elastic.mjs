@@ -7,6 +7,9 @@ import { DataError } from './data-error.mjs';
 import { createHash } from 'node:crypto';
 import { contextUrl } from './dataverse-url.mjs';
 import { compileCosmosQuery, cosmosParameters } from './dataverse-cosmos-query.mjs';
+// runJob is imported when a job runs: a static import of dataverse-async.mjs would close an import cycle through
+// dataverse-security.mjs and data.mjs (config-keys.mjs loads this module early).
+const runJob = async (...args) => (await import('./dataverse-async.mjs')).runJob(...args);
 const refuse = (message) => new DataError(message, 400, 'InvalidRequest'); // status and code are guesses
 const bare = (type) => String(type ?? '').replace(/^#?Microsoft\.Dynamics\.CRM\./, '');
 const flagOf = (value) => (value !== null && typeof value === 'object' ? value.Value === true : value === true);
@@ -196,6 +199,20 @@ export function sweepExpired(api) {
   });
 }
 
+/**
+ * The TTL purge the install timer runs: sweepExpired through api.change as a job root (dataverse-async.mjs runJob, kind
+ * elastic-ttl-purge) whose rows event counts the purged rows; the delete events it commits stage their asynchronous steps
+ * and flows under it. Nothing is traced when nothing has expired. Resolves to the number of rows purged.
+ */
+function purgeExpired(api) {
+  if (!hasExpired(api.store, api.clock())) return Promise.resolve(0);
+  return runJob(api.store, { name: 'Elastic table TTL purge', kind: 'elastic-ttl-purge' }, async (span) => {
+    const rows = await api.change(() => sweepExpired(api));
+    span?.event('rows', { attributes: { operation: 'delete', rows } });
+    return rows;
+  });
+}
+
 const lifecycles = new WeakMap();
 
 // ExecuteCosmosSqlQuery. The local engine is immediately
@@ -318,7 +335,7 @@ export function install(api) {
   const timer = setInterval(() => {
     if (!hasExpired(store, api.clock())) return;
     Promise.resolve()
-      .then(() => api.change(() => sweepExpired(api)))
+      .then(() => purgeExpired(api))
       .catch((error) => api.log?.('elastic TTL purge failed', { message: error?.message }));
   }, 1000);
   timer.unref?.();

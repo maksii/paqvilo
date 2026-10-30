@@ -1,3 +1,4 @@
+// @test-kind unproven: local model of the model-driven app Dataverse surface; no native capture cited
 // The organization API and the model-driven shell must use one transactional store.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -305,6 +306,7 @@ test(
     const withoutRequestTrace = (markup) =>
       markup
         .replace(/const parentTrace="[^"]*";/g, 'const parentTrace="[request]";')
+        .replace(/const rootTrace="[^"]*";/g, 'const rootTrace="[request]";')
         .replace(/"correlationId":"[^"]*"/g, '"correlationId":"[request]"');
     assert.equal(withoutRequestTrace(await portal()), withoutRequestTrace(html));
     await sim.store.flushCommittedEvents();

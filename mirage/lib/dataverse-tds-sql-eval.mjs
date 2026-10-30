@@ -1,7 +1,9 @@
 // Dataverse TDS SQL evaluator (read-only subset). Pure: no store, protocol or HTTP knowledge.
 // Runs parseBatch() statements against a catalog and a scan callback.
 //
-// executeBatch(sql, { catalog, scan, params, principal, signal, now })
+// executeBatch(sql, { catalog, scan, params, principal, signal, now, statement })
+//   statement  optional async (statement, run) wrapper per statement (a trace span): it must await run(), which resolves
+//              { rowCount, resultSets } (the result sets this statement added); statement.source is { text, redacted }.
 //   catalog    { tables: Map<lowercase logical name, { logicalName, columns: [{ name, sqlType, length, precision, scale, nullable }] }> }
 //              (the shape buildCatalog returns, see dataverse-tds-catalog.mjs)
 //   scan       async (logicalName, { columns, pushdown }) -> row objects keyed by catalog column names.
@@ -76,7 +78,16 @@ function tick(st) {
 
 export async function executeBatch(
   sql,
-  { catalog, scan, params = {}, principal: _principal, signal, now, collation = 'CI_AI' } = {},
+  {
+    catalog,
+    scan,
+    params = {},
+    principal: _principal,
+    signal,
+    now,
+    collation = 'CI_AI',
+    statement: around = null,
+  } = {},
 ) {
   const { statements } = parseBatch(sql);
   const batches = splitBatches(sql);
@@ -107,7 +118,18 @@ export async function executeBatch(
         const key = name.startsWith('@') ? name : `@${name}`;
         st.vars.set(lower(key), { name: key, value });
       }
-      for (const statement of groups[i]) await runStatement(statement, st, resultSets);
+      for (const statement of groups[i]) {
+        if (!around) {
+          await runStatement(statement, st, resultSets);
+          continue;
+        }
+        // The caller's wrapper (a trace span per statement) runs it and reads what it produced.
+        await around(statement, async () => {
+          const before = resultSets.length;
+          await runStatement(statement, st, resultSets);
+          return { rowCount: st.session.rowCount, resultSets: resultSets.slice(before) };
+        });
+      }
     }
   }
   return { resultSets, rowCount: st.session.rowCount };

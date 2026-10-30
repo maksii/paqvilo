@@ -32,6 +32,7 @@
 // ponytail: a workflow row written by a store-level path (not the records pipeline) inside an open transaction is seen by later
 // writes of that transaction only after it commits; workflow writes through the records pipeline drop the index at once.
 import { DataError } from './data-error.mjs';
+import { traceDecision } from './dataverse-security.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
 import { packCheck, registerPackExport } from './pack-exports.mjs';
 import { onceReporter, packOverrides } from './dataverse-addon-common.mjs';
@@ -286,6 +287,7 @@ export function validateBusinessRules(map) {
 
 // ---- Extension
 
+// Runs one rule; answers how it ran: 'override' (a pack handler), 'unsupported' (not evaluated) or 'evaluated'.
 function runRule(state, c, mapping, rule, { operation, data, merged, creating, required }) {
   const override = state.overrides[rule.workflowId];
   if (override) {
@@ -310,7 +312,7 @@ function runRule(state, c, mapping, rule, { operation, data, merged, creating, r
       Object.assign(data, result.target);
       Object.assign(merged, result.target);
     }
-    return;
+    return 'override';
   }
   if (rule.clientOnly.length)
     report(state, {
@@ -329,9 +331,40 @@ function runRule(state, c, mapping, rule, { operation, data, merged, creating, r
       table: mapping.logicalName,
       message: `${rule.unsupported} The rule is not evaluated; supply a pack businessRules['${rule.workflowId}'] handler.`,
     });
-    return;
+    return 'unsupported';
   }
   apply(rule.steps, { data, merged, creating, required });
+  return 'evaluated';
+}
+
+// Tracing: each rule run is one business-rule event on the write's span, naming the rule, how it ran, the columns it set and
+// the error it raised (a raised error fails the write); under a bulk span the rows' runs are one event and the span's
+// `businessRules` counts (dataverse-security.mjs traceDecision), never one event per row.
+function tracedRule(span, state, c, mapping, rule, facts) {
+  if (!span) return runRule(state, c, mapping, rule, facts);
+  const before = { ...facts.data };
+  const event = (attributes) =>
+    traceDecision(span, 'business-rule', {
+      attributes: {
+        workflowId: rule.workflowId,
+        name: rule.name ?? null,
+        table: mapping.logicalName,
+        operation: facts.operation,
+        ...attributes,
+      },
+    });
+  let mode;
+  try {
+    mode = runRule(state, c, mapping, rule, facts);
+  } catch (error) {
+    event({ mode: 'error', code: error?.code ?? null, error: error?.message ?? String(error) });
+    throw error;
+  }
+  const changed = Object.keys(facts.data).filter(
+    (key) => !Object.hasOwn(before, key) || before[key] !== facts.data[key],
+  );
+  event({ mode, changed });
+  return mode;
 }
 
 /**
@@ -359,7 +392,9 @@ function install(api, options = {}) {
     const creating = operation === 'create' || (operation === 'upsert' && !existing);
     const merged = { ...(existing ?? {}), ...data };
     const required = new Set();
-    for (const rule of rules) runRule(state, c, mapping, rule, { operation, data, merged, creating, required });
+    const span = api.store.traces?.enabled ? api.store.traces.current() : null;
+    for (const rule of rules)
+      tracedRule(span, state, c, mapping, rule, { operation, data, merged, creating, required });
     for (const column of required) if (empty(refId(merged[column]))) throw requiredError(mapping.logicalName, column);
   });
 }

@@ -105,16 +105,18 @@ A trusted pack can run the plug-in steps that a Dataverse client registered thro
 
 A step whose type has a handler runs it at its stage, mode and rank, when its message, table and filtering attributes match. A step on a type with no handler is stored and skipped (`PLUGIN_STEP_PLACEHOLDER`). A handler keyed by the exported step id (`pluginSteps`) takes precedence over a type handler for that step.
 
-The handler receives the arguments of a `pluginSteps` handler (`step`, `entity`, `operation`, `stage`, `target`, `record`, `previous`, `preImage`, `postImage`, `identity`, `changedAttributes`, `reject`) and also `context`, an IPluginExecutionContext-like object:
+The handler receives the arguments of a `pluginSteps` handler (`step`, `entity`, `operation`, `stage`, `target`, `record`, `previous`, `preImage`, `postImage`, `identity`, `changedAttributes`, `sharedVariables`, `reject`) and also `context`, an IPluginExecutionContext-like object:
 
 - `MessageName`, `PrimaryEntityName`, `PrimaryEntityId`, `Stage`, `Mode` (0 or 1), `Depth` (1 at the top, one more for each nested handler write) and `InitiatingUserId`.
 - `UserId`: the step's impersonated user when it names one, else the initiating user.
 - `InputParameters`: `Target` for Create, Update and Delete; `Targets` for bulk messages.
 - `OutputParameters`: `id` for a PostOperation Create.
 - `PreEntityImages` and `PostEntityImages`: the registered images, keyed by alias, limited to their attributes.
+- `SharedVariables`: the same object as the `sharedVariables` argument.
 
-`context` is a copy: changing it does not change the write. Return `{ target }` to change a PreOperation Create or Update, or throw.
+`context` is a copy, except `SharedVariables`: changing the rest does not change the write. Return `{ target }` to change a PreOperation Create or Update, or throw.
 
+- `sharedVariables` is the operation's shared variables collection as a plain object, the one argument that is not a copy. What a handler sets there is what later steps and stages of the same operation receive, JavaScript or CLR (`IPluginExecutionContext.SharedVariables`). The request `tag` value is read-only: changing it fails the step with 409 `LocalPluginTagImmutable`.
 - A thrown error is the plug-in fault: 400 `0x80040265` with its message. Its `SubErrorCode` annotation is `-2146233088`. The write rolls back.
 - An asynchronous (mode 1) step runs after commit through the same queue as the exported ones. While the Dataverse API is on, each run also writes an asyncoperation system job (operation type System Event): Completed with status Succeeded, or Failed with the handler's message. A succeeded job is removed when its step has `asyncautodelete`. The job is written in the run's own transaction, so the portal response does not change.
 - `trace(text)` on a plug-in handler's arguments (and `context.trace` for a `pluginTypes` handler) records a trace line. With `organization.plugintracelogsetting` 2 every handler or CLR run writes a plugintracelog row with its trace lines (`messageblock`), type, message, depth and duration; 1 writes only failed runs, with `exceptiondetails`; 0 writes none. The diagnostic row survives business rollback, including a failed Custom API main operation.

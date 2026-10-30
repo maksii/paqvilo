@@ -1,6 +1,6 @@
+// @test-kind unproven: local model of Dataverse-triggered cloud flow hosting; no native capture cited
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,6 +13,7 @@ import { createFlowTriggerRunner, nextOccurrence } from '../lib/flow-triggers.mj
 import { inspectFlowTrigger } from '../lib/flow-runtime.mjs';
 import { operationCatalogue } from '../lib/operation-catalogue.mjs';
 import { createFlowRoutes } from '../lib/sim-flow-routes.mjs';
+import { serveRoutes } from './support/route-server.mjs';
 import { PACK_EXPORTS } from '../lib/pack-exports.mjs';
 import { ownedFixture, makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
@@ -144,15 +145,7 @@ const enable = (overrides, id) => {
 
 async function flowRouteClient(t, api, runs) {
   const routes = createFlowRoutes({ api: { ...api, flowRuns: runs }, csrf: () => 'invented-csrf' });
-  const server = http.createServer(async (req, res) => {
-    if (!(await routes(req, res, new URL(req.url, 'http://127.0.0.1')))) {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = await serveRoutes(t, routes);
   const call = async (method, path, body, csrf = true) => {
     const response = await fetch(origin + path, {
       method,

@@ -74,8 +74,15 @@
       return false;
     }
   }
-  async function request(url, options) {
-    const response = await fetch(url, options),
+  // Every call joins the page's trace (canvas-player.mjs data-trace-id / data-trace-parent, docs/design/tracing.md),
+  // except the source watch's revision polls (untraced), which would fill the page trace once a second.
+  const traceHeaders = {
+    ...(body.dataset.traceId ? { 'X-Trace-Id': body.dataset.traceId } : {}),
+    ...(body.dataset.traceParent ? { 'X-Sim-Parent-Trace': body.dataset.traceParent } : {}),
+  };
+  async function request(url, { untraced = false, ...options } = {}) {
+    const headers = untraced ? options.headers : { ...traceHeaders, ...options.headers };
+    const response = await fetch(url, { ...options, headers }),
       data = await response.json();
     if (!response.ok && !data.snapshot)
       throw new Error(
@@ -925,6 +932,7 @@
     try {
       const result = await request(`/_apps/canvas/api/${encodeURIComponent(app)}?revision=1`, {
         signal: controller.signal,
+        untraced: true,
       });
       if (typeof result.revision !== 'string') throw new Error('Source revision is unavailable.');
       if (result.revision !== source.revision) {
