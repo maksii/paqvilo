@@ -24,6 +24,7 @@ import {
 } from './external-login.mjs';
 import { authRoute, parseCookies, returnUrlParameter, safeReturnUrl } from './auth-session.mjs';
 import { loginPath } from './redirects.mjs';
+import { tracedFetch } from './trace-hosts.mjs';
 
 /**
  * The portal side of external sign-in.
@@ -190,6 +191,8 @@ export function createExternalSignIn({
   identity,
   audit,
   trace,
+  // (contactId, provider) once a sign-in issues its session cookie: the host names the contact on the request's trace.
+  signedIn = () => {},
   diagnostic = () => {},
   renderSignIn,
   renderPage,
@@ -198,6 +201,25 @@ export function createExternalSignIn({
   // One clock for issuing (local identity provider) and validating (this consumer): the organization clock when present.
   const now = () => (store?.clock ? store.clock.now() : Date.now());
   let idp = null;
+  // The provider's metadata, keys, token and UserInfo requests are http-out spans of the sign-in's trace (D-R3-5); the
+  // token exchange carries the client secret and answers tokens, so its bodies are never captured.
+  const providerFetch = (operation, url, init = {}, capture = 'full') =>
+    tracedFetch(store?.traces, { module: 'identity', operation, url, init, capture });
+  // The sign-in's contact, external identity and invitation writes run through the organization's record pipeline
+  // (dataverse-records.mjs store.recordPipeline) as portal writes the site has authorized, so each is a traced Dataverse
+  // operation with its plug-in steps (D-R3-12); a store without an organization writes directly.
+  const pipelineWrite = [
+    { identity: { admin: true }, portal: true, caller: null, method: 'POST', headers: {} },
+    { authorized: true, writeOptions: { coerce: false, dataverseWebApi: false } },
+  ];
+  const createRow = (logical, data) =>
+    store.recordPipeline
+      ? store.recordPipeline.createInternal(pipelineWrite[0], logical, data, pipelineWrite[1])
+      : store.createRecordAsync(logical, data, { admin: true });
+  const updateRow = (logical, id, data) =>
+    store.recordPipeline
+      ? store.recordPipeline.updateInternal(pipelineWrite[0], logical, id, data, pipelineWrite[1])
+      : store.updateRecordAsync(logical, id, data, { admin: true });
   // Protected data (the state's authentication properties and the external sign-in cookie) is
   // encrypted and authenticated (AES-256-GCM), as the platform's data protection does: the PKCE
   // verifier in the state never shows in a URL. Keys are created for each process.
@@ -276,6 +298,8 @@ export function createExternalSignIn({
   /** An audit entry for a record the sign-in flow created (registration, identities). */
   const record = (kind, entity, query, contactId, { method, path } = {}) => {
     const context = trace.getStore();
+    // The entry names the span the write ran in (the sign-in request's trace, D-M-4); none at trace level off.
+    const span = (store?.traces?.enabled ? store.traces.current() : null) ?? context?.traceSpan ?? null;
     audit
       .begin({
         kind,
@@ -286,6 +310,11 @@ export function createExternalSignIn({
         query,
         correlationId: context?.correlationId,
         parentId: context?.spanId,
+        traceId: span?.traceId,
+        spanId: span?.spanId,
+        // The signed-in contact names the session (D-M-2 Who); the visitor cookie stays its own field.
+        visitorId: context?.visitor,
+        sessionKey: contactId ? `contact:${contactId}` : context?.visitor ? `visitor:${context.visitor}` : null,
       })
       .finish({ status: 201, rowCount: 1 });
   };
@@ -326,18 +355,14 @@ export function createExternalSignIn({
   const createIdentityRow = async (provider, subject, contactId, kind, extra = {}) => {
     const mapping = ensureIdentityTable();
     const contact = contactById(contactId);
-    const row = await store.createRecordAsync(
-      IDENTITY_TABLE,
-      {
-        [mapping.idColumn]: randomUUID(),
-        adx_username: subject,
-        adx_identityprovidername: provider.id,
-        adx_contactid: { id: key(contactId), logical_name: 'contact', name: contactName(contact) ?? '' },
-        statecode: 0,
-        statuscode: 1,
-      },
-      { admin: true },
-    );
+    const row = await createRow(IDENTITY_TABLE, {
+      [mapping.idColumn]: randomUUID(),
+      adx_username: subject,
+      adx_identityprovidername: provider.id,
+      adx_contactid: { id: key(contactId), logical_name: 'contact', name: contactName(contact) ?? '' },
+      statecode: 0,
+      statuscode: 1,
+    });
     addLedger({
       kind,
       contactId: key(contactId),
@@ -361,15 +386,11 @@ export function createExternalSignIn({
     const email = fields.emailaddress1 ?? emailClaim(claims);
     if (!fields.lastname) fields.lastname = String(claims.family_name ?? claims.name ?? email ?? claims.sub).trim();
     const contactId = randomUUID();
-    await store.createRecordAsync(
-      mapping.logicalName,
-      {
-        [mapping.idColumn]: contactId,
-        ...fields,
-        fullname: [fields.firstname, fields.lastname].filter(Boolean).join(' '),
-      },
-      { admin: true },
-    );
+    await createRow(mapping.logicalName, {
+      [mapping.idColumn]: contactId,
+      ...fields,
+      fullname: [fields.firstname, fields.lastname].filter(Boolean).join(' '),
+    });
     return contactId;
   };
 
@@ -430,6 +451,7 @@ export function createExternalSignIn({
       // The organization clock (runtime-clock.mjs via the store) dates tokens, codes and sessions.
       clock: now,
       host,
+      traces: store?.traces ?? null,
       providers: () =>
         providerList().map((provider) => ({
           ...provider,
@@ -481,7 +503,7 @@ export function createExternalSignIn({
   // ---- provider metadata and token validation (as the platform reads its provider) ----
   const metadataCache = new Map();
   const getJson = async (target) => {
-    const response = await fetch(target, { signal: AbortSignal.timeout(5000) });
+    const response = await providerFetch('metadata', target, { signal: AbortSignal.timeout(5000) });
     if (!response.ok)
       throw new SignInProblem(
         `The identity provider answered ${response.status} for ${target}.`,
@@ -593,6 +615,7 @@ export function createExternalSignIn({
       status: problem.status ?? 400,
       returnUrl,
       error: problem.message,
+      code: problem.code,
       invitationCode,
     });
   };
@@ -788,12 +811,17 @@ export function createExternalSignIn({
     } else body.set('client_secret', provider.clientSecret ?? '');
     let response;
     try {
-      response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-        body,
-        signal: AbortSignal.timeout(5000),
-      });
+      response = await providerFetch(
+        'token',
+        endpoint,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+          body,
+          signal: AbortSignal.timeout(5000),
+        },
+        'none',
+      );
     } catch (error) {
       throw new SignInProblem(
         `The identity provider's token endpoint is not reachable (${error.message}).`,
@@ -837,7 +865,7 @@ export function createExternalSignIn({
       );
     let response;
     try {
-      response = await fetch(endpoint, {
+      response = await providerFetch('userinfo', endpoint, {
         headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
         signal: AbortSignal.timeout(5000),
       });
@@ -1028,7 +1056,7 @@ export function createExternalSignIn({
       Object.entries(fields).every(([name, value]) => contact[name] === value)
     )
       return;
-    await store.update(mapping.logicalName, contactId, fields, { admin: true });
+    await store.transact(() => updateRow(mapping.logicalName, contactId, fields), { incremental: true });
     record(
       'sign-in',
       mapping.logicalName,
@@ -1164,12 +1192,7 @@ export function createExternalSignIn({
     const contact = contactMapping();
     const account = lookupOf(invitation.row, 'adx_assigntoaccount');
     if (account && contact)
-      await store.updateRecordAsync(
-        contact.logicalName,
-        contactId,
-        { parentcustomerid: { id: account, logical_name: 'account' } },
-        { admin: true },
-      );
+      await updateRow(contact.logicalName, contactId, { parentcustomerid: { id: account, logical_name: 'account' } });
     const roles = invitationRoles(invitation);
     if (roles.length) {
       const simulator = (store.state.simulator ??= {});
@@ -1185,24 +1208,19 @@ export function createExternalSignIn({
     }
     const redemptions = invitation.redemptions + 1;
     const done = invitation.type === 'single' || (invitation.maximum && redemptions >= invitation.maximum);
-    await store.updateRecordAsync(
-      invitation.mapping.logicalName,
-      invitation.id,
-      {
-        adx_redemptions: redemptions,
-        ...(invitation.type === 'single'
-          ? {
-              adx_redeemedcontact: {
-                id: key(contactId),
-                logical_name: 'contact',
-                name: contactName(contactById(contactId)) ?? '',
-              },
-            }
-          : {}),
-        ...(done ? { statuscode: INVITATION_REDEEMED } : {}),
-      },
-      { admin: true },
-    );
+    await updateRow(invitation.mapping.logicalName, invitation.id, {
+      adx_redemptions: redemptions,
+      ...(invitation.type === 'single'
+        ? {
+            adx_redeemedcontact: {
+              id: key(contactId),
+              logical_name: 'contact',
+              name: contactName(contactById(contactId)) ?? '',
+            },
+          }
+        : {}),
+      ...(done ? { statuscode: INVITATION_REDEEMED } : {}),
+    });
     if (lookupOf(invitation.row, 'adx_redemptionworkflow'))
       diagnostic({
         code: 'INVITATION_WORKFLOW_NOT_RUN',
@@ -1324,6 +1342,7 @@ export function createExternalSignIn({
         `/Account/Login/RedeemInvitation?ReturnUrl=${encodeURIComponent(returnUrl)}`,
         'invitation-required',
       );
+    signedIn(outcome.contactId, provider.id);
     return redirect(res, returnUrl, outcome.route, [
       sessions.cookie({ contactId: outcome.contactId, provider: provider.slug }),
       clearExternal(),
@@ -1392,6 +1411,7 @@ export function createExternalSignIn({
       if (!(problem instanceof SignInProblem)) throw problem;
       return redeemPage(req, res, url, { status: problem.status ?? 400, code, returnUrl, error: problem.message });
     }
+    signedIn(outcome.contactId, provider.id);
     return redirect(res, returnUrl, outcome.route, [
       sessions.cookie({ contactId: outcome.contactId, provider: provider.slug }),
       clearExternal(),

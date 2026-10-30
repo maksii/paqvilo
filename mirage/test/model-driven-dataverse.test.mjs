@@ -305,6 +305,7 @@ test(
     const withoutRequestTrace = (markup) =>
       markup
         .replace(/const parentTrace="[^"]*";/g, 'const parentTrace="[request]";')
+        .replace(/const rootTrace="[^"]*";/g, 'const rootTrace="[request]";')
         .replace(/"correlationId":"[^"]*"/g, '"correlationId":"[request]"');
     assert.equal(withoutRequestTrace(await portal()), withoutRequestTrace(html));
     await sim.store.flushCommittedEvents();

@@ -1,10 +1,19 @@
 import { messageNameOf, runPluginPhase } from './exported-plugins.mjs';
-import { committedJobs, liveJob, stageCommittedJobs } from './committed-work.mjs';
+import { committedJobs, liveJob, stageCommittedJobs, traceJob } from './committed-work.mjs';
 import { clockFunction, systemClock, systemIds } from './runtime-clock.mjs';
 import { createRequestContext, runWithRequest } from './request-context.mjs';
 
 // Each run gets its own request context: the starting request's correlation (carried by the committed event, else the chain)
 // as the parent, mode async, the writer as principal; a plug-in trace log and nested events then carry that correlation.
+// The human facts of an asynchronous step finding (D-M-2 Findings): the step's display name, the table and a sentence.
+const stepFacts = (item, itemId, event, outcome) => {
+  const name = item?.name ?? itemId;
+  return {
+    name,
+    entity: event?.entity ?? item?.entity ?? null,
+    message: `${name} ${outcome}${event?.entity ? ` on ${event.entity}` : ''}${item?.message ? ` (${item.message})` : ''}.`,
+  };
+};
 const runContext = (store, event, chain) =>
   createRequestContext({ correlationId: event.correlationId ?? chain.id, clock: store.clock, ids: store.ids }).child({
     mode: 'async',
@@ -125,7 +134,7 @@ export function createAsyncPluginRunner({
   const itemOf = (id) => items().find((item) => sameId(item.id, id)) ?? null;
   // An asynchronous web hook is delivered after commit. Its System Job is Locked while the POST runs, then Succeeded, Failed, or Canceled
   // (32: an endpoint the simulator does not contact, with a WEBHOOK_NOT_CONTACTED diagnostic, or a contract other than 8).
-  const deliverWebhook = async ({ id, payload: { itemId, chain }, event }) => {
+  const deliverWebhook = async ({ id, payload: { itemId, chain }, event }, span) => {
     const item = itemOf(itemId);
     try {
       if (!webhooks) {
@@ -160,15 +169,18 @@ export function createAsyncPluginRunner({
         await store.transact(() => (answer?.canceled ? job.cancel(answer.canceled) : job.finish(null)));
         diagnostic({
           code: 'PLUGIN_ASYNC_COMPLETED',
+          ...stepFacts(item, itemId, event, 'completed'),
           stepId: itemId,
           chainId: chain.id,
           sourceFile: item.sourceFile,
           mode: item.mode,
         });
       } catch (error) {
+        span?.fail(error);
         await store.transact(() => job.finish(error));
         diagnostic({
           code: 'PLUGIN_ASYNC_FAILED',
+          ...stepFacts(item, itemId, event, `failed: ${error.message}`),
           stepId: itemId,
           chainId: chain.id,
           error: { code: error.code ?? 'LocalPluginAsyncError', message: error.message },
@@ -185,7 +197,7 @@ export function createAsyncPluginRunner({
       own.delete(id);
     }
   };
-  const runStep = async ({ id, payload: { itemId, chain }, event }) => {
+  const runStep = async ({ id, payload: { itemId, chain }, event }, span) => {
     const item = itemOf(itemId);
     await store
       .transact(() => {
@@ -231,15 +243,18 @@ export function createAsyncPluginRunner({
           else job.finish(null);
           diagnostic({
             code: 'PLUGIN_ASYNC_COMPLETED',
+            ...stepFacts(item, itemId, event, skipped ? 'was canceled: nothing was executed' : 'completed'),
             stepId: itemId,
             chainId: chain.id,
             sourceFile: item.sourceFile,
             mode: item.mode,
           });
         } catch (error) {
+          span?.fail(error);
           job?.finish(error);
           diagnostic({
             code: 'PLUGIN_ASYNC_FAILED',
+            ...stepFacts(item, itemId, event, `failed: ${error.message}`),
             stepId: itemId,
             chainId: chain.id,
             error: { code: error.code ?? 'LocalPluginAsyncError', message: error.message },
@@ -260,7 +275,21 @@ export function createAsyncPluginRunner({
       })
       .finally(() => own.delete(id));
   };
-  const inContext = (run) => (job) => runWithRequest(runContext(store, job.event, job.payload.chain), () => run(job));
+  // The job span (committed-work.mjs traceJob) parents explicitly by the staging span; the request context names it too.
+  const inContext = (run) => (job) =>
+    traceJob(
+      store,
+      job,
+      (span) =>
+        runWithRequest(
+          runContext(store, job.event, job.payload.chain).with({
+            traceId: span?.traceId ?? null,
+            spanId: span?.spanId ?? null,
+          }),
+          () => run(job, span),
+        ),
+      { name: itemOf(job.payload.itemId)?.name ?? null },
+    );
   // A rethrown transaction failure reaches the job runner, which counts the attempt (committed-work.mjs).
   const unregister = [
     jobs.register('plugin', inContext(runStep), { diagnostic }),

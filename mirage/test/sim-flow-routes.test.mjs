@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { DataStore, emptyState } from '../lib/data.mjs';
 import { createScheduler, fixedClock, sequentialIds } from '../lib/runtime-clock.mjs';
 import { createConnectorRuntime } from '../lib/connector-runtime.mjs';
 import { createFlowRunStore } from '../lib/flow-runs.mjs';
 import { createFlowRoutes } from '../lib/sim-flow-routes.mjs';
+import { serveRoutes } from './support/route-server.mjs';
 
 const FLOW = '77777777-7777-4777-8777-777777777777';
 const CSRF = 'invented-csrf';
@@ -18,15 +18,7 @@ async function fixture(t, { resumeRun, csrf = () => CSRF } = {}) {
   const connectors = createConnectorRuntime({ store });
   const flowRuns = createFlowRunStore({ store, scheduler, approvals: connectors.approvals });
   const routes = createFlowRoutes({ api: { flowRuns, providers: { connectors } }, csrf, resumeRun });
-  const server = http.createServer(async (req, res) => {
-    if (!(await routes(req, res, new URL(req.url, 'http://127.0.0.1')))) {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const origin = await serveRoutes(t, routes);
   const call = async (method, path, body, headers = {}) => {
     const response = await fetch(origin + path, {
       method,

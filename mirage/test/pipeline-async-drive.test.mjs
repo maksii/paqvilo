@@ -19,6 +19,7 @@ import { closeSyncIoBridge, syncIo, syncIoWorker } from '../lib/sync-io-bridge.m
 import { EXTENSION as CASCADE } from '../lib/dataverse-cascade.mjs';
 import { EXTENSION as ROLLUP, recalculate } from '../lib/dataverse-rollup.mjs';
 import { contractModuleFixture } from './contract-module-fixture.mjs';
+import { cascadeMappings } from './support/parent-child-tables.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
 
 const ENDPOINT = '77777777-7777-4777-8777-777777777b01',
@@ -158,31 +159,9 @@ test('a flow Dataverse CreateRecord whose synchronous web hook receiver runs in 
 test('the Assign cascade updates each child on the asynchronous drive: an in-process synchronous web hook on the child answers', async (t) => {
   const receiver = await inProcessReceiver(t);
   const owner = (id) => ({ id, logical_name: 'systemuser', name: 'Invented user' });
-  const link = { from: 'x_parentid', to: 'x_parentid', cascade: { assign: 'Cascade' } };
   const { request, json, store } = await contractModuleFixture(t, {
     extension: CASCADE,
-    mappings: {
-      x_parent: {
-        logicalName: 'x_parent',
-        entitySet: 'x_parents',
-        idColumn: 'x_parentid',
-        nameColumn: 'x_name',
-        relationships: { children: { entity: 'x_child', many: true, ...link } },
-        fields: { x_name: { dataverseType: 'nvarchar' }, ownerid: { dataverseType: 'owner' } },
-      },
-      x_child: {
-        logicalName: 'x_child',
-        entitySet: 'x_children',
-        idColumn: 'x_childid',
-        nameColumn: 'x_name',
-        relationships: { parent: { entity: 'x_parent', many: false, ...link } },
-        fields: {
-          x_name: { dataverseType: 'nvarchar' },
-          x_parentid: { dataverseType: 'lookup' },
-          ownerid: { dataverseType: 'owner' },
-        },
-      },
-    },
+    mappings: cascadeMappings({ assign: 'Cascade' }),
     tables: {
       systemuser: [
         { systemuserid: USER_ONE, fullname: 'Invented one', statecode: 0 },

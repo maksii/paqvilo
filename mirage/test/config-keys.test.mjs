@@ -44,6 +44,8 @@ const NEW_KEYS = [
   'canvas',
   'codeApps',
   'sourceMaps',
+  'trace',
+  'logs',
 ];
 const PRE_MIGRATION_CATALOGUE = [
   'project',

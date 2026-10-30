@@ -17,7 +17,7 @@ import {
 } from './plugin-clr.mjs';
 import { sdkValueToRecord } from './local-organization-service.mjs';
 import { populatePluginSystemOutputs } from './plugin-response.mjs';
-import { pluginFailure } from './plugin-fault.mjs';
+import { notePluginFault, pluginFailure } from './plugin-fault.mjs';
 
 // A plug-in record is mostly scalar columns: copy those directly and clone only structured values.
 const detachedRecord = (value) => {
@@ -31,6 +31,8 @@ const detachedRecord = (value) => {
   return copy;
 };
 const executionFrames = new WeakMap();
+// The plugin-stage span names (tracing): Create account · PostOperation.
+const STAGE_NAMES = { 10: 'PreValidation', 20: 'PreOperation', 30: 'MainOperation', 40: 'PostOperation' };
 // The message name a plug-in sees for an operation (IPluginExecutionContext.MessageName).
 export const messageNameOf = (operation) =>
   ({
@@ -424,16 +426,87 @@ const handlerOf = (handlers, step) => handlers.get(step.id) ?? handlers.get(step
 // Depth. Handlers must return synchronously, so it is balanced within one call stack. Depth past eight fails.
 const HANDLER_DEPTH_LIMIT = 8;
 // A plug-in type handler's exception is the InvalidPluginExecutionException fault: 0x80040265 with the SubErrorCode native sends.
-const pluginFault = (cause, item) =>
+const pluginFault = (cause, item, stage, depth) =>
   pluginFailure(
     {
       message: cause?.message ?? String(cause),
       errorCode: cause?.errorCode,
       pluginFault: 'InvalidPluginExecutionException',
     },
-    { name: item.name, id: item.id, type: item.typeName, traces: [] },
+    { name: item.name, id: item.id, type: item.typeName, traces: [], stage, depth },
     0,
   );
+// The registered images of one type set (0 pre, 1 post, 2 both) from source, keyed by alias, limited to their attributes.
+const registeredImages = (item, types, source) =>
+  Object.fromEntries(
+    (item.images ?? [])
+      .filter((spec) => types.includes(spec.type) && source)
+      .map((spec) => [
+        spec.alias || spec.name,
+        detachedRecord(
+          spec.attributes?.length
+            ? Object.fromEntries(
+                spec.attributes.filter((name) => Object.hasOwn(source, name)).map((name) => [name, source[name]]),
+              )
+            : source,
+        ),
+      ]),
+  );
+// InputParameters of a CRUD, external event or bulk message (IPluginExecutionContext.InputParameters).
+function typedInputParameters({ operation, target, targets, previous, changedAttributes = [] }) {
+  if (['create', 'update', 'delete', 'onexternalcreated', 'onexternalupdated', 'onexternaldeleted'].includes(operation))
+    return {
+      Target: detachedRecord(target),
+      ...(operation === 'onexternalupdated'
+        ? { PreImage: detachedRecord(previous), ChangedFields: [...changedAttributes] }
+        : {}),
+    };
+  if (['createmultiple', 'updatemultiple'].includes(operation))
+    return { Targets: Array.isArray(targets) ? targets.map(detachedRecord) : cloneStateData(targets) };
+  return {};
+}
+// The shared variables of one operation frame (IPluginExecutionContext.SharedVariables), kept as the CLR host's
+// ParameterCollection so JavaScript and CLR steps of one operation share them.
+const sharedValues = (frame) => frame?.sharedVariables?.values ?? {};
+// The business unit of a systemuser row (the execution context's BusinessUnitId), or null.
+const businessUnitOf = (store, userId) => {
+  const id = canonical(userId);
+  if (!id || !store?.state?.tables?.systemuser) return null;
+  const row = store.tableRows('systemuser').find((user) => canonical(user.systemuserid) === id);
+  return row ? (row.businessunitid?.id ?? row.businessunitid ?? null) : null;
+};
+// A step span's error (D-R3-19): the plug-in fault identity, with the span status the thrown error gives.
+const failStep = (span, failure, identity) =>
+  span?.end({
+    error: identity ?? failure,
+    status: [401, 403].includes(failure?.status) || /denied/i.test(String(failure?.code ?? '')) ? 'denied' : 'error',
+  });
+// The CLR step span's input and output (D-R3-20): the same shape as a JavaScript step, read from the host bridge context.
+const guidOf = (value) => value?.value ?? value ?? null;
+const sdkRecord = (value) => (value?.$type === 'Entity' ? sdkValueToRecord(value) : (value ?? null));
+const sdkImages = (images) =>
+  Object.fromEntries(Object.entries(images ?? {}).map(([alias, image]) => [alias, sdkRecord(image)]));
+function clrStepInput({ context, inputParameters, sharedVariables, preImages, postImages }) {
+  const parameters = inputParameters?.values ?? {};
+  return {
+    target: sdkRecord(parameters.Target) ?? (parameters.Targets?.entities ?? []).map(sdkRecord),
+    inputParameters: parameters,
+    preImages: sdkImages(preImages),
+    postImages: sdkImages(postImages),
+    sharedVariables: sharedVariables?.values ?? {},
+    context: {
+      messageName: context.MessageName,
+      stage: context.Stage,
+      mode: context.Mode,
+      depth: context.Depth,
+      correlationId: guidOf(context.CorrelationId),
+      initiatingUserId: guidOf(context.InitiatingUserId),
+      userId: guidOf(context.UserId),
+      businessUnitId: guidOf(context.BusinessUnitId),
+      isolationMode: context.IsolationMode,
+    },
+  };
+}
 // The IPluginExecutionContext-like context a plug-in type handler receives: registered images keyed by alias, and the
 // caller or the impersonated user as UserId. Values are copies; the handler cannot change the write through it.
 function typedContext({
@@ -450,23 +523,9 @@ function typedContext({
   depth,
   trace,
   changedAttributes = [],
+  sharedVariables,
 }) {
   const idColumn = store?.resolveMapping(entity)?.idColumn;
-  const images = (types, source) =>
-    Object.fromEntries(
-      (item.images ?? [])
-        .filter((spec) => types.includes(spec.type) && source)
-        .map((spec) => [
-          spec.alias || spec.name,
-          detachedRecord(
-            spec.attributes.length
-              ? Object.fromEntries(
-                  spec.attributes.filter((name) => Object.hasOwn(source, name)).map((name) => [name, source[name]]),
-                )
-              : source,
-          ),
-        ]),
-    );
   const initiating = identity?.systemUserId ?? identity?.id ?? null;
   return {
     MessageName: messageNameOf(operation),
@@ -477,26 +536,12 @@ function typedContext({
     Depth: depth,
     InitiatingUserId: initiating,
     UserId: item.impersonatingUserId ?? initiating,
-    InputParameters: [
-      'create',
-      'update',
-      'delete',
-      'onexternalcreated',
-      'onexternalupdated',
-      'onexternaldeleted',
-    ].includes(operation)
-      ? {
-          Target: detachedRecord(target),
-          ...(operation === 'onexternalupdated'
-            ? { PreImage: detachedRecord(previous), ChangedFields: [...changedAttributes] }
-            : {}),
-        }
-      : ['createmultiple', 'updatemultiple'].includes(operation)
-        ? { Targets: Array.isArray(targets) ? targets.map(detachedRecord) : cloneStateData(targets) }
-        : {},
+    InputParameters: typedInputParameters({ operation, target, targets, previous, changedAttributes }),
     OutputParameters: stage === 40 && operation === 'create' && idColumn ? { id: record[idColumn] } : {},
-    PreEntityImages: images([0, 2], previous),
-    PostEntityImages: stage === 40 && operation !== 'delete' ? images([1, 2], record) : {},
+    PreEntityImages: registeredImages(item, [0, 2], previous),
+    PostEntityImages: stage === 40 && operation !== 'delete' ? registeredImages(item, [1, 2], record) : {},
+    // The one member that is not a copy: the operation's shared variables, which later steps and stages see.
+    SharedVariables: sharedVariables,
     trace,
   };
 }
@@ -680,11 +725,72 @@ export function runPluginPhase({
     if (frame?.outputParameters?.values && Object.hasOwn(frame.outputParameters.values, key))
       frame.outputParameters.values[key] = multiple ? collection : holder.entity;
   };
+  // Tracing (docs/design/tracing.md): a plugin-stage span only when steps matched, and one plugin-step span per step that
+  // runs (handler, CLR, mock, web hook). The step body runs inside its span, so its SDK calls and writes nest under it.
+  const tracing = matched.length && store?.traces?.enabled ? store.traces : null;
+  // The record the stage and its steps act on (D-R3-1): the target row's id; a bulk or multi-row message has none.
+  const recordId =
+    tracing && !bulk && !multiple && record ? (record[store.resolveMapping(entity)?.idColumn] ?? null) : null;
+  // A step's input at level full (D-R3-20): the target, the input parameters, the registered images by alias and attribute
+  // filter, the shared variables and the execution context, as the step receives them. A CLR step's comes from the host
+  // bridge context (clrStepInput).
+  const stepInput = (item) => {
+    const initiating = identity?.systemUserId ?? identity?.id ?? null,
+      userId = item.impersonatingUserId ?? initiating;
+    return {
+      target: target ?? targets ?? null,
+      inputParameters: {
+        ...typedInputParameters({ operation, target, targets, previous, changedAttributes }),
+        ...(association ? associationParameters : {}),
+        ...(multiple ? { Query: query } : {}),
+        ...(read && !multiple ? { Target: { logicalName: entity, id: recordId }, ColumnSet: columns } : {}),
+      },
+      preImages: registeredImages(item, [0, 2], previous),
+      postImages: stage === 40 && operation !== 'delete' && !read ? registeredImages(item, [1, 2], record) : {},
+      sharedVariables: sharedValues(executionFrames.get(record)),
+      context: {
+        messageName: messageNameOf(operation),
+        stage,
+        mode: item.contract?.mode ?? 0,
+        depth: pluginExecutionDepth() + 1,
+        correlationId: store?.flowChain?.id ?? currentRequest()?.correlationId ?? null,
+        initiatingUserId: initiating,
+        userId,
+        businessUnitId: businessUnitOf(store, userId),
+        isolationMode: item.isolationMode ?? 2,
+      },
+    };
+  };
+  const stepSpan = (item) =>
+    tracing?.start({
+      kind: 'plugin-step',
+      name: item.name ?? item.typeName ?? item.id,
+      module: item.mode === 'clr' ? 'clr' : 'plugins',
+      operation,
+      entity,
+      recordId,
+      actor: { kind: 'plugin', id: item.id ?? null, name: item.typeName ?? item.name ?? null },
+      attributes: {
+        stepId: item.id,
+        typeName: item.typeName,
+        assemblyName: item.assemblyName,
+        mode: item.mode,
+        rank: item.rank,
+        stage,
+        depth: pluginExecutionDepth() + 1,
+        sourceFile: item.sourceFile,
+      },
+      // A CLR step sets its input once the host bridge context exists.
+      ...(item.mode === 'clr' ? {} : { input: () => stepInput(item) }),
+    });
+  const inSpan = (span, fn) => (span ? tracing.run(span, fn) : fn());
   // The steps from index `from` on; an awaited post returns the promise of the rest (see awaitIo above).
   const run = (from) => {
     for (let index = from; index < matched.length; index++) {
       const item = matched[index];
-      const note = (code, message) =>
+      const note = (code, message) => {
+        // Skipped, simulated and rejected steps are events on the current (stage or step) span.
+        tracing?.current()?.event('plugin', { message, attributes: { code, stepId: item.id } });
         diagnostic({
           code,
           severity: code === 'PLUGIN_STEP_REJECTED' ? 'error' : code === 'PLUGIN_STEP_SIMULATED' ? 'info' : 'warning',
@@ -696,6 +802,7 @@ export function runPluginPhase({
           sourceFile: item.sourceFile,
           message,
         });
+      };
       if (item.mode === 'disabled') {
         note('PLUGIN_STEP_DISABLED', 'This step is explicitly disabled in local simulator configuration.');
         continue;
@@ -704,7 +811,14 @@ export function runPluginPhase({
         if ((item.configuration?.status ?? 200) >= 400 || item.configuration?.body?.error) {
           const message = item.configuration?.body?.error?.message || 'Explicit plugin mock rejected.';
           note('PLUGIN_STEP_REJECTED', message);
-          throw error(message, 'PluginValidation');
+          const failure = error(message, 'PluginValidation');
+          notePluginFault(failure, {
+            pluginType: item.typeName ?? null,
+            step: item.id,
+            stage,
+            depth: pluginExecutionDepth() + 1,
+          });
+          throw failure;
         }
         if (item.unsupported)
           note(
@@ -737,20 +851,27 @@ export function runPluginPhase({
           diagnostic,
         };
         let pending;
+        const hook = stepSpan(item);
         try {
-          pending = awaitIo && webhooks.send ? webhooks.send(facts) : webhooks.sync(facts);
+          pending = inSpan(hook, () => (awaitIo && webhooks.send ? webhooks.send(facts) : webhooks.sync(facts)));
         } catch (cause) {
+          hook?.fail(cause);
           note('PLUGIN_STEP_REJECTED', cause.message);
           throw cause;
         }
         if (typeof pending?.then === 'function')
           return pending.then(
-            () => run(index + 1),
+            () => {
+              hook?.end();
+              return run(index + 1);
+            },
             (cause) => {
+              hook?.fail(cause);
               note('PLUGIN_STEP_REJECTED', cause.message);
               throw cause;
             },
           );
+        hook?.end();
         continue;
       }
       if (item.mode === 'placeholder') {
@@ -765,9 +886,14 @@ export function runPluginPhase({
         nested = false,
         handlerDepth = 0;
       store?.counters?.increment('plugins.executions');
+      const span = stepSpan(item);
       // The trace lines of a handler or CLR run, and its timing for plugintracelog. executed: such a run started.
+      // A handler's line is also an event on its step span (CLR lines: plugin-clr.mjs, on the current span).
       const traces = [],
-        trace = (text) => traces.push(String(text));
+        trace = (text) => {
+          traces.push(String(text));
+          span?.event('trace', { message: String(text) });
+        };
       let executed = false,
         started = 0,
         startedAt = null;
@@ -838,13 +964,21 @@ export function runPluginPhase({
               frame,
               depth,
             });
-          const answer = executeClrPlugin(runtime, context, {
-            store,
-            diagnostic: (entry) => {
-              if (entry.code === 'PLUGIN_CLR_TRACE') traces.push(String(entry.message));
-              diagnostic({ ...entry, stepId: item.id, entity, operation, stage });
-            },
-          });
+          span?.setInput(() => clrStepInput(context));
+          const answer = inSpan(span, () =>
+            executeClrPlugin(runtime, context, {
+              store,
+              diagnostic: (entry) => {
+                if (entry.code === 'PLUGIN_CLR_TRACE') traces.push(String(entry.message));
+                diagnostic({ ...entry, stepId: item.id, entity, operation, stage });
+              },
+            }),
+          );
+          span?.set({ sdkCalls: answer.sdkCalls });
+          span?.output(() => ({
+            outputParameters: answer.outputParameters?.values ?? {},
+            sharedVariables: answer.sharedVariables?.values ?? {},
+          }));
           if (
             Object.hasOwn(frame.sharedVariables?.values ?? {}, 'tag') &&
             answer.sharedVariables?.values?.tag !== frame.sharedVariables.values.tag
@@ -950,61 +1084,79 @@ export function runPluginPhase({
                 : source,
             );
           };
-          output = handler({
-            step: cloneStateData(item),
-            entity,
-            operation,
-            stage,
-            target: cloneStateData(target),
-            record: cloneStateData(record),
-            previous: previous ? cloneStateData(previous) : null,
-            preImage: image([0, 2], previous),
-            postImage: stage === 40 ? image([1, 2], record) : undefined,
-            identity: cloneStateData(identity),
-            changedAttributes: [...changedAttributes],
-            ...(association ? { associationParameters: cloneStateData(associationParameters) } : {}),
-            ...(bulk
-              ? {
-                  targets: cloneStateData(targets),
-                  previousRecords: cloneStateData(previousRecords),
-                  records: cloneStateData(records),
-                }
-              : {}),
-            ...(read
-              ? {
-                  query: cloneStateData(query),
-                  collection: cloneStateData(collection),
-                  columns: cloneStateData(columns),
-                  entityResult: cloneStateData(holder?.entity),
-                }
-              : {}),
-            ...(typed
-              ? {
-                  context: typedContext({
-                    item,
-                    store,
-                    entity,
-                    operation,
-                    stage,
-                    target,
-                    targets,
-                    record,
-                    previous,
-                    identity,
-                    depth: handlerDepth,
-                    trace,
-                    changedAttributes,
-                  }),
-                }
-              : {}),
-            trace,
-            reject: (message) => {
-              throw new DataError(String(message), 400, 'PluginValidation', { declaredValidationMessage: true });
-            },
-          });
+          // SharedVariables: the operation frame's collection, the one mutable member a handler receives; what it leaves
+          // there is what later steps and stages (JavaScript or CLR) of the operation see.
+          const frame = executionFrames.get(record),
+            before = sharedValues(frame),
+            shared = cloneStateData(before);
+          output = inSpan(span, () =>
+            handler({
+              sharedVariables: shared,
+              step: cloneStateData(item),
+              entity,
+              operation,
+              stage,
+              target: cloneStateData(target),
+              record: cloneStateData(record),
+              previous: previous ? cloneStateData(previous) : null,
+              preImage: image([0, 2], previous),
+              postImage: stage === 40 ? image([1, 2], record) : undefined,
+              identity: cloneStateData(identity),
+              changedAttributes: [...changedAttributes],
+              ...(association ? { associationParameters: cloneStateData(associationParameters) } : {}),
+              ...(bulk
+                ? {
+                    targets: cloneStateData(targets),
+                    previousRecords: cloneStateData(previousRecords),
+                    records: cloneStateData(records),
+                  }
+                : {}),
+              ...(read
+                ? {
+                    query: cloneStateData(query),
+                    collection: cloneStateData(collection),
+                    columns: cloneStateData(columns),
+                    entityResult: cloneStateData(holder?.entity),
+                  }
+                : {}),
+              ...(typed
+                ? {
+                    context: typedContext({
+                      item,
+                      store,
+                      entity,
+                      operation,
+                      stage,
+                      target,
+                      targets,
+                      record,
+                      previous,
+                      identity,
+                      depth: handlerDepth,
+                      trace,
+                      changedAttributes,
+                      sharedVariables: shared,
+                    }),
+                  }
+                : {}),
+              trace,
+              reject: (message) => {
+                throw new DataError(String(message), 400, 'PluginValidation', { declaredValidationMessage: true });
+              },
+            }),
+          );
           if (output?.then) {
             Promise.resolve(output).catch(() => {});
             throw error('Plugin handlers must return synchronously.', 'LocalPluginAsyncHandler');
+          }
+          if (Object.hasOwn(before, 'tag') && shared.tag !== before.tag)
+            throw error('The request tag is immutable.', 'LocalPluginTagImmutable', 409);
+          if (frame || Object.keys(shared).length) {
+            if (!frame) executionFrames.set(record, {});
+            executionFrames.get(record).sharedVariables = {
+              $type: 'ParameterCollection',
+              values: cloneStateData(shared),
+            };
           }
         } else
           throw error(
@@ -1070,11 +1222,26 @@ export function runPluginPhase({
         if (executed) journal(null);
         if (item.mode !== 'clr')
           note('PLUGIN_STEP_SIMULATED', `Local ${item.mode} completed; compiled .NET was not executed.`);
+        // A CLR step's output is the host bridge answer (set above); the others' the frame after the step.
+        if (item.mode !== 'clr')
+          span?.output(() => ({
+            outputParameters:
+              executionFrames.get(record)?.outputParameters?.values ??
+              (stage === 40 && operation === 'create' && recordId != null ? { id: recordId } : {}),
+            sharedVariables: sharedValues(executionFrames.get(record)),
+            output: output ?? null,
+          }));
+        span?.end();
       } catch (cause) {
+        const depth = nested ? handlerDepth : pluginExecutionDepth() + 1;
         // A plug-in type handler's exception surfaces as the documented fault; the write rolls back with the throw.
-        const failure = typed && !(cause instanceof DataError) ? pluginFault(cause, item) : cause;
+        const failure = typed && !(cause instanceof DataError) ? pluginFault(cause, item, stage, depth) : cause;
         if (executed) journal(failure);
         store?.counters?.increment('plugins.failures');
+        // The fault identity (type, code, OperationStatus, plug-in type, step, stage, depth) travels on the error to every
+        // span it fails; this step's span records it.
+        const identity = notePluginFault(failure, { pluginType: item.typeName ?? null, step: item.id, stage, depth });
+        failStep(span, failure, identity);
         note('PLUGIN_STEP_REJECTED', failure.message);
         throw failure;
       } finally {
@@ -1083,5 +1250,17 @@ export function runPluginPhase({
     }
     return cloneStateData(executionFrames.get(record) ?? {});
   };
-  return run(0);
+  if (!tracing) return run(0);
+  return tracing.wrap(
+    {
+      kind: 'plugin-stage',
+      name: `${messageNameOf(operation)} ${entity} · ${STAGE_NAMES[stage] ?? `Stage ${stage}`}`,
+      module: 'plugins',
+      operation,
+      entity,
+      recordId,
+      attributes: { stage, mode: asyncExecution ? 'async' : 'sync', matched: matched.length, asyncExecution },
+    },
+    () => run(0),
+  );
 }

@@ -9,21 +9,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DataStore, emptyState } from '../lib/data.mjs';
-import { dataverseSettings } from '../lib/dataverse-settings.mjs';
-import { startDataverseApi } from '../lib/dataverse-api.mjs';
-import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { install as installRegistration, overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
+import { install as installRegistration } from '../lib/dataverse-plugin-registration.mjs';
 import { isLoopbackUrl, loopbackFetch, serviceEndpointDelivery, webhookDelivery } from '../lib/dataverse-webhooks.mjs';
 import { createLocalMessageBus } from '../lib/message-bus.mjs';
-import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
 import { createCounters } from '../lib/runtime-counters.mjs';
-import {
-  pluginCatalogue,
-  pluginPhaseRequiresCheckpoint,
-  pluginStepMatchesEntity,
-  runPluginPhase,
-} from '../lib/exported-plugins.mjs';
 import { makeTemporaryDirectory } from '../testing/owned-fixture.mjs';
+import { widgetApi, wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 
 const WIDGET = 'bbbbbbbb-0000-4000-8000-000000000021';
 const ENDPOINT = 'cccccccc-0000-4000-8000-000000000021';
@@ -113,37 +104,12 @@ async function startReceiver() {
   };
 }
 
-function fixtureState() {
-  const state = emptyState();
-  state.mappings.contoso_widget = {
-    logicalName: 'contoso_widget',
-    entitySet: 'contoso_widgets',
-    idColumn: 'contoso_widgetid',
-    nameColumn: 'contoso_name',
-    userConfigured: true,
-    fields: { contoso_name: { dataverseType: 'nvarchar' } },
-    relationships: {},
-  };
-  state.tables.contoso_widget = [];
-  return state;
-}
-
 // A store with the Dataverse API, the registration rows and the pipeline wired the way server.mjs wires it. The endpoint and the
 // step are rows, so each test writes them and can change the endpoint's URL and authentication by editing its row.
 async function world({ mode = 0, delivery = webhookDelivery } = {}) {
-  const store = await new DataStore({ state: fixtureState() }).init();
   const diagnostics = [];
   const diagnostic = (entry) => diagnostics.push(entry);
-  const api = await startDataverseApi({
-    store,
-    settings: dataverseSettings({ enabled: true }),
-    log: () => {},
-    extensions: [...EXTENSIONS],
-  });
-  const messageId = store.tableRows('sdkmessage').find((row) => row.name === 'Create').sdkmessageid;
-  const filterId = store
-    .tableRows('sdkmessagefilter')
-    .find((row) => row.sdkmessageid === messageId && row.primaryobjecttypecode === 'contoso_widget').sdkmessagefilterid;
+  const { store, api, messageId, filterId } = await widgetApi('contoso');
   await store.create(
     'serviceendpoint',
     {
@@ -173,29 +139,7 @@ async function world({ mode = 0, delivery = webhookDelivery } = {}) {
     { admin: true },
   );
   const webhooks = delivery(store);
-  const pluginSteps = () =>
-    pluginCatalogue({
-      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
-      handlers: new Map(),
-    });
-  store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store, items: pluginSteps(), handlers: new Map(), webhooks, diagnostic }),
-    ({ entity, operation }) =>
-      pluginSteps().some(
-        (item) =>
-          item.enabled && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation,
-      ),
-    (context) => pluginPhaseRequiresCheckpoint(pluginSteps(), context),
-  );
-  const runner = createAsyncPluginRunner({
-    store,
-    items: pluginSteps,
-    handlers: new Map(),
-    runtimes: new Map(),
-    webhooks,
-    diagnostic,
-    systemJobs: () => true,
-  });
+  const runner = wireRegisteredSteps(store, webhooks, diagnostic);
   // Points the endpoint row at a URL, and sets its authentication (authtype and the stored authvalue).
   const endpoint = (fields) =>
     store.transact(() =>

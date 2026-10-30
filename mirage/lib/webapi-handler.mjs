@@ -33,6 +33,7 @@ import {
   observedODataInnerMessage,
 } from './webapi-error-details.mjs';
 import { appendObservedWebApiErrorTemplate } from './webapi-error-templates.mjs';
+import { recordHttpError } from './trace-store.mjs';
 
 const WEBAPI_COUNT_LIMIT = 5000;
 const KEY = String.raw`((?:'(?:[^']|'')*'|[^()'/])*)`;
@@ -519,11 +520,75 @@ async function route(req, res, url, deps) {
       'NotImplemented',
     );
   const t = requestContext(req, res, url, deps, target, method);
+  const traces = deps.store.traces;
+  const span = traces?.start({
+    kind: 'webapi',
+    name: `${req.method} ${target.set}`,
+    module: 'webapi',
+    operation: webApiOperation(method, target),
+    entity: t.mapping.logicalName,
+    recordId: target.key ?? null,
+    attributes: { target: target.kind, prefer: req.headers.prefer },
+  });
+  if (!span?.enabled) return routeTarget(t, method, target, url);
+  t.span = span;
+  // The response the handler writes names the outcome: a row count for a collection, the id of a created row.
+  let answered = null;
+  t.deps = {
+    ...deps,
+    json: (out, status, body, headers) => {
+      answered = { body, headers };
+      return deps.json(out, status, body, headers);
+    },
+  };
+  try {
+    await traces.run(span, () => routeTarget(t, method, target, url));
+  } catch (error) {
+    span.fail(error);
+    throw error;
+  }
+  const status = res.statusCode;
+  const rowCount = Array.isArray(answered?.body?.value) ? answered.body.value.length : undefined;
+  const entityId = answered?.headers?.['OData-EntityId'] ?? answered?.headers?.['odata-entityid'];
+  const id = typeof entityId === 'string' ? (/\(([^()]+)\)$/.exec(entityId)?.[1] ?? undefined) : undefined;
+  span.output(() => ({ status, ...(rowCount === undefined ? {} : { rowCount }), ...(id ? { id } : {}) }));
+  // A created row names the span's record; an error envelope the handler answered itself is the span's error (D-R3-4).
+  if (id && !span.recordId) span.setEntity(t.mapping.logicalName, id);
+  recordHttpError(span, status, answered?.body?.error);
+  span.end({ attributes: { statusCode: status, rowCount, id } });
+}
+
+/**
+ * The 403 of a refused table read; the refusal is the deny `permission` event of the current span, as a refused create or
+ * delete is (D-R3-11).
+ */
+function readDenied(store, table) {
+  const message = `Table permission denies read on ${table}`;
+  store.traceDenial?.({
+    table,
+    operation: 'read',
+    model: store.portalAuthorization?.describe().model ?? 'standard',
+    permissions: [],
+    message,
+  });
+  return new DataError(message, 403, 'PermissionDenied', { operation: 'read', table });
+}
+
+// The span operation of a portal Web API request (docs/design/tracing.md span model).
+function webApiOperation(method, target) {
+  if (method === 'GET')
+    return target.kind === 'collection' || target.kind === 'navcount' ? 'retrievemultiple' : 'retrieve';
+  if (target.kind === 'ref') return method === 'DELETE' ? 'disassociate' : 'associate';
+  if (method === 'POST') return target.kind === 'collection' ? 'create' : 'action';
+  return method === 'DELETE' && target.kind === 'entity' ? 'delete' : 'update';
+}
+
+async function routeTarget(t, method, target, url) {
   // A read observer can issue independently committed SDK writes. Finish the
   // serialized read unit before sending a successful response, including text
   // properties and conditional 304s, so persistence failures remain errors.
   const execute = () =>
-    method === 'GET' && typeof deps.store.readOperation === 'function' ? dispatchRead(t) : dispatch(t);
+    method === 'GET' && typeof t.store.readOperation === 'function' ? dispatchRead(t) : dispatch(t);
   if (method === 'GET' && !(target.kind === 'collection' && url.searchParams.has('fetchXml')))
     try {
       return await execute();
@@ -885,11 +950,7 @@ function assertExpandReadable(t, mapping, expand, specs = parseExpand(expand)) {
       const rel = owner.relationships?.[spec.navigation];
       if (!rel) continue;
       const target = store.resolveMapping(rel.entity);
-      if (!store.rules(target.logicalName, 'read', deps.identity).length)
-        throw new DataError(`Table permission denies read on ${target.logicalName}`, 403, 'PermissionDenied', {
-          operation: 'read',
-          table: target.logicalName,
-        });
+      if (!store.rules(target.logicalName, 'read', deps.identity).length) throw readDenied(t.store, target.logicalName);
       visit(target, spec.expand ?? []);
     }
   };
@@ -906,10 +967,7 @@ function getCollection(t, { mapping = t.mapping, policy = t.policy, ids } = {}) 
     store.state.settings?.permissionMode !== 'permissive' &&
     !store.rules(mapping.logicalName, 'read', deps.identity).length
   )
-    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, 'PermissionDenied', {
-      operation: 'read',
-      table: mapping.logicalName,
-    });
+    throw readDenied(t.store, mapping.logicalName);
   if (!apply) assertExpandReadable(t, mapping, url.searchParams.get('$expand'));
   if (!apply && !url.searchParams.has('$select')) assertSelectLessRead(t, policy, mapping);
   const paging = prepareODataPage({
@@ -988,11 +1046,7 @@ function getFetch(t) {
   const admitTables = () => {
     if (!deps.identity?.admin && store.state.settings?.permissionMode !== 'permissive')
       for (const logical of fetchTables(store, xml))
-        if (!store.rules(logical, 'read', deps.identity).length)
-          throw new DataError(`Table permission denies read on ${logical}`, 403, 'PermissionDenied', {
-            operation: 'read',
-            table: logical,
-          });
+        if (!store.rules(logical, 'read', deps.identity).length) throw readDenied(t.store, logical);
   };
   let project;
   try {
@@ -1162,6 +1216,8 @@ async function getProperty(t, raw) {
 async function readBody(t) {
   const observed = t.deps.portal?.observed?.webApiErrorDetails === 'odata-wrapper';
   const body = await t.deps.jsonBody(t.req, { allowEmpty: false, odataErrorDetails: observed });
+  // The parsed body is the webapi span's input (captured, redacted, only at level full).
+  t.span?.setInput(() => body);
   t.odataNumberLexemes = observed ? odataNumberLexemes(body) : undefined;
   if (!body || typeof body !== 'object' || Array.isArray(body))
     throw attachODataReaderDetails(
@@ -1325,10 +1381,7 @@ function representationParams(t, mapping) {
     store.state.settings?.permissionMode !== 'permissive' &&
     !store.rules(mapping.logicalName, 'read', deps.identity).length
   )
-    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, 'PermissionDenied', {
-      operation: 'read',
-      table: mapping.logicalName,
-    });
+    throw readDenied(t.store, mapping.logicalName);
   assertExpandReadable(t, mapping, params.get('$expand'));
   return params;
 }
@@ -1337,10 +1390,7 @@ function representationBody(t, mapping, id, params) {
     return entityResponse(t, mapping, t.policy, id, params);
   } catch (error) {
     if (error?.code !== 'NotFound') throw error;
-    throw new DataError(`Table permission denies read on ${mapping.logicalName}`, 403, 'PermissionDenied', {
-      operation: 'read',
-      table: mapping.logicalName,
-    });
+    throw readDenied(t.store, mapping.logicalName);
   }
 }
 /** Run a write and, when requested, read its representation in one store transaction. */
@@ -1503,6 +1553,14 @@ async function fileColumnRequest(t) {
     fileName,
     contentType: header('content-type'),
     defaultName: true,
+  });
+  // The file transfer on the Web API span: the column, the operation and (once known) the file's name, size and type.
+  t.span?.set({
+    fileColumn: target.segment,
+    transfer: download ? 'download' : method === 'DELETE' ? 'delete' : 'upload',
+    ...(answer.file
+      ? { fileName: answer.file.name, fileSize: answer.file.size, mimetype: answer.file.mimeType }
+      : { fileName: fileName ?? undefined }),
   });
   if (answer.statusCode !== 200) return sendNoContent(t);
   const { name, size, mimeType } = answer.file;

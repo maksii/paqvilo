@@ -147,7 +147,7 @@ test('standalone API administration hides portal surfaces and shows persistence 
   page.on('request', (request) => requests.push(new URL(request.url()).pathname));
   await page.goto(sim.url + '/_sim/#overview');
   await page
-    .getByRole('heading', { name: 'Overview', exact: true })
+    .getByRole('heading', { name: 'Home', exact: true })
     .waitFor()
     .catch(async (error) => {
       throw new Error(`${error.message}\n${await page.locator('body').innerText()}\n${errors.join('\n')}`);
@@ -155,9 +155,12 @@ test('standalone API administration hides portal surfaces and shows persistence 
   assert.equal(await page.getByRole('link', { name: /^Open (portal|website)/ }).count(), 0);
   assert.equal(await page.getByRole('link', { name: 'Model-driven apps', exact: true }).count(), 0);
   assert.equal(await page.getByRole('link', { name: 'Portal identity & permissions', exact: true }).count(), 0);
+  await capture(page, 'api-only-overview');
+  // Persistence is reported in Runtime state (it moved there from the old Overview).
+  await page.getByRole('link', { name: 'Runtime state', exact: true }).click();
+  await page.getByRole('heading', { name: 'Runtime state', exact: true }).waitFor();
   assert.match(await page.locator('#content').innerText(), /Dry run/);
   assert.match(await page.locator('#content').innerText(), /memory/);
-  await capture(page, 'api-only-overview');
   assert.ok(!requests.some((path) => /\/api\/(personas|session)$/.test(path)));
   await page.getByRole('link', { name: 'Organization identity & API', exact: true }).click();
   await page.getByRole('heading', { name: 'Organization identity & API' }).waitFor();
@@ -170,6 +173,7 @@ test('standalone API administration hides portal surfaces and shows persistence 
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await capture(page, 'organization-mobile');
+  await page.getByRole('button', { name: 'Menu' }).click();
   await page.getByRole('link', { name: 'Runtime state', exact: true }).click();
   await page.getByRole('heading', { name: 'Runtime state', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Export state JSON', exact: true }).count(), 0);
@@ -217,7 +221,7 @@ test('file-backed model and admin commands are disabled for tables without DATA 
   assert.equal(await page.getByRole('button', { name: 'Save', exact: true }).isDisabled(), true);
   assert.equal(await page.getByLabel('Name', { exact: true }).isDisabled(), true);
   await page.goto(sim.url + '/_sim/#records');
-  await page.getByLabel('Entity', { exact: true }).selectOption('x_item');
+  await page.getByLabel('Table', { exact: true }).selectOption('x_item');
   await page.getByRole('cell', { name: 'Visible local row', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Create record', exact: true }).isDisabled(), true);
   assert.equal(await page.getByRole('button', { name: 'Edit', exact: true }).isDisabled(), true);
@@ -499,7 +503,7 @@ test(
       'none',
     );
     releaseRead();
-    await page.getByRole('heading', { name: 'Overview', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Home', exact: true }).waitFor();
     await page.getByRole('link', { name: 'Organization identity & API', exact: true }).click();
     await page.locator('[data-disclosure="dv-register"] > summary').click();
     await page.locator('#dv-app-form').waitFor();
@@ -579,7 +583,7 @@ test(
     await page.locator('#activity-feedback').waitFor({ state: 'hidden' });
     assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
     await page.getByRole('link', { name: 'Data records', exact: true }).click();
-    await page.getByLabel('Entity', { exact: true }).selectOption('x_item');
+    await page.getByLabel('Table', { exact: true }).selectOption('x_item');
     await page.getByRole('button', { name: 'Edit', exact: true }).click();
     let releaseEdit;
     const editing = new Promise((resolve) => {
@@ -612,7 +616,7 @@ test(
   async (t) => {
     const { page, sim, errors } = await organization(t);
     await page.goto(sim.url + '/_sim/#records');
-    await page.getByLabel('Entity', { exact: true }).selectOption('x_item');
+    await page.getByLabel('Table', { exact: true }).selectOption('x_item');
     await page.getByRole('cell', { name: 'Visible local row', exact: true }).waitFor();
     await page.getByRole('button', { name: 'Edit', exact: true }).click();
     const json = JSON.parse(await page.locator('#editor-json').inputValue());

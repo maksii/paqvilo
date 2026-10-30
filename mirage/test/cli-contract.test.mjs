@@ -129,6 +129,7 @@ test('JSON-capable tools return one structured error for invalid flags', () => {
     'query-inventory',
     'capture-shell',
     'verify-storage',
+    'trace',
   ]) {
     const result = run(`mirage/${name}.mjs`, '--bogus', '--json');
     assert.ok(result.status > 0, name);
@@ -169,6 +170,7 @@ test('JSON tools report missing inputs without reading a configured site', async
       'liquid-conformance',
       'query-inventory',
       'capture-shell',
+      'trace',
     ]) {
       const result = spawnSync(process.execPath, [path.join(root, `mirage/${name}.mjs`), '--json'], {
         cwd: dir,

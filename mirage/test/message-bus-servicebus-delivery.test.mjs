@@ -8,7 +8,6 @@ import { DataStore, emptyState } from '../lib/data.mjs';
 import { dataverseSettings } from '../lib/dataverse-settings.mjs';
 import { startDataverseApi } from '../lib/dataverse-api.mjs';
 import { EXTENSIONS } from '../lib/dataverse-extensions.mjs';
-import { overlayRegisteredSteps } from '../lib/dataverse-plugin-registration.mjs';
 import { serviceEndpointDelivery } from '../lib/dataverse-webhooks.mjs';
 import {
   createLocalMessageBus,
@@ -16,13 +15,7 @@ import {
   mappedEntities,
   messagingSettings,
 } from '../lib/message-bus.mjs';
-import { createAsyncPluginRunner } from '../lib/plugin-async.mjs';
-import {
-  pluginCatalogue,
-  pluginPhaseRequiresCheckpoint,
-  pluginStepMatchesEntity,
-  runPluginPhase,
-} from '../lib/exported-plugins.mjs';
+import { wireRegisteredSteps } from './support/service-endpoint-pipeline.mjs';
 import { startFakeBroker } from '../testing/amqp-fake-broker.mjs';
 
 const KEY = 'invented-key-7f3a9c',
@@ -120,29 +113,7 @@ async function world(t, { contract = 2, entity = 'x-queue', mode = 1, second = n
     organizationUri: 'https://invented.example.test',
   };
   const webhooks = serviceEndpointDelivery(store, { messaging });
-  const steps = () =>
-    pluginCatalogue({
-      plugins: overlayRegisteredSteps({ steps: [], types: [], assemblies: [] }, store),
-      handlers: new Map(),
-    });
-  store.setPluginPipeline(
-    (context) => runPluginPhase({ ...context, store, items: steps(), handlers: new Map(), webhooks, diagnostic }),
-    ({ entity: table, operation }) =>
-      steps().some(
-        (item) =>
-          item.enabled && pluginStepMatchesEntity(item, table) && String(item.message).toLowerCase() === operation,
-      ),
-    (context) => pluginPhaseRequiresCheckpoint(steps(), context),
-  );
-  const runner = createAsyncPluginRunner({
-    store,
-    items: steps,
-    handlers: new Map(),
-    runtimes: new Map(),
-    webhooks,
-    diagnostic,
-    systemJobs: () => true,
-  });
+  const runner = wireRegisteredSteps(store, webhooks, diagnostic);
   t.after(async () => {
     delete process.env[variable];
     await runner.close();

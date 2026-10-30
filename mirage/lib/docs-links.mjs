@@ -38,6 +38,7 @@ const DOCS = Object.freeze({
   stateStorage: 'mirage/docs/state-storage.md',
   bootstrap: 'mirage/docs/bootstrap-and-sources.md',
   runtimePerformance: 'mirage/docs/runtime-performance.md',
+  tracing: 'mirage/docs/tracing.md',
 });
 
 const label = (path) =>

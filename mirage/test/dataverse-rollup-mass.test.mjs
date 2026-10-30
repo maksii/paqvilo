@@ -8,42 +8,15 @@ import { createOrganizationRuntime } from '../lib/dataverse-organization.mjs';
 import { EXTENSION } from '../lib/dataverse-rollup.mjs';
 import { normalizeCapabilityRecord } from '../lib/capability-registry.mjs';
 import { createScheduler, fixedClock } from '../testing.mjs';
+import { rollupMappings } from './support/parent-child-tables.mjs';
 
 const PARENT = '11111111-1111-4111-8111-111111111191';
-const formula =
-  '<fetch aggregate="true"><entity name="x_child"><attribute name="x_amount" aggregate="sum" alias="total"/>' +
-  '<filter type="and"><condition attribute="x_parentid" operator="eq" value="{id}"/></filter></entity></fetch>';
 
 test('the hourly mass recalculation computes stale rollup columns on the scheduler', async (t) => {
   const clock = fixedClock(Date.parse('2030-01-01T00:00:00.000Z'));
   const scheduler = createScheduler({ clock, manual: true });
   const state = emptyState();
-  Object.assign(state.mappings, {
-    x_parent: {
-      logicalName: 'x_parent',
-      entitySet: 'x_parents',
-      idColumn: 'x_parentid',
-      nameColumn: 'x_name',
-      fields: {
-        x_name: { dataverseType: 'nvarchar' },
-        x_total: { dataverseType: 'decimal', columnMetadata: { sourceType: 2, formulaDefinition: formula } },
-        x_total_state: { dataverseType: 'int' },
-        x_total_date: { dataverseType: 'datetime' },
-      },
-    },
-    x_child: {
-      logicalName: 'x_child',
-      entitySet: 'x_children',
-      idColumn: 'x_childid',
-      nameColumn: 'x_name',
-      relationships: { x_parentid: { entity: 'x_parent', from: 'x_parentid', to: 'x_parentid', many: false } },
-      fields: {
-        x_name: { dataverseType: 'nvarchar' },
-        x_amount: { dataverseType: 'decimal' },
-        x_parentid: { dataverseType: 'lookup', targets: ['x_parent'] },
-      },
-    },
-  });
+  Object.assign(state.mappings, rollupMappings());
   state.tables.x_parent = [{ x_parentid: PARENT, x_name: 'Invented parent', x_total_state: 0, x_total_date: null }];
   state.tables.x_child = [
     {

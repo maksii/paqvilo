@@ -7,8 +7,28 @@ const fail = (message, code = 'LocalPluginBulkUnsupported', status = 501) => {
   throw new DataError(message, status, code);
 };
 /** Explicit standard-table source capability only. Mixed single/multiple source
- * stage ordering needs native evidence; this adapter never silently reorders it. */
-export function executeBulkRecords({ store, entity, operation, targets, identity, authorize, responseToken, write }) {
+ * stage ordering needs native evidence; this adapter never silently reorders it.
+ * Tracing: one bulk span per message (docs/design/tracing.md); its per-row reads and writes open no spans of their own. */
+export function executeBulkRecords(args) {
+  const traces = args.store.traces;
+  if (!traces?.enabled) return bulkRecords(args);
+  return traces.wrap(
+    {
+      kind: 'bulk',
+      name: `${args.operation === 'updatemultiple' ? 'UpdateMultiple' : 'CreateMultiple'} ${args.entity}`,
+      module: 'dataverse',
+      operation: args.operation,
+      entity: args.entity,
+      attributes: { targets: Array.isArray(args.targets) ? args.targets.length : null, entity: args.entity },
+    },
+    (span) => {
+      const result = bulkRecords(args);
+      span.output(() => ({ ids: result.ids }));
+      return result;
+    },
+  );
+}
+function bulkRecords({ store, entity, operation, targets, identity, authorize, responseToken, write }) {
   const mapping = store.resolveMapping(entity),
     primary = mapping.idColumn,
     update = operation === 'updatemultiple',
