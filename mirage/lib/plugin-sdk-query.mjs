@@ -43,10 +43,41 @@ const serialize = (node) =>
 export function queryExpressionToFetch(query, store) {
   if (query.$type !== 'QueryExpression') fail('Linked SDK execution requires QueryExpression.');
   let count = 0;
+  // ColumnSet.AttributeExpressions (XrmAttributeExpression: XrmAggregateType None 0, Count 1, CountColumn 2, Sum 3, Avg 4,
+  // Min 5, Max 6; XrmDateTimeGrouping None 0, Day 1, Week 2, Month 3, Quarter 4, Year 5, FiscalPeriod 6, FiscalYear 7) are the
+  // FetchXML aggregate attributes; the query is then an aggregate fetch.
+  const AGGREGATES = [null, 'count', 'countcolumn', 'sum', 'avg', 'min', 'max'];
+  const GROUPINGS = [null, 'day', 'week', 'month', 'quarter', 'year', 'fiscal-period', 'fiscal-year'];
+  const member = (expression, key) => {
+    const value = expression?.members?.[key];
+    return value?.$type === 'Enum' ? Number(value.value) : value;
+  };
+  let aggregate = false;
+  const expressionColumn = (expression) => {
+    if (expression?.$type !== 'Object' || expression.type !== 'Microsoft.Xrm.Sdk.Query.XrmAttributeExpression')
+      fail('SDK ColumnSet.AttributeExpressions requires XrmAttributeExpression values.');
+    const kind = AGGREGATES[member(expression, 'AggregateType') ?? 0],
+      grouping = GROUPINGS[member(expression, 'DateTimeGrouping') ?? 0],
+      groupBy = member(expression, 'HasGroupBy') === true;
+    if (kind === undefined || grouping === undefined) fail('Unsupported SDK aggregate or date grouping value.');
+    if (kind || groupBy) aggregate = true;
+    return (
+      '<attribute' +
+      attrs({
+        name: name(member(expression, 'AttributeName')),
+        alias: member(expression, 'Alias') ?? null,
+        aggregate: kind,
+        groupby: groupBy ? 'true' : null,
+        dategrouping: grouping,
+      }) +
+      ' />'
+    );
+  };
   const columns = (c) =>
-    c?.allColumns
+    (c?.allColumns
       ? '<all-attributes />'
-      : (c?.columns ?? []).map((column) => '<attribute name="' + name(column) + '" />').join('');
+      : (c?.columns ?? []).map((column) => '<attribute name="' + name(column) + '" />').join('')) +
+    (c?.attributeExpressions ?? []).map(expressionColumn).join('');
   const condition = (c) => {
     if (['Contains', 'DoesNotContain'].includes(c.operatorName))
       fail(
@@ -130,7 +161,7 @@ export function queryExpressionToFetch(query, store) {
         (order) =>
           '<order' +
           attrs({
-            attribute: name(order.attributeName),
+            ...(order.alias ? { alias: order.alias } : { attribute: name(order.attributeName) }),
             entityname: order.entityName ? name(order.entityName) : null,
             descending: order.descending ? 'true' : 'false',
           }) +
@@ -211,7 +242,7 @@ export function queryExpressionToFetch(query, store) {
     orders(query.orders) +
     (query.linkEntities ?? []).map((child) => link(child, table)).join('') +
     '</entity></fetch>'
-  );
+  ).replace(/^<fetch/, aggregate ? '<fetch aggregate="true"' : '<fetch');
 }
 /** Ordinary SDK reads return their primary Attribute even when not selected.
  * Keep this projection separate from Targets, images and plugin-authored output. */

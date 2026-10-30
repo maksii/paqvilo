@@ -28,7 +28,7 @@ public sealed class Plain:IPlugin {public void Execute(IServiceProvider p){throw
 public sealed class AuthoredUnsupported:IPlugin {public void Execute(IServiceProvider p){throw new NotSupportedException("Invented authored unsupported failure");}}
 public sealed class Controlled:IPlugin {public void Execute(IServiceProvider p){throw new InvalidPluginExecutionException("Invented controlled failure");}}
 public sealed class SdkFault:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId).Retrieve("secondary",new Guid("${id(99)}"),new ColumnSet("name"));}}
-public sealed class AdapterFault:IPlugin {public void Execute(IServiceProvider p){p.GetService(typeof(IDisposable));}}
+public sealed class AdapterFault:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var e=new Entity("widget");e["title"]=new int[,]{{1}};((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId).Create(e);}}
 public sealed class OutputFault:IPlugin {public void Execute(IServiceProvider p){((IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext))).SharedVariables["opaque"]=new object();}}
 public sealed class Wrapper:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var s=((IOrganizationServiceFactory)p.GetService(typeof(IOrganizationServiceFactory))).CreateOrganizationService(c.UserId);try{s.Create(new Entity("child"));throw new Exception("Nested failure was accepted");}catch(FaultException<OrganizationServiceFault> e){if(e.Detail.ErrorCode!=unchecked((int)0x80040224))throw;}((Entity)c.InputParameters["Target"])["caught"]=true;}}
 }`,
@@ -132,6 +132,8 @@ test(
 );
 
 // @test-kind compatibility+contract: documented plug-in error codes; local adapter/output failures use Paqvilo LocalPluginSdkUnsupported classification
+// The adapter failure is an SDK value without a DataContract form (a multidimensional array): GetService of an unbound type is
+// null natively (recorded native sandbox), so it no longer serves as the local adapter gap.
 test(
   'controlled plug-in exceptions, modeled SDK faults and local adapter failures keep their separate classification',
   { skip: CLR_SKIP },
