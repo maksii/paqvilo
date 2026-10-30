@@ -1,5 +1,6 @@
 import { asyncMultiplePluginParent, asynchronousParentChain } from './plugin-sdk-parent.mjs';
 import { organizationRecord } from './organization-context.mjs';
+import { recordHttpError, statusFromHttp } from './trace-store.mjs';
 // Webhooks. A plug-in step whose eventhandler is a service endpoint with contract 8 (Webhook) POSTs the
 // RemoteExecutionContext JSON to the endpoint URL, with the documented headers and authentication.
 //
@@ -350,7 +351,7 @@ function operationTimeEpoch(value) {
 // An asynchronous job's OperationCreatedOn is an Unspecified DateTime: DataContractJsonSerializer appends the zero
 // offset (native asynchronous web hook payloads: '/Date(1793373678000+0000)/').
 const operationCreatedOn = (value) => `/Date(${operationTimeEpoch(value)}+0000)/`;
-const guidOf = (value) => value?.value ?? value ?? null;
+const guidOf = (value) => (value !== null && typeof value === 'object' ? (value.value ?? null) : (value ?? null));
 
 /** One RemoteExecutionContext frame (the 30 documented properties) from an SDK ExecutionContext's values. */
 function remoteFrame(values) {
@@ -675,7 +676,7 @@ function requestOf(store, endpoint, facts) {
  * HttpQueryString). The one rule for every drive: the asynchronous pipeline applies it in process; the
  * synchronous I/O bridge worker applies it after resolving the value's env: reference itself (sync-io-worker.mjs), so no
  * authentication value crosses the thread boundary. */
-export function withAuth({ url, headers, body, auth = null }) {
+export function withAuth({ url, headers, body, auth = null, capture = 0 }) {
   const target = new URL(url),
     next = { ...headers },
     values = authPairs(auth?.value);
@@ -690,7 +691,7 @@ export function withAuth({ url, headers, body, auth = null }) {
       for (const [key, value] of values) target.searchParams.append(key, value);
       break; // HttpQueryString
   }
-  return { url: target.toString(), headers: next, body };
+  return { url: target.toString(), headers: next, body, capture };
 }
 
 // Connection failures that prove nothing was written. Any other failure once the call started (the 60-second abort, a dropped
@@ -698,8 +699,10 @@ export function withAuth({ url, headers, body, auth = null }) {
 const NOT_SENT = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EADDRNOTAVAIL']);
 
 // One delivery with the documented retry: 502, 503 and 504 get exactly one more attempt. Each attempt has the 60-second timeout. The
-// response body is ignored, so only the status is returned. send is loopbackFetch (in process and in the bridge worker).
-export async function deliver({ url, headers, body }, send) {
+// response body is ignored, so only the status is returned; with capture (a byte count, set by a trace at level full) the
+// answer is { status, body } with the first capture characters of the last response's text. send is loopbackFetch (in
+// process and in the bridge worker).
+export async function deliver({ url, headers, body, capture = 0 }, send) {
   for (let attempt = 1; ; attempt++) {
     let response;
     try {
@@ -714,11 +717,22 @@ export async function deliver({ url, headers, body }, send) {
         { indeterminate: !NOT_SENT.has(code) },
       );
     }
-    await response.arrayBuffer().catch(() => {});
+    const received = capture > 0 ? await response.text().catch(() => '') : await response.arrayBuffer().catch(() => {});
     if (attempt === 1 && [502, 503, 504].includes(response.status)) continue;
-    return response.status;
+    return capture > 0 ? { status: response.status, body: received.slice(0, capture) } : response.status;
   }
 }
+// A delivery answer as { status, body?, indeterminate? }: deliver answers a status, or { status, body } with capture.
+const answerOf = (answer) => (typeof answer === 'number' ? { status: answer } : (answer ?? { status: -1 }));
+// A captured body as a payload: JSON text parsed, any other text as it is (the trace store redacts and caps it).
+const jsonOrText = (value) => {
+  if (typeof value !== 'string') return value ?? null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+};
 
 // The bridge deadlines: a web hook has at most two attempts of 60 seconds each; an emulator send has 5-second steps
 // (connection, link, transfer). A post answers { status } (-1 when no answer came) and indeterminate when it may have been
@@ -732,13 +746,13 @@ const postSync = ({ auth, ...request }) => {
   const name = auth?.value ? `PAQVILO_SYNC_IO_AUTH_${randomUUID().replaceAll('-', '')}` : null;
   if (name) process.env[name] = String(auth.value);
   try {
-    return {
-      status: syncIo(
+    return answerOf(
+      syncIo(
         'http-post',
         { ...request, auth: { type: auth?.type ?? null, ref: name ? `env:${name}` : null } },
         { timeoutMs: POST_TIMEOUT },
       ),
-    };
+    );
   } catch (error) {
     return { status: -1, indeterminate: indeterminate(error) };
   } finally {
@@ -746,10 +760,10 @@ const postSync = ({ auth, ...request }) => {
   }
 };
 const postAsync = (request) =>
-  deliver(withAuth(request), loopbackFetch).then(
-    (status) => ({ status }),
-    (error) => ({ status: -1, indeterminate: indeterminate(error) }),
-  );
+  deliver(withAuth(request), loopbackFetch).then(answerOf, (error) => ({
+    status: -1,
+    indeterminate: indeterminate(error),
+  }));
 
 // Queue (2), Topic (5) and Queue Persistent (6): the serviceendpoint contracts the message bus carries.
 const BUS_CONTRACTS = new Set([2, 5, 6]);
@@ -816,7 +830,84 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
           ? 'webhooks.delivered'
           : 'webhooks.failed',
     );
-  const notContacted = (facts, reason, host) =>
+  // The id of the step's primary row (its record, else the pre-image or target), for the span's recordId.
+  const recordIdOf = (facts) => {
+    let idColumn;
+    try {
+      idColumn = store.resolveMapping(facts.entity).idColumn;
+    } catch {
+      return null;
+    }
+    const id = facts.record?.[idColumn] ?? facts.previous?.[idColumn] ?? facts.target?.[idColumn] ?? null;
+    return id == null ? null : String(id);
+  };
+  // Tracing (docs/design/tracing.md): one http-out span per POST, named by the URL path only (never the query, which can carry
+  // the WebhookKey code, nor the authentication value); the request forwards traces.headers() of the span so
+  // a loopback receiver joins the trace. post(request) answers { status } or a status, synchronously or as a promise.
+  // At level full the span input is the request as built before the authentication is applied ({ url, headers, body }: the
+  // RemoteExecutionContext; no code, header or query value of the endpoint's authentication), and its output the receiver's
+  // answer { status, body } (the first payloadBytes of its text, read on every drive through deliver's capture).
+  const outbound = (facts, request, post) => {
+    const traces = store.traces;
+    if (!traces?.enabled) return post(request);
+    const url = new URL(request.url);
+    const settings = traces.settings();
+    const capture = settings.level === 'full' ? settings.payloadBytes : 0;
+    const span = traces.start({
+      kind: 'http-out',
+      name: `POST ${url.pathname}`,
+      module: 'webhooks',
+      operation: 'post',
+      entity: facts.entity ?? null,
+      recordId: recordIdOf(facts),
+      attributes: {
+        host: url.hostname,
+        path: url.pathname,
+        contract: WEBHOOK_CONTRACT,
+        stepId: facts.item?.id ?? null,
+        stepName: facts.item?.name ?? null,
+        mode: facts.asyncExecution ? 'async' : 'sync',
+      },
+      input: () => ({ url: `${url.origin}${url.pathname}`, headers: request.headers, body: jsonOrText(request.body) }),
+    });
+    const answered = (answer) => {
+      const { status, body, indeterminate: unknown } = answerOf(answer);
+      if (body !== undefined) span.output(() => ({ status, body: jsonOrText(body) }));
+      // A delivery succeeds only with a 2xx answer; 401/403 are denied (statusFromHttp), any other answer an error.
+      const attributes = { statusCode: status ?? null, ...(unknown ? { indeterminate: true } : {}) };
+      if (status >= 400)
+        recordHttpError(span, status, { code: `Http${status}`, message: `The web hook answered ${status}.` });
+      else if (!(status >= 200 && status < 300))
+        span.end({
+          status: statusFromHttp(status) === 'denied' ? 'denied' : 'error',
+          attributes,
+          error:
+            status === -1
+              ? { code: 'WebhookNoAnswer', message: 'The web hook POST got no answer.' }
+              : { code: `Http${status}`, message: `The web hook answered ${status}.` },
+        });
+      span.end({ attributes });
+      return answer;
+    };
+    let answer;
+    try {
+      answer = post({ ...request, capture, headers: { ...request.headers, ...traces.headers(span) } });
+    } catch (error) {
+      span.fail(error);
+      throw error;
+    }
+    return typeof answer?.then === 'function'
+      ? answer.then(answered, (error) => {
+          span.fail(error);
+          throw error;
+        })
+      : answered(answer);
+  };
+  const notContacted = (facts, reason, host) => {
+    store.traces?.current()?.event('webhook', {
+      message: 'Endpoint not contacted (loopback webhooks only).',
+      attributes: { code: 'WEBHOOK_NOT_CONTACTED', reason, host },
+    });
     facts.diagnostic?.({
       code: 'WEBHOOK_NOT_CONTACTED',
       severity: 'warning',
@@ -830,6 +921,7 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
       message:
         'The simulator contacts only loopback webhook endpoints. The endpoint was not called and nothing was delivered; the operation continues.',
     });
+  };
   const notDelivered = (facts, reason) =>
     facts.diagnostic?.({
       code: 'WEBHOOK_NOT_DELIVERED',
@@ -920,9 +1012,70 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
     }
     return { target, context, properties };
   };
+  // Tracing: one `webhook` span per Service Bus send (D-R3-5), attribute transport 'servicebus', with the queue or topic, the
+  // provider and the message id; at level full its input is the message (the RemoteExecutionContext body and the listener
+  // properties). send() is the bus send, synchronous or a promise; its failure fails the span.
+  const busOutbound = (facts, endpoint, { target, context, properties }, send) => {
+    const traces = store.traces;
+    if (!traces?.enabled) return send();
+    const contract = Number(endpoint.contract);
+    const span = traces.start({
+      kind: 'webhook',
+      name: `Send ${target.providerId}/${target.entity}`,
+      module: 'webhooks',
+      operation: 'send',
+      entity: facts.entity ?? null,
+      recordId: recordIdOf(facts),
+      attributes: {
+        transport: 'servicebus',
+        contract,
+        channel: contract === 5 ? 'topic' : 'queue',
+        provider: target.providerId,
+        queue: target.entity,
+        external: externalBus(target),
+        serviceEndpointId: endpoint.serviceendpointid ?? null,
+        serviceEndpoint: endpoint.name ?? null,
+        stepId: facts.item?.id ?? null,
+        stepName: facts.item?.name ?? null,
+        mode: facts.asyncExecution ? 'async' : 'sync',
+        messageId: context.OperationId,
+      },
+      input: () => ({ entity: target.entity, messageId: context.OperationId, properties, body: context }),
+    });
+    let result;
+    try {
+      result = traces.run(span, send);
+    } catch (error) {
+      span.fail(error);
+      throw error;
+    }
+    // The bus receipt (never the message again): its id, sequence number and whether it was a duplicate.
+    const sent = (value) => {
+      if (value && typeof value === 'object')
+        span.set({ sequenceNumber: value.sequenceNumber ?? null, duplicate: value.duplicate ?? null });
+      span.end();
+    };
+    if (typeof result?.then !== 'function') {
+      sent(result);
+      return result;
+    }
+    return result.then(
+      (value) => {
+        sent(value);
+        return value;
+      },
+      (error) => {
+        span.fail(error);
+        throw error;
+      },
+    );
+  };
   const sendToBus = (facts, endpoint, provider, nested) => {
-    const { target, context, properties } = messageFor(facts, endpoint, provider);
-    return target.bus.send(target.entity, context, { messageId: context.OperationId, properties, nested });
+    const message = messageFor(facts, endpoint, provider);
+    const { target, context, properties } = message;
+    return busOutbound(facts, endpoint, message, () =>
+      target.bus.send(target.entity, context, { messageId: context.OperationId, properties, nested }),
+    );
   };
   // A synchronous step's failed bus send fails its operation; the native error code, status and text are guesses.
   const sendFailed = (facts, endpoint, cause) => {
@@ -1003,7 +1156,13 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
         // A bus in this process joins the running transaction (nested), so a rollback takes the message too.
         return Promise.resolve()
           .then(() =>
-            target.bus.send(target.entity, context, { messageId: context.OperationId, properties, nested: !external }),
+            busOutbound(facts, endpoint, message, () =>
+              target.bus.send(target.entity, context, {
+                messageId: context.OperationId,
+                properties,
+                nested: !external,
+              }),
+            ),
           )
           .then(
             () => {
@@ -1016,7 +1175,7 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
       }
       const request = requestFor(facts);
       if (!request) return undefined;
-      return postAsync(request).then((status) => webhookAnswered(facts, request, status));
+      return outbound(facts, request, postAsync).then((status) => webhookAnswered(facts, request, status));
     },
     /** A synchronous step on the synchronous SDK drive: the post runs on the I/O bridge and this call returns when it answered. */
     sync(facts) {
@@ -1033,10 +1192,12 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
           bridge = bridged(target);
         if (bridge) {
           try {
-            syncIo(
-              'amqp-send',
-              { provider: bridge, entity: target.entity, body: context, messageId: context.OperationId, properties },
-              { timeoutMs: AMQP_TIMEOUT },
+            busOutbound(facts, endpoint, message, () =>
+              syncIo(
+                'amqp-send',
+                { provider: bridge, entity: target.entity, body: context, messageId: context.OperationId, properties },
+                { timeoutMs: AMQP_TIMEOUT },
+              ),
             );
           } catch (cause) {
             if (indeterminate(cause))
@@ -1049,21 +1210,23 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
         // A bus in this process (the local bus) writes its row before send() returns, inside the running transaction.
         // ponytail: a pack bus without syncIo is not awaited on this drive; its failure is a diagnostic only. A pack bus takes
         // part in synchronous steps by exporting syncIo in the core emulator bus's shape.
-        target.bus
-          .send(target.entity, context, { messageId: context.OperationId, properties, nested: true })
-          .catch((error) =>
-            facts.diagnostic?.({
-              code: 'SERVICE_ENDPOINT_SEND_FAILED',
-              severity: 'error',
-              stepId: facts.item.id,
-              message: error.message,
-            }),
-          );
+        Promise.resolve(
+          busOutbound(facts, endpoint, message, () =>
+            target.bus.send(target.entity, context, { messageId: context.OperationId, properties, nested: true }),
+          ),
+        ).catch((error) =>
+          facts.diagnostic?.({
+            code: 'SERVICE_ENDPOINT_SEND_FAILED',
+            severity: 'error',
+            stepId: facts.item.id,
+            message: error.message,
+          }),
+        );
         return;
       }
       const request = requestFor(facts);
       if (!request) return;
-      webhookAnswered(facts, request, postSync(request));
+      webhookAnswered(facts, request, outbound(facts, request, postSync));
     },
     async afterCommit(delivered) {
       const facts = { ...delivered, asyncExecution: true }; // after commit: the asynchronous delivery (Mode 1, no transaction)
@@ -1079,10 +1242,12 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
       }
       const request = requestFor(facts);
       if (!request) return { canceled: NOT_CONTACTED };
-      const status = await deliver(withAuth(request), loopbackFetch).catch((error) => {
-        count(-1);
-        throw error;
-      });
+      const { status } = answerOf(
+        await outbound(facts, request, (sent) => deliver(withAuth(sent), loopbackFetch)).catch((error) => {
+          count(-1);
+          throw error;
+        }),
+      );
       count(status);
       if (!(status >= 200 && status < 300)) throw unavailable();
       return undefined;

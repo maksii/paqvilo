@@ -1,5 +1,6 @@
 /* Shared UI kit for /_sim/ and /_setup/. Every selector is prefixed `ui-`, so existing unprefixed classes in
-   both pages keep their meaning. Light theme only; animation stops under prefers-reduced-motion. */
+   both pages keep their meaning. Light by default; a page with <html data-ui-theme="auto"> follows prefers-color-scheme (the dark tokens at the
+   end). Animation stops under prefers-reduced-motion. */
 :root {
   --ui-accent: #4254dc;
   --ui-line: #e4e8f1;
@@ -131,7 +132,7 @@
   width: 17px;
   height: 17px;
   padding: 0;
-  border: 1px solid #b6c1d6;
+  border: 1px solid var(--ui-l-b6c1d6, #b6c1d6);
   border-radius: 50%;
   background: var(--ui-surface);
   color: var(--ui-accent);
@@ -204,7 +205,7 @@
   margin: 8px 0;
   padding: 10px 12px;
   border-radius: 8px;
-  background: #f3f5fa;
+  background: var(--ui-c-f3f5fa, #f3f5fa);
   font-family: var(--ui-mono);
   font-size: 13px;
   white-space: pre;
@@ -374,7 +375,7 @@
   overflow: auto;
   border: 1px solid var(--ui-line);
   border-radius: var(--ui-radius);
-  background: #fbfcfe;
+  background: var(--ui-c-fbfcfe, #fbfcfe);
 }
 .ui-topology svg {
   display: block;
@@ -418,31 +419,31 @@
 }
 .ui-node.is-listening .ui-node-card,
 .ui-node.is-ready .ui-node-card {
-  fill: #f6fbf8;
-  stroke: #b9e0cb;
+  fill: var(--ui-c-f6fbf8, #f6fbf8);
+  stroke: var(--ui-l-b9e0cb, #b9e0cb);
 }
 .ui-node.is-declared .ui-node-card,
 .ui-node.is-planned .ui-node-card {
-  fill: #f6f8ff;
-  stroke: #c8d3f5;
+  fill: var(--ui-c-f6f8ff, #f6f8ff);
+  stroke: var(--ui-l-c8d3f5, #c8d3f5);
 }
 .ui-node.is-planned .ui-node-card {
   stroke-dasharray: 5 4;
 }
 .ui-node.is-disabled .ui-node-card {
-  fill: #f4f5f8;
-  stroke: #d5dae4;
+  fill: var(--ui-c-f4f5f8, #f4f5f8);
+  stroke: var(--ui-l-d5dae4, #d5dae4);
 }
 .ui-node.is-disabled .ui-node-label {
   fill: var(--ui-muted);
 }
 .ui-node.is-placeholder .ui-node-card {
-  fill: #fffaf0;
+  fill: var(--ui-c-fffaf0, #fffaf0);
   stroke: #f0d6a2;
 }
 .ui-node.is-missing .ui-node-card,
 .ui-node.is-error .ui-node-card {
-  fill: #fff6f7;
+  fill: var(--ui-c-fff6f7, #fff6f7);
   stroke: #e7b3ba;
 }
 .ui-status-dot {
@@ -477,7 +478,7 @@ span.ui-status-dot {
   background: var(--ui-bad);
 }
 .ui-edge {
-  stroke: #b4bfd3;
+  stroke: var(--ui-l-b4bfd3, #b4bfd3);
   stroke-width: 1.6;
 }
 .ui-edge.is-disabled,
@@ -496,7 +497,7 @@ span.ui-status-dot {
   animation: ui-flow 1.2s linear infinite;
 }
 .ui-edge-arrow {
-  fill: #b4bfd3;
+  fill: var(--ui-c-b4bfd3, #b4bfd3);
 }
 @keyframes ui-flow {
   to {
@@ -581,7 +582,7 @@ span.ui-status-dot {
   font-weight: 600;
 }
 .ui-rail .is-done a {
-  border-color: #b9e0cb;
+  border-color: var(--ui-l-b9e0cb, #b9e0cb);
 }
 .ui-rail .is-next a {
   border-color: var(--ui-accent);
@@ -589,6 +590,621 @@ span.ui-status-dot {
 .ui-rail .is-blocked a {
   border-color: #e7b3ba;
 }
+/* Toolbars and filter grids */
+.ui-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.ui-toolbar .ui-help {
+  margin: 0;
+}
+.ui-filter-grid {
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  max-width: none;
+  align-items: start;
+}
+.ui-filter-grid label {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+}
+.ui-filter-grid input,
+.ui-filter-grid select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  font: inherit;
+}
+.ui-filter-actions {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+}
+
+/* Tabs */
+.ui-tablist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--ui-line);
+}
+.ui-tab {
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: none;
+  color: var(--ui-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.ui-tab[aria-selected='true'] {
+  border-color: var(--ui-line);
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+  font-weight: 600;
+  margin-bottom: -1px;
+}
+.ui-tab:focus-visible {
+  outline: 3px solid var(--ui-focus);
+  outline-offset: 1px;
+}
+.ui-tabpanel {
+  padding: 10px 0 0;
+}
+
+/* Bars: geometry is SVG attributes; colour, status and async marks are classes */
+.ui-bar {
+  display: block;
+  width: 100%;
+  height: 12px;
+}
+.ui-bar-track {
+  fill: var(--ui-neutral-bg);
+}
+.ui-bar-fill {
+  fill: var(--ui-accent);
+}
+.ui-bar-fill.is-error {
+  stroke: var(--ui-bad);
+  stroke-width: 3;
+}
+.ui-bar-fill.is-denied {
+  stroke: var(--ui-warn);
+  stroke-width: 3;
+}
+.ui-bar-fill.is-async {
+  stroke: var(--ui-ink);
+  stroke-width: 2;
+  stroke-dasharray: 8 4;
+}
+.ui-bar-fill.is-running {
+  opacity: 0.55;
+}
+.ui-bar-mark {
+  fill: var(--ui-surface);
+  stroke: var(--ui-ink);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+/* Module colours: one per module in MODULES order (view-activity.mjs), each at least 3.7:1 against the bar track. */
+.ui-series-0 {
+  fill: #4254dc;
+}
+.ui-series-1 {
+  fill: #1f7a4d;
+}
+.ui-series-2 {
+  fill: #b26b00;
+}
+.ui-series-3 {
+  fill: #8e3fb8;
+}
+.ui-series-4 {
+  fill: #0f7c8c;
+}
+.ui-series-5 {
+  fill: #c2410c;
+}
+.ui-series-6 {
+  fill: #2e3440;
+}
+.ui-series-7 {
+  fill: #b02a6b;
+}
+.ui-series-8 {
+  fill: #5c7a00;
+}
+.ui-series-9 {
+  fill: #7c4a21;
+}
+.ui-series-10 {
+  fill: #1b2f6e;
+}
+.ui-series-11 {
+  fill: #0a78b5;
+}
+.ui-series-12 {
+  fill: #7a1f3d;
+}
+.ui-series-13 {
+  fill: #d4145a;
+}
+.ui-series-other {
+  fill: #7b8698;
+}
+
+/* Waterfall */
+.ui-waterfall {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ui-waterfall-row {
+  display: grid;
+  grid-template-columns: minmax(200px, 40%) minmax(120px, 1fr) 110px;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--ui-line);
+}
+.ui-waterfall-row.is-selected,
+.ui-tree .is-selected > .ui-tree-span,
+.ui-tree .is-selected > details > summary .ui-tree-span,
+.ui-table tr.is-selected td {
+  background: var(--ui-info-bg);
+}
+.ui-waterfall-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 4px;
+  border: 0;
+  background: none;
+  color: var(--ui-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ui-waterfall-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-depth-1 > .ui-waterfall-label {
+  padding-left: 18px;
+}
+.ui-depth-2 > .ui-waterfall-label {
+  padding-left: 32px;
+}
+.ui-depth-3 > .ui-waterfall-label {
+  padding-left: 46px;
+}
+.ui-depth-4 > .ui-waterfall-label {
+  padding-left: 60px;
+}
+.ui-depth-5 > .ui-waterfall-label {
+  padding-left: 74px;
+}
+.ui-depth-6 > .ui-waterfall-label {
+  padding-left: 88px;
+}
+.ui-depth-7 > .ui-waterfall-label {
+  padding-left: 102px;
+}
+.ui-depth-8 > .ui-waterfall-label {
+  padding-left: 116px;
+}
+.ui-depth-9 > .ui-waterfall-label {
+  padding-left: 130px;
+}
+.ui-depth-10 > .ui-waterfall-label {
+  padding-left: 144px;
+}
+.ui-depth-11 > .ui-waterfall-label {
+  padding-left: 158px;
+}
+.ui-depth-12 > .ui-waterfall-label {
+  padding-left: 172px;
+}
+.ui-waterfall-duration {
+  font-family: var(--ui-mono);
+  font-size: 0.9em;
+  text-align: right;
+}
+.ui-waterfall-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-left: calc(40% + 8px);
+  margin-right: 118px;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+.ui-waterfall-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+.ui-waterfall-legend li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ui-swatch {
+  width: 10px;
+  height: 10px;
+}
+
+/* Span tree */
+.ui-tree,
+.ui-tree ul {
+  margin: 0;
+  padding-left: 18px;
+  list-style: none;
+}
+.ui-tree {
+  padding-left: 0;
+  overflow-x: auto;
+}
+.ui-tree ul.is-flat {
+  padding-left: 0;
+}
+.ui-tree li {
+  white-space: nowrap;
+}
+.ui-tree .is-context > .ui-tree-head,
+.ui-tree .is-context > details > summary .ui-tree-head,
+.ui-waterfall-row.is-context > .ui-waterfall-label {
+  opacity: 0.55;
+}
+.ui-tree li {
+  margin: 2px 0;
+}
+.ui-tree summary {
+  cursor: pointer;
+}
+.ui-tree-leaf {
+  padding-left: 16px;
+}
+.ui-tree-span {
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--ui-accent);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  /* R2C-11: one line per span, however deep. */
+  max-width: min(40em, 60vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.ui-tree-name {
+  display: inline-block;
+  max-width: min(40em, 60vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+.ui-tree-span:hover,
+.ui-link-button:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ui-tree-facts {
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+
+/* Histogram */
+.ui-histogram {
+  margin: 8px 0 12px;
+}
+.ui-histogram svg {
+  display: block;
+  width: 100%;
+  height: 80px;
+  border-bottom: 1px solid var(--ui-line);
+}
+.ui-histogram-hit {
+  fill: transparent;
+}
+.ui-histogram-count {
+  fill: var(--ui-accent);
+  opacity: 0.75;
+}
+.ui-histogram-errors {
+  fill: var(--ui-bad);
+}
+.ui-histogram-bucket {
+  cursor: pointer;
+}
+.ui-histogram-bucket:hover .ui-histogram-hit,
+.ui-histogram-bucket:focus .ui-histogram-hit {
+  fill: var(--ui-info-bg);
+}
+.ui-histogram-bucket:focus {
+  outline: none;
+}
+.ui-histogram-bucket:focus-visible .ui-histogram-hit {
+  stroke: var(--ui-focus);
+  stroke-width: 3;
+  vector-effect: non-scaling-stroke;
+}
+.ui-histogram-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ui-muted);
+  font-size: 12px;
+}
+.ui-table tr[data-trace-open] {
+  cursor: pointer;
+}
+.ui-badge-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+/* Trace list: compact cells that may wrap, so Status, Duration and the Root button stay in view at desktop widths;
+   the root name, origin and kind counts keep one line each with an ellipsis (the full text is the title). */
+.ui-table[data-table='trace-list'] th,
+.ui-table[data-table='trace-list'] td {
+  padding: 8px 10px;
+}
+.ui-table[data-table='trace-list'] td {
+  max-width: none;
+  white-space: normal;
+}
+.ui-trace-kinds {
+  display: block;
+  max-width: 14em;
+  margin: 2px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ui-accent);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ui-trace-root {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(24em, 36vw);
+}
+.ui-trace-root .ui-trace-name,
+.ui-trace-origin {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ui-trace-origin {
+  display: block;
+  max-width: min(24em, 36vw);
+  margin: 2px 0 0;
+}
+.ui-sort {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ui-sort:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ui-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+.ui-chip {
+  padding: 2px 10px;
+  border: 1px solid var(--ui-line);
+  border-radius: 999px;
+  background: var(--ui-info-bg);
+  color: var(--ui-ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ui-chip:hover {
+  border-color: var(--ui-accent);
+}
+.ui-span-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px 16px;
+  margin: 8px 0;
+}
+.ui-span-tools label {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+}
+.ui-span-tools input[type='search'] {
+  padding: 6px 8px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  font: inherit;
+}
+.ui-span-tools .ui-help {
+  margin: 0;
+}
+.ui-json {
+  max-height: 60vh;
+  overflow: auto;
+}
+.ui-copy-fallback textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--ui-mono);
+}
+.ui-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.ui-compare > section {
+  min-width: 0;
+}
+.ui-payload > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ui-bar-fill.is-cancelled {
+  opacity: 0.45;
+  stroke: var(--ui-neutral);
+  stroke-dasharray: 2 2;
+}
+/* Trace view: the list beside the open trace, the span path, the spotlight lists and the status legend. */
+@media (min-width: 1200px) {
+  .ui-trace-layout.has-detail {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+    gap: 16px;
+    align-items: start;
+  }
+  .ui-trace-layout.has-detail .ui-trace-side {
+    position: sticky;
+    top: 8px;
+    max-height: calc(100vh - 16px);
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .ui-trace-layout.has-detail .ui-trace-main .ui-trace-extra,
+  .ui-trace-layout.has-detail .ui-trace-main .ui-trace-kinds {
+    display: none;
+  }
+  /* The start time takes two lines (date, then time) instead of breaking at every hyphen. */
+  .ui-trace-layout.has-detail .ui-trace-main td > time {
+    display: inline-block;
+    min-width: 12ch;
+  }
+  .ui-trace-layout.has-detail .ui-trace-root,
+  .ui-trace-layout.has-detail .ui-trace-origin {
+    max-width: 18em;
+  }
+  /* A first error keeps a readable measure in the narrow list instead of one word per line. */
+  .ui-trace-layout.has-detail .ui-trace-error {
+    min-width: 16em;
+  }
+  /* Beside the list the waterfall labels take over half of the narrower column, and a name wraps instead of being cut,
+     so sibling spans stay distinguishable; the bar scales to the remaining width (DV-Y8-6). */
+  .ui-trace-side .ui-waterfall-row {
+    grid-template-columns: minmax(0, 55%) minmax(80px, 1fr) 84px;
+  }
+  .ui-trace-side .ui-waterfall-label {
+    flex-wrap: wrap;
+  }
+  .ui-trace-side .ui-waterfall-name {
+    min-width: min(100%, 8em);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+.ui-trace-layout > div {
+  min-width: 0;
+}
+.ui-crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 4px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.ui-crumbs li {
+  overflow-wrap: anywhere;
+}
+.ui-crumbs li + li::before {
+  content: '›';
+  margin-right: 4px;
+  color: var(--ui-muted);
+}
+.ui-crumbs [aria-current] {
+  font-weight: 600;
+}
+.ui-span-spotlight {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 8px 24px;
+}
+.ui-span-refs {
+  margin: 0;
+  padding-left: 20px;
+}
+.ui-span-refs li {
+  margin: 4px 0;
+  overflow-wrap: anywhere;
+}
+.ui-span-ref-error,
+.ui-trace-error {
+  display: block;
+  color: var(--ui-bad);
+  overflow-wrap: anywhere;
+}
+.ui-trace-error {
+  max-width: 24em;
+  margin: 2px 0 0;
+}
+.ui-status-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+.ui-limits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 8px 16px;
+}
+.ui-limits label {
+  display: block;
+  font-weight: 600;
+}
+.ui-form input[type='number'] {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  font: inherit;
+}
+
 @media (min-width: 1100px) {
   .ui-rail {
     position: sticky;
@@ -598,7 +1214,37 @@ span.ui-status-dot {
   }
 }
 
+@media (max-width: 900px) {
+  .ui-compare {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 600px) {
+  .ui-waterfall-name,
+  .ui-trace-root .ui-trace-name,
+  .ui-trace-origin,
+  .ui-tree-span {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  /* A deep span keeps its indent; its name takes the next line instead of shrinking to a few letters. */
+  .ui-waterfall-label {
+    flex-wrap: wrap;
+  }
+  .ui-waterfall-name {
+    min-width: min(100%, 10em);
+  }
+  .ui-waterfall-row {
+    grid-template-columns: minmax(0, 1fr) 80px;
+  }
+  .ui-waterfall-row .ui-bar {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .ui-waterfall-scale {
+    margin: 0;
+  }
   .ui-kv {
     grid-template-columns: minmax(0, 1fr);
     gap: 2px;
@@ -618,4 +1264,534 @@ span.ui-status-dot {
   .ui-section > summary::before {
     transition: none;
   }
+}
+
+/* Dark theme (generated from the light literals by a lightness transform: every light surface, line and ink colour of the
+   /_sim/ sheets is a --ui-c- (surface), --ui-l- (line) or --ui-t- (text) token named by its light hex, with that light
+   value as fallback. A page opts in with <html data-ui-theme="auto"> and then follows prefers-color-scheme.) */
+@media (prefers-color-scheme: dark) {
+  :root[data-ui-theme='auto'] {
+    color-scheme: dark;
+    --ui-accent: #8792e9;
+    --ui-line: #2b3753;
+    --ui-muted: #9aa4b4;
+    --ui-danger: #e38d96;
+    --ui-ok: #8de2b8;
+    --ui-warn: #f1c37e;
+    --ui-bad: #e38d96;
+    --ui-info: #8ba5e5;
+    --ui-neutral: #aab4c5;
+    --ui-surface: #292929;
+    --ui-ink: #dbe3ee;
+    --ui-ok-bg: #18251e;
+    --ui-warn-bg: #282113;
+    --ui-bad-bg: #30171b;
+    --ui-info-bg: #171d2f;
+    --ui-neutral-bg: #1a1e27;
+    --ui-focus: #7e95f1;
+    --accent: #8792e9;
+    --line: #2b3753;
+    --muted: #9aa4b4;
+    --danger: #e38d96;
+    --dm-ink: #e7ebf3;
+    --dm-ink-2: #c2cad8;
+    --dm-muted: #a3adbc;
+    --dm-line: #364153;
+    --dm-surface: #292929;
+    --dm-canvas: #1d212a;
+    --dm-off: #aeb5c1;
+    --dm-pages: #9691de;
+    --dm-apps: #cb93dc;
+    --dm-dataverse: #7ff0b7;
+    --dm-automate: #82a9ee;
+    --dm-azure: #7ebef1;
+    --dm-neutral: #abb4c4;
+    --dm-wire: #abb4c4;
+    --dm-wire-soft: #a8b4c7;
+    --dm-active: #7ea5f1;
+    --dm-hot: #918be5;
+    --ui-on-accent: #0e1426;
+    --ui-accent-hover: #a3adf5;
+    --ui-c-9aacc8: #465d81;
+    --ui-c-b4bfd3: #3d4c67;
+    --ui-c-b8c3d6: #3a4964;
+    --ui-c-b9c1cf: #424d61;
+    --ui-c-dce2ec: #121418;
+    --ui-c-e3e7ee: #16181c;
+    --ui-c-e3e9ff: #14192a;
+    --ui-c-eaf7f0: #18251e;
+    --ui-c-ebf3fc-a60: rgba(21, 32, 44, 0.6);
+    --ui-c-eceeff: #16192e;
+    --ui-c-ecf8f1-a60: rgba(24, 39, 30, 0.6);
+    --ui-c-edf0ff: #171b2f;
+    --ui-c-edf1fa: #181d2a;
+    --ui-c-edf1fb: #171d2c;
+    --ui-c-edf4ff: #17202f;
+    --ui-c-eef1f6: #1b1e25;
+    --ui-c-eef1f8: #1a1e27;
+    --ui-c-eef1ff: #171b2f;
+    --ui-c-eef2ff: #171d2f;
+    --ui-c-f0f2f7-a70: rgba(28, 31, 38, 0.7);
+    --ui-c-f0f5fb: #18212c;
+    --ui-c-f1f3f9: #1b1f29;
+    --ui-c-f1f4f9: #1b2029;
+    --ui-c-f1f8f4: #1c2721;
+    --ui-c-f3f4f8: #1e2027;
+    --ui-c-f3f5fa: #1c202a;
+    --ui-c-f3f5ff: #181c32;
+    --ui-c-f4f5f8: #1f2127;
+    --ui-c-f4f6fb: #1b202c;
+    --ui-c-f5f7fb: #1c222c;
+    --ui-c-f6f8fc: #1c222e;
+    --ui-c-f6f8ff: #191f33;
+    --ui-c-f6fbf8: #1e2c23;
+    --ui-c-f7f8fb: #1f222b;
+    --ui-c-f7f8ff: #191c34;
+    --ui-c-fafbfd: #1e242f;
+    --ui-c-fafbfe: #1a2134;
+    --ui-c-fbfcfe: #1c2433;
+    --ui-c-fff0f2: #30171b;
+    --ui-c-fff1f2: #311819;
+    --ui-c-fff5df: #282113;
+    --ui-c-fff6d9: #252012;
+    --ui-c-fff6f7: #33191c;
+    --ui-c-fff9ed: #2f2717;
+    --ui-c-fffaf0: #302817;
+    --ui-c-fffafa: #351a1a;
+    --ui-c-fffbf1: #312a18;
+    --ui-c-fffdf7: #342d19;
+    --ui-c-ffffff: #292929;
+    --ui-c-ffffff-a55: rgba(41, 41, 41, 0.55);
+    --ui-l-8fa3d8: #4b619b;
+    --ui-l-aebacf: #4e6183;
+    --ui-l-b4bfd3: #4a5c7e;
+    --ui-l-b6c1d6: #46597d;
+    --ui-l-b9c1cf: #515e76;
+    --ui-l-b9c4d7: #46597a;
+    --ui-l-b9e0cb: #3b7b59;
+    --ui-l-bfcee1: #395477;
+    --ui-l-c3cad6: #4a576d;
+    --ui-l-c8d3f5: #303d64;
+    --ui-l-c9d0dc: #435168;
+    --ui-l-c9d9ee: #324968;
+    --ui-l-cbd5e4: #374c6a;
+    --ui-l-cfe9da: #326748;
+    --ui-l-d4ddeb: #304463;
+    --ui-l-d5dae4: #3c475d;
+    --ui-l-d9deea: #333f5c;
+    --ui-l-d9dfeb: #31405d;
+    --ui-l-dce2ec: #314059;
+    --ui-l-dfe4ff: #262c4f;
+    --ui-l-e5e9f5: #273252;
+    --ui-l-e5eaf2: #293953;
+    --ui-l-e7eaf0: #30394c;
+    --ui-l-edf0f5: #283549;
+    --ui-l-eff1f6: #283147;
+    --ui-l-f1e5ca: #655531;
+    --ui-l-f2cbd0: #643037;
+    --ui-l-ffffff: #333333;
+    --ui-t-1d2b44: #dee5f1;
+    --ui-t-213047: #dbe3ee;
+    --ui-t-237657: #b4e9d5;
+    --ui-t-244874: #b6cce8;
+    --ui-t-273851: #d2dbe9;
+    --ui-t-293d65: #c1cde6;
+    --ui-t-33445e: #c5cfdf;
+    --ui-t-344666: #becade;
+    --ui-t-354666: #bec9dd;
+    --ui-t-3546a5: #8995d9;
+    --ui-t-354762: #c1cdde;
+    --ui-t-36445b: #c7cfde;
+    --ui-t-384a66: #bec9db;
+    --ui-t-40516a: #b9c4d5;
+    --ui-t-405277: #aebbd4;
+    --ui-t-455773: #b1bdd0;
+    --ui-t-4f5c74: #afb8c8;
+    --ui-t-52637b: #a9b5c6;
+    --ui-t-53617a: #a9b3c5;
+    --ui-t-5361c5: #6673cc;
+    --ui-t-566174: #aeb6c3;
+    --ui-t-56647b: #a8b2c2;
+    --ui-t-57658b: #9ba5c0;
+    --ui-t-586984: #a1adc0;
+    --ui-t-596880: #a4afc0;
+    --ui-t-5c6b87: #9ea9bd;
+    --ui-t-60708d: #98a4b9;
+    --ui-t-67758a: #9aa4b4;
+    --ui-t-718096: #8e9aac;
+    --ui-t-738198: #8c98aa;
+    --ui-t-7883da: #5f6cd3;
+    --ui-t-7a8599: #8c95a6;
+    --ui-t-7b899e: #8996a9;
+    --ui-t-7c89a0: #8994a9;
+    --ui-t-8390a4: #8996a9;
+    --ui-t-8391a6: #8896aa;
+    --ui-t-8491a5: #8996a9;
+    --ui-t-8590a4: #8a95a8;
+    --ui-t-8591a3: #8b96a7;
+    --ui-t-867342: #d1c4a2;
+    --ui-t-8994a7: #8a95a8;
+    --ui-t-8a5300: #eedabc;
+    --ui-t-8b5a00: #eedcbc;
+    --ui-t-967016: #e8d4a4;
+    --ui-t-97a2b5: #8894aa;
+    --ui-t-9ca9dc: #687cca;
+    --ui-t-9fb3dc: #6a89c8;
+    --ui-t-af3f4c: #d18089;
+    --ui-t-b33346: #da7e8b;
+  }
+}
+
+/* A table column of row actions: the buttons stay on one line, side by side. */
+.ui-table td.ui-actions {
+  white-space: nowrap;
+}
+.ui-table td.ui-actions > * + * {
+  margin-left: 6px;
+}
+/* On a narrow screen a wide table scrolls inside its frame; its row actions stay pinned to the frame's right edge. */
+@media (max-width: 760px) {
+  .ui-table td.ui-actions,
+  .ui-table td.actions,
+  table[data-table] td.actions {
+    position: sticky;
+    right: 0;
+    background: var(--ui-surface);
+    box-shadow: -8px 0 8px -8px rgba(0, 0, 0, 0.25);
+  }
+}
+/* Backend operations on a phone: headings and cells wrap and the row actions stack, so the table fits its frame. */
+@media (max-width: 760px) {
+  table[data-table='operations'] {
+    table-layout: fixed;
+    width: 100%;
+  }
+  table[data-table='operations'] th,
+  table[data-table='operations'] td {
+    padding: 10px 6px;
+    max-width: none;
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  table[data-table='operations'] th:nth-child(1) {
+    width: 31%;
+  }
+  table[data-table='operations'] th:nth-child(2) {
+    width: 24%;
+  }
+  table[data-table='operations'] th:nth-child(3) {
+    width: 23%;
+  }
+  table[data-table='operations'] .ui-badge {
+    padding-inline: 5px;
+    white-space: normal;
+  }
+  table[data-table='operations'] th {
+    letter-spacing: 0;
+  }
+  table[data-table='operations'] td.actions {
+    position: static;
+    box-shadow: none;
+    text-align: left;
+  }
+  table[data-table='operations'] td.actions > * {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: normal;
+  }
+  table[data-table='operations'] td.actions > * + * {
+    margin: 6px 0 0;
+  }
+}
+/*
+ * DV-N4c-2: on a wide screen Data records and Platform settings fit their frame. Records share the width evenly and
+ * cut long values (the full value is the cell's title); platform settings wrap their text and override controls.
+ */
+@media (min-width: 761px) {
+  table[data-table='records'] {
+    table-layout: fixed;
+    width: 100%;
+  }
+  table[data-table='records'] th,
+  table[data-table='records'] td:not(.actions) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  table[data-table='records'] th:last-child {
+    width: 232px;
+  }
+  table[data-table='platform-settings'] td {
+    white-space: normal;
+  }
+  table[data-table='platform-settings'] td input,
+  table[data-table='platform-settings'] td select {
+    display: block;
+    width: 100%;
+    max-width: 220px;
+    margin: 4px 0 6px;
+  }
+  table[data-table='platform-settings'] td .button + .button {
+    margin-left: 0;
+  }
+}
+
+/* ---- Page chrome (D-M-7): no title block; one toolbar row, then the content. */
+.ui-page-chrome {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.ui-page-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 30px;
+}
+.ui-page-summary {
+  color: var(--ui-muted);
+  font-size: 13px;
+}
+.ui-page-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.ui-filter-count {
+  font-weight: 700;
+}
+.ui-filter-toggle[aria-expanded='true'] {
+  border-color: var(--ui-accent);
+  color: var(--ui-accent);
+}
+.ui-filter-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, 100vw);
+  background: var(--ui-surface);
+  color: var(--ui-ink);
+  border-left: 1px solid var(--ui-line);
+  box-shadow: -12px 0 32px rgba(15, 23, 42, 0.18);
+}
+.ui-filter-drawer[hidden] {
+  display: none;
+}
+.ui-filter-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--ui-line);
+}
+.ui-filter-drawer-head h2 {
+  margin: 0;
+  font-size: 16px;
+}
+.ui-filter-drawer-body {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 18px;
+}
+.ui-filter-drawer-foot {
+  display: flex;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--ui-line);
+}
+@media (min-width: 1200px) {
+  #content:has(> * .ui-filter-drawer:not([hidden])),
+  #content:has(> .ui-filter-drawer:not([hidden])) {
+    padding-right: 380px;
+  }
+}
+/* Section help is an (i) next to the heading, never a sentence under it (D-M-6). */
+.ui-help-inline {
+  display: inline-flex;
+  margin: 0 0 0 6px;
+  vertical-align: middle;
+}
+.ui-section-help {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 6px;
+}
+/* A content block without its own frame (the main list of a page): the shared gap below it. */
+.ui-card {
+  margin: 0 0 16px;
+}
+/* Tables read as rows (td borders in shell.css); the header stays while a long table scrolls. */
+.ui-table thead th,
+.ui-data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+/* Controls in the page toolbar are compact, so the toolbar stays one short row. */
+.ui-page-actions :is(select, input:not([type='checkbox'], [type='radio'])) {
+  height: 28px;
+  padding-block: 2px;
+  font-size: 13px;
+}
+/* ---- dataTable (D-M-8): bar above, sortable sticky header, row dividers and hover, controls bar below. */
+.ui-data-table {
+  margin: 0 0 16px;
+}
+.ui-table-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.ui-table-bar input[type='search'] {
+  flex: 0 1 280px;
+  min-width: 0;
+  height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+}
+.ui-table-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-left: auto;
+}
+.ui-table-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px 14px;
+  margin: 8px 0 0;
+}
+.ui-table-foot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-right: auto;
+}
+.ui-data-table tbody tr:hover td {
+  background: var(--ui-info-bg);
+}
+.ui-sort {
+  line-height: 1.2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+.ui-sort:focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+.ui-sort-mark {
+  color: var(--ui-muted);
+  font-size: 10px;
+}
+th[aria-sort='ascending'] .ui-sort-mark,
+th[aria-sort='descending'] .ui-sort-mark {
+  color: var(--ui-accent);
+}
+/* A section's (i) sits at the right end of its title row instead of on a line of its own. */
+.ui-section {
+  position: relative;
+}
+.ui-section > .ui-section-body > .ui-section-help:first-child {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  margin: 0;
+}
+@media (max-width: 759px) {
+  .ui-page-chrome {
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .ui-page-toolbar {
+    min-height: 26px;
+  }
+  .ui-table thead th {
+    padding-block: 6px;
+  }
+}
+.ui-page-actions :is(.button, .ui-button) {
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding-block: 0;
+}
+/* The toolbar and its chips never widen the page: they wrap within it. */
+.ui-page-toolbar,
+.ui-page-actions,
+.ui-page-chrome > .ui-chips {
+  min-width: 0;
+  max-width: 100%;
+}
+.ui-page-chrome .ui-chips {
+  flex-wrap: wrap;
+}
+.ui-page-chrome .ui-chip {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/*
+ * DV-N4d-1: a title keeps its (i) on its line. A heading followed by its (i) leaves room for it, so a long title wraps
+ * with the (i) beside its last line; a legend holds its (i); on a phone a panel heading's button wraps under the title
+ * instead of squeezing it.
+ */
+:is(h2, h3, legend):has(+ :is(.ui-help-inline, .ui-note)) {
+  max-width: calc(100% - 30px);
+}
+legend > .ui-note {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+@media (max-width: 760px) {
+  .panel-heading {
+    flex-wrap: wrap;
+  }
+  .panel-heading > :first-child {
+    flex: 1 1 14rem;
+    min-width: 0;
+  }
+}
+
+/* D-M-11 table parity: the bar's Filters sits after the search box; chips of a table's column filters under its bar;
+   the record search in the Data records toolbar row. */
+.ui-data-table > .ui-chips {
+  margin: 0 0 8px;
+}
+.ui-page-chrome :is(.ui-chrome-search, [data-table-search]) {
+  width: 220px;
+  max-width: 100%;
+  height: 30px;
+  padding: 4px 10px;
+  border: 1px solid var(--ui-line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
 }

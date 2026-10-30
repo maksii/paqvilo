@@ -7,6 +7,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto
 import { ProviderError, STORAGE_OPERATIONS, validateKey } from './storage-provider.mjs';
 import { isLoopbackUrl, loopbackFetch } from './dataverse-webhooks.mjs';
 import { clockFunction, systemClock } from './runtime-clock.mjs';
+import { tracedFetch } from './trace-hosts.mjs';
 
 /** x-ms-version pinned for every request and the SAS `sv` (listed in "Previous Azure Storage service versions"). */
 export const BLOB_API_VERSION = '2021-08-06';
@@ -154,7 +155,14 @@ const sasTime = (time) => new Date(time).toISOString().replace(/\.\d{3}Z$/, 'Z')
  * contract whose operations answer Unavailable with the reason and whose preflight() reports it. ponytail: restart the host
  * to pick up a changed connection string.
  */
-export function createAzuriteStorage({ id = 'azurite', settings = {}, env = process.env, clock = systemClock } = {}) {
+export function createAzuriteStorage({
+  id = 'azurite',
+  settings = {},
+  env = process.env,
+  clock = systemClock,
+  // The runtime's trace store, or a function answering it (read per request): each Blob request is an http-out span.
+  traces = null,
+} = {}) {
   const now = clockFunction(clock);
   const container = settings.container ?? 'paqvilo';
   const variable = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(settings.connectionString ?? '')?.[1] ?? null;
@@ -207,11 +215,16 @@ export function createAzuriteStorage({ id = 'azurite', settings = {}, env = proc
       limit,
     );
     try {
-      const response = await loopbackFetch(url, {
-        method,
-        headers: all,
-        body,
-        signal: signal ? AbortSignal.any([signal, timer.signal]) : timer.signal,
+      // Each Blob request is an http-out span of the current trace (D-R3-5): blob bytes are never captured, the span names
+      // the provider, container and size. The forwarded trace headers are not x-ms-* headers, so the signature is unchanged.
+      const response = await tracedFetch(typeof traces === 'function' ? traces() : traces, {
+        module: 'storage',
+        operation: method.toLowerCase(),
+        url,
+        init: { method, headers: all, body, signal: signal ? AbortSignal.any([signal, timer.signal]) : timer.signal },
+        capture: 'none',
+        attributes: { provider: id, container, ...(body?.length ? { bytes: body.length } : {}) },
+        fetch: loopbackFetch,
       });
       health =
         response.status === 401 || response.status === 403

@@ -1,3 +1,4 @@
+// @test-kind contract: Paqvilo's own simulator administration, CLI, configuration and runtime behaviour
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -101,6 +102,9 @@ test('catalogue option tables produce registry help accepted by each parser and 
             : 'fixture';
       assert.doesNotThrow(() => parseToolArgs(name, [`--${key}`, ...(definition.type === 'string' ? [value] : [])]));
     }
+    // trace reads a running runtime's /_sim/api/trace, not the catalogue: its parser and help are checked above, and
+    // cli-contract.test.mjs covers its structured errors without a runtime.
+    if (name === 'trace') continue;
     const args = [name, '--config', config, '--json'];
     if (name !== 'portal-matrix') args.push('--site', 'synthetic');
     if (name === 'portal-matrix') args.push('--only', 'import,bootstrap,liquid,webapi');

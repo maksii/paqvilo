@@ -18,6 +18,7 @@ import { COMMON_DEFAULTS, CONTROL_CATALOGUE, controlKind, unsupportedControls } 
 import { prepareCanvasSource } from './canvas-components.mjs';
 import { CANVAS_ASSETS, canvasAssetUrls } from './canvas-assets.mjs';
 import {
+  CAUSE,
   ErrorKind,
   FxDataSource,
   FxDate,
@@ -244,8 +245,8 @@ function observable(value, depth = 0) {
  * `source.screens` with controls); `evaluator` = createPowerFxEvaluator() (the core engine; a pack adapter receives the same
  * values and host); `principal` = { kind, principalId }; `api` = the organization api and `caller(principal)` → the write
  * context `{ user[, caller] }` (null: no Dataverse data sources); `transact(fn)` runs one behaviour formula's writes
- * (the host change slot); `connectors({ reference, operationId, body, principal })` → result or undefined; `launch(entry)`
- * hears every Launch; `diagnostic(record)` receives runtime diagnostics.
+ * (the host change slot); `connectors({ reference, operationId, body, principal, caller: 'canvas' })` → result or
+ * undefined; `launch(entry)` hears every Launch; `diagnostic(record)` receives runtime diagnostics.
  */
 export function createCanvasApp({
   app,
@@ -572,23 +573,35 @@ export function createCanvasApp({
     if (!entry && where.startsWith('App.Formulas.')) entry = formulas.get('App')?.get('Formulas');
     return entry?.source ? { file: entry.source, ...(entry.line ? { line: entry.line } : {}) } : {};
   };
-  const fromError = (error, where) => ({
-    ...location(where),
-    code: error.code ?? 'CanvasFormulaError',
-    kind: error.details?.kind ?? error.kind ?? 'Unknown',
-    message: error.message,
-    source: where,
-    ...(error.status ? { status: error.status } : {}),
-  });
-  const fromFxError = (value, where) =>
-    value.errors.map((item) => ({
+  // A plug-in fault's trace identity (plugin-fault.mjs traceError) stays on the entry, non-enumerable, so the snapshot and
+  // the answer are unchanged and the canvas host's trace spans record the fault as the Dataverse spans do (D-R3-19).
+  const fromError = (error, where) => {
+    const entry = {
       ...location(where),
-      code: 'PowerFxError',
-      kind: kindName(item.Kind),
-      message: item.Message ?? '',
+      code: error.code ?? 'CanvasFormulaError',
+      kind: error.details?.kind ?? error.kind ?? 'Unknown',
+      message: error.message,
       source: where,
-      ...(item.Details?.HttpStatusCode ? { status: item.Details.HttpStatusCode } : {}),
-    }));
+      ...(error.status ? { status: error.status } : {}),
+    };
+    if (error.traceError) Object.defineProperty(entry, 'traceError', { value: error.traceError });
+    return entry;
+  };
+  // A data source refusal keeps its cause; a plug-in fault's trace identity rides along as for fromError.
+  const fromFxError = (value, where) =>
+    value.errors.map((item) => {
+      const entry = {
+        ...location(where),
+        code: 'PowerFxError',
+        kind: kindName(item.Kind),
+        message: item.Message ?? '',
+        source: where,
+        ...(item.Details?.HttpStatusCode ? { status: item.Details.HttpStatusCode } : {}),
+      };
+      const traceError = item[CAUSE]?.traceError;
+      if (traceError) Object.defineProperty(entry, 'traceError', { value: traceError });
+      return entry;
+    });
 
   const isBehaviour = (name, property) =>
     BEHAVIOUR_PROPERTY.test(property) ||
@@ -1514,6 +1527,7 @@ export function createCanvasApp({
         operationId: operation,
         body,
         principal,
+        caller: 'canvas',
       });
     } catch (error) {
       log({ event: 'connector', dataSource: entry.name, operationId: operation, status: error?.status ?? null });

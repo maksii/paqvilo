@@ -60,6 +60,7 @@ import { MODEL_DRIVEN_CAPABILITY_RECORDS } from './model-driven/catalogue.mjs';
 import { customConnectorsOf } from './custom-connector.mjs';
 import { describe as flowTriggersDescribe } from './flow-triggers.mjs';
 import { DataStore, emptyState } from './data.mjs';
+import { createTraceStore } from './trace-store.mjs';
 import { buildSourceGraph, canvasRequirementRows } from './source-graph.mjs';
 import { describeCanvasRuntime } from './canvas-runtime.mjs';
 import { hostnameOf, isLoopbackUrl } from './dataverse-webhooks.mjs';
@@ -252,7 +253,8 @@ function buildProviders(
     }
     // Core Blob REST transport (storage-azurite.mjs); its connection string is read from env here, never stored.
     if (entry.kind === 'azurite') {
-      instances[id] = createAzuriteStorage({ id, settings: entry, env, clock: now });
+      // Blob requests are http-out spans of the host trace store (set once the host composes, so read per request).
+      instances[id] = createAzuriteStorage({ id, settings: entry, env, clock: now, traces: () => store?.traces });
       created.push({ name: `storage/${id}`, item: instances[id] });
       continue;
     }
@@ -361,7 +363,10 @@ function buildProviders(
       stateDirectory,
       trustedScripts: config.connectorScripts ?? [],
     }),
-    secrets: config.secrets ? createSecretResolver({ secrets: config.secrets, clock: now, diagnostic }) : null,
+    // The secret spans go to the host's trace store (store.traces is set once the host composes, so read per call).
+    secrets: config.secrets
+      ? createSecretResolver({ secrets: config.secrets, clock: now, diagnostic, traces: () => store.traces })
+      : null,
     serviceFixtures: createServiceFixtureRegistry({ packs, diagnostic }),
     powerFx: createPowerFxEvaluator(powerFxAdapter === undefined ? {} : { adapter: powerFxAdapter }),
     localServices:
@@ -674,6 +679,47 @@ export async function activeDeploymentProfile({
 
 /** Status `routes`: the /_sim/api prefixes of the routers a host mounts (each router's `routes` export), in mounting order, unique. */
 export const simApiRoutes = (...lists) => [...new Set(lists.flat())];
+// The public trace-store methods an in-process runtime exposes as `simulator.trace` (docs/design/tracing.md).
+const TRACE_METHODS = [
+  'query',
+  'spans',
+  'tree',
+  'span',
+  'ancestry',
+  'stats',
+  'export',
+  'clear',
+  'settings',
+  'configure',
+  'status',
+  'subscribe',
+  'flush',
+];
+export const traceMethods = (traces) =>
+  Object.freeze(Object.fromEntries(TRACE_METHODS.map((name) => [name, traces[name]])));
+
+/**
+ * The trace host and module of an app surface path (D-R3-3): `/_apps/canvas*` and `/_apps/api/canvas/*` are canvas apps,
+ * `/_apps/code*` code apps, `/main.aspx` and every other `/_apps*` path the model-driven shell and its API; null otherwise.
+ */
+export function appTraceSurface(pathname) {
+  if (/^\/_apps\/(?:canvas(?:\/|$)|api\/canvas\/)/.test(pathname)) return { host: 'canvas', module: 'canvas' };
+  if (/^\/_apps\/code(?:\/|$)/.test(pathname)) return { host: 'code-app', module: 'code-apps' };
+  if (pathname === '/main.aspx' || /^\/_apps(?:\/|$)/.test(pathname))
+    return { host: 'model-driven', module: 'model-driven' };
+  return null;
+}
+
+/**
+ * The trace actor of a staff principal ({ kind: 'staff' | 'local-admin', principalId }, staff-session.mjs) with the
+ * user's display name; null for any other principal (a portal visitor keeps its root's contact actor).
+ */
+export function staffActor(organization, principal) {
+  if (!principal?.principalId || !['staff', 'local-admin'].includes(principal.kind)) return null;
+  const user = organization?.principals?.byId(principal.principalId);
+  const name = principal.kind === 'local-admin' ? 'Local administrator' : (user?.fullname ?? user?.domainname ?? null);
+  return { kind: 'staff', id: principal.principalId, name };
+}
 /** Status `modelDrivenApps`: the imported model-driven apps of the Solution metadata as { id, uniqueName, name }. */
 export const modelDrivenAppsOf = (metadata) =>
   (metadata?.modelDrivenApps ?? []).map(({ id, uniqueName, name }) => ({ id, uniqueName, name }));
@@ -746,7 +792,7 @@ export function codeAppDataverse({ organization, change, origin }) {
       ) {
         if (candidate === 'WhoAmI' && noParameters)
           return unboundFunction(
-            { organizationId: organization.organizationId },
+            { organizationId: organization.organizationId, store: organization.store },
             { method: 'GET', origin: url.origin, url },
             { kind: 'function', name: candidate, version: route.version ?? 'v9.2' },
             context,
@@ -780,9 +826,10 @@ export function codeAppDataverse({ organization, change, origin }) {
 /**
  * The code-app connector call (code-apps-http.mjs `connectors`): the power.config.json reference key binds a project
  * connection of the same id, else the connector's built-in provider. undefined (answered 501) when nothing implements it.
+ * `caller` names the calling surface in the connector context (canvas-runtime.mjs passes 'canvas').
  */
 export function codeAppConnectors(connectors, connections = {}) {
-  return async ({ reference, operationId, body, principal }) => {
+  return async ({ reference, operationId, body, principal, caller = 'code-app' }) => {
     const connectorId = connectorOf(reference.apiId ?? reference.key);
     const connectionId = Object.hasOwn(connections, reference.key) ? reference.key : null;
     connectors.validateOperation?.(connectorId, { operationId, parameters: body ?? {} });
@@ -801,7 +848,7 @@ export function codeAppConnectors(connectors, connections = {}) {
       parameters: body ?? {},
       connection,
       context: {
-        caller: 'code-app',
+        caller,
         initiatingUserId: principal?.principalId ?? null,
         correlationId: currentRequest()?.correlationId ?? null,
       },
@@ -819,6 +866,9 @@ export function codeAppConnectors(connectors, connections = {}) {
  *   runtime (runtimeSettings output), surfaces(): the host surfaces as { legacyKey: enabled } (capability summary keys),
  *   inventory(): the Solution inventory records, localOrigin(): the host's own origin once it listens, codeApps(): the loaded
  *   code app records (code-apps-config.mjs loadCodeApps) that topology() counts; projectRoot: the base of the relative pack paths it reports.
+ *   trace: the mirage.trace settings (trace-settings.mjs) of the one trace store (docs/design/tracing.md) the host creates,
+ *   exposes as host.traces and sets as store.traces; every host of the runtime shares it. traces: an existing trace store to
+ *   share instead (a persona runtime records into its parent's store; trace is then ignored).
  * The host builds handler maps and providers at once; createBackend, createOrganization and startApi run when the host is
  * ready for them (the portal host creates its backend before its organization). The steps below share one context `c`:
  * hostContext (inputs, handler maps, providers, canvas, flow runs, lifecycle state), hostCatalogues, hostRegistry,
@@ -826,9 +876,22 @@ export function codeAppConnectors(connectors, connections = {}) {
  */
 export async function composeOrganizationHost(options) {
   const c = await hostContext(options);
+  // One trace store per organization host; deep layers reach it as store.traces. Persisted traces go under the state folder;
+  // a memory-only runtime (dry-run, no state file) passes null and the store reports why it writes nothing.
+  c.traces =
+    options.traces ??
+    createTraceStore({
+      settings: options.trace ?? {},
+      stateDirectory: () => c.stateDirectory ?? null,
+      // A table filter names the logical or the entity set name (DV-N4-2).
+      entityNames: (name) => options.store.entityNames?.(name) ?? [name],
+    });
+  options.store.traces = c.traces;
   hostCatalogues(c);
   c.registry = hostRegistry(c);
   const host = {
+    // When this organization runtime started (epoch milliseconds on its clock): the dashboard's runtime.startedAt/uptimeMs.
+    startedAt: (options.store.clock ?? systemClock).now(),
     packs: c.packs,
     handlers: c.handlers,
     descriptors: c.descriptors,
@@ -839,6 +902,7 @@ export async function composeOrganizationHost(options) {
     workflows: c.workflows,
     operations: c.operations,
     cloudFlow: c.cloudFlow,
+    traces: c.traces,
     /**
      * Runs fn with this runtime's pack registries (expression operators, shell conventions) and query resolvers in scope:
      * hierarchy operators of portal FetchXML, Liquid and Web API queries resolve through this store's hierarchy module.
@@ -1045,6 +1109,8 @@ function hostCatalogues(c) {
       .operations()
       .find((entry) => entry.kind === 'cloud-flow' && canonical(entry.processId) === canonical(id));
     return {
+      // The flow's display name (the flow-run span name, docs/design/tracing.md).
+      name: workflow.name ?? null,
       definition: definitionOf(workflow),
       mode: item?.mode ?? 'placeholder',
       steps: item?.configuration?.steps,
@@ -1297,6 +1363,7 @@ function hostLifecycle(c) {
     }) {
       c.dataverse = await startDataverseApi({
         organization: c.organization,
+        traces: c.traces,
         host: listenHost,
         tls,
         beforeListen,
@@ -1418,7 +1485,8 @@ function hostReports(c) {
     /**
      * The shared part of GET /_sim/api/dashboard (sim-dashboard-routes.mjs): { runtime, nodes, edges, activity } from the
      * registry, providers, configuration, the Dataverse listener and cheap table counts. Memoised on the store revision, the
-     * counters tick and a 5-second time bucket; never reads a secret value, connection settings or a service endpoint URL beyond its hostname.
+     * counters tick and a 5-second time bucket, except activity.trace, which is read per call; never reads a secret value,
+     * connection settings or a service endpoint URL beyond its hostname.
      */
     topology: () => {
       // A 5-second time bucket refreshes counts that change with time alone (message locks and schedules, overdue waits).
@@ -1452,7 +1520,14 @@ function hostReports(c) {
             projectRoot: c.projectRoot,
           }),
         };
-      return structuredClone(c.topologyMemo.value);
+      const value = structuredClone(c.topologyMemo.value);
+      // Every traced request moves the trace counters without a store write or counter tick, so they are read per call.
+      const trace = store.traces ? attempt(() => store.traces.status(), null) : null;
+      if (trace) {
+        const { retained, spans, running, dropped, droppedSpans, latestSequence } = trace;
+        value.activity.trace = { retained, spans, running, dropped, droppedSpans, latestSequence };
+      }
+      return value;
     },
     /** Status payload fields: the legacy boolean summary and the registry report. */
     capabilityStatus: ({ reuse = false } = {}) =>
@@ -1962,6 +2037,22 @@ function orgNodes({
     },
     { link: '#flows' },
   );
+  // The trace store of this host (docs/design/tracing.md): its level and persistence, linking to the trace view. What it
+  // retains changes with every traced request, so those counters are activity.trace (topology()), not node detail.
+  const trace = store.traces ? attempt(() => store.traces.status(), null) : null;
+  if (trace)
+    node(
+      'org:trace',
+      'org',
+      'Tracing',
+      trace.enabled ? 'ready' : 'disabled',
+      {
+        level: trace.level,
+        persist: trace.persist?.enabled ?? false,
+        persistError: trace.persist?.lastError ?? null,
+      },
+      { link: '#activity' },
+    );
   edge('org:store', 'org:plugins', 'process', 'ready', 'pipeline');
   edge('org:plugins', 'org:store', 'process', 'ready', 'SDK calls');
   edge('org:plugins', 'org:jobs', 'process', 'ready', 'async steps');
