@@ -117,12 +117,21 @@ test('Standard bulk validates all identities/security before writing and preserv
   );
   assert.equal(calls, 1);
   assert.deepEqual(store.snapshot(), before);
+  // @parity-evidence: native recorder corpus bulk: a CreateMultiple request with both CreateMultiple and Create steps runs
+  // them all (CreateMultiple first, then each record's Create, at every stage); a host pipeline without a step catalogue
+  // no longer refuses that mix.
+  const seen = [];
   store.setPluginPipeline(
-    () => {},
+    (context) => {
+      seen.push(`${context.operation}/${context.stage}`);
+    },
     () => true,
   );
-  assert.throws(() => invoke(store, 'CreateMultiple', [entity({ title: 'mixed' })]), /merged-pipeline ordering/);
-  assert.deepEqual(store.snapshot(), before);
+  await store.transact(() => invoke(store, 'CreateMultiple', [entity({ title: 'mixed' })]));
+  assert.deepEqual(
+    seen,
+    [10, 20, 40].flatMap((stage) => [`createmultiple/${stage}`, `create/${stage}`]),
+  );
 });
 
 // @test-kind security: backend grant predicates are re-checked per bulk target after PreOperation SDK changes; no stale grant survives

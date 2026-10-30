@@ -54,6 +54,7 @@ function jobColumns(store, item, event, chain) {
     /* A removed entity has no primary-key column to include. */
   }
   const recordId =
+    // A bridged multiple job (plugin-single-multiple.mjs) concerns its single event's row.
     idColumn && !['createmultiple', 'updatemultiple', 'retrievemultiple'].includes(event.operation)
       ? (event.row?.[idColumn] ?? null)
       : null;
@@ -63,7 +64,7 @@ function jobColumns(store, item, event, chain) {
     regardingobjectid: recordId ? { id: recordId, logical_name: event.entity } : null,
     regardingobjecttypecode: event.entity,
     primaryentitytype: event.entity,
-    messagename: event.customApi?.name ?? messageNameOf(event.operation),
+    messagename: event.customApi?.name ?? messageNameOf(event.bridgedMessage ?? event.operation),
     correlationid: chain.id,
     depth: event.frame?.operationDepth ?? chain.depth + 1,
     ...(requestId == null ? {} : { requestid: requestId }),
@@ -268,6 +269,7 @@ export function createAsyncPluginRunner({
         bypassStepIds: event.bypassStepIds,
         bypassCustomPlugins: event.bypassCustomAsync,
         diagnostic,
+        bridgedMessage: event.bridgedMessage ?? null,
       })
     )
       return 'Simulator: this asynchronous registration no longer matches its queued message; nothing was executed.';
@@ -315,6 +317,7 @@ export function createAsyncPluginRunner({
           targets: event.targets,
           previousRecords: event.previousRecords,
           records: event.records,
+          bridged: Boolean(event.bridgedMessage),
           depth: chain.depth + 1,
           correlationId: event.correlationId ?? chain.id,
           diagnostic,
@@ -406,6 +409,7 @@ export function createAsyncPluginRunner({
             initialFrame: jobExecutionFrame(store, id, event),
             // A record a bulk message delegated has no ConcurrencyBehavior input (recorded corpus).
             ...(event.fromBulk ? { concurrencyBehavior: null } : {}),
+            bridgedMessage: event.bridgedMessage ?? null,
             asyncExecution: true,
             diagnostic,
             onStepExecuted: () => {
@@ -502,7 +506,8 @@ export function createAsyncPluginRunner({
       const job = rows[index];
       if (
         job.statecode !== 0 ||
-        !['Create', 'Update'].includes(job.messagename) ||
+        // UpdateMultiple and CreateMultiple jobs of a single write wait on the same row (native asyncDeletedRow).
+        !['Create', 'Update', 'CreateMultiple', 'UpdateMultiple'].includes(job.messagename) ||
         job.regardingobjectid?.logical_name !== event.entity ||
         !sameId(job.regardingobjectid?.id, rowId) ||
         !String(job.data ?? '').includes('"kind":"plugin"')
@@ -564,80 +569,38 @@ export function createAsyncPluginRunner({
         )
         .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
       for (const item of selected) {
-        let invocation = event;
-        if (String(item.message).toLowerCase() !== event.operation) {
-          const mapping = store.resolveMapping(event.entity),
-            id = event.row[mapping.idColumn];
-          const target = recordToSdkEntity(store, event.entity, event.target ?? {}, {
-            allColumns: true,
-            target: true,
-            postOperation: true,
-          });
-          target.id = id;
-          const multipleFrame = event.frame?.multipleFrame,
-            sourceParent = event.frame?.asyncSourceParent,
-            asyncSourceParent = sourceParent?.target
-              ? {
-                  ...sourceParent,
-                  inputParameters: {
-                    $type: 'ParameterCollection',
-                    values: {
-                      ...sourceParent.inputParameters?.values,
-                      Target: recordToSdkEntity(store, event.entity, sourceParent.target, {
-                        allColumns: true,
-                        target: true,
-                      }),
-                    },
-                  },
-                }
-              : sourceParent,
-            requestTag = Object.hasOwn(multipleFrame ?? {}, 'requestTag')
-              ? multipleFrame.requestTag
-              : event.frame?.requestTag;
-          const sharedVariables = {
-            ...(event.frame?.asyncSourceParent?.childSharedVariables?.values ?? {}),
-            ...(multipleFrame?.sharedVariables?.values ?? {}),
-            ...(requestTag === undefined ? {} : { tag: requestTag }),
-          };
-          invocation = {
-            ...event,
-            operation: multipleMessage(event.operation),
-            row: { [mapping.idColumn]: '00000000-0000-0000-0000-000000000000', bulkIds: [id] },
-            targets: [target],
-            previousRecords: [event.previous ?? null],
-            records: [event.row],
-            // An async-only multiple registration has no synchronous wrapper
-            // frame. Retain the known originating operation metadata without
-            // copying the scalar message's Target/outputs or parent snapshot.
-            frame: {
-              ...Object.fromEntries(
-                Object.entries(event.frame ?? {}).filter(([key]) =>
-                  [
-                    'requestTag',
-                    'requestId',
-                    'suppliedRequestId',
-                    'operationId',
-                    'correlationId',
-                    'createdOn',
-                    'createdOnWire',
-                    'operationDepth',
-                    'asyncSourceParent',
-                    'bulkOrigin',
-                    'formattedTargetKeys',
-                  ].includes(key),
-                ),
-              ),
-              ...(multipleFrame ?? {}),
-              ...(asyncSourceParent ? { asyncSourceParent } : {}),
-              ...(!Object.keys(sharedVariables).length
-                ? {}
-                : {
-                    sharedVariables: { $type: 'ParameterCollection', values: sharedVariables },
-                  }),
-            },
-            messageEvent: true,
-          };
-        }
+        // A single-origin event queues its paired multiple message's steps as jobs of the same operation: they run the
+        // single event under the multiple message name (native crud, depth: CreateMultiple/40/m1 shares the Create job's
+        // request, row, Target and parent chain).
+        // JavaScript and web hook contexts name that multiple message's saved main operation as their parent.
+        const source = event.frame?.asyncSourceParent;
+        const invocation =
+          String(item.message).toLowerCase() === event.operation
+            ? event
+            : {
+                ...event,
+                bridgedMessage: multipleMessage(event.operation),
+                ...(source?.target
+                  ? {
+                      frame: {
+                        ...event.frame,
+                        asyncSourceParent: {
+                          ...source,
+                          inputParameters: {
+                            $type: 'ParameterCollection',
+                            values: {
+                              ...source.inputParameters?.values,
+                              Target: recordToSdkEntity(store, event.entity, source.target, {
+                                allColumns: true,
+                                target: true,
+                              }),
+                            },
+                          },
+                        },
+                      },
+                    }
+                  : {}),
+              };
         // A root event (no chain) starts its own chain, so the rows of one bulk commit never share one chain budget.
         const chain = event.chain ?? { id: (store.ids ?? systemIds).uuid(), depth: 0 },
           count = (counts.get(chain.id) ?? runs.get(chain.id) ?? 0) + 1;

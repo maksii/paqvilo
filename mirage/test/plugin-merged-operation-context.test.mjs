@@ -58,6 +58,12 @@ function assertContexts(seen, operation, multipleFirst) {
     assert.equal(new Set(seen.map((context) => context[field])).size, 1, field + ' belongs to one merged request');
   }
   assert.equal(seen[0].operation, seen[0].request);
+  // One SharedVariables collection per phase for both messages: each step sees the last writer of its phase.
+  // PreValidation's collection is the main operation's; PreOperation and PostOperation share a fresh one.
+  assert.deepEqual(
+    seen.map((context) => context.prior ?? null),
+    [null, ordered[0], null, ordered[0], ordered[1], ordered[0]],
+  );
   for (const context of seen.filter((context) => context.parentRequest != null)) {
     assert.equal(context.parentRequest, context.request);
     assert.equal(context.parentOperation, context.operation);
@@ -65,7 +71,8 @@ function assertContexts(seen, operation, multipleFirst) {
   }
 }
 
-test('typed scalar-first and multiple-first lanes share operation metadata while retaining their own inputs and variables', async (t) => {
+// @test-kind parity: native recorder corpus pipelineEffects (native and native-r2): a Create PreValidation step's shared variable reaches the CreateMultiple step of the same phase, a PreOperation one reaches CreateMultiple PreOperation, the PostOperation steps and the queued job; crud: Create and CreateMultiple contexts share RequestId, OperationId and CorrelationId and keep their own Target/Targets inputs
+test('typed scalar-first and multiple-first lanes share operation metadata and variables while retaining their own inputs', async (t) => {
   for (const operation of ['Create', 'Update'])
     for (const multipleFirst of [false, true])
       await t.test(operation + (multipleFirst ? ' multiple-first' : ' scalar-first'), async (t) => {
@@ -78,9 +85,10 @@ test('typed scalar-first and multiple-first lanes share operation metadata while
                 const multiple = context.MessageName.endsWith('Multiple');
                 assert.equal(Object.hasOwn(context.InputParameters, 'Target'), !multiple);
                 assert.equal(Object.hasOwn(context.InputParameters, 'Targets'), multiple);
-                assert.ok(context.SharedVariables.lane == null || context.SharedVariables.lane === context.MessageName);
+                const prior = context.SharedVariables.lane ?? null;
                 context.SharedVariables.lane = context.MessageName;
                 seen.push({
+                  prior,
                   message: context.MessageName,
                   stage: context.Stage,
                   request: context.RequestId,
@@ -107,7 +115,8 @@ test('typed scalar-first and multiple-first lanes share operation metadata while
       });
 });
 
-test('synchronous multiple-only metadata reaches queued scalar steps without exposing the multiple message collections', async (t) => {
+// @test-kind parity: native recorder corpus pipelineEffects (native and native-r2): a variable a PreOperation step shares reaches the queued job of the same operation, and the job keeps its own message's Target input
+test('synchronous multiple-step metadata and shared variables reach queued scalar steps without the multiple message inputs', async (t) => {
   for (const operation of ['Create', 'Update'])
     await t.test(operation, async (t) => {
       const f = fixture(operation, false),
@@ -118,7 +127,7 @@ test('synchronous multiple-only metadata reaches queued scalar steps without exp
           'Invented.Observer',
           ({ context }) => {
             observed.push(context);
-            if (context.Mode === 0) context.SharedVariables.multipleOnly = 'Private multiple lane variable';
+            if (context.Mode === 0) context.SharedVariables.multipleOnly = 'Shared by the multiple step';
           },
         ],
       ]);
@@ -160,7 +169,7 @@ test('synchronous multiple-only metadata reaches queued scalar steps without exp
       assert.notEqual(single.OperationId, multiple.OperationId);
       assert.equal(single.OperationCreatedOn, job.createdon.replace(/Z$/, ''));
       assert.equal(single.SharedVariables.tag, 'Merged canonical request tag');
-      assert.equal(Object.hasOwn(single.SharedVariables, 'multipleOnly'), false);
+      assert.equal(single.SharedVariables.multipleOnly, 'Shared by the multiple step');
       assert.equal(Object.hasOwn(single.InputParameters, 'Target'), true);
       assert.equal(Object.hasOwn(single.InputParameters, 'Targets'), false);
       assert.equal(f.store.tableRows('asyncoperation')[0].statuscode, 30);
@@ -180,7 +189,7 @@ test(
     t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 5 }));
     await fs.writeFile(
       source,
-      `using System;using System.IO;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Observer:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;var multiple=c.MessageName.EndsWith("Multiple");if(c.InputParameters.Contains("Target")==multiple||c.InputParameters.Contains("Targets")!=multiple)throw new Exception("Merged input lanes were mixed");if(c.SharedVariables.Contains("lane")&&(string)c.SharedVariables["lane"]!=c.MessageName)throw new Exception("Merged variables were mixed");c.SharedVariables["lane"]=c.MessageName;File.AppendAllText(@"${log.replaceAll('"', '""')}",String.Join("|",new[]{c.MessageName,c.Stage.ToString(),c.RequestId.ToString(),c.OperationId.ToString(),c.CorrelationId.ToString(),c.OperationCreatedOn.ToString("O"),c.OperationCreatedOn.Kind.ToString(),parent==null?"":parent.RequestId.ToString(),parent==null?"":parent.OperationId.ToString(),parent==null?"":parent.OperationCreatedOn.ToString("O")})+"\\n");}}}`,
+      `using System;using System.IO;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Observer:IPlugin{public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;var multiple=c.MessageName.EndsWith("Multiple");if(c.InputParameters.Contains("Target")==multiple||c.InputParameters.Contains("Targets")!=multiple)throw new Exception("Merged input lanes were mixed");var prior=c.SharedVariables.Contains("lane")?(string)c.SharedVariables["lane"]:"";c.SharedVariables["lane"]=c.MessageName;File.AppendAllText(@"${log.replaceAll('"', '""')}",String.Join("|",new[]{c.MessageName,c.Stage.ToString(),c.RequestId.ToString(),c.OperationId.ToString(),c.CorrelationId.ToString(),c.OperationCreatedOn.ToString("O"),c.OperationCreatedOn.Kind.ToString(),parent==null?"":parent.RequestId.ToString(),parent==null?"":parent.OperationId.ToString(),parent==null?"":parent.OperationCreatedOn.ToString("O"),prior})+"\\n");}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({
@@ -231,6 +240,7 @@ test(
                 parentRequest,
                 parentOperation,
                 parentCreated,
+                prior,
               ] = line.split('|');
               assert.equal(kind, 'Unspecified');
               return {
@@ -240,6 +250,7 @@ test(
                 operation,
                 correlation,
                 created,
+                prior: prior || null,
                 ...(parentRequest ? { parentRequest, parentOperation, parentCreated } : {}),
               };
             });

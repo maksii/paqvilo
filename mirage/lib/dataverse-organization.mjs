@@ -364,6 +364,9 @@ async function composeOrganizationRuntime({
     diagnostic: extensionDiagnostics(diagnostic),
   };
   api.secrets = api.providers.secrets;
+  // The plug-in SDK bridge holds only the store; it reaches the organization's message services (metadata, version) through
+  // the store's record entries (plugin-sdk-messages.mjs organizationApiOf).
+  Object.defineProperty(recordHandlers, 'organizationApi', { value: api, configurable: true });
   // Metadata functions over the metadata service's response builders.
   const metadataFunction = (name, respond, csdl) =>
     operations.register({

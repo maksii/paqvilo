@@ -14,6 +14,8 @@ import { CLR_SKIP, clrSdk, compileClr } from './fixtures/clr-sdk.mjs';
 const caller = '10000000-0000-0000-0000-000000000001';
 const runAs = '10000000-0000-0000-0000-000000000002';
 const recordId = '10000000-0000-0000-0000-000000000003';
+// Native recorder corpus crud: an UpdateMultiple step of a single Update reports that Update's PrimaryEntityId and has the
+// Update/30 main operation the single Update steps see as its parent (same principal, depth and transaction).
 test(
   'an implicit UpdateMultiple CLR step has its original single Update core parent at the same depth',
   { skip: CLR_SKIP },
@@ -25,7 +27,7 @@ test(
       assembly = path.join(root, 'Delegated.dll');
     await fs.writeFile(
       source,
-      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Delegated:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(c.MessageName!="UpdateMultiple"||c.Depth!=1||c.PrimaryEntityId!=Guid.Empty||c.UserId!=new Guid("${runAs}")||parent==null||parent.MessageName!="Update"||parent.Stage!=30||parent.Depth!=c.Depth||parent.PrimaryEntityId!=new Guid("${recordId}")||parent.UserId!=new Guid("${caller}")||!parent.IsInTransaction)throw new Exception("Delegated core context lost");var target=(Entity)parent.InputParameters["Target"];if(target.Id!=new Guid("${recordId}")||target.GetAttributeValue<string>("title")!="After")throw new Exception("Original single target lost");}}}`,
+      `using System;using Microsoft.Xrm.Sdk;namespace Invented {public sealed class Delegated:IPlugin {public void Execute(IServiceProvider p){var c=(IPluginExecutionContext)p.GetService(typeof(IPluginExecutionContext));var parent=c.ParentContext;if(c.MessageName!="UpdateMultiple"||c.Depth!=1||c.PrimaryEntityId!=new Guid("${recordId}")||c.UserId!=new Guid("${runAs}")||parent==null||parent.MessageName!="Update"||parent.Stage!=30||parent.Depth!=c.Depth||parent.PrimaryEntityId!=new Guid("${recordId}")||parent.UserId!=c.UserId||!parent.IsInTransaction)throw new Exception("Delegated core context lost");var target=(Entity)parent.InputParameters["Target"];if(target.Id!=new Guid("${recordId}")||target.GetAttributeValue<string>("title")!="After")throw new Exception("Original single target lost");}}}`,
     );
     compileClr(source, assembly, { references: [sdk] });
     const runtime = await prepareClrRuntime({

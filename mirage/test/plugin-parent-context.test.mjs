@@ -86,52 +86,65 @@ function probe(store, want, { act, stepOf = () => step(), multiple } = {}) {
     snapshots = new WeakMap();
   const pipeline = (phase) => {
     const frame = runPluginPhase({ ...phase, store, items: [], handlers: new Map() });
-    const label = `${phase.customApi?.name ?? phase.operation}/${phase.stage}`;
-    if (!want(label, phase)) return frame;
-    if (phase.stage !== 10 && snapshots.has(phase.record)) frame.preValidationContext = snapshots.get(phase.record);
-    frame.callerIdentity ??= phase.identity;
-    // A multiple message step reads its Targets and images from the frame (exported-plugins.mjs).
-    if (phase.targets)
-      Object.assign(frame, { targets: phase.targets, previousRecords: phase.previousRecords, records: phase.records });
-    const answer = clrContext({
-      runtime,
-      store,
-      step: stepOf(label),
-      entity: phase.entity,
-      operation: phase.operation,
-      stage: phase.stage,
-      target: phase.target,
-      record: phase.record,
-      previous: phase.previous,
-      frame,
-      depth: pluginExecutionDepth() + 1,
-    });
-    seen.push({
-      label,
-      context: answer.context,
-      inputs: answer.inputParameters.values,
-      shared: answer.sharedVariables,
-    });
-    // A record PreValidation step's context becomes the main operation's parent snapshot (exported-plugins.mjs).
-    if (phase.stage === 10 && ['create', 'update', 'delete'].includes(phase.operation))
-      snapshots.set(phase.record, {
-        $type: 'ExecutionContext',
-        values: {
-          ...structuredClone(answer.context),
-          InputParameters: structuredClone(answer.inputParameters),
-          OutputParameters: structuredClone(answer.outputParameters),
-          SharedVariables: structuredClone(answer.sharedVariables),
-        },
+    // @parity-evidence: native recorder corpus crud/depth/faults (two captures): a single Create/Update/Delete runs its paired multiple message's steps on the same frame (audit C26a); only this probe helper changes, no assertion
+    // A single Create/Update/Delete also runs its multiple message's steps on its own frame (plugin-single-multiple.mjs).
+    const labels = [
+      `${phase.customApi?.name ?? phase.operation}/${phase.stage}`,
+      ...(multiple && phase.bridgedMessage ? [`${phase.bridgedMessage}/${phase.stage}`] : []),
+    ];
+    for (const label of labels) {
+      if (!want(label, phase)) continue;
+      const bridged = label !== labels[0];
+      if (phase.stage !== 10 && snapshots.has(phase.record)) frame.preValidationContext = snapshots.get(phase.record);
+      frame.callerIdentity ??= phase.identity;
+      // A multiple message step reads its Targets and images from the frame (exported-plugins.mjs).
+      if (phase.targets)
+        Object.assign(frame, {
+          targets: phase.targets,
+          previousRecords: phase.previousRecords,
+          records: phase.records,
+        });
+      const answer = clrContext({
+        runtime,
+        store,
+        step: stepOf(label),
+        entity: phase.entity,
+        operation: phase.operation,
+        stage: phase.stage,
+        target: phase.target,
+        record: phase.record,
+        previous: phase.previous,
+        frame,
+        depth: pluginExecutionDepth() + 1,
+        bridged,
       });
-    enterPluginExecution();
-    try {
-      act?.(answer, label);
-    } finally {
-      leavePluginExecution();
+      seen.push({
+        label,
+        context: answer.context,
+        inputs: answer.inputParameters.values,
+        shared: answer.sharedVariables,
+      });
+      // A record PreValidation step's context becomes the main operation's parent snapshot (exported-plugins.mjs).
+      if (!bridged && phase.stage === 10 && ['create', 'update', 'delete'].includes(phase.operation))
+        snapshots.set(phase.record, {
+          $type: 'ExecutionContext',
+          values: {
+            ...structuredClone(answer.context),
+            InputParameters: structuredClone(answer.inputParameters),
+            OutputParameters: structuredClone(answer.outputParameters),
+            SharedVariables: structuredClone(answer.sharedVariables),
+          },
+        });
+      enterPluginExecution();
+      try {
+        act?.(answer, label);
+      } finally {
+        leavePluginExecution();
+      }
     }
     return frame;
   };
-  store.setPluginPipeline(multiple ? singleMultiplePipeline(store, () => multiple, pipeline) : pipeline);
+  store.setPluginPipeline(multiple ? singleMultiplePipeline(pipeline) : pipeline);
   return seen;
 }
 // The plug-in's SDK request, with the server's entry snapshot of the calling step as its parent.

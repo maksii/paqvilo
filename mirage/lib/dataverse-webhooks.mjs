@@ -30,6 +30,7 @@ import { recordToSdkEntity } from './plugin-clr.mjs';
 import { imageAttributes } from './plugin-images.mjs';
 import { PLATFORM_TYPES } from './dataverse-operation-contracts.mjs';
 import { delegatedPluginParent } from './plugin-delegation.mjs';
+import { bridgeTargetInputs, multipleMessage } from './plugin-single-multiple.mjs';
 import { exactNumeric, stringifyExactJson } from './exact-numeric.mjs';
 
 const LOOPBACK = /^(?:(?:[a-z0-9-]+\.)*localhost|127(?:\.\d{1,3}){3}|\[::1\])$/i;
@@ -449,6 +450,19 @@ export function remoteExecutionContext(store, facts) {
       );
     }
   }
+  // A bridged multiple step (plugin-single-multiple.mjs) receives the single Target as one Targets record.
+  if (facts.bridged) {
+    const sdkTarget =
+      operation === 'delete'
+        ? { $type: 'EntityReference', logicalName: entity, id: record?.[idColumn] }
+        : frame.inputParametersStage === stage && frame.inputParameters?.values?.Target?.$type === 'Entity'
+          ? frame.inputParameters.values.Target
+          : recordToSdkEntity(store, entity, { [idColumn]: record?.[idColumn], ...target }, { allColumns: true });
+    inputs = [
+      ...inputs.filter((entry) => entry.key !== 'Target'),
+      ...pairs(bridgeTargetInputs({ Target: sdkTarget }, entity)),
+    ];
+  }
   const outputs =
     facts.messageParameters?.outputParameters?.values ??
     frame.outputParameters?.values ??
@@ -474,7 +488,7 @@ export function remoteExecutionContext(store, facts) {
     IsInTransaction: !asyncExecution && store.pluginInTransaction === true,
     IsOfflinePlayback: false,
     IsolationMode: 1, // as in the documented sample
-    MessageName: facts.customApi?.name ?? messageNameOf(operation),
+    MessageName: facts.customApi?.name ?? messageNameOf(facts.bridged ? multipleMessage(operation) : operation),
     Mode: asyncExecution ? 1 : 0,
     OperationCreatedOn: `/Date(${asyncExecution && frame.asyncOperation ? operationTimeEpoch(frame.asyncOperation.createdOn) : frame.createdOn == null ? (store.clock ?? systemClock).now() : operationTimeEpoch(frame.createdOn)})/`,
     OperationId:
@@ -495,11 +509,12 @@ export function remoteExecutionContext(store, facts) {
     ),
     PostEntityImages: stage === 40 && operation !== 'delete' ? images(record, [1, 2]) : [],
     PreEntityImages: images(previous, [0, 2]),
-    PrimaryEntityId: ['associate', 'disassociate'].includes(operation)
-      ? '00000000-0000-0000-0000-000000000000'
-      : (record?.[idColumn] ??
-        previous?.[idColumn] ??
-        (facts.customApi ? '00000000-0000-0000-0000-000000000000' : null)),
+    PrimaryEntityId:
+      ['associate', 'disassociate'].includes(operation) || (facts.bridged && asyncExecution && operation === 'delete')
+        ? '00000000-0000-0000-0000-000000000000'
+        : (record?.[idColumn] ??
+          previous?.[idColumn] ??
+          (facts.customApi ? '00000000-0000-0000-0000-000000000000' : null)),
     PrimaryEntityName: ['associate', 'disassociate'].includes(operation)
       ? 'none'
       : entity || (facts.customApi ? 'none' : entity),
@@ -519,7 +534,7 @@ export function remoteExecutionContext(store, facts) {
       ),
     );
   }
-  const asyncParent = asyncMultiplePluginParent(frame, operation, entity);
+  const asyncParent = asyncMultiplePluginParent(frame, facts.bridged ? multipleMessage(operation) : operation, entity);
   if (asyncParent) context.ParentContext = dataContract(asyncParent);
   return context;
 }
@@ -1156,3 +1171,51 @@ export function serviceEndpointDelivery(store, { bus = null, messaging = bus } =
 
 /** Alias of serviceEndpointDelivery: the name the organization backend calls (without options, contract 8 only). */
 export const webhookDelivery = (store, options) => serviceEndpointDelivery(store, options);
+
+/**
+ * IServiceEndpointNotificationService.Execute from a plug-in (plugin-sdk-messages.mjs): posts the plug-in's RemoteExecutionContext
+ * (serialized by the CLR host with the official DataContractJsonSerializer) to a web hook endpoint on the synchronous I/O bridge,
+ * under the rule of a synchronous step: a contacted endpoint answering outside 2xx fails the call ("Endpoint unavailable"); a
+ * non-loopback endpoint is not contacted (WEBHOOK_NOT_CONTACTED). Answers null: the web hook's response body is not returned.
+ * Other contracts (Service Bus queues, topics, Event Hub, two-way listeners) are not posted from a plug-in locally (501).
+ */
+export function notifyServiceEndpoint(store, endpointId, body, diagnostic = () => {}) {
+  const endpoint = store.tableRows('serviceendpoint').find((row) => same(row.serviceendpointid, endpointId));
+  if (!endpoint)
+    throw new DataError(`serviceendpoint With Id = ${endpointId} Does Not Exist`, 404, 'NotFound', {
+      innerCode: '0x80040217',
+    });
+  if (Number(endpoint.contract) !== WEBHOOK_CONTRACT)
+    throw new DataError(
+      `Service endpoint contract ${Number(endpoint.contract)} is not posted from a plug-in locally; only web hooks (contract 8) are.`,
+      501,
+      'LocalPluginSdkUnsupported',
+    );
+  if (!isLoopbackUrl(endpoint.url)) {
+    diagnostic({
+      code: 'WEBHOOK_NOT_CONTACTED',
+      severity: 'warning',
+      reason: 'non-loopback',
+      host: hostnameOf(endpoint.url),
+      message: 'The simulator contacts only loopback webhook endpoints. The endpoint was not called.',
+    });
+    return null;
+  }
+  const context = JSON.parse(body),
+    org = organizationRecord(store) ?? {};
+  const { status } = postSync({
+    url: new URL(endpoint.url).toString(),
+    headers: {
+      'content-type': 'application/json',
+      'x-ms-dynamics-organization': String(org.domainname ?? org.name ?? ''),
+      'x-ms-dynamics-entity-name': context.PrimaryEntityName ?? '',
+      'x-ms-dynamics-request-name': context.MessageName ?? '',
+      'x-ms-correlation-request-id': context.CorrelationId ?? '',
+    },
+    body,
+    auth: { type: Number(endpoint.authtype), value: endpoint.authvalue ?? '' },
+  });
+  store.counters?.increment(status >= 200 && status < 300 ? 'webhooks.delivered' : 'webhooks.failed');
+  if (!(status >= 200 && status < 300)) throw unavailable();
+  return null;
+}
