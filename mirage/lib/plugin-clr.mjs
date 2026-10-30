@@ -36,8 +36,14 @@ import { CRM_FUNCTIONS } from './dataverse-conditions.mjs';
 import { runtimeConstructorSettings } from './plugin-constructor-configuration.mjs';
 import { validateSdkTag, canonicalTagParent } from './plugin-request-tag.mjs';
 import { executePlatformSdkMessage, isPlatformSdkMessage } from './plugin-platform-messages.mjs';
-import { executePluginServiceCall, executeSdkOrganizationMessage, sdkFault } from './plugin-sdk-messages.mjs';
+import {
+  executePluginServiceCall,
+  executeSdkOrganizationMessage,
+  organizationApiOf,
+  sdkFault,
+} from './plugin-sdk-messages.mjs';
 import { formatPipelineTargets, pipelineFormattedValues } from './plugin-formatted-values.mjs';
+import { privilegeDeniedError } from './dataverse-security.mjs';
 const sha = (value) => createHash('sha256').update(value).digest('hex'),
   uuid = /^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const fail = (message, code = 'LocalPluginClrConfiguration', status = 409) => {
@@ -859,26 +865,39 @@ function dispatchSdkCallCore({
   sdkFromSandbox = false,
   invokingUserId,
 }) {
-  // Natively CreateOrganizationService(null) runs as the organization's SYSTEM user and
-  // CreateOrganizationService(context.UserId) as the step's executing user. Both keep the step's backend grants;
-  // any other user still needs its own evidence-backed caller profile.
+  // IOrganizationServiceFactory.CreateOrganizationService (Learn): null is the organization's SYSTEM user, Guid.Empty the
+  // step's executing user (context.UserId), any other id that system user. With an organization the calls are authorized by
+  // that user's Dataverse security roles, as the Web API authorizes its callers (SYSTEM is not checked; a missing privilege
+  // is the native 0x80040220 fault). A store without a Dataverse security model has no roles: there the descriptor's
+  // grants (or a caller profile of that user) authorize the call. So do they for the descriptor's own identities (its
+  // profile user, the step's executing user) when the organization has no such systemuser: those are project-configured
+  // stand-ins, not users the plug-in chose.
   const system = store.tableRows('systemuser').find((row) => row.fullname === 'SYSTEM');
-  const selected =
+  const runAs =
     message.userId === null
-      ? system
-        ? { ...profile, userId: system.systemuserid }
-        : profile
-      : invokingUserId &&
-          canon(message.userId) === canon(invokingUserId) &&
-          canon(profile.userId) !== canon(invokingUserId)
-        ? { ...profile, userId: message.userId }
-        : [profile, ...callerProfiles].find((candidate) => canon(candidate.userId) === canon(message.userId));
-  if (!selected)
-    fail(
-      'SDK impersonation is not covered by the configured backend profiles.',
-      'LocalPluginImpersonationUnsupported',
-      501,
-    );
+      ? (system?.systemuserid ?? profile.userId)
+      : canon(message.userId) === canon('00000000-0000-0000-0000-000000000000')
+        ? (invokingUserId ?? profile.userId)
+        : message.userId;
+  const principals = organizationApiOf(store)?.principals,
+    user = principals?.byId(runAs),
+    configured = [profile.userId, invokingUserId].some((id) => id && canon(id) === canon(runAs));
+  let selected;
+  if (principals && (user || !configured)) {
+    if (!user)
+      throw new DataError(`systemuser With Id = ${runAs} Does Not Exist`, 404, 'NotFound', { innerCode: '0x80040217' });
+    selected = {
+      userId: user.systemuserid,
+      evidence: profile.evidence,
+      grants: [],
+      ...(profile.bulkTables ? { bulkTables: profile.bulkTables } : {}),
+      dataverseSecurity: system && canon(user.systemuserid) === canon(system.systemuserid) ? 'system' : user,
+    };
+  } else
+    selected = {
+      ...([profile, ...callerProfiles].find((candidate) => canon(candidate.userId) === canon(runAs)) ?? profile),
+      userId: runAs,
+    };
   validateServiceProfile(selected);
   const previousExecutionUser = store.pluginExecutionUserId;
   store.pluginExecutionUserId = selected.userId;
@@ -911,12 +930,23 @@ function sdkBypassOptions(parameters, profile, store) {
   const bypassStepIds = parseBypassStepIds(store, parameters.BypassBusinessLogicExecutionStepIds);
   if (logic.some((value) => !['customsync', 'customasync'].includes(value)))
     fail('SDK BypassBusinessLogicExecution accepts CustomSync and CustomAsync.', 'LocalPluginSdkUnsupported', 501);
+  // A run-as user holds a bypass privilege through its roles (System Administrator holds both, as on the Web API).
+  const security = profile.dataverseSecurity,
+    principals = security && security !== 'system' ? organizationApiOf(store)?.principals : null;
+  const holds = (privilege) =>
+    security === 'system' ||
+    (principals
+      ? principals.privileges(security).get(privilege) > 0 ||
+        principals.roles(security).some((role) => role.name === 'System Administrator')
+      : profile.privileges?.includes(privilege));
   for (const [requested, privilege] of [
     [parameters.BypassCustomPluginExecution === true, 'prvBypassCustomPlugins'],
     [logic.length > 0 || bypassStepIds.length > 0, 'prvBypassCustomBusinessLogic'],
   ])
-    if (requested && !profile.privileges?.includes(privilege))
-      fail('The local backend profile lacks ' + privilege + '.', 'LocalBackendPermissionDenied', 403);
+    if (requested && !holds(privilege))
+      throw principals
+        ? privilegeDeniedError(security, privilege, 'systemuser')
+        : new DataError('The local backend profile lacks ' + privilege + '.', 403, 'LocalBackendPermissionDenied');
   return {
     bypassCustomPlugins: parameters.BypassCustomPluginExecution === true || logic.includes('customsync'),
     bypassCustomAsync: logic.includes('customasync'),
@@ -959,19 +989,6 @@ function dispatchSdkCallAuthorized({ store, profile, message, diagnostic, sdkFro
     diagnostic,
     requestOptions: { sdkFromSandbox },
   });
-  if (message.userId !== null && canon(message.userId) !== canon(profile.userId))
-    fail(
-      'SDK impersonation is not covered by the configured backend profile.',
-      'LocalPluginImpersonationUnsupported',
-      501,
-    );
-  // null factory user requests Dataverse SYSTEM. It must be explicitly bound, never granted by default.
-  if (message.userId === null && profile.allowSystemFactory !== true)
-    fail(
-      'CreateOrganizationService(null) requires explicit system-factory authorization.',
-      'LocalPluginImpersonationUnsupported',
-      501,
-    );
   const args = message.arguments ?? [];
   switch (message.method) {
     case 'Execute': {

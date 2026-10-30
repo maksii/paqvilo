@@ -33,7 +33,7 @@ const sdkObject = (type, members) => ({ $type: 'Object', type, members });
 const sdkCollection = (type, values) => ({ $type: 'Collection', type, values });
 
 /** The organization API behind a store (its record entries carry it), or null for a store without an organization. */
-const organizationApiOf = (store) => store.recordPipeline?.organizationApi ?? null;
+export const organizationApiOf = (store) => store.recordPipeline?.organizationApi ?? null;
 
 /**
  * The OrganizationServiceFault a plug-in's FaultException<OrganizationServiceFault> carries for an organization failure:

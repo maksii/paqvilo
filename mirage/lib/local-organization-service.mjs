@@ -41,6 +41,8 @@ function sdkRecordKey(store, entity, target, partitionId) {
 }
 
 const OPERATIONS = ['read', 'create', 'update', 'delete', 'associate', 'disassociate'];
+// The privilege an association checks on the row, as the Web API's $ref routes do.
+const ROLE_OPERATION = { associate: 'appendto', disassociate: 'appendto' };
 const BULK_MESSAGES = ['CreateMultiple', 'UpdateMultiple'];
 const tableName = (value) => /^[a-z][a-z0-9_]*$/i.test(value ?? '');
 const evidenced = (value) => typeof value === 'string' && Boolean(value.trim());
@@ -110,6 +112,22 @@ export function validateServiceProfile(profile) {
  * table for the operation whose predicate (when it has one) accepts the row; otherwise 403 LocalBackendPermissionDenied. */
 export function authorizeGrant(store, profile, entity, operation, row) {
   const logical = store.resolveMapping(entity).logicalName;
+  // A plug-in service of a Dataverse user (plugin-clr.mjs dispatchSdkCallCore): that user's security roles decide, as the
+  // Web API decides for its callers; the SYSTEM user is not checked.
+  const security = profile.dataverseSecurity;
+  if (security === 'system') return logical;
+  if (security) {
+    const principals = store.recordPipeline?.organizationApi?.principals;
+    if (!principals)
+      fail('A Dataverse run-as user needs the organization security model.', 'LocalBackendIdentityRequired', 409);
+    principals.authorize({
+      user: security,
+      entity: logical,
+      operation: ROLE_OPERATION[operation] ?? operation,
+      row: operation === 'create' ? undefined : row,
+    });
+    return logical;
+  }
   const grants = profile.grants.filter((g) => g.entity === logical && g.operations.includes(operation));
   if (!grants.some((g) => !g.predicate || g.predicate(cloneStateData(row), operation) === true))
     fail(`Local backend profile denied ${operation} on ${logical}.`, 'LocalBackendPermissionDenied', 403);
@@ -351,6 +369,15 @@ export function localOrganizationService(store, profile, records, { diagnostic =
     );
   };
   const readGrants = (logical) => {
+    // A Dataverse run-as user reads the rows its roles admit (the Web API read filter); SYSTEM reads every row.
+    if (profile.dataverseSecurity === 'system') return [{}];
+    if (profile.dataverseSecurity) {
+      const filter = store.recordPipeline?.organizationApi?.principals?.readFilter({
+        user: profile.dataverseSecurity,
+        entity: logical,
+      });
+      return [{ predicate: filter ? (row) => filter(row) : undefined }];
+    }
     const grants = profile.grants.filter((g) => g.entity === logical && g.operations.includes('read'));
     if (!grants.length) fail('Local backend profile denied read on ' + logical, 'LocalBackendPermissionDenied', 403);
     return grants;
@@ -687,8 +714,13 @@ export function localOrganizationService(store, profile, records, { diagnostic =
       );
     },
     executeMessageSync(name, target, parameters) {
+      // A Dataverse run-as user executes any message its privileges allow: the message's own execute privilege is checked
+      // by the operation as that user, as on the Web API.
+      const principal = profile.dataverseSecurity
+        ? { ...profile, grants: [{ message: name, operations: ['execute'] }] }
+        : profile;
       if (
-        !profile.grants.some(
+        !principal.grants.some(
           (grant) =>
             typeof grant.message === 'string' &&
             grant.message.toLowerCase() === name.toLowerCase() &&
@@ -700,7 +732,7 @@ export function localOrganizationService(store, profile, records, { diagnostic =
         fail('Custom SDK messages require an organization message adapter.', 'LocalPluginSdkUnsupported', 501);
       return store.sdkMutation(() =>
         records.executeMessageSyncInternal({
-          principal: profile,
+          principal,
           name,
           target,
           parameters,
