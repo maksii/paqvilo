@@ -175,6 +175,90 @@ test('a step without a filter is accepted on any existing message; a refusing fi
   assert.equal((await refused.json()).error.code, '0x80044187');
 });
 
+// Native registration round 2 (single capture of deterministic validation): global WhoAmI/RetrieveVersion refused, images
+// on SetStateDynamicEntity, GrantAccess and DeleteMultiple accepted, an unknown image attribute refused, a step without a
+// stage accepted, a missing message refused, a client deployment on a server-only filter refused, and a plug-in type with a
+// step not deleted.
+test('registration round 2 rules answer with the native codes and texts', async (t) => {
+  const f = await fixture(t);
+  const refused = async (response, status, code, pattern) => {
+    const { error } = await response.json();
+    assert.equal(response.status, status, error?.message);
+    assert.equal(error.code, code);
+    assert.match(error.message, pattern);
+  };
+  for (const name of ['WhoAmI', 'RetrieveVersion'])
+    await refused(
+      await f.register(name),
+      400,
+      '0x80044187',
+      new RegExp(
+        `^Custom SdkMessageProcessingStep with Id: '[0-9a-f-]{36}' is not allowed on the message with SdkMessageId: '${f.message(name).sdkmessageid}'\\.$`,
+      ),
+    );
+  const stepOf = async (name, over) => {
+    const response = await f.register(name, over);
+    assert.equal(response.status, 201, name);
+    return (await response.json()).sdkmessageprocessingstepid;
+  };
+  const image = (stepId, imagetype, messagepropertyname, attributes) =>
+    f.request('POST', '/sdkmessageprocessingstepimages', {
+      name: 'img',
+      entityalias: 'img',
+      imagetype,
+      messagepropertyname,
+      ...(attributes ? { attributes } : {}),
+      'sdkmessageprocessingstepid@odata.bind': `/sdkmessageprocessingsteps(${stepId})`,
+    });
+  for (const [name, type, property] of [
+    ['SetStateDynamicEntity', 1, 'EntityMoniker'],
+    ['GrantAccess', 0, 'Target'],
+    ['DeleteMultiple', 0, 'Targets'],
+  ])
+    assert.equal(
+      (await image(await stepOf(name, { table: 'x_owned', stage: 40 }), type, property)).status,
+      201,
+      `${name} image`,
+    );
+  await refused(
+    await image(await stepOf('Update', { table: 'x_owned', stage: 40 }), 0, 'Target', 'x_nope'),
+    400,
+    '0x80081119',
+    /^The step image 'img' \(id '[0-9a-f-]{36}'\) references attribute 'x_nope', which does not exist on entity 'x_owned'\. This step image is entity-specific/,
+  );
+  assert.equal(
+    (await f.register('Update', { table: 'x_owned', stage: undefined })).status,
+    201,
+    'a step without a stage',
+  );
+  await refused(
+    await f.request('POST', '/sdkmessageprocessingsteps', {
+      name: 'No message',
+      stage: 20,
+      'eventhandler_plugintype@odata.bind': `/plugintypes(${TYPE})`,
+    }),
+    400,
+    '0x80040200',
+    /^sdkmessageid is missing\.$/,
+  );
+  await refused(
+    await f.register('Update', { table: 'x_owned', supporteddeployment: 1 }),
+    400,
+    '0x80040203',
+    /^Supported deployment does not agree with message availability$/,
+  );
+  const kept = await stepOf('Update', { table: 'x_owned' });
+  await refused(
+    await f.request('DELETE', `/plugintypes(${TYPE})`),
+    400,
+    '0x8004f01f',
+    new RegExp(
+      `^The PluginType\\(${TYPE}\\) component cannot be deleted because it is referenced by \\d+ other components\\. For a list of referenced components, use the RetrieveDependenciesForDeleteRequest\\.$`,
+    ),
+  );
+  assert.equal((await f.request('GET', `/sdkmessageprocessingsteps(${kept})`)).status, 200, 'the step survives');
+});
+
 test('registration validation answers with the native codes and texts', async (t) => {
   const f = await fixture(t);
   const refused = async (response, code, pattern) => {

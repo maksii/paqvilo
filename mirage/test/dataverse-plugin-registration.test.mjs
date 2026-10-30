@@ -353,24 +353,25 @@ describe('plug-in registration over HTTP', () => {
   // Native accepts a negative rank (registration probe: Update at stage 20 with rank -1).
   it('accepts any whole rank, a negative one included, and defaults a missing rank to 1', async () => {
     assert.equal((await createStep({ rank: -1 })).status, 204);
-    assert.equal((await errorOf(await createStep({ rank: 1.5 }))).code, '0x80040203');
+    // @parity-evidence: native registration round 2 (_registration-probes-2.json) "rank 1.5": 0x80048d19, the OData payload reader cannot convert 1.5 to Edm.Int32
+    assert.equal((await errorOf(await createStep({ rank: 1.5 }))).code, '0x80048d19');
     const response = await createStep({ name: 'Default rank' });
     const step = await (await call(`sdkmessageprocessingsteps(${idFromLocation(response)})`)).json();
     assert.equal(step.rank, 1);
   });
 
-  it('refuses a filter of another message with 0x80044187', async () => {
-    const error = await errorOf(
-      await createStep({ 'sdkmessagefilterid@odata.bind': `/sdkmessagefilters(${ids.updateFilter})` }),
+  // @parity-evidence: native registration round 2 (_registration-probes-2.json): "Merge with the probe Update filter" is accepted, "Merge with an unknown filter" answers
+  // 404 0x80040217; the earlier refusal of another message's filter had no native basis
+  it('accepts a filter of another message, and answers 404 for an unknown filter', async () => {
+    assert.equal(
+      (await createStep({ 'sdkmessagefilterid@odata.bind': `/sdkmessagefilters(${ids.updateFilter})` })).status,
+      204,
     );
-    assert.equal(error.code, '0x80044187');
-    // Native text names the step and the filter (registration probe on IsValidStateTransition).
-    assert.match(
-      error.message,
-      new RegExp(
-        `^Custom SdkMessageProcessingStep is not allowed on the specified message and entity\\. SdkMessageProcessingStepId: '[0-9a-f-]{36}', SdkMessageFilterId: '${ids.updateFilter}'\\.$`,
-      ),
-    );
+    const unknown = await createStep({
+      'sdkmessagefilterid@odata.bind': '/sdkmessagefilters(a1000000-0000-4000-8000-0000000000e8)',
+    });
+    assert.equal(unknown.status, 404);
+    assert.equal((await unknown.json()).error.code, '0x80040217');
   });
 
   it('refuses a filter the table does not allow a custom step on with 0x80044187', async () => {
@@ -421,9 +422,12 @@ describe('plug-in registration over HTTP', () => {
     });
     assert.equal(secure.status, 204);
     const secureId = idFromLocation(secure);
+    // An unfiltered Create step: the message's availability (2) admits deployment 2, so the secure-configuration rule
+    // answers (a custom table filter is server-only and answers the availability error first).
     const error = await errorOf(
       await createStep({
         supporteddeployment: 2,
+        'sdkmessagefilterid@odata.bind': undefined,
         'sdkmessageprocessingstepsecureconfigid@odata.bind': `/sdkmessageprocessingstepsecureconfigs(${secureId})`,
       }),
     );
@@ -462,12 +466,13 @@ describe('plug-in registration over HTTP', () => {
     );
   });
 
+  // @parity-evidence: native registration round 2 (_registration-probes-2.json) "step without event handler": 0x80040200 "plugintypeid is missing."
   it('refuses a step without its handler (the eventhandler is required)', async () => {
     const error = await errorOf(
       await createStep({ 'plugintypeid@odata.bind': undefined, 'eventhandler_plugintype@odata.bind': undefined }),
     );
-    assert.equal(error.code, '0x80040203');
-    assert.equal(error.message, "The 'eventhandler' attribute is required.");
+    assert.equal(error.code, '0x80040200');
+    assert.equal(error.message, 'plugintypeid is missing.');
   });
 
   // Images: each rule with the step it needs. The step on Update is valid for a pre-image; the others need their message.
@@ -520,7 +525,8 @@ describe('plug-in registration over HTTP', () => {
     assert.equal((await errorOf(await postImage(imageBody(deleteStep, { imagetype: 1 })))).code, '0x8004416d');
   });
 
-  // Microsoft Learn register-plug-in: no assembly is unregistered while steps depend on it; images go with their step.
+  // Native registration round 2: deleting a plug-in type with a step answers 0x8004f01f and the step survives; Learn
+  // register-plug-in: no assembly is unregistered while steps depend on it; images go with their step.
   it('builds the assembly, type and step chain; refuses to delete the assembly or type while a step uses it', async () => {
     const assembly = await call('pluginassemblies', {
       method: 'POST',
@@ -553,8 +559,10 @@ describe('plug-in registration over HTTP', () => {
     const probeImage = idFromLocation(image);
     for (const path of [`pluginassemblies(${probeAssembly})`, `plugintypes(${probeType})`]) {
       const refused = await call(path, { method: 'DELETE' });
-      assert.equal(refused.status, 405, path);
-      assert.equal((await refused.json()).error.code, '0x80040227');
+      assert.equal(refused.status, 400, path);
+      const { error } = await refused.json();
+      assert.equal(error.code, '0x8004f01f');
+      assert.match(error.message, /component cannot be deleted because it is referenced by 1 other components\./);
     }
     assert.equal((await call(`sdkmessageprocessingsteps(${probeStep})`)).status, 200, 'the step remains');
     assert.equal((await call(`sdkmessageprocessingsteps(${probeStep})`, { method: 'DELETE' })).status, 204);
@@ -1368,7 +1376,9 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     });
   });
 
-  it('a plug-in type must be declared in the assembly (0x8004418c), and an activity type is flagged isworkflowactivity', async () => {
+  // @parity-evidence: native registration round 2 (_registration-probes-2.json) "plugintype that does not implement IPlugin": 0x8004418b "PluginType [..] not found in
+  // PluginAssembly [..] which has a total of [n] plugin/workflow activity types."
+  it('a plug-in type must be one of the assembly plug-in types (0x8004418b), and an activity type is flagged isworkflowactivity', async () => {
     const { store, run } = await registry();
     store.insertRow('pluginassembly', store.state.tables.pluginassembly, {
       pluginassemblyid: ASSEMBLY,
@@ -1381,7 +1391,10 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     const bind = { 'pluginassemblyid@odata.bind': `/pluginassemblies(${ASSEMBLY})` };
     await assert.rejects(
       run('plugintype', 'create', { typename: 'Contoso.Plugins.Missing', name: 'Contoso.Plugins.Missing', ...bind }),
-      (error) => error.details?.innerCode === '0x8004418c',
+      (error) =>
+        error.details?.innerCode === '0x8004418b' &&
+        error.message ===
+          `PluginType [Contoso.Plugins.Missing] not found in PluginAssembly [Contoso.Signed, Version=1.2.3.4, Culture=en-US, PublicKeyToken=${tokenOf(fakePublicKey)}] which has a total of [2] plugin/workflow activity types.`,
     );
     const check = { typename: CONTOSO, name: CONTOSO, ...bind };
     await run('plugintype', 'create', check);
@@ -1426,8 +1439,8 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     await assert.rejects(
       run('plugintype', 'create', { typename: 'Contoso.Plugins.Model', ...bind }),
       (error) =>
-        error.details?.innerCode === '0x8004418c' &&
-        error.message.startsWith('Plug-in type must implement exactly one of the following classes or interfaces'),
+        error.details?.innerCode === '0x8004418b' &&
+        error.message.startsWith('PluginType [Contoso.Plugins.Model] not found in PluginAssembly [Contoso.Mixed,'),
     );
     await run('plugintype', 'create', { typename: CONTOSO, ...bind });
     store.insertRow('plugintype', (store.state.tables.plugintype ??= []), {
@@ -1521,7 +1534,7 @@ describe('plug-in registration: assembly content and plug-in types', () => {
     );
     await assert.rejects(
       run('pluginpackage', 'delete', {}, existing),
-      (error) => error.details?.innerCode === '0x80040227',
+      (error) => error.details?.innerCode === '0x8004f01f',
     );
     store.removeRow('sdkmessageprocessingstep', store.state.tables.sdkmessageprocessingstep, 0);
     await run('pluginpackage', 'update', { content: nupkg([['Contoso.Unsigned.dll', other]]) }, existing);

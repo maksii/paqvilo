@@ -161,8 +161,10 @@ const STANDARD_TABLE_FILTERS = {
     ['Update', true, 0],
   ],
 };
-// The 'none' (no table) filters native has for platform messages, as message: [iscustomprocessingstepallowed, availability].
-// The flag governs a step registered on that filter; a step registered with no filter is accepted on any existing message.
+// The 'none' (no table) filters native has for platform messages, as message: [iscustomprocessingstepallowed, availability,
+// unfiltered]. The allowed flag governs a step registered on that filter. A step registered with no filter is accepted on any
+// existing message (Upsert, Merge and RetrieveEntityChanges included, whose 'none' filters refuse custom steps) except where
+// unfiltered is false: native refuses a global WhoAmI or RetrieveVersion step (0x80044187).
 const NONE_FILTERS = {
   ApplyRecordCreationAndUpdateRule: [true, 0],
   Associate: [true, 2],
@@ -178,11 +180,11 @@ const NONE_FILTERS = {
   RetrieveEntityChanges: [false, 2],
   RetrievePersonalWall: [true, 0],
   RetrieveRecordWall: [true, 0],
-  RetrieveVersion: [false, 2],
+  RetrieveVersion: [false, 2, false],
   SetLocLabels: [true, 0],
   Upsert: [false, 2],
   UpsertMultiple: [false, 2],
-  WhoAmI: [false, 2],
+  WhoAmI: [false, 2, false],
 };
 const EXTERNAL_MESSAGES = ['OnExternalCreated', 'OnExternalUpdated', 'OnExternalDeleted'];
 const STAGE_NAME = { 10: 'PreValidation', 20: 'PreOperation', 40: 'PostOperation' };
@@ -197,13 +199,16 @@ const IMAGE_PROPERTIES = {
   Create: ['Id'],
   CreateMultiple: ['Targets'],
   Delete: ['Target'],
+  DeleteMultiple: ['Targets'],
   DeliverIncoming: ['EmailId'],
+  GrantAccess: ['Target'],
   DeliverPromote: ['EmailId'],
   Merge: ['Target', 'SubordinateId'],
   Retrieve: ['Target'],
   Route: ['Target'],
   Send: ['FaxId', 'EmailId', 'TemplateId'],
   SetState: ['EntityMoniker'],
+  SetStateDynamicEntity: ['EntityMoniker'],
   Update: ['Target'],
   UpdateMultiple: ['Targets'],
 };
@@ -223,8 +228,10 @@ const same = (a, b) => {
   return x != null && y != null && String(x).toLowerCase() === String(y).toLowerCase();
 };
 const fail = (message, innerCode) => new DataError(message, 400, 'InvalidRequest', { innerCode });
-// Records do not check required columns; the 0x80040203 invalid-argument default is a guess.
+// Records do not check required columns; the 0x80040203 invalid-argument default is a guess. A step without a message or
+// handler answers native's 0x80040200 "<column> is missing." (registration round 2).
 const required = (column) => fail(`The '${column}' attribute is required.`, '0x80040203');
+const missing = (column) => fail(`${column} is missing.`, '0x80040200');
 const notFound = (logical, id) =>
   new DataError(`Entity '${logical}' With Id = ${id} Does Not Exist`, 404, 'NotFound', { innerCode: '0x80040217' });
 // ponytail: a linear scan per lookup; index the registration tables by id if their row counts grow.
@@ -682,15 +689,14 @@ const stepsOfType = (store, typeId) =>
   store
     .tableRows('sdkmessageprocessingstep')
     .filter((step) => same(step.eventhandler, typeId) || same(step.plugintypeid, typeId));
-// Documented restrict (register-plug-in: no assembly is unregistered while steps depend on it; a package with step
-// registrations cannot be unregistered). The code is Dataverse's documented association refusal; the native code of this
-// particular refusal is not captured.
-const dependentSteps = () =>
-  new DataError(
-    'The object you tried to delete is associated with another object and cannot be deleted.',
-    405,
-    'CannotDeleteDueToAssociation',
-    { innerCode: '0x80040227', table: 'sdkmessageprocessingstep' },
+// A component that steps reference is not deleted (native registration round 2: deleting a plug-in type with a step answers
+// 0x8004f01f and the step survives; Learn: no assembly or package is unregistered while steps depend on it). The assembly
+// and package refusals reuse the type's native form.
+const SCHEMA = { pluginpackage: 'PluginPackage', pluginassembly: 'PluginAssembly', plugintype: 'PluginType' };
+const dependentSteps = (logical, id, count) =>
+  fail(
+    `The ${SCHEMA[logical]}(${String(id).toLowerCase()}) component cannot be deleted because it is referenced by ${count} other components. For a list of referenced components, use the RetrieveDependenciesForDeleteRequest.`,
+    '0x8004f01f',
   );
 
 // A plug-in type or assembly with steps is not deleted; a package-owned assembly is deleted only with its package
@@ -709,7 +715,8 @@ function guardDelete(store, logical, existing) {
         : logical === 'plugintype'
           ? [existing]
           : [];
-  if (types.some((type) => stepsOfType(store, type.plugintypeid).length)) throw dependentSteps();
+  const steps = types.reduce((count, type) => count + stepsOfType(store, type.plugintypeid).length, 0);
+  if (steps) throw dependentSteps(logical, existing[`${logical}id`], steps);
   if (logical === 'pluginpackage') removePackageRows(store, existing.pluginpackageid, () => true);
 }
 
@@ -891,9 +898,6 @@ function validatePackage({ store, data, existing, operation }) {
   }
 }
 
-const TYPE_IMPLEMENTATION =
-  'Plug-in type must implement exactly one of the following classes or interfaces: Microsoft.Crm.Sdk.IPlugin, Microsoft.Xrm.Sdk.IPlugin, System.Activities.Activity and System.Workflow.ComponentModel.Activity.';
-
 function validateType({ store, data, existing }) {
   const typename = valueOf(data, existing, 'typename');
   if (!typename) throw required('typename');
@@ -937,11 +941,16 @@ function validateType({ store, data, existing }) {
       culture: assembly.culture,
       publickeytoken: assembly.publickeytoken,
     });
-  // With content, the type must be a TypeDef of the assembly implementing IPlugin or a workflow activity
-  // (InvalidPluginTypeImplementation), and isworkflowactivity comes from it.
+  // With content, the type must be one of the assembly's plug-in or workflow activity types (native registration round 2:
+  // a type that does not implement IPlugin is "not found" among them), and isworkflowactivity comes from it.
   if (assembly && typeof assembly.content === 'string' && assembly.content !== '') {
-    const type = assemblyContent(assembly.content).types.find((candidate) => candidate.fullName === typename);
-    if (!type || !(type.isPlugin || type.isWorkflowActivity)) throw fail(TYPE_IMPLEMENTATION, '0x8004418c');
+    const types = assemblyContent(assembly.content).types.filter((type) => type.isPlugin || type.isWorkflowActivity);
+    const type = types.find((candidate) => candidate.fullName === typename);
+    if (!type)
+      throw fail(
+        `PluginType [${typename}] not found in PluginAssembly [${assembly.name}, Version=${assembly.version}, Culture=${assembly.culture ?? 'neutral'}, PublicKeyToken=${assembly.publickeytoken ?? 'null'}] which has a total of [${types.length}] plugin/workflow activity types.`,
+        '0x8004418b',
+      );
     data.isworkflowactivity = type.isWorkflowActivity;
   }
 }
@@ -968,6 +977,29 @@ function validateImage({ store, data, existing }) {
     throw fail(`Message property name '${property}' is not valid on message ${name}.`, '0x8004416b');
   if (post && [10, 20].includes(Number(step.stage)))
     throw fail('PreEvent step registration does not support Post Image.', '0x8004416e');
+  // The selected attributes must be columns of the step's table (native registration round 2).
+  const table = rowById(
+    store,
+    'sdkmessagefilter',
+    'sdkmessagefilterid',
+    step.sdkmessagefilterid,
+  )?.primaryobjecttypecode;
+  if (table && table !== 'none') {
+    const columns = columnsOf(store, table);
+    const unknown = String(val('attributes') ?? '')
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .find((attribute) => attribute && !columns.has(attribute));
+    if (unknown) {
+      const imageId = String(
+        existing?.sdkmessageprocessingstepimageid ?? (data.sdkmessageprocessingstepimageid ??= store.ids.uuid()),
+      ).toLowerCase();
+      throw fail(
+        `The step image '${val('entityalias')}' (id '${imageId}') references attribute '${unknown}', which does not exist on entity '${table}'. This step image is entity-specific, so a required solution dependency is likely missing or incomplete. Verify that all dependent solutions are installed and that the attribute exists on the entity.`,
+        '0x80081119',
+      );
+    }
+  }
 }
 
 function validateStep({ store, principals, c, data, existing, operation }) {
@@ -985,15 +1017,22 @@ function validateStep({ store, principals, c, data, existing, operation }) {
     ).toLowerCase();
   const handler = handlerOf(data, existing);
   if (operation === 'create' && data.rank === undefined) data.rank = 1; // the Plug-in Registration Tool sends rank; the default is 1
+  // Native accepts a step without a stage (registration round 2); when such a step runs is not captured.
   for (const [column, present] of [
     ['sdkmessageid', messageRefId],
-    ['stage', val('stage')],
-    ['eventhandler', handler.id],
+    ['plugintypeid', handler.id],
   ])
-    if (present == null || present === '') throw required(column);
+    if (present == null || present === '') throw missing(column);
+  const staged = val('stage') != null && val('stage') !== '';
   const stage = Number(val('stage')),
     mode = Number(val('mode') ?? 0),
     rank = Number(val('rank'));
+  // A whole-number column: native's OData payload reader refuses a fractional rank before any rule runs.
+  if (!Number.isInteger(rank))
+    throw fail(
+      `Error identified in Payload provided by the user for Entity :'sdkmessageprocessingsteps', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.OData.ODataException: Cannot convert the literal '${val('rank')}' to the expected type 'Edm.Int32'.`,
+      '0x80048d19',
+    );
   for (const [column, value, accepted] of [
     ['mode', mode, [0, 1]],
     ['supporteddeployment', Number(val('supporteddeployment') ?? 0), [0, 1, 2]],
@@ -1017,29 +1056,37 @@ function validateStep({ store, principals, c, data, existing, operation }) {
     throw fail('External virtual table events support only asynchronous PostOperation steps.', '0x80090303');
   }
   // Native accepts any whole rank, a negative one included.
-  if (!Number.isInteger(rank)) throw fail('The rank must be a whole number.', '0x80040203');
-  if (![10, 20, 40].includes(stage)) throw fail(STAGE_TEXT, '0x80044184');
+  if (staged && ![10, 20, 40].includes(stage)) throw fail(STAGE_TEXT, '0x80044184');
   if (mode === 1 && stage !== 40)
     throw fail(
       `Asynchronous steps are only supported in AfterMainOperationInsideTransaction stages and AfterMainOperationOutsideTransaction stage. SdkMessageProcessingStep name '${val('name') ?? ''}', id '${stepId()}'.`,
       '0x80040203',
     );
-  // A filtered step needs a filter of the message that allows custom steps. Native accepts a step with no filter on any
-  // existing message, whatever its 'none' filter allows (global steps on Upsert, Merge and RetrieveEntityChanges, whose
-  // 'none' filters refuse custom steps, and on messages with no 'none' filter at all).
+  // A filtered step needs an existing filter that allows custom steps (an unknown filter is 404); native does not check
+  // that the filter belongs to the step's message (a Merge step on an Update filter is accepted). A step with no filter is
+  // accepted on any existing message except those whose 'none' filter refuses unfiltered steps (NONE_FILTERS).
   const filter = rowById(store, 'sdkmessagefilter', 'sdkmessagefilterid', filterRefId);
-  if (
-    filterRefId &&
-    (!filter || !same(filter.sdkmessageid, messageRefId) || filter.iscustomprocessingstepallowed !== true)
-  )
+  if (filterRefId && !filter) throw notFound('sdkmessagefilter', filterRefId);
+  if (filter && filter.iscustomprocessingstepallowed !== true)
     throw fail(
       `Custom SdkMessageProcessingStep is not allowed on the specified message and entity. SdkMessageProcessingStepId: '${stepId()}', SdkMessageFilterId: '${filterRefId}'.`,
       '0x80044187',
     );
-  const availability = store.state.dataverse?.pluginSourceAvailability?.[String(messageName).toLowerCase()];
+  if (!filter && NONE_FILTERS[messageName]?.[2] === false)
+    throw fail(
+      `Custom SdkMessageProcessingStep with Id: '${stepId()}' is not allowed on the message with SdkMessageId: '${String(message.sdkmessageid).toLowerCase()}'.`,
+      '0x80044187',
+    );
+  // The supported deployment must agree with the availability of the step's filter (else its message): server-only (0)
+  // takes deployment 0, client-only (1) deployment 1, both (2) any. A Solution's recorded availability wins. Checked before
+  // the secure-configuration rule (native registration round 2 answers this error with secure configuration supplied).
+  const sourced = store.state.dataverse?.pluginSourceAvailability?.[String(messageName).toLowerCase()];
+  const availability = [
+    sourced?.filters?.[filter?.primaryobjecttypecode ?? 'none'] ?? (filter ? filter.availability : undefined),
+    sourced?.message ?? (filter ? undefined : message.availability),
+  ];
   const deployment = Number(val('supporteddeployment') ?? 0);
-  const knownAvailability = [availability?.message, availability?.filters?.[filter?.primaryobjecttypecode ?? 'none']];
-  if ((deployment !== 0 && knownAvailability.includes(0)) || (deployment !== 1 && knownAvailability.includes(1)))
+  if ((deployment !== 0 && availability.includes(0)) || (deployment !== 1 && availability.includes(1)))
     throw fail('Supported deployment does not agree with message availability', '0x80040203');
   // The attributes must be columns of the filter's table (a missing dependency natively); any message is accepted.
   const table = filter?.primaryobjecttypecode;
